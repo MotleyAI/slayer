@@ -15,7 +15,7 @@ from slayer.live_schema.schema_drift import (
     LiveTable,
     _CascadeState,
     _diff_sql_table_columns,
-    _first_dropped_sql_column_ref,
+    _first_dropped_sql_field_ref,
     _is_bare_identifier,
 )
 
@@ -95,7 +95,7 @@ def test_first_dropped_ref_scans_non_ascii_leading_alias():
         dropped_relationships={},
         pk_per_dataset={},
     )
-    result = _first_dropped_sql_column_ref(
+    result = _first_dropped_sql_field_ref(
         col=model.fields[0], dataset=model, state=state
     )
     assert result == (model, "год")

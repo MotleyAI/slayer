@@ -78,7 +78,7 @@ def _line_items() -> SlayerDataset:
     )
 
 
-def _orders(*, extra=None, joins_extra=None) -> SlayerDataset:
+def _orders(*, extra=None, relationships_extra=None) -> SlayerDataset:
     cols = [
         DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
         DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
@@ -87,7 +87,7 @@ def _orders(*, extra=None, joins_extra=None) -> SlayerDataset:
     ]
     cols += extra or []
     joins = [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])]
-    joins += joins_extra or []
+    joins += relationships_extra or []
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", fields=cols, relationships=joins,
     )
@@ -307,7 +307,7 @@ class TestDev1527F1BasePull:
         # below pins the still-legal shape.
         orders = _orders(
             extra=[DatasetField(name="li_weight", expression="line_items.qty", datatype=DataType.FLOAT)],
-            joins_extra=[DatasetRelationship(
+            relationships_extra=[DatasetRelationship(
                 to="line_items", from_columns=["id"], to_columns=["order_id"])],
         )
         query = SlayerQuery(

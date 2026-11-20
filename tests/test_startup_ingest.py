@@ -411,7 +411,7 @@ class TestOrchestrator:
     async def test_output_routed_to_stream_not_stdout(self, monkeypatch: pytest.MonkeyPatch, capsys):
         storage = _stub_storage(names=["a"])
         _patch_ingester(
-            monkeypatch, lambda n, ds: _result_with_addition("a_model", "a")
+            monkeypatch, lambda n, ds: _result_with_addition("a_dataset", "a")
         )
         stream = io.StringIO()
 
@@ -428,7 +428,7 @@ class TestOrchestrator:
     async def test_default_stream_is_stderr(self, monkeypatch: pytest.MonkeyPatch, capsys):
         storage = _stub_storage(names=["only"])
         _patch_ingester(
-            monkeypatch, lambda n, ds: _result_with_addition("only_model", "only")
+            monkeypatch, lambda n, ds: _result_with_addition("only_dataset", "only")
         )
 
         # No `stream=` kwarg → defaults to sys.stderr.

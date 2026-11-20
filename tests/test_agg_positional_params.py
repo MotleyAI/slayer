@@ -24,9 +24,9 @@ async def exec_engine(request):
         yield engine
 
 
-async def _rows(engine, *measures: str) -> list[dict]:
+async def _rows(engine, *metrics: str) -> list[dict]:
     resp = await engine.execute(sales_q(
-        dimensions=["sales.region"], metrics=list(measures)))
+        dimensions=["sales.region"], metrics=list(metrics)))
     return sorted(resp.data, key=lambda r: (r["sales.region"] is None,
                                             str(r["sales.region"])))
 

@@ -103,10 +103,10 @@ def _projecting(path: str, *, extension: DatasetExtension) -> SlayerQuery:
     )
 
 
-_ROOT_JOIN = DatasetExtension(
+_ROOT_RELATIONSHIP = DatasetExtension(
     dataset="orders", relationships=[DatasetRelationship(to="regions", from_columns=["ship_region_id"], to_columns=["id"])],
 )
-_JOINED_JOIN = DatasetExtension(
+_JOINED_RELATIONSHIP = DatasetExtension(
     dataset="customers", relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
 )
 
@@ -114,18 +114,18 @@ _JOINED_JOIN = DatasetExtension(
 class TestExtensionJoinPaths:
     @pytest.mark.parametrize("path", ["orders.regions.name", "regions.name"])
     async def test_root_extension_join(self, storage: StorageBackend, path: str) -> None:
-        result = await extract_entities_from_query(_projecting(path, extension=_ROOT_JOIN), storage=storage)
+        result = await extract_entities_from_query(_projecting(path, extension=_ROOT_RELATIONSHIP), storage=storage)
         assert "mydb.regions.name" in result.canonical_forms
 
     @pytest.mark.parametrize("path", ["orders.customers.regions.name", "customers.regions.name"])
     async def test_joined_extension_join(self, storage: StorageBackend, path: str) -> None:
-        result = await extract_entities_from_query(_projecting(path, extension=_JOINED_JOIN), storage=storage)
+        result = await extract_entities_from_query(_projecting(path, extension=_JOINED_RELATIONSHIP), storage=storage)
         assert "mydb.regions.name" in result.canonical_forms
 
     async def test_short_form_route_resolves_in_the_query_datasource(self, named_storage: StorageBackend) -> None:
         q = SlayerQuery(
             population="orders", dimensions=[QueryDimension(field="regions.name")],
-            metrics=[QueryMetric(metric="count(orders.*)")], extensions=[_JOINED_JOIN],
+            metrics=[QueryMetric(metric="count(orders.*)")], extensions=[_JOINED_RELATIONSHIP],
         )
         result = await extract_entities_from_query(q, storage=named_storage)
         assert "mydb.regions.name" in result.canonical_forms
@@ -133,7 +133,7 @@ class TestExtensionJoinPaths:
 
     async def test_extension_column_reads_through_extension_join(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
-            population="orders", extensions=[_ROOT_JOIN],
+            population="orders", extensions=[_ROOT_RELATIONSHIP],
             dimensions=[QueryDimension(field="regions.name", alias="region_label")],
             metrics=[QueryMetric(metric="count(orders.*)")],
         )
@@ -143,7 +143,7 @@ class TestExtensionJoinPaths:
 
 
 #: ``buyer`` names a new query-local edge (non-stored pairs) or aliases the stored ``orders → customers`` edge.
-_NAMED_JOINS = {
+_NAMED_RELATIONSHIPS = {
     "new_edge": DatasetRelationship(to="customers", name="buyer", from_columns=["ship_region_id"], to_columns=["region_id"]),
     "alias": DatasetRelationship(to="customers", name="buyer", from_columns=["customer_id"], to_columns=["id"]),
 }
@@ -158,19 +158,19 @@ def _assert_no_edge_token(forms: list[str]) -> None:
 
 class TestNamedExtensionJoins:
     @pytest.mark.parametrize("path", ["buyer.name", "orders.buyer.name"])
-    @pytest.mark.parametrize("kind", sorted(_NAMED_JOINS))
+    @pytest.mark.parametrize("kind", sorted(_NAMED_RELATIONSHIPS))
     async def test_named_join_records_stored_target(self, storage: StorageBackend, kind: str, path: str) -> None:
-        extension = DatasetExtension(dataset="orders", relationships=[_NAMED_JOINS[kind]])
+        extension = DatasetExtension(dataset="orders", relationships=[_NAMED_RELATIONSHIPS[kind]])
         result = await extract_entities_from_query(_projecting(path, extension=extension), storage=storage)
         assert "mydb.customers.name" in result.canonical_forms
         _assert_no_edge_token(result.canonical_forms)
 
     @pytest.mark.parametrize("path", ["buyer.premium", "orders.buyer.premium"])
-    @pytest.mark.parametrize("kind", sorted(_NAMED_JOINS))
+    @pytest.mark.parametrize("kind", sorted(_NAMED_RELATIONSHIPS))
     async def test_extension_column_through_named_join(self, storage: StorageBackend, kind: str, path: str) -> None:
         q = SlayerQuery(
             population="orders",
-            extensions=[DatasetExtension(dataset="orders", relationships=[_NAMED_JOINS[kind]])],
+            extensions=[DatasetExtension(dataset="orders", relationships=[_NAMED_RELATIONSHIPS[kind]])],
             dimensions=[QueryDimension(field=f"{path.removesuffix('premium')}region_id + 1", alias="premium")],
             metrics=[QueryMetric(metric="count(orders.*)")],
         )
@@ -180,12 +180,12 @@ class TestNamedExtensionJoins:
         _assert_no_edge_token(result.canonical_forms)
 
     @pytest.mark.parametrize(("formula", "entity"), _AGGREGATED_PATHS)
-    @pytest.mark.parametrize("kind", sorted(_NAMED_JOINS))
+    @pytest.mark.parametrize("kind", sorted(_NAMED_RELATIONSHIPS))
     async def test_aggregated_named_join_path(
         self, storage: StorageBackend, kind: str, formula: str, entity: str,
     ) -> None:
         q = SlayerQuery(
-            population="orders", extensions=[DatasetExtension(dataset="orders", relationships=[_NAMED_JOINS[kind]])],
+            population="orders", extensions=[DatasetExtension(dataset="orders", relationships=[_NAMED_RELATIONSHIPS[kind]])],
             metrics=[QueryMetric(metric=formula)],
         )
         result = await extract_entities_from_query(q, storage=storage)

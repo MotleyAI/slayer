@@ -114,19 +114,19 @@ class TestResolveRegistersJoins:
         scope = _scope(_orders(), _customers(), _regions())
         expr = scope.resolve(FieldKey(leaf="amount"))
         assert expr.sql(dialect="postgres") == "orders.amount"
-        assert scope.join_paths.as_list() == []
+        assert scope.relationship_paths.as_list() == []
 
     def test_single_hop_joined_columnkey_registers_path(self) -> None:
         scope = _scope(_orders(), _customers(), _regions())
         expr = scope.resolve(FieldKey(path=("customers",), leaf="region_id"))
         assert expr.sql(dialect="postgres") == "customers.region_id"
-        assert scope.join_paths.as_list() == [("customers",)]
+        assert scope.relationship_paths.as_list() == [("customers",)]
 
     def test_multi_hop_columnkey_registers_every_prefix(self) -> None:
         scope = _scope(_orders(), _customers(), _regions())
         expr = scope.resolve(FieldKey(path=("customers", "regions"), leaf="name"))
         assert expr.sql(dialect="postgres") == "customers__regions.name"
-        assert scope.join_paths.as_list() == [("customers",), ("customers", "regions")]
+        assert scope.relationship_paths.as_list() == [("customers",), ("customers", "regions")]
 
     def test_derived_columnsqlkey_crossing_registers_prefixes(self) -> None:
         orders = _orders(extra=[
@@ -136,7 +136,7 @@ class TestResolveRegistersJoins:
         scope = _scope(orders, _customers(), _regions())
         expr = scope.resolve(FieldSqlKey(dataset="orders", field_name="region_weight"))
         assert "customers__regions.weight" in expr.sql(dialect="postgres")
-        assert scope.join_paths.as_list() == [("customers",), ("customers", "regions")]
+        assert scope.relationship_paths.as_list() == [("customers",), ("customers", "regions")]
 
     def test_registration_dedupes_and_preserves_order(self) -> None:
         scope = _scope(_orders(), _customers(), _regions())
@@ -144,7 +144,7 @@ class TestResolveRegistersJoins:
         scope.resolve(FieldKey(path=("customers",), leaf="balance"))  # already seen
         # ``customers`` was registered first (as a prefix); dedup keeps one copy
         # in first-seen order.
-        assert scope.join_paths.as_list() == [("customers",), ("customers", "regions")]
+        assert scope.relationship_paths.as_list() == [("customers",), ("customers", "regions")]
 
 
 # --------------------------------------------------------------------------- #
@@ -160,7 +160,7 @@ class TestResolveReservedQuoting:
         scope = _scope(_reserved_host(), _reserved_target())
         expr = scope.resolve(FieldKey(path=("user",), leaf="grade"))
         assert '"user"' in expr.sql(dialect="postgres")
-        assert scope.join_paths.as_list() == [("user",)]
+        assert scope.relationship_paths.as_list() == [("user",)]
 
     def test_resolver_alias_matches_build_from_and_joins(self) -> None:
         # D-K / Codex H1: the alias the resolver anchors a reserved-word relationship
@@ -214,7 +214,7 @@ class TestResolveReservedQuoting:
         scope = _scope(host, _reserved_target())
         expr = scope.resolve(FieldSqlKey(dataset="order", field_name="user_grade"))
         assert '"user"' in expr.sql(dialect="postgres")
-        assert scope.join_paths.as_list() == [("user",)]
+        assert scope.relationship_paths.as_list() == [("user",)]
 
 
 # --------------------------------------------------------------------------- #
@@ -285,7 +285,7 @@ class TestMaterialization:
         assert mat.alias == "_val_0"
         assert "customers__regions.population" in mat.expr.sql(dialect="postgres")
         # Registration still happens in the producer (Law 1 before Law 2).
-        assert producer.join_paths.as_list() == [
+        assert producer.relationship_paths.as_list() == [
             ("customers",), ("customers", "regions"),
         ]
 
@@ -364,7 +364,7 @@ class TestMaterialization:
         gen = SQLGenerator(dialect="postgres")
         from_clause, joins = gen._build_from_and_joins(
             source_dataset=producer.root_dataset, source_relation="orders",
-            joined_paths=producer.join_paths.as_list(), bundle=producer.bundle,
+            joined_paths=producer.relationship_paths.as_list(), bundle=producer.bundle,
         )
         inner = exp.Select().select(exp.column("id", table="orders")).from_(from_clause)
         for j, on, jt in joins:
@@ -417,7 +417,7 @@ class TestResolvePathedColumnSqlKey:
         assert "UPPER(customers.balance)" in rendered, rendered
         assert "orders.balance" not in rendered, rendered
         # The relationship it lives behind is registered (Law 1).
-        assert scope.join_paths.as_list() == [("customers",)]
+        assert scope.relationship_paths.as_list() == [("customers",)]
 
     def test_single_hop_derived_registers_only_its_join(self) -> None:
         scope = _scope(_orders(), self._customers_with_tier(), _regions())
@@ -425,7 +425,7 @@ class TestResolvePathedColumnSqlKey:
             FieldSqlKey(path=("customers",), dataset="customers", field_name="tier"))
         # ``regions`` is NOT referenced by ``tier`` — only the ``customers`` hop
         # is pulled.
-        assert ("customers", "regions") not in scope.join_paths.as_list()
+        assert ("customers", "regions") not in scope.relationship_paths.as_list()
 
     def test_joined_derived_crossing_further_join_registers_prefixes(self) -> None:
         # A derived field on the joined dataset whose sql crosses a FURTHER relationship
@@ -446,7 +446,7 @@ class TestResolvePathedColumnSqlKey:
             FieldSqlKey(path=("customers",), dataset="customers", field_name="deep"))
         rendered = expr.sql(dialect="postgres")
         assert "customers__regions.population" in rendered, rendered
-        assert scope.join_paths.as_list() == [
+        assert scope.relationship_paths.as_list() == [
             ("customers",), ("customers", "regions"),
         ]
 

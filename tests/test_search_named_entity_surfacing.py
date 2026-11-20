@@ -269,12 +269,12 @@ async def test_unknown_named_ref_is_warning_not_entity_hit(
     service: SearchService,
 ) -> None:
     resp = await service.search(
-        entities=["warehouse.orders.no_such_column"],
+        entities=["warehouse.orders.no_such_field"],
         max_results=20,
     )
     entity_hits = [h for h in resp.results if h.kind != "memory"]
     assert entity_hits == []
-    assert any("no_such_column" in w for w in resp.warnings)
+    assert any("no_such_field" in w for w in resp.warnings)
 
 
 # ---------------------------------------------------------------------------

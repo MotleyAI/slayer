@@ -90,12 +90,12 @@ async def _dry(engine: SlayerQueryEngine, query) -> str:
     return sql
 
 
-async def _respell_orders(engine: SlayerQueryEngine, *, column: str, field: str,
+async def _respell_orders(engine: SlayerQueryEngine, *, field_name: str, field: str,
                           value: str) -> None:
     """Re-save ``orders`` with ``column.field`` set to ``value``."""
     orders = await engine.storage.get_dataset("orders", data_source="test")
     assert orders is not None
-    orders.fields = [c.model_copy(update={field: value}) if c.name == column else c
+    orders.fields = [c.model_copy(update={field: value}) if c.name == field_name else c
                       for c in orders.fields]
     await engine.storage.save_dataset(orders)
 
@@ -390,7 +390,7 @@ class TestModelSqlSpelledByModelName:
         resp = await engine.execute(query)
         assert by_key(resp, RNAME, "orders.north_amount_sum") == \
             {"North": 100.0, "South": None, None: None}
-        await _respell_orders(engine, column="north_amount", field="filter",
+        await _respell_orders(engine, field_name="north_amount", field="filter",
                               value="customers.hr.rname = 'North'")
         assert sql == await _dry(engine, query)
 

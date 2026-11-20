@@ -22,7 +22,7 @@ from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema.ingestion import (
     IntrospectedColumn, ResultList, _inferred_elements, _retyped_list, ingest_datasource_idempotent,
-    retyped_sql_columns,
+    retyped_sql_fields,
 )
 from slayer.mcp.server import create_mcp_server
 from slayer.live_schema.schema_scope import SchemaRef
@@ -351,9 +351,9 @@ async def _reingest(ds: DatasourceConfig, tmp: str, stored: SlayerDataset) -> Sl
     return loaded
 
 
-def _stored(*columns: DatasetField) -> SlayerDataset:
+def _stored(*fields: DatasetField) -> SlayerDataset:
     return SlayerDataset(name="contractors", sql_table="contractors", data_source="test",
-                       fields=[DatasetField(name="id", datatype=DataType.INTEGER), *columns])
+                       fields=[DatasetField(name="id", datatype=DataType.INTEGER), *fields])
 
 
 class TestReingest:
@@ -426,7 +426,7 @@ class TestReingest:
 # --------------------------------------------------------------------------- #
 # Rendering for agents
 # --------------------------------------------------------------------------- #
-def _find_column(node: Any, name: str) -> Optional[dict[str, Any]]:
+def _find_field(node: Any, name: str) -> Optional[dict[str, Any]]:
     if isinstance(node, dict):
         if node.get("name") == name and "datatype" in node:
             return node
@@ -436,7 +436,7 @@ def _find_column(node: Any, name: str) -> Optional[dict[str, Any]]:
     else:
         return None
     for child in children:
-        found = _find_column(child, name)
+        found = _find_field(child, name)
         if found is not None:
             return found
     return None
@@ -456,7 +456,7 @@ class TestRendering:
         assert model is not None
         out = await render_dataset_inspection(dataset=model, storage=engine.storage, engine=engine, format="json",
                                             sections=["fields"])
-        skills = _find_column(json.loads(out), "skills")
+        skills = _find_field(json.loads(out), "skills")
         assert skills is not None
         assert (skills["datatype"], skills["element_type"]) == ("Array", "String")
         assert skills.get("sampled_values") == ["go", "sql"]
@@ -475,7 +475,7 @@ class TestRendering:
         markdown = render_datasets_summary(datasource_name="test", datasets=models, fmt="markdown", compact=False)
         assert "Array<String>" in markdown, markdown
         assert "Array<Integer>" in markdown, markdown
-        skills = _find_column(json.loads(render_datasets_summary(datasource_name="test", datasets=models, fmt="json",
+        skills = _find_field(json.loads(render_datasets_summary(datasource_name="test", datasets=models, fmt="json",
                                                                compact=False)), "skills")
         assert skills is not None
         assert skills["element_type"] == "String"
@@ -586,7 +586,7 @@ class TestSqlModeElementType:
         model = SlayerDataset.model_validate({"name": "tagged", "sql": "SELECT id, tags FROM t", "data_source": "sf",
                                             "fields": [{"name": "id", "datatype": "Integer"},
                                                         {"name": "tags", "datatype": "Array"}]})
-        updated, retyped = retyped_sql_columns(model, lists={"tags": ResultList(element_type=DataType.INTEGER,
+        updated, retyped = retyped_sql_fields(model, lists={"tags": ResultList(element_type=DataType.INTEGER,
                                                                                 db_type="ARRAY")})
         tags = updated.get_field("tags")
         assert tags is not None

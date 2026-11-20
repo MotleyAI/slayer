@@ -13,7 +13,7 @@ from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.engine.dataset_reads import datasets_read_by, placeholder
 from slayer.storage.access_filtered import AccessFilteredStorage
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     ALL_LOADABLE,
     DS,
@@ -178,7 +178,7 @@ class TestModelsReadBy:
         assert self.reads(datasets["fin"], datasets) == set()
         assert self.reads(datasets["pub_link"], datasets) == set()
 
-    @pytest.mark.parametrize("name", ["pay", "pay_col", "pay_colfilter", "pay_filter", "pay_measure", "pay_agg"])
+    @pytest.mark.parametrize("name", ["pay", "pay_col", "pay_colfilter", "pay_filter", "pay_metric", "pay_agg"])
     async def test_definition_paths_read_their_hops(self, datasets: dict[str, SlayerDataset], name: str) -> None:
         reads = self.reads(datasets[name], datasets)
         assert "hr" in reads
@@ -217,10 +217,10 @@ class TestModelsReadBy:
     async def test_saved_measure_reads_are_followed_recursively(self, datasets: dict[str, SlayerDataset]) -> None:
         relay = datasets["pub"].model_copy(update={
             "name": "relay",
-            "relationships": [DatasetRelationship(to="pay_measure", from_columns=["id"], to_columns=["id"])],
-            "metrics": [DatasetMetric(name="relayed", expression="pay_measure.hr_salary_total")],
+            "relationships": [DatasetRelationship(to="pay_metric", from_columns=["id"], to_columns=["id"])],
+            "metrics": [DatasetMetric(name="relayed", expression="pay_metric.hr_salary_total")],
         })
-        assert {"pay_measure", "hr"} <= self.reads(relay, datasets)
+        assert {"pay_metric", "hr"} <= self.reads(relay, datasets)
 
     async def test_unresolvable_path_adds_nothing(self, datasets: dict[str, SlayerDataset]) -> None:
         stray = datasets["pub"].model_copy(update={

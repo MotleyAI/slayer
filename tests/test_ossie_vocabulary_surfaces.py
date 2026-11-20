@@ -25,7 +25,7 @@ from slayer.memories.help_seed import HELP_TOPICS, seed_help_memories
 from slayer.storage.base import StorageBackend
 from tests._cli_inprocess import CliResult, run_cli_in_process
 from tests._deprecated_input_helpers import deprecated_in, mcp_payload, recorded
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store
 from tests._stored_upgrade_fixtures import DS
 

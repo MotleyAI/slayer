@@ -20,7 +20,7 @@ from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._model_access_fixtures import make_storage, mcp_text, must_get
+from tests._dataset_access_fixtures import make_storage, mcp_text, must_get
 from tests._stored_upgrade_fixtures import DS as SHOP, customers_v10, orders_v10, raw_doc, raw_store
 
 DS = "tagds"

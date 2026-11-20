@@ -44,7 +44,7 @@ from tests._dev1836_fixtures import (  # noqa: E402,F401  (re-export)
 # (composite, nested/recursive, self-qualified, own-relationship, field-filter local /
 # proven-hop / unproven-hop, partition_by local / grand, transform, typed,
 # round-trip, cross-dataset cycle). See EQUIV_PAIRS for the hand-expanded twins.
-CUSTOMER_MEASURES: List[DatasetMetric] = [
+CUSTOMER_METRICS: List[DatasetMetric] = [
     DatasetMetric(name="aov", expression="sum(spend) / count(*)"),
     DatasetMetric(name="aov_big", expression="aov * 2"),
     DatasetMetric(name="self_aov", expression="sum(customers.spend) / count(customers.*)"),
@@ -62,7 +62,7 @@ CUSTOMER_MEASURES: List[DatasetMetric] = [
 
 # On ``orders`` — host metrics whose bare-name resolution recurses into a
 # dotted cross-dataset reference, plus the cross-dataset cycle partner.
-ORDERS_MEASURES: List[DatasetMetric] = [
+ORDERS_METRICS: List[DatasetMetric] = [
     DatasetMetric(name="host_runs_dotted", expression="cumsum(customers.aov)"),
     DatasetMetric(name="host_mix", expression="sum(amount) / customers.aov"),
     DatasetMetric(name="cyc_o", expression="customers.cyc_c"),
@@ -82,12 +82,12 @@ def customers_dataset() -> SlayerDataset:
     base = _customers_1836()
     return base.model_copy(update={
         "fields": list(base.fields) + [_NORTH_SPEND],
-        "metrics": CUSTOMER_MEASURES,
+        "metrics": CUSTOMER_METRICS,
     })
 
 
 def orders_dataset() -> SlayerDataset:
-    return _orders_1836().model_copy(update={"metrics": ORDERS_MEASURES})
+    return _orders_1836().model_copy(update={"metrics": ORDERS_METRICS})
 
 
 def dev1842_datasets() -> List[SlayerDataset]:
@@ -101,9 +101,9 @@ def q(**kw):
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "orders.ordered_at"):
+def month_td(field: str = "orders.ordered_at"):
     return [TimeDimension(
-        field=column, granularity=TimeGranularity.MONTH,
+        field=field, granularity=TimeGranularity.MONTH,
     )]
 
 
@@ -175,7 +175,7 @@ PARITY_ERROR_PAIRS = {
 
 
 __all__ = [
-    "CUSTOMER_MEASURES", "ORDERS_MEASURES",
+    "CUSTOMER_METRICS", "ORDERS_METRICS",
     "customers_dataset", "orders_dataset", "regions_dataset", "segments_dataset",
     "dev1842_datasets", "q", "month_td", "gen", "make_exec_engine",
     "rows_by", "broadcast_warnings",

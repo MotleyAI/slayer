@@ -230,9 +230,9 @@ def _cell(row: dict[str, Any], suffix: str) -> Any:
 # --------------------------------------------------------------------------- #
 # Save-time name collisions
 # --------------------------------------------------------------------------- #
-def _plain(name: str, *, joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _plain(name: str, *, relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(name=name, sql_table=name, data_source="test", fields=[
-        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)], relationships=joins or [])
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)], relationships=relationships or [])
 
 
 @pytest.fixture
@@ -260,13 +260,13 @@ class TestNameCollisions:
 
     async def test_the_collision_created_from_the_other_side(self, storage: StorageBackend) -> None:
         await storage.save_dataset(contractors_dataset())
-        skills = _plain("skills", joins=[DatasetRelationship(to="contractors", from_columns=["id"], to_columns=["id"])])
+        skills = _plain("skills", relationships=[DatasetRelationship(to="contractors", from_columns=["id"], to_columns=["id"])])
         with pytest.raises(ValueError, match=r"contractors\.skills"):
             await storage.save_dataset(skills)
 
     async def test_a_named_edge_created_from_the_other_side(self, storage: StorageBackend) -> None:
         await storage.save_dataset(contractors_dataset())
-        people = _plain("people", joins=[DatasetRelationship(to="contractors", from_columns=["id"], to_columns=["id"],
+        people = _plain("people", relationships=[DatasetRelationship(to="contractors", from_columns=["id"], to_columns=["id"],
                                                     name="skills")])
         with pytest.raises(ValueError, match=r"contractors\.skills"):
             await storage.save_dataset(people)

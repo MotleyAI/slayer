@@ -16,7 +16,7 @@ from slayer.core.models import DatasetField
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.sql.scope import ScopeFrame
 
-from tests._cross_model_chain import _gen
+from tests._cross_dataset_chain import _gen
 from tests._engine_helpers import _extract_cte_body, _norm
 
 # Byte-parity baselines: swapping which materialiser mints ``_val_<n>`` must not change these
@@ -263,7 +263,7 @@ class TestRankedPathUsesTheOneMaterialiser:
     Reaching it needs a HOST-rooted aggregate (a ``customers_v2.…`` metric roots at the target instead), so the host gets a derived field crossing into the joined dataset and first/last runs over that.
     """
 
-    _HOST_CROSSING_COLUMN = [
+    _HOST_CROSSING_FIELD = [
         DatasetField(
             name="cust_ltv",
             expression="customers_v2.lifetime_value",
@@ -280,7 +280,7 @@ class TestRankedPathUsesTheOneMaterialiser:
 
     async def test_local_first_last_still_materialises_correctly(self) -> None:
         sql = await _gen(
-            self._query(), orders_extra=self._HOST_CROSSING_COLUMN,
+            self._query(), orders_extra=self._HOST_CROSSING_FIELD,
             dialect="postgres",
         )
         assert "_val_" in sql, (
@@ -295,7 +295,7 @@ class TestRankedPathUsesTheOneMaterialiser:
         spy = _MaterializeSpy()
         spy.install(monkeypatch)
         sql = await _gen(
-            self._query(), orders_extra=self._HOST_CROSSING_COLUMN,
+            self._query(), orders_extra=self._HOST_CROSSING_FIELD,
             dialect="postgres",
         )
         emitted = set(_re.findall(r"\b_val_\d+\b", sql))

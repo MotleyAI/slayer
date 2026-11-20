@@ -1250,20 +1250,20 @@ def staff_engine(tmp_path: Path) -> Iterator[sa.Engine]:
         yield engine
 
 
-def _staff_columns(engine: sa.Engine, *, source: str, fields: list[OSIField]) -> dict:
+def _staff_fields(engine: sa.Engine, *, source: str, fields: list[OSIField]) -> dict:
     doc = OSIDocument(version="0.2.0.dev0", name="s", datasets=[OSIDataset(name="staff", source=source, fields=fields)])
     staff = _by_name(_convert(engine, doc, target_dialect="duckdb"))["staff"]
     return {c.name: (c.datatype, c.element_type) for c in staff.fields}
 
 
 def test_a_query_source_list_column_is_a_list(staff_engine):
-    cols = _staff_columns(staff_engine, source="SELECT id, skills FROM staff",
+    cols = _staff_fields(staff_engine, source="SELECT id, skills FROM staff",
                           fields=[OSIField(name="skills", expression=_expr("skills"))])
     assert cols["skills"] == (DataType.ARRAY, DataType.OPAQUE)
 
 
 def test_a_derived_list_field_is_a_list(staff_engine):
-    cols = _staff_columns(staff_engine, source="staff", fields=[
+    cols = _staff_fields(staff_engine, source="staff", fields=[
         OSIField(name="skill_set", expression=_expr("list_distinct(skills)")),
         OSIField(name="skills", expression=_expr("list_distinct(skills)")),
     ])
@@ -1301,7 +1301,7 @@ def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
 
 def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
-    cols = _staff_columns(staff_engine, source="staff",
+    cols = _staff_fields(staff_engine, source="staff",
                           fields=[OSIField(name="skills", expression=_expr("list_distinct(skills)"))])
     assert cols["skills"] == (DataType.ARRAY, DataType.STRING)
 

@@ -352,7 +352,7 @@ class TestPostgresQueries:
     async def test_consecutive_periods_breaks_on_calendar_gap(
         self, pg_env: SlayerQueryEngine, column: str, granularity: str,
     ) -> None:
-        await assert_calendar_streak(pg_env, column=column, granularity=granularity)
+        await assert_calendar_streak(pg_env, field=column, granularity=granularity)
 
     async def test_change_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
         """change() with date_range should fetch previous period from outside the filtered range."""

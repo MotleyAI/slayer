@@ -40,7 +40,7 @@ postgresql_proc = factories.postgresql_proc(port=None)
 MODES = [pytest.param({}, id="default"), pytest.param({"to_many_handling": "associate"}, id="associate")]
 REV_ROOTLESS = [metric("sum(orders.amount)", "rev")]
 REV_ROOTED = [metric("sum(orders.amount)", "rev")]
-CUSTOMER_MEASURES = [
+CUSTOMER_METRICS = [
     metric("sum(customers.spend)", "sp"),
     metric("wsum(customers.spend)", "ws"),
     metric("weighted_avg(customers.spend, weight=customers.spend)", "wa"),
@@ -151,7 +151,7 @@ class TestUnprovenHopAssociatesByDefault:
 class TestKeylessHome:
     @pytest.mark.parametrize("mode", MODES)
     async def test_matches_the_keyed_model(self, dialect, mode) -> None:
-        q = query(population="orders", dimensions=["orders.status"], metrics=CUSTOMER_MEASURES, **mode)
+        q = query(population="orders", dimensions=["orders.status"], metrics=CUSTOMER_METRICS, **mode)
         async with ossie_engine(dialect, datasets=ossie_datasets(keyed=True)) as engine:
             keyed = await engine.execute(q.model_copy(update={"to_many_handling": "associate"}))
         async with ossie_engine(dialect) as engine:

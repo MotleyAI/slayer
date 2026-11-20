@@ -377,15 +377,15 @@ class TestResolveEntityDotted:
         self, storage: StorageBackend
     ) -> None:
         with pytest.raises(EntityResolutionError) as exc_info:
-            await resolve_entity("orders.no_such_column", storage=storage)
-        assert "no_such_column" in str(exc_info.value)
+            await resolve_entity("orders.no_such_field", storage=storage)
+        assert "no_such_field" in str(exc_info.value)
 
     async def test_unknown_model_in_known_datasource_raises(
         self, storage: StorageBackend
     ) -> None:
         with pytest.raises(EntityResolutionError) as exc_info:
-            await resolve_entity("mydb.no_such_model", storage=storage)
-        assert "no_such_model" in str(exc_info.value)
+            await resolve_entity("mydb.no_such_dataset", storage=storage)
+        assert "no_such_dataset" in str(exc_info.value)
 
     async def test_case_c_dotted_taken_literally(
         self, storage: StorageBackend

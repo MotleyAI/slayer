@@ -220,12 +220,12 @@ def seed_parallel(db_path: str) -> None:
 # --------------------------------------------------------------------------- #
 # Engines.
 # --------------------------------------------------------------------------- #
-async def chain_engine(tmpdir: str, **model_kwargs) -> SlayerQueryEngine:
+async def chain_engine(tmpdir: str, **dataset_kwargs) -> SlayerQueryEngine:
     db_path = os.path.join(tmpdir, "data.db")
     seed_chain(db_path)
     return await make_seeded_sqlite_engine(
         base_dir=os.path.join(tmpdir, "store"), db_path=db_path,
-        datasets=chain_datasets(**model_kwargs),
+        datasets=chain_datasets(**dataset_kwargs),
     )
 
 

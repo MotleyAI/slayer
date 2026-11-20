@@ -311,13 +311,13 @@ async def test_formula_referencing_nonexistent_measure_raises(tmp_path) -> None:
         seed=False,
         metrics=[
             DatasetMetric(name="order_count", expression="count(id)"),
-            DatasetMetric(name="bad", expression="order_count / nonexistent_measure"),
+            DatasetMetric(name="bad", expression="order_count / nonexistent_metric"),
         ],
     )
     query = SlayerQuery(population="orders", metrics=["orders.bad"])
     with pytest.raises(UnknownReferenceError) as exc:
         await engine.execute(query=query, dry_run=True)
-    assert "nonexistent_measure" in str(exc.value)
+    assert "nonexistent_metric" in str(exc.value)
 
 
 async def test_transform_referencing_nonexistent_measure_raises(tmp_path) -> None:
@@ -328,7 +328,7 @@ async def test_transform_referencing_nonexistent_measure_raises(tmp_path) -> Non
         seed=False,
         metrics=[
             DatasetMetric(name="order_count", expression="count(id)"),
-            DatasetMetric(name="running_bad", expression="cumsum(nonexistent_measure)"),
+            DatasetMetric(name="running_bad", expression="cumsum(nonexistent_metric)"),
         ],
     )
     query = SlayerQuery.model_validate({
@@ -338,4 +338,4 @@ async def test_transform_referencing_nonexistent_measure_raises(tmp_path) -> Non
     })
     with pytest.raises(UnknownReferenceError) as exc:
         await engine.execute(query=query, dry_run=True)
-    assert "nonexistent_measure" in str(exc.value)
+    assert "nonexistent_metric" in str(exc.value)

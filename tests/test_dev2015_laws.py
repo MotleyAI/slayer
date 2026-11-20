@@ -36,7 +36,7 @@ BASES: dict[str, dict[str, Any]] = {
     "fact-filter": {"filter": ["orders.amount > 60"]},
     "p-filter": {"dimensions": ["customers.region"], "filter": ["customers.region != 'E'"]},
 }
-MEASURE_SETS = {"one": POOL[:1], "facts": POOL[:3], "all": POOL}
+METRIC_SETS = {"one": POOL[:1], "facts": POOL[:3], "all": POOL}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -58,7 +58,7 @@ async def test_measures_never_change_rows_or_siblings(engine, base) -> None:
     extra = dict(BASES[base])
     by = [d.rsplit(".", 1)[-1] for d in extra.get("dimensions", [])]
     results = {k: _cells(await engine.execute(spine_query(metrics=ms, **extra)), by=by)
-               for k, ms in MEASURE_SETS.items()}
+               for k, ms in METRIC_SETS.items()}
     full = results["all"]
     for name, cells in results.items():
         assert set(cells) == set(full), name

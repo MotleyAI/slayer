@@ -90,7 +90,7 @@ def jaffle_datasets(jaffle_duckdb_path: str) -> dict[str, SlayerDataset]:
 # ``field_name -> (DataType, primary_key, format_type_or_None)``. Fields
 # whose source name contained a dot (joined fields) are excluded by
 # ``_fields_to_dataset`` and so are not listed here.
-_EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
+_EXPECTED_FIELDS: dict[str, dict[str, tuple]] = {
     "customers": {
         "id": (DataType.STRING, True, None),
         "name": (DataType.STRING, False, None),
@@ -147,7 +147,7 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
 
 
 # Expected direct relationships per dataset. Values are sets of (target_dataset, src_col, tgt_col).
-_EXPECTED_JOINS: dict[str, set] = {
+_EXPECTED_RELATIONSHIPS: dict[str, set] = {
     "customers": set(),
     "regions": set(),
     "stores": {
@@ -172,13 +172,13 @@ _EXPECTED_JOINS: dict[str, set] = {
 
 
 def test_all_jaffle_models_produced(jaffle_datasets: dict[str, SlayerDataset]) -> None:
-    assert set(jaffle_datasets.keys()) == set(_EXPECTED_COLUMNS.keys())
+    assert set(jaffle_datasets.keys()) == set(_EXPECTED_FIELDS.keys())
 
 
-@pytest.mark.parametrize("model_name", sorted(_EXPECTED_COLUMNS.keys()))
+@pytest.mark.parametrize("model_name", sorted(_EXPECTED_FIELDS.keys()))
 def test_jaffle_model_columns_v2_shape(jaffle_datasets: dict[str, SlayerDataset], model_name: str) -> None:
     model: SlayerDataset = jaffle_datasets[model_name]
-    expected = _EXPECTED_COLUMNS[model_name]
+    expected = _EXPECTED_FIELDS[model_name]
 
     by_name = {c.name: c for c in model.fields}
     assert set(by_name.keys()) == set(expected.keys())
@@ -209,10 +209,10 @@ def test_jaffle_no_dotted_column_names(jaffle_datasets: dict[str, SlayerDataset]
             )
 
 
-@pytest.mark.parametrize("model_name", sorted(_EXPECTED_JOINS.keys()))
+@pytest.mark.parametrize("model_name", sorted(_EXPECTED_RELATIONSHIPS.keys()))
 def test_jaffle_model_joins(jaffle_datasets: dict[str, SlayerDataset], model_name: str) -> None:
     model = jaffle_datasets[model_name]
-    expected = _EXPECTED_JOINS[model_name]
+    expected = _EXPECTED_RELATIONSHIPS[model_name]
 
     actual: set = set()
     for j in model.relationships:

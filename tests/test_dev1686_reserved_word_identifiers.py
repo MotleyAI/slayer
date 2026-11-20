@@ -96,7 +96,7 @@ def _q(name: str, dialect: str) -> str:
     return sqlglot.exp.Identifier(this=name, quoted=True).sql(dialect=dialect)
 
 
-def _grant_dataset(*, with_join: bool = False, extra_cols=()) -> SlayerDataset:
+def _grant_dataset(*, with_relationship: bool = False, extra_cols=()) -> SlayerDataset:
     cols = [
         DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="namespace", expression="namespace", datatype=DataType.STRING),
@@ -105,7 +105,7 @@ def _grant_dataset(*, with_join: bool = False, extra_cols=()) -> SlayerDataset:
         DatasetField(name="merchantId", expression="merchantId", datatype=DataType.INTEGER),
         *extra_cols,
     ]
-    joins = [DatasetRelationship(to="merchant", from_columns=["merchantId"], to_columns=["id"])] if with_join else []
+    joins = [DatasetRelationship(to="merchant", from_columns=["merchantId"], to_columns=["id"])] if with_relationship else []
     return SlayerDataset(
         name="grant", sql_table='"Grant"', data_source="api",
         default_time_dimension="created_at", fields=cols, relationships=joins,
@@ -306,7 +306,7 @@ class TestReservedStringReparsePaths:
             "metrics": ["count(grant.*)"],
         })
         sql = _norm(await _gen(
-            q, _grant_dataset(with_join=True), extra_datasets=[_merchant_dataset()],
+            q, _grant_dataset(with_relationship=True), extra_datasets=[_merchant_dataset()],
         ))
         assert 'ON "grant"."merchantId" = merchant.id' in sql, sql
         _assert_parses(sql)

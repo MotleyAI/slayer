@@ -12,7 +12,7 @@ from slayer.core.errors import AssociatedGrainWarning, BroadcastGrainWarning
 from slayer.core.models import DatasetField
 from slayer.core.query import QueryMetric, SlayerQuery
 
-from tests._cross_model_chain import (
+from tests._cross_dataset_chain import (
     _extract_cte_body,
     _gen,
     _norm,

@@ -240,7 +240,7 @@ COUNT_CITY_MIXED_BY_REGION = {"North": 4, "South": 3, "East": 3, "Gap": 3,
 DISTINCT_MIXED_BY_REGION = {"North": 3, "South": 3, "East": 3, "Gap": 3,
                             "Void": 2}
 #: customers-rooted sum(region_id * sum(corders.amount, partition_by=region_id)).
-CROSS_MODEL_MIXED_BY_REGION_ID = {1: 140.0, 2: 200.0}
+CROSS_DATASET_MIXED_BY_REGION_ID = {1: 140.0, 2: 200.0}
 #: wavg(mixed, weight=quantity) = sum(q^2 * avg_p) / sum(q).
 WAVG_MIXED_BY_REGION = {"North": 23.75, "South": 475.0 / 11.0,
                         "East": 55.0 / 3.0, "Gap": 35.0 / 3.0,
@@ -367,7 +367,7 @@ __all__ = [
     "CITY_MIXED_BY_REGION", "COALESCE_CITY_MIXED_BY_REGION",
     "FILTERED_AVG_UP_BY_PRODUCT", "FILTERED_MIXED_BY_REGION",
     "FILTERED_MIXED_NORTH_WRONG", "COUNT_CITY_MIXED_BY_REGION",
-    "DISTINCT_MIXED_BY_REGION", "CROSS_MODEL_MIXED_BY_REGION_ID",
+    "DISTINCT_MIXED_BY_REGION", "CROSS_DATASET_MIXED_BY_REGION_ID",
     "WAVG_MIXED_BY_REGION", "CORR_MIXED_BY_REGION",
     "MIXED_BAND_THRESHOLD", "AMOUNT_BY_MIXED_BAND", "MIXED_BAND_EXPR",
     "_SALES_ROWS", "_SALES_EXTRA", "_SALES_ROWS_WIDE",

@@ -643,7 +643,7 @@ class TestTimeArgJoinDiscovery:
             }),
             _u_orders(),
         )
-        assert ("customers",) in scope.join_paths.as_list()
+        assert ("customers",) in scope.relationship_paths.as_list()
 
     def test_multi_hop_time_arg_registers_every_prefix(self) -> None:
         scope = self._run(
@@ -654,8 +654,8 @@ class TestTimeArgJoinDiscovery:
             }),
             _u_orders(),
         )
-        assert ("customers",) in scope.join_paths.as_list()
-        assert ("customers", "regions") in scope.join_paths.as_list()
+        assert ("customers",) in scope.relationship_paths.as_list()
+        assert ("customers", "regions") in scope.relationship_paths.as_list()
 
     def test_local_derived_crossing_time_arg_registers_join(self) -> None:
         orders = _u_orders(extra=[
@@ -669,7 +669,7 @@ class TestTimeArgJoinDiscovery:
             }),
             orders,
         )
-        assert ("customers",) in scope.join_paths.as_list()
+        assert ("customers",) in scope.relationship_paths.as_list()
 
     def test_composite_time_arg_registers_join(self) -> None:
         scope = self._run(
@@ -681,7 +681,7 @@ class TestTimeArgJoinDiscovery:
             ),
             _u_orders(),
         )
-        assert ("customers",) in scope.join_paths.as_list()
+        assert ("customers",) in scope.relationship_paths.as_list()
 
     def test_cross_model_time_arg_not_registered_on_host(self) -> None:
         query = SlayerQuery.model_validate({
@@ -715,7 +715,7 @@ class TestTimeArgJoinDiscovery:
             gen._resolve_agg_inputs_via_scope(
                 base_render_order=order, slots_by_id=slots, scope=scope,
             )
-        assert scope.join_paths.as_list() == []
+        assert scope.relationship_paths.as_list() == []
         assert seen == [], f"cross-dataset arg was resolved: {seen!r}"
 
     def test_residual_path_bearing_columnsqlkey_skipped_without_raise(self) -> None:
@@ -743,7 +743,7 @@ class TestTimeArgJoinDiscovery:
             gen._resolve_agg_inputs_via_scope(
                 base_render_order=["s0"], slots_by_id={"s0": slot}, scope=scope,
             )
-        assert scope.join_paths.as_list() == []
+        assert scope.relationship_paths.as_list() == []
         assert residual not in seen, f"residual arg was resolved: {seen!r}"
 
 

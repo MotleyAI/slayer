@@ -53,7 +53,7 @@ async def inner_engine() -> AsyncIterator[SlayerQueryEngine]:
         yield await chain_engine(d, join_type=JoinType.INNER)
 
 
-def _joins_on(sql: str, table: str) -> list[exp.Join]:
+def _relationships_on(sql: str, table: str) -> list[exp.Join]:
     tree = sqlglot.parse_one(sql, dialect="sqlite")
     return [j for j in tree.find_all(exp.Join)
             if isinstance(j.this, exp.Table) and j.this.name == table]
@@ -93,7 +93,7 @@ class TestRootRelativeJoinType:
             dry_run=True)
         assert resp.sql is not None
         assert "RIGHT" not in resp.sql.upper()
-        joins = _joins_on(resp.sql, "orders")
+        joins = _relationships_on(resp.sql, "orders")
         assert joins, resp.sql
         assert all((j.side or "").upper() == "LEFT" for j in joins), resp.sql
 
@@ -106,7 +106,7 @@ class TestRootRelativeJoinType:
             dry_run=True)
         assert resp.sql is not None
         assert "RIGHT" not in resp.sql.upper()
-        joins = _joins_on(resp.sql, "orders")
+        joins = _relationships_on(resp.sql, "orders")
         assert joins, resp.sql
         assert all((j.kind or "").upper() == "INNER" for j in joins), resp.sql
 

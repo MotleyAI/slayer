@@ -81,7 +81,7 @@ def _regions() -> SlayerDataset:
     )
 
 
-def _customers(*, cols: tuple[DatasetField, ...] = (), joins: tuple[DatasetRelationship, ...] = ()) -> SlayerDataset:
+def _customers(*, cols: tuple[DatasetField, ...] = (), relationships: tuple[DatasetRelationship, ...] = ()) -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
         fields=[
@@ -94,7 +94,7 @@ def _customers(*, cols: tuple[DatasetField, ...] = (), joins: tuple[DatasetRelat
         relationships=[
             DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
-            *joins,
+            *relationships,
         ],
     )
 
@@ -594,7 +594,7 @@ def _unresolved_query_datasets() -> list[SlayerDataset]:
     customers = _customers(
         cols=(DatasetField(name="ghost_spend", datatype=DataType.FLOAT,
                      expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="ghost.customers.spend"), DialectEntry(dialect="SQLITE", expression="ghost.customers.spend")])),),
-        joins=(DatasetRelationship(to="ghost", from_columns=["region_id"], to_columns=["id"]),),
+        relationships=(DatasetRelationship(to="ghost", from_columns=["region_id"], to_columns=["id"]),),
     )
     return [_regions(), customers, _orders()]
 

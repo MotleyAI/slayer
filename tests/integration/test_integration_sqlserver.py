@@ -99,7 +99,7 @@ from tests._dev2046_fixtures import (
     GT15_TOTALS,
     by_dim,
     dev2046_datasets,
-    m as bool_measure,
+    m as bool_metric,
     orders_q,
     seed_statements as dev2046_seed_statements,
 )
@@ -512,7 +512,7 @@ class TestSQLServerQueries:
     async def test_consecutive_periods_breaks_on_calendar_gap(
         self, sqlserver_env: SlayerQueryEngine, column: str, granularity: str,
     ) -> None:
-        await assert_calendar_streak(sqlserver_env, column=column, granularity=granularity)
+        await assert_calendar_streak(sqlserver_env, field=column, granularity=granularity)
 
     async def test_change_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
@@ -1552,8 +1552,8 @@ class TestSQLServerBooleanAggregation:
     async def test_bit_column_aggregates(self, _sqlserver_boolean_storage) -> None:
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
         resp = await engine.execute(orders_q(metrics=[
-            bool_measure("sum(orders.flag)", "s"), bool_measure("avg(orders.flag)", "a"), bool_measure("min(orders.flag)", "mn"), bool_measure("max(orders.flag)", "mx"),
-            bool_measure("count(orders.flag)", "c"),
+            bool_metric("sum(orders.flag)", "s"), bool_metric("avg(orders.flag)", "a"), bool_metric("min(orders.flag)", "mn"), bool_metric("max(orders.flag)", "mx"),
+            bool_metric("count(orders.flag)", "c"),
         ]))
         row = resp.data[0]
         assert row["s"] == FLAG_TOTALS["sum"]
@@ -1565,7 +1565,7 @@ class TestSQLServerBooleanAggregation:
     async def test_predicate_inputs(self, _sqlserver_boolean_storage) -> None:
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
         resp = await engine.execute(orders_q(metrics=[
-            bool_measure("sum(orders.amount > 15)", "s"), bool_measure("count(orders.amount > 15)", "c"), bool_measure("max(orders.amount > 15)", "mx"),
+            bool_metric("sum(orders.amount > 15)", "s"), bool_metric("count(orders.amount > 15)", "c"), bool_metric("max(orders.amount > 15)", "mx"),
         ]))
         row = resp.data[0]
         assert row["s"] == GT15_TOTALS["sum"]
@@ -1575,15 +1575,15 @@ class TestSQLServerBooleanAggregation:
     async def test_avg_is_fractional(self, _sqlserver_boolean_storage) -> None:
         """T-SQL's AVG over integers truncates; ``avg`` never does."""
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
-        resp = await engine.execute(orders_q(dimensions=["orders.region"], metrics=[bool_measure("avg(orders.customer_id)")]))
+        resp = await engine.execute(orders_q(dimensions=["orders.region"], metrics=[bool_metric("avg(orders.customer_id)")]))
         assert {k: float(v) for k, v in by_dim(resp, "region").items()} == pytest.approx({"east": 400 / 3, "west": 200.0})
-        resp = await engine.execute(orders_q(metrics=[bool_measure("avg(orders.amount > 15)", "a")]))
+        resp = await engine.execute(orders_q(metrics=[bool_metric("avg(orders.amount > 15)", "a")]))
         assert float(resp.data[0]["a"]) == pytest.approx(GT15_TOTALS["avg"])
 
     async def test_projected_boolean_measure(self, _sqlserver_boolean_storage) -> None:
         """``sum(amount) > 50`` projects as a BIT value; NULL when the sum is NULL."""
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
-        resp = await engine.execute(orders_q(dimensions=["orders.region"], metrics=[bool_measure("sum(orders.amount) > 50")]))
+        resp = await engine.execute(orders_q(dimensions=["orders.region"], metrics=[bool_metric("sum(orders.amount) > 50")]))
         values = by_dim(resp, "region")
         assert values["west"] is None
         assert bool(values["east"]) is True
@@ -1592,7 +1592,7 @@ class TestSQLServerBooleanAggregation:
     async def test_post_aggregation_filters(self, _sqlserver_boolean_storage, having: str) -> None:
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
         resp = await engine.execute(orders_q(
-            dimensions=["orders.region"], metrics=[bool_measure("sum(orders.flag)")], filter=["orders.amount > 5 or orders.amount is None", having],
+            dimensions=["orders.region"], metrics=[bool_metric("sum(orders.flag)")], filter=["orders.amount > 5 or orders.amount is None", having],
         ))
         assert by_dim(resp, "region") == {"east": 2}
 

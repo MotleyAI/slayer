@@ -89,7 +89,7 @@ from tests._dev1837_fixtures import (  # noqa: F401 — re-exported fixture surf
     TRAILING_90D_REGION,
     TimeDimension,
     TimeGranularity,
-    dev1837_models,
+    dev1837_datasets,
     dim_key,
     gen,
     make_exec_engine,
@@ -100,7 +100,7 @@ from tests._dev1837_fixtures import (  # noqa: F401 — re-exported fixture surf
     with_nulls,
 )
 
-dev1835_models = dev1837_models
+dev1835_datasets = dev1837_datasets
 
 # --------------------------------------------------------------------------- #
 # Migrated-family executed-value oracles.
@@ -356,7 +356,7 @@ __all__ = [
     "TRAILING_45D_REGION", "TRAILING_90D_REGION", "TS_OVER_LAST", "TS_OVER_W90",
     "TimeDimension", "TimeGranularity", "UNION_RK_DIM", "UNION_RK_RANK",
     "UNION_WM_DIM", "UNION_WM_RANK", "W90_RATIO", "WM_X", "cte_aliases",
-    "dev1835_models", "dim_key", "gen", "make_exec_engine",
+    "dev1835_datasets", "dim_key", "gen", "make_exec_engine",
     "make_shipped_exec_engine", "month_key", "month_td", "q", "rows_by",
     "shipped_orders_dataset", "with_nulls",
 ]

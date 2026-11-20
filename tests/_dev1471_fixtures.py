@@ -35,7 +35,7 @@ def one_value(row: dict, *, exclude: Iterable[str] = ()) -> Any:
     return vals[0]
 
 
-def _orders_columns(extra: Iterable[DatasetField] = ()) -> list[DatasetField]:
+def _orders_fields(extra: Iterable[DatasetField] = ()) -> list[DatasetField]:
     cols = [
         DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
         DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
@@ -51,7 +51,7 @@ def _orders_columns(extra: Iterable[DatasetField] = ()) -> list[DatasetField]:
 def orders_dataset(
     *,
     data_source: str = "ds",
-    extra_columns: Iterable[DatasetField] = (),
+    extra_fields: Iterable[DatasetField] = (),
     default_time_dimension: Optional[str] = "created_at",
 ) -> SlayerDataset:
     """The single-table ``orders`` dataset (id, customer_id, amount, region, created_at, shipped_at)."""
@@ -60,17 +60,17 @@ def orders_dataset(
         sql_table="orders",
         data_source=data_source,
         default_time_dimension=default_time_dimension,
-        fields=_orders_columns(extra_columns),
+        fields=_orders_fields(extra_fields),
     )
 
 
-def orders_table_spec(rows: list[tuple], *, extra_columns: Iterable[tuple[str, str]] = ()) -> dict:
+def orders_table_spec(rows: list[tuple], *, extra_fields: Iterable[tuple[str, str]] = ()) -> dict:
     """Table spec for the ``orders`` seed; ``rows`` column order must match."""
     columns = [
         ("id", "INT"), ("customer_id", "INT"), ("amount", "DOUBLE"),
         ("region", "TEXT"), ("created_at", "TIMESTAMP"), ("shipped_at", "TIMESTAMP"),
     ]
-    columns.extend(extra_columns)
+    columns.extend(extra_fields)
     return {"name": "orders", "columns": columns, "rows": rows}
 
 

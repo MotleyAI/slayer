@@ -29,13 +29,13 @@ def _orders_dataset() -> SlayerDataset:
     )
 
 
-def _customers_dataset(extra_columns=None, extra_aggregations=None) -> SlayerDataset:
+def _customers_dataset(extra_fields=None, extra_aggregations=None) -> SlayerDataset:
     columns = [
         DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
         DatasetField(name="name", expression="name", datatype=DataType.STRING),
     ]
-    if extra_columns:
-        columns.extend(extra_columns)
+    if extra_fields:
+        columns.extend(extra_fields)
     return SlayerDataset(
         name="customers",
         sql_table="public.customers",
@@ -127,7 +127,7 @@ class TestCrossModelGating:
         so ``sum(customers.rating)`` must raise.
         """
         customers = _customers_dataset(
-            extra_columns=[
+            extra_fields=[
                 DatasetField(
                     name="rating",
                     expression="rating",
@@ -147,7 +147,7 @@ class TestCrossModelGating:
     async def test_cross_model_whitelist_match_allowed(self) -> None:
         """A whitelist match works."""
         customers = _customers_dataset(
-            extra_columns=[
+            extra_fields=[
                 DatasetField(
                     name="rating",
                     expression="rating",
@@ -357,7 +357,7 @@ class TestCrossModelColumnFilter:
         the aggregation as a CASE-WHEN — same as for local metrics.
         """
         customers = _customers_dataset(
-            extra_columns=[
+            extra_fields=[
                 DatasetField(
                     name="completed_rev",
                     expression="amount",

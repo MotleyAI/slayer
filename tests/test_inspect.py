@@ -211,7 +211,7 @@ class TestPerKindFullRender:
         assert "Aggregation: mydb.orders.big" in out
         assert "MAX({col})" in out
 
-    async def test_model(self, svc: InspectService) -> None:
+    async def test_dataset(self, svc: InspectService) -> None:
         out = await svc.inspect(
             reference="mydb.orders", entity_type="dataset", compact=False,
         )

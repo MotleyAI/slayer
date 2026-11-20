@@ -67,7 +67,7 @@ G2_MESSAGE = (
     "  suggestion: Add a single time_dimensions entry, or set main_time_dimension "
     "to select among multiple time dimensions."
 )
-NO_RANKING_COLUMN = (
+NO_RANKING_FIELD = (
     "first/last aggregation requires a ranking time field "
     "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
     "dataset's default_time_dimension); none is resolvable for "
@@ -124,7 +124,7 @@ class TestPreservedGuardsVerbatim:
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query, datasets=models)
-        assert str(ei.value) == NO_RANKING_COLUMN
+        assert str(ei.value) == NO_RANKING_FIELD
 
 
 class TestRepointedGuards:

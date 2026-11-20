@@ -168,18 +168,18 @@ class TestRejectAndAccept:
         self, tmp_path: Path, bad_sql: str
     ) -> None:
         engine, storage = await _make_engine(tmp_path)
-        model = _sql_dataset(bad_sql, name="invalid_sql_model")
+        model = _sql_dataset(bad_sql, name="invalid_sql_dataset")
         with pytest.raises(DatasetSqlValidationError):
             await engine.save_dataset(model)
-        assert await storage.get_dataset("invalid_sql_model", data_source=_DS) is None
+        assert await storage.get_dataset("invalid_sql_dataset", data_source=_DS) is None
 
     async def test_error_names_model_and_datasource(self, tmp_path: Path) -> None:
         engine, _ = await _make_engine(tmp_path)
-        model = _sql_dataset("SELECT id FROM ghosts", name="invalid_sql_model")
+        model = _sql_dataset("SELECT id FROM ghosts", name="invalid_sql_dataset")
         with pytest.raises(DatasetSqlValidationError) as excinfo:
             await engine.save_dataset(model)
         message = str(excinfo.value)
-        assert "invalid_sql_model" in message
+        assert "invalid_sql_dataset" in message
         assert _DS in message
 
     async def test_error_reports_ds_type_and_hides_secrets(self, tmp_path: Path) -> None:
@@ -246,12 +246,12 @@ class TestGatesSkipProbe:
             _raise(_op_error("no such table: orders")),
         )
         model = _sql_dataset(
-            "SELECT id FROM orders WHERE status = {status}", name="param_model"
+            "SELECT id FROM orders WHERE status = {status}", name="param_dataset"
         )
         with caplog.at_level(logging.INFO, logger=_ENGINE_LOGGER):
             await engine.save_dataset(model)
-        assert await storage.get_dataset("param_model", data_source=_DS) is not None
-        assert any("param_model" in m for m in _validator_logs(caplog, logging.INFO))
+        assert await storage.get_dataset("param_dataset", data_source=_DS) is not None
+        assert any("param_dataset" in m for m in _validator_logs(caplog, logging.INFO))
         assert _validator_logs(caplog, logging.WARNING) == []  # skip is INFO, not WARN
 
     async def test_optional_block_placeholder_skipped_and_persists(
@@ -266,10 +266,10 @@ class TestGatesSkipProbe:
         # placeholder in dataset.sql, so the probe is skipped.
         model = _sql_dataset(
             "SELECT id FROM orders {? WHERE status = {status} ?}",
-            name="optblock_model",
+            name="optblock_dataset",
         )
         await engine.save_dataset(model)
-        assert await storage.get_dataset("optblock_model", data_source=_DS) is not None
+        assert await storage.get_dataset("optblock_dataset", data_source=_DS) is not None
 
     async def test_var_only_in_column_sql_still_validates_model_sql(
         self, tmp_path: Path
@@ -278,7 +278,7 @@ class TestGatesSkipProbe:
         # dataset.sql is static and invalid; a {var} in a field expression must
         # not suppress the dataset.sql probe (Codex MAJOR 1).
         model = SlayerDataset(
-            name="col_var_model",
+            name="col_var_dataset",
             sql="SELECT nonexistent FROM orders",
             data_source=_DS,
             fields=[DatasetField(name="c", expression="{threshold}", datatype=DataType.STRING)],
@@ -434,10 +434,10 @@ class TestNonReadOnlySqlRejected:
     async def test_select_into_rejected(self, tmp_path: Path) -> None:
         # SELECT ... INTO parses under a SELECT root but creates a table.
         engine, storage = await _make_engine(tmp_path)
-        model = _sql_dataset("SELECT id INTO archived FROM orders", name="into_model")
+        model = _sql_dataset("SELECT id INTO archived FROM orders", name="into_dataset")
         with pytest.raises(DatasetSqlValidationError):
             await engine.save_dataset(model)
-        assert await storage.get_dataset("into_model", data_source=_DS) is None
+        assert await storage.get_dataset("into_dataset", data_source=_DS) is None
 
     async def test_parameterized_identifier_placeholder_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

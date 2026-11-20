@@ -32,7 +32,7 @@ def _q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-async def _gen_with_reserved_column(query: SlayerQuery) -> str:
+async def _gen_with_reserved_field(query: SlayerQuery) -> str:
     """``gen`` over an ``orders`` carrying a stored ``__regroup__x`` field."""
     base, *rest = dev1740_datasets()
     model = base.model_copy(update={"fields": [
@@ -219,12 +219,12 @@ class TestDiscoveryGuards:
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises(ValueError, match=r"__regroup__"):
-            await _gen_with_reserved_column(q)
+            await _gen_with_reserved_field(q)
 
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = _q(
             dimensions=["orders.region"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
-        sql = await _gen_with_reserved_column(q)
+        sql = await _gen_with_reserved_field(q)
         assert "SELECT" in sql

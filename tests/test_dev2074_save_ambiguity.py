@@ -34,10 +34,10 @@ def _int(name: str) -> DatasetField:
     return DatasetField(name=name, datatype=DataType.INTEGER)
 
 
-def _m(name: str, *cols: DatasetField, joins: list[DatasetRelationship] | None = None,
+def _m(name: str, *cols: DatasetField, relationships: list[DatasetRelationship] | None = None,
        filters: list[str] | None = None) -> SlayerDataset:
     return SlayerDataset(name=name, data_source=DS, sql_table=name, fields=[_pk(), *cols],
-                       relationships=joins or [], filters=filters or [])
+                       relationships=relationships or [], filters=filters or [])
 
 
 def _j(target: str, src: str, *, tgt: str = "id", name: str | None = None,
@@ -49,11 +49,11 @@ def _addresses() -> SlayerDataset:
     return _m("addresses", DatasetField(name="city", datatype=DataType.STRING))
 
 
-def _orders(*cols: DatasetField, joins: list[DatasetRelationship] | None = None,
+def _orders(*cols: DatasetField, relationships: list[DatasetRelationship] | None = None,
             filters: list[str] | None = None) -> SlayerDataset:
     return _m("orders", _int("address_id"), _int("ship_address_id"),
               DatasetField(name="amount", datatype=DataType.FLOAT), *cols,
-              joins=joins if joins is not None else [_j("addresses", "address_id")], filters=filters)
+              relationships=relationships if relationships is not None else [_j("addresses", "address_id")], filters=filters)
 
 
 def _parallel(*, named: bool = False) -> list[DatasetRelationship]:
@@ -106,7 +106,7 @@ def door(request) -> str:
 
 class TestAmbiguousDefinitionRejected:
     async def test_column_sql_rejected_at_both_doors(self, tmp_path) -> None:
-        model = _orders(DatasetField(name="city", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="addresses.city")])), joins=_parallel())
+        model = _orders(DatasetField(name="city", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="addresses.city")])), relationships=_parallel())
         for exc in await _both_doors(tmp_path, model, _addresses(), expected=DerivedFieldAmbiguousError):
             assert isinstance(exc, DerivedFieldAmbiguousError)
             assert isinstance(exc, AmbiguousRelationshipPathError)
@@ -123,7 +123,7 @@ class TestAmbiguousDefinitionRejected:
         model = _orders(
             DatasetField(name="paris_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="addresses.city = 'Paris'"),
-            joins=_parallel(),
+            relationships=_parallel(),
         )
         for exc in await _both_doors(tmp_path, model, _addresses(), expected=DerivedFieldAmbiguousError):
             assert isinstance(exc, DerivedFieldAmbiguousError)
@@ -132,7 +132,7 @@ class TestAmbiguousDefinitionRejected:
             _assert_names_both_edges(exc)
 
     async def test_model_filter_rejected_with_the_base_error(self, tmp_path) -> None:
-        model = _orders(joins=_parallel(), filters=["addresses.city = 'Paris'"])
+        model = _orders(relationships=_parallel(), filters=["addresses.city = 'Paris'"])
         for exc in await _both_doors(tmp_path, model, _addresses(), expected=AmbiguousRelationshipPathError):
             assert not isinstance(exc, DerivedFieldAmbiguousError)
             assert "addresses.city = 'Paris'" in str(exc)
@@ -143,7 +143,7 @@ class TestAmbiguousDefinitionRejected:
         model = _orders(
             DatasetField(name="loud_city", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="upper(orders.city)")])),
             DatasetField(name="city", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="addresses.city")])),
-            joins=_parallel(),
+            relationships=_parallel(),
         )
         for exc in await _both_doors(tmp_path, model, _addresses(), expected=DerivedFieldAmbiguousError):
             assert isinstance(exc, DerivedFieldAmbiguousError)
@@ -156,7 +156,7 @@ class TestAmbiguousDefinitionRejected:
             "customers", _int("region_id"), _int("hq_region_id"),
             DatasetField(name="spend", datatype=DataType.FLOAT),
             DatasetField(name="revisit_spend", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),
-            joins=[_j("regions", "region_id", name="r1"), _j("regions", "hq_region_id", name="r2")],
+            relationships=[_j("regions", "region_id", name="r1"), _j("regions", "hq_region_id", name="r2")],
         )
         for exc in await _both_doors(tmp_path, customers, regions, expected=DerivedFieldAmbiguousError):
             assert isinstance(exc, DerivedFieldAmbiguousError)
@@ -167,9 +167,9 @@ class TestAmbiguousDefinitionRejected:
 
     async def test_ambiguity_precedes_a_later_fanning_hop(self, tmp_path) -> None:
         visits = _m("visits", _int("address_id"), DatasetField(name="n", datatype=DataType.INTEGER),
-                    joins=[_j("addresses", "address_id")])
+                    relationships=[_j("addresses", "address_id")])
         model = _orders(DatasetField(name="visit_n", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="addresses.visits.n")])),
-                        joins=_parallel())
+                        relationships=_parallel())
         storage = await _storage(tmp_path)
         await storage.save_dataset(_addresses())
         await storage.save_dataset(visits)
@@ -181,10 +181,10 @@ class TestAmbiguousDefinitionRejected:
     async def test_revisit_before_an_ambiguous_hop_stays_circular(self, tmp_path) -> None:
         regions = _m("regions", DatasetField(name="name", datatype=DataType.STRING))
         customers = _m("customers", _int("region_id"), _int("hq_region_id"),
-                       joins=[_j("regions", "region_id"), _j("regions", "hq_region_id")])
+                       relationships=[_j("regions", "region_id"), _j("regions", "hq_region_id")])
         model = _m("orders", _int("customer_id"),
                    DatasetField(name="rn", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="customers.orders.customers.regions.name")])),
-                   joins=[_j("customers", "customer_id")])
+                   relationships=[_j("customers", "customer_id")])
         for exc in await _both_doors(tmp_path, model, regions, customers, expected=DerivedFieldCircularError):
             assert isinstance(exc, DerivedFieldCircularError)
             assert exc.revisited == "orders"
@@ -193,7 +193,7 @@ class TestAmbiguousDefinitionRejected:
         storage = await _storage(tmp_path)
         await storage.save_dataset(_addresses())
         model = _orders(DatasetField(name="city", datatype=DataType.STRING, expression="billing_address.city"),
-                        joins=_parallel(named=True))
+                        relationships=_parallel(named=True))
         await _save(door, storage, model)
         assert await storage.get_dataset("orders", data_source=DS) is not None
 
@@ -204,7 +204,7 @@ class TestAmbiguousDefinitionRejected:
 def _shipments() -> SlayerDataset:
     return _m("shipments", _int("order_id"),
               DatasetField(name="city", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="orders.addresses.city")])),
-              joins=[_j("orders", "order_id")])
+              relationships=[_j("orders", "order_id")])
 
 
 async def _world(tmp_path, *dependents: SlayerDataset, orders: SlayerDataset | None = None) -> YAMLStorage:
@@ -239,7 +239,7 @@ def _assert_dependent_warning(msg: str, *, dataset: str, definition: str, refere
 class TestEdgeSetChangeWarnings:
     async def test_new_parallel_edge_warns_about_a_dependent(self, tmp_path, door) -> None:
         storage = await _world(tmp_path, _shipments())
-        msgs = await _save_warnings(door, storage, _orders(joins=_parallel()))
+        msgs = await _save_warnings(door, storage, _orders(relationships=_parallel()))
         about = _about(msgs, "shipments")
         assert len(about) == 1, msgs
         _assert_dependent_warning(about[0], dataset="shipments", definition="city",
@@ -248,7 +248,7 @@ class TestEdgeSetChangeWarnings:
 
     async def test_removed_edge_warns_no_longer_resolvable(self, tmp_path, door) -> None:
         storage = await _world(tmp_path, _shipments())
-        msgs = await _save_warnings(door, storage, _orders(joins=[]))
+        msgs = await _save_warnings(door, storage, _orders(relationships=[]))
         about = _about(msgs, "shipments")
         assert len(about) == 1, msgs
         assert "city" in about[0]
@@ -261,16 +261,16 @@ class TestEdgeSetChangeWarnings:
         storage = await _world(tmp_path, _shipments())
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            await _save(door, storage, _orders(joins=[]))
+            await _save(door, storage, _orders(relationships=[]))
         about = [w for w in caught if issubclass(w.category, UserWarning) and "'shipments'" in str(w.message)]
         assert [w.filename for w in about] == [__file__]
 
     async def test_dependent_several_hops_away(self, tmp_path, door) -> None:
         parcels = _m("parcels", _int("shipment_id"),
                      DatasetField(name="city", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="shipments.orders.addresses.city")])),
-                     joins=[_j("shipments", "shipment_id")])
+                     relationships=[_j("shipments", "shipment_id")])
         storage = await _world(tmp_path, _shipments(), parcels)
-        msgs = await _save_warnings(door, storage, _orders(joins=_parallel()))
+        msgs = await _save_warnings(door, storage, _orders(relationships=_parallel()))
         about = _about(msgs, "parcels")
         assert len(about) == 1, msgs
         _assert_dependent_warning(about[0], dataset="parcels", definition="city",
@@ -281,8 +281,8 @@ class TestEdgeSetChangeWarnings:
                       DatasetField(name="city", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="orders.addresses.city")])))
         to_invoice = _j("invoices", "id", tgt="order_id", cardinality=RelationshipCardinality.ONE_TO_ONE)
         storage = await _world(tmp_path, invoices,
-                               orders=_orders(joins=[_j("addresses", "address_id"), to_invoice]))
-        msgs = await _save_warnings(door, storage, _orders(joins=[*_parallel(), to_invoice]))
+                               orders=_orders(relationships=[_j("addresses", "address_id"), to_invoice]))
+        msgs = await _save_warnings(door, storage, _orders(relationships=[*_parallel(), to_invoice]))
         about = _about(msgs, "invoices")
         assert len(about) == 1, msgs
         _assert_dependent_warning(about[0], dataset="invoices", definition="city",
@@ -292,19 +292,19 @@ class TestEdgeSetChangeWarnings:
         crates = _m("crates", _int("order_id"), DatasetField(name="weight", datatype=DataType.FLOAT),
                     DatasetField(name="paris_weight", datatype=DataType.FLOAT, expression="weight",
                            filter="orders.addresses.city = 'Paris'"),
-                    joins=[_j("orders", "order_id")])
+                    relationships=[_j("orders", "order_id")])
         storage = await _world(tmp_path, crates)
-        msgs = await _save_warnings(door, storage, _orders(joins=_parallel()))
+        msgs = await _save_warnings(door, storage, _orders(relationships=_parallel()))
         about = _about(msgs, "crates")
         assert len(about) == 1, msgs
         _assert_dependent_warning(about[0], dataset="crates", definition="paris_weight",
                                   reference="orders.addresses.city")
 
     async def test_dependent_model_filter(self, tmp_path, door) -> None:
-        audits = _m("audits", _int("order_id"), joins=[_j("orders", "order_id")],
+        audits = _m("audits", _int("order_id"), relationships=[_j("orders", "order_id")],
                     filters=["orders.addresses.city = 'Paris'"])
         storage = await _world(tmp_path, audits)
-        msgs = await _save_warnings(door, storage, _orders(joins=_parallel()))
+        msgs = await _save_warnings(door, storage, _orders(relationships=_parallel()))
         about = _about(msgs, "audits")
         assert len(about) == 1, msgs
         _assert_dependent_warning(about[0], dataset="audits", definition="orders.addresses.city = 'Paris'",
@@ -317,7 +317,7 @@ class TestUnchangedEdgeSetReExaminesNothing:
 
     @staticmethod
     def _audits() -> SlayerDataset:
-        return _m("audits", _int("order_id"), joins=[_j("orders", "order_id")],
+        return _m("audits", _int("order_id"), relationships=[_j("orders", "order_id")],
                   filters=["orders.addresses.city = 'Paris'"])
 
     async def test_column_only_change_neither_warns_nor_re_examines(self, tmp_path, door) -> None:
@@ -330,5 +330,5 @@ class TestUnchangedEdgeSetReExaminesNothing:
     async def test_edge_change_re_examines_the_dependent(self, tmp_path, door) -> None:
         storage = await _world(tmp_path, self._audits())
         with observe_traversals() as seen:
-            await _save_warnings(door, storage, _orders(joins=_parallel()))
+            await _save_warnings(door, storage, _orders(relationships=_parallel()))
         assert seen.get("orders") is True

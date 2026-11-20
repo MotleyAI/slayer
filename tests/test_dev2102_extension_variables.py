@@ -11,7 +11,7 @@ from slayer.engine.dataset_reads import datasets_read_by
 from slayer.inspect.dataset_render import render_dataset_inspection
 
 from tests._dev1966_fixtures import customers_dataset, dev1966_engine, m, orders_dataset, query
-from tests._dev2102_fixtures import DS, countries, customers, ext, join, orders, q, regions
+from tests._dev2102_fixtures import DS, countries, customers, ext, relationship_to, orders, q, regions
 
 _OVER = {"dataset": "orders", "metrics": [
     {"name": "rev", "expression": "sum(iif(amount >= {floor}, amount, 0))"}]}
@@ -57,7 +57,7 @@ def test_a_joined_models_extension_reads_what_its_definitions_read(extension: di
     assert (DS, "regions") in reads
 
 
-_TO_REGIONS = join("regions", [["region_id", "id"]])
+_TO_REGIONS = relationship_to("regions", [["region_id", "id"]])
 
 
 @pytest.mark.parametrize(("source", "dimensions", "extension"), [
@@ -76,7 +76,7 @@ def test_a_path_through_an_extension_join_reads_its_downstream_models(
     assert (DS, "countries") in reads
 
 
-_TO_CUSTOMERS = join("customers", [["customer_id", "id"]])
+_TO_CUSTOMERS = relationship_to("customers", [["customer_id", "id"]])
 
 
 @pytest.mark.parametrize(("dimensions", "extension"), [
@@ -109,7 +109,7 @@ def test_a_path_through_chained_sibling_stages_reads_its_downstream_models() -> 
         q(name="s2", population="orders", dimensions=["orders.customer_id"]),
         q(name="s1", population="orders", dimensions=["orders.customer_id"]),
         q(population="s1", dimensions=["s1.customer_id", "s2.customers.regions.name"], extensions=[
-            ext("s1", relationships=[join("s2", [["customer_id", "customer_id"]])]), ext("s2", relationships=[_TO_CUSTOMERS])])])
+            ext("s1", relationships=[relationship_to("s2", [["customer_id", "customer_id"]])]), ext("s2", relationships=[_TO_CUSTOMERS])])])
     assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 
 
@@ -140,6 +140,6 @@ def test_a_sibling_join_key_its_extension_defines_is_one_column() -> None:
     backed = SlayerDataset(name="backed", data_source=DS, source_queries=[
         q(name="s", population="orders", dimensions=[{"field": "orders.customer_id", "alias": "customer_key"}]),
         q(population="s", dimensions=["customers.regions.name"], extensions=[ext(
-            "s", relationships=[join("customers", [["customer_key", "id"]])])])])
+            "s", relationships=[relationship_to("customers", [["customer_key", "id"]])])])])
     assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 

@@ -70,7 +70,7 @@ CUSTOMER_METRICS = [
     DatasetMetric(name="n_regions", expression='count("region")'),
 ]
 #: ``orders`` custom aggregations read by ``customers``-rooted queries.
-ORDER_AGGREGATIONS = [_agg("w_bare", "amount"), _agg("w_quoted", '"amount"'), _agg("w_join", "customers.weight")]
+ORDER_AGGREGATIONS = [_agg("w_bare", "amount"), _agg("w_quoted", '"amount"'), _agg("w_relationship", "customers.weight")]
 
 
 def definition_datasets(*, customer_filters: tuple[str, ...] = ()) -> list[SlayerDataset]:
@@ -180,7 +180,7 @@ async def test_saved_metric(engine: SlayerQueryEngine, cell: str) -> None:
 AGGREGATION_CELLS = {
     "bare-field": ("w_bare", {"EAST": 100.0 ** 2 + 200.0 ** 2 + 50.0 ** 2, "WEST": 300.0 ** 2}),
     "quoted-name": ("w_quoted", {"EAST": 100.0 ** 2 + 200.0 ** 2 + 50.0 ** 2, "WEST": 300.0 ** 2}),
-    "dotted-join": ("w_join", {"EAST": (100.0 + 200.0 + 50.0) * 2, "WEST": 300.0}),
+    "dotted-join": ("w_relationship", {"EAST": (100.0 + 200.0 + 50.0) * 2, "WEST": 300.0}),
 }
 
 

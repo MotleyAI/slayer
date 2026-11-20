@@ -113,7 +113,7 @@ def _unique(dataset: SlayerDataset) -> set[str]:
     return {c.name for c in dataset.fields if c.unique}
 
 
-def _joins(dataset: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
+def _relationships(dataset: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
     return {j.to: ([list(p) for p in j.column_pairs], j.cardinality) for j in dataset.relationships}
 
 
@@ -141,20 +141,20 @@ class TestDuckdbKeys:
 
     async def test_fk_to_a_unique_column_is_to_one(self, keys_db) -> None:
         orders = _datasets(await _report(_ds(keys_db)))["orders"]
-        pairs, cardinality = _joins(orders)["customers"]
+        pairs, cardinality = _relationships(orders)["customers"]
         assert pairs == [["customer_code", "code"]]
         assert cardinality in _TO_ONE
 
     async def test_composite_unique_is_a_key_for_join_cardinality(self, keys_db) -> None:
         pairs_model = _datasets(await _report(_ds(keys_db)))["pairs"]
-        pairs, cardinality = _joins(pairs_model)["customers"]
+        pairs, cardinality = _relationships(pairs_model)["customers"]
         assert pairs == [["a", "a"], ["b", "b"]]
         assert cardinality in _TO_ONE
 
     async def test_composite_pk(self, keys_db) -> None:
         lines = _datasets(await _report(_ds(keys_db)))["lines"]
         assert _pk(lines) == ["order_id", "n"]
-        assert _joins(lines)["orders"][0] == [["order_id", "id"]]
+        assert _relationships(lines)["orders"][0] == [["order_id", "id"]]
 
     async def test_expression_unique_index_is_no_key(self, keys_db) -> None:
         customers = _datasets(await _report(_ds(keys_db)))["customers"]
@@ -164,7 +164,7 @@ class TestDuckdbKeys:
         models = _datasets(await _report(_ds(schema_db), schemas=["ofr"]))
         assert _pk(models["parent"]) == ["a", "b"]
         assert _pk(models["child"]) == ["id"]
-        pairs, cardinality = _joins(models["child"])["parent"]
+        pairs, cardinality = _relationships(models["child"])["parent"]
         assert pairs == [["pa", "a"], ["pb", "b"]]
         assert cardinality in _TO_ONE
 
@@ -220,15 +220,15 @@ class TestGenericReflectionBypassed:
         assert _pk(models["customers"]) == ["id"]
         assert _unique(models["customers"]) == {"code", "Mixed Case"}
         assert _pk(models["lines"]) == ["order_id", "n"]
-        assert _joins(models["orders"])["customers"][0] == [["customer_code", "code"]]
-        assert _joins(models["pairs"])["customers"][0] == [["a", "a"], ["b", "b"]]
-        assert _joins(models["lines"])["orders"][0] == [["order_id", "id"]]
+        assert _relationships(models["orders"])["customers"][0] == [["customer_code", "code"]]
+        assert _relationships(models["pairs"])["customers"][0] == [["a", "a"], ["b", "b"]]
+        assert _relationships(models["lines"])["orders"][0] == [["order_id", "id"]]
         amount = next(c for c in models["orders"].fields if c.name == "amount")
         assert (amount.datatype, amount.db_type) == (DataType.DECIMAL, "DECIMAL(12,2)")
 
     async def test_non_default_schema_join_survives(self, schema_db, broken_generic_reflection) -> None:
         models = _datasets(await _report(_ds(schema_db), schemas=["ofr"]))
-        assert _joins(models["child"])["parent"][0] == [["pa", "a"], ["pb", "b"]]
+        assert _relationships(models["child"])["parent"][0] == [["pa", "a"], ["pb", "b"]]
 
 
 # ---------------------------------------------------------------------------
@@ -295,9 +295,9 @@ class TestKeyReadFailureIsVisible:
         assert set(models) == {"customers", "orders", "pairs", "lines"}
         orders, customers = models["orders"], models["customers"]
         assert [c.name for c in orders.fields] == ["id", "customer_code", "amount"]
-        assert _joins(models["lines"])["orders"][0] == [["order_id", "id"]]
+        assert _relationships(models["lines"])["orders"][0] == [["order_id", "id"]]
         assert _pk(orders) == ([] if kind == "primary_key" else ["id"])
-        assert ("customers" in _joins(orders)) is (kind != "foreign_keys")
+        assert ("customers" in _relationships(orders)) is (kind != "foreign_keys")
         assert _pk(customers) == ["id"]
         assert ("code" in _unique(customers)) is (kind != "unique")
         assert ("Mixed Case" in _unique(customers)) is (kind != "unique_index")
@@ -321,7 +321,7 @@ class TestKeyReadFailureIsVisible:
         models = _datasets(report)
         assert report.skipped == []
         assert models["orders"].relationships == []
-        assert _joins(models["items"])["orders"][0] == [["order_id", "id"]]
+        assert _relationships(models["items"])["orders"][0] == [["order_id", "id"]]
         _assert_one_read_warning(_warnings_naming(caplog, "orders"), word="foreign", marker=LOST)
 
 

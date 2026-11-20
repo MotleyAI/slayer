@@ -11,7 +11,7 @@ from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
     customers_v10,
-    measure_total,
+    metric_total,
     memory_v2,
     orders_v10,
     query_backed_v10,
@@ -75,7 +75,7 @@ async def test_legacy_literal_against_temporal_column_runs(tmp_path, shop_ds, ba
     [loaded] = await _loaded_filters(storage)
     assert not [frag for frag in LEGACY_FRAGMENTS if frag in loaded], loaded
     resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
-    assert measure_total(resp, measure="rev_sum") == expected
+    assert metric_total(resp, metric="rev_sum") == expected
 
 
 async def test_repair_keeps_the_rest_of_the_filter_verbatim(tmp_path, shop_ds):
@@ -101,7 +101,7 @@ async def test_mixed_in_list_refuses_to_load(tmp_path, shop_ds):
 async def test_text_column_comparison_keeps_its_rows(tmp_path, shop_ds):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", filters=["status = '2024/01/01'"])
     resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
-    assert measure_total(resp, measure="rev_sum") == 60.0
+    assert metric_total(resp, metric="rev_sum") == 60.0
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -115,4 +115,4 @@ async def test_memory_query_filter_literal_is_repaired(tmp_path, shop_ds, backen
     [loaded] = mem.query.filter or []
     assert "+02:00" not in loaded
     resp = await run(storage, mem.query)
-    assert measure_total(resp, measure="rev") == 150.0
+    assert metric_total(resp, metric="rev") == 150.0

@@ -231,19 +231,19 @@ class TestJoinRegistration:
     def test_predicate_crossing_one_hop_registers_it(self) -> None:
         scope = _scope()
         scope.enter_predicate("customers.balance > 1")
-        assert ("customers",) in scope.join_paths.as_list()
+        assert ("customers",) in scope.relationship_paths.as_list()
 
     def test_predicate_crossing_two_hops_registers_every_prefix(self) -> None:
         scope = _scope()
         scope.enter_predicate("customers.regions.population > 1")
-        paths = scope.join_paths.as_list()
+        paths = scope.relationship_paths.as_list()
         assert ("customers",) in paths
         assert ("customers", "regions") in paths
 
     def test_expression_crossing_registers_too(self) -> None:
         scope = _scope()
         scope.enter_expression("customers.regions.population")
-        paths = scope.join_paths.as_list()
+        paths = scope.relationship_paths.as_list()
         # every PREFIX is required, not just the deepest hop — the FROM builder
         # needs the intermediate join to reach the last one
         assert ("customers",) in paths, paths
@@ -252,7 +252,7 @@ class TestJoinRegistration:
     def test_local_predicate_registers_nothing(self) -> None:
         scope = _scope()
         scope.enter_predicate("amount > 1")
-        assert scope.join_paths.as_list() == []
+        assert scope.relationship_paths.as_list() == []
 
     def test_dual_scan_keeps_paths_that_expansion_removes(self) -> None:
         """The pre-expansion scan is load-bearing.
@@ -286,7 +286,7 @@ class TestJoinRegistration:
         # the reference really does vanish from the expanded AST ...
         assert "customers" not in _sql_of(node), _sql_of(node)
         # ... and the relationship path is still registered
-        assert ("customers",) in scope.join_paths.as_list(), (
+        assert ("customers",) in scope.relationship_paths.as_list(), (
             "the pre-expansion scan did not run: a crossing ref that inlines "
             "to a constant lost its relationship path"
         )
@@ -328,7 +328,7 @@ class TestParseFailureRaises:
         with pytest.raises(SlayerError):
             scope.enter_predicate("customers.balance > ( not sql")
         # and it certainly must not have quietly succeeded with no relationship paths
-        assert scope.join_paths.as_list() == []
+        assert scope.relationship_paths.as_list() == []
 
 
 # --------------------------------------------------------------------------- #

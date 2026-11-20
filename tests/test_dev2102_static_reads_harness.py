@@ -15,7 +15,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.statement_reads import StatementReads
 from slayer.live_schema.schema_drift import ToDeleteEntry, WholeDatasetDelete, field_dependents
 from tests._dev2102_fixtures import (
-    DS, CUSTOMER_PAIRS, base_datasets, customers, ext, join, q, regions, respelled_dataset, shop,
+    DS, CUSTOMER_PAIRS, base_datasets, customers, ext, relationship_to, q, regions, respelled_dataset, shop,
 )
 
 _HARNESS_QB = "harness_qb"
@@ -42,7 +42,7 @@ def _cities(*extra: dict, name: str = "cities_src") -> SlayerDataset:
 
 _CORPUS: list[Any] = [
     pytest.param(q(population="orders", dimensions=["orders.ship_region.name"], metrics=[_AMOUNT],
-                   extensions=[ext("orders", relationships=[join("regions", [["ship_region_id", "id"]], name="ship_region")])]),
+                   extensions=[ext("orders", relationships=[relationship_to("regions", [["ship_region_id", "id"]], name="ship_region")])]),
                  id="root-extension-join"),
     pytest.param(q(population="orders", dimensions=[{"field": "upper(customers.tier)", "alias": "tier_label"}],
                    metrics=[_AMOUNT]), id="joined-computed-dimension"),
@@ -57,17 +57,17 @@ _CORPUS: list[Any] = [
                  id="multi-hop-extension-measure"),
     pytest.param([q(name="s", population="orders", dimensions=["orders.customer_id"], metrics=[_AMOUNT]),
                   q(population="s", dimensions=["customers.tier"], metrics=[{"metric": "sum(s.a)", "alias": "t"}],
-                    extensions=[ext("s", relationships=[join("customers", [["customer_id", "id"]])])])],
+                    extensions=[ext("s", relationships=[relationship_to("customers", [["customer_id", "id"]])])])],
                  id="sibling-extension-join"),
     pytest.param([q(name="s2", population="orders", dimensions=["orders.customer_id"]),
                   q(name="s1", population="orders", dimensions=["orders.customer_id"]),
                   q(population="s1", dimensions=["s1.customer_id", "s2.customers.regions.name"], extensions=[
-                      ext("s1", relationships=[join("s2", [["customer_id", "customer_id"]])]),
-                      ext("s2", relationships=[join("customers", [["customer_id", "id"]])])])],
+                      ext("s1", relationships=[relationship_to("s2", [["customer_id", "customer_id"]])]),
+                      ext("s2", relationships=[relationship_to("customers", [["customer_id", "id"]])])])],
                  id="chained-siblings"),
     pytest.param([q(name="s", population="orders", dimensions=["orders.customer_id"]),
                   q(population="s", dimensions=["s.customer_id", "customers.name"],
-                    extensions=[ext("customers", relationships=[join("s", [["id", "customer_id"]])])])],
+                    extensions=[ext("customers", relationships=[relationship_to("s", [["id", "customer_id"]])])])],
                  id="join-into-the-sibling-source"),
     pytest.param([q(name="customers", population="orders", dimensions=["orders.customer_id"],
                     metrics=[{"metric": "sum(orders.amount)", "alias": "spent"}]),
@@ -76,7 +76,7 @@ _CORPUS: list[Any] = [
                  id="sibling-shadows-stored"),
     pytest.param(q(population="orders", dimensions=["orders.customer_id"],
                    metrics=[_AMOUNT, {"metric": "cust_spend.spent2", "alias": "s2"}], extensions=[
-                     ext("orders", relationships=[join("cust_spend", [["customer_id", "customer_id"]])]),
+                     ext("orders", relationships=[relationship_to("cust_spend", [["customer_id", "customer_id"]])]),
                      ext("cust_spend", metrics=[{"name": "spent2", "expression": "sum(spent * 2)"}])]),
                  id="query-backed-join-target-extension"),
     pytest.param(q(population="cust_spend", dimensions=["cust_spend.customer_id"], metrics=["cust_spend.mm"],
@@ -89,39 +89,39 @@ _CORPUS: list[Any] = [
                    extensions=[ext("customers", metrics=[{"name": "c10", "expression": "sum(credit)"}])]),
                  id="root-extension-measure"),
     pytest.param(q(population="customers", dimensions=["customers.tier"], metrics=[{"metric": "count(customers.*)", "alias": "n"}],
-                   extensions=[ext("customers", relationships=[join("vip_list", [["id", "customer_id"]], join_type="inner")])]),
+                   extensions=[ext("customers", relationships=[relationship_to("vip_list", [["id", "customer_id"]], join_type="inner")])]),
                  id="inner-root-join"),
     pytest.param(q(population="orders", dimensions=["orders.status"], metrics=[_AMOUNT], extensions=[
-                     ext("customers", relationships=[join("regions", _REGION_PAIRS, join_type="inner")])]),
+                     ext("customers", relationships=[relationship_to("regions", _REGION_PAIRS, join_type="inner")])]),
                  id="inner-join-on-a-joined-model"),
     pytest.param(q(population="orders", dimensions=["orders.status"], metrics=[_AMOUNT], extensions=[
-                     ext("orders", relationships=[join("customers", CUSTOMER_PAIRS, name="c", join_type="inner")])]),
+                     ext("orders", relationships=[relationship_to("customers", CUSTOMER_PAIRS, name="c", join_type="inner")])]),
                  id="inner-over-a-stored-edge-alias"),
     pytest.param(q(population="orders", dimensions=["orders.billing_address.city", "orders.shipping_address.city"],
                    metrics=[_AMOUNT]), id="stored-parallel-named-edges"),
     pytest.param(q(population="orders", dimensions=["orders.bill.city"], metrics=[_AMOUNT], extensions=[
-                     ext("addresses", relationships=[join("orders", [["id", "billing_address_id"]], name="bill")]),
-                     ext("orders", relationships=[join("addresses", [["billing_address_id", "id"]], name="bill")])]),
+                     ext("addresses", relationships=[relationship_to("orders", [["id", "billing_address_id"]], name="bill")]),
+                     ext("orders", relationships=[relationship_to("addresses", [["billing_address_id", "id"]], name="bill")])]),
                  id="reversed-stored-edge-reuse"),
     pytest.param([q(name="s", dimensions=["orders.customer_id"]),
                   q(population="s", dimensions=["s.customer_id", "customers.regions.name"],
-                    extensions=[ext("s", relationships=[join("customers", [["customer_id", "id"]])])])],
+                    extensions=[ext("s", relationships=[relationship_to("customers", [["customer_id", "id"]])])])],
                  id="rootless-sibling"),
     pytest.param([q(name="s", population="orders", dimensions=[{"field": "orders.customer_id", "alias": "customer_key"}]),
                   q(population="s", dimensions=["customers.regions.name"], extensions=[ext(
-                      "s", relationships=[join("customers", [["customer_key", "id"]])])])],
+                      "s", relationships=[relationship_to("customers", [["customer_key", "id"]])])])],
                  id="sibling-extension-defined-join-key"),
     pytest.param(q(population="orders", dimensions=["orders.status"], metrics=[_AMOUNT],
                    filter=["customers.regions.name = 'North'"]), id="filter-through-a-path"),
     pytest.param(q(population="shipments", dimensions=["shipments.origin.city", "shipments.dest.city"],
                    metrics=[{"metric": "count(shipments.*)", "alias": "n"}]), id="parallel-edges-one-key-pair"),
     pytest.param(q(population="orders", dimensions=["orders.status"], metrics=[_AMOUNT], extensions=[
-                     ext("customers", relationships=[join("vip_list", [["id", "customer_id"]], join_type="inner")])]),
+                     ext("customers", relationships=[relationship_to("vip_list", [["id", "customer_id"]], join_type="inner")])]),
                  id="inner-two-hops-from-the-root"),
     pytest.param([q(name="s", population="cust_spend", dimensions=["cust_spend.customer_id"], metrics=["cust_spend.mm"],
                     extensions=[ext("cust_spend", metrics=[{"name": "mm", "expression": "sum(spent)"}])]),
                   q(population="s", dimensions=["customers.name"], metrics=[{"metric": "sum(s.mm)", "alias": "t"}],
-                    extensions=[ext("s", relationships=[join("customers", [["customer_id", "id"]])])])],
+                    extensions=[ext("s", relationships=[relationship_to("customers", [["customer_id", "id"]])])])],
                  id="query-backed-extension-in-a-non-root-stage"),
 ]
 

@@ -10,7 +10,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import DelegatingSqlClient
 from tests._osi_export_fixtures import (
-    BASIC_MEASURES, col, customers, slayer_metric, monthly_revenue, orders, rich_orders, visits,
+    BASIC_METRICS, col, customers, slayer_metric, monthly_revenue, orders, rich_orders, visits,
 )
 from tests._osi_export_helpers import (
     carries, dataset, dataset_names, doc_text, export, export_datasets, make_env, mentions, reimport, relationships,
@@ -39,7 +39,7 @@ async def test_deterministic_output(env) -> None:
 
 
 async def test_datasets_ordered_by_model_name(env) -> None:
-    await save(env, visits(), customers(), orders(metrics=BASIC_MEASURES))
+    await save(env, visits(), customers(), orders(metrics=BASIC_METRICS))
     assert dataset_names((await export(env)).document) == ["customers", "orders", "visits"]
 
 
@@ -90,14 +90,14 @@ async def test_name_and_description_from_shared_semantic_model(env) -> None:
 
 async def test_semantic_model_not_shared_by_every_model_falls_back_to_datasource(env) -> None:
     imported, _ = await reimport(env, _retail_document())
-    await save(imported, orders(metrics=BASIC_MEASURES, joins=[]))
+    await save(imported, orders(metrics=BASIC_METRICS, relationships=[]))
     document = (await export(imported)).document
     assert document["name"] == env.datasource
     assert document["description"] == "Shop data"
 
 
 async def test_join_to_excluded_model_is_reported(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), subset=["orders"])
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS), subset=["orders"])
     assert dataset_names(result.document) == ["orders"]
     assert relationships(result.document) == []
     [entry] = mentions(result, "customers", severity="dropped")
@@ -108,7 +108,7 @@ async def test_join_to_excluded_model_is_reported(env) -> None:
 
 @pytest.mark.parametrize("name", ["segment", "discounted"])
 async def test_slayer_only_entity_needing_excluded_model_is_reported(env, name: str) -> None:
-    model = orders(metrics=[*BASIC_MEASURES, slayer_metric("discounted", "sum(amount * customers.rate)")])
+    model = orders(metrics=[*BASIC_METRICS, slayer_metric("discounted", "sum(amount * customers.rate)")])
     model.fields.append(col("segment", DataType.STRING, "customers.segment"))
     result = await export_datasets(env, customers(), model, subset=["orders"])
     [entry] = mentions(result, name, severity="dropped")
@@ -118,7 +118,7 @@ async def test_slayer_only_entity_needing_excluded_model_is_reported(env, name: 
 
 
 async def test_measure_needing_excluded_model_is_reported(env) -> None:
-    measures = [*BASIC_MEASURES, slayer_metric("customer_discount", "sum(customers.discount)")]
+    measures = [*BASIC_METRICS, slayer_metric("customer_discount", "sum(customers.discount)")]
     result = await export_datasets(env, customers(), orders(metrics=measures), subset=["orders"])
     assert mentions(result, "customer_discount", severity="dropped")
     assert all(m["name"] != "customer_discount" for d in result.document["datasets"] for m in d.get("metrics") or [])

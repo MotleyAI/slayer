@@ -21,7 +21,7 @@ from tests._dev2102_fixtures import (
     by_key,
     customers,
     ext,
-    join,
+    relationship_to,
     orders,
     q,
     respelled_dataset,
@@ -70,7 +70,7 @@ class TestExtendingAnyModel:
         assert float(extended.data[0]["ct"]) == float(direct.data[0]["ct"]) == TOTAL_CREDIT
 
     async def test_extending_the_root_equals_the_legacy_form(self, dialect) -> None:
-        joins = [join("regions", [["ship_region_id", "id"]])]
+        joins = [relationship_to("regions", [["ship_region_id", "id"]])]
         fields = {"dimensions": ["regions.name"], "metrics": [AMOUNT]}
         async with shop(dialect) as engine:
             current = await engine.execute(q(population="orders", extensions=[ext("orders", relationships=joins)], **fields))
@@ -84,7 +84,7 @@ class TestExtendingAnyModel:
     async def test_extension_of_a_query_backed_join_target_applies_once(self, dialect) -> None:
         query = q(population="orders", dimensions=["orders.customer_id"],
                   metrics=[AMOUNT, {"metric": "cust_spend.spent2", "alias": "s2"}], extensions=[
-            ext("orders", relationships=[join("cust_spend", [["customer_id", "customer_id"]])]),
+            ext("orders", relationships=[relationship_to("cust_spend", [["customer_id", "customer_id"]])]),
             ext("cust_spend", metrics=[{"name": "spent2", "expression": "sum(spent * 2)"}]),
         ])
         async with shop(dialect, with_datasets(_cust_spend())) as engine:
@@ -117,7 +117,7 @@ class TestScope:
         stage = q(name="s1", population="orders", dimensions=["orders.status"], metrics=[AMOUNT],
                   extensions=[ext("customers", metrics=[CREDIT_TOTAL])])
         root = q(population="orders", metrics=[{"metric": "customers.credit_total", "alias": "ct"}],
-                 extensions=[ext("orders", relationships=[join("s1", [["status", "status"]])])])
+                 extensions=[ext("orders", relationships=[relationship_to("s1", [["status", "status"]])])])
         async with shop(dialect) as engine:
             with pytest.raises(UnknownReferenceError):
                 await engine.execute([stage, root])
@@ -136,7 +136,7 @@ class TestScope:
         stored = orders().model_copy(update={"metrics": [
             DatasetMetric(name="labels", expression="count_distinct(regions.name)")]})
         query = q(population="orders", metrics=["orders.labels"],
-                  extensions=[ext("orders", relationships=[join("regions", [["ship_region_id", "id"]])])])
+                  extensions=[ext("orders", relationships=[relationship_to("regions", [["ship_region_id", "id"]])])])
         async with shop(dialect, with_datasets(stored)) as engine:
             with pytest.raises(SlayerError, match="regions"):
                 await engine.execute(query)
@@ -153,7 +153,7 @@ class TestScope:
     async def test_a_join_another_model_declares_into_the_sibling_source_is_walkable(self, dialect) -> None:
         stage = q(name="s", population="orders", dimensions=["orders.customer_id"])
         root = q(population="s", dimensions=["s.customer_id", "customers.name"],
-                 extensions=[ext("customers", relationships=[join("s", [["id", "customer_id"]])])])
+                 extensions=[ext("customers", relationships=[relationship_to("s", [["id", "customer_id"]])])])
         async with shop(dialect) as engine:
             resp = await engine.execute([stage, root])
         assert {r["customers.name"] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
@@ -173,7 +173,7 @@ class TestModelNameCase:
     async def test_a_stage_joins_a_model_saved_in_another_case(self, dialect) -> None:
         stage = q(name="big_orders", population="orders", dimensions=["orders.id", "orders.customer_id"])
         root = q(population="big_orders", dimensions=["customers.name"],
-                 extensions=[ext("big_orders", relationships=[join("customers", [["customer_id", "id"]])])])
+                 extensions=[ext("big_orders", relationships=[relationship_to("customers", [["customer_id", "id"]])])])
         async with shop(dialect, respelled_dataset(base_datasets(), name="customers", spelling="Customers")) as engine:
             resp = await engine.execute([stage, root])
         assert {r[resp.columns[0]] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
@@ -190,7 +190,7 @@ class TestModelNameCase:
 class TestRejectedTargets:
     @pytest.mark.parametrize("extension", [
         ext("nope", metrics=[COUNT_X]),
-        ext("orders", relationships=[join("nope", [["customer_id", "id"]])]),
+        ext("orders", relationships=[relationship_to("nope", [["customer_id", "id"]])]),
     ], ids=["source_name", "join-target"])
     async def test_unknown_extension_target(self, dialect, extension: dict) -> None:
         async with shop(dialect) as engine:
@@ -209,10 +209,10 @@ class TestRejectedTargets:
 
 class TestSaveTimeRefusal:
     @pytest.mark.parametrize(("extension", "named"), [
-        (ext("orders", relationships=[join("addresses", [["ship_region_id", "id"]], name="billing_address")]),
+        (ext("orders", relationships=[relationship_to("addresses", [["ship_region_id", "id"]], name="billing_address")]),
          "billing_address"),
         (ext("nope", metrics=[COUNT_X]), "nope"),
-        (ext("events", relationships=[join("users", [["user_id", "id"]], join_type="inner")]), "events"),
+        (ext("events", relationships=[relationship_to("users", [["user_id", "id"]], join_type="inner")]), "events"),
     ], ids=["edge-conflict", "unresolvable", "unreachable-inner"])
     async def test_save_refuses_a_stage_whose_extension_always_fails(self, dialect, extension, named) -> None:
         stages = [
@@ -236,7 +236,7 @@ class TestStageOrdering:
         d = q(name="d", population="customers", dimensions=["customers.id"])
         e = q(name="e", population="orders", dimensions=["orders.status"])
         b = q(name="b", population="a", extensions=[
-            ext("a", relationships=[join("c", [["customer_id", "id"]]), join("d", [["customer_id", "id"]])]),
+            ext("a", relationships=[relationship_to("c", [["customer_id", "id"]]), relationship_to("d", [["customer_id", "id"]])]),
             ext("e", metrics=[COUNT_X]),
         ])
         ordered = [s.name for s in topologically_order_stages([b, e, d, c, a, q(population="b")])]
@@ -250,7 +250,7 @@ class TestStageOrdering:
             "c": q(name="c", population="customers", dimensions=["customers.id"],
                    metrics=[{"metric": "max(customers.tier)", "alias": "top_tier"}]),
             "b": q(name="b", population="a", dimensions=["c.top_tier"], metrics=[{"metric": "sum(a.spent)", "alias": "t"}],
-                   extensions=[ext("a", relationships=[join("c", [["customer_id", "id"]])])]),
+                   extensions=[ext("a", relationships=[relationship_to("c", [["customer_id", "id"]])])]),
         }
         root = q(population="b", metrics=[{"metric": "sum(b.t)", "alias": "total"}])
         async with shop(dialect) as engine:

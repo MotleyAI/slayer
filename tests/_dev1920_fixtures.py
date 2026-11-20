@@ -88,7 +88,7 @@ def datasource_doc(*, db_path: str, dialect: str, granularities: Sequence[dict] 
     return doc
 
 
-_ORDER_COLUMNS = [
+_ORDER_FIELDS = [
     {"name": "order_id", "type": "INT", "primary_key": True},
     {"name": "customer_id", "type": "INT"},
     {"name": "status", "type": "TEXT"},
@@ -106,7 +106,7 @@ def orders_doc(*, version: int | None = STORED_VERSIONS["SlayerModel"], metrics:
                **extra: Any) -> dict:
     """``version=None`` is a fresh (unversioned) payload."""
     doc: dict[str, Any] = {
-        "name": "orders", "sql_table": "orders", "data_source": DS, "columns": _ORDER_COLUMNS,
+        "name": "orders", "sql_table": "orders", "data_source": DS, "columns": _ORDER_FIELDS,
         "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
         **extra,
     }

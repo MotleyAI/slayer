@@ -424,7 +424,7 @@ class TestAllocatorRouting:
     ) -> None:
         """Windowed producers render as ``_cm_`` CTEs through the shared allocator."""
         engine = await _hostile_engine(
-            column="revx2", base_dir=str(tmp_path),
+            field="revx2", base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
@@ -495,7 +495,7 @@ _INTERNAL_NAMES = [
 ]
 
 
-async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
+async def _hostile_engine(*, field: str, base_dir: str) -> SlayerQueryEngine:
     """A store whose ``orders`` dataset carries a user field named like an internal alias."""
     d = base_dir
     db_path = os.path.join(d, "hostile.db")
@@ -529,7 +529,7 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
                 DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
-                DatasetField(name=column, expression="hostile", datatype=DataType.FLOAT),
+                DatasetField(name=field, expression="hostile", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -545,7 +545,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         self, column, tmp_path,
     ) -> None:
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path),
+            field=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
@@ -570,7 +570,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
     ) -> None:
         """The same names as a GROUP BY dimension (projection-aliasing path)."""
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path),
+            field=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
@@ -587,7 +587,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
     ) -> None:
         """first/last builds the ranked subquery; last amount: a -> 20, b -> 30."""
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path),
+            field=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
@@ -605,7 +605,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
     async def test_windowed_families_survive_the_name(self, column, tmp_path) -> None:
         """A duration-windowed metric is the only shape that builds the ``_w_*`` aliases."""
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path),
+            field=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(

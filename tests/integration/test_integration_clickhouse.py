@@ -507,7 +507,7 @@ class TestClickHouseQueries:
     async def test_consecutive_periods_breaks_on_calendar_gap(
         self, clickhouse_env: SlayerQueryEngine, column: str, granularity: str,
     ) -> None:
-        await assert_calendar_streak(clickhouse_env, column=column, granularity=granularity)
+        await assert_calendar_streak(clickhouse_env, field=column, granularity=granularity)
 
     async def test_change_with_date_range(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(

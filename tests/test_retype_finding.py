@@ -97,7 +97,7 @@ def _dropped() -> SlayerDataset:
     ], metrics=[DatasetMetric(name="n_gone", expression="count_distinct(gone)")])
 
 
-DUCK_MODELS = (_legacy, _legacy_sql, _retyped, _listy, _listy_sql, _dropped)
+DUCK_DATASETS = (_legacy, _legacy_sql, _retyped, _listy, _listy_sql, _dropped)
 
 
 class Duck:
@@ -125,7 +125,7 @@ async def duck(tmp_path: Path) -> AsyncGenerator[Duck]:
     ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     await storage.save_datasource(ds)
-    for build in DUCK_MODELS:
+    for build in DUCK_DATASETS:
         await storage.save_dataset(build())
     try:
         yield Duck(root=tmp_path, ds=ds, storage=storage)
@@ -330,8 +330,8 @@ class TestForceClean:
             assert sum(f"{model}.{column}" in line for line in lines) == 1, (model, column, result.stdout)
 
 
-def _carried(err: SchemaDriftError, *, dataset: str, column: str) -> bool:
-    wanted = {"finding": "retype", "dataset_name": dataset, "field": column}
+def _carried(err: SchemaDriftError, *, dataset: str, field: str) -> bool:
+    wanted = {"finding": "retype", "dataset_name": dataset, "field": field}
     carried = [f.model_dump(mode="json") for f in getattr(err, "findings", [])]
     for f in carried:
         _assert_remedy_agrees(f)
@@ -351,7 +351,7 @@ class TestQueryTime:
         assert "flags" not in _removed(_dump(err.to_delete), "legacy"), err.to_delete
         assert "legacy.flags" in str(err), str(err)
         assert "BIT" in str(err), str(err)
-        assert _carried(err, dataset="legacy", column="flags"), err.findings
+        assert _carried(err, dataset="legacy", field="flags"), err.findings
 
     async def test_postgres_json_grouped(self, pg: SlayerQueryEngine) -> None:
         with pytest.raises(SchemaDriftError) as info:
@@ -360,7 +360,7 @@ class TestQueryTime:
         assert "payload" not in _removed(_dump(err.to_delete), "pg_sql"), err.to_delete
         assert "pg_sql.payload" in str(err), str(err)
         assert "json" in str(err), str(err)
-        assert _carried(err, dataset="pg_sql", column="payload"), err.findings
+        assert _carried(err, dataset="pg_sql", field="payload"), err.findings
 
 
 class TestOneShape:

@@ -38,8 +38,8 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
         yield eng
 
 
-def by_region(*measures: str) -> dict[str, Any]:
-    return {"population": "orders", "dimensions": ["orders.region"], "metrics": list(measures)}
+def by_region(*metrics: str) -> dict[str, Any]:
+    return {"population": "orders", "dimensions": ["orders.region"], "metrics": list(metrics)}
 
 
 class TestUnknownFunction:

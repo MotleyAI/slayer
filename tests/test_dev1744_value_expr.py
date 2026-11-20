@@ -323,7 +323,7 @@ class TestRenderContextApi:
         render_value_key(
             key=FieldKey(path=("customers", "regions"), leaf="name"), ctx=ctx,
         )
-        assert scope.join_paths.as_list() == [
+        assert scope.relationship_paths.as_list() == [
             ("customers",), ("customers", "regions"),
         ]
 

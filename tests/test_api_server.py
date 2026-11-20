@@ -414,7 +414,7 @@ class TestQueryBackedModelsAPI:
         self, client: TestClient
     ) -> None:
         resp = client.post("/query", json={
-            "name": "some_model",
+            "name": "some_dataset",
             "population": "other",
         })
         assert resp.status_code == 400
@@ -427,7 +427,7 @@ class TestQueryBackedModelsAPI:
         # had forgotten ``whole_periods_only``. Silently ignoring it is the
         # worst possible behavior — this test pins the rejection.
         resp = client.post("/query", json={
-            "name": "some_model",
+            "name": "some_dataset",
             "whole_periods_only": True,
         })
         assert resp.status_code == 400
@@ -439,7 +439,7 @@ class TestQueryBackedModelsAPI:
         # Run-by-name executes the stored backing query, which never sees a
         # request-level ``strict`` — rejecting beats silently dropping it.
         resp = client.post("/query", json={
-            "name": "some_model",
+            "name": "some_dataset",
             "strict": True,
         })
         assert resp.status_code == 400
@@ -790,23 +790,23 @@ class TestSaveTimeSqlValidation:
     ) -> None:
         self._register_live_ds(client, tmp_path)
         resp = client.post("/datasets", json={
-            "name": "good_model", "sql": "SELECT id FROM orders",
+            "name": "good_dataset", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
             "fields": [{"name": "id", "expression": "id", "datatype": "number"}],
         })
         assert resp.status_code == 200
         # Acknowledged AND retrievable — not a no-op 200.
-        assert client.get("/datasets/good_model").status_code == 200
+        assert client.get("/datasets/good_dataset").status_code == 200
 
     def test_invalid_sql_model_returns_400(self, client: TestClient, tmp_path) -> None:
         self._register_live_ds(client, tmp_path)
         resp = client.post("/datasets", json={
-            "name": "bad_model", "sql": "SELECT nope FROM ghosts",
+            "name": "bad_dataset", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
             "fields": [{"name": "id", "expression": "id", "datatype": "number"}],
         })
         assert resp.status_code == 400
-        assert client.get("/datasets/bad_model").status_code == 404
+        assert client.get("/datasets/bad_dataset").status_code == 404
 
     def test_invalid_sql_update_returns_400_and_original_intact(
         self, client: TestClient, tmp_path

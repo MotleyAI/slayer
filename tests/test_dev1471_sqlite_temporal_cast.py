@@ -35,13 +35,13 @@ def _norm(sql: str) -> str:
     return " ".join(sql.split())
 
 
-async def _engine(backend: str, tmp: str, *, extra_columns=()):
+async def _engine(backend: str, tmp: str, *, extra_fields=()):
     return await make_engine(
         backend,
         base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
         tables=[orders_table_spec(_ROWS)],
-        datasets=[orders_dataset(extra_columns=extra_columns)],
+        datasets=[orders_dataset(extra_fields=extra_fields)],
     )
 
 
@@ -76,7 +76,7 @@ async def test_partitioned_temporal_aggregate_returns_full_date(backend: str) ->
 async def test_derived_temporal_column_returns_full_date(backend: str) -> None:
     """A non-identifier TIMESTAMP field (coalesce) projected and max-aggregated is a full date."""
     with tempfile.TemporaryDirectory() as tmp:
-        eng = await _engine(backend, tmp, extra_columns=[_LAST_TOUCH])
+        eng = await _engine(backend, tmp, extra_fields=[_LAST_TOUCH])
         resp = await eng.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["orders.customer_id"],
             "metrics": [{"metric": "max(orders.last_touch)"}],
@@ -107,7 +107,7 @@ async def test_sqlite_derived_column_sql_has_no_temporal_cast() -> None:
             "population": "orders", "dimensions": ["orders.customer_id"],
             "metrics": [{"metric": "max(orders.last_touch)"}],
         }),
-        dataset=orders_dataset(extra_columns=[_LAST_TOUCH]), dialect="sqlite",
+        dataset=orders_dataset(extra_fields=[_LAST_TOUCH]), dialect="sqlite",
     )
     assert "AS TIMESTAMP" not in _norm(sql), sql
 

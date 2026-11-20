@@ -70,7 +70,7 @@ def _seed_orders_db_at(db_path) -> None:
         cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", rows)
 
 
-async def _engine_with(*models: SlayerDataset) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
+async def _engine_with(*datasets: SlayerDataset) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build a real SQLite datasource + YAML storage with the given datasets
     saved. Returns (engine, tmpdir_handle); caller keeps the tmpdir alive.
     """
@@ -81,7 +81,7 @@ async def _engine_with(*models: SlayerDataset) -> tuple[SlayerQueryEngine, tempf
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    for m in models:
+    for m in datasets:
         await storage.save_dataset(m)
     return SlayerQueryEngine(storage=storage), tmp
 

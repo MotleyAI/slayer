@@ -20,7 +20,7 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._deprecated_input_helpers import recorded
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 
 OLD_TOPICS = ("help.models", "help.joins")
 NEW_TOPICS = ("help.datasets", "help.relationships")

@@ -54,7 +54,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
         yield e
 
 
-def _join(source: str, target: str, pairs: List[List[str]]) -> Dict[str, Any]:
+def _relationship(source: str, target: str, pairs: List[List[str]]) -> Dict[str, Any]:
     return {"population": source,
             "extensions": [{"dataset": source, "relationships": [{"to": target, "from_columns": [p[0] for p in pairs], "to_columns": [p[1] for p in pairs]}]}]}
 
@@ -88,7 +88,7 @@ class TestParity:
             engine,
             inline=query(population="clients", dimensions=["clients.id", "cust_rev.top"]),
             splice=[*explicit_splice(cust_rev_dataset()),
-                    query(**_join("clients", "cust_rev", [["id", "customer_id"]]),
+                    query(**_relationship("clients", "cust_rev", [["id", "customer_id"]]),
                           dimensions=["clients.id", "cust_rev.top"])],
             columns=["clients.id", "cust_rev.top"],
             rows=[{"clients.id": c, "cust_rev.top": v} for c, v in CUST_TOP.items()])
@@ -99,7 +99,7 @@ class TestParity:
             inline=query(population="clients", dimensions=["clients.tier"],
                          metrics=[m("sum(cust_rev.rev)", "r")]),
             splice=[*explicit_splice(cust_rev_dataset()),
-                    query(**_join("clients", "cust_rev", [["id", "customer_id"]]),
+                    query(**_relationship("clients", "cust_rev", [["id", "customer_id"]]),
                           dimensions=["clients.tier"], metrics=[m("sum(cust_rev.rev)", "r")])],
             columns=["clients.tier", "r"],
             rows=[{"clients.tier": t, "r": v} for t, v in AMOUNT_BY_TIER.items()])
@@ -117,7 +117,7 @@ class TestParity:
                    metrics=[m("sum(cust_rev.rev)", "a")])
         s2 = query(name="s2", population="cust_rev", dimensions=["cust_rev.customer_id"],
                    metrics=[m("max(cust_rev.top)", "b")])
-        root = query(**_join("s1", "s2", [["customer_id", "customer_id"]]),
+        root = query(**_relationship("s1", "s2", [["customer_id", "customer_id"]]),
                      dimensions=["s1.customer_id", "s1.a", "s2.b"])
         resp = await engine.execute([s1, s2, root])
         assert resp.columns == ["s1.customer_id", "s1.a", "s2.b"]
@@ -192,7 +192,7 @@ class TestOneFlatWith:
                    metrics=[m(f"sum({variant}.amount)", "a")])
         s2 = query(name="s2", population="with_t", dimensions=["with_t.customer_id"],
                    metrics=[m("sum(with_t.amount)", "b")])
-        root = query(**_join("s1", "s2", [["customer_id", "customer_id"]]),
+        root = query(**_relationship("s1", "s2", [["customer_id", "customer_id"]]),
                      dimensions=["s1.customer_id", "s1.a", "s2.b"])
         resp = await engine.execute([s1, s2, root])
         expected = EMBEDDED_WITH[variant][1]
@@ -229,7 +229,7 @@ class TestMetadata:
             engine,
             inline=query(population="clients", dimensions=["clients.tier"], metrics=measures),
             splice=[*explicit_splice(cust_rev_dataset()),
-                    query(**_join("clients", "cust_rev", [["id", "customer_id"]]),
+                    query(**_relationship("clients", "cust_rev", [["id", "customer_id"]]),
                           dimensions=["clients.tier"], metrics=measures)],
             columns=["clients.tier", "sp", "r"],
             rows=[{"clients.tier": t, "sp": SPEND_BY_TIER[t], "r": AMOUNT_BY_TIER[t]}
@@ -284,7 +284,7 @@ class TestVariableLayering:
         models = _v_datasets(source=None, inner="18", outer="22", stage=None, dims=["status"])
         s1 = query(name="s1", population="v_inner", dimensions=["v_inner.status"], metrics=[m("sum(v_inner.rev)", "a")])
         s2 = query(name="s2", population="v_outer", dimensions=["v_outer.status"], metrics=[m("sum(v_outer.tot)", "b")])
-        root = query(**_join("s1", "s2", [["status", "status"]]),
+        root = query(**_relationship("s1", "s2", [["status", "status"]]),
                      dimensions=["s1.status", "s1.a", "s2.b"])
         async with dev1966_engine("sqlite", datasets=models) as e:
             with pytest.raises(ValueError, match="v_inner"):
@@ -344,7 +344,7 @@ class TestSplicedWarnings:
 
     async def test_consumer_warnings_equal_the_explicit_splice(self, engine: SlayerQueryEngine) -> None:
         consumer = query(
-            name="r", **_join("orders", "cust_rev", [["customer_id", "customer_id"]]),
+            name="r", **_relationship("orders", "cust_rev", [["customer_id", "customer_id"]]),
             dimensions=["orders.status"],
             metrics=[m("sum(orders.amount)", "m"), m("sum(customers.spend)", "cm"), m("max(orders.cust_rev.rev)", "rm")],
             to_many_handling="broadcast")

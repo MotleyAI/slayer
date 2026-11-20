@@ -467,8 +467,8 @@ class TestSlayerModel:
     def test_model_name_allows_double_underscore(self) -> None:
         # `__` is legal in dataset names (the dotted-canonical flip
         # made relationship-path ambiguity structurally impossible).
-        model = SlayerDataset(name="my__model", sql_table="t", data_source="test")
-        assert model.name == "my__model"
+        model = SlayerDataset(name="my__dataset", sql_table="t", data_source="test")
+        assert model.name == "my__dataset"
 
     def test_model_name_rejects_reserved_slayer_prefix(self) -> None:
         with pytest.raises(ValueError, match="__slayer_"):
@@ -494,8 +494,8 @@ class TestSlayerModel:
             SlayerQuery(name="__slayer_x", population="orders")
 
     def test_model_name_single_underscore_allowed(self) -> None:
-        model = SlayerDataset(name="my_model", sql_table="t", data_source="test")
-        assert model.name == "my_model"
+        model = SlayerDataset(name="my_dataset", sql_table="t", data_source="test")
+        assert model.name == "my_dataset"
 
     def test_dimension_name_single_underscore_allowed(self) -> None:
         dim = DatasetField(name="customer_name")

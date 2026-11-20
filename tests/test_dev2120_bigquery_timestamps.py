@@ -201,9 +201,9 @@ class TestZonedColumnReadsNaive:
         assert "orders.order_date >= '2025-01-01 00:00:00'" in sql, sql
 
 
-def _zoned(datasets: list[SlayerDataset], columns: set[tuple[str, str]]) -> list[SlayerDataset]:
+def _zoned(datasets: list[SlayerDataset], fields: set[tuple[str, str]]) -> list[SlayerDataset]:
     return [m.model_copy(update={"fields": [
-        c.model_copy(update={"db_type": "TIMESTAMP", "datatype": DataType.DATETIME}) if (m.name, c.name) in columns else c
+        c.model_copy(update={"db_type": "TIMESTAMP", "datatype": DataType.DATETIME}) if (m.name, c.name) in fields else c
         for c in m.fields]}) for m in datasets]
 
 

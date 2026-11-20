@@ -89,14 +89,14 @@ def has_sqlite_widenable_fields(d: dict) -> bool:
     sql_table = d.get("sql_table")
     if not isinstance(sql_table, str) or not sql_table:
         return False
-    columns = d.get("fields")
-    if not isinstance(columns, list) or not columns:
+    fields = d.get("fields")
+    if not isinstance(fields, list) or not fields:
         return False
     return any(
         isinstance(c, dict)
         and stored_datatype(c.get("datatype")) is DataType.INTEGER
         and _physical(c) is not None
-        for c in columns
+        for c in fields
     )
 
 
@@ -212,9 +212,9 @@ async def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig, clien
     """Probe-verified SQLite refinement of ``d`` in place: widen INT on non-integer storage, narrow DOUBLE
     only on certified integer storage; ``True`` when a field changed."""
     sql_table = d["sql_table"]
-    columns = d["fields"]
+    fields = d["fields"]
     refineable: list[dict] = [
-        c for c in columns
+        c for c in fields
         if isinstance(c, dict)
         and (_is_double(c.get("datatype")) or stored_datatype(c.get("datatype")) is DataType.INTEGER)
         and _physical(c) is not None
@@ -247,9 +247,9 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
         return False
 
     sql_table = d["sql_table"]
-    columns = d["fields"]
+    fields = d["fields"]
     refinable: list[dict] = [
-        c for c in columns
+        c for c in fields
         if isinstance(c, dict)
         and _is_double(c.get("datatype"))
         and _physical(c) is not None

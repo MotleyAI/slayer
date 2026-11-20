@@ -15,7 +15,7 @@ from slayer.embeddings import client as embedding_client
 from slayer.embeddings.models import Embedding, EntityKind
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     DS,
     FIN_MEMORY,
@@ -150,11 +150,11 @@ def _edge_named_like_pruned_edge(_: SlayerDataset, pub_link: SlayerDataset) -> S
     return pub_link.model_copy(update={"relationships": [DatasetRelationship(to="fin", name=PRUNED_EDGE, from_columns=["id"], to_columns=["id"])]})
 
 
-def _without_key_column(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
+def _without_key_field(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
     return fin.model_copy(update={"fields": [c for c in fin.fields if c.name != "staff_id"]})
 
 
-def _key_column(fin: SlayerDataset, **update) -> SlayerDataset:
+def _key_field(fin: SlayerDataset, **update) -> SlayerDataset:
     columns = [c.model_copy(update=update) if c.name == "staff_id" else c for c in fin.fields]
     return fin.model_copy(update={"fields": columns})
 
@@ -164,9 +164,9 @@ CONFLICTS: dict[str, tuple[Callable[[SlayerDataset, SlayerDataset], SlayerDatase
     "edge-named-like-hidden-model": (_edge_named_like_hidden_dataset, "hr", "fin"),
     "new-model-edge-named-like-hidden-model": (_new_dataset_with_edge_named_like_hidden_dataset, "hr", "pub_edge"),
     "edge-named-like-pruned-edge": (_edge_named_like_pruned_edge, None, "pub_link"),
-    "removed-key-column": (_without_key_column, None, "fin"),
-    "expression-key-column": (lambda fin, _: _key_column(fin, expression="id + 0"), None, "fin"),
-    "filtered-key-column": (lambda fin, _: _key_column(fin, filter="staff_id > 0"), None, "fin"),
+    "removed-key-column": (_without_key_field, None, "fin"),
+    "expression-key-column": (lambda fin, _: _key_field(fin, expression="id + 0"), None, "fin"),
+    "filtered-key-column": (lambda fin, _: _key_field(fin, filter="staff_id > 0"), None, "fin"),
 }
 
 
@@ -231,7 +231,7 @@ class TestAccessTags:
     async def test_access_tags_error_comes_first(self, store: AccessStore, saver: str) -> None:
         fin = view(store, "fin")
         model = await must_get(fin, "fin")
-        conflicting = _without_key_column(model, model).model_copy(update={"access_tags": ["hr"]})
+        conflicting = _without_key_field(model, model).model_copy(update={"access_tags": ["hr"]})
         with pytest.raises(AccessTagsEditError):
             await save(fin, conflicting, saver=saver)
 

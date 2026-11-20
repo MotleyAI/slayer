@@ -10,12 +10,12 @@ async def exec_engine(tmp_path):
     return await fx.build_exec_engine(tmp_path)
 
 
-def _month_query(order_column: str, direction: str = "desc") -> SlayerQuery:
+def _month_query(order_field: str, direction: str = "desc") -> SlayerQuery:
     return fx.q(
         population="orders",
         time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
         metrics=[{"metric": "sum(orders.amount)"}],
-        order=[{"field": order_column, "direction": direction}],
+        order=[{"field": order_field, "direction": direction}],
     )
 
 

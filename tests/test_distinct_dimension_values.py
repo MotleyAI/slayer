@@ -78,7 +78,7 @@ def _orders_dataset(
     *,
     metrics: list[DatasetMetric] | None = None,
     aggregations: list[Aggregation] | None = None,
-    joins: list[DatasetRelationship] | None = None,
+    relationships: list[DatasetRelationship] | None = None,
 ) -> SlayerDataset:
     return SlayerDataset(
         name="orders",
@@ -93,7 +93,7 @@ def _orders_dataset(
         ],
         metrics=metrics or [],
         aggregations=aggregations or [],
-        relationships=joins or [],
+        relationships=relationships or [],
     )
 
 
@@ -623,7 +623,7 @@ class TestCrossModelDimensions:
             cust = _customers_dataset()
             await engine.storage.save_dataset(cust)
             orders = _orders_dataset(
-                joins=[
+                relationships=[
                     DatasetRelationship(
                         to="customers",
                         from_columns=["customer_id"], to_columns=["id"],

@@ -194,7 +194,7 @@ def _unique(dataset: SlayerDataset) -> set[str]:
     return {c.name for c in dataset.fields if c.unique}
 
 
-def _joins(dataset: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
+def _relationships(dataset: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
     return {j.to: ([list(p) for p in j.column_pairs], j.cardinality) for j in dataset.relationships}
 
 
@@ -209,8 +209,8 @@ class TestIngestion:
         models = _datasets(report.datasets)
         assert _pk(models["comp_pk"]) == ["a", "b"]
         assert _pk(models["no_rowid"]) == ["k"]
-        assert _joins(models["implicit_child"])["parents"] == ([["parent_id", "id"]], RelationshipCardinality.MANY_TO_ONE)
-        assert _joins(models["comp_child"])["comp_pk"] == ([["ca", "a"], ["cb", "b"]], RelationshipCardinality.MANY_TO_ONE)
+        assert _relationships(models["implicit_child"])["parents"] == ([["parent_id", "id"]], RelationshipCardinality.MANY_TO_ONE)
+        assert _relationships(models["comp_child"])["comp_pk"] == ([["ca", "a"], ["cb", "b"]], RelationshipCardinality.MANY_TO_ONE)
         assert _unique(models["uniq_c"]) == {"email"}
         assert _unique(models["uniq_i"]) == {"code"}
         for keyless in ("keyless", VIEW):

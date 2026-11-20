@@ -22,7 +22,7 @@ from slayer.core.query import SlayerQuery
 from slayer.core.relationship_edges import RelationshipEdgeRef, relationship_signature
 from tests._deprecated_input_helpers import deprecated_in, deprecations, errors_in, payload_of, recorded
 from tests._engine_helpers import _engine_generate, owned_query_engine
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store, stored_document
 from tests._osi_export_helpers import export_datasets, make_env, relationships
 from tests._stored_upgrade_fixtures import DS

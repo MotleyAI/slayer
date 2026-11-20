@@ -59,7 +59,7 @@ def _ts(name: str) -> DatasetField:
     return DatasetField(name=name, expression=name, datatype=DataType.DATETIME)
 
 
-def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
+def _relationship(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
     return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], **kw)
 
 
@@ -82,7 +82,7 @@ def _chain_datasets(
     )
     customer_joins = (
         [] if drop_customer_consumer
-        else [_join("Consumer", [["consumerId", "id"]])]
+        else [_relationship("Consumer", [["consumerId", "id"]])]
     )
     customer = SlayerDataset(
         name="Customer", sql_table="Customer", data_source="test",
@@ -91,11 +91,11 @@ def _chain_datasets(
     subscription = SlayerDataset(
         name="Subscription", sql_table="Subscription", data_source="test",
         fields=[_pk(), _d("customerId")],
-        relationships=[_join("Customer", [["customerId", "id"]])],
+        relationships=[_relationship("Customer", [["customerId", "id"]])],
     )
-    invoice_joins = [_join("Subscription", [["subscriptionId", "id"]])]
+    invoice_joins = [_relationship("Subscription", [["subscriptionId", "id"]])]
     if direct_customer:
-        invoice_joins.append(_join("Customer", [["customerId", "id"]]))
+        invoice_joins.append(_relationship("Customer", [["customerId", "id"]]))
     invoice = SlayerDataset(
         name="Invoice", sql_table="Invoice", data_source="test",
         fields=[_pk(), _d("subscriptionId"), _d("customerId"), _d("amount"),
@@ -190,10 +190,10 @@ def _multi_datasets(*, branches: int, safe: int) -> list[SlayerDataset]:
         pairs = [["t_id", "id"]] if is_safe else [["t_grp", "grp"]]
         mids.append(SlayerDataset(
             name=f"M{i}", sql_table=f"M{i}", data_source="test",
-            fields=cols, relationships=[_join("Tag", pairs)],
+            fields=cols, relationships=[_relationship("Tag", pairs)],
         ))
         root_cols.append(_d(f"m{i}_id"))
-        root_joins.append(_join(f"M{i}", [[f"m{i}_id", "id"]]))
+        root_joins.append(_relationship(f"M{i}", [[f"m{i}_id", "id"]]))
     root = SlayerDataset(
         name="Root", sql_table="Root", data_source="test",
         fields=root_cols, relationships=root_joins,
@@ -289,7 +289,7 @@ class TestFanoutTieBreak:
         hub = SlayerDataset(
             name="Hub", sql_table="Hub", data_source="test",
             fields=[_pk(), _t("name"), _d("other_id")],
-            relationships=[_join(
+            relationships=[_relationship(
                 "Other", [["other_id", "id"]],
                 join_type=JoinType.INNER, cardinality=RelationshipCardinality.MANY_TO_ONE,
             )],
@@ -299,13 +299,13 @@ class TestFanoutTieBreak:
         )
         spoke = SlayerDataset(
             name="Spoke", sql_table="Spoke", data_source="test",
-            fields=[_pk(), _d("hub_id")], relationships=[_join("Hub", [["hub_id", "id"]])],
+            fields=[_pk(), _d("hub_id")], relationships=[_relationship("Hub", [["hub_id", "id"]])],
         )
         root = SlayerDataset(
             name="Root", sql_table="Root", data_source="test",
             fields=[_pk(), _d("spoke_id"), _d("other_id"), _d("amount")],
-            relationships=[_join("Spoke", [["spoke_id", "id"]]),
-                   _join("Other", [["other_id", "id"]])],
+            relationships=[_relationship("Spoke", [["spoke_id", "id"]]),
+                   _relationship("Other", [["other_id", "id"]])],
         )
         storage = resolve_storage(str(tmp_path))
         await _save(storage, [other, hub, spoke, root])
@@ -329,8 +329,8 @@ class TestBidirectionalAndParallelEdges:
         payment = SlayerDataset(
             name="Payment", sql_table="Payment", data_source="test",
             fields=[_pk(), _d("invoiceId"), _d("methodId")],
-            relationships=[_join("Invoice", [["invoiceId", "id"]]),
-                   _join("Method", [["methodId", "id"]])],
+            relationships=[_relationship("Invoice", [["invoiceId", "id"]]),
+                   _relationship("Method", [["methodId", "id"]])],
         )
         invoice = SlayerDataset(
             name="Invoice", sql_table="Invoice", data_source="test",
@@ -356,16 +356,16 @@ class TestBidirectionalAndParallelEdges:
             name="Mid", sql_table="Mid", data_source="test",
             fields=[_pk(), _d("leaf_id"), _t("leaf_grp")],
             relationships=[
-                _join("Leaf", [["leaf_id", "id"]],
+                _relationship("Leaf", [["leaf_id", "id"]],
                       **({"name": names[0]} if names[0] else {})),
-                _join("Leaf", second_pair,
+                _relationship("Leaf", second_pair,
                       **({"name": names[1]} if names[1] else {})),
             ],
         )
         root = SlayerDataset(
             name="Root", sql_table="Root", data_source="test",
             fields=[_pk(), _d("mid_id"), _d("amount")],
-            relationships=[_join("Mid", [["mid_id", "id"]])],
+            relationships=[_relationship("Mid", [["mid_id", "id"]])],
         )
         return [leaf, mid, root]
 
@@ -406,8 +406,8 @@ class TestBidirectionalAndParallelEdges:
         root = SlayerDataset(
             name="Root", sql_table="Root", data_source="test",
             fields=[_pk(), _d("a_id"), _d("b_id"), _d("amount")],
-            relationships=[_join("Leaf", [["a_id", "id"]], name="a_leaf"),
-                   _join("Leaf", [["b_id", "id"]], name="b_leaf")],
+            relationships=[_relationship("Leaf", [["a_id", "id"]], name="a_leaf"),
+                   _relationship("Leaf", [["b_id", "id"]], name="b_leaf")],
         )
         storage = resolve_storage(str(tmp_path))
         await _save(storage, [leaf, root])
@@ -436,8 +436,8 @@ class TestAdjacentParallelParity:
             name="Root", sql_table="Root", data_source="test",
             fields=[_pk(), _d("tgt_id"), _t("tgt_grp"), _d("amount")],
             relationships=[
-                _join("Target", [["tgt_id", "id"]], name="by_id"),     # safe (onto PK)
-                _join("Target", [["tgt_grp", "grp"]], name="by_grp"),  # fan-out (non-unique)
+                _relationship("Target", [["tgt_id", "id"]], name="by_id"),     # safe (onto PK)
+                _relationship("Target", [["tgt_grp", "grp"]], name="by_grp"),  # fan-out (non-unique)
             ],
         )
         return [target, root]
@@ -607,7 +607,7 @@ class TestUniformSurfaces:
 # Requirement: type preserved / opaque rejected
 
 class TestTypeAndOpaque:
-    async def _virtual_columns(self, engine: SlayerQueryEngine, stage: SlayerQuery):
+    async def _virtual_fields(self, engine: SlayerQueryEngine, stage: SlayerQuery):
         qb = SlayerDataset(
             name="qb", data_source="test", source_queries=[stage],
         )
@@ -618,12 +618,12 @@ class TestTypeAndOpaque:
         """A routed dimension's virtual field has the full-path field's type (email is TEXT); its name follows its
         key."""
         engine = await _chain_engine(tmp_path)
-        short = await self._virtual_columns(engine, SlayerQuery.model_validate({
+        short = await self._virtual_fields(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.email"],
             "metrics": [{"metric": "count(Invoice.*)"}],
         }))
-        full = await self._virtual_columns(engine, SlayerQuery.model_validate({
+        full = await self._virtual_fields(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.email"],
             "metrics": [{"metric": "count(Invoice.*)"}],
@@ -742,7 +742,7 @@ class TestScoping:
         from the datasource bundle stays ``UnknownReferenceError`` — never routed."""
         models = _chain_datasets()
         invoice = next(m for m in models if m.name == "Invoice")
-        invoice.relationships.append(_join("Ghost", [["customerId", "id"]]))
+        invoice.relationships.append(_relationship("Ghost", [["customerId", "id"]]))
         storage = resolve_storage(str(tmp_path))
         await _save(storage, models)
         await storage.save_datasource(
@@ -779,7 +779,7 @@ class TestSchemaDriftRouting:
             sql_diffs={},
         )
 
-    def _drop_intervening_join(self, datasets: list[SlayerDataset]):
+    def _drop_intervening_relationship(self, datasets: list[SlayerDataset]):
         """Drop the intervening ``Customer → Consumer`` relationship — the routed short
         form ``Consumer.email`` traverses it, so its removal must cascade."""
         edit = EditDatasetDelete(
@@ -803,7 +803,7 @@ class TestSchemaDriftRouting:
 
     def test_dropping_intervening_join_cascades(self) -> None:
         models = [*_chain_datasets(), self._qb()]
-        entry = self._entry_for("qb", self._drop_intervening_join(models))
+        entry = self._entry_for("qb", self._drop_intervening_relationship(models))
         assert isinstance(entry, WholeDatasetDelete)
 
     def test_ambiguous_short_form_attributes_to_nothing(self) -> None:
@@ -824,8 +824,8 @@ class TestSchemaDriftRouting:
             name="Invoice", sql_table="Invoice", data_source="test",
             fields=[_pk(), _d("consumerId"), _t("consumerGrp")],
             relationships=[
-                _join("Consumer", [["consumerId", "id"]], name="by_id"),
-                _join("Consumer", [["consumerGrp", "grp"]], name="by_grp"),
+                _relationship("Consumer", [["consumerId", "id"]], name="by_id"),
+                _relationship("Consumer", [["consumerGrp", "grp"]], name="by_grp"),
             ],
         )
         return [consumer, invoice]

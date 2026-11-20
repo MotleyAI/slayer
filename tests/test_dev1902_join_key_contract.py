@@ -46,18 +46,18 @@ def _physical_pairs(*, edge: OrientedRelationship, source: SlayerDataset, target
     return [(s.physical_name, t.physical_name) for s, t in relationship_key_fields(edge=edge, source=source, target=target)]
 
 
-def _orders(*columns: DatasetField, pairs: list[list[str]], target: str = "customers") -> SlayerDataset:
+def _orders(*fields: DatasetField, pairs: list[list[str]], target: str = "customers") -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), *columns],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), *fields],
         relationships=[DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs])],
     )
 
 
-def _customers(*columns: DatasetField) -> SlayerDataset:
+def _customers(*fields: DatasetField) -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        fields=list(columns) or [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+        fields=list(fields) or [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
 

@@ -118,7 +118,7 @@ def _orders() -> SlayerDataset:
             DatasetField(name="host_derived_mixed", expression="amount * customers.balance",
                    datatype=DataType.FLOAT),
             # derived referencing TWO datasets
-            DatasetField(name="multi_model",
+            DatasetField(name="multi_dataset",
                    expression="customers.balance + customers.regions.population",
                    datatype=DataType.FLOAT),
             # derived-of-derived across two hops
@@ -182,7 +182,7 @@ class TestCrossedPathScan:
         assert _paths_for(_derived("host_derived_local")) == ()
 
     def test_derived_referencing_multiple_models(self) -> None:
-        paths = _paths_for(_derived("multi_model"))
+        paths = _paths_for(_derived("multi_dataset"))
         assert ("customers",) in paths
         assert ("customers", "regions") in paths
 

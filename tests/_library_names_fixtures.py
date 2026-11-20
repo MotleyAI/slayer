@@ -54,8 +54,8 @@ def seed(db_path: str, *, dialect: str) -> None:
         cur.executemany("INSERT INTO customers VALUES (?,?)", CUSTOMER_ROWS)
 
 
-def agg(name: str, formula: str = "SUM({value})", **params: str) -> dict:
-    out: dict[str, Any] = {"name": name, "formula": formula}
+def agg(name: str, expression: str = "SUM({value})", **params: str) -> dict:
+    out: dict[str, Any] = {"name": name, "formula": expression}
     if params:
         out["params"] = [{"name": k, "sql": v} for k, v in params.items()]
     return out

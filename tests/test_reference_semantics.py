@@ -29,13 +29,13 @@ from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from tests._engine_helpers import _dataset_where_text, _engine_generate
 
 
-def _make_planets_dataset(*, with_window_column: bool = False) -> SlayerDataset:
+def _make_planets_dataset(*, with_window_field: bool = False) -> SlayerDataset:
     columns = [
         DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="name", expression="name", datatype=DataType.STRING),
         DatasetField(name="mass", expression="mass", datatype=DataType.FLOAT),
     ]
-    if with_window_column:
+    if with_window_field:
         columns.append(
             DatasetField(
                 name="rn",
@@ -558,7 +558,7 @@ class TestPredicatePromotionRemoved:
     """
 
     async def test_filter_on_windowed_column_raises_with_actionable_message(self) -> None:
-        model = _make_planets_dataset(with_window_column=True)
+        model = _make_planets_dataset(with_window_field=True)
         query = SlayerQuery(
             population="planets",
             dimensions=[QueryDimension(field="planets.name")],
@@ -575,7 +575,7 @@ class TestPredicatePromotionRemoved:
     async def test_select_only_on_windowed_column_still_works(self) -> None:
         """A windowed DatasetField.sql is still legal as a *projection* — only as a
         filter target does it now error."""
-        model = _make_planets_dataset(with_window_column=True)
+        model = _make_planets_dataset(with_window_field=True)
         query = SlayerQuery(
             population="planets",
             dimensions=["planets.name", "planets.rn"],

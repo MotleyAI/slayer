@@ -27,7 +27,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _orders_with_customers_join(**overrides) -> SlayerDataset:
+def _orders_with_customers_relationship(**overrides) -> SlayerDataset:
     fields = dict(
         name="orders",
         data_source="prod",
@@ -90,7 +90,7 @@ async def _save_and_reload(dataset: SlayerDataset) -> SlayerDataset:
 
 class TestModeASurfacesPreservedVerbatim:
     async def test_column_sql_surface_preserved(self):
-        m = _orders_with_customers_join()
+        m = _orders_with_customers_relationship()
         m.fields = list(m.fields) + [
             DatasetField(
                 name="region_name",
@@ -103,7 +103,7 @@ class TestModeASurfacesPreservedVerbatim:
         assert out_col.definition_sql == "customers.regions.name"
 
     async def test_column_filter_surface_preserved(self):
-        m = _orders_with_customers_join()
+        m = _orders_with_customers_relationship()
         m.fields = list(m.fields) + [
             DatasetField(
                 name="region_amount",
@@ -119,7 +119,7 @@ class TestModeASurfacesPreservedVerbatim:
         assert out_col.filter == "customers.regions.name = 'EU'"
 
     async def test_model_filters_surface_preserved(self):
-        m = _orders_with_customers_join(
+        m = _orders_with_customers_relationship(
             filters=["customers.regions.name IS NOT NULL"],
         )
         stored = await _save_and_reload(m)
@@ -128,7 +128,7 @@ class TestModeASurfacesPreservedVerbatim:
     async def test_model_measure_formula_preserved(self):
         # DatasetMetric.expression is Mode-B (DSL); the dotted colon form is a
         # relationship-path reference and must survive save verbatim.
-        m = _orders_with_customers_join(
+        m = _orders_with_customers_relationship(
             metrics=[
                 DatasetMetric(
                     name="region_count",
@@ -143,7 +143,7 @@ class TestModeASurfacesPreservedVerbatim:
 
 class TestNormalizeQueryLeavesModeBText:
     def test_query_filters_mode_b_not_rewritten(self):
-        m = _orders_with_customers_join()
+        m = _orders_with_customers_relationship()
         q = SlayerQuery(
             population="orders",
             filter=["customers.regions.name = 'EU'"],

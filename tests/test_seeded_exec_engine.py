@@ -43,7 +43,7 @@ def _seed_nums(dialect: str):
     return seed
 
 
-_MODEL = SlayerDataset(
+_DATASET = SlayerDataset(
     name="nums", data_source="test", sql_table="nums",
     fields=[DatasetField(name="v", expression="v", datatype=DataType.INTEGER)],
 )
@@ -75,7 +75,7 @@ async def test_seeded_exec_engine_smoke(dialect: str) -> None:
             patch.object(engine_factory, "invalidate_engine", side_effect=watching_invalidate):
         warnings.simplefilter("always")
         async with seeded_exec_engine(
-            dialect=dialect, seed=_seed_nums(dialect), datasets=[_MODEL],
+            dialect=dialect, seed=_seed_nums(dialect), datasets=[_DATASET],
         ) as (engine, db_path):
             holder["path"] = db_path
             assert Path(db_path).exists()

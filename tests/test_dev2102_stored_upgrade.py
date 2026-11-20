@@ -19,7 +19,7 @@ from tests._stored_upgrade_fixtures import (
     DS,
     by_dimension,
     customers_v10,
-    measure_total,
+    metric_total,
     memory_v2,
     orders_v10,
     query_backed_v10,
@@ -214,7 +214,7 @@ class TestExtensionColumnFilterLiterals:
         assert loaded.filter == [repaired]
         _assert_no_extension_columns(loaded)
         resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev_x.rev)"]})
-        assert measure_total(resp, measure="rev_sum") == expected
+        assert metric_total(resp, metric="rev_sum") == expected
 
     async def test_a_non_temporal_extension_column_literal_stays_verbatim(self, tmp_path, shop_ds) -> None:
         qb = query_backed_v10(name="rev_x", stages=[_legacy_root_stage("status_code = '2024/01/01'")])
@@ -224,7 +224,7 @@ class TestExtensionColumnFilterLiterals:
         assert loaded.filter == ["orders.status = '2024/01/01'"]
         _assert_no_extension_columns(loaded)
         resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev_x.rev)"]})
-        assert measure_total(resp, measure="rev_sum") == 60.0
+        assert metric_total(resp, metric="rev_sum") == 60.0
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_stored_memory_filter_on_a_legacy_extension_column_is_repaired(
@@ -237,4 +237,4 @@ class TestExtensionColumnFilterLiterals:
         assert loaded.query is not None
         assert loaded.query.filter == ["CAST(CAST(orders.ordered_at AS DATE) AS DATE) >= '2024-01-01'"]
         _assert_no_extension_columns(loaded.query)
-        assert measure_total(await run(storage, loaded.query), measure="rev") == 200.0
+        assert metric_total(await run(storage, loaded.query), metric="rev") == 200.0

@@ -50,7 +50,7 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.tsql import TsqlDialect
 import pydantic
 
-_MEASURE = [{"metric": "sum(orders.amount)", "alias": "rev"}]
+_METRIC = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 _MONTH = TimeDimension(
     field="orders.created_at", granularity=TimeGranularity.MONTH,
@@ -63,7 +63,7 @@ _D4_SHAPES = {
     "host_base": SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="orders.status")],
-        metrics=_MEASURE,
+        metrics=_METRIC,
         order=[OrderItem(field="rev", direction="desc")],
     ),
     "cross_model": SlayerQuery(
@@ -196,7 +196,7 @@ class TestOrderTargetMatrix:
         sql = await _sql(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.regions.name")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(
                 field="customers.regions.name",
                 direction="asc",
@@ -214,7 +214,7 @@ class TestOrderTargetMatrix:
         sql = await _sql(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(field="orders.id", direction="desc")],
         ))
         assert order_terms(sql), f"hidden sort key produced no ORDER BY:\n{sql}"
@@ -439,7 +439,7 @@ class TestSingleResolver:
             ("base", SlayerQuery(
                 population="orders",
                 dimensions=[QueryDimension(field="orders.status")],
-                metrics=_MEASURE,
+                metrics=_METRIC,
                 order=[OrderItem(field="rev", direction="desc")],
             )),
             ("combined", SlayerQuery(

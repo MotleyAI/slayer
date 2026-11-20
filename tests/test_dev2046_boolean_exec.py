@@ -12,7 +12,7 @@ from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.query import SlayerQuery
 
 from tests._dev2046_fixtures import (
-    CROSS_MODEL_FLAG_SUM_BY_NAME,
+    CROSS_DATASET_FLAG_SUM_BY_NAME,
     FLAG_90D_BY_MONTH,
     FLAG_BY_REGION,
     FLAG_CUMSUM_BY_MONTH,
@@ -182,7 +182,7 @@ class TestComposition:
             "population": "customers", "dimensions": ["customers.name"], "metrics": [m("sum(orders.flag)")],
         }))
         values = by_dim(resp, "name", dataset="customers")
-        assert values == CROSS_MODEL_FLAG_SUM_BY_NAME
+        assert values == CROSS_DATASET_FLAG_SUM_BY_NAME
         assert not any(isinstance(v, bool) for v in values.values())
 
     async def test_stage_reaggregation(self, engine) -> None:

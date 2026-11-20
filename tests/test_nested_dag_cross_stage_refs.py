@@ -93,7 +93,7 @@ def _orders_dataset() -> SlayerDataset:
     )
 
 
-async def _engine_with_join_chain() -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
+async def _engine_with_relationship_chain() -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build a YAMLStorage with orders → customers → regions → countries."""
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
@@ -237,7 +237,7 @@ class TestReportedCase:
         """Outer SELECT must reference `s1.customers__regions__name`, not
         the broken `customers__regions.name` (a table alias that doesn't
         exist in the outer FROM clause)."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -307,7 +307,7 @@ class TestThreeHopDimension:
     async def test_three_hop_cross_stage(self) -> None:
         """Path `customers.regions.countries.name` (3 hops) should
         resolve in the outer stage the same way as 2-hop."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -349,7 +349,7 @@ class TestCrossStageTimeDimension:
         `customers.regions.last_activity_at`. Outer references the same
         dotted path. Without the fix, the outer SQL emits a broken
         `customers__regions.last_activity_at` ref."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -392,7 +392,7 @@ class TestCrossStageCrossModelMeasure:
         """Inner stage projects `sum(customers.revenue)`. Outer references
         same with `:sum` again → emits as a local re-aggregated metric
         `SUM(s1.customers__revenue_sum)`."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -460,7 +460,7 @@ class TestCrossStageFilter:
     async def test_filter_dotted_ref_rewritten_to_flat(self) -> None:
         """Outer stage filter `customers.regions.name = 'West'` must
         compile to `s1.customers__regions__name = 'West'`."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -524,7 +524,7 @@ class TestCrossStageOrderBy:
     async def test_order_by_dotted_ref_sql_shape(self) -> None:
         """When the dotted dim is declared in `dimensions` AND `order_by`,
         the dim-resolver fix flows through `alias_lookup` automatically."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -593,7 +593,7 @@ class TestShortAliasRegression:
     async def test_short_alias_still_resolves(self) -> None:
         """Users that already reference the flat alias
         (`customers__regions__name`) on the outer stage must keep working."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -627,7 +627,7 @@ class TestNonVirtualModel:
         """A single-stage table-backed query with the multi-hop dim
         (which already works today) must continue to work — no
         regression. Pin the join-walk SQL shape."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             single = SlayerQuery.model_validate({
                 "population": "orders",
@@ -662,7 +662,7 @@ class TestRenamedInnerMeasureCrossStage:
         The outer's `sum(customers.revenue)` no longer matches the intercept's
         candidate flat name, so it never re-aggregates s1: `customers`, which no
         relationship path reaches from s1, is aggregated over its own rows."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -684,7 +684,7 @@ class TestRenamedInnerMeasureCrossStage:
         so `sum(rev)` on the outer DOES resolve (s1.get_field('rev')
         finds it as a local field, the standard local-aggregate
         path emits SUM(s1.rev))."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -720,7 +720,7 @@ class TestCrossStageTimeShift:
         dim (`customers.regions.last_activity_at`) projected by the
         inner stage. The shifted CTE must reference the inner stage's
         flat alias, not the broken hybrid form."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -848,7 +848,7 @@ class TestCrossModelStarCountCrossStage:
         return the number of groups instead of total rows (CodeRabbit
         review on PR #137).
         """
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -903,7 +903,7 @@ class TestCrossModelInterceptSemanticsGate:
         averaging an inner-aggregated average is not equal to the overall
         average. `customers`, which no relationship path reaches from s1, is
         averaged over its own rows instead."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -923,7 +923,7 @@ class TestCrossModelInterceptSemanticsGate:
     async def test_count_distinct_falls_through(self) -> None:
         """Cross-stage `count_distinct(customers.revenue)` is also
         non-distributive — `customers` is aggregated over its own rows."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -944,7 +944,7 @@ class TestCrossModelInterceptSemanticsGate:
         """Regression guard: re-aggregating the flat inner alias
         `customers__revenue_sum` with `:sum` is distributive — outer
         emits SUM(s1.customers__revenue_sum)."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -982,7 +982,7 @@ class TestCrossModelInterceptRenameBookkeeping:
         """Outer projects `{metric: sum(customers__revenue_sum), alias: rev}`
         against `s1`. The re-aggregated metric must surface as `s1.rev`
         (the user rename), not the canonical `customers__revenue_sum_sum`."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -1010,7 +1010,7 @@ class TestCrossModelInterceptRenameBookkeeping:
         filters via the aggregation. The filter may use
         either the aggregation or the user alias; both resolve to the
         rename."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -1079,7 +1079,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         every downstream stage to address its predecessor by flat
         field name; aggregation suffixes stack predictably
         (`*_sum`, then `*_sum_sum`)."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             s1 = SlayerQuery.model_validate({
                 "name": "s1",
@@ -1127,7 +1127,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         `{"metric": "sum(amount)", "alias": "customers__revenue_sum"}`
         on the inner stage stays distinct from a cross-dataset
         `sum(customers.revenue)` reference on the outer."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             # Inner has a local `sum(amount)` renamed to
             # `customers__revenue_sum`. There is NO real
@@ -1166,7 +1166,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         and skips the dim-style rewrite: `customers`, which no relationship path
         reaches from s1, is aggregated over its own rows and the filter
         applies to that value."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -1193,7 +1193,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         materialises as a hidden aggregate on s1 and orders at the outer
         wrap — valid grouped SQL, resolving on s1, never a bare `customers`
         table."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -1248,7 +1248,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         never
         reach back into s1's own source tables, and must not widen the outer
         grain or leak into the public projection."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -1283,7 +1283,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         ordering by a bare inner-stage field emits a valid SPLIT reference
         against the s1 rowset — resolving on s1, never a bare `customers`
         table."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
@@ -1325,7 +1325,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         qualifier-aware host-local check must recognise the stage relation as
         the host, so it resolves identically to the bare form — not
         misclassified as a foreign-joined ref."""
-        engine, tmp = await _engine_with_join_chain()
+        engine, tmp = await _engine_with_relationship_chain()
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",

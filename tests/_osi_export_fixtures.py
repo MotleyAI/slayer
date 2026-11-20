@@ -51,7 +51,7 @@ def to_customers(**extra: Any) -> DatasetRelationship:
     return DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"], **extra)
 
 
-def orders_columns() -> list[DatasetField]:
+def orders_fields() -> list[DatasetField]:
     return [
         col("id", DataType.INTEGER, "o_orderkey", primary_key=True),
         col("customer_id", DataType.INTEGER, "o_custkey"),
@@ -70,20 +70,20 @@ def orders_columns() -> list[DatasetField]:
     ]
 
 
-def orders(*, columns: list[DatasetField] | None = None, metrics: list[DatasetMetric] | None = None,
-           joins: list[DatasetRelationship] | None = None, **extra: Any) -> SlayerDataset:
+def orders(*, fields: list[DatasetField] | None = None, metrics: list[DatasetMetric] | None = None,
+           relationships: list[DatasetRelationship] | None = None, **extra: Any) -> SlayerDataset:
     """The ``orders`` table dataset; by default related many-to-one to ``customers``."""
     return SlayerDataset(
         name=extra.pop("name", "orders"), sql_table=extra.pop("sql_table", "orders"), data_source=DATASOURCE,
-        fields=orders_columns() if columns is None else columns,
+        fields=orders_fields() if fields is None else fields,
         metrics=metrics or [],
-        relationships=[to_customers()] if joins is None else joins,
+        relationships=[to_customers()] if relationships is None else relationships,
         default_time_dimension=extra.pop("default_time_dimension", "ordered_on"),
         **extra,
     )
 
 
-def customers(*, metrics: list[DatasetMetric] | None = None, joins: list[DatasetRelationship] | None = None,
+def customers(*, metrics: list[DatasetMetric] | None = None, relationships: list[DatasetRelationship] | None = None,
               **extra: Any) -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=DATASOURCE,
@@ -95,7 +95,7 @@ def customers(*, metrics: list[DatasetMetric] | None = None, joins: list[Dataset
             col("email", DataType.STRING, unique=True),
         ],
         metrics=metrics or [],
-        relationships=joins or [],
+        relationships=relationships or [],
         **extra,
     )
 
@@ -127,7 +127,7 @@ def monthly_revenue() -> SlayerDataset:
     )
 
 
-BASIC_MEASURES = [
+BASIC_METRICS = [
     slayer_metric("revenue", "sum(amount)"),
     slayer_metric("n", "count(*)"),
     slayer_metric("aov", "revenue / n"),
@@ -136,7 +136,7 @@ BASIC_MEASURES = [
 
 def rich_orders() -> SlayerDataset:
     """``orders`` exercising every exportable metric family plus SLayer-only attributes."""
-    columns = orders_columns()
+    columns = orders_fields()
     for c in columns:
         if c.name == "amount":
             c.format = NumberFormat(type=NumberFormatType.CURRENCY, precision=2)
@@ -157,10 +157,10 @@ def rich_orders() -> SlayerDataset:
         col("segment", DataType.STRING, expression="customers.segment"),
     ]
     return orders(
-        columns=columns,
+        fields=columns,
         aggregations=[Aggregation(name="trimmed_sum", expression="SUM(CASE WHEN {value} < 15 THEN {value} END)")],
         metrics=[
-            *BASIC_MEASURES,
+            *BASIC_METRICS,
             slayer_metric("avg_amount", "avg(amount)", label="Average amount", datatype=DataType.FLOAT,
                     meta={"owner": "finance"}),
             slayer_metric("min_amount", "min(amount)"),

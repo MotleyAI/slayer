@@ -151,7 +151,7 @@ def _orders() -> SlayerDataset:
             # derived-of-derived, two hops (currently BROKEN — see module doc)
             DatasetField(name="deep_pop", expression="customers.regions.pop_x2",
                    datatype=DataType.FLOAT),
-            DatasetField(name="multi_model",
+            DatasetField(name="multi_dataset",
                    expression="customers.spend + customers.regions.population",
                    datatype=DataType.FLOAT),
         ],
@@ -209,7 +209,7 @@ def _cases() -> dict:
             metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "expand/multi_model_derived": _q(
-            dimensions=["orders.multi_model"],
+            dimensions=["orders.multi_dataset"],
             metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         # --- cross-dataset _cm_ scope ---
