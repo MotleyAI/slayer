@@ -1335,7 +1335,50 @@ class TestClickHouseDecimalPreservation:
 
 
 # ---------------------------------------------------------------------------
-# Per-statement timeout (max_execution_time)
+# An inferred timestamp keeps its native precision (no cast)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_nanos_storage(clickhouse_container, tmp_path_factory):
+    """Two DateTime64(9) values inside one microsecond."""
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                conn.execute(sa.text(
+                    "CREATE TABLE nanos (id Int32, at DateTime64(9)) ENGINE = MergeTree() ORDER BY id"
+                ))
+                conn.execute(sa.text(
+                    "INSERT INTO nanos VALUES (1, '2024-03-01 10:00:00.123456100'), (2, '2024-03-01 10:00:00.123456900')"
+                ))
+        datasource = _ds_config(clickhouse_container, db_name)
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_nanos")))
+        run_sync(storage.save_datasource(datasource))
+        run_sync(storage.save_dataset(SlayerDataset(
+            name="nanos", sql_table="nanos", data_source=datasource.name,
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="at", datatype=DataType.DATETIME)],
+        )))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHouseInferredTimestampPrecision:
+    async def test_a_computed_timestamp_keeps_values_within_one_microsecond_apart(
+        self, _clickhouse_nanos_storage,
+    ) -> None:
+        engine = SlayerQueryEngine(storage=_clickhouse_nanos_storage)
+        # The driver cannot read a nanosecond value back, so a later stage counts the groups.
+        groups = {"name": "g", "population": "nanos",
+                  "dimensions": [{"field": "date_add(nanos.at, 1, 'hour')", "alias": "v"}],
+                  "metrics": [{"metric": "count(nanos.*)", "alias": "n"}]}
+        result = await engine.execute([groups, {"population": "g", "metrics": [{"metric": "count(g.*)", "alias": "k"}]}])
+        (row,) = result.data
+        assert [int(v) for k, v in row.items() if k == "k" or k.endswith(".k")] == [2], result.sql
+
 # ---------------------------------------------------------------------------
 
 
