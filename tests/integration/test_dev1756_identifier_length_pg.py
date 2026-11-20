@@ -26,8 +26,9 @@ postgresql_proc = factories.postgresql_proc(port=None)
 
 DS = "testpg"
 
-LONG_NAME = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.name"
 LONG_EMAIL = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
+NAME_KEY = "SandboxSubscription.SandboxCustomer.SandboxConsumer.name"
+EMAIL_KEY = "SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
 
 
 def _create_db(postgresql_proc):
@@ -157,15 +158,15 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
                 QueryDimension(field=f"{DEEP}.name"),
                 QueryDimension(field=f"{DEEP}.email"),
-                QueryDimension(field="status"),
-            ], "metrics": [{"metric": "sum(totalAmount)"}, {"metric": "count(*)"}], "order": [OrderItem.model_validate({
-                "field": "avg(totalAmount)",
+                QueryDimension(field="SandboxInvoiceV2.status"),
+            ], "metrics": [{"metric": "sum(SandboxInvoiceV2.totalAmount)"}, {"metric": "count(SandboxInvoiceV2.*)"}], "order": [OrderItem.model_validate({
+                "field": "avg(SandboxInvoiceV2.totalAmount)",
                 "direction": "desc",
             })], "limit": 10})
         result = await chain_env.execute(query=query)
         # Pin the exact pairing; a wrong-column alias would still be "present with distinct values".
         got = {
-            (row[LONG_NAME], row[LONG_EMAIL], row["SandboxInvoiceV2.status"]):
+            (row[NAME_KEY], row[EMAIL_KEY], row["SandboxInvoiceV2.status"]):
                 (float(row["SandboxInvoiceV2.totalAmount_sum"]), row["SandboxInvoiceV2._count"])
             for row in result.data
         }
@@ -179,11 +180,11 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
                 QueryDimension(field=f"{DEEP}.name"),
                 QueryDimension(field=f"{DEEP}.email"),
-            ], "metrics": [{"metric": "count(*)"}]})
+            ], "metrics": [{"metric": "count(SandboxInvoiceV2.*)"}]})
         result = await chain_env.execute(query=query)
         assert result.data
-        names = {row[LONG_NAME] for row in result.data}
-        emails = {row[LONG_EMAIL] for row in result.data}
+        names = {row[NAME_KEY] for row in result.data}
+        emails = {row[EMAIL_KEY] for row in result.data}
         assert names == {"Ann", "Bob"}
         assert emails == {"ann@example.io", "bob@example.io"}
 
@@ -192,25 +193,25 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [QueryDimension(field=f"{DEEP}.email")],
-            "metrics": [{"metric": "sum(totalAmount)"}],
+            "metrics": [{"metric": "sum(SandboxInvoiceV2.totalAmount)"}],
         })
         result = await chain_env.execute(query=query)
         assert result.data
         for row in result.data:
-            assert LONG_EMAIL in row, (
+            assert EMAIL_KEY in row, (
                 f"over-limit alias missing from the result row: {sorted(row)}"
             )
-            assert row[LONG_EMAIL] in {"ann@example.io", "bob@example.io"}
+            assert row[EMAIL_KEY] in {"ann@example.io", "bob@example.io"}
 
     async def test_values_are_correct_not_merely_present(self, chain_env: SlayerQueryEngine) -> None:
         """Pin the aggregate; a wrong-column fitted alias would still be present."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [QueryDimension(field=f"{DEEP}.email")],
-            "metrics": [{"metric": "sum(totalAmount)"}],
+            "metrics": [{"metric": "sum(SandboxInvoiceV2.totalAmount)"}],
         })
         result = await chain_env.execute(query=query)
-        totals = {row[LONG_EMAIL]: float(row["SandboxInvoiceV2.totalAmount_sum"]) for row in result.data}
+        totals = {row[EMAIL_KEY]: float(row["SandboxInvoiceV2.totalAmount_sum"]) for row in result.data}
         assert totals == {"ann@example.io": 150.0, "bob@example.io": 200.0}
 
     async def test_response_columns_are_canonical(self, chain_env: SlayerQueryEngine) -> None:
@@ -218,10 +219,10 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [QueryDimension(field=f"{DEEP}.name"), QueryDimension(field=f"{DEEP}.email")],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(SandboxInvoiceV2.*)"}],
         })
         result = await chain_env.execute(query=query)
-        assert set(result.data[0]) >= {LONG_NAME, LONG_EMAIL}
+        assert set(result.data[0]) >= {NAME_KEY, EMAIL_KEY}
         assert LONG_EMAIL not in cast(str, result.sql)
 
     async def test_cached_execution_round_trip(self, chain_env: SlayerQueryEngine) -> None:
@@ -229,26 +230,26 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [QueryDimension(field=f"{DEEP}.email")],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(SandboxInvoiceV2.*)"}],
         })
         first = await chain_env.execute(query=query, cache=True)
         second = await chain_env.execute(query=query, cache=True)
-        assert LONG_EMAIL in first.data[0]
-        assert LONG_EMAIL in second.data[0]
+        assert EMAIL_KEY in first.data[0]
+        assert EMAIL_KEY in second.data[0]
         assert first.data == second.data
 
     async def test_deep_cross_model_measure_executes(self, chain_env: SlayerQueryEngine) -> None:
         """Surface 3: the `_cm_` cross-dataset CTE name also crosses 63 bytes on this chain."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [QueryDimension(field="status")],
+            "dimensions": [QueryDimension(field="SandboxInvoiceV2.status")],
             "metrics": [{"metric": f"sum({DEEP}.lifetimeValue)"}],
         })
         result = await chain_env.execute(query=query)
         assert "_cm_" in cast(str, result.sql), "no cross-dataset CTE generated; test is vacuous"
         for name in re.findall(r"\b_cm_\w+", cast(str, result.sql)):
             assert len(name.encode()) <= 63, f"{name!r} exceeds the Postgres limit"
-        alias = f"SandboxInvoiceV2.{DEEP}.lifetimeValue_sum"
+        alias = f"{DEEP}.lifetimeValue_sum"
         assert len(result.data) == 1
         assert float(result.data[0][alias]) == 30.0
 
@@ -258,12 +259,12 @@ class TestPostgresIdentifierLength:
             "name": "stage1",
             "population": "SandboxInvoiceV2",
             "dimensions": [QueryDimension(field=f"{DEEP}.email")],
-            "metrics": [{"metric": "sum(totalAmount)"}],
+            "metrics": [{"metric": "sum(SandboxInvoiceV2.totalAmount)"}],
         })
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "dimensions": [QueryDimension(field="SandboxSubscription__SandboxCustomer__SandboxConsumer__email")],
-            "metrics": [{"metric": "sum(totalAmount_sum)"}],
+            "dimensions": [QueryDimension(field="stage1.SandboxSubscription__SandboxCustomer__SandboxConsumer__email")],
+            "metrics": [{"metric": "sum(stage1.totalAmount_sum)"}],
         })
         result = await chain_env.execute(query=[stage1, stage2])
         assert result.data
