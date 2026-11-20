@@ -24,7 +24,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.sqlite_conn import transaction
 from tests._deprecated_input_helpers import deprecated_in, deprecations, recorded, strict
-from tests._model_access_fixtures import ACCESS_PARAMS, DS, AccessStore, access_store, mcp_text, must_get
+from tests._dataset_access_fixtures import ACCESS_PARAMS, DS, AccessStore, access_store, mcp_text, must_get
 
 STRICT_WORD = re.compile(r"(?<![\w])strict(?![\w])")
 PUB_COUNT = {"population": "pub", "metrics": [{"metric": "count(pub.*)", "alias": "v"}]}

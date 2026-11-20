@@ -28,7 +28,7 @@ from tests._dev1948_fixtures import (
     SPEND_BY_TIER,
     chain_list,
     customers_dataset,
-    inline_join_list,
+    inline_relationship_list,
     make_dev1948_engine,
     orders_dataset,
     pop_check_list,
@@ -41,7 +41,7 @@ from tests._dev1948_fixtures import (
     stage_b,
     stage_c,
     stage_x,
-    stored_join_collision_list,
+    stored_relationship_collision_list,
     three_reads_list,
 )
 
@@ -146,7 +146,7 @@ class TestExecution:
 
     def test_inline_model_joining_a_sibling_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="(?i)inline"):
-            inline_join_list()
+            inline_relationship_list()
 
     async def test_one_stage_reads_three_siblings(self, exec_engine) -> None:
         resp = await exec_engine.execute(three_reads_list())
@@ -165,7 +165,7 @@ class TestExecution:
         assert rows_by(resp.data, key="s2.status", value="total") == AMOUNT_BY_STATUS
 
     async def test_stored_join_resolves_to_the_model_not_a_sibling(self, exec_engine) -> None:
-        resp = await exec_engine.execute(stored_join_collision_list())
+        resp = await exec_engine.execute(stored_relationship_collision_list())
         assert rows_by(resp.data, key="b.customers__tier", value="total") == AMOUNT_BY_TIER
 
     def test_nested_source_queries_rejected(self) -> None:

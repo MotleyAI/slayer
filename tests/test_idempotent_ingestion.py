@@ -685,9 +685,9 @@ def _create_probe_workspace_db(
 
 
 async def _persist_int_dataset(
-    storage: StorageBackend, ds_name: str, table: str, column: str,
+    storage: StorageBackend, ds_name: str, table: str, field: str,
     *,
-    column_format: NumberFormat | None = None,
+    field_format: NumberFormat | None = None,
     extra_meta: dict | None = None,
     description: str = "",
     label: str | None = None,
@@ -695,10 +695,10 @@ async def _persist_int_dataset(
     """Persist a dataset with the target field hard-coded as type=INT,
     simulating an ingest from before SQLite widening."""
     col_kwargs: dict[str, Any] = {
-        "name": column,
-        "sql": column,
+        "name": field,
+        "sql": field,
         "datatype": DataType.INTEGER,
-        "format": column_format or NumberFormat(type=NumberFormatType.INTEGER),
+        "format": field_format or NumberFormat(type=NumberFormatType.INTEGER),
         "description": description,
     }
     if label is not None:
@@ -973,7 +973,7 @@ class TestSqliteProbeWideningOnReingest:
         )
         await _persist_int_dataset(
             storage, "ds", "sensordata", "amount",
-            column_format=custom_format,
+            field_format=custom_format,
         )
 
         with caplog.at_level(_logging.INFO, logger="slayer.live_schema.ingestion"):

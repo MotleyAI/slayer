@@ -16,7 +16,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
-    BASIC_MEASURES, DATASOURCE, col, customers, slayer_metric, monthly_revenue, orders, orders_columns, rich_orders, visits,
+    BASIC_METRICS, DATASOURCE, col, customers, slayer_metric, monthly_revenue, orders, orders_fields, rich_orders, visits,
 )
 from tests._osi_export_helpers import (
     Env, convert_document, doc_text, export, fresh_store, make_env, normalized, reimport, rows, save, stored, validate,
@@ -101,14 +101,14 @@ def _datasets() -> list[SlayerDataset]:
     rich.metrics += [slayer_metric("n_types", "count_distinct(LegalType)"),
                       slayer_metric("approx", "count_distinct_approx(customer_id)")]
     return [
-        customers(joins=[to_active, to_profile], metrics=[
+        customers(relationships=[to_active, to_profile], metrics=[
             slayer_metric("n_customers", "count(*)"), slayer_metric("total_discount", "sum(discount)"),
             slayer_metric("active_revenue", "sum(active_orders.amount)"),
             slayer_metric("n_emails", "count_distinct(customer_profiles.email)")]),
         profiles,
         rich,
-        orders(name="active_orders", columns=[*orders_columns(), col("deleted_at", DataType.DATETIME)], joins=[],
-               filters=["deleted_at IS NULL", "status <> 'test'"], metrics=BASIC_MEASURES, hidden=True),
+        orders(name="active_orders", fields=[*orders_fields(), col("deleted_at", DataType.DATETIME)], relationships=[],
+               filters=["deleted_at IS NULL", "status <> 'test'"], metrics=BASIC_METRICS, hidden=True),
         visits(relationships=[visitor], metrics=[slayer_metric("n_visits", "count(*)")], access_tags=["ops"]),
         monthly_revenue(),
     ]
@@ -143,8 +143,8 @@ def _masked_orders() -> SlayerDataset:
     """Masked operands in every aggregate position; ``open``/``test`` groups are all-NULL under the mask."""
     keep = {"id", "amount", "price", "status", "region", "ordered_on"}
     return orders(
-        name="masked_orders", joins=[],
-        columns=[*(c for c in orders_columns() if c.name in keep),
+        name="masked_orders", relationships=[],
+        fields=[*(c for c in orders_fields() if c.name in keep),
                  col("m_amount", sql="amount", filter="status = 'completed'"),
                  col("m_qty", DataType.INTEGER, sql="quantity", filter="region = 'US'"),
                  col("m_paid", DataType.BOOLEAN, sql="is_paid", filter="status <> 'test'")],
@@ -173,7 +173,7 @@ def _meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     return {k: v for k, v in (meta or {}).items() if not k.startswith("osi_")}
 
 
-def _column_shape(dataset: SlayerDataset) -> dict[str, tuple]:
+def _field_shape(dataset: SlayerDataset) -> dict[str, tuple]:
     return {c.name: (c.primary_key, c.unique, c.label, c.description, c.hidden, c.format, c.granularity,
                      c.allowed_aggregations, c.filter, _meta(c.meta)) for c in dataset.fields}
 
@@ -182,7 +182,7 @@ def _metric_shape(dataset: SlayerDataset) -> dict[str, tuple]:
     return {m.name or m.text: (m.expression, m.label, m.datatype, _meta(m.meta)) for m in dataset.metrics}
 
 
-def _join_shape(dataset: SlayerDataset) -> set[tuple]:
+def _relationship_shape(dataset: SlayerDataset) -> set[tuple]:
     return {(j.to, tuple(map(tuple, j.column_pairs)), j.join_type, j.cardinality, j.name)
             for j in dataset.relationships}
 
@@ -199,10 +199,10 @@ async def test_slayer_structure_restored(trip: tuple[Env, Env]) -> None:
     for original in _datasets():
         restored = await stored(imported, original.name)
         assert _dataset_shape(restored) == _dataset_shape(original), original.name
-        assert _join_shape(restored) == _join_shape(original), original.name
+        assert _relationship_shape(restored) == _relationship_shape(original), original.name
         assert _metric_shape(restored) == _metric_shape(original), original.name
         if not original.source_queries:
-            assert _column_shape(restored) == _column_shape(original), original.name
+            assert _field_shape(restored) == _field_shape(original), original.name
 
 
 async def test_filtered_column_split_restored(trip: tuple[Env, Env]) -> None:

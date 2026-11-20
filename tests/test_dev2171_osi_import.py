@@ -15,7 +15,7 @@ from slayer.osi.parser import parse_osi_path
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import ListFn
 from tests._dev2171_fixtures import (
-    by_id, column, convert_osi, counts_by, entries, has_column, import_osi, datasets_of, rows, seed, value,
+    by_id, field_of, convert_osi, counts_by, entries, has_field, import_osi, datasets_of, rows, seed, value,
 )
 from tests._osi_helpers import ds, f, flat, legacy, m, mentions, unconverted, visible, write_yaml
 
@@ -142,13 +142,13 @@ class TestArrayFunctions:
 
     def test_array_length_with_a_dimension_is_reported(self, db: Path) -> None:
         result = import_osi(flat([orders([*LIST_FIELDS, f("n_dim", "ARRAY_LENGTH(tags, 1)")])]), db=db)
-        assert not has_column(result, "orders", "n_dim")
+        assert not has_field(result, "orders", "n_dim")
         assert [e for e in entries(result, "n_dim") if "dimension" in e.message], result.warnings
 
     @pytest.mark.parametrize("target", ["mysql", "sqlite"])
     def test_field_list_call_the_target_refuses_is_reported(self, db: Path, target: str) -> None:
         result = import_osi(flat([orders([*LIST_FIELDS, f("n_tags", "CARDINALITY(tags)")])]), db=db, target_dialect=target)
-        assert not has_column(result, "orders", "n_tags")
+        assert not has_field(result, "orders", "n_tags")
         assert [e for e in entries(result, "n_tags") if "not supported" in e.message], result.warnings
 
     @pytest.mark.parametrize("sql", ["SUM(CARDINALITY(tags))", "ARRAY_AGG(DISTINCT status)"], ids=["length", "collect"])
@@ -166,7 +166,7 @@ class TestArrayFunctions:
                                                               args: tuple[Expression, ...]) -> None:
         dialect = dialect_for_ds_type(target)
         result = import_osi(flat([orders([*LIST_FIELDS, f("listed", sql)])]), db=db, target_dialect=target)
-        stored = column(datasets_of(result)["orders"], "listed").definition_sql
+        stored = field_of(datasets_of(result)["orders"], "listed").definition_sql
         assert stored is not None
         expected = dialect.build_list_call(fn, args).sql(dialect=dialect.sqlglot_name)
         assert _unquoted(stored, dialect.sqlglot_name) == _unquoted(expected, dialect.sqlglot_name)

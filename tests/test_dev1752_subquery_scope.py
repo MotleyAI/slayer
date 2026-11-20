@@ -160,9 +160,9 @@ class TestJoinDiscoveryRootOnly:
         scope.enter_predicate(
             "id IN (SELECT x FROM other WHERE other.k = customers.balance)"
         )
-        assert scope.join_paths.as_list() == [], (
+        assert scope.relationship_paths.as_list() == [], (
             "a relationship-target-looking ref INSIDE a subquery must not register a "
-            f"root relationship path: {scope.join_paths.as_list()}"
+            f"root relationship path: {scope.relationship_paths.as_list()}"
         )
 
     def test_collect_paths_ignores_subquery_scope(self) -> None:

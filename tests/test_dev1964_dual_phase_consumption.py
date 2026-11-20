@@ -383,8 +383,8 @@ class TestDimensionTransformOwnsReaggregation:
 # --------------------------------------------------------------------------- #
 # Synthesized producer grain names — injective, key-derived.
 # --------------------------------------------------------------------------- #
-def _flag(column: str, value: str) -> ScalarCallKey:
-    cond = ArithmeticKey(op="=", operands=(FieldKey(leaf=column), LiteralKey(value=value)))
+def _flag(field: str, value: str) -> ScalarCallKey:
+    cond = ArithmeticKey(op="=", operands=(FieldKey(leaf=field), LiteralKey(value=value)))
     return ScalarCallKey(name="iif", args=(cond, LiteralKey(value=Decimal(1)),
                                            LiteralKey(value=Decimal(0))))
 

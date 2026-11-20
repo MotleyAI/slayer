@@ -28,7 +28,7 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1837_fixtures import (
     BAND35,
-    dev1837_models,
+    dev1837_datasets,
     gen,
     month_td,
     q,
@@ -42,7 +42,7 @@ ARM_WINDOWED_RANKED = (
     "A row regroup attach (computed dimension) combined with a windowed or "
     "ranked measure is not yet supported (DEV-1835)."
 )
-ARM_CROSS_MODEL = (
+ARM_CROSS_DATASET = (
     "A row regroup attach (computed dimension) combined with a cross-model "
     "measure is not yet supported (DEV-1836)."
 )
@@ -87,7 +87,7 @@ def _sources_containing(fragment: str) -> list:
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1837_models()
+    models = dev1837_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
         population=models[0], referenced_datasets=list(models[1:]),
@@ -164,7 +164,7 @@ class TestRemainingArmsExactMessages:
             ],
         ))
         assert "__regroup__" not in sql, sql
-        assert not _sources_containing(ARM_CROSS_MODEL)
+        assert not _sources_containing(ARM_CROSS_DATASET)
 
 
 class TestCteBodyArms:

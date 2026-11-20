@@ -197,8 +197,8 @@ def stored_bytes(*, backend: str, base: str, name: str) -> str:
     return row[0]
 
 
-def column_of(model: SlayerDataset, name: str) -> DatasetField:
-    by_name = {c.name: c for c in model.fields}
+def field_of(dataset: SlayerDataset, name: str) -> DatasetField:
+    by_name = {c.name: c for c in dataset.fields}
     assert name in by_name, sorted(by_name)
     return by_name[name]
 
@@ -218,11 +218,11 @@ async def run(storage: StorageBackend, query: SlayerQuery | dict, *, dry_run: bo
         return await engine.execute(q, dry_run=dry_run)
 
 
-def measure_total(resp: SlayerResponse, *, measure: str) -> float:
-    """Sum of the ``measure`` column (matched by suffix) over every row."""
+def metric_total(resp: SlayerResponse, *, metric: str) -> float:
+    """Sum of the ``metric`` column (matched by suffix) over every row."""
     if not resp.data:
         return 0.0
-    key = next(k for k in resp.data[0] if k == measure or k.endswith(f".{measure}") or k.endswith(f"_{measure}"))
+    key = next(k for k in resp.data[0] if k == metric or k.endswith(f".{metric}") or k.endswith(f"_{metric}"))
     return sum(float(r[key]) for r in resp.data if r[key] is not None)
 
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from slayer.core.query import QueryMetric
 
-from tests._dev1865_fixtures import BAND35, SlayerQuery, dev1865_models
+from tests._dev1865_fixtures import BAND35, SlayerQuery, dev1865_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -57,7 +57,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(query: SlayerQuery, dialect: str):
-    models = dev1865_models()
+    models = dev1865_datasets()
     try:
         return await _engine_generate(
             query=query, dataset=models[0], extra_datasets=models[1:],

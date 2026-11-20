@@ -60,7 +60,7 @@ from tests._dev1747_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-_MEASURE = [{"metric": "sum(orders.amount)", "alias": "rev"}]
+_METRIC = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 
 def _wrap_functions(sql: str, column: str, *, dialect: str = "postgres") -> list[str]:
@@ -82,7 +82,7 @@ def _grouped_order_query(*, dataset: str, name: str, direction: str) -> SlayerQu
     return SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="orders.status")],
-        metrics=_MEASURE,
+        metrics=_METRIC,
         order=[OrderItem(
             field=f"{dataset}.{name}", direction=direction,
         )],
@@ -201,7 +201,7 @@ class TestDirectionAwareWrap:
         sql = await _sql(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[OrderItem(
                 field="orders.created_at", direction="asc",
             )],
@@ -221,7 +221,7 @@ class TestDirectionAwareWrap:
         sql = await _sql(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],
-            metrics=_MEASURE,
+            metrics=_METRIC,
             order=[
                 OrderItem(field="orders.created_at", direction="asc"),
                 OrderItem(field="orders.amount", direction="desc"),

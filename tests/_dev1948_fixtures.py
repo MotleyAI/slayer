@@ -161,8 +161,8 @@ def chain_list() -> List[SlayerQuery]:
     return [stage_x(), stage_c(), stage_b(), root_over_b()]
 
 
-def inline_orders(*, joins: List[DatasetRelationship]) -> SlayerDataset:
-    """An inline dataset over the ``orders`` table carrying ``joins``."""
+def inline_orders(*, relationships: List[DatasetRelationship]) -> SlayerDataset:
+    """An inline dataset over the ``orders`` table carrying ``relationships``."""
     return SlayerDataset(
         name="orders_inline", data_source="test", sql_table="orders",
         fields=[
@@ -171,16 +171,16 @@ def inline_orders(*, joins: List[DatasetRelationship]) -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
-        relationships=joins,
+        relationships=relationships,
     )
 
 
-def inline_join_list() -> List[SlayerQuery]:
+def inline_relationship_list() -> List[SlayerQuery]:
     """``b`` reaches sibling ``c`` through an inline dataset's own relationships."""
     b = _query(
         name="b",
         population=inline_orders(
-            joins=[DatasetRelationship(to="c", from_columns=["customer_id"], to_columns=["id"])]),
+            relationships=[DatasetRelationship(to="c", from_columns=["customer_id"], to_columns=["id"])]),
         dimensions=["c.tr"],
         metrics=[{"metric": "sum(orders.amount)", "alias": "amt"}],
     )
@@ -283,7 +283,7 @@ def pop_check_list() -> List[SlayerQuery]:
     return [stage("s1", [p]), stage("s2", [q]), stage("s3", [p, q]), root]
 
 
-def stored_join_collision_list() -> List[SlayerQuery]:
+def stored_relationship_collision_list() -> List[SlayerQuery]:
     """A sibling named ``customers`` beside ``orders``' stored relationship to dataset ``customers``."""
     sibling = _query(
         name="customers", population="orders", dimensions=["orders.status"],

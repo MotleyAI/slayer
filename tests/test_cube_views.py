@@ -15,7 +15,7 @@ from slayer.cube.models import (
 )
 from slayer.cube.report import CubeIssueCategory
 from slayer.core.syntax import AggCall, DottedRef, Ref, parse_expr
-from tests._cube_helpers import column, convert, metric, meta
+from tests._cube_helpers import field_of, convert, metric, meta
 
 
 def _orders_customers_cubes(*, orders_sql_mode: bool = False) -> list[CubeCube]:
@@ -74,7 +74,7 @@ def test_view_prefixed_joined_dimension_references_joined_column():
     models, _ = convert(project)
     view = models["orders_overview"]
     # prefix: true → "<cube>_<member>" (Cube prepends the cube name verbatim).
-    col = column(view, "customers_name")
+    col = field_of(view, "customers_name")
     assert col.sql == "customers.name"
 
 
@@ -316,7 +316,7 @@ def test_view_facade_declares_the_join_key():
     view = models["orders_overview"]
     (join,) = [j for j in view.relationships if j.to == "customers"]
     assert join.column_pairs == [("customer_id", "id")]
-    col = column(view, "customer_id")
+    col = field_of(view, "customer_id")
     assert col is not None
     assert col.is_base
     assert col.hidden is True

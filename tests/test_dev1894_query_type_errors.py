@@ -56,7 +56,7 @@ def _m(metric: str, alias: str) -> QueryMetric:
     return QueryMetric(metric=metric, alias=alias)
 
 
-def _orders(*, extra_columns: Tuple[DatasetField, ...] = (), **kw) -> SlayerDataset:
+def _orders(*, extra_fields: Tuple[DatasetField, ...] = (), **kw) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
@@ -66,7 +66,7 @@ def _orders(*, extra_columns: Tuple[DatasetField, ...] = (), **kw) -> SlayerData
             DatasetField(name="revenue", datatype=DataType.FLOAT),
             DatasetField(name="profit", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
-            *extra_columns,
+            *extra_fields,
         ],
         **kw,
     )
@@ -155,7 +155,7 @@ FAMILY_CASES = [
      NameCollisionError, None, True),
     ("dimension-type",
      lambda: (SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.loc")]),
-              [_orders(extra_columns=(DatasetField(name="loc", datatype=DataType.OPAQUE, db_type="point"),))]),
+              [_orders(extra_fields=(DatasetField(name="loc", datatype=DataType.OPAQUE, db_type="point"),))]),
      DimensionTypeError, "dimension 'loc'", True),
     ("model-filter",
      lambda: (SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(orders.*)")]),
@@ -213,7 +213,7 @@ async def test_family_error_layout(
     ), [_orders()]), MetricNameCollidesWithFieldError, "metric 'status'", id="measure-collides-with-column"),
     pytest.param(lambda: (SlayerQuery(
         population="orders", dimensions=[QueryDimension(field="orders.status")], metrics=[_m("sum(orders.amount)", "rev2")],
-    ), [_orders(extra_columns=(DatasetField(name="amount_sum", datatype=DataType.FLOAT),))]),
+    ), [_orders(extra_fields=(DatasetField(name="amount_sum", datatype=DataType.FLOAT),))]),
         CanonicalAliasShadowsFieldError, "metric 'rev2'", id="canonical-alias-shadows"),
     pytest.param(lambda: (SlayerQuery(
         population="orders", dimensions=[QueryDimension(field="orders.status")],

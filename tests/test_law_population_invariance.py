@@ -22,7 +22,7 @@ _BASES = [
 ]
 
 # Metric sets layered onto each base; all bind under either population.
-_MEASURE_SETS = [
+_METRIC_SETS = [
     [],
     [{"metric": "sum(orders.amount)", "alias": "m1"}],
     [
@@ -51,7 +51,7 @@ async def test_measure_does_not_requantify(chain_engine: SlayerQueryEngine, labe
     dim_cols = list(base.columns)
     base_rows = {tuple(r[c] for c in dim_cols) for r in base.data}
 
-    for measures in _MEASURE_SETS:
+    for measures in _METRIC_SETS:
         resp = await chain_engine.execute(SlayerQuery(
             dimensions=dims, filter=filters, metrics=measures or None,
         ))

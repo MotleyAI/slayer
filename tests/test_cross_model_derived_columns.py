@@ -73,7 +73,7 @@ async def _gen_sql(engine: SlayerQueryEngine, query: SlayerQuery, dataset: Slaye
 # ---------------------------------------------------------------------------
 
 
-async def _save_a_b(storage: YAMLStorage, *, a_columns: list[DatasetField]) -> SlayerDataset:
+async def _save_a_b(storage: YAMLStorage, *, a_fields: list[DatasetField]) -> SlayerDataset:
     model_b = SlayerDataset(
         name="B",
         data_source="test",
@@ -93,7 +93,7 @@ async def _save_a_b(storage: YAMLStorage, *, a_columns: list[DatasetField]) -> S
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
             DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
-            *a_columns,
+            *a_fields,
         ],
         relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
@@ -112,7 +112,7 @@ async def test_cross_model_dim_derived_column_via_query(tmp_path) -> None:
     alias (``B``), not left ambiguous.
     """
     engine, storage = _engine_with_storage(tmp_path)
-    model_a = await _save_a_b(storage, a_columns=[])
+    model_a = await _save_a_b(storage, a_fields=[])
     query = SlayerQuery(
         population="A",
         dimensions=[QueryDimension(field="B.foo_normalized")],
@@ -200,7 +200,7 @@ async def test_derived_over_quoted_self_identity_keeps_quoting(tmp_path) -> None
 
 async def test_cross_model_columnsql_references_derived_column(tmp_path) -> None:
     engine, storage = _engine_with_storage(tmp_path)
-    model_a = await _save_a_b(storage, a_columns=[
+    model_a = await _save_a_b(storage, a_fields=[
         DatasetField(
             name="ratio_using_derived",
             sql="A.bar / B.foo_normalized",
@@ -226,7 +226,7 @@ async def test_cross_model_columnsql_references_derived_column(tmp_path) -> None
 async def test_cross_model_base_column_still_works(tmp_path) -> None:
     """Sanity: fields that reference a *base* joined field still work."""
     engine, storage = _engine_with_storage(tmp_path)
-    model_a = await _save_a_b(storage, a_columns=[
+    model_a = await _save_a_b(storage, a_fields=[
         DatasetField(name="ratio_using_base", sql="A.bar / B.foo_raw", datatype=DataType.FLOAT),
     ])
     query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.ratio_using_base")])
@@ -540,7 +540,7 @@ async def test_self_reference_terminates(tmp_path) -> None:
 
 async def test_mixed_base_and_derived_refs_in_one_columnsql(tmp_path) -> None:
     engine, storage = _engine_with_storage(tmp_path)
-    model_a = await _save_a_b(storage, a_columns=[
+    model_a = await _save_a_b(storage, a_fields=[
         DatasetField(
             name="mixed",
             sql="A.bar / B.foo_raw + B.foo_normalized",
@@ -562,7 +562,7 @@ async def test_mixed_base_and_derived_refs_in_one_columnsql(tmp_path) -> None:
 
 async def test_measure_aggregation_over_cross_model_derived(tmp_path) -> None:
     engine, storage = _engine_with_storage(tmp_path)
-    model_a = await _save_a_b(storage, a_columns=[])
+    model_a = await _save_a_b(storage, a_fields=[])
     query = SlayerQuery(
         population="A",
         metrics=[QueryMetric(metric="sum(B.foo_normalized)")],
@@ -586,7 +586,7 @@ async def test_measure_aggregation_over_cross_model_derived(tmp_path) -> None:
 
 async def test_measure_aggregation_via_local_columnsql_referencing_derived(tmp_path) -> None:
     engine, storage = _engine_with_storage(tmp_path)
-    model_a = await _save_a_b(storage, a_columns=[
+    model_a = await _save_a_b(storage, a_fields=[
         DatasetField(
             name="ratio_using_derived",
             sql="A.bar / B.foo_normalized",
@@ -612,7 +612,7 @@ async def test_measure_aggregation_via_local_columnsql_referencing_derived(tmp_p
 
 async def test_filter_referencing_derived_column(tmp_path) -> None:
     engine, storage = _engine_with_storage(tmp_path)
-    model_a = await _save_a_b(storage, a_columns=[])
+    model_a = await _save_a_b(storage, a_fields=[])
     query = SlayerQuery(
         population="A",
         dimensions=[QueryDimension(field="A.bar")],
@@ -674,7 +674,7 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
     # ``foo_raw`` onto A so it collides with B's field of the same name.
     model_a = await _save_a_b(
         storage,
-        a_columns=[DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT)],
+        a_fields=[DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT)],
     )
     query = SlayerQuery(
         population="A",
@@ -696,7 +696,7 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
 # ---------------------------------------------------------------------------
 
 
-_DEFAULT_C_COLUMNS: list[DatasetField] = [
+_DEFAULT_C_FIELDS: list[DatasetField] = [
     DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
     DatasetField(name="raw_c", sql="raw_c", datatype=DataType.FLOAT),
     DatasetField(name="x_derived", sql="raw_c * 2", datatype=DataType.FLOAT),
@@ -704,13 +704,13 @@ _DEFAULT_C_COLUMNS: list[DatasetField] = [
 
 
 async def _save_a_b_c(
-    storage: YAMLStorage, *, c_columns: list[DatasetField] | None = None,
+    storage: YAMLStorage, *, c_fields: list[DatasetField] | None = None,
 ) -> SlayerDataset:
-    """A → B → C. ``c_columns`` overrides C's field list (default: a derived
+    """A → B → C. ``c_fields`` overrides C's field list (default: a derived
     ``x_derived = "raw_c * 2"`` over a base ``raw_c``)."""
     model_c = SlayerDataset(
         name="C", data_source="test", sql_table="C",
-        fields=c_columns if c_columns is not None else _DEFAULT_C_COLUMNS,
+        fields=c_fields if c_fields is not None else _DEFAULT_C_FIELDS,
     )
     await storage.save_dataset(model_c)
     model_b = SlayerDataset(
@@ -822,7 +822,7 @@ async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
     callsite (``enrichment.py:_resolve_time_dimensions``) takes a separate
     path through ``_maybe_expand`` from regular dims; pin it."""
     engine, storage = _engine_with_storage(tmp_path)
-    model_a = await _save_a_b_c(storage, c_columns=[
+    model_a = await _save_a_b_c(storage, c_fields=[
         DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
         DatasetField(name="raw_ts", sql="raw_ts", datatype=DataType.DATETIME),
         # Derived passthrough — we just want it derived-shaped (sql != name).
@@ -984,7 +984,7 @@ async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) ->
 )
 async def test_generated_sql_parses(tmp_path, scenario) -> None:
     engine, storage = _engine_with_storage(tmp_path)
-    model_a = await _save_a_b(storage, a_columns=[
+    model_a = await _save_a_b(storage, a_fields=[
         DatasetField(name="ratio_using_base", sql="A.bar / B.foo_raw", datatype=DataType.FLOAT),
         DatasetField(name="ratio_using_derived", sql="A.bar / B.foo_normalized", datatype=DataType.FLOAT),
     ])
@@ -1045,8 +1045,8 @@ async def _orders_customers_storage(tmp_path) -> YAMLStorage:
 async def _save_orders_with_is_eu(
     storage: YAMLStorage,
     *,
-    extra_columns: list[DatasetField] | None = None,
-    extra_joins: list[DatasetRelationship] | None = None,
+    extra_fields: list[DatasetField] | None = None,
+    extra_relationships: list[DatasetRelationship] | None = None,
     filters: list[str] | None = None,
     include_amount: bool = True,
 ) -> SlayerDataset:
@@ -1068,10 +1068,10 @@ async def _save_orders_with_is_eu(
     ))
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        fields=base_cols + list(extra_columns or []),
+        fields=base_cols + list(extra_fields or []),
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
-            *(extra_joins or []),
+            *(extra_relationships or []),
         ],
         filters=list(filters or []),
     )
@@ -1117,7 +1117,7 @@ async def test_dev1334_query_filter_on_chained_local_derived_cols_adds_join(
     orders = await _save_orders_with_is_eu(
         storage,
         include_amount=False,
-        extra_columns=[
+        extra_fields=[
             DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
             # Chains through is_eu.
             DatasetField(
@@ -1223,7 +1223,7 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
     storage = await _orders_customers_storage(tmp_path)
     orders = await _save_orders_with_is_eu(
         storage,
-        extra_columns=[
+        extra_fields=[
             # Field-level filter referencing a bare-named derived field.
             DatasetField(
                 name="eu_amount",
@@ -1266,16 +1266,16 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
 # keeps these tests free of the duplicated boilerplate Sonar flags.
 # ---------------------------------------------------------------------------
 
-_CLAIM_LP_JOIN = DatasetRelationship(
+_CLAIM_LP_RELATIONSHIP = DatasetRelationship(
     to="loss_payment", from_columns=["id"], to_columns=["id"],
 )
-_CLAIM_LP_JOIN_INNER = DatasetRelationship(
+_CLAIM_LP_RELATIONSHIP_INNER = DatasetRelationship(
     to="loss_payment", from_columns=["id"], to_columns=["id"],
     join_type="inner",
 )
 
 
-def _loss_payment_dataset(*, extra_columns, joins=None) -> SlayerDataset:
+def _loss_payment_dataset(*, extra_fields, relationships=None) -> SlayerDataset:
     """The canonical ``loss_payment`` relationship target (PK ``id`` =
     ``Claim_Amount_Identifier``); callers add the fields / relationships each test needs.
     """
@@ -1283,14 +1283,14 @@ def _loss_payment_dataset(*, extra_columns, joins=None) -> SlayerDataset:
         name="loss_payment", data_source="test", sql_table="Loss_Payment",
         fields=[
             DatasetField(name="id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
-            *extra_columns,
+            *extra_fields,
         ],
-        relationships=list(joins or []),
+        relationships=list(relationships or []),
     )
 
 
 async def _claim_amount_filter_sql(
-    tmp_path, *, claim_columns, metrics, claim_joins=(_CLAIM_LP_JOIN,),
+    tmp_path, *, claim_fields, metrics, claim_relationships=(_CLAIM_LP_RELATIONSHIP,),
     claim_filters=None, extra_datasets=(),
 ) -> str:
     """Save ``claim_amount`` (PK ``id`` auto-prepended) plus any extra relationship-target
@@ -1303,9 +1303,9 @@ async def _claim_amount_filter_sql(
         name="claim_amount", data_source="test", sql_table="Claim_Amount",
         fields=[
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            *claim_columns,
+            *claim_fields,
         ],
-        relationships=list(claim_joins),
+        relationships=list(claim_relationships),
         filters=list(claim_filters or []),
     )
     await storage.save_dataset(claim_amount)
@@ -1322,10 +1322,10 @@ async def test_dev1494_column_filter_dotted_base_ref_adds_join(tmp_path) -> None
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_datasets=[_loss_payment_dataset(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_fields=[
             DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ])],
-        claim_columns=[
+        claim_fields=[
             DatasetField(name="loss_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.FLOAT),
         ],
         metrics=[QueryMetric(metric="sum(claim_amount.loss_amt)", alias="amt")],
@@ -1353,17 +1353,17 @@ async def test_dev1494_column_filter_dotted_derived_ref_crossing_further_join(
         ],
     )
     loss_payment = _loss_payment_dataset(
-        extra_columns=[
+        extra_fields=[
             DatasetField(name="claim_id", sql="claim_id", datatype=DataType.FLOAT),
             # Derived field on the joined dataset whose sql reaches a further relationship.
             DatasetField(name="deep_flag", sql="CASE WHEN claim.state = 'open' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
         ],
-        joins=[DatasetRelationship(to="claim", from_columns=["claim_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="claim", from_columns=["claim_id"], to_columns=["id"])],
     )
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[claim, loss_payment],
-        claim_columns=[
+        claim_fields=[
             DatasetField(name="deep_amt", sql="amount", filter="loss_payment.deep_flag = 1", datatype=DataType.FLOAT),
         ],
         metrics=[QueryMetric(metric="sum(claim_amount.deep_amt)", alias="amt")],
@@ -1395,11 +1395,11 @@ async def test_dev1494_model_filter_dotted_derived_ref_inlined(tmp_path) -> None
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_datasets=[_loss_payment_dataset(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_fields=[
             DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
         ])],
-        claim_columns=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
-        claim_joins=[_CLAIM_LP_JOIN_INNER],
+        claim_fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+        claim_relationships=[_CLAIM_LP_RELATIONSHIP_INNER],
         claim_filters=["loss_payment.has_flag = 1"],
         metrics=[QueryMetric(metric="sum(claim_amount.amount)", alias="amt")],
     )
@@ -1426,10 +1426,10 @@ async def test_dev1494_column_filter_does_not_disturb_sibling_unfiltered_measure
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_datasets=[_loss_payment_dataset(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_fields=[
             DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ])],
-        claim_columns=[
+        claim_fields=[
             DatasetField(name="total_amt", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.FLOAT),
         ],
@@ -1457,12 +1457,12 @@ async def test_dev1494_column_filter_exists_subquery_ref_not_scanned_for_joins(
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_datasets=[_loss_payment_dataset(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_fields=[
             DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ])],
         # Inner-scope ``loss_payment`` ref lives inside a subquery; it must not
         # pull an outer LEFT JOIN loss_payment into the base FROM.
-        claim_columns=[DatasetField(
+        claim_fields=[DatasetField(
             name="exists_amt", sql="amount",
             filter="EXISTS (SELECT 1 FROM Loss_Payment AS loss_payment WHERE loss_payment.status = 'paid')",
             datatype=DataType.FLOAT,
@@ -1484,13 +1484,13 @@ async def test_dev1494_column_filter_constant_placeholder_join_kept_sqlite(
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_datasets=[_loss_payment_dataset(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_fields=[
             DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
         ])],
-        claim_columns=[
+        claim_fields=[
             DatasetField(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT),
         ],
-        claim_joins=[_CLAIM_LP_JOIN_INNER],
+        claim_relationships=[_CLAIM_LP_RELATIONSHIP_INNER],
         metrics=[QueryMetric(metric="sum(claim_amount.loss_amt)", alias="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), f"placeholder join not kept:\n{sql}"
@@ -1519,13 +1519,13 @@ async def test_dev1494_column_filter_multihop_dotted_input_adds_all_joins(
         ],
     )
     loss_payment = _loss_payment_dataset(
-        extra_columns=[DatasetField(name="claim_id", sql="claim_id", datatype=DataType.FLOAT)],
-        joins=[DatasetRelationship(to="claim", from_columns=["claim_id"], to_columns=["id"])],
+        extra_fields=[DatasetField(name="claim_id", sql="claim_id", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="claim", from_columns=["claim_id"], to_columns=["id"])],
     )
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[claim, loss_payment],
-        claim_columns=[
+        claim_fields=[
             DatasetField(name="amt", sql="amount", filter="loss_payment.claim.state = 'open'", datatype=DataType.FLOAT),
         ],
         metrics=[QueryMetric(metric="sum(claim_amount.amt)", alias="a")],
@@ -1547,10 +1547,10 @@ async def test_dev1494_column_filter_join_discovered_in_composite_measure(
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_datasets=[_loss_payment_dataset(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_fields=[
             DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ])],
-        claim_columns=[
+        claim_fields=[
             DatasetField(name="total_amt", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.FLOAT),
         ],
@@ -1631,8 +1631,8 @@ async def test_dev1334_filter_with_mixed_dotted_and_bare_derived_refs(tmp_path) 
     orders = await _save_orders_with_is_eu(
         storage,
         include_amount=False,
-        extra_columns=[DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT)],
-        extra_joins=[DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"])],
+        extra_fields=[DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT)],
+        extra_relationships=[DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"])],
     )
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
@@ -1737,7 +1737,7 @@ async def test_dev1334_dialect_threaded_into_join_discovery(tmp_path) -> None:
     orders = await _save_orders_with_is_eu(
         storage,
         include_amount=False,
-        extra_columns=[
+        extra_fields=[
             DatasetField(
                 name="bracket_eu",
                 sql="CASE WHEN [customers].[region] = 'EU' THEN 1 ELSE 0 END",
@@ -1938,7 +1938,7 @@ async def test_dev1410_qualified_ref_to_derived_inside_subquery_left_alone(
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(
         storage,
-        a_columns=[
+        a_fields=[
             DatasetField(
                 name="collide",
                 sql=(

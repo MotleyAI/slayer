@@ -20,17 +20,17 @@ FIELD_VALUES = {"label": "Rev", "datatype": "Float", "description": "Paid revenu
 OTHER_VALUES = {"label": "Revenue", "datatype": "Integer", "description": "All revenue", "meta": {"unit": "eur"}}
 
 
-def saved(*measures: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "orders", "metrics": list(measures)})
+def saved(*metrics: Any) -> SlayerQuery:
+    return SlayerQuery.model_validate({"population": "orders", "metrics": list(metrics)})
 
 
-def merge(base: SlayerQuery, *measures: Any) -> SlayerQuery:
-    return refine_query(saved=base, refinement=QueryRefinement.model_validate({"metrics": list(measures)}))
+def merge(base: SlayerQuery, *metrics: Any) -> SlayerQuery:
+    return refine_query(saved=base, refinement=QueryRefinement.model_validate({"metrics": list(metrics)}))
 
 
-def conflict(base: SlayerQuery, *measures: Any) -> str:
+def conflict(base: SlayerQuery, *metrics: Any) -> str:
     with pytest.raises(RefinementConflictError) as info:
-        merge(base, *measures)
+        merge(base, *metrics)
     return str(info.value)
 
 

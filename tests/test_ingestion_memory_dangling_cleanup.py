@@ -76,7 +76,7 @@ class TestIngestDanglingRefCleanup:
         # Hand-inject a memory with a stale dataset ref.
         m = await storage.save_memory(
             learning="x",
-            entities=["mydb.orders.amount", "mydb.deleted_model"],
+            entities=["mydb.orders.amount", "mydb.deleted_dataset"],
         )
         # Run the datasource ingest pass; cleanup happens inline.
         try:
@@ -92,7 +92,7 @@ class TestIngestDanglingRefCleanup:
         loaded = await storage.get_memory(m.id)
         assert "mydb.orders.amount" in loaded.entities
         # The residual cleanup pass should strip the stale ref.
-        assert "mydb.deleted_model" not in loaded.entities
+        assert "mydb.deleted_dataset" not in loaded.entities
 
     async def test_transient_failure_keeps_refs(
         self, storage: StorageBackend, monkeypatch: pytest.MonkeyPatch,
@@ -102,9 +102,9 @@ class TestIngestDanglingRefCleanup:
         intact" so transient infra hiccups don't drop data."""
         m = await storage.save_memory(
             learning="x",
-            # ``mydb.deleted_model`` would normally get stripped, but
+            # ``mydb.deleted_dataset`` would normally get stripped, but
             # under a faulting lookup the cleanup pass must abstain.
-            entities=["mydb.orders.amount", "mydb.deleted_model"],
+            entities=["mydb.orders.amount", "mydb.deleted_dataset"],
         )
         ds = await storage.get_datasource("mydb")
         assert ds is not None
@@ -130,7 +130,7 @@ class TestIngestDanglingRefCleanup:
         loaded = await storage.get_memory(m.id)
         # Both refs survive: cleanup never had a definitive answer.
         assert "mydb.orders.amount" in loaded.entities
-        assert "mydb.deleted_model" in loaded.entities
+        assert "mydb.deleted_dataset" in loaded.entities
 
     async def test_stale_query_emits_ingestion_error(
         self, storage: StorageBackend,

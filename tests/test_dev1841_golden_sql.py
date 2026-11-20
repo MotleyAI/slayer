@@ -29,7 +29,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1841_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
             "snowflake"]
 
-_MODEL_SETS = {
+_DATASET_SETS = {
     "default": dev1840_datasets,
     "ext": dev1841_datasets,
 }
@@ -67,7 +67,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(case, dialect: str):
-    models = _MODEL_SETS[case["models"]]()
+    models = _DATASET_SETS[case["models"]]()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:

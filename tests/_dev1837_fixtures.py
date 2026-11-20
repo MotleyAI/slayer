@@ -63,7 +63,7 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     TRAILING_90D_REGION,
     TimeDimension,
     TimeGranularity,
-    dev1824_models,
+    dev1824_datasets,
     gen,
     make_exec_engine,
     month_key,
@@ -72,7 +72,7 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     rows_by,
 )
 
-dev1837_models = dev1824_models
+dev1837_datasets = dev1824_datasets
 
 RANK_DIM = "rank(sum(orders.amount, partition_by=orders.region), direction='desc')"
 BARE_DIM = "sum(orders.amount, partition_by=orders.city)"
@@ -90,7 +90,7 @@ DIM_FAMILY_DIMS = {
 }
 
 #: Transform-metric expressions, keyed by op (the M-transform family).
-TRANSFORM_FORMULAS = {
+TRANSFORM_EXPRESSIONS = {
     "time_shift": "time_shift(sum(orders.amount), -1)",
     "lag": "lag(sum(orders.amount))",
     "lead": "lead(sum(orders.amount))",
@@ -101,7 +101,7 @@ TRANSFORM_FORMULAS = {
     "rank": "rank(sum(orders.amount), direction='desc')",
 }
 #: Transform ops that need the month time dimension (rank is timeless).
-TD_TRANSFORM_OPS = frozenset(TRANSFORM_FORMULAS) - {"rank"}
+TD_TRANSFORM_OPS = frozenset(TRANSFORM_EXPRESSIONS) - {"rank"}
 
 #: ``sum(amount)`` per group, WITHOUT the time dimension.
 GROUP_M = {
@@ -319,7 +319,7 @@ __all__ = [
     "CP_PRED", "FieldRef", "DIM_FAMILY_DIMS", "GRAND_TOTAL", "GROUP_M",
     "GROUP_M_MONTH", "MIXED_DIM", "DatasetMetric", "RANK_DIM", "REGION_LAST",
     "REGION_TOTAL",
-    "SlayerQuery", "TD_TRANSFORM_OPS", "TRAILING_90D_REGION", "TRANSFORM_FORMULAS",
-    "TRANSFORM_X", "TimeDimension", "TimeGranularity", "dev1837_models", "dim_key",
+    "SlayerQuery", "TD_TRANSFORM_OPS", "TRAILING_90D_REGION", "TRANSFORM_EXPRESSIONS",
+    "TRANSFORM_X", "TimeDimension", "TimeGranularity", "dev1837_datasets", "dim_key",
     "gen", "make_exec_engine", "month_key", "month_td", "q", "rows_by", "with_nulls",
 ]

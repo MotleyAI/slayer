@@ -263,7 +263,7 @@ class DbtToSlayerConverter:
         # {model_name: DbtSemanticModel} for looking up entities
         self._dbt_models_by_name: dict[str, DbtSemanticModel] = {}
         # Filtered-field dedup: {(dataset, column_expr, normalized_filter): col_name}
-        self._filtered_columns: dict[tuple[str, str, str | None], str] = {}
+        self._filtered_fields: dict[tuple[str, str, str | None], str] = {}
         # {regular_model_name: raw_code} — used to inline SQL into semantic
         # models whose underlying dbt model is a query rather than a table.
         self._regular_models_sql: dict[str, str] = {
@@ -321,7 +321,7 @@ class DbtToSlayerConverter:
         self._unconverted = []
         self._datasets_by_name = {}
         self._dbt_models_by_name = {}
-        self._filtered_columns = {}
+        self._filtered_fields = {}
 
     def _convert(self) -> ConversionResult:
         self._reset()
@@ -1803,7 +1803,7 @@ class DbtToSlayerConverter:
 
         slayer_filter = self._convert_filter(raw_filter, source_sm)
         key = (slayer_dataset.name, column_expr, slayer_filter)
-        col_name = self._filtered_columns.get(key)
+        col_name = self._filtered_fields.get(key)
         if col_name is None:
             col_name = self._alloc_field_name(slayer_dataset, f"{dbt_measure.name}_filtered")
             slayer_dataset.fields.append(finished_field(DatasetField(
@@ -1814,7 +1814,7 @@ class DbtToSlayerConverter:
                 format=col_format if col_type in NUMERIC_DATATYPES else None,
                 filter=slayer_filter,
             ), token=self._token))
-            self._filtered_columns[key] = col_name
+            self._filtered_fields[key] = col_name
         return functional_agg_text(source=col_name, suffix=agg_call)
 
     def _filtered_leaf_spec(

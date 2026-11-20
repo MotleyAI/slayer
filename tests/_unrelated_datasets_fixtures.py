@@ -73,8 +73,8 @@ def main_tables(*, event_rows: Optional[list[tuple]] = None) -> list[TableSpec]:
     return [CUSTOMERS, events_table(event_rows), USERS, ORGS]
 
 
-def _many_to_one(target: str, column: str) -> DatasetRelationship:
-    return DatasetRelationship(to=target, from_columns=[column], to_columns=["id"], cardinality=RelationshipCardinality.MANY_TO_ONE)
+def _many_to_one(target: str, field: str) -> DatasetRelationship:
+    return DatasetRelationship(to=target, from_columns=[field], to_columns=["id"], cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
 def customers_dataset(**extra: Any) -> SlayerDataset:

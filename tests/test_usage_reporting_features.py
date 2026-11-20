@@ -103,7 +103,7 @@ def test_builtin_names_counted_by_name_and_custom_as_custom(store: str) -> None:
 
 
 def test_features_counted_per_attempt_even_on_failure(store: str) -> None:
-    report = _run_query(store, {"population": "orders", "metrics": ["sum(orders.no_such_column)"]})
+    report = _run_query(store, {"population": "orders", "metrics": ["sum(orders.no_such_field)"]})
     assert report["features"]["aggregations"]["sum"] == 1
     assert usage(report, "cli:query")["ok"] == 0
 

@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(not is_available(), reason="ladybug not installe
 
 # Walks every RELATIONSHIPS path of up to 30 hops: several seconds over the cycles below.
 RUNAWAY = "MATCH (a)-[:RELATIONSHIPS*]->(b) RETURN DISTINCT b.id AS id"
-MODELS = "MATCH (m:Dataset) RETURN m.id AS id"
+DATASETS = "MATCH (m:Dataset) RETURN m.id AS id"
 DATASOURCES = "MATCH (d:Datasource) RETURN d.id AS id"
 
 #: m0 ⇄ m1 ⇄ m2 plus m2 → m0: dense enough that RUNAWAY takes seconds untimed.
@@ -58,7 +58,7 @@ def _limit(monkeypatch: pytest.MonkeyPatch, ms: int) -> None:
 
 async def test_runaway_traversal_times_out(cyclic_storage, monkeypatch: pytest.MonkeyPatch) -> None:
     _limit(monkeypatch, 300)
-    await get_filtered_ids(MODELS, cyclic_storage)  # warm the cache
+    await get_filtered_ids(DATASETS, cyclic_storage)  # warm the cache
     start = time.monotonic()
     with pytest.raises(ValueError) as ei:
         await get_filtered_ids(RUNAWAY, cyclic_storage)
@@ -104,7 +104,7 @@ def blocking_conns(monkeypatch: pytest.MonkeyPatch) -> list[_BlockingConn]:
 
 
 async def test_other_requests_proceed_during_a_slow_filter(cyclic_storage, blocking_conns) -> None:
-    await get_filtered_ids(MODELS, cyclic_storage)
+    await get_filtered_ids(DATASETS, cyclic_storage)
     conn = blocking_conns[-1]
     slow = asyncio.create_task(get_filtered_ids(DATASOURCES, cyclic_storage))
     try:
@@ -119,22 +119,22 @@ async def test_other_requests_proceed_during_a_slow_filter(cyclic_storage, block
 
 async def test_concurrent_filters_return_their_own_ids(cyclic_storage) -> None:
     clear_cache()
-    queries = [MODELS, DATASOURCES] * 10
+    queries = [DATASETS, DATASOURCES] * 10
     results = await asyncio.gather(*(get_filtered_ids(q, cyclic_storage) for q in queries))
     for query, ids in zip(queries, results):
-        expected = {"shop.m0", "shop.m1", "shop.m2"} if query == MODELS else {"shop"}
+        expected = {"shop.m0", "shop.m1", "shop.m2"} if query == DATASETS else {"shop"}
         assert ids == frozenset(expected)
 
 
 async def test_rebuild_waits_for_an_in_flight_filter(cyclic_storage, blocking_conns) -> None:
-    await get_filtered_ids(MODELS, cyclic_storage)
+    await get_filtered_ids(DATASETS, cyclic_storage)
     conn = blocking_conns[-1]
     slow = asyncio.create_task(get_filtered_ids(DATASOURCES, cyclic_storage))
     try:
         assert await asyncio.to_thread(conn.entered.wait, 5)
         assert not slow.done()
         await cyclic_storage.save_memory(learning="Changes the graph fingerprint.", entities=[])
-        rebuild = asyncio.create_task(get_filtered_ids(MODELS, cyclic_storage))
+        rebuild = asyncio.create_task(get_filtered_ids(DATASETS, cyclic_storage))
         await asyncio.sleep(0.3)
         assert not rebuild.done()
     finally:

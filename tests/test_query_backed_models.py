@@ -39,7 +39,7 @@ def _ds() -> DatasourceConfig:
     return DatasourceConfig(name="ds", type="sqlite", database=":memory:")
 
 
-async def _engine_with_orders(*extra_models: SlayerDataset) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
+async def _engine_with_orders(*extra_datasets: SlayerDataset) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build a YAMLStorage with `orders` saved + any extras, and an engine.
 
     Returns (engine, tmpdir_handle). Caller must keep the tmpdir alive.
@@ -48,7 +48,7 @@ async def _engine_with_orders(*extra_models: SlayerDataset) -> tuple[SlayerQuery
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(_ds())
     await storage.save_dataset(_orders_dataset())
-    for m in extra_models:
+    for m in extra_datasets:
         await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp

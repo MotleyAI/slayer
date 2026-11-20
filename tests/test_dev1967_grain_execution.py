@@ -46,7 +46,7 @@ C_BY_ID_TIER = {
     "name": "c", "population": "customers", "dimensions": ["customers.id", "customers.tier"],
     "metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
 }
-ORDERS_JOIN_C = {
+ORDERS_RELATIONSHIP_C = {
     "dataset": "orders",
     "relationships": [{"to": "c", "from_columns": ["customer_id"], "to_columns": ["id"]}],
 }
@@ -56,7 +56,7 @@ TIERS_BY_ID = {1: "gold", 2: "silver", 3: "gold", 4: "bronze"}
 class TestSiblingJoins:
     async def test_join_onto_sibling_grain_is_proven(self, engine) -> None:
         resp = await engine.execute(_stages(C_BY_ID, {
-            "population": "orders", "extensions": [ORDERS_JOIN_C], "dimensions": ["c.tr"],
+            "population": "orders", "extensions": [ORDERS_RELATIONSHIP_C], "dimensions": ["c.tr"],
             "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}],
         }))
         assert _by(resp, "c.tr", "amt") == pytest.approx(AMOUNT_BY_TIER)
@@ -64,7 +64,7 @@ class TestSiblingJoins:
 
     async def test_join_onto_sibling_grain_through_a_chain(self, engine) -> None:
         b = {
-            "name": "b", "population": "orders", "extensions": [ORDERS_JOIN_C], "dimensions": ["c.tr"],
+            "name": "b", "population": "orders", "extensions": [ORDERS_RELATIONSHIP_C], "dimensions": ["c.tr"],
             "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}],
         }
         root = {
@@ -77,14 +77,14 @@ class TestSiblingJoins:
 
     async def test_join_on_part_of_composite_sibling_grain_broadcasts(self, engine) -> None:
         resp = await engine.execute(_stages(C_BY_ID_TIER, {
-            "population": "orders", "extensions": [ORDERS_JOIN_C], "dimensions": ["c.tier"],
+            "population": "orders", "extensions": [ORDERS_RELATIONSHIP_C], "dimensions": ["c.tier"],
             "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}], "to_many_handling": "broadcast",
         }))
         assert len(broadcast_warnings(resp)) == 1
         assert {r["amt"] for r in resp.data} == {AMOUNT_TOTAL}
 
     async def test_join_on_part_of_composite_sibling_grain_associates_by_default(self, engine) -> None:
-        final = {"population": ORDERS_JOIN_C, "dimensions": ["c.tier"],
+        final = {"population": ORDERS_RELATIONSHIP_C, "dimensions": ["c.tier"],
                  "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}]}
         default = await engine.execute(_stages(C_BY_ID_TIER, final))
         assoc = await engine.execute(_stages(C_BY_ID_TIER, {**final, "to_many_handling": "associate"}))

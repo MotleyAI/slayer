@@ -35,7 +35,7 @@ from tests._dev2215_fixtures import (
     single,
     warnings_mentioning,
 )
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 
 SLAYER_3 = "3.0"
 

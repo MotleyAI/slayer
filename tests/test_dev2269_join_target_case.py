@@ -307,7 +307,7 @@ async def test_an_ambiguous_stored_target_fails_closed_at_query_time(tmp_path, s
 # --------------------------------------------------------------------------- #
 # A stored relationship to the spine is dropped on load
 # --------------------------------------------------------------------------- #
-def _ev_doc(*, joins: list[dict]) -> dict:
+def _ev_doc(*, relationships: list[dict]) -> dict:
     """No time axis: two temporal fields and no declared default."""
     return {
         "version": PRE_REPAIR, "name": "ev", "sql_table": "orders", "data_source": DS,
@@ -317,7 +317,7 @@ def _ev_doc(*, joins: list[dict]) -> dict:
             {"name": "ordered_at", "type": "TIMESTAMP"},
             {"name": "ordered_day", "sql": "ordered_at", "type": "TIMESTAMP"},
         ],
-        "joins": joins,
+        "joins": relationships,
     }
 
 
@@ -332,7 +332,7 @@ SPINE_QUERY = {
 @pytest.mark.parametrize("target", ["time_spine", "TIME_SPINE"])
 async def test_a_stored_join_to_the_spine_is_dropped_on_load(tmp_path, shop_ds, backend, target) -> None:
     spine_join = {"target_model": target, "name": "spine_link", "join_pairs": [["ordered_at", "timestamp"]]}
-    storage = await _store(tmp_path, backend=backend, ds=shop_ds, docs=[_ev_doc(joins=[spine_join])])
+    storage = await _store(tmp_path, backend=backend, ds=shop_ds, docs=[_ev_doc(relationships=[spine_join])])
     with recorded_warnings() as caught:
         model = await storage.get_dataset("ev", data_source=DS)
     assert model is not None
@@ -341,7 +341,7 @@ async def test_a_stored_join_to_the_spine_is_dropped_on_load(tmp_path, shop_ds, 
     doc = await raw_doc(storage, "ev")
     assert (doc["version"], doc.get("joins") or []) == (mig.CURRENT_VERSIONS["SlayerModel"], [])
     resp = await run(storage, SPINE_QUERY)
-    plain = await _store(tmp_path, backend=backend, ds=shop_ds, base="plain", docs=[_ev_doc(joins=[])])
+    plain = await _store(tmp_path, backend=backend, ds=shop_ds, base="plain", docs=[_ev_doc(relationships=[])])
     expected = await run(plain, SPINE_QUERY)
     assert {str(r["time_spine.timestamp"])[:7]: float(r["s"]) for r in resp.data} == {
         "2024-01": 210.0, "2024-02": 210.0, "2024-03": 210.0}

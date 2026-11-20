@@ -100,7 +100,7 @@ def _monthly_dataset() -> SlayerDataset:
     )
 
 
-_MONTHLY_MODEL_TABLE = {
+_MONTHLY_DATASET_TABLE = {
     "name": "monthly",
     "columns": [("month_ts", "TIMESTAMP"), ("rev", "DOUBLE")],
     "rows": [("2025-01-01", 100.0), ("2025-02-01", 200.0), ("2025-03-01", 300.0), ("2025-04-01", 400.0)],
@@ -129,7 +129,7 @@ async def test_windowed_aggregate_over_stage_time_dimension(backend: str) -> Non
         model_engine = await make_engine(
             backend, base_dir=os.path.join(tmp, "model_store"),
             db_path=os.path.join(tmp, f"m.{backend}"),
-            tables=[_MONTHLY_MODEL_TABLE], datasets=[_monthly_dataset()],
+            tables=[_MONTHLY_DATASET_TABLE], datasets=[_monthly_dataset()],
         )
         model_resp = await model_engine.execute(model_query)
     stage = _by_month(stage_resp.data, "win")

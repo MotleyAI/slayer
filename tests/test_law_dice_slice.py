@@ -22,7 +22,7 @@ from tests._dev1841_fixtures import (
 from slayer.core.query import QueryMetric
 
 #: metric root spans local field, star-count, deep hop, and percentile family.
-MEASURES = {
+METRICS = {
     "spend": "sum(customers.spend)",
     "count": "count(customers.*)",
     "pop": "sum(customers.regions.pop)",
@@ -33,7 +33,7 @@ DIMENSIONS = {"status": ["ok", "new"], "channel": ["app", "web"]}
 
 FAMILY = [
     pytest.param(m, d, v, id=f"{m}-{d}-{v}")
-    for m in MEASURES
+    for m in METRICS
     for d, values in DIMENSIONS.items()
     for v in values
 ]
@@ -48,7 +48,7 @@ async def exec_backend(request):
 @pytest.mark.parametrize("measure_key,dim,value", FAMILY)
 async def test_filtered_value_equals_sliced_cell(exec_backend, measure_key, dim, value):
     _, engine = exec_backend
-    measure = QueryMetric(metric=MEASURES[measure_key], alias="m")
+    measure = QueryMetric(metric=METRICS[measure_key], alias="m")
 
     filtered = await engine.execute(
         assoc_q(metrics=[measure], filter=[f"orders.{dim} = '{value}'"]))
@@ -65,7 +65,7 @@ async def test_filtered_value_equals_sliced_cell(exec_backend, measure_key, dim,
 @pytest.mark.parametrize("measure_key,dim,value", FAMILY)
 async def test_holds_by_default(exec_backend, measure_key, dim, value):
     _, engine = exec_backend
-    measure = QueryMetric(metric=MEASURES[measure_key], alias="m")
+    measure = QueryMetric(metric=METRICS[measure_key], alias="m")
 
     filtered = await engine.execute(q(metrics=[measure], filter=[f"orders.{dim} = '{value}'"]))
     sliced = await engine.execute(q(dimensions=[f"orders.{dim}"], metrics=[measure]))

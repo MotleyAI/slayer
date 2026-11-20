@@ -30,7 +30,7 @@ from slayer.engine.cardinality import relationship_safety
 from slayer.engine.compile import stages
 
 #: Cross-dataset aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
-_CROSS_MODEL_MEASURE = {"metric": "sum(customers.spend)", "alias": "cs"}
+_CROSS_DATASET_METRIC = {"metric": "sum(customers.spend)", "alias": "cs"}
 
 #: Reachable from the re-rooted target (``customers -> regions``).
 FILTER_REACHABLE = "customers.regions.name == 'Alpha'"
@@ -62,7 +62,7 @@ def _query(*filters: str) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": [QueryDimension(field="customers.regions.name")],
-        "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, _CROSS_DATASET_METRIC],
         "filter": list(filters) or None,
     })
 
@@ -239,7 +239,7 @@ class TestMixedOrPushes:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [QueryDimension(field="customers.regions.name")],
-            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, _CROSS_DATASET_METRIC],
             "filter": [
                 "customers.tier == 'gold' or orders.status == 'A'",
                 "customers.tier == 'silver' or orders.status == 'B'",
@@ -315,7 +315,7 @@ class TestUnreachableDimensionsStillDrop:
         query = SlayerQuery.model_validate({"population": "orders", "dimensions": [
                 QueryDimension(field="customers.regions.name"),
                 QueryDimension(field="order_tags.name"),
-            ], "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
+            ], "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, _CROSS_DATASET_METRIC],
             "to_many_handling": "broadcast"})
         plan = plan_query(query=query, bundle=dev1747_bundle())
         attach = next(
@@ -371,7 +371,7 @@ class TestFilteredLocalDispatchAccounting:
                 dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     {"metric": "sum(orders.amount)", "alias": "rev"},
-                    _CROSS_MODEL_MEASURE,
+                    _CROSS_DATASET_METRIC,
                 ],
             ),
             bundle=dev1747_bundle(),

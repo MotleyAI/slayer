@@ -48,8 +48,8 @@ def test_the_allowlist_names_real_tokenize_readers() -> None:
 # --------------------------------------------------------------------------- #
 # Usage reporting reads the parse tree
 # --------------------------------------------------------------------------- #
-def _features(*measures: str) -> tuple[Counter[str], Counter[str]]:
-    found = query_features({"population": "m", "metrics": list(measures)})
+def _features(*metrics: str) -> tuple[Counter[str], Counter[str]]:
+    found = query_features({"population": "m", "metrics": list(metrics)})
     return Counter(found.aggregations), Counter(found.flags)
 
 

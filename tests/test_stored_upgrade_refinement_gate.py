@@ -18,7 +18,7 @@ from slayer.storage import base as storage_base
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction
 from tests._gateway_harness import RecordingClient
-from tests._stored_upgrade_fixtures import BACKENDS, DS, column_of, raw_doc, raw_store
+from tests._stored_upgrade_fixtures import BACKENDS, DS, field_of, raw_doc, raw_store
 
 
 def _items(*, version: int, amount_type: str = "DOUBLE", sql_table: str = "items", columns: list[dict] | None = None) -> dict:
@@ -68,7 +68,7 @@ async def test_v10_model_loads_without_datasource_entry(tmp_path, backend):
     storage = await raw_store(backend=backend, base=str(tmp_path), datasource=None, models=[_items(version=10)])
     model = await storage.get_dataset("items", data_source=DS)
     assert model is not None
-    assert column_of(model, "amount").datatype is DataType.FLOAT
+    assert field_of(model, "amount").datatype is DataType.FLOAT
     assert (await raw_doc(storage, "items"))["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
@@ -79,7 +79,7 @@ async def test_v10_model_loads_with_unreachable_datasource(tmp_path, backend, no
     storage = await raw_store(backend=backend, base=str(tmp_path), datasource=ds, models=[_items(version=10)])
     model = await storage.get_dataset("items", data_source=DS)
     assert model is not None
-    assert column_of(model, "amount").datatype is DataType.FLOAT
+    assert field_of(model, "amount").datatype is DataType.FLOAT
     assert no_live_access == []
 
 
@@ -107,7 +107,7 @@ async def test_v7_model_is_still_refined(tmp_path, backend):
         engine.close()
         engine_factory.invalidate_engine(ds)
     assert model is not None
-    assert column_of(model, "amount").datatype is DataType.INTEGER
+    assert field_of(model, "amount").datatype is DataType.INTEGER
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -141,7 +141,7 @@ async def test_refinement_reads_only_the_models_table(tmp_path: Path) -> None:
         engine.close()
         engine_factory.invalidate_engine(ds)
     assert model is not None
-    assert column_of(model, "amount").datatype is DataType.INTEGER
+    assert field_of(model, "amount").datatype is DataType.INTEGER
     reads = [c for c in clients[0].calls if c.op == "reflect_columns"]
     assert [(c.args[0] if c.args else c.kwargs["location"]).name for c in reads] == ["items"]
     assert "list_objects" not in clients[0].ops()
@@ -214,8 +214,8 @@ async def test_sqlite_refinement_keeps_its_sampling_rules(tmp_path: Path) -> Non
         "blobs": DataType.STRING, "coercible": DataType.FLOAT, "noncoercible": DataType.STRING,
         "nonfinite": DataType.STRING,
     }
-    assert column_of(models["big"], "v").datatype is DataType.FLOAT
-    assert column_of(models["events"], "group").datatype is DataType.INTEGER
-    assert column_of(models["odd"], "v").datatype is DataType.INTEGER
+    assert field_of(models["big"], "v").datatype is DataType.FLOAT
+    assert field_of(models["events"], "group").datatype is DataType.INTEGER
+    assert field_of(models["odd"], "v").datatype is DataType.INTEGER
     assert clients
     assert clients[0].statements()

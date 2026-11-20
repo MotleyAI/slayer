@@ -27,7 +27,7 @@ from tests.test_dev1756_identifier_length import (
 )
 
 # 73 chars — over the postgres 63-byte limit.
-LONGCOL = "a_very_long_column_name_that_certainly_exceeds_sixty_three_bytes_for_fit"
+LONGCOL = "a_very_long_field_name_that_certainly_exceeds_sixty_three_bytes_for_fit"
 # 310 chars — over both the T-SQL (128) and BigQuery (300) limits.
 LONG310 = "c" * 310
 
@@ -40,7 +40,7 @@ GOLDEN_UNDER_LIMIT_PG = (
 )
 
 
-def _long_column(name: str) -> list[DatasetField]:
+def _long_field(name: str) -> list[DatasetField]:
     return [
         DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
         DatasetField(name=name, sql="amount", datatype=DataType.FLOAT),
@@ -50,7 +50,7 @@ def _long_column(name: str) -> list[DatasetField]:
 async def _expand(
     *,
     ds_type: str,
-    columns: list[DatasetField],
+    fields: list[DatasetField],
     dimensions: list[str],
 ) -> tuple[SlayerDataset, str]:
     """Expand a one-stage query-backed dataset; returns (dataset, backing sql)."""
@@ -61,7 +61,7 @@ async def _expand(
             DatasourceConfig(name="ds", type=ds_type, database="db")
         )
         await storage.save_dataset(SlayerDataset(
-            name="orders", sql_table="orders_t", data_source="ds", fields=columns,
+            name="orders", sql_table="orders_t", data_source="ds", fields=fields,
         ))
         engine = SlayerQueryEngine(storage=storage)
         stage = SlayerQuery(population="orders", dimensions=dimensions)
@@ -88,14 +88,14 @@ class TestPremise:
 class TestBackingSqlIsLengthFitted:
     async def test_postgres_backing_sql_within_limit(self) -> None:
         _, sql = await _expand(
-            ds_type="postgres", columns=_long_column(LONGCOL), dimensions=[f"orders.{LONGCOL}"],
+            ds_type="postgres", fields=_long_field(LONGCOL), dimensions=[f"orders.{LONGCOL}"],
         )
         _assert_within_limit(sql, 63)
         assert LONGCOL not in sql
 
     async def test_postgres_column_bridges_canonical_to_fitted(self) -> None:
         expanded, sql = await _expand(
-            ds_type="postgres", columns=_long_column(LONGCOL), dimensions=[f"orders.{LONGCOL}"],
+            ds_type="postgres", fields=_long_field(LONGCOL), dimensions=[f"orders.{LONGCOL}"],
         )
         col = next(c for c in expanded.fields if c.name == LONGCOL)
         fitted = get_dialect("postgres").fit_alias(LONGCOL)
@@ -106,7 +106,7 @@ class TestBackingSqlIsLengthFitted:
 
     async def test_tsql_mangled_and_fitted(self) -> None:
         expanded, sql = await _expand(
-            ds_type="mssql", columns=_long_column(LONG310), dimensions=[f"orders.{LONG310}"],
+            ds_type="mssql", fields=_long_field(LONG310), dimensions=[f"orders.{LONG310}"],
         )
         _assert_within_limit(sql, 128, dialect="tsql")
         assert LONG310 not in sql
@@ -115,7 +115,7 @@ class TestBackingSqlIsLengthFitted:
 
     async def test_bigquery_mangled_and_fitted(self) -> None:
         expanded, sql = await _expand(
-            ds_type="bigquery", columns=_long_column(LONG310), dimensions=[f"orders.{LONG310}"],
+            ds_type="bigquery", fields=_long_field(LONG310), dimensions=[f"orders.{LONG310}"],
         )
         _assert_within_limit(sql, 300, dialect="bigquery")
         assert LONG310 not in sql
@@ -125,7 +125,7 @@ class TestBackingSqlIsLengthFitted:
     async def test_under_limit_expansion_is_byte_identical(self) -> None:
         expanded, sql = await _expand(
             ds_type="postgres",
-            columns=[
+            fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
@@ -137,7 +137,7 @@ class TestBackingSqlIsLengthFitted:
 
     async def test_unbounded_dialect_keeps_canonical_aliases(self) -> None:
         expanded, sql = await _expand(
-            ds_type="sqlite", columns=_long_column(LONGCOL), dimensions=[f"orders.{LONGCOL}"],
+            ds_type="sqlite", fields=_long_field(LONGCOL), dimensions=[f"orders.{LONGCOL}"],
         )
         assert LONGCOL in sql
         assert not _FIT_MARKER_RE.search(sql)
@@ -155,7 +155,7 @@ class TestOuterQueryThroughVirtualModel:
             )
             await storage.save_dataset(SlayerDataset(
                 name="orders", sql_table="orders_t", data_source="ds",
-                fields=_long_column(LONGCOL),
+                fields=_long_field(LONGCOL),
             ))
             stage = SlayerQuery(population="orders", dimensions=[f"orders.{LONGCOL}"])
             await storage.save_dataset(SlayerDataset(

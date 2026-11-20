@@ -17,7 +17,7 @@ from slayer.inspect.dataset_render import dataset_skeleton_fields, render_datase
 from tests._dev2073_fixtures import (
     DS,
     addresses_dataset,
-    join_to,
+    relationship_to,
     dataset_store,
     named_pair,
     orders_with,
@@ -57,19 +57,19 @@ class TestInspectShowsEdgeNames:
         assert dataset_skeleton_fields(dataset=_orders())["relationships_to"] == EDGE_NAMES
 
 
-def _summary_joins(*models: SlayerDataset) -> dict[str, list[str]]:
-    out = json.loads(render_datasets_summary(datasource_name=DS, datasets=list(models), fmt="json", compact=True))
+def _summary_relationships(*datasets: SlayerDataset) -> dict[str, list[str]]:
+    out = json.loads(render_datasets_summary(datasource_name=DS, datasets=list(datasets), fmt="json", compact=True))
     return {m["name"]: m["relationships_to"] for m in out["datasets"]}
 
 
 class TestModelsSummaryListsAddressableTokens:
     def test_named_parallel_edges_list_their_names(self) -> None:
-        joins = _summary_joins(addresses_dataset(), _orders())
+        joins = _summary_relationships(addresses_dataset(), _orders())
         assert joins["orders"] == EDGE_NAMES
         assert joins["addresses"] == EDGE_NAMES
 
     def test_unnamed_parallel_pair_is_marked_ambiguous(self) -> None:
-        joins = _summary_joins(addresses_dataset(), orders_with(*unnamed_pair()))
+        joins = _summary_relationships(addresses_dataset(), orders_with(*unnamed_pair()))
         assert joins["orders"] == ["addresses (ambiguous: name the edges)"]
 
 
@@ -111,7 +111,7 @@ def _dimension_names(result: QueryResult) -> list[str]:
 
 class TestTranslatorMatchesTheDeclaredEdge:
     def test_reverse_direction_join_traverses_the_declared_edge(self) -> None:
-        orders = orders_with(join_to([["customer_id", "id"]], target="customers"))
+        orders = orders_with(relationship_to([["customer_id", "id"]], target="customers"))
         catalog = build_catalog(datasets_by_datasource={DS: [orders, _customers()]})
         sql = (
             'SELECT "Orders"."status" AS "s" FROM "public"."customers" '

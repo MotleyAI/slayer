@@ -39,7 +39,7 @@ setup_cube = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(setup_cube)
 
 DS = setup_cube.DATASOURCE_NAME
-EXPECTED_MODELS = {"orders", "customers", "order_facts", "orders_overview"}
+EXPECTED_DATASETS = {"orders", "customers", "order_facts", "orders_overview"}
 _BOTH = ["Beverages", "Bakery"]
 
 
@@ -130,7 +130,7 @@ def test_library_import_persists_all_models(tmp_path):
     store = tmp_path / "slayer_models"
     result: CubeConversionResult = setup_cube.import_cube_lib(datasets_dir=store)
     assert not result.report.has_errors
-    assert {m.name for m in result.datasets} == EXPECTED_MODELS
+    assert {m.name for m in result.datasets} == EXPECTED_DATASETS
     fp_members = {
         i.member
         for i in result.report.issues
@@ -150,7 +150,7 @@ def test_cli_import_writes_report_and_models(tmp_path):
     assert not errors, errors
 
     storage = YAMLStorage(base_dir=str(store))
-    for name in EXPECTED_MODELS:
+    for name in EXPECTED_DATASETS:
         model = run_sync(storage.get_dataset(name, data_source=DS))
         assert model is not None
         assert model.name == name

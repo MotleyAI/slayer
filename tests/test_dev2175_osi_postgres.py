@@ -75,9 +75,9 @@ def _orders(datasource: DatasourceConfig, *fields: dict[str, Any]) -> SlayerData
                    {"name": "amount", "datatype": "Integer"}, {"name": "qty", "datatype": "Integer"}, *fields]})
 
 
-async def _exported_field(datasource: DatasourceConfig, tmp_path: Path, model: SlayerDataset,
+async def _exported_field(datasource: DatasourceConfig, tmp_path: Path, slayer_dataset: SlayerDataset,
                           name: str) -> dict[str, Any]:
-    async with pg_query_engine(datasource, base_dir=str(tmp_path / "store"), datasets=[model]) as engine:
+    async with pg_query_engine(datasource, base_dir=str(tmp_path / "store"), datasets=[slayer_dataset]) as engine:
         document = (await export_osi(engine=engine, datasource=datasource.name)).document
     found = field(dataset(document, "orders"), name)
     assert found is not None

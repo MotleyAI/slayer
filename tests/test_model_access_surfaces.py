@@ -25,7 +25,7 @@ from slayer.search import graph as search_graph
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     DS,
     HIDDEN_TOKEN,

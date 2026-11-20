@@ -349,10 +349,10 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,
         )
-    column_type = ctx.field_type or _require_scope(ctx, key).field_type
+    field_type = ctx.field_type or _require_scope(ctx, key).field_type
     return apply_aggregate(
         entry=entry, value=inner, dialect=ctx.dialect,
-        input_type=aggregation_source_type(key.source, field_type=column_type),
+        input_type=aggregation_source_type(key.source, field_type=field_type),
     )
 
 

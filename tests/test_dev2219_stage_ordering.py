@@ -22,7 +22,7 @@ from tests._dev2219_fixtures import (
     by,
     customers,
     ext,
-    join,
+    relationship_to,
     m,
     orders,
     outcome,
@@ -152,7 +152,7 @@ class TestEdgeAwareExtractor:
     async def test_an_inherited_edge_reaches_its_sibling_target(self, dialect: str) -> None:
         totals = q(name="totals", population="orders", dimensions=["orders.region_id"], metrics=[m("sum(orders.amount)", "total")])
         keyed = q(name="keyed", population="orders", dimensions=["orders.region_id"], metrics=[m("count(orders.*)", "n")],
-                  extensions=[ext("orders", join("totals", [("region_id", "region_id")], name="totals_link"))])
+                  extensions=[ext("orders", relationship_to("totals", [("region_id", "region_id")], name="totals_link"))])
         root = q(population="keyed", dimensions=["keyed.region_id", "keyed.totals_link.total"], metrics=[m("sum(keyed.n)", "nn")])
         async with shop(dialect) as engine:
             resp = await engine.execute([totals, keyed, root])

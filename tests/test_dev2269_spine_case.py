@@ -218,7 +218,7 @@ async def storage(request, tmp_path) -> StorageBackend:
 
 def _joined_to(target: str) -> SlayerDataset:
     join = DatasetRelationship(to=target, name="spine_link", from_columns=["order_date"], to_columns=["timestamp"])
-    return orders_dataset(extra_joins=[join])
+    return orders_dataset(extra_relationships=[join])
 
 
 class TestNoStoredJoinToTheSpine:

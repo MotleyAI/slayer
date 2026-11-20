@@ -77,11 +77,11 @@ def _close(engine: SlayerQueryEngine, env: Env) -> None:
     engine_factory.invalidate_engine(env.config)
 
 
-async def save(env: Env, *models: SlayerDataset) -> None:
-    """Save ``models`` through the engine, validating each."""
+async def save(env: Env, *datasets: SlayerDataset) -> None:
+    """Save ``datasets`` through the engine, validating each."""
     engine = _engine(env)
     try:
-        for model in models:
+        for model in datasets:
             await engine.save_dataset(model.model_copy(update={"data_source": env.datasource}))
     finally:
         _close(engine, env)
@@ -95,9 +95,9 @@ async def export(env: Env, *, datasets: list[str] | None = None, extensions: boo
         _close(engine, env)
 
 
-async def export_datasets(env: Env, *models: SlayerDataset, extensions: bool = True,
+async def export_datasets(env: Env, *datasets: SlayerDataset, extensions: bool = True,
                         subset: list[str] | None = None) -> OsiExportResult:
-    await save(env, *models)
+    await save(env, *datasets)
     return await export(env, datasets=subset, extensions=extensions)
 
 
