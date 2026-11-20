@@ -163,7 +163,8 @@ def _params(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
 
 
 class Helpers(BaseModel):
-    """Test functions forwarding into a field: a ``sql`` parameter, or ``*args`` (index of the first) as field dicts."""
+    """Test functions forwarding into a field: a ``sql`` parameter or ``**kwargs``, or ``*args`` (index of the first) as
+    field dicts."""
 
     keyword: set[str] = set()
     varargs: dict[str, int] = {}
@@ -211,6 +212,7 @@ class _Finder(ast.NodeVisitor):
         self.seen: set[int] = set()
         self.sql_names: set[str] = set()  # names passed as a field's sql
         self.item_names: set[str] = set()  # names spread or listed as field dicts
+        self.kwarg_names: set[str] = set()  # names spread as a field's keywords
 
     @property
     def _where(self) -> str:
@@ -387,6 +389,8 @@ class _Finder(ast.NodeVisitor):
                     self.sql_names.add(kw.value.id)
             elif kw.arg is None:
                 self._field_dict(kw.value, form=form)
+                if isinstance(kw.value, ast.Name):
+                    self.kwarg_names.add(kw.value.id)
         for arg in node.args:
             self._field_dict(arg, form=form)
 
@@ -402,17 +406,21 @@ class _Finder(ast.NodeVisitor):
             self._add(node=node, form="helper keyword")
             if isinstance(sql, ast.Name):
                 self.sql_names.add(sql.id)
+        if name in self.helpers.keyword:
+            self.kwarg_names.update(kw.value.id for kw in node.keywords
+                                    if kw.arg is None and isinstance(kw.value, ast.Name))
         if name in self.helpers.varargs:
             for arg in node.args[self.helpers.varargs[name]:]:
                 self._field_dict(arg.value if isinstance(arg, ast.Starred) else arg, form="helper field dict")
 
 
 def _scan_helpers(func: ast.FunctionDef | ast.AsyncFunctionDef, *, module: _Module, helpers: Helpers) -> Helpers:
-    """What ``func`` forwards into a field: its ``sql`` parameter, its ``*args``."""
+    """What ``func`` forwards into a field: its ``sql`` parameter or ``**kwargs``, its ``*args``."""
     finder = _Finder(module=module, helpers=helpers)
     finder.visit(func)
     found = Helpers()
-    if "sql" in _params(func) and "sql" in finder.sql_names:
+    kwarg = func.args.kwarg
+    if ("sql" in _params(func) and "sql" in finder.sql_names) or (kwarg is not None and kwarg.arg in finder.kwarg_names):
         found.keyword.add(func.name)
     vararg = func.args.vararg
     if vararg is not None and vararg.arg in finder.item_names:
@@ -572,6 +580,21 @@ def outer(name, sql=None):
 outer('a', sql='x')
 """
     assert sorted(f for _, _, f in _sites(source)) == ["field keyword", "helper keyword", "helper keyword"]
+
+
+def test_a_helper_forwarding_kwargs_into_a_field() -> None:
+    source = _IMPORT + """
+def col(name, **extra):
+    return DatasetField(name=name, **extra)
+
+def outer(name, **kw):
+    return col(name, **kw)
+
+col('a', sql='x + 1')
+outer('b', sql='y')
+col('c', filter='z')
+"""
+    assert sorted(where for _, where, _ in _sites(source)) == ["<module>", "<module>"]
 
 
 def test_a_varargs_helper_spreading_field_dicts() -> None:

@@ -1,7 +1,7 @@
 ## 1. Base
 
 - [x] 1.1 Merge the DEV-2277 branch (fast-forward to `7a5fb8aa9`) and origin/main into this branch; verify `git log` shows both.
-- [ ] 1.2 At each later stage start, re-merge the DEV-2277 branch and origin/main (merge, never rebase); verify `git merge-base --is-ancestor` for both heads.
+- [x] 1.2 At each later stage start, re-merge the DEV-2277 branch and origin/main (merge, never rebase); verify `git merge-base --is-ancestor` for both heads.
 
 ## 2. Guard test (pr-tests)
 
@@ -15,7 +15,7 @@
 - [x] 3.2 Static inventory of every field-level `sql` site in `tests/` (Python only; YAML unchanged, decision 5), classified by `unquoted_identifier` (decision 19); reconcile each non-identifier site as observed, statically classified, or deprecated-spelling exemption; extend each site's dialect set with the backends of CI-only test files importing its module (decision 15). Verify: zero unreconciled sites.
 - [x] 3.3 Decide each non-identifier site by the end-to-end comparison (decisions 1, 11, 15): `resolved_dataset` as written vs with the replacement, every field of the dataset, every dialect in its set (unobserved backends offline with that `ds_type` and recorded live types); portable iff all equal after the same sqlglot normalisation, else one dialect entry per dialect; never-resolved sites portable; conflicting outputs per AST node flagged for call-site rewriting. Verify: a substitution summary (file:line, old → new, rule).
 - [x] 3.4 Classify each `.sql` read on a `DatasetField`/`Column` (basedpyright references) outside deprecated-spelling tests and propose its intent-specific rewrite (decision 12); list tests whose expected value would change. Verify: entries in the summary.
-- [ ] 3.5 Show the owner the substitution summary and the changed-expectation list; wait for consent on the latter. Verify: owner's answer recorded on the tracker issue.
+- [x] 3.5 Show the owner the substitution summary and the changed-expectation list; wait for consent on the latter. Verify: owner's answer recorded on the tracker issue.
 - [x] 3.6 Apply the value pass, including dict-literal fields (key and value, decision 6) and raw payloads by version (decision 18); re-run every touched test. Verify: touched tests pass; no non-identifier field `sql` remains outside the allowlist.
 
 ## 4. Keyword pass (pr-implement)
@@ -29,4 +29,4 @@
 
 - [x] 5.1 Guard test green with only the allowlist; no field-level `sql=` / `"sql"` field key in `tests/` outside it. Verify: `poetry run pytest tests/test_field_expression_spelling_guard.py`.
 - [x] 5.2 Local test scope per the flow (`la-affected-tests` + touched tests) passes; ruff, `la-typecheck`, `la-arch-check`, LikeC4 validation, `openspec validate --strict` clean. Verify: each command's output.
-- [ ] 5.3 CI green, including the path-gated per-backend integration workflows (decision 20). Verify: `la-fetch-failed-pr-checks` reports none.
+- [x] 5.3 CI green, including the path-gated per-backend integration workflows (decision 20). Verify: `la-fetch-failed-pr-checks` reports none.
