@@ -218,10 +218,19 @@ def classify_row_sources(query: SlayerQuery, *, datasets_by_name: dict[str, Slay
 # --------------------------------------------------------------------------- #
 # Composition
 # --------------------------------------------------------------------------- #
+def _row_level(text: str) -> bool:
+    """Whether ``text`` parses and reads no aggregation."""
+    try:
+        return not any(isinstance(n, AggCall) for n in walk_parsed_refs(parse_template(text)))
+    except Exception:  # noqa: BLE001 — an unparseable entry is refused where it binds
+        return False
+
+
 def _field_filters(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> list[str]:
     """The query's aggregate-free filters reading only fields (no metric alias, no saved metric), a dimension alias
     spelled as its field."""
-    fields = {d.alias: d.field for d in query.dimensions or [] if d.alias and d.ref is not None}
+    fields = {d.alias: d.field if d.ref is not None else f"({d.field})"
+              for d in query.dimensions or [] if d.alias and _row_level(d.field)}
     out: list[str] = []
     for f in (respell_bare_names(c, respell=fields.get) for c in query.filter_conditions):
         refs, ok = _all_filter_refs(f, root=None)

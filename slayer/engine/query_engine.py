@@ -179,7 +179,7 @@ from slayer.engine.stage_ordering import localize_stages, topologically_order_st
 from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
 from slayer.engine.elaborate_env import check_result_names_case, check_stage_flatten_collision, saved_date_only_notices
-from slayer.engine.extensions import respelled_heads, with_own_extension
+from slayer.engine.extensions import with_own_extension
 from slayer.engine.plan import bound_supply, plan_stages
 from slayer.ir.variables import (
     apply_variables_to_query,
@@ -1734,14 +1734,12 @@ class SlayerQueryEngine:
     async def _infer_population_of(
         self, *, query: SlayerQuery, data_source: Optional[str], sibling_stage_names: Set[str],
     ) -> "_StageInference":
-        """``query`` planned from its population, with its row supply when it has none (or a pinned anchor). Inference
-        reads dataset heads in their declared spelling (identifier-case rule); the stage keeps them as written."""
-        datasets = {name for _ds, name in await self.storage._list_all_dataset_identities()}
-        spelled = respelled_heads(query, tiers=[sibling_stage_names, datasets])
+        """``query`` planned from its population, with its row supply when it has none (or a pinned anchor); rows are
+        planned from inference's spelling of it (each dataset head as declared), the stage keeps it as written."""
         if query.population is not None and not query.population_inferred:
-            return await self._named_population_of(query=query, spelled=spelled, data_source=data_source,
+            return await self._named_population_of(query=query, data_source=data_source,
                                                    sibling_stage_names=sibling_stage_names)
-        free = spelled.model_copy(update={"population": None, "population_inferred": False})
+        free = query.model_copy(update={"population": None, "population_inferred": False})
         if is_spine_query(query):
             return await self._spine_population_of(query=query, free=free, data_source=data_source,
                                                    sibling_stage_names=sibling_stage_names)
@@ -1749,7 +1747,7 @@ class SlayerQueryEngine:
                                 sibling_stage_names=sibling_stage_names,
                                 raw_rows=not query.distinct_dimension_values)
         anchor = DimensionAnchor(datasets=(query.population_name,)) if query.population_name else rows.anchor
-        plan = plan_rows(free, anchor=anchor, datasets_by_name=rows.datasets_by_name)
+        plan = plan_rows(rows.query, anchor=anchor, datasets_by_name=rows.datasets_by_name)
         return _StageInference(
             query=query.model_copy(update={"population": plan.population, "population_inferred": True}),
             data_source=rows.data_source, reported=plan.reported, supply=plan.supply,
@@ -1757,9 +1755,9 @@ class SlayerQueryEngine:
         )
 
     async def _named_population_of(
-        self, *, query: SlayerQuery, spelled: SlayerQuery, data_source: Optional[str], sibling_stage_names: Set[str],
+        self, *, query: SlayerQuery, data_source: Optional[str], sibling_stage_names: Set[str],
     ) -> "_StageInference":
-        """``query`` under the population it names (``spelled``: its heads in their declared spelling)."""
+        """``query`` under the population it names."""
         spine_ds = None
         if query.population_name == TIME_SPINE_DATASET:
             spine_ds = await spine_datasource(
@@ -1767,7 +1765,7 @@ class SlayerQueryEngine:
                 sibling_stage_names=sibling_stage_names,
             )
         name = query.population_name
-        routed = await self._anchored_rows(spelled, data_source=data_source) if spine_ds is None else None
+        routed = await self._anchored_rows(query, data_source=data_source) if spine_ds is None else None
         if routed is not None:
             plan, routed_ds = routed
             return _StageInference(
@@ -2696,7 +2694,7 @@ class SlayerQueryEngine:
         """Recommend the query root for ``dataset.field`` / ``dataset.metric`` items, plus each item's path.
 
         Selection uses the population rule — the root must *determine*
-        every field item along provably to-one paths (fewest total hops); saved
+        every field item along to-one paths, an unproven hop by association (fewest total hops); saved
         metrics and aggregation-suffixed items are attachments, needing only
         (cardinality-blind) reachability, and never steer the choice. No common
         determiner ⇒ ``reachable=False`` with a Pareto ``coverage`` over the

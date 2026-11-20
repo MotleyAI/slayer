@@ -392,7 +392,8 @@ async def test_a_filter_on_a_dimension_alias_restricts_the_supply(backend: str) 
     ('"region" = 1', '"region" = 1'),
     ("region(x) = 1", "region(x) = 1"),
     ("region = = 1", "region = = 1"),
-], ids=["bare", "string-and-path", "argument", "quoted", "call", "unparseable"])
+    ("region = {region}", "customers.region = {region}"),
+], ids=["bare", "string-and-path", "argument", "quoted", "call", "unparseable", "placeholder"])
 def test_respell_bare_names_replaces_only_bare_references(text: str, expected: str) -> None:
     assert respell_bare_names(text, respell={"region": "customers.region"}.get) == expected
 
@@ -402,3 +403,18 @@ async def test_a_supplying_hosts_own_filter_never_restricts_another_home(backend
     async with seed_engine(backend, datasets=seed_datasets(orders=orders)) as eng:
         resp = await run(eng, dimensions=[R], metrics=[REV, RET])
     assert table(resp, R, REV, RET) == rows(("EAST", 200, 25), ("NORTH", None, 10), ("WEST", 300, None))
+
+
+async def test_a_filter_on_a_computed_dimension_alias_restricts_the_supply(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[{"field": "upper(customers.region)", "alias": "region"}], metrics=[REV, RET],
+                         filter=["region = 'EAST'"])
+    assert table(resp, "region", REV, RET) == rows(("EAST", 350, 25))
+
+
+async def test_a_coarser_term_restricts_on_a_dimension_under_two_aliases(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[{"field": R, "alias": "a"}, {"field": R, "alias": "b"}, "customers.segment"],
+                         metrics=[{"metric": "sum(orders.amount, partition_by=[customers.region])", "alias": "p"}])
+    assert table(resp, "a", "b", "customers.segment", "p") == rows(
+        ("EAST", "EAST", "corporate", 350), ("EAST", "EAST", "retail", 350), ("WEST", "WEST", "retail", 300))

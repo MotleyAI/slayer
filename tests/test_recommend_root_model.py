@@ -262,14 +262,14 @@ class TestRootSelection:
         rec = await engine.recommend_population(["customers.name", "products.price"])
         assert rec.population == "orders"
 
-    async def test_symmetric_tie_broken_lexicographically(self, engine: SlayerQueryEngine) -> None:
-        # The single orders→order_items INNER edge routes both ways:
-        # root=orders costs 1 hop, root=order_items costs 1 hop. Both are
-        # mentioned owning datasets, so the mentioned-preference can't break it
-        # → lexicographically smallest name wins: "order_items" < "orders".
+    async def test_symmetric_tie_recommends_no_root(self, engine: SlayerQueryEngine) -> None:
+        # The unknown-cardinality orders→order_items edge counts both ways (by association from orders), so both
+        # determine both items in one hop: a tie, as dimension-anchor inference refuses it.
         rec = await engine.recommend_population(["orders.status", "order_items.sku"])
-        assert rec.population == "order_items"
-        assert _paths(rec) == {"orders.status": "orders.status", "order_items.sku": "order_items.sku"}
+        assert rec.population is None
+        assert not rec.reachable
+        assert {(c.dataset_name, tuple(c.reachable_items)) for c in rec.coverage} == {
+            ("order_items", ("orders.status", "order_items.sku")), ("orders", ("orders.status", "order_items.sku"))}
 
 
 # --------------------------------------------------------------------------
@@ -346,14 +346,13 @@ class TestAggSuffix:
 # the to-one order_items→orders→(products) chain.
 # --------------------------------------------------------------------------
 class TestInnerJoins:
-    async def test_inner_pair_routes_from_child(self, engine: SlayerQueryEngine) -> None:
-        # {orders, order_items, products}: orders cannot determine order_items
-        # (the INNER hop fans out), so order_items is the sole to-one determiner
-        # — reaching orders in 1 hop and products in 2 (order_items→orders→products).
+    async def test_inner_pair_routes_from_the_associated_parent(self, engine: SlayerQueryEngine) -> None:
+        # {orders, order_items, products}: orders reaches order_items by association (the INNER hop has no declared
+        # cardinality) and products in one hop, fewer than order_items' two (order_items→orders→products).
         rec = await engine.recommend_population(
             ["orders.status", "order_items.sku", "products.category"]
         )
-        assert rec.population == "order_items"
+        assert rec.population == "orders"
         assert _paths(rec)["order_items.sku"] == "order_items.sku"
         assert _paths(rec)["orders.status"] == "orders.status"
 

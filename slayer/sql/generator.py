@@ -4008,8 +4008,9 @@ class SQLGenerator:
             if len(outputs) != len(plan.projection):
                 raise ValueError("a row-source plan projects other values than its dimensions")
             public = {sid: plan_slots[sid].public_name or plan_slots[sid].declared_name for sid in plan.projection}
-            by_dim = {names[public[sid]]: col for sid, col in zip(plan.projection, outputs) if public[sid] in names}
-            return body, by_dim
+            if any(public[sid] not in names for sid in plan.projection):
+                raise ValueError("a row-source plan projects a column that is no dimension of its stage")
+            return body, {names[public[sid]]: col for sid, col in zip(plan.projection, outputs)}
 
         branches = [
             self._row_supply_branch(index=i, branch=branch, cells=cells, dims=dims, key_names=key_names,
@@ -4064,8 +4065,6 @@ class SQLGenerator:
         )).from_(exp.Subquery(this=body, alias=exp.TableAlias(this=exp.to_identifier(alias))))
         for j, restrict in enumerate(branch.restrict):
             r_body, r_dim = cells(restrict)
-            if len(r_dim) != len(restrict.projection):
-                raise ValueError("a restricting cell plan projects a column that is no dimension of its stage")
             r_alias = f"_agree{index}_{j}"
             on = build_grain_joinback_condition(pairs=self._keyed_pairs([
                 (exp.column(col, table=r_alias, quoted=True), exp.column(by_dim[sid], table=alias, quoted=True),

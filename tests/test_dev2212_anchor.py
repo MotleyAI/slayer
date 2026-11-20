@@ -6,8 +6,11 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.errors import PopulationErrorReason, PopulationInferenceError
+from slayer.core.models import DatasetMetric
 
-from tests._dev2212_fixtures import BACKENDS, rows, run, seed_engine, table
+from tests._dev2212_fixtures import (
+    BACKENDS, customers_dataset, orders_dataset, rows, run, seed_datasets, seed_engine, table, to_customers,
+)
 from tests._dev2277_fixtures import add_other_datasource, cycle_engine
 
 R, REV, RET = "customers.region", "orders.total_revenue", "returns.total_returns"
@@ -106,3 +109,22 @@ async def test_a_dimensioned_query_scopes_by_its_metric_homes_too(backend: str) 
         with pytest.raises(PopulationInferenceError) as ei:
             await run(eng, dimensions=[R], metrics=["count(events.*)"])
     assert ei.value.reason is PopulationErrorReason.NO_DATASOURCE
+
+
+async def test_a_row_level_saved_metric_dimension_determines_its_dataset(backend: str) -> None:
+    base = orders_dataset()
+    orders = base.model_copy(update={"metrics": [*base.metrics, DatasetMetric(name="amt2", expression="amount * 2")]})
+    async with seed_engine(backend, datasets=seed_datasets(orders=orders)) as eng:
+        resp = await run(eng, dimensions=[{"field": "orders.amt2", "alias": "a2"}])
+    assert sorted(r["a2"] for r in resp.data) == [100, 200, 400, 600]
+    assert resp.population == "orders"
+
+
+async def test_recommendation_counts_an_unknown_cardinality_hop_as_inference_does() -> None:
+    datasets = seed_datasets(customers=customers_dataset(keyed=False),
+                             orders=orders_dataset(relationship=to_customers(cardinality=None)))
+    async with seed_engine("sqlite", datasets=datasets) as eng:
+        inferred = await run(eng, dimensions=["orders.status", R])
+        rec = await eng.recommend_population(["orders.status", R])
+    assert rec.reachable
+    assert rec.population == inferred.population == "orders"

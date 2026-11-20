@@ -595,7 +595,7 @@ async def _inferred_host(query: SlayerQuery, *, storage: StorageBackend) -> tupl
         choice = await infer_spine_population(query=query, storage=storage)
         return choice.dataset_name, choice.data_source
     rows = await infer_rows(query=query, storage=storage, raw_rows=not query.distinct_dimension_values)
-    plan = plan_rows(query, anchor=rows.anchor, datasets_by_name=rows.datasets_by_name)
+    plan = plan_rows(rows.query, anchor=rows.anchor, datasets_by_name=rows.datasets_by_name)
     reported = plan.reported if plan.reported in rows.datasets_by_name else None
     return reported or plan.population, rows.data_source
 

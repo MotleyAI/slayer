@@ -183,3 +183,9 @@ async def test_memory_entities_of_a_rootless_query(query: dict, root: str) -> No
     async with seed_engine("sqlite") as eng:
         resolved = await extract_entities_from_query(SlayerQuery.model_validate(query), storage=eng.storage)
     assert resolved.canonical_forms[0] == root
+
+
+async def test_mcp_markdown_row_sources_of_a_unit_query_end_the_table() -> None:
+    async with seed_engine("sqlite") as eng:
+        markdown = await _mcp(eng.storage, UNIT, "markdown")
+    assert "\n\nRow sources: unit" in markdown

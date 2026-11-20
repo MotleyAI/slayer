@@ -2476,6 +2476,9 @@ def _is_path_head(text: str, *, start: int, end: int) -> bool:
     return bool(segment) and (segment[0] in '"*' or _RUN_RE.match(segment) is not None)
 
 
+_PLACEHOLDER_RE = re.compile(r"\{[^{}]*\}")
+
+
 def _is_bare_ref(text: str, *, start: int, end: int) -> bool:
     """The word ``text[start:end]`` stands alone: no word or ``.`` before it, no ``.`` or call after it."""
     before = text[:start].rstrip()
@@ -2494,9 +2497,11 @@ def respell_bare_names(text: str, *, respell: Callable[[str], Optional[str]]) ->
     out: List[str] = []
     last = 0
     for region in (r for r in _regions(text) if r.kind == "code") if names else ():
+        placeholders = [m.span() for m in _PLACEHOLDER_RE.finditer(text, region.start, region.end)]
         for word in _RUN_RE.finditer(text, region.start, region.end):
             new = respell(word.group()) if word.group() in names else None
-            if new is None or not _is_bare_ref(text, start=word.start(), end=word.end()):
+            inside = any(a <= word.start() < b for a, b in placeholders)
+            if new is None or inside or not _is_bare_ref(text, start=word.start(), end=word.end()):
                 continue
             out += [text[last:word.start()], new]
             last = word.end()

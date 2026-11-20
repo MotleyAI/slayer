@@ -23,7 +23,7 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.names import match_name
 from slayer.core.query import DatasetExtension, SlayerQuery, extension_dataset_names
 from slayer.core.scope import DatasetScope
-from slayer.core.syntax import drop_root_hop, respell_path_heads, text_paths
+from slayer.core.syntax import drop_root_hop, text_paths
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population import dimension_routing
 from slayer.engine.population.anchors import anchor_route, find_anchor
@@ -46,7 +46,6 @@ __all__ = [
     "query_scopes",
     "resolve_path",
     "respelled",
-    "respelled_heads",
     "respelled_stages",
     "with_own_extension",
 ]
@@ -86,33 +85,6 @@ def respelled(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQu
     extensions = [extension(e) for e in query.extensions or []]
     if any(new is not old for new, old in zip(extensions, query.extensions or [])):
         update["extensions"] = extensions
-    return query.model_copy(update=update) if update else query
-
-
-def respelled_heads(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQuery:
-    """``query`` with each unquoted dotted-path head in its dimensions, time dimensions, metrics and filters spelled as
-    the first of ``tiers`` that declares it; an undeclared head stays as written."""
-    declared = [list(dict.fromkeys(tier)) for tier in tiers]
-
-    def spell(name: str) -> Optional[str]:
-        return next((f for names in declared if (f := match_name(name=name, declared=names, quoted=False))), None)
-
-    def text(t: str) -> str:
-        return respell_path_heads(t, respell=spell)
-
-    update: Dict[str, object] = {}
-    dims = [d.model_copy(update={"field": text(d.field)}) for d in query.dimensions or []]
-    if any(d.field != o.field for d, o in zip(dims, query.dimensions or [])):
-        update["dimensions"] = dims
-    tds = [t.model_copy(update={"field": text(t.field)}) for t in query.time_dimensions or []]
-    if any(t.field != o.field for t, o in zip(tds, query.time_dimensions or [])):
-        update["time_dimensions"] = tds
-    metrics = [m.model_copy(update={"metric": text(m.metric)}) for m in query.metrics or []]
-    if any(m.metric != o.metric for m, o in zip(metrics, query.metrics or [])):
-        update["metrics"] = metrics
-    filters = [text(f) for f in query.filter_conditions]
-    if filters != list(query.filter_conditions):
-        update["filter"] = filters
     return query.model_copy(update=update) if update else query
 
 

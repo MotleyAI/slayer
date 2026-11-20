@@ -106,13 +106,15 @@ class DimensionAnchor(BaseModel):
 
 
 class InferredRows(BaseModel):
-    """A root-less query's dimension anchor, resolved datasource and that datasource's datasets."""
+    """A root-less query's dimension anchor, resolved datasource and that datasource's datasets, and the query with
+    each first segment spelled as the dataset it anchors at."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     anchor: DimensionAnchor
     data_source: str
     datasets_by_name: dict[str, SlayerDataset]
+    query: SlayerQuery
 
 
 # --------------------------------------------------------------------------- #
@@ -347,14 +349,16 @@ def probe_item(
                                            associate=associate)
     if terminal is None:
         return (_UNREACHABLE if verdict == _NO_EDGE else verdict, ())
-    if terminal.get_field(leaf) is None:
+    # A saved metric read in a dimension is the terminal's own (binding refuses an aggregate there).
+    if terminal.get_field(leaf) is None and terminal.get_metric(leaf) is None:
         return (_UNREACHABLE, ())
     return (_OK, hops)
 
 
 def determined_path(*, root: str, item: str, datasets_by_name: dict[str, SlayerDataset]) -> tuple[str, ...] | None:
-    """``item``'s canonical path from ``root`` when ``root`` determines it, else ``None``."""
-    verdict, path = probe_item(root=root, item=item, datasets_by_name=datasets_by_name)
+    """``item``'s canonical path from ``root`` when ``root`` determines it, an unproven hop by association as the
+    dimension anchor counts it (semantics 12.2), else ``None``."""
+    verdict, path = probe_item(root=root, item=item, datasets_by_name=datasets_by_name, associate=True)
     return path if verdict == _OK else None
 
 
@@ -719,6 +723,7 @@ def _respelled_heads(query: SlayerQuery, respell: dict[str, str]) -> SlayerQuery
         "time_dimensions": [td.model_copy(update={"field": heads(td.field)})
                             for td in query.time_dimensions or []] or None,
         "filter": [heads(f) for f in query.filter_conditions] or None,
+        "metrics": [m.model_copy(update={"metric": heads(m.metric)}) for m in query.metrics or []] or None,
     })
 
 
@@ -901,7 +906,7 @@ async def infer_rows(
     datasets_by_name = scopes[ds]
     return InferredRows(
         anchor=dimension_anchor(query, datasets_by_name=datasets_by_name, raw_rows=raw_rows),
-        data_source=ds, datasets_by_name=datasets_by_name,
+        data_source=ds, datasets_by_name=datasets_by_name, query=query,
     )
 
 
