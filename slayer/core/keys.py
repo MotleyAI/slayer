@@ -1931,12 +1931,15 @@ def _computed_value_type(
 def _int_scalar_type(
     key: ScalarCallKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
 ) -> Optional[DataType]:
-    """``abs`` / ``round`` / … from its operands' resolved types: a DECIMAL first operand keeps DECIMAL; integers (or
-    booleans) stay INT unless ``round`` takes digits; any other number is DOUBLE; all-NULL is ``None``."""
+    """``abs`` / ``round`` / … from its operands' resolved types: ``mod`` as ``%``; otherwise a DECIMAL first operand
+    keeps DECIMAL, integers (or booleans) stay INT unless ``round`` takes digits, any other number is DOUBLE;
+    all-NULL is ``None``."""
     types = [value_type(a, field_type=field_type, aggregate_type=aggregate_type)
              for a in key.args if not _is_null_arg(a)]
     if not types:
         return None
+    if key.name == "mod":
+        return _arithmetic_result_type("%", types)
     if types[0] is DataType.DECIMAL:
         return DataType.DECIMAL
     digits = key.name == "round" and len(key.args) > 1

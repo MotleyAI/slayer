@@ -205,13 +205,14 @@ def field_aggregate_type(*, dataset: SlayerDataset, field_name: str, aggregation
     """The type of ``aggregation`` over ``dataset``'s field ``field_name`` (``"*"``: its rows), dialect-neutral;
     ``None`` when a parameter default does not bind within ``dataset`` alone (it reads a related dataset)."""
     definition = aggregation_definition(owner=dataset, agg=aggregation)
-    if definition is not None and definition.datatype is not None:
+    builtin = builtin_semantics(definition)
+    # As the planner: an expression aggregation's declared datatype wins; a built-in's type is its class's.
+    if not builtin and definition is not None and definition.datatype is not None:
         return definition.datatype
     source = StarKey() if field_name == "*" else FieldKey(leaf=field_name)
     bundle = ResolvedSourceBundle(dialect="", population=dataset)
-    builtin = builtin_semantics(definition)
     kwargs: tuple = ()
-    if not builtin:  # a built-in's type is its class's, whatever its parameters
+    if not builtin:
         try:
             kwargs = bind_aggregation_params(
                 agg=aggregation, source=source, kwargs=(), bundle=bundle, bind_quoted=_no_quoted)

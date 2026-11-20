@@ -241,6 +241,12 @@ class TestFacadeAgreement:
         _, metrics = build_local_view(_facts(weighted))
         assert {mt.name: mt.data_type for mt in metrics}["qty_sum"] is None
 
+    def test_a_built_in_overrides_declared_datatype_agrees_with_the_planner(self) -> None:
+        model = _facts(Aggregation(name="sum", datatype=DOUBLE))
+        assert _assert_facade_agrees(model, {"sum"}) > 0
+        _, metrics = build_local_view(model)
+        assert {mt.name: mt.data_type for mt in metrics}["qty_sum"] is INT
+
     def test_a_declared_datatype_wins_over_an_unbindable_default(self) -> None:
         weighted = Aggregation(name="sum", expression="SUM({value} * {weight})", datatype=DataType.DECIMAL,
                                params=[AggregationParam(name="weight", sql="customers.weight")])
@@ -274,3 +280,19 @@ class TestTemplateTyper:
         template = "{value}"
         assert template_result_type(template=template, bindings={"value": True}, dialect="postgres") is BOOL
         assert template_result_type(template=template, bindings={"value": Decimal(1)}, dialect="postgres") is INT
+
+    def test_a_boolean_coalesce_with_a_fractional_fallback_stays_fractional(self) -> None:
+        typed = template_result_type(template="SUM(COALESCE({value}, 0.5))", bindings={"value": BOOL}, dialect="postgres")
+        assert typed is DOUBLE
+
+    @pytest.mark.parametrize(("template", "value", "expected"), [
+        ("SUM(COALESCE({value} = 1, 0.5))", INT, DOUBLE),
+        ("SUM({value} = 1)", INT, INT),
+        ("SUM(COALESCE(TRUE, 0.5) * {value})", INT, DOUBLE),
+        ("BOOL_AND({value} = 1) * 1", INT, INT),
+        ("SUM({value}) * 1.0 / COUNT(*)", BOOL, DOUBLE),
+    ])
+    def test_a_boolean_expression_in_a_numeric_position_is_read_as_its_integer(
+        self, template: str, value: DataType, expected: DataType,
+    ) -> None:
+        assert template_result_type(template=template, bindings={"value": value}, dialect="postgres") is expected

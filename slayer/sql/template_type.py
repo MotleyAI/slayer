@@ -8,7 +8,7 @@ from typing import Mapping, Optional, Tuple, Union
 
 from pydantic import BaseModel
 from sqlglot import exp
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.annotate_types import annotate_types
 
@@ -66,7 +66,7 @@ def _cached(
         return None
     annotation_dialect = None if dialect in _NEUTRAL_ANNOTATION else dialect or None
     typed = _annotate(root, schema=schema, dialect=annotation_dialect)
-    retyped = _booleans_as_integers(typed, schema=schema)
+    retyped = _booleans_as_integers(typed)
     if retyped is not None:
         typed = _annotate(retyped, schema=schema, dialect=annotation_dialect)
     return _data_type(typed.type)
@@ -98,16 +98,20 @@ def _annotate(root: Expression, *, schema: Mapping[str, str], dialect: Optional[
     return annotated.selects[0].this
 
 
-def _booleans_as_integers(root: Expression, *, schema: Mapping[str, str]) -> Optional[Expression]:
-    """``root`` with every BOOLEAN column in a numeric position — directly or through a ``COALESCE`` chain — cast to
-    INT (the outermost ``COALESCE`` as a whole), ``None`` when there is none."""
-    sites: list[Expression] = []
-    for column in root.find_all(exp.Column):
-        if schema.get(column.name) != "BOOLEAN":
+def _booleans_as_integers(root: Expression) -> Optional[Expression]:
+    """``root`` (annotated) with every BOOLEAN value in a numeric position — directly or through a ``COALESCE``
+    chain, where each boolean argument of the chain is read so — cast to INT; ``None`` when there is none."""
+    sites: list[Expr] = []
+    for node in list(root.walk()):
+        # A numeric operator is typed BOOLEAN only by its operands: those are the values read.
+        if isinstance(node, (exp.Paren, exp.Coalesce, *_NUMERIC_POSITIONS)) or not _is_boolean(node):
             continue
-        site, parent = _through_coalesce(column)
-        if isinstance(parent, _NUMERIC_POSITIONS) and not any(s is site for s in sites):
-            sites.append(site)
+        top, parent = _through_coalesce(node)
+        if not isinstance(parent, _NUMERIC_POSITIONS):
+            continue
+        for site in _boolean_reads(top) if isinstance(top, exp.Coalesce) else [node]:
+            if not any(s is site for s in sites):
+                sites.append(site)
     if not sites:
         return None
     for site in sites:
@@ -115,7 +119,24 @@ def _booleans_as_integers(root: Expression, *, schema: Mapping[str, str]) -> Opt
     return root
 
 
-def _through_coalesce(node: Expression) -> Tuple[Expression, object]:
+def _boolean_reads(coalesce: exp.Coalesce) -> list[Expr]:
+    """The BOOLEAN-typed arguments of a ``COALESCE`` chain (nested ``COALESCE`` and parentheses walked through)."""
+    out: list[Expr] = []
+    for arg in (coalesce.this, *coalesce.expressions):
+        while isinstance(arg, exp.Paren):
+            arg = arg.this
+        if isinstance(arg, exp.Coalesce):
+            out.extend(_boolean_reads(arg))
+        elif _is_boolean(arg):
+            out.append(arg)
+    return out
+
+
+def _is_boolean(node: Expr) -> bool:
+    return node.type is not None and node.type.this is exp.DataType.Type.BOOLEAN
+
+
+def _through_coalesce(node: Expr) -> Tuple[Expr, object]:
     """The outermost ``COALESCE`` wrapping ``node`` (else ``node``) and its parent, parentheses skipped."""
     parent = _unparenthesized_parent(node)
     while isinstance(parent, exp.Coalesce):
@@ -123,7 +144,7 @@ def _through_coalesce(node: Expression) -> Tuple[Expression, object]:
     return node, parent
 
 
-def _unparenthesized_parent(node: Expression) -> object:
+def _unparenthesized_parent(node: Expr) -> object:
     parent = node.parent
     while isinstance(parent, exp.Paren):
         parent = parent.parent

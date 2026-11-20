@@ -330,6 +330,14 @@ class TestCastComputedDimension:
         assert any(g == shown for g in group), select.sql(dialect=dialect)
 
 
+class TestIntegerScalars:
+    def test_mod_over_a_decimal_and_a_double_is_double(self) -> None:
+        assert emitted_types(_dim("mod(orders.price, orders.rate)"), names=["x"]) == {"x": DOUBLE}
+
+    def test_abs_over_a_decimal_stays_decimal(self) -> None:
+        assert emitted_types(_dim("abs(orders.price)"), names=["x"]) == {"x": DEC}
+
+
 class TestArithmeticNullOperand:
     def test_only_a_null_literal_is_absorbed(self) -> None:
         quantity, unresolved, null = FieldKey(leaf="quantity"), FieldKey(leaf="unresolved"), LiteralKey(value=None)
