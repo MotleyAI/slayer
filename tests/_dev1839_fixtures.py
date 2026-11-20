@@ -72,12 +72,12 @@ SUBSET_RANK = (
     "rank(sum(orders.amount, partition_by=[orders.region, orders.city]) - sum(orders.amount, partition_by=orders.region), direction='desc')"
 )
 NESTED_RANK = (
-    "rank(cumsum(sum(amount, partition_by=[region, ordered_at])) - "
-    "sum(amount, partition_by=city), direction='desc')"
+    "rank(cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) - "
+    "sum(orders.amount, partition_by=orders.city), direction='desc')"
 )
 EXPLICIT_PART_RANK = (
-    "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), "
-    "partition_by=region, direction='desc')"
+    "rank(sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), "
+    "partition_by=orders.region, direction='desc')"
 )
 SAMEGRAIN_RANK = (
     "rank(sum(orders.amount, partition_by=orders.region) + sum(orders.ok_amount, partition_by=orders.region), direction='desc')"

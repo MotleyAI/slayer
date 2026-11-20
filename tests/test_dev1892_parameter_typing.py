@@ -46,7 +46,7 @@ from tests._dev1892_fixtures import (
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 
-_WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
+_WEIGHT_COUNT = "weight=count(sales.id, partition_by=[sales.city, sales.region])"
 _WAVG_REAGG = f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})"
 
 
@@ -204,7 +204,7 @@ class TestReaggregationOperandParameter:
         distinguishable from the unweighted global average."""
         resp = await reagg_engine.execute(chain_q(
             metrics=[QueryMetric(
-                metric=("weighted_avg(sum(amount, partition_by=customer_id), "
+                metric=("weighted_avg(sum(corders.amount, partition_by=corders.customer_id), "
                          "weight=customers.region_id)"),
                 alias="w")]))
         got = float(resp.data[0]["w"])
@@ -256,8 +256,8 @@ class TestReaggregationOperandParameter:
         resp = await reagg_engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=("weighted_avg(sum(amount, partition_by=region), "
-                         "weight=count(id, partition_by=region))"),
+                metric=("weighted_avg(sum(sales.amount, partition_by=sales.region), "
+                         "weight=count(sales.id, partition_by=sales.region))"),
                 alias="w")]))
         vals = _region_vals(resp, "w")
         for region, total in DEGENERATE_WAVG_BY_REGION.items():

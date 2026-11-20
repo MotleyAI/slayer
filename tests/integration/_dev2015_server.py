@@ -99,9 +99,9 @@ async def check_quarter_hour_year(engine: SlayerQueryEngine, *, data_source: str
 async def _buckets(engine: SlayerQueryEngine, *, data_source: str, dataset: str, column: str, granularity: str,
                    series: str | None = None, width: int = 10) -> dict[str, float]:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": dataset, "metrics": [m("sum(amount)", "s")],
-        "time_dimensions": [{"field": column, "granularity": granularity}],
-        "filter": [f"series = '{series}'"] if series else [],
+        "population": dataset, "metrics": [m(f"sum({dataset}.amount)", "s")],
+        "time_dimensions": [{"field": f"{dataset}.{column}", "granularity": granularity}],
+        "filter": [f"{dataset}.series = '{series}'"] if series else [],
     }), data_source=data_source)
     return {bucket_key(value(r, column), width=width): float(value(r, "s")) for r in resp.data}
 

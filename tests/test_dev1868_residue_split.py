@@ -40,7 +40,7 @@ class TestTransformInDimensionResidue:
 
     async def test_mixed_grained_and_ungrained_aggregates(self) -> None:
         message = await _raises(
-            "CASE WHEN cumsum(sum(amount, partition_by=status) + sum(amount)) > 50 "
+            "CASE WHEN cumsum(sum(orders.amount, partition_by=orders.status) + sum(orders.amount)) > 50 "
             "THEN 1 ELSE 0 END")
         assert "partition_by" in message
         assert "amount" in message  # names the ungrained aggregate

@@ -111,7 +111,7 @@ class TestExplicitOuterKeyUnattributable:
         # operand cells, so it is unattributable to the operand dataset.
         return sales_q(
             dimensions=["sales.region", "sales.product"], to_many_handling=mode,
-            metrics=[reagg("avg", INNER_CR, name="acc", partition_by="product")])
+            metrics=[reagg("avg", INNER_CR, name="acc", partition_by="sales.product")])
 
     async def test_broadcast_mode_refuses(self, exec_engine):
         query = self._pq("broadcast")

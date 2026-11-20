@@ -15,6 +15,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.names import qualified_reference
 from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import (
     IntrospectedColumn, _fields_to_dataset, _sql_table_identity, ingest_datasource_idempotent, list_ingestable_objects,
@@ -128,7 +129,7 @@ def test_rendered_name_reads_back_as_its_parts(parts: Sequence[str], dialect: st
 async def _query(storage: YAMLStorage, dataset: str) -> list[dict[str, object]]:
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return (await engine.execute({"population": dataset, "dimensions": ["qty"]})).data
+        return (await engine.execute({"population": dataset, "dimensions": [qualified_reference(dataset, "qty")]})).data
     finally:
         engine.close()
 

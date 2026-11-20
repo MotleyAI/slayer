@@ -190,7 +190,7 @@ class TestUngroupedDerivedCrossing:
         """The control: ``amount_x2`` is derived but LOCAL. It resolved before
         this change and must keep resolving — the fix must not be "stop
         checking whether the SQL crosses"."""
-        sql = await _sql(_ungrouped("asc", column="amount_x2"))
+        sql = await _sql(_ungrouped("asc", column="orders.amount_x2"))
         assert order_by_text(sql), f"non-crossing derived sort key broke:\n{sql}"
         assert "customers__regions" not in base_from_join_aliases(sql)
 
@@ -236,7 +236,7 @@ class TestDerivedOfDerivedSortKey:
         return terms
 
     async def test_hidden_derived_of_derived_expands_its_sibling(self) -> None:
-        sql = await _sql(_ungrouped("asc", column="amount_x4"))
+        sql = await _sql(_ungrouped("asc", column="orders.amount_x4"))
         term = self._sort_term(sql)
         assert "amount_x2" not in term, (
             f"the sort term names the DERIVED sibling, which is not a database "
@@ -251,7 +251,7 @@ class TestDerivedOfDerivedSortKey:
         expression whether it is projected or only sorted on. Compared to the
         PROJECTED expansion rather than to a literal, so the two cannot drift
         apart again without this failing."""
-        hidden_sql = await _sql(_ungrouped("asc", column="amount_x4"))
+        hidden_sql = await _sql(_ungrouped("asc", column="orders.amount_x4"))
         projected_sql = await _sql(SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.amount_x4")],
@@ -278,7 +278,7 @@ class TestDerivedOfDerivedSortKey:
     async def test_it_executes(self) -> None:
         """The end of the argument: the statement the DB actually runs. Under
         the old form SQLite raises ``no such column: amount_x2``."""
-        response = await _execute(_ungrouped("asc", column="amount_x4"))
+        response = await _execute(_ungrouped("asc", column="orders.amount_x4"))
         # 4 raw rows, ordered by amount * 4 ascending: 11, 13, 17, 19.
         assert response_column_values(response.data, "orders.status") == [
             "A", "A", "B", "N",

@@ -257,7 +257,7 @@ async def _assert_parity(engine: SlayerQueryEngine, payload: Any) -> None:
 async def test_stage_column_names(exec_engine, dimension, flat, public) -> None:
     rendered = await _plan(exec_engine, [
         _stage(dimensions=[dimension]),
-        _outer(dimensions=[flat, "cr.revenue"]),
+        _outer(dimensions=[f"cr.{flat}", "cr.revenue"]),
     ])
     schema = next(
         p.stage_schema for p in rendered.planned_list

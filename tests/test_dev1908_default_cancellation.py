@@ -293,8 +293,8 @@ class TestReverseHopNotOnThePath:
     async def test_reverse_hop_default_homes_on_customers(self):
         # Rooted at regions, `customers` is not on the path: nothing cancels, the
         # default homes on customers, and it plans exactly as its explicit twin.
-        default = await _gen("wsum_cust_spend(pop)", source_dataset="regions")
-        explicit = await _gen("wsum_cust_spend(pop, weight=customers.spend)", source_dataset="regions")
+        default = await _gen("wsum_cust_spend(regions.pop)", source_dataset="regions")
+        explicit = await _gen("wsum_cust_spend(regions.pop, weight=customers.spend)", source_dataset="regions")
         assert default == explicit
 
 

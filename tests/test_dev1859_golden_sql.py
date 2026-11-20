@@ -25,13 +25,13 @@ _MODEL_SETS = {
     "orders": dev1840_datasets,
     "orders_wsum": customers_wsum_datasets,
 }
-_REGION_SUM = "sum(amount, partition_by=region)"
+_REGION_SUM = "sum(sales.amount, partition_by=sales.region)"
 _HEADLINE = ("weighted_avg(customers.spend, "
-             "weight=sum(amount, partition_by=customers.regions.name))")
+             "weight=sum(orders.amount, partition_by=customers.regions.name))")
 _MIXED_TWIN = "sum(customers.spend * sum(orders.amount, partition_by=customers.regions.name))"
 _RANKED_TRANSFORM = ("weighted_avg(customers.spend, "
-                     "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
-_LOCAL_RANKED_TRANSFORM = f"weighted_avg(amount, weight=rank({_REGION_SUM}, direction='desc'))"
+                     "weight=rank(sum(orders.amount, partition_by=customers.regions.name), direction='desc'))")
+_LOCAL_RANKED_TRANSFORM = f"weighted_avg(sales.amount, weight=rank({_REGION_SUM}, direction='desc'))"
 
 
 def _cases() -> dict:
@@ -39,11 +39,11 @@ def _cases() -> dict:
         "mixed/headline": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["sales.region"], "metrics": [
-                {"metric": f"sum(quantity * {INNER_UP_PRODUCT})", "alias": "m"}]}},
+                {"metric": f"sum(sales.quantity * {INNER_UP_PRODUCT})", "alias": "m"}]}},
         "mixed/outer_partition": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["sales.region", "sales.product"], "metrics": [
-                {"metric": f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=region)",
+                {"metric": f"sum(sales.quantity * {INNER_UP_PRODUCT}, partition_by=sales.region)",
                  "alias": "m"}]}},
         "param/associate": {
             "models": "orders", "source": "orders", "mode": "associate",
@@ -60,12 +60,12 @@ def _cases() -> dict:
         "param/ordinary": {
             "models": "sales_wsum", "source": "sales", "mode": None,
             "kw": {"dimensions": ["sales.region"], "metrics": [
-                {"metric": f"weighted_avg(amount, weight={_REGION_SUM})",
+                {"metric": f"weighted_avg(sales.amount, weight={_REGION_SUM})",
                  "alias": "w"}]}},
         "param/mixed_plus": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["sales.region"], "metrics": [
-                {"metric": (f"weighted_avg(quantity * {INNER_UP_PRODUCT}, "
+                {"metric": (f"weighted_avg(sales.quantity * {INNER_UP_PRODUCT}, "
                              f"weight={_REGION_SUM})"), "alias": "w"}]}},
         "param/literal": {
             "models": "sales_wsum", "source": "sales", "mode": None,
@@ -74,8 +74,8 @@ def _cases() -> dict:
         "param/ungrained_reagg": {
             "models": "sales_wsum", "source": "sales", "mode": None,
             "kw": {"dimensions": ["sales.region"], "metrics": [
-                {"metric": ("wsum(sum(amount, partition_by=[city, region]), "
-                             "weight=count(id))"), "alias": "w"}]}},
+                {"metric": ("wsum(sum(sales.amount, partition_by=[sales.city, sales.region]), "
+                             "weight=count(sales.id))"), "alias": "w"}]}},
         "param/ranked_transform": {
             "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["orders.status"],

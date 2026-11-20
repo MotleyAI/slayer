@@ -37,8 +37,8 @@ class TestMultiOutputProducerValues:
     async def test_sum_and_count_in_one_band(self, exec_engine) -> None:
         # band = 1 iff city sum > 5000 AND city count > 1: Paris, Berlin.
         # NULL-city has sum 6000 but count 1 -> band 0.
-        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
-                "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
+        band = ("CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
+                "AND count(orders.amount, partition_by=orders.city) > 1 THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
@@ -54,7 +54,7 @@ class TestMultiOutputProducerValues:
             dimensions=[
                 "orders.region",
                 {"field": BAND, "alias": "band_hi"},
-                {"field": "CASE WHEN count(amount, partition_by=city) > 1 "
+                {"field": "CASE WHEN count(orders.amount, partition_by=orders.city) > 1 "
                                "THEN 1 ELSE 0 END", "alias": "band_n"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],

@@ -358,7 +358,7 @@ def test_basic_query(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(orders.quantity)")],
     )))
     rows = result.data
     assert len(rows) == 1
@@ -375,7 +375,7 @@ def test_functional_aggregation(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     func = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(orders.quantity)")],
     )))
     assert int(next(iter(func.data[0].values()))) == 16
 
@@ -385,8 +385,8 @@ def test_query_with_dimension(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
-        metrics=[QueryMetric(metric="count(*)")],
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=[QueryMetric(metric="count(orders.*)")],
     )))
     rows = result.data
     statuses = {row.get("orders.status") for row in rows}
@@ -407,8 +407,8 @@ def test_dev1933_regex_literal_model_column(sf_storage_with_datasets: StorageBac
     ]})))
     result = run_sync(engine.execute(SlayerQuery(
         population="orders_rx",
-        dimensions=[QueryDimension(field="rx")],
-        metrics=[QueryMetric(metric="count(*)")],
+        dimensions=[QueryDimension(field="orders_rx.rx")],
+        metrics=[QueryMetric(metric="count(orders_rx.*)")],
     )))
     by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
     assert by_rx == {1: 2, 0: 4}
@@ -425,10 +425,10 @@ def test_rollup_join_via_explicit_joins(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="customers.regions.name")],
-        metrics=[QueryMetric(metric="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(orders.quantity)")],
     )))
     rows = result.data
-    region_names = {row.get("orders.customers.regions.name") for row in rows}
+    region_names = {row.get("customers.regions.name") for row in rows}
     assert region_names == {"US", "EU"}
 
 
@@ -443,8 +443,8 @@ def test_median_percentile_native(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
-            QueryMetric(metric="median(quantity)"),
-            QueryMetric(metric="percentile(quantity, p=0.5)"),
+            QueryMetric(metric="median(orders.quantity)"),
+            QueryMetric(metric="percentile(orders.quantity, p=0.5)"),
         ],
     )))
     rows = result.data
@@ -462,8 +462,8 @@ def test_stddev_var_native(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
-            QueryMetric(metric="stddev_samp(quantity)"),
-            QueryMetric(metric="var_samp(quantity)"),
+            QueryMetric(metric="stddev_samp(orders.quantity)"),
+            QueryMetric(metric="var_samp(orders.quantity)"),
         ],
     )))
     rows = result.data
@@ -479,8 +479,8 @@ def test_corr_covar_native(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
-            QueryMetric(metric="corr(quantity, other=customer_id)"),
-            QueryMetric(metric="covar_samp(quantity, other=customer_id)"),
+            QueryMetric(metric="corr(orders.quantity, other=orders.customer_id)"),
+            QueryMetric(metric="covar_samp(orders.quantity, other=orders.customer_id)"),
         ],
     )))
     rows = result.data
@@ -496,10 +496,10 @@ def test_date_trunc_quarter(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.QUARTER,
         )],
-        metrics=[QueryMetric(metric="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(orders.quantity)")],
     )))
     rows = result.data
     # All orders are in Q1 2024 → exactly one row.
@@ -512,12 +512,12 @@ def test_time_shift_dateadd(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )],
         metrics=[
-            QueryMetric(metric="sum(quantity)"),
-            QueryMetric(metric="time_shift(sum(quantity), -1, 'month')", alias="prev_month"),
+            QueryMetric(metric="sum(orders.quantity)"),
+            QueryMetric(metric="time_shift(sum(orders.quantity), -1, 'month')", alias="prev_month"),
         ],
     )))
     rows = result.data
@@ -530,17 +530,17 @@ def test_rank_transforms(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
         metrics=[
-            QueryMetric(metric="sum(quantity)"),
-            QueryMetric(metric="rank(sum(quantity), direction='desc')", alias="qty_rank"),
-            QueryMetric(metric="dense_rank(sum(quantity), direction='desc')", alias="qty_dense_rank"),
-            QueryMetric(metric="ntile(sum(quantity), n=2)", alias="qty_bucket"),
+            QueryMetric(metric="sum(orders.quantity)"),
+            QueryMetric(metric="rank(sum(orders.quantity), direction='desc')", alias="qty_rank"),
+            QueryMetric(metric="dense_rank(sum(orders.quantity), direction='desc')", alias="qty_dense_rank"),
+            QueryMetric(metric="ntile(sum(orders.quantity), n=2)", alias="qty_bucket"),
         ],
     )))
     rows = result.data
     # Three status groups → three rows with rank values 1..3
-    ranks = {int(row.get("orders.qty_rank")) for row in rows}
+    ranks = {int(row.get("qty_rank")) for row in rows}
     assert ranks == {1, 2, 3}
 
 
@@ -778,7 +778,7 @@ def test_explain_query_uses_explain_using_json(sf_storage_with_datasets) -> None
     result = run_sync(engine.execute(
         query=SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(quantity)")],
+            metrics=[QueryMetric(metric="sum(orders.quantity)")],
         ),
         explain=True,
     ))
@@ -867,8 +867,8 @@ def test_query_result_keys_use_lowercase(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
-        metrics=[QueryMetric(metric="count(*)")],
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=[QueryMetric(metric="count(orders.*)")],
     )))
     rows = result.data
     assert rows
@@ -933,10 +933,10 @@ def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
     engine = SlayerQueryEngine(storage=sf_dev1645_storage)
     result = run_sync(engine.execute(SlayerQuery(
         population="dev1645_accounts",
-        metrics=[QueryMetric(metric="count(*)", alias="cnt")],
-        filter=["is_inactive == True"],
+        metrics=[QueryMetric(metric="count(dev1645_accounts.*)", alias="cnt")],
+        filter=["dev1645_accounts.is_inactive == True"],
     )))
-    assert result.data[0]["dev1645_accounts.cnt"] == 2
+    assert result.data[0]["cnt"] == 2
 
 
 def test_every_snowflake_alias_failure_is_quoted(sf_engine) -> None:
@@ -1071,18 +1071,18 @@ def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: Data
 
 
 @pytest.mark.parametrize(("filters", "kept"), [
-    (["contains(typed, 'go')"], {1}),
-    (["contains_any(typed, ['go', 'rust'])"], {1}),
-    (["contains_all(typed, ['go', 'sql'])"], {1}),
-    (["length(typed) = 1"], {2}),
-    (["typed.value = 'sql'"], {1, 2}),
+    (["contains(structured.typed, 'go')"], {1}),
+    (["contains_any(structured.typed, ['go', 'rust'])"], {1}),
+    (["contains_all(structured.typed, ['go', 'sql'])"], {1}),
+    (["length(structured.typed) = 1"], {2}),
+    (["structured.typed.value = 'sql'"], {1, 2}),
 ])
 def test_list_functions_on_a_structured_array(sf_lists: tuple[YAMLStorage, Any], sf_datasource: DatasourceConfig, filters, kept) -> None:
     storage, _ = sf_lists
     (model,) = run_sync(_ingest(sf_datasource, include_tables=["structured"]))
     run_sync(storage.save_dataset(model))
     resp = run_sync(SlayerQueryEngine(storage=storage).execute(
-        {"population": "structured", "dimensions": ["id"], "filter": filters}))
+        {"population": "structured", "dimensions": ["structured.id"], "filter": filters}))
     assert {int(r["structured.id"]) for r in resp.data} == kept, resp.sql
 
 
@@ -1222,7 +1222,7 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         assert tags.definition_sql == '"tags"'
         engine = SlayerQueryEngine(storage=storage)
         try:
-            rows = run_sync(engine.execute({"population": "lower_items", "dimensions": ["qty"]})).data
+            rows = run_sync(engine.execute({"population": "lower_items", "dimensions": ["lower_items.qty"]})).data
         finally:
             engine.close()
         assert [r["lower_items.qty"] for r in rows] == [7]

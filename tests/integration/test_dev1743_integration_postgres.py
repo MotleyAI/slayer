@@ -102,9 +102,9 @@ class TestDunderModelLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customer__region.label"],
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             }))
-        by_label = {r["orders.customer__region.label"]: r["orders.amount_sum"]
+        by_label = {r["customer__region.label"]: r["orders.amount_sum"]
                     for r in result.data}
         assert by_label == {"North": 15, "South": 20}
 
@@ -180,10 +180,10 @@ class TestLongAliasCollisionLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "subscription_entity",
                 "dimensions": [north, south],
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(subscription_entity.amount)"}],
             }))
         assert result.row_count == 1
         row = result.data[0]
         # The two long paths must read their OWN leaf, not a truncation-merged one.
-        assert row[f"subscription_entity.{north}"] == "N"
-        assert row[f"subscription_entity.{south}"] == "S"
+        assert row[north] == "N"
+        assert row[south] == "S"

@@ -146,8 +146,8 @@ _FLAGGED = DatasetField(name="flagged", sql="CASE WHEN {flag} THEN amount ELSE 0
 _HOSTILE = {
     "column-sql": (lambda: _table_dataset(extra=(_SCALED,)), "sum(orders.scaled)", {"k": _HOSTILE_SCALAR}),
     "column-filter": (lambda: _table_dataset(extra=(_FLOORED,)), "sum(orders.big)", {"floor": _HOSTILE_PREDICATE}),
-    "model-filter": (lambda: _table_dataset(filters=["amount >= {floor}"]), "sum(amount)", {"floor": _HOSTILE_PREDICATE}),
-    "model-sql": (lambda: _sql_dataset("SELECT * FROM orders WHERE amount >= {floor}"), "sum(amount)",
+    "model-filter": (lambda: _table_dataset(filters=["amount >= {floor}"]), "sum(orders.amount)", {"floor": _HOSTILE_PREDICATE}),
+    "model-sql": (lambda: _sql_dataset("SELECT * FROM orders WHERE amount >= {floor}"), "sum(orders_sql.amount)",
                   {"floor": _HOSTILE_PREDICATE}),
     "string-in-bare-slot": (lambda: _table_dataset(extra=(_SCALED,)), "sum(orders.scaled)", {"k": "abc"}),
 }
@@ -175,7 +175,7 @@ class TestHostileValuesAreRefused:
 
 class TestLiteralValuesBind:
     async def test_a_number_in_column_sql(self, env: _Env) -> None:
-        assert await env.value(_table_dataset(extra=(_SCALED,)), _query("orders", "sum(scaled)", variables={"k": 2})) == 200
+        assert await env.value(_table_dataset(extra=(_SCALED,)), _query("orders", "sum(orders.scaled)", variables={"k": 2})) == 200
 
     @pytest.mark.parametrize("surface", ["column-filter", "model-filter", "model-sql"])
     async def test_a_numeric_string_reads_as_its_number(self, env: _Env, surface: str) -> None:
@@ -184,12 +184,12 @@ class TestLiteralValuesBind:
             "model-filter": _table_dataset(filters=["amount >= {floor}"]),
             "model-sql": _sql_dataset("SELECT * FROM orders WHERE amount >= {floor}"),
         }[surface]
-        formula = "sum(orders.big)" if surface == "column-filter" else "sum(amount)"
+        formula = "sum(orders.big)" if surface == "column-filter" else f"sum({model.name}.amount)"
         assert await env.value(model, _query(model.name, formula, variables={"floor": "25"})) == 70
 
     async def test_a_whole_in_list(self, env: _Env) -> None:
         model = _table_dataset(filters=["status IN ({statuses})"])
-        assert await env.value(model, _query("orders", "sum(amount)", variables={"statuses": ["ok", "new"]})) == 60
+        assert await env.value(model, _query("orders", "sum(orders.amount)", variables={"statuses": ["ok", "new"]})) == 60
 
     async def test_a_quote_inside_a_string_literal(self, env: _Env) -> None:
         resp = await env.run(_table_dataset(extra=(_TAGGED,)), SlayerQuery.model_validate({
@@ -201,12 +201,12 @@ class TestLiteralValuesBind:
     @pytest.mark.parametrize(("flag", "expected"), [(True, 100), (False, 0)])
     async def test_a_boolean_in_a_bare_slot(self, env: _Env, flag: bool, expected: float) -> None:
         model = _table_dataset(extra=(_FLAGGED,))
-        assert await env.value(model, _query("orders", "sum(flagged)", variables={"flag": flag})) == expected
+        assert await env.value(model, _query("orders", "sum(orders.flagged)", variables={"flag": flag})) == expected
 
     async def test_sql_and_filter_of_one_column_both_bind(self, env: _Env) -> None:
         both = DatasetField(name="both", sql="amount * {k}", filter="amount >= {floor}", datatype=DataType.FLOAT)
         model = _table_dataset(extra=(both,))
-        assert await env.value(model, _query("orders", "sum(both)", variables={"k": 2, "floor": 25})) == 140
+        assert await env.value(model, _query("orders", "sum(orders.both)", variables={"k": 2, "floor": 25})) == 140
 
 
 #: (field, dataset) pairs whose placeholder stands in a non-literal position.
@@ -231,8 +231,8 @@ class TestNonLiteralPositionsAreRefused:
 
     @pytest.mark.parametrize(("model", "formula", "variables"), [
         pytest.param(_BARE_SLOT, "sum(orders.c)", {"col": "amount"}, id="identifier"),
-        pytest.param(_NON_LITERAL["column-partial-in-list"], "count(*)", {"s": "ok"}, id="partial-in-list"),
-        pytest.param(_NON_LITERAL["model-sql-table"], "count(*)", {"table": "users"}, id="table-name"),
+        pytest.param(_NON_LITERAL["column-partial-in-list"], "count(orders.*)", {"s": "ok"}, id="partial-in-list"),
+        pytest.param(_NON_LITERAL["model-sql-table"], "count(orders_sql.*)", {"table": "users"}, id="table-name"),
     ])
     async def test_a_stored_model_is_refused_at_query_time(
         self, env: _Env, executed: list[str], model: SlayerDataset, formula: str, variables: dict[str, Any],
@@ -248,15 +248,15 @@ class TestOptionalBlocks:
     _BLOCK = _table_dataset(filters=["{? created_at >= '{from}' ?}"])
 
     async def test_a_supplied_block_filters_on_the_literal(self, env: _Env) -> None:
-        assert await env.value(self._BLOCK, _query("orders", "sum(amount)", variables={"from": "2024-03-01"})) == 70
+        assert await env.value(self._BLOCK, _query("orders", "sum(orders.amount)", variables={"from": "2024-03-01"})) == 70
 
     async def test_an_unsupplied_block_is_dropped(self, env: _Env) -> None:
-        assert await env.value(self._BLOCK, _query("orders", "sum(amount)", variables={"other": 1})) == 100
+        assert await env.value(self._BLOCK, _query("orders", "sum(orders.amount)", variables={"other": 1})) == 100
 
     async def test_a_hostile_value_inside_a_block_stays_a_literal(self, env: _Env) -> None:
         model = _table_dataset(filters=["{? amount >= {floor} ?}"])
         await env.storage.save_dataset(model)
-        query = _query("orders", "sum(amount)", variables={"floor": _HOSTILE_PREDICATE})
+        query = _query("orders", "sum(orders.amount)", variables={"floor": _HOSTILE_PREDICATE})
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await env.engine.execute(query)
 
