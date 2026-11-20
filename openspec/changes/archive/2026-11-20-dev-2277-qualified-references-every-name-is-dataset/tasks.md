@@ -47,6 +47,6 @@
 
 ## 6. Finish
 
-- [ ] 6.1 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors, never `--writebaseline`), `poetry run la-arch-check`, `npx likec4 validate architecture`, `openspec validate --all --strict`.
-- [ ] 6.2 Local test scope green; full suites green in CI.
+- [x] 6.1 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors, never `--writebaseline`), `poetry run la-arch-check`, `npx likec4 validate architecture`, `openspec validate --all --strict`.
+- [x] 6.2 Local test scope green; full suites green in CI.
 - [ ] 6.3 After merge: comment on DEV-2279, DEV-2212 and DEV-2243 that qualified references are on `main`, with any ruling that changed since the DEV-2212 comment of 2026-11-15.

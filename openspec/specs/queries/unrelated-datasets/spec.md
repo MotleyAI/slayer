@@ -9,11 +9,11 @@ Scenario seed data, unless a scenario says otherwise: `customers` (id 1–3, cit
 
 ### Requirement: An unrelated dataset is reached by naming it
 
-In a query frame — the main query and every stage of a query list, including the stored stages of a query-backed model — a reference path whose first hop resolves to no edge and no route from the population SHALL resolve through a product hop to the dataset its token names, when that token names a model visible to the caller or a query-local stage (the stage spelling taking precedence) in the population's datasource. The product hop SHALL pair every population row with every row of that dataset (`P × D`) and determine nothing across it. Every existing edge and route resolution SHALL take precedence, and no route search — short-form routing, route counting, population inference, root recommendation's determination probe — SHALL take a product hop. A path SHALL continue past the product hop over ordinary edges. A token naming no visible dataset of the population's datasource, the time spine, or the population itself SHALL keep its existing error. Stored definitions (`DatasetField.sql`, model filters, saved measures, joins) SHALL refuse a reference with no join path: a saved measure fails when used with the existing no-route error, and a `DatasetField.sql` or model filter is rejected at save time with a typed error naming the definition and the unreachable model, and fails closed with that error at query time when stored without validation.
+In a query frame — the main query and every stage of a query list, including the stored stages of a query-backed model — a reference whose anchor (`queries/references`) has no route from the population SHALL resolve through a product hop to that anchor, when the anchor is a model visible to the caller or a query-local stage (the stage spelling taking precedence) in the population's datasource. The product hop SHALL pair every population row with every row of that dataset (`P × D`) and determine nothing across it. Every route resolution SHALL take precedence, and no route search — anchor routing, route counting, population inference, root recommendation's determination probe — SHALL take a product hop. A reference SHALL continue past the product hop over ordinary edges of its explicit route. A first segment naming no visible dataset of the population's datasource SHALL keep its existing error; the time spine and the population itself are anchors with their own rules, never product hops. Stored definitions (`DatasetField.sql`, model filters, saved measures, joins) SHALL refuse a reference with no join path: a saved measure fails when used with the existing no-route error, and a `DatasetField.sql` or model filter is rejected at save time with a typed error naming the definition and the unreachable model, and fails closed with that error at query time when stored without validation.
 
 #### Scenario: A grand-total ratio across unrelated models
 
-- **WHEN** a query with `population: customers` measures `{"metric": "count(events.id) / count(*)", "alias": "events_per_customer"}`
+- **WHEN** a query with `population: customers` measures `{"metric": "count(events.id) / count(customers.*)", "alias": "events_per_customer"}`
 - **THEN** one row is returned with `events_per_customer` = 5 / 3, equal to dividing the two separate single-model answers
 
 #### Scenario: A path continues past the product hop
@@ -23,7 +23,7 @@ In a query frame — the main query and every stage of a query list, including t
 
 #### Scenario: A query-local stage is an unrelated dataset
 
-- **WHEN** a query list has stages `c` (`population: customers`, measure `count(*)` named `nc`) and `e` (`population: events`, measure `count(*)` named `ne`) and a final stage `{"population": "c", "dimensions": ["nc"], "metrics": [{"metric": "max(e.ne)", "alias": "ne"}]}`
+- **WHEN** a query list has stages `c` (`population: customers`, measure `count(customers.*)` named `nc`) and `e` (`population: events`, measure `count(events.*)` named `ne`) and a final stage `{"population": "c", "dimensions": ["c.nc"], "metrics": [{"metric": "max(e.ne)", "alias": "ne"}]}`
 - **THEN** exactly one row (nc 3, ne 5) is returned
 
 #### Scenario: References in every position are found
@@ -33,13 +33,13 @@ In a query frame — the main query and every stage of a query list, including t
 
 #### Scenario: Existing paths and routing are unchanged
 
-- **WHEN** a query references a model that a join path or a unique short-form route reaches
-- **THEN** it resolves exactly as before this change, and no product hop is taken
+- **WHEN** a query references a model whose anchor a route reaches from the population
+- **THEN** it resolves along that route, and no product hop is taken
 
 #### Scenario: Names that are not reachable datasets keep their errors
 
-- **WHEN** a `customers`-rooted query references `evnts.id` (no such model), a model of another datasource, a model hidden from the caller by its access context, or `customers.id` spelled through the population's own name
-- **THEN** each fails or resolves exactly as before this change; a hidden model is reported as unknown
+- **WHEN** a `customers`-rooted query references `evnts.id` (no such model), a model of another datasource, a model hidden from the caller by its access context, or `customers.id`
+- **THEN** the first three fail as unknown datasets, a hidden model being reported as unknown, and `customers.id` reads the population's own field
 
 #### Scenario: Row-level security scopes the unrelated dataset
 

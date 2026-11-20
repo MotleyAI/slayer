@@ -110,7 +110,7 @@ def main():
     print("\n=== Query 6: Monthly orders with average quantity ===")
     result = engine.execute_sync(query=SlayerQuery(
         population="orders",
-        time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+        time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],  # NOSONAR(S1192) — each query spells its references inline, as a reader copies them
         metrics=[
             COUNT_METRIC,
             QUANTITY_SUM_METRIC,

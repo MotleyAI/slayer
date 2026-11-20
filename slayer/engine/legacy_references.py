@@ -19,7 +19,7 @@ from slayer.core.names import match_name, spelled_name
 from slayer.core.query import QueryDimension, QueryMetric, QueryRefinement, SlayerQuery, TimeDimension, declared_aliases
 from slayer.core.models import SlayerDataset
 from slayer.core.syntax import (
-    AggCall, NamedArg, Ref, ScalarCall, StarSource, keyword_spelling, reference_spans, walk_references,
+    AggCall, DottedRef, NamedArg, Ref, ScalarCall, StarSource, keyword_spelling, reference_spans, walk_references,
 )
 from slayer.core.time_spine import TIME_SPINE_DATASET, TIME_SPINE_FIELD, is_spine_spelling
 from slayer.core.warnings import DeprecatedInputWarning
@@ -106,43 +106,50 @@ def convert_text(
     edits: Dict[Tuple[int, int], str] = {}
     for call, arg in _named_args(parsed):
         span = spans.get(id(arg))
-        if span is None or anchors.names_parameter(population=population, agg=call.agg, name=arg.name):
-            continue
-        if anchors.reads_keyword(population=population, call=call.agg, name=arg.name):
-            continue
-        if declared and _is_alias(arg.name, declared=declared, quoted=False):
-            continue
-        written = text[span[0]:span[1]]
-        conversions.note(written, f"{prefix}.{written}")
-        edits[span] = f"{prefix}.{written}"
+        if span is not None and _converts_argument(call=call.agg, name=arg.name, population=population,
+                                                   anchors=anchors, declared=declared):
+            written = text[span[0]:span[1]]
+            conversions.note(written, f"{prefix}.{written}")
+            edits[span] = f"{prefix}.{written}"
     for node, aggregation in walk_references(parsed):
         span = spans.get(id(node))
-        if span is None:
-            continue
         call = keyword_names.get(id(node))
-        if call is not None and anchors.reads_keyword(population=population, call=call, name=node.name):
+        if span is None or (call is not None and anchors.reads_keyword(population=population, call=call,
+                                                                        name=node.name)):
             continue
-        start, end = span
-        written = text[start:end]
+        written = text[span[0]:span[1]]
         if isinstance(node, StarSource):
             agg = aggregation or "count"
             conversions.note(f"{agg}(*)", f"{agg}({prefix}.*)")
             edits[span] = f"{prefix}.*"
-            continue
-        if isinstance(node, Ref):
-            if declared and _is_alias(node.name, declared=declared, quoted=node.quoted):
-                continue
-        elif anchors.anchors(node.parts[0], quoted=node.quoted_at(0)) or not (anchors.reads_head(
-                population=population, name=node.parts[0], quoted=node.quoted_at(0))
-                or _is_alias(node.parts[0], declared=local_edges, quoted=node.quoted_at(0))):
-            continue
-        replacement = f"{prefix}.{written}"
-        conversions.note(written, replacement)
-        edits[span] = replacement
+        elif _converts_reference(node, population=population, anchors=anchors, declared=declared, edges=local_edges):
+            conversions.note(written, f"{prefix}.{written}")
+            edits[span] = f"{prefix}.{written}"
     out = text
     for (start, end), replacement in sorted(edits.items(), reverse=True):
         out = out[:start] + replacement + out[end:]
     return out
+
+
+def _converts_argument(*, call: str, name: str, population: str, anchors: AnchorNames, declared: List[str]) -> bool:
+    """Whether ``name = …`` in ``call(…)`` was a root-relative reference."""
+    if anchors.names_parameter(population=population, agg=call, name=name):
+        return False
+    if anchors.reads_keyword(population=population, call=call, name=name):
+        return False
+    return not (declared and _is_alias(name, declared=declared, quoted=False))
+
+
+def _converts_reference(node: Any, *, population: str, anchors: AnchorNames, declared: List[str],
+                        edges: List[str]) -> bool:
+    """Whether the ``Ref`` or ``DottedRef`` ``node`` was read from ``population``."""
+    if isinstance(node, Ref):
+        return not (declared and _is_alias(node.name, declared=declared, quoted=node.quoted))
+    head, quoted = node.parts[0], node.quoted_at(0)
+    if anchors.anchors(head, quoted=quoted):
+        return False
+    return anchors.reads_head(population=population, name=head, quoted=quoted) or _is_alias(
+        head, declared=edges, quoted=quoted)
 
 
 def _named_args(node: Any) -> List[Tuple[AggCall, NamedArg]]:
@@ -305,20 +312,22 @@ def population_relative(query: SlayerQuery) -> SlayerQuery:
 
 
 async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], *,
-                       data_source: Optional[str]) -> AnchorNames:
-    """What a first segment of ``queries`` may anchor at: the datasets the caller sees in their populations'
-    datasources (``data_source`` when pinned; a query-backed dataset's empty one pins nothing), their stages and the
-    spine."""
+                       data_source: Optional[str], refinement: Optional[QueryRefinement] = None) -> AnchorNames:
+    """What a first segment of ``queries`` (and ``refinement``) may anchor at: the datasets the caller sees in their
+    populations' datasources (``data_source`` when pinned; a query-backed dataset's empty one pins nothing), their
+    stages and the spine."""
     identities = await storage._list_all_dataset_identities()
     stage_names = {q.name for q in queries if q.name}
     if not data_source:
         sources = {ds for q in queries if (p := q.population_name) and p not in stage_names
-                   for ds, n in identities if n == p}
+                   for ds, n in identities if n == _matched(p, identities=identities, data_source=ds)}
         chosen = sources or {ds for ds, _ in identities}
     else:
         chosen = {data_source}
     names = {n for ds, n in identities if ds in chosen}
     names |= stage_names | {q.population_name for q in queries if q.population_name}
+    names.add(TIME_SPINE_DATASET)
+    dotted = _dotted_heads([*queries, *([refinement] if refinement is not None else [])])
     members: Dict[str, frozenset[str]] = {}
     aggregations: Dict[str, frozenset[str]] = {}
     heads: Dict[str, frozenset[str]] = {}
@@ -332,22 +341,56 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
         members[population.casefold()] = frozenset(
             n.casefold() for n in [*(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name)])
         aggregations[population.casefold()] = frozenset(a.name.casefold() for a in dataset.aggregations)
-        heads[population.casefold()] = frozenset(
-            [*(f.name for f in dataset.fields),
-             *await storage.incident_edge_names(dataset.name, data_source=dataset_source)])
-    return AnchorNames(names=frozenset({*names, TIME_SPINE_DATASET}), members=members, aggregations=aggregations,
-                       heads=heads)
+        own = [*(f.name for f in dataset.fields), *(r.name for r in dataset.relationships if r.name)]
+        if any(not _is_alias(h, declared=[*names, *own], quoted=q) for h, q in dotted):
+            # Only an edge declared on a peer is left: reading every peer is the expensive part.
+            own += await storage.incident_edge_names(dataset.name, data_source=dataset_source)
+        heads[population.casefold()] = frozenset(own)
+    return AnchorNames(names=frozenset(names), members=members, aggregations=aggregations, heads=heads)
+
+
+def _dotted_heads(sources: Sequence[Any]) -> List[Tuple[str, bool]]:
+    """``(first segment, quoted)`` of every dotted reference in the entries of ``sources`` (queries, refinements)."""
+    out: List[Tuple[str, bool]] = []
+    for text in (t for source in sources for t in _entry_texts(source)):
+        try:
+            parsed = reference_spans(text)[0]
+        except ValueError:
+            continue
+        out.extend((n.parts[0], n.quoted_at(0)) for n, _ in walk_references(parsed) if isinstance(n, DottedRef))
+    return out
+
+
+def _entry_texts(source: Any) -> List[str]:
+    texts = [d.field for d in getattr(source, "dimensions", None) or []]
+    texts += [td.field for td in getattr(source, "time_dimensions", None) or []]
+    texts += [m.metric for m in getattr(source, "metrics", None) or []]
+    flt = getattr(source, "filter", None)
+    texts += [flt] if isinstance(flt, str) else list(flt or [])
+    for o in getattr(source, "order", None) or []:
+        texts += [o.field, *([o.raw_expression] if o.raw_expression else [])]
+    main = getattr(source, "main_time_dimension", None)
+    return [*texts, *([main] if main else [])]
 
 
 async def _population_dataset(
     storage: StorageBackend, population: str, *, identities: Sequence[Tuple[str, str]], chosen: Iterable[str],
 ) -> Optional[Tuple[str, SlayerDataset]]:
     """The datasource and stored dataset ``population`` names in the ``chosen`` datasources, when exactly one does."""
-    hits = [(ds, n) for ds, n in identities if ds in set(chosen) and n == population]
+    hits = [(ds, n) for ds, n in identities
+            if ds in set(chosen) and n == _matched(population, identities=identities, data_source=ds)]
     if len(hits) != 1:
         return None
     dataset = await storage.get_dataset(hits[0][1], data_source=hits[0][0])
     return None if dataset is None else (hits[0][0], dataset)
+
+
+def _matched(population: str, *, identities: Sequence[Tuple[str, str]], data_source: str) -> Optional[str]:
+    """The dataset of ``data_source`` that ``population`` names (unquoted)."""
+    try:
+        return match_name(name=population, declared=[n for ds, n in identities if ds == data_source], quoted=False)
+    except AmbiguousReferenceError:
+        return None
 
 
 async def qualified_input(queries: List[Any], *, storage: StorageBackend, data_source: Optional[str],

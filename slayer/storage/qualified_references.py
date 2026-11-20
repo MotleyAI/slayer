@@ -13,7 +13,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from slayer.core.errors import AmbiguousReferenceError, UnqualifiableReferenceError
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name, spelled_name
-from slayer.core.query import SlayerQuery, computed_dimension_name, declared_aliases, extension_dataset_names
+from slayer.core.query import (
+    QueryDimension, QueryMetric, SlayerQuery, TimeDimension, computed_dimension_name, declared_aliases,
+    extension_dataset_names,
+)
 from slayer.core.relationship_walker import canonical_path
 from slayer.core.syntax import (
     DottedRef,
@@ -126,32 +129,11 @@ def _qualified_stage(stage: _Stage, query: SlayerQuery) -> SlayerQuery:
     """``query`` with every reference qualified; an anchorless unaliased expression keeps its column name as alias."""
     data: Dict[str, Any] = {name: getattr(query, name) for name in query.model_fields_set | {"version"}}
     if query.dimensions:
-        dims = []
-        for d in query.dimensions:
-            field, anchors = stage.text(d.field)
-            update: Dict[str, Any] = {"field": field}
-            if d.alias is None and d.ref is None and _anchorless(anchors):
-                update["alias"] = d.name
-            dims.append(d.model_copy(update=update))
-        data["dimensions"] = dims
+        data["dimensions"] = [_qualified_dimension(stage, d) for d in query.dimensions]
     if query.time_dimensions:
-        tds = []
-        for td in query.time_dimensions:
-            field, anchors = stage.text(td.field)
-            update = {"field": field}
-            if td.alias is None and td.field_ref is None and _anchorless(anchors):
-                update["alias"] = computed_dimension_name(td.field)
-            tds.append(td.model_copy(update=update))
-        data["time_dimensions"] = tds
+        data["time_dimensions"] = [_qualified_time_dimension(stage, td) for td in query.time_dimensions]
     if query.metrics:
-        metrics = []
-        for m in query.metrics:
-            text, anchors = stage.text(m.metric)
-            update = {"metric": text}
-            if m.alias is None and _anchorless(anchors):
-                update["alias"] = expression_text_alias(root_relative(parse_expr(m.metric), stage.population))
-            metrics.append(m.model_copy(update=update))
-        data["metrics"] = metrics
+        data["metrics"] = [_qualified_metric(stage, m) for m in query.metrics]
     if isinstance(query.filter, str):
         data["filter"] = stage.text(query.filter)[0]
     elif query.filter:
@@ -164,6 +146,30 @@ def _qualified_stage(stage: _Stage, query: SlayerQuery) -> SlayerQuery:
     if query.main_time_dimension:
         data["main_time_dimension"] = stage.text(query.main_time_dimension)[0]
     return SlayerQuery.model_validate(data)
+
+
+def _qualified_dimension(stage: _Stage, d: QueryDimension) -> QueryDimension:
+    field, anchors = stage.text(d.field)
+    update: Dict[str, Any] = {"field": field}
+    if d.alias is None and d.ref is None and _anchorless(anchors):
+        update["alias"] = d.name
+    return d.model_copy(update=update)
+
+
+def _qualified_time_dimension(stage: _Stage, td: TimeDimension) -> TimeDimension:
+    field, anchors = stage.text(td.field)
+    update: Dict[str, Any] = {"field": field}
+    if td.alias is None and td.field_ref is None and _anchorless(anchors):
+        update["alias"] = computed_dimension_name(td.field)
+    return td.model_copy(update=update)
+
+
+def _qualified_metric(stage: _Stage, m: QueryMetric) -> QueryMetric:
+    text, anchors = stage.text(m.metric)
+    update: Dict[str, Any] = {"metric": text}
+    if m.alias is None and _anchorless(anchors):
+        update["alias"] = expression_text_alias(root_relative(parse_expr(m.metric), stage.population))
+    return m.model_copy(update=update)
 
 
 def qualified_stages(
