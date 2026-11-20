@@ -14,6 +14,7 @@ from slayer.core.errors import (
     AmbiguousReferenceError,
     SlayerError,
     UnknownReferenceError,
+    UnresolvableDimensionRelationshipError,
 )
 from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.names import match_path
@@ -124,7 +125,7 @@ class TestFolding:
         assert num(single(resp, "n")) == 6.0
 
     @pytest.mark.parametrize(("ref", "error"), [
-        ("ITEMS.value", None), ('"items".value', None), ('"ITEMS".value', UnknownReferenceError),
+        ("ITEMS.value", None), ('"items".value', None), ('"ITEMS".value', UnresolvableDimensionRelationshipError),
         ("items.VALUE", None), ('items."value"', None), ('items."VALUE"', UnknownReferenceError),
     ])
     async def test_a_list_element_reference_follows_quoting(self, ref: str, error: type[SlayerError] | None) -> None:

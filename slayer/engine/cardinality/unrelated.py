@@ -6,7 +6,7 @@ from typing import Iterable, Iterator, Optional, Tuple
 
 
 from slayer.core.relationship_search import count_routes
-from slayer.core.relationship_walker import matching_edges, neighbors
+from slayer.core.relationship_walker import product_token
 from slayer.core.keys import (
     AggregateKey,
     FieldKey,
@@ -65,15 +65,12 @@ def _named(token: str, datasets: Iterable[SlayerDataset]) -> Optional[SlayerData
 def unrelated_targets(
     *, host: SlayerDataset, names: Iterable[str], datasets_by_name: dict[str, SlayerDataset],
 ) -> frozenset[str]:
-    """The datasets ``names`` spell that neither an incident edge nor a route reaches from ``host``."""
+    """The anchors ``names`` spell that no route reaches from ``host``; a relationship spelled the same is no route."""
     universe = {**datasets_by_name, host.name: host}
-    incident = neighbors(dataset=host, datasets_by_name=universe)
     out: set[str] = set()
     for token in names:
-        if token == host.spelling or matching_edges(incident, token):
-            continue
         target = _named(token, universe.values())
-        if target is None or is_spine(target) or target.name == host.name:
+        if target is None or is_spine(target) or target.name == host.name or token == host.spelling:
             continue
         if count_routes(root=host, target=target.name, datasets_by_name=universe) == 0:
             out.add(target.name)
@@ -94,9 +91,14 @@ def crosses_product_hop(
     *, host: SlayerDataset, path: Tuple[str, ...], datasets_by_name: dict[str, SlayerDataset],
 ) -> bool:
     """``path`` from ``host`` starts with a product hop to an unrelated dataset."""
-    return bool(path) and any(
-        datasets_by_name[n].spelling == path[0] for n in host.unrelated_datasets if n in datasets_by_name
-    )
+    return bool(path) and path[0] in _product_tokens(host=host, datasets_by_name=datasets_by_name)
+
+
+def _product_tokens(*, host: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> dict[str, str]:
+    """Each product hop's token from ``host`` → its target's spelling."""
+    universe = {**datasets_by_name, host.name: host}
+    return {product_token(source=host, target=universe[n], datasets_by_name=universe): universe[n].spelling
+            for n in host.unrelated_datasets if n in universe}
 
 
 class ProductSides:
@@ -106,8 +108,7 @@ class ProductSides:
         datasets = bundle.datasets_by_name
         self.host = host
         self.bundle = bundle
-        # A product hop's canonical token is its target's spelling.
-        self.tokens = {datasets[n].spelling: n for n in host.unrelated_datasets if n in datasets}
+        self.tokens = _product_tokens(host=host, datasets_by_name=datasets)
 
     def crossed(self, leaf: ValueKey) -> frozenset[str]:
         """The spellings of the unrelated datasets ``leaf``'s dependency closure reaches."""
@@ -115,7 +116,7 @@ class ProductSides:
             return frozenset()
         closure = key_closure(key=leaf, anchor_dataset=self.host, anchor_relation=self.host.name, bundle=self.bundle)
         paths = closure if closure is not None else (_leaf_path(leaf),)
-        return frozenset(p[0] for p in paths if p and p[0] in self.tokens)
+        return frozenset(self.tokens[p[0]] for p in paths if p and p[0] in self.tokens)
 
     def row_level_reads(self, root: ValueKey) -> Iterator[Tuple[ValueKey, str]]:
         """``(reference, dataset)`` for every read across a product hop outside an aggregation's inputs."""

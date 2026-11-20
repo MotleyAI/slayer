@@ -16,12 +16,14 @@ from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import PopulationInferenceError, SlayerError, UnresolvableDimensionRelationshipError
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, RelationshipOrigin, SlayerDataset
 from slayer.core.query import SlayerQuery
+from slayer.core.relationship_walker import PRODUCT_TOKEN_PREFIX
 from slayer.engine.population.anchors import anchor_route
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._dev1954_fixtures import POP_MAX_BY_RNAME, by_key, make_exec_engine, table_count
 from tests._dev2102_fixtures import ext, join, q, rows, shop
+from tests._dev2219_fixtures import m as m19, orders as orders19, q as q19, shop as shop19, with_datasets as with_datasets19
 from tests._dev2277_fixtures import (
     BACKENDS,
     CUSTOMERS,
@@ -485,3 +487,31 @@ class TestInheritedRelationships:
         )
         with pytest.raises(UnresolvableDimensionRelationshipError, match="more than one path"):
             _route(datasets, reader="s", anchor="customers")
+
+
+class TestUnrelatedAnchorSpelledLikeARelationship:
+    """A first segment names its anchor, never a relationship: an unrelated anchor spelled like one of the reader's
+    relationships is read as the anchor."""
+
+    def test_the_product_hop_names_the_anchor_alone(self) -> None:
+        datasets = _by_name(
+            _dataset("orders", _key_to("regions", name="ship_region")),
+            _dataset("regions"),
+            _dataset("ship_region"),
+        )
+        reached = anchor_route(reader=datasets["orders"], anchor=datasets["ship_region"], datasets_by_name=datasets)
+        assert reached.unrelated
+        assert reached.route == (f"{PRODUCT_TOKEN_PREFIX}ship_region",)
+
+    def test_without_a_same_spelled_relationship_the_hop_is_the_spelling(self) -> None:
+        datasets = _by_name(_dataset("orders"), _dataset("ship_region"))
+        reached = anchor_route(reader=datasets["orders"], anchor=datasets["ship_region"], datasets_by_name=datasets)
+        assert reached.route == ("ship_region",)
+
+    @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
+    async def test_an_aggregate_reads_the_unrelated_stage_not_the_relationship(self, dialect: str) -> None:
+        sibling = q19(name="ship_region", population="customers", metrics=[m19("count(customers.*)", "nc")])
+        reader = q19(name="z", population="orders", metrics=[m19("max(ship_region.nc)", "customers_seen")])
+        async with shop19(dialect, with_datasets19(orders19(ship_region=True))) as engine:
+            resp = await engine.execute([sibling, reader, q19(population="z", metrics=[m19("max(z.customers_seen)", "t")])])
+        assert [float(v) for v in resp.data[0].values()] == [5.0]

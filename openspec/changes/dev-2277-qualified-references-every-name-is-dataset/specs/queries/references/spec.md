@@ -78,6 +78,10 @@ A query SHALL reach a reference's anchor from its population as follows. When th
 - **WHEN** stage `s` is grouped by `customers.id`, inheriting relationships to `orders` and to `events`, and a query with `population: "s"` measures `sum(orders.amount)`
 - **THEN** it reads `orders` over `s → orders`, not the detour `s → events → customers → orders`
 
+#### Scenario: An unrelated anchor spelled like a relationship of the reader is read as the anchor
+- **WHEN** stage `z` (population `orders`, which has a relationship `ship_region`) measures `max(ship_region.nc)` while a sibling stage named `ship_region` exists that no route from `orders` reaches
+- **THEN** it reads the sibling across the product, never the relationship; reading `ship_region.name` fails as an unknown field of the sibling
+
 #### Scenario: A directed cycle takes its to-one path
 - **WHEN** `x → y`, `y → z` and `z → x` are many-to-one and a query with `population: "x"` measures `sum(z.amount)`
 - **THEN** it sums the `z` row reached through `x → y → z`, and `sum(x.z.amount)` sums the `z` rows referencing each `x`

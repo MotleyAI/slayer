@@ -18,7 +18,7 @@ from slayer.core.errors import (
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name, spelled_name
 from slayer.core.relationship_search import HopFilter, blocking_pairs, routes
-from slayer.core.relationship_walker import canonical_token, matching_edges, neighbors, walk_terminal
+from slayer.core.relationship_walker import canonical_token, neighbors, product_token, walk_terminal
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population.dimension_routing import resolve_route
 
@@ -100,25 +100,13 @@ def anchor_route(
     if len(direct) == 1:
         return Anchor(dataset=anchor, route=(canonical_token(direct[0]),))
     reached = _reach(reader=reader, anchor=anchor, universe=universe, rest=rest)
-    return reached or _unrelated(reader=reader, anchor=anchor, universe=universe, rest=rest)
+    return reached or _unrelated(reader=reader, anchor=anchor, universe=universe)
 
 
-def _unrelated(
-    *, reader: SlayerDataset, anchor: SlayerDataset, universe: Mapping[str, SlayerDataset], rest: Sequence[str],
-) -> Anchor:
-    """``anchor`` met as a product; refused when ``reader`` has a relationship its spelling also names, which leaves
-    the product hop unaddressable."""
-    if not matching_edges(neighbors(dataset=reader, datasets_by_name=dict(universe)), anchor.spelling):
-        return Anchor(dataset=anchor, route=(anchor.spelling,), unrelated=True)
-    via_relationship = ".".join((spelled_name(reader.spelling), anchor.spelling, *rest))
-    raise UnresolvableDimensionRelationshipError(
-        reference=".".join((anchor.spelling, *rest)),
-        root_dataset=reader.spelling,
-        reason=(f"{anchor.spelling!r} anchors a dataset unrelated to {reader.spelling!r} and also spells one of "
-                f"{reader.spelling!r}'s relationships; spell the relationship from {reader.spelling!r} "
-                f"({via_relationship!r}), or rename one of the two."),
-        suggested_path=via_relationship,
-    )
+def _unrelated(*, reader: SlayerDataset, anchor: SlayerDataset, universe: Mapping[str, SlayerDataset]) -> Anchor:
+    """``anchor`` met as a product, by the hop token that names it alone from ``reader``."""
+    return Anchor(dataset=anchor, route=(product_token(source=reader, target=anchor, datasets_by_name=dict(universe)),),
+                  unrelated=True)
 
 
 def _declared_graph(universe: Mapping[str, SlayerDataset]) -> dict[str, SlayerDataset]:
