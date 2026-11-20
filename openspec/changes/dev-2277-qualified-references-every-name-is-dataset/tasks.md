@@ -35,8 +35,8 @@
 
 ## 4. Respell the tests
 
-- [ ] 4.1 Record the conversions the engine performs on the existing suite (old text, qualified twin, file and line) and apply them through the deterministic tooling; extend the tooling in the living-architecture repo where it cannot express an edit, and bump the `la` pin. Show the owner the substitution summary first. Verify: the respelled suite emits no `deprecated_input` warning outside the dedicated legacy tests.
-- [ ] 4.2 Apply the per-file approved changes of task 2.11. Verify: the local test scope passes.
+- [x] 4.1 Record the conversions the engine performs on the existing suite (old text, qualified twin, file and line) and apply them through the deterministic tooling; extend the tooling in the living-architecture repo where it cannot express an edit, and bump the `la` pin. Show the owner the substitution summary first. Verify: the respelled suite emits no `deprecated_input` warning outside the dedicated legacy tests. Note: by owner decision, a one-off scripted respell from the recorded conversions replaced the deterministic tooling (no tooling change, no pin bump); computed and conflicting sites were respelled by hand.
+- [x] 4.2 Apply the per-file approved changes of task 2.11. Verify: the local test scope passes.
 
 ## 5. Specs, architecture and docs
 
