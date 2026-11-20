@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
     AmbiguousRelationshipPathError,
+    UnevaluableEntityError,
     ScalarArgumentError,
     ScalarOperandTypeError,
     AggregationArgumentError,
@@ -807,6 +808,7 @@ def _resolve_ref(
     # A ``__``-bearing name is not special: it resolves like any other name.
     col = resolve_generated_field(dataset=dataset, name=name, quoted=quoted)
     if col is not None:
+        _check_evaluable(col, dataset=dataset)
         if col.needs_expansion:
             return FieldSqlKey(path=(), dataset=dataset.name, field_name=col.name)
         return FieldKey(path=(), leaf=col.name)
@@ -824,6 +826,13 @@ def _resolve_ref(
         scope_summary=f"{_dataset_label(dataset, bundle=bundle)} fields: {[c.name for c in dataset.fields]}",
         suggestion=_name_suggestion(name=name, dataset=dataset),
     )
+
+
+def _check_evaluable(entity: "DatasetField | DatasetMetric", *, dataset: SlayerDataset) -> None:
+    """Refuse reading a document entity SLayer loads but cannot evaluate yet."""
+    if entity.load_warning is not None:
+        kind = "Field" if isinstance(entity, DatasetField) else "Metric"
+        raise UnevaluableEntityError(entity=f"{kind} '{dataset.spelling}.{entity.name}'", reason=entity.load_warning)
 
 
 def _visible_datasets(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> List[SlayerDataset]:
@@ -1227,6 +1236,7 @@ def _resolve_terminal_leaf(
     → saved metric (re-anchored into host coords) → unresolved error."""
     col = resolve_generated_field(dataset=current, name=leaf, quoted=quoted)
     if col is not None:
+        _check_evaluable(col, dataset=current)
         if col.needs_expansion:
             # Derived / filtered field on a joined dataset — path is part of the
             # key so the cross-dataset planner can route via the relationship graph.
@@ -1318,6 +1328,7 @@ def _resolve_saved_metric(
     is the host→terminal relationship path (``()`` for bare/local); a cross-dataset
     metric binds against the target then prepends ``host_path``. Raises the
     ineligible-position error when ``metric_ctx`` is None."""
+    _check_evaluable(metric, dataset=terminal_dataset)
     if metric_ctx is None:
         raise _ineligible_saved_metric_error(
             ref_text=ref_text, dataset_name=terminal_dataset.spelling,

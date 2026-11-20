@@ -23,7 +23,7 @@ from slayer.core.semantic_model import (
     ModelScopedMetric, OssieDataset, OssieExpression, SemanticModelDocument, ossie_validity_errors,
 )
 from slayer.sql.dialects import ossie_token
-from slayer.sql.ossie_dialects import ANSI_SQL, OSSIE_SQL, Candidate, read, reader_for, render
+from slayer.sql.ossie_dialects import ANSI_SQL, OSSIE_SQL, PORTABLE_READER, Candidate, read, reader_for, render
 from slayer.sql.ossie_source import parse_source
 
 __all__ = ["Decomposition", "DocumentIndex", "build_index", "checked_document", "decompose", "expression_datasets",
@@ -104,6 +104,31 @@ def _runnable(expression: OssieExpression, *, target: str) -> tuple[Expression, 
     return obj, f"has no readable SQL expression (dialects: {found})"
 
 
+def _runnable_metric(expression: OssieExpression, *, target: str) -> tuple[Expression, str | None]:
+    """A metric runs its portable ``sql``: one without it gets an in-memory one from its ANSI_SQL entry, else its
+    target-native entry, else its first readable entry translated."""
+    entries = [DialectEntry(dialect=d.dialect, expression=d.expression) for d in expression.dialects or []]
+    if expression.sql is not None and not entries:
+        return expression.sql, None
+    obj = ExpressionObject(sql=expression.sql, dialects=entries or None)
+    if _portable(expression) is not None:
+        return obj, None
+    ansi = [e for e in entries if token(e.dialect) == ANSI_SQL]
+    native = [e for e in entries if token(e.dialect) == target]
+    if ansi or native:
+        return obj.model_copy(update={"sql": (ansi or native)[0].expression}), None
+    for entry in entries:
+        if reader_for(entry.dialect) is None:
+            continue
+        candidate = Candidate(dialect=entry.dialect, text=entry.expression)
+        try:
+            return obj.model_copy(update={"sql": render(candidate, read(candidate), target=PORTABLE_READER)}), None
+        except SqlglotError:
+            continue
+    found = ", ".join(dict.fromkeys(e.dialect for e in entries)) or "none"
+    return obj, f"has no readable SQL expression (dialects: {found})"
+
+
 def _source(dataset: OssieDataset) -> dict[str, Any]:
     parsed = parse_source(dataset.source)
     return {"sql": parsed.query} if parsed.is_query else {"sql_table": dataset.source.strip()}
@@ -122,7 +147,7 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str) -> Datas
 
 
 def _metric(metric: Any, *, target: str, windowed_fields: set[str]) -> DatasetMetric:
-    expression, problem = _runnable(metric.expression, target=target)
+    expression, problem = _runnable_metric(metric.expression, target=target)
     warning = problem
     if _windowed(metric.expression):
         warning = WINDOW_WARNING
@@ -138,13 +163,14 @@ def _reads(expression: OssieExpression, names: set[str]) -> bool:
     return tree is not None and any(not c.table and c.name.casefold() in names for c in tree.find_all(exp.Column))
 
 
-def _dataset(dataset: OssieDataset, *, data_source: str, target: str) -> SlayerDataset:
+def _dataset(dataset: OssieDataset, *, data_source: str, target: str, document: str) -> SlayerDataset:
     primary = set(dataset.primary_key or [])
     unique = {k[0] for k in dataset.unique_keys or [] if len(k) == 1}
     fields = [_field(f, keys=(primary, unique), target=target) for f in dataset.fields or []]
     windowed = {f.name.casefold() for f in fields if f.load_warning == WINDOW_WARNING}
     return SlayerDataset(
         name=dataset.name, data_source=data_source, description=dataset.description, fields=fields,
+        semantic_model=document,
         metrics=[_metric(m, target=target, windowed_fields=windowed) for m in dataset.metrics or []],
         **_source(dataset),
     )
@@ -153,7 +179,7 @@ def _dataset(dataset: OssieDataset, *, data_source: str, target: str) -> SlayerD
 @functools.lru_cache(maxsize=256)
 def _decomposed(text: str, name: str, data_source: str, target: str) -> Decomposition:
     doc = checked_document(text=text, name=name)
-    datasets = {d.name: _dataset(d, data_source=data_source, target=target) for d in doc.datasets}
+    datasets = {d.name: _dataset(d, data_source=data_source, target=target, document=doc.name) for d in doc.datasets}
     for rel in doc.relationships or []:
         datasets[rel.from_dataset].relationships.append(DatasetRelationship(
             name=rel.name, to=rel.to, from_columns=list(rel.from_columns), to_columns=list(rel.to_columns),
@@ -161,7 +187,7 @@ def _decomposed(text: str, name: str, data_source: str, target: str) -> Decompos
         ))
     metrics = []
     for m in doc.metrics or []:
-        expression, problem = _runnable(m.expression, target=target)
+        expression, problem = _runnable_metric(m.expression, target=target)
         metrics.append(ModelScopedMetric(
             name=m.name, semantic_model=doc.name, data_source=data_source, expression=expression,
             description=m.description, ai_context=m.ai_context,

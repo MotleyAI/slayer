@@ -667,6 +667,8 @@ class DatasetMetric(MetricBase, DatasetPart):
 
     @model_validator(mode="after")
     def _reject_raw_window_function(self) -> "DatasetMetric":
+        if self.load_warning is not None:
+            return self
         text = portable_text(self.expression)
         if text is None:
             carried = ", ".join(dialect_tokens(self.expression)) or "none"
@@ -1241,6 +1243,8 @@ class SlayerDataset(DatasetPart):
     meta: dict[str, Any] | None = None
     # In-memory breadcrumb for virtual stage datasets; ``exclude=True`` keeps it unpersisted.
     source_dataset_origin: SourceDatasetOrigin | None = Field(default=None, exclude=True)
+    #: Runtime only: the semantic-model document declaring this dataset (``None`` for a standalone dataset).
+    semantic_model: str | None = Field(default=None, exclude=True)
     # Runtime-only (never persisted): a query stage's user spelling in relationship paths.
     _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
     # Runtime-only: this dataset is the P factor of a ``time_spine × P`` population.
