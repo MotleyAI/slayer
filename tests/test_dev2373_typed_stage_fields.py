@@ -15,13 +15,14 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
-from slayer.core.errors import ScalarOperandTypeError, TimeDimensionFieldError
-from slayer.core.keys import ArithmeticKey, FieldKey, LiteralKey, Phase, value_type
-from slayer.core.models import Aggregation, DatasetMetric, SlayerDataset
+from slayer.core.errors import AmbiguousRelationshipPathError, ScalarOperandTypeError, TimeDimensionFieldError
+from slayer.core.keys import ArithmeticKey, FieldKey, LiteralKey, Phase, ScalarCallKey, value_type
+from slayer.core.models import Aggregation, DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import StageField, StageSchema
+from slayer.core.scope import DatasetScope, StageField, StageSchema
+from slayer.engine.key_metadata import SlotTyping
 from slayer.ir.planned import ValueSlot
-from slayer.ir.source_bundle import dataset_from_stage_schema
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from slayer.sql.render.row_expr import data_type_target
 from tests._dev2373_fixtures import (
     DIALECTS,
@@ -336,6 +337,36 @@ class TestIntegerScalars:
 
     def test_abs_over_a_decimal_stays_decimal(self) -> None:
         assert emitted_types(_dim("abs(orders.price)"), names=["x"]) == {"x": DEC}
+
+
+class TestNullif:
+    def test_nullif_takes_its_returned_arguments_resolved_type(self) -> None:
+        text_min = Aggregation(name="min", expression="MIN(CAST({value} AS VARCHAR))")
+        datasets = shop_datasets(orders_dataset=orders(aggregations=[text_min]))
+        assert emitted_types(_metric("nullif(min(orders.flag), '0')"), names=["x"], datasets=datasets) == {"x": TEXT}
+
+    def test_nullif_over_a_boolean_field_stays_boolean(self) -> None:
+        assert emitted_types(_dim("nullif(orders.flag, false)"), names=["x"]) == {"x": BOOL}
+
+    def test_nullif_over_an_opaque_value_stays_opaque(self) -> None:
+        key = ScalarCallKey(name="nullif", args=(FieldKey(leaf="blob"), LiteralKey(value="")))
+        assert value_type(key, field_type=lambda _k: DataType.OPAQUE) is DataType.OPAQUE
+
+
+class TestUnresolvableField:
+    def test_typing_reports_the_walkers_refusal(self) -> None:
+        returns = SlayerDataset(
+            name="returns", data_source=DS, sql_table="returns",
+            fields=[DatasetField(name="id", datatype=INT, primary_key=True),
+                    DatasetField(name="cust_a", datatype=INT), DatasetField(name="cust_b", datatype=INT)],
+            relationships=[DatasetRelationship(to="customers", from_columns=["cust_a"], to_columns=["id"]),
+                           DatasetRelationship(to="customers", from_columns=["cust_b"], to_columns=["id"])],
+        )
+        bundle = ResolvedSourceBundle(dialect="duckdb", population=returns, referenced_datasets=[customers()])
+        typing = SlotTyping(scope=DatasetScope(population=returns), bundle=bundle)
+        key = FieldKey(path=("customers",), leaf="name")
+        with pytest.raises(AmbiguousRelationshipPathError):
+            typing.type_of(key)
 
 
 class TestArithmeticNullOperand:

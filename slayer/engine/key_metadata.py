@@ -41,6 +41,7 @@ from slayer.core.relationship_walker import (
     dataset_field,
     dataset_field_element,
     dataset_field_type,
+    follow,
 )
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
@@ -155,6 +156,11 @@ class SlotTyping:
             return found
         if not any(isinstance(k, _ROW_READING) for k in walk_value_keys(key)):
             return DataType.INTEGER
+        if self._population is not None:
+            # The walker's own refusal (an ambiguous or broken hop) names the cause.
+            for k in walk_value_keys(key):
+                if isinstance(k, FieldKey) and k.path:
+                    follow(root=self._population, path=tuple(k.path), datasets_by_name=self._datasets)
         raise TypeError(f"no type derives for {key!r}: a field it reads does not resolve")
 
     def preserves_native_type(self, key: ValueKey, data_type: DataType) -> bool:

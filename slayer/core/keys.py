@@ -1896,6 +1896,9 @@ def _row_value_type(
         return DataType.ARRAY
     if isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS:
         return _fold_branch_types(key, field_type=field_type, aggregate_type=aggregate_type)[0]
+    if isinstance(key, ScalarCallKey) and key.name == "nullif" and key.args:
+        # Its first argument or NULL: that argument's resolved type (an opaque one kept).
+        return value_type(key.args[0], field_type=field_type, aggregate_type=aggregate_type)
     if boolean_valued(key, field_type=field_type):
         return DataType.BOOLEAN
     if isinstance(key, ArithmeticKey) and key.op in _ARITHMETIC_OPS:
