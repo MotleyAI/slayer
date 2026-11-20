@@ -8,11 +8,15 @@ mocked at the import boundary — no live API calls are made.
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
 
 import pytest
 
 from slayer.embeddings import client as embedding_client
+from tests._loop_gated_stub import gated
+
+_REAL_IS_AVAILABLE = embedding_client.is_available  # captured before conftest's autouse stub
 
 
 @pytest.fixture(autouse=True)
@@ -903,3 +907,76 @@ async def test_embed_query_returns_none_when_per_input_retry_fails(
         "expected 1 batch call + 1 per-input retry = 2; got "
         f"{call_count['n']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Availability check and truncation run off the event loop
+# ---------------------------------------------------------------------------
+
+
+class _VectorResponse:
+    def __init__(self, n: int) -> None:
+        self.data = [{"embedding": [float(i)]} for i in range(n)]
+
+
+async def test_embed_batch_truncation_keeps_the_loop_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embedding_client, "is_available", lambda: True)
+    litellm = pytest.importorskip("litellm")
+
+    async def fake_aembedding(*, model: str, input: list[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+        return _VectorResponse(len(input))
+
+    monkeypatch.setattr(litellm, "aembedding", fake_aembedding)
+    truncate = gated(fn=lambda text, *, model=None: text)
+    monkeypatch.setattr(embedding_client, "truncate_text_for_model", truncate)
+    vectors = await embedding_client.embed_batch(["a", "b"], model="openai/x")
+    truncate.assert_loop_stayed_free()
+    assert truncate.calls == 2
+    assert vectors == [[0.0], [1.0]]
+
+
+async def test_embed_batch_availability_check_keeps_the_loop_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    check = gated()
+    monkeypatch.setattr(embedding_client, "is_available", check)
+    assert await embedding_client.embed_batch(["a", "b"], model="openai/x") == [None, None]
+    check.assert_loop_stayed_free()
+
+
+@pytest.mark.parametrize("value", [True, False])
+async def test_is_available_async_honours_a_stub_off_the_loop(
+    monkeypatch: pytest.MonkeyPatch, value: bool,
+) -> None:
+    check = gated(fn=lambda: value)
+    monkeypatch.setattr(embedding_client, "is_available", check)
+    assert await embedding_client.is_available_async() is value
+    check.assert_loop_stayed_free()
+
+
+async def test_is_available_async_honours_cache_clear_off_the_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    litellm = pytest.importorskip("litellm")
+    keys = {"present": True}
+    threads: list[int] = []
+
+    def fake_validate(*, model: str) -> dict:
+        threads.append(threading.get_ident())
+        return {"keys_in_environment": keys["present"]}
+
+    monkeypatch.setattr(litellm, "validate_environment", fake_validate)
+    monkeypatch.setattr(embedding_client, "is_available", _REAL_IS_AVAILABLE)
+    _REAL_IS_AVAILABLE.cache_clear()
+    try:
+        assert await embedding_client.is_available_async() is True
+        keys["present"] = False
+        assert await embedding_client.is_available_async() is True
+        _REAL_IS_AVAILABLE.cache_clear()
+        assert await embedding_client.is_available_async() is False
+    finally:
+        _REAL_IS_AVAILABLE.cache_clear()
+    assert len(threads) == 2
+    assert threading.get_ident() not in threads
