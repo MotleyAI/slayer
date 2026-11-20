@@ -27,4 +27,4 @@
 ## 5. Finish
 
 - [x] 5.1 `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors, never `--writebaseline`), `poetry run la-arch-check`, `npx likec4 validate architecture`, `openspec validate dev-2364-ossie-vocabulary-rename-the-leftover --strict`. Verify: all pass.
-- [ ] 5.2 Local test scope (`la-affected-tests --base main` plus touched goldens and the corpus) green; full suites green in CI.
+- [x] 5.2 Local test scope (`la-affected-tests --base main` plus touched goldens and the corpus) green; full suites green in CI.
