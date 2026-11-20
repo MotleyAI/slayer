@@ -2337,8 +2337,9 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             target_rooted=bool(target_path),
         )
     active_td = prebound.main_time_key
-    if window_kwarg_of(agg) is not None and active_td is not None and not key_attributable_from_root(
-        key=active_td, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+    td_home = routed(active_td) if active_td is not None else None
+    if window_kwarg_of(agg) is not None and active_td is not None and td_home is not None and not key_attributable_from_root(
+        key=td_home, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
         bundle=bundle, host_dataset=host_dataset, host_name=host_dataset.name,
     ):
         # A fanning window axis is judged before the grain: it associates, or it is refused.
@@ -2350,10 +2351,10 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         if all(u.key != active_td for u in unattributable):
             unattributable.append(_UnattributableDim(
                 key=active_td, name=context.dim_display(active_td), reason=key_broadcast_reason(
-                    key=active_td, target_path=target_path, root_dataset=root_dataset,
+                    key=td_home, target_path=target_path, root_dataset=root_dataset,
                     datasets_by_name=datasets_with_host, bundle=bundle,
                     host_dataset=host_dataset, host_name=host_dataset.name,
-                ),
+                ), routed=td_home,
             ))
     # Association only when a DIMENSION is unattributable; attached inputs never need it.
     associate = policy.associates and bool(unattributable) and not product_associate
@@ -2400,8 +2401,8 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
                 check_windowed_time_axis_attributable(
                     alias=alias, root_name=root_name, active_td_name=None, attributable=False,
                 )
-            assert active_td is not None  # the checker raised otherwise
-            window_td_key = cast(TimeTruncKey, dict(safe_pairs).get(active_td) or _rerooted(active_td))
+            assert active_td is not None and td_home is not None  # the checker raised otherwise
+            window_td_key = cast(TimeTruncKey, dict(safe_pairs).get(active_td) or _rerooted(td_home))
     else:
         # BROADCAST / ERROR ARM: an unattributable explicit key is a hard error.
         if product_associate:
