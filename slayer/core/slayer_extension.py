@@ -128,6 +128,7 @@ class ModelMetricContent(BaseModel):
     expression: FieldExpression
     description: str | None = None
     datatype: DataType | None = None
+    ai_context: Any = None
 
 
 class DocumentBoundary(BaseModel):

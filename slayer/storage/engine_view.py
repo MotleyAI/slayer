@@ -132,6 +132,13 @@ class EngineStorage(StorageBackend):
     async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
         await self._sourced(self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing))
 
+    async def create_semantic_model(self, *, data_source: str, name: str, content: str | dict[str, Any] | None = None,
+                                    datasets: list[str] | None = None) -> None:
+        await self._sourced(self._inner.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets))
+
+    async def edit_semantic_model(self, name: str, *, data_source: str, **edits: Any) -> None:
+        await self._sourced(self._inner.edit_semantic_model(name, data_source=data_source, **edits))
+
     async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
         return await self._inner.list_model_scoped_metrics(data_source)
 

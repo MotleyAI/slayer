@@ -797,6 +797,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         access_tags: Annotated[list[str] | None, Field(
             description="Access groups allowed to see the dataset; omit for public.",
         )] = None,
+        semantic_model: Annotated[str | None, Field(
+            description="Add the dataset to this semantic model (an Ossie document of the datasource); omit to store "
+                        "it standalone.",
+        )] = None,
     ) -> str:
         """Create a semantic dataset from a database table (sql_table), a SQL query (sql), or a SLayer query (query: the dataset becomes query-backed and its fields come from the result).
 
@@ -855,6 +859,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             metrics=metrics,
             aggregations=aggregations,
             access_tags=access_tags,
+            semantic_model=semantic_model,
         )
         try:
             dataset = SlayerDataset.model_validate(data)
@@ -1029,7 +1034,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description="JSON metadata replacing the dataset's meta; null clears it.",
         )],
     ) -> str:
-        """Edit an existing dataset in one call: metadata, upserts of fields / metrics / aggregations / relationships (by name; only the given keys change), dataset filters, and removals (applied first).
+        """Edit an existing dataset in one call: metadata, upserts of fields / metrics / aggregations / relationships (by name; only the given keys change), dataset filters, and removals (applied first). A dataset of a semantic model is edited in place in its document.
 
         Host a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
@@ -1553,6 +1558,73 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if deleted:
             return f"Dataset '{name}' deleted."
         return f"Dataset '{name}' not found."
+
+    @tool()
+    async def create_semantic_model(
+        name: Annotated[str, Field(description="The semantic model's name, unique in its datasource.")],
+        data_source: Annotated[str, Field(description="The datasource it describes (from list_datasources).")],
+        content: Annotated[str | dict[str, Any] | None, Field(
+            description="A whole Ossie 0.3.0.dev0 semantic-model document, as YAML/JSON text or an object.",
+        )] = None,
+        datasets: Annotated[list[str] | None, Field(
+            description="Standalone datasets of the datasource to move into the new semantic model, instead of content.",
+        )] = None,
+    ) -> str:
+        """Create a semantic model: an Ossie document holding datasets, their relationships and model-scoped metrics (metrics a query names bare). Give its Ossie content, or the standalone datasets it takes over (they keep their names)."""
+        try:
+            await storage.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets)
+        except Exception as exc:
+            return f"Error creating semantic model '{name}': {type(exc).__name__}: {exc}"
+        return f"Semantic model '{name}' created."
+
+    @tool()
+    async def edit_semantic_model(
+        name: Annotated[str, Field(description="Semantic model to edit.")],
+        data_source: Annotated[str, Field(description="Its datasource.")],
+        description: Annotated[str | None, Field(description="New description of the semantic model.")] = None,
+        ai_context: Annotated[str | dict[str, Any] | None, Field(
+            description="New AI context: instructions text, or {instructions, synonyms, examples}.",
+        )] = None,
+        metrics: Annotated[list[dict[str, Any]] | None, Field(
+            description='Model-scoped metrics to add or replace, {"name", "expression", "description", "ai_context"}; '
+                        'the expression reads like a query: qualified fields inside aggregates, AGG(dataset.metric), '
+                        'other model-scoped metrics by bare name.',
+        )] = None,
+        remove_metrics: Annotated[list[str] | None, Field(description="Model-scoped metrics to remove.")] = None,
+        relationships: Annotated[list[dict[str, Any]] | None, Field(
+            description='Relationships to add or replace, {"name", "from", "to", "from_columns", "to_columns"} '
+                        '(many-to-one from "from").',
+        )] = None,
+        remove_relationships: Annotated[list[str] | None, Field(description="Relationships to remove, by name.")] = None,
+        add_datasets: Annotated[list[str] | None, Field(
+            description="Standalone datasets of the datasource to move into the semantic model.",
+        )] = None,
+    ) -> str:
+        """Edit a semantic model in place: its description and AI context, its model-scoped metrics and relationships, and standalone datasets moved into it. Edit its datasets with edit_dataset."""
+        edits = {k: v for k, v in {"description": description, "ai_context": ai_context}.items() if v is not None}
+        try:
+            await storage.edit_semantic_model(
+                name, data_source=data_source, metrics=metrics, remove_metrics=remove_metrics,
+                relationships=relationships, remove_relationships=remove_relationships, add_datasets=add_datasets,
+                **edits,
+            )
+        except Exception as exc:
+            return f"Error editing semantic model '{name}': {type(exc).__name__}: {exc}"
+        return f"Semantic model '{name}' edited."
+
+    @tool()
+    async def delete_semantic_model(
+        name: Annotated[str, Field(description="Semantic model to delete.")],
+        data_source: Annotated[str | None, Field(
+            description="Its datasource; required when the name exists in several datasources.",
+        )] = None,
+    ) -> str:
+        """Delete a semantic model together with all its datasets and model-scoped metrics."""
+        try:
+            deleted = await storage.delete_semantic_model(name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
+            return _ambiguous_with_mcp_hint(exc)
+        return f"Semantic model '{name}' deleted." if deleted else f"Semantic model '{name}' not found."
 
     @tool()
     async def validate_datasets(

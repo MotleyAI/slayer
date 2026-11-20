@@ -146,6 +146,8 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: l
            dataset: str) -> DatasetField:
     primary, unique = keys
     expression, problem = _runnable(field.expression, target=target)
+    if expression == field.name:
+        expression = None  # reads the column named like the field
     warning = WINDOW_WARNING if _windowed(field.expression) else problem
     built = DatasetField(
         name=field.name, expression=expression,

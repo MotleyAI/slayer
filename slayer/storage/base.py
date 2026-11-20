@@ -9,6 +9,8 @@ import os
 import sys
 import uuid
 import warnings
+
+import yaml
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
@@ -58,7 +60,7 @@ from slayer.core.models import (
     shadows_library_function,
 )
 from slayer.core.query import SlayerQuery, mode_a_texts
-from slayer.core.semantic_model import ModelScopedMetric, ossie_validity_errors
+from slayer.core.semantic_model import OSSIE_VERSION, ModelScopedMetric, ossie_validity_errors
 from slayer.core.syntax import parse_expr
 from slayer.core.vocabulary import bridge_renamed_hooks, method_twin
 from slayer.core.warnings import (
@@ -118,6 +120,8 @@ from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
 from slayer.storage.qualified_references import qualified_stages
 from slayer.storage.document_mapping import as_expression, with_dataset, without_dataset
+from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle
+from slayer.storage.semantic_model_edits import UNSET, MetricSpec, edited_document, metric_spec, with_datasets
 from slayer.core.document_text import edit_text
 from slayer.storage.semantic_models import (
     DocumentIndex, build_index, checked_document, decompose, expression_datasets,
@@ -1132,11 +1136,13 @@ class StorageBackend(ABC):
             raise
 
     async def _check_document_namespace(self, *, name: str, data_source: str, datasets: list[str],
-                                        metrics: list[str]) -> None:
-        """Refuse a dataset or model-scoped metric name the datasource already uses elsewhere, in any case."""
+                                        metrics: list[str], moving: set[str] = frozenset()) -> None:
+        """Refuse a dataset or model-scoped metric name the datasource already uses elsewhere, in any case; ``moving``
+        names standalone datasets this write moves into the document."""
         owner = f"semantic model {name!r}"
         taken: dict[str, str] = {n.casefold(): f"standalone dataset {n!r}"
-                                 for ds, n in await self._standalone_identities() if ds == data_source}
+                                 for ds, n in await self._standalone_identities()
+                                 if ds == data_source and n.casefold() not in moving}
         others = [(n, t) for n, t in [
             (n, await self._get_semantic_model_text_impl(data_source=data_source, name=n))
             for ds, n in await self._list_semantic_model_identities() if ds == data_source and n != name] if t]
@@ -1158,6 +1164,94 @@ class StorageBackend(ABC):
             existing = other_metrics.get(metric.casefold()) or taken.get(metric.casefold()) or own.get(metric.casefold())
             if existing is not None:
                 raise NamespaceCollisionError(name=metric, owner=owner, existing=existing, data_source=data_source)
+
+    async def create_semantic_model(self, *, data_source: str, name: str, content: str | dict[str, Any] | None = None,
+                                    datasets: list[str] | None = None) -> None:
+        """Create document ``name`` from Ossie ``content`` (text or mapping), or from the standalone ``datasets``, which
+        move into it under the same names."""
+        if (content is None) == (datasets is None):
+            raise ValueError("Give a semantic model either its Ossie content or the standalone datasets it takes")
+        if content is not None:
+            text = content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False, allow_unicode=True)
+            await self.save_semantic_model_text(data_source=data_source, name=name, text=text)
+            return
+        moved = await self._standalone_members(datasets or [], data_source=data_source)
+        reader = await self._reader(data_source)
+        doc = with_datasets({"version": OSSIE_VERSION, "name": name, "datasets": []}, moved, reader=reader)
+        reasons = ossie_validity_errors(doc)
+        if reasons:
+            raise OssieDocumentInvalidError(name=name, reasons=reasons)
+        await self.adopt_semantic_model(data_source=data_source, name=name, replacing=[d.name for d in moved],
+                                        text=yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))
+
+    async def _standalone_members(self, names: list[str], *, data_source: str) -> list[SlayerDataset]:
+        out = []
+        for name in names:
+            if await self._owner_of(name, data_source=data_source) is not None:
+                raise ValueError(f"Dataset {name!r} already belongs to a semantic model")
+            dataset = await self.get_dataset(name, data_source=data_source)
+            if dataset is None:
+                raise ValueError(f"Dataset {name!r} not found in datasource {data_source!r}")
+            out.append(dataset)
+        return out
+
+    async def _reader(self, data_source: str) -> str:
+        datasource = await self.get_datasource(data_source)
+        return dialect_for_ds_type(datasource.type if datasource is not None else None).sqlglot_name
+
+    async def edit_semantic_model(self, name: str, *, data_source: str, description: Any = UNSET,
+                                  ai_context: Any = UNSET, metrics: list[dict[str, Any]] | None = None,
+                                  remove_metrics: list[str] | None = None,
+                                  relationships: list[dict[str, Any]] | None = None,
+                                  remove_relationships: list[str] | None = None,
+                                  add_datasets: list[str] | None = None) -> None:
+        """Edit document ``name`` in place: its description and AI context, upserted or removed model-scoped metrics and
+        relationships, and standalone datasets moved into it. Every model-scoped metric written is checked first."""
+        text = await self.get_semantic_model_text(name, data_source=data_source)
+        if text is None:
+            raise ValueError(f"Semantic model {name!r} not found in datasource {data_source!r}")
+        moved = await self._standalone_members(add_datasets or [], data_source=data_source)
+        datasource = await self.get_datasource(data_source)
+        ds_type = datasource.type if datasource is not None else None
+        reader = dialect_for_ds_type(ds_type).sqlglot_name
+        specs = [metric_spec(m) for m in metrics or []]
+        current = decompose(text=text, name=name, data_source=data_source, ds_type=ds_type)
+        members = [*current.datasets, *moved]
+        others = [m.name for m in await self.list_model_scoped_metrics(data_source) if m.semantic_model != name]
+        kept = [m.name for m in current.metrics if m.name.casefold() not in {
+            n.casefold() for n in [*(remove_metrics or []), *(s["name"] for s in specs)]}]
+        scope = DocumentScope(
+            fields={d.name.casefold(): {f.name.casefold() for f in d.fields} for d in members},
+            dataset_metrics={d.name.casefold(): {m.name.casefold() for m in d.metrics} for d in members},
+            datasource_datasets={n.casefold() for ds, n in await self._list_all_dataset_identities() if ds == data_source},
+            model_metrics={n.casefold() for n in [*others, *kept, *(s["name"] for s in specs)]},
+        )
+        written = [MetricSpec(s, slayer_only=check_model_metric(name=s["name"], text=MetricSpec(s, slayer_only=False).text,
+                                                                scope=scope)) for s in specs]
+        dependencies = {m.name.casefold(): expression_datasets(m.expression)[1] for m in current.metrics
+                        if m.name.casefold() in {k.casefold() for k in kept}}
+        dependencies.update({w.name.casefold(): expression_datasets(w.text)[1] for w in written})
+        metric_cycle({k: v & set(dependencies) for k, v in dependencies.items()})
+        await self._check_document_namespace(
+            name=name, data_source=data_source, datasets=[d.name for d in members],
+            metrics=[*kept, *(w.name for w in written)], moving={d.name.casefold() for d in moved})
+
+        def patch(stored: str) -> str:
+            def edit(doc: dict[str, Any]) -> dict[str, Any]:
+                out = edited_document(with_datasets(doc, moved, reader=reader), description=description,
+                                      ai_context=ai_context, metrics=written, remove_metrics=remove_metrics or [],
+                                      relationships=relationships or [],
+                                      remove_relationships=remove_relationships or [])
+                reasons = ossie_validity_errors(out)
+                if reasons:
+                    raise OssieDocumentInvalidError(name=name, reasons=reasons)
+                return out
+
+            return edit_text(stored, edit)
+
+        await self._patch_semantic_model_text(data_source=data_source, name=name, patch=patch)
+        for dataset in moved:
+            await self._delete_dataset_row(data_source=data_source, name=dataset.name)
 
     async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
         """Delete a document, cascading every member's embeddings and memory entities; ``False`` when absent."""

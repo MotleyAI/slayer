@@ -167,7 +167,7 @@ def relationship_declarations(rel: Any, entry: Entry | None, *, datasets: dict[s
                 f"{declaration.relationship.to!r}, which are not both in the document; read as a many-to-one "
                 "relationship")))
             return fallback
-        out.append((declaration.dataset, declaration.relationship.model_copy(update={"name": rel.name})))
+        out.append((declaration.dataset, declaration.relationship.model_copy()))
     return out
 
 

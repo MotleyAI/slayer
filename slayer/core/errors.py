@@ -1407,6 +1407,45 @@ class SemanticModelsUnsupportedError(SlayerError):
         ))
 
 
+class UnqualifiedModelMetricReferenceError(SlayerError, ValueError):
+    """A model-scoped metric SLayer authors reads a field by a bare name."""
+
+    def __init__(self, *, metric: str, reference: str) -> None:
+        self.metric = metric
+        self.reference = reference
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Model-scoped metric {metric!r} reads the bare name {reference!r}: a model-scoped metric has no "
+                    "home dataset, so every field it reads must be qualified.",
+            suggestion=f"Write it qualified, as '<dataset>.{reference}'.",
+        ))
+
+
+class ModelMetricReferenceError(SlayerError, ValueError):
+    """A model-scoped metric SLayer authors breaks a reference rule."""
+
+    def __init__(self, *, metric: str, reference: str, reason: str) -> None:
+        self.metric = metric
+        self.reference = reference
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Model-scoped metric {metric!r} cannot read {reference!r}: {reason}.",
+            suggestion="Aggregate qualified fields of this semantic model's datasets, evaluate a dataset metric with "
+                       "AGG(<dataset>.<metric>), or name another model-scoped metric.",
+        ))
+
+
+class ModelMetricNameError(SlayerError, ValueError):
+    """A model-scoped metric SLayer authors takes a name it may not."""
+
+    def __init__(self, *, name: str, reason: str) -> None:
+        self.name = name
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=f"Model-scoped metric name {name!r} is refused: {reason}.",
+            suggestion="Choose another name.",
+        ))
+
+
 class UnevaluableEntityError(SlayerError):
     """A document entity SLayer loads but cannot evaluate yet, read by a query."""
 
