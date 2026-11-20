@@ -9,12 +9,12 @@
 
 ## 2. Implementation (pr-implement stage)
 
-- [ ] 2.1 `slayer/embeddings/client.py`: add `is_available_async()` (always `asyncio.to_thread`, no fast path); `embed_batch` awaits it and runs the truncation loop in one `asyncio.to_thread`. Verify: 1.4 passes.
-- [ ] 2.2 `slayer/search/retrievers/embeddings.py`: the four gates await `embedding_client.is_available_async()`. Verify: 1.2(a)(b) and 1.3 pass.
-- [ ] 2.3 `slayer/search/graph.py`: add `is_available_async()`; `slayer/search/service.py` `_apply_cypher_filter` and `get_filtered_ids` await it. Verify: 1.2(c) and 1.5 pass.
-- [ ] 2.4 Verify the law test 1.6 passes and the existing `is_available` monkeypatching tests still pass unchanged.
+- [x] 2.1 `slayer/embeddings/client.py`: add `is_available_async()` (always `asyncio.to_thread`, no fast path); `embed_batch` awaits it and runs the truncation loop in one `asyncio.to_thread`. Verify: 1.4 passes.
+- [x] 2.2 `slayer/search/retrievers/embeddings.py`: the four gates await `embedding_client.is_available_async()`. Verify: 1.2(a)(b) and 1.3 pass.
+- [x] 2.3 `slayer/search/graph.py`: add `is_available_async()`; `slayer/search/service.py` `_apply_cypher_filter` and `get_filtered_ids` await it. Verify: 1.2(c) and 1.5 pass.
+- [x] 2.4 Verify the law test 1.6 passes and the existing `is_available` monkeypatching tests still pass unchanged.
 
 ## 3. Gates
 
-- [ ] 3.1 `architecture/model.c4` `specs ['search']` on the `search` bucket is in place (applied at plan time); `poetry run la-arch-check` and `npx likec4 validate` pass.
-- [ ] 3.2 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) pass; `openspec validate dev-2380-embedding-availability-check-imports-litellm --strict` passes.
+- [x] 3.1 `architecture/model.c4` `specs ['search']` on the `search` bucket is in place (applied at plan time); `poetry run la-arch-check` and `npx likec4 validate` pass.
+- [x] 3.2 `poetry run ruff check slayer/ tests/` and `poetry run basedpyright` (no new errors vs baseline) pass; `openspec validate dev-2380-embedding-availability-check-imports-litellm --strict` passes.

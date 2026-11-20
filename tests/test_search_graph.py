@@ -204,8 +204,9 @@ async def test_get_filtered_ids_availability_check_keeps_the_loop_free(
 ) -> None:
     check = gated()
     monkeypatch.setattr(search_graph, "is_available", check)
+    storage = YAMLStorage(base_dir=str(tmp_path))
     with pytest.raises(ValueError, match="requires LadybugDB"):
-        await get_filtered_ids("MATCH (n:Dataset) RETURN n.id AS id", YAMLStorage(base_dir=str(tmp_path)))
+        await get_filtered_ids("MATCH (n:Dataset) RETURN n.id AS id", storage)
     check.assert_loop_stayed_free()
 
 
