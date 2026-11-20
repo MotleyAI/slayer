@@ -99,7 +99,7 @@ def table_datasets() -> list[SlayerDataset]:
             _id(), DatasetField(name="name", datatype=DataType.STRING),
         ]),
         _returns("returns", joins=[_to("done_orders"), _to("ups_orders")],
-                 extra=[DatasetField(name="done_status", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="done_orders.status") for d in ("CLICKHOUSE", "POSTGRES", "SQLITE")]))]),
+                 extra=[DatasetField(name="done_status", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="done_orders.status") for d in ("CLICKHOUSE", "DUCKDB", "POSTGRES", "SQLITE")]))]),
         _returns("late_returns", joins=[_to("orders")], filters=["reason = 'late'"]),
         _returns("returns_of_done", joins=[_to("done_orders")], filters=["done_orders.id is not null"]),
         _returns("returns_inner", joins=[_to("done_orders", join_type=JoinType.INNER)]),

@@ -12,6 +12,7 @@ from typing import AsyncIterator, List
 import pytest
 
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -200,11 +201,11 @@ def event_less_datasets(
             DatasetField(name="value_or_zero_x2", datatype=DataType.FLOAT,
                    expression="region_events.value_or_zero * 2"),
             DatasetField(name="one", datatype=DataType.INTEGER, expression="1"),
-            DatasetField(name="in_empty", datatype=DataType.BOOLEAN, expression="value IN ()"),
+            DatasetField(name="in_empty", datatype=DataType.BOOLEAN, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="value IN ()") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])),
             DatasetField(name="col_in_list", datatype=DataType.BOOLEAN,
                    expression="value IN (30, 50)"),
             DatasetField(name="lit_in_list", datatype=DataType.BOOLEAN,
-                   expression="1 IN (value, 1)"),
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="1 IN (value, 1)") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])),
             DatasetField(name="lit_between", datatype=DataType.BOOLEAN,
                    expression="1 BETWEEN value AND 0"),
         ]

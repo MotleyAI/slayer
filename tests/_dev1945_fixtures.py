@@ -22,6 +22,7 @@ import os
 from typing import List, Optional
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -52,7 +53,7 @@ def orders_dataset(*, default: Optional[str] = None) -> SlayerDataset:
                 name="li_flag_ts", datatype=DataType.DATETIME, expression="created_at",
                 filter="line_items.qty > 0",
             ),
-            DatasetField(name="bad_ts", datatype=DataType.DATETIME, expression=UNPARSEABLE_SQL),
+            DatasetField(name="bad_ts", datatype=DataType.DATETIME, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression=UNPARSEABLE_SQL) for d in ("DUCKDB", "SQLITE")])),
             # Derived across the proven hop.
             DatasetField(name="cust_signup", datatype=DataType.DATETIME, expression="customers.signup_at"),
         ],

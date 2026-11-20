@@ -15,6 +15,7 @@ import pytest
 
 import slayer.core.refs as refs
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.errors import ParameterGrainError, SlayerError
 from slayer.core.keys import (
     KIND_POLICY,
@@ -150,7 +151,7 @@ def _sales_variant() -> SlayerDataset:
         DatasetField(name="city_len", datatype=DataType.INTEGER, expression="LENGTH(city)"),
         DatasetField(name="prod_flag", datatype=DataType.INTEGER,
                expression="CASE WHEN product = 'P' THEN 1 ELSE 0 END"),
-        DatasetField(name="bad", datatype=DataType.INTEGER, expression="amount +* )"),
+        DatasetField(name="bad", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="amount +* )") for d in ("DUCKDB", "SQLITE")])),
         DatasetField(name="city_q", datatype=DataType.STRING, expression="city", filter="product = 'Q'"),
         DatasetField(name="city_n", datatype=DataType.STRING, expression="city", filter="region = 'North'"),
     ]

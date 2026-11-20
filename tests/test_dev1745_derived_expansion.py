@@ -78,7 +78,7 @@ def _orders() -> SlayerDataset:
             # --- controls: same reference inside a larger expression ---
             DatasetField(name="deep_pop_compound", expression="customers.regions.pop_x2 * 1",
                    datatype=DataType.FLOAT),
-            DatasetField(name="deep_pop_paren", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="(customers.regions.pop_x2)")]),
+            DatasetField(name="deep_pop_paren", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="(customers.regions.pop_x2)") for d in ("DUCKDB", "POSTGRES")]),
                    datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
