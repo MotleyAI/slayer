@@ -10,13 +10,13 @@
 
 ## 2. Implementation (pr-implement stage)
 
-- [ ] 2.1 `slayer/embeddings/client.py`: apply #612's diff verbatim (file is byte-identical to `main`'s pre-merge). Verify: `git diff abccc2074 -- slayer/embeddings/client.py` is empty; 1.6 passes.
-- [ ] 2.2 `slayer/search/retrievers/embeddings.py`: the four gates await `embedding_client.is_available_async()`; #612's comment / issue-reference trims; move the `numpy` / `ranker` import to module scope with `main`'s exact block (`git show origin/main:slayer/search/retrievers/embeddings.py`), `retrieve()` checks `if np is None:` keeping the operator log line. Verify: 1.3 (search, subtree), 1.4, 1.5 pass; the diff vs `abccc2074` is vocabulary-only.
-- [ ] 2.3 `slayer/search/graph.py`: add `is_available_async()`, `get_filtered_ids` awaits it, #612's issue-reference removals; `slayer/search/service.py` `_apply_cypher_filter` awaits `_search_graph.is_available_async()`. Verify: 1.3 (cypher), 1.7 pass.
-- [ ] 2.4 Verify the law test 1.2 passes and the existing `is_available` monkeypatching tests still pass unchanged (local scope per `la-affected-tests --base 1.x`).
-- [ ] 2.5 Post the forward-merge (1.x → `main`) notes as a comment on DEV-2381: `model.c4`, `client.py`, the spec file, helper and law files merge identically; both archive folders stay; vocabulary hunks in the touched source and test files take `main`'s side; the numpy block is identical; the 1.x-only retriever tests 1.5 (a)/(b) are kept and translated to `main`'s vocabulary. Verify: the comment exists on DEV-2381.
+- [x] 2.1 `slayer/embeddings/client.py`: apply #612's diff verbatim (file is byte-identical to `main`'s pre-merge). Verify: `git diff abccc2074 -- slayer/embeddings/client.py` is empty; 1.6 passes.
+- [x] 2.2 `slayer/search/retrievers/embeddings.py`: the four gates await `embedding_client.is_available_async()`; #612's comment / issue-reference trims; move the `numpy` / `ranker` import to module scope with `main`'s exact block (`git show origin/main:slayer/search/retrievers/embeddings.py`), `retrieve()` checks `if np is None:` keeping the operator log line. Verify: 1.3 (search, subtree), 1.4, 1.5 pass; the diff vs `abccc2074` is vocabulary-only.
+- [x] 2.3 `slayer/search/graph.py`: add `is_available_async()`, `get_filtered_ids` awaits it, #612's issue-reference removals; `slayer/search/service.py` `_apply_cypher_filter` awaits `_search_graph.is_available_async()`. Verify: 1.3 (cypher), 1.7 pass.
+- [x] 2.4 Verify the law test 1.2 passes and the existing `is_available` monkeypatching tests still pass unchanged (local scope per `la-affected-tests --base 1.x`).
+- [x] 2.5 Post the forward-merge (1.x → `main`) notes as a comment on DEV-2381: `model.c4`, `client.py`, the spec file, helper and law files merge identically; both archive folders stay; vocabulary hunks in the touched source and test files take `main`'s side; the numpy block is identical; the 1.x-only retriever tests 1.5 (a)/(b) are kept and translated to `main`'s vocabulary. Verify: the comment exists on DEV-2381.
 
 ## 3. Gates
 
 - [x] 3.1 `architecture/model.c4`: `specs ['search']` on the `search` bucket (approved; applied at plan time). Verify: `poetry run la-arch-check` and `npx likec4 validate` pass.
-- [ ] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline), `la-check-conventions`, `poetry run la-arch-check`, `openspec validate dev-2381-backport-to-1x-searchs-optional-extra-checks --strict` all pass.
+- [x] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline), `la-check-conventions`, `poetry run la-arch-check`, `openspec validate dev-2381-backport-to-1x-searchs-optional-extra-checks --strict` all pass.

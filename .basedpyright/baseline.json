@@ -16726,16 +16726,6 @@
                 }
             }
         ],
-        "./tests/test_embeddings_client.py": [
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 34,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/test_engine_namespacing.py": [
             {
                 "code": "reportArgumentType",

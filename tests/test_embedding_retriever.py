@@ -269,8 +269,10 @@ async def test_fetch_corpus_filters_by_active_model_name(
 
     rows_a = await retriever_a.fetch_corpus()
     rows_b = await retriever_b.fetch_corpus()
-    assert len(rows_a) == 1 and rows_a[0].embedding_model_name == "openai/a"
-    assert len(rows_b) == 1 and rows_b[0].embedding_model_name == "openai/b"
+    assert len(rows_a) == 1
+    assert rows_a[0].embedding_model_name == "openai/a"
+    assert len(rows_b) == 1
+    assert rows_b[0].embedding_model_name == "openai/b"
 
 
 # ---------------------------------------------------------------------------

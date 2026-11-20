@@ -7,7 +7,8 @@ mocked at the import boundary — no live API calls are made.
 
 from __future__ import annotations
 
-import asyncio
+import hashlib
+import inspect
 import threading
 from typing import Any
 
@@ -164,8 +165,8 @@ async def test_embed_query_returns_none_on_extra_missing(
 def test_event_loop_imports() -> None:
     """Sanity: this module's async helpers can be invoked from a fresh
     loop without import side-effects."""
-    assert asyncio.iscoroutinefunction(embedding_client.embed_batch)
-    assert asyncio.iscoroutinefunction(embedding_client.embed_query)
+    assert inspect.iscoroutinefunction(embedding_client.embed_batch)
+    assert inspect.iscoroutinefunction(embedding_client.embed_query)
 
 
 # ---------------------------------------------------------------------------
@@ -208,9 +209,8 @@ def test_truncate_text_for_model_truncates_over_cap_input(
     decode(encode(long_text)[:budget]) so an implementation that
     drops from the wrong side, returns ``""``, or hashes the input
     cannot pass."""
-    pytest.importorskip("litellm")
+    litellm = pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
-    import litellm  # noqa: F401 — ensures the import-skip above gates
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
     long_text = "word " * 2000  # ~2000 tokens, well over the 300-cap budget
     out = embedding_client.truncate_text_for_model(
@@ -227,9 +227,8 @@ def test_truncate_text_for_model_unknown_cap_falls_back_to_8192(
 ) -> None:
     """When get_max_tokens returns None for every form of the model
     name, the function uses an 8192-token cap fallback."""
-    pytest.importorskip("litellm")
+    litellm = pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
-    import litellm
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: None)
     # 9000 cl100k tokens > 8192 - 256 budget
     long_text = "word " * 9000
@@ -246,9 +245,8 @@ def test_truncate_text_for_model_get_max_tokens_raises_falls_back(
     """A raising get_max_tokens is treated the same as None — fall back
     to the 8192 cap. Codex finding #3: a transient failure must NOT be
     cached as 8192 forever (see the no-cache-poisoning test below)."""
-    pytest.importorskip("litellm")
+    litellm = pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
-    import litellm
 
     def boom(_m: str) -> int:
         raise RuntimeError("model map fetch failed")
@@ -266,9 +264,8 @@ def test_truncate_text_for_model_unknown_encoder_falls_back_to_cl100k(
 ) -> None:
     """When tiktoken.encoding_for_model raises KeyError, we fall back to
     cl100k_base. Truncation still respects the budget."""
-    pytest.importorskip("litellm")
+    litellm = pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
-    import litellm
 
     def raise_key(_name: str) -> Any:
         raise KeyError("no such model")
@@ -290,8 +287,7 @@ def test_truncate_text_for_model_strips_provider_prefix_for_encoder(
     (provider prefix stripped). cl100k_base shortcut works if the
     encoder lookup is correct."""
     tiktoken = pytest.importorskip("tiktoken")
-    pytest.importorskip("litellm")
-    import litellm
+    litellm = pytest.importorskip("litellm")
     seen: dict = {}
     real_encoding_for_model = tiktoken.encoding_for_model
 
@@ -313,8 +309,7 @@ def test_truncate_text_for_model_get_max_tokens_prefixed_then_bare(
     """Codex finding #2: if get_max_tokens returns None for the
     provider-prefixed form, retry with the bare model name before
     falling back to 8192."""
-    pytest.importorskip("litellm")
-    import litellm
+    litellm = pytest.importorskip("litellm")
     calls: list[str] = []
 
     def fake_get_max(model: str) -> int | None:
@@ -344,10 +339,8 @@ def test_truncate_text_for_model_warns_on_truncation(
     it back to the source memory/entity — model, original token count,
     post-truncation token count, and a sha256 prefix of the input —
     without leaking the embedded content itself."""
-    pytest.importorskip("litellm")
+    litellm = pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
-    import hashlib
-    import litellm
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
     long_text = ("PREVIEWABLE_TOKEN " * 2000).strip()
     enc = tiktoken.get_encoding("cl100k_base")
@@ -385,8 +378,7 @@ def test_truncate_text_for_model_no_warn_on_identity_return(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    pytest.importorskip("litellm")
-    import litellm
+    litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 8191)
     caplog.set_level("WARNING", logger="slayer.embeddings.client")
     embedding_client.truncate_text_for_model(
@@ -400,8 +392,7 @@ def test_truncate_text_for_model_cap_below_margin_returns_empty(
 ) -> None:
     """Codex finding #1: budget must clamp at zero — never slice with a
     negative index, which would silently keep most of the string."""
-    pytest.importorskip("litellm")
-    import litellm
+    litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 10)
     out = embedding_client.truncate_text_for_model(
         "word " * 1000, model="openai/text-embedding-3-small",
@@ -416,8 +407,7 @@ def test_truncate_text_for_model_tiktoken_import_failure_is_identity(
     the encoder helper raises), truncation degrades to an identity
     passthrough — over-cap text still flows through unchanged and the
     per-input retry in embed_batch is what saves the batch."""
-    pytest.importorskip("litellm")
-    import litellm
+    litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
 
     def boom(_name: str) -> Any:
@@ -444,8 +434,7 @@ def test_truncate_text_for_model_handles_tiktoken_special_token_literal(
     contract. Implementation must pass ``disallowed_special=()`` so
     these literals are tokenised as regular text and don't poison the
     batch."""
-    pytest.importorskip("litellm")
-    import litellm
+    litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
     # Long enough that truncation actually fires; contains the
     # offending literal that default tiktoken would reject.
@@ -491,9 +480,8 @@ def test_truncate_text_for_model_get_max_tokens_raises_then_bare_used(
     """Codex round-2 finding #5: a raising prefixed lookup must still
     trigger the bare-name retry. If the bare lookup succeeds with a
     small cap, the small cap takes effect — not the 8192 fallback."""
-    pytest.importorskip("litellm")
+    litellm = pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
-    import litellm
     calls: list[str] = []
 
     def fake_get_max(model: str) -> int | None:
@@ -523,9 +511,8 @@ def test_truncate_text_for_model_non_positive_cap_falls_back_to_8192(
     """Codex round-2 finding #7: a zero or negative cap from
     get_max_tokens is bogus — fall back to 8192 (and don't cache the
     bogus value)."""
-    pytest.importorskip("litellm")
+    litellm = pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
-    import litellm
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 0)
     long_text = "word " * 9000
     out = embedding_client.truncate_text_for_model(
@@ -544,9 +531,8 @@ def test_truncate_text_for_model_failure_not_cached(
     fallback. A subsequent successful lookup with a SMALLER cap must
     take effect — we prove this by sending a long string the 2nd call
     and asserting it was truncated to that smaller cap, not 8192."""
-    pytest.importorskip("litellm")
+    litellm = pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
-    import litellm
     call = {"n": 0}
 
     def fake_get_max(_m: str) -> int | None:
@@ -588,7 +574,7 @@ def test_truncate_text_for_model_failure_not_cached(
 def _make_bad_request_error() -> Exception:
     """Build a real litellm.BadRequestError for tests. Catches the same
     class path the implementation looks up at runtime."""
-    import litellm
+    litellm = pytest.importorskip("litellm")
     return litellm.BadRequestError(
         message="Invalid 'input[1]': maximum input length is 8192 tokens.",
         model="text-embedding-3-small",
