@@ -585,11 +585,11 @@ class TestCrossModelRenameCollisionGuards:
                 ),
             ],
         )
-        query = [stage, SlayerQuery(population="s", dimensions=["s.customers__region_id"])]
+        downstream = SlayerQuery(population="s", dimensions=[QueryDimension(field="s.customers__region_id")])
         with pytest.raises(
             ValueError, match=r"'customers__region_id'.*flatten to the same downstream name",
         ):
-            await engine.execute(query=query, dry_run=True)
+            await engine.execute(query=[stage, downstream], dry_run=True)
 
     async def test_cross_model_rename_vs_dimension_stay_distinct(
         self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerDataset],

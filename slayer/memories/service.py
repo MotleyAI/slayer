@@ -133,16 +133,14 @@ class MemoryService:
                 canonical.extend(result.canonical_forms)
                 warnings.extend(result.warnings)
         else:
-            attached_query = _coerce_query(linked_entities)
             conversions: list = []
-            [attached_query] = await qualified_input([attached_query], storage=self._storage, data_source=None,
-                                                     deprecations_out=conversions)
+            [query] = await qualified_input([_coerce_query(linked_entities)], storage=self._storage,
+                                            data_source=None, deprecations_out=conversions)
             warnings.extend(p.human_message() for p in conversions)
-            extraction = await extract_entities_from_query(
-                attached_query, storage=self._storage
-            )
+            extraction = await extract_entities_from_query(query, storage=self._storage)
             canonical.extend(extraction.canonical_forms)
-            warnings.extend(p.human_message() for p in attached_query.deprecated_inputs)
+            warnings.extend(p.human_message() for p in query.deprecated_inputs)
+            attached_query = query
             warnings.extend(extraction.warnings)
 
         canonical = _dedup(canonical)

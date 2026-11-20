@@ -431,7 +431,7 @@ Filters can reference fields from joined datasets, and the planner adds the impl
 
 - Dotted refs: `"customers.region = 'EU'"` — direct relationship target.
 - Multi-hop dotted refs: `"customers.regions.name = 'US'"` — every prefix on the path is added.
-- Local derived fields whose own SQL crosses a relationship: e.g. a field `{"name": "is_eu", "sql": "CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END"}` on `orders` referenced as `"filter": ["orders.is_eu = 1"]`. The planner walks the field's `sql` (recursively, through any local derived-field chain) to find the cross-table aliases and adds the corresponding joins.
+- Local derived fields whose own SQL crosses a relationship: e.g. a field `{"name": "is_eu", "expression": "CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END"}` on `orders` referenced as `"filter": ["orders.is_eu = 1"]`. The planner walks the field's expression (recursively, through any local derived-field chain) to find the cross-table aliases and adds the corresponding joins.
 
 The same auto-join logic applies to dataset-level `filters` (always-applied WHERE) and to field-level `filter=` attributes (a `CASE WHEN` value mask that fires in every position).
 

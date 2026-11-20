@@ -116,17 +116,17 @@ The query-backed dataset wrap (`_expand_query_backed_dataset`, via `flat_name` i
 Accepted at `DatasetField` construction:
 
 ```json
-{"name": "active_amount", "sql": "amount", "filter": "json_extract(metadata, '$.active') = 1", "datatype": "Float"}
-{"name": "amt", "sql": "amount", "filter": "CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1", "datatype": "Float"}
-{"name": "amt", "sql": "amount", "filter": "customers.regions.name = 'US'", "datatype": "Float"}
+{"name": "active_amount", "expression": "amount", "filter": "json_extract(metadata, '$.active') = 1", "datatype": "Float"}
+{"name": "amt", "expression": "amount", "filter": "CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1", "datatype": "Float"}
+{"name": "amt", "expression": "amount", "filter": "customers.regions.name = 'US'", "datatype": "Float"}
 ```
 
 Rejected at `DatasetField` construction:
 
 ```json
-{"name": "x", "sql": "amount", "filter": "sum(revenue) > 100"}        // DSL aggregation
-{"name": "x", "sql": "amount", "filter": "cumsum(amount) > 0"}       // DSL transform call
-{"name": "x", "sql": "amount", "filter": "row_number() over (...)"}  // raw OVER
+{"name": "x", "expression": "amount", "filter": "sum(revenue) > 100"}        // DSL aggregation
+{"name": "x", "expression": "amount", "filter": "cumsum(amount) > 0"}       // DSL transform call
+{"name": "x", "expression": "amount", "filter": "row_number() over (...)"}  // raw OVER
 ```
 
 ### `SlayerQuery.filter` (DSL mode)

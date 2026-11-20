@@ -1,4 +1,4 @@
-version: 26
+version: 28
 name: tweets
 sql_table: tweets
 source_kind: table
@@ -6,14 +6,14 @@ query_variables: {}
 data_source: jaffle_shop
 fields:
 - name: id
-  sql: id
+  expression: id
   datatype: String
   primary_key: true
   unique: false
   label: Tweet ID
   hidden: false
 - name: user_id
-  sql: user_id
+  expression: user_id
   datatype: String
   primary_key: false
   unique: false
@@ -21,7 +21,7 @@ fields:
   label: Customer ID
   hidden: false
 - name: tweeted_at
-  sql: tweeted_at
+  expression: tweeted_at
   datatype: Date
   primary_key: false
   unique: false
@@ -29,7 +29,7 @@ fields:
   label: Tweet Date
   hidden: false
 - name: content
-  sql: content
+  expression: content
   datatype: String
   primary_key: false
   unique: false

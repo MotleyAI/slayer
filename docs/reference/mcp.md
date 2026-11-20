@@ -245,7 +245,7 @@ To explore first without auto-ingesting:
 ```
 1. edit_dataset(
      dataset_name="orders",
-     fields=[{"name": "priority", "sql": "priority", "datatype": "String"}],
+     fields=[{"name": "priority", "datatype": "String"}],
      metrics=[{"name": "aov", "expression": "sum(revenue) / count(*)", "label": "Average Order Value"}],
      remove={"fields": ["legacy_field"]}
    )

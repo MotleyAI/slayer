@@ -181,8 +181,9 @@ def qualified_stages(
                                    priority=priority)
         population = query.population_name
         if population is None:
-            read_from = query.model_copy(update={"population": _inferred_population(query, datasets=datasets)})
-            out.append(_qualified_stage(_Stage(query=read_from, host=datasets[read_from.population_name],
+            inferred = _inferred_population(query, datasets=datasets)
+            read_from = query.model_copy(update={"population": inferred})
+            out.append(_qualified_stage(_Stage(query=read_from, host=datasets[inferred],
                                                stages=stages, datasets_by_name=datasets), query))
             continue
         stage = match_name(name=population, declared=stages, quoted=False)

@@ -23,7 +23,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import QueryMetric, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 
 from tests._engine_helpers import _dataset_where_text, _engine_generate
 
@@ -462,7 +462,7 @@ class TestStrictResolution:
         )
         query = SlayerQuery(
             population="m",
-            dimensions=["m.id"],
+            dimensions=[QueryDimension(field="m.id")],
             filter=["m.unknown_col > 0"],
         )
         with pytest.raises(Exception, match="(?i)unknown_col|not.*column.*measure|undefined|unknown"):
@@ -483,7 +483,7 @@ class TestStrictResolution:
         for typo in ("m.made_up_sum", "m.typo_count_distinct", "m.foo_avg"):
             query = SlayerQuery(
                 population="m",
-                dimensions=["m.id"],
+                dimensions=[QueryDimension(field="m.id")],
                 filter=[f"{typo} > 0"],
             )
             with pytest.raises(Exception, match=f"(?i){typo}|unknown|not a Column"):
@@ -508,7 +508,7 @@ class TestStrictResolution:
         )
         query = SlayerQuery(
             population="households",
-            dimensions=["households.housenum"],
+            dimensions=[QueryDimension(field="households.housenum")],
             filter=["households.transportation_assets.total_vehicles >= 3"],
         )
         # An unreachable short form is route-aware-rejected (a ValueError) — still a loud raise, never silent unbound SQL.
@@ -538,7 +538,7 @@ class TestStrictResolution:
         )
         query = SlayerQuery(
             population="m",
-            dimensions=["m.id"],
+            dimensions=[QueryDimension(field="m.id")],
             filter=["m.status = 'active'"],
         )
         # Should not raise.
@@ -560,7 +560,7 @@ class TestPredicatePromotionRemoved:
         model = _make_planets_dataset(with_window_column=True)
         query = SlayerQuery(
             population="planets",
-            dimensions=["planets.name"],
+            dimensions=[QueryDimension(field="planets.name")],
             filter=["planets.rn <= 3"],
         )
         with pytest.raises(Exception) as excinfo:

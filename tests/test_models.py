@@ -4,6 +4,7 @@ import datetime
 
 import pytest
 import sqlglot
+from sqlglot import exp
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
@@ -1748,7 +1749,9 @@ async def _prefix_sql(query: dict) -> str:
 
 def _unaliased(sql: str) -> str:
     """``sql`` with each outer result alias replaced by its position."""
-    for i, name in enumerate(sqlglot.parse_one(sql).named_selects):
+    tree = sqlglot.parse_one(sql)
+    assert isinstance(tree, exp.Query)
+    for i, name in enumerate(tree.named_selects):
         sql = sql.replace(f'"{name}"', f'"_c{i}"')
     return sql
 

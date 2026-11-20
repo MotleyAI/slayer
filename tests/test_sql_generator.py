@@ -179,7 +179,9 @@ def _outer_projection_names(sql: str, dialect: str = "postgres") -> set[str]:
 
 def _unaliased(sql: str) -> str:
     """``sql`` with each outer result alias replaced by its position (different anchors are different keys)."""
-    for i, name in enumerate(sqlglot.parse_one(sql).named_selects):
+    tree = sqlglot.parse_one(sql)
+    assert isinstance(tree, exp.Query)
+    for i, name in enumerate(tree.named_selects):
         sql = sql.replace(f'"{name}"', f'"_c{i}"')
     return sql
 

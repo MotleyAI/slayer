@@ -54,7 +54,7 @@ from slayer.core.models import (
     DatasetRelationship,
     SlayerDataset,
 )
-from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
@@ -780,7 +780,7 @@ class TestNullSafeJoinBackExecution:
         ))
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
-            dimensions=["customers_v2.status"],
+            dimensions=[QueryDimension(field="customers_v2.status")],
             metrics=[QueryMetric(metric="sum(orders_x.amt_hi)")],
         ))
         by_status = {r["customers_v2.status"]: r for r in resp.data}

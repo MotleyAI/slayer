@@ -324,15 +324,17 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
     heads: Dict[str, frozenset[str]] = {}
     for population in {q.population_name for q in queries if q.population_name} - stage_names:
         found = await _population_dataset(storage, population, identities=identities, chosen=chosen)
-        dataset = found[1] if found is not None else None
-        if dataset is None and is_spine_spelling(population):
-            members[population.casefold()] = heads[population.casefold()] = frozenset({TIME_SPINE_FIELD})
-        elif dataset is not None:
-            members[population.casefold()] = frozenset(
-                n.casefold() for n in [*(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name)])
-            aggregations[population.casefold()] = frozenset(a.name.casefold() for a in dataset.aggregations)
-            heads[population.casefold()] = frozenset(
-                [*(f.name for f in dataset.fields), *await storage.incident_edge_names(dataset.name, data_source=found[0])])
+        if found is None:
+            if is_spine_spelling(population):
+                members[population.casefold()] = heads[population.casefold()] = frozenset({TIME_SPINE_FIELD})
+            continue
+        dataset_source, dataset = found
+        members[population.casefold()] = frozenset(
+            n.casefold() for n in [*(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name)])
+        aggregations[population.casefold()] = frozenset(a.name.casefold() for a in dataset.aggregations)
+        heads[population.casefold()] = frozenset(
+            [*(f.name for f in dataset.fields),
+             *await storage.incident_edge_names(dataset.name, data_source=dataset_source)])
     return AnchorNames(names=frozenset({*names, TIME_SPINE_DATASET}), members=members, aggregations=aggregations,
                        heads=heads)
 

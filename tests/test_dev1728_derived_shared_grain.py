@@ -54,7 +54,7 @@ from slayer.core.models import (
     DatasetRelationship,
     SlayerDataset,
 )
-from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
@@ -629,7 +629,7 @@ class TestDerivedGrainExecution:
         (``ltv_x2``): each distinct ltv*2 is its own group with the right sum."""
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
-            dimensions=["customers_v2.ltv_x2"],
+            dimensions=[QueryDimension(field="customers_v2.ltv_x2")],
             metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
         by_grain = {r["customers_v2.ltv_x2"]: r for r in resp.data}
