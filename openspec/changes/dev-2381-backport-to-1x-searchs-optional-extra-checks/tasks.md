@@ -1,0 +1,22 @@
+## 1. Tests (pr-tests stage; port from #612 = `git diff abccc2074^1 abccc2074 -- tests/`; names as on `main`, 1.x vocabulary only where 1.x code forces it — design.md decision 6)
+
+- [ ] 1.1 Install the env first (`poetry install -E all`; the worktree has no venv yet). Copy `tests/_loop_gated_stub.py` and `tests/test_loop_gated_stub.py` from `abccc2074` unchanged. Verify: `tests/test_loop_gated_stub.py` passes.
+- [ ] 1.2 Copy `tests/test_law_search_checks_off_loop.py` from `abccc2074`, unchanged unless 1.x forces an edit. Verify: it fails on today's 1.x and lists the eight call sites in seven functions; its fixture-snippet self-tests pass.
+- [ ] 1.3 `tests/test_gateway_features.py` `TestTheLoopStaysResponsive`: port `test_dataset_subtree_refresh` (ingest and edit routes), `test_search_with_a_question`, `test_cypher_filtered_search`. Use 1.x's harness (`shop_storage(models=…)` etc.), 1.x's `handle_edit_refresh` kwargs, `MATCH (n:Model)`, and the ingest entry point the existing 1.x tests in that class use (1.x's `ingest_datasource_idempotent` is a sync deprecation shim over async `_ingest_idempotent`). Verify: each fails on today's 1.x via the gated stub, and asserts its stub was called.
+- [ ] 1.4 `tests/test_embedding_retriever.py`: port the test parametrized over `retrieve`, `upsert_memory`, `refresh_datasource`, `refresh_model_subtree`. Verify: each case fails on today's 1.x.
+- [ ] 1.5 `tests/test_embedding_retriever.py`, 1.x-only (design.md decision 5): (a) `retrieve()` on a seeded corpus, embedding check stubbed available, loop-gated `builtins.__import__` stub blocking on `numpy` / `slayer.embeddings.ranker` (pass every other import through) — loop stays free, stub never hit; (b) module `np` monkeypatched to `None` → empty `RetrievalResult` and the "numpy not installed" warning logged. Verify: (a) fails on today's 1.x; (b) is regression coverage for the new branch (expected to error at monkeypatch setup on today's 1.x, not counted as a fails-before test).
+- [ ] 1.6 `tests/test_embeddings_client.py`: port the `embed_batch` blocking-truncation test and the `is_available_async` gate tests (stub honoured, `cache_clear()` honoured, runs off the loop thread). Verify: each fails on today's 1.x.
+- [ ] 1.7 `tests/test_search_graph.py`: port the graph gate unit test and the `get_filtered_ids` blocking-stub test (then its `ValueError`), with `MATCH (n:Model)`. Verify: each fails on today's 1.x.
+
+## 2. Implementation (pr-implement stage)
+
+- [ ] 2.1 `slayer/embeddings/client.py`: apply #612's diff verbatim (file is byte-identical to `main`'s pre-merge). Verify: `git diff abccc2074 -- slayer/embeddings/client.py` is empty; 1.6 passes.
+- [ ] 2.2 `slayer/search/retrievers/embeddings.py`: the four gates await `embedding_client.is_available_async()`; #612's comment / issue-reference trims; move the `numpy` / `ranker` import to module scope with `main`'s exact block (`git show origin/main:slayer/search/retrievers/embeddings.py`), `retrieve()` checks `if np is None:` keeping the operator log line. Verify: 1.3 (search, subtree), 1.4, 1.5 pass; the diff vs `abccc2074` is vocabulary-only.
+- [ ] 2.3 `slayer/search/graph.py`: add `is_available_async()`, `get_filtered_ids` awaits it, #612's issue-reference removals; `slayer/search/service.py` `_apply_cypher_filter` awaits `_search_graph.is_available_async()`. Verify: 1.3 (cypher), 1.7 pass.
+- [ ] 2.4 Verify the law test 1.2 passes and the existing `is_available` monkeypatching tests still pass unchanged (local scope per `la-affected-tests --base 1.x`).
+- [ ] 2.5 Post the forward-merge (1.x → `main`) notes as a comment on DEV-2381: `model.c4`, `client.py`, the spec file, helper and law files merge identically; both archive folders stay; vocabulary hunks in the touched source and test files take `main`'s side; the numpy block is identical; the 1.x-only retriever tests 1.5 (a)/(b) are kept and translated to `main`'s vocabulary. Verify: the comment exists on DEV-2381.
+
+## 3. Gates
+
+- [x] 3.1 `architecture/model.c4`: `specs ['search']` on the `search` bucket (approved; applied at plan time). Verify: `poetry run la-arch-check` and `npx likec4 validate` pass.
+- [ ] 3.2 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs the baseline), `la-check-conventions`, `poetry run la-arch-check`, `openspec validate dev-2381-backport-to-1x-searchs-optional-extra-checks --strict` all pass.
