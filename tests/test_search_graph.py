@@ -15,6 +15,7 @@ import asyncio
 import os
 import tempfile
 from collections.abc import AsyncIterator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -29,6 +30,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
+from slayer.search import graph as search_graph
 from slayer.search.graph import (
     _validate_cypher,
     build_graph,
@@ -39,6 +41,7 @@ from slayer.search.graph import (
 from slayer.search.service import SearchResponse, SearchService
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._loop_gated_stub import gated
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +187,27 @@ async def shop_only_storage() -> AsyncIterator[YAMLStorage]:
 def test_is_available_returns_bool() -> None:
     result = is_available()
     assert isinstance(result, bool)
+
+
+@pytest.mark.parametrize("value", [True, False])
+async def test_is_available_async_honours_a_stub_off_the_loop(
+    monkeypatch: pytest.MonkeyPatch, value: bool,
+) -> None:
+    check = gated(fn=lambda: value)
+    monkeypatch.setattr(search_graph, "is_available", check)
+    assert await search_graph.is_available_async() is value
+    check.assert_loop_stayed_free()
+
+
+async def test_get_filtered_ids_availability_check_keeps_the_loop_free(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    check = gated()
+    monkeypatch.setattr(search_graph, "is_available", check)
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="requires LadybugDB"):
+        await get_filtered_ids("MATCH (n:Dataset) RETURN n.id AS id", storage)
+    check.assert_loop_stayed_free()
 
 
 # ---------------------------------------------------------------------------
