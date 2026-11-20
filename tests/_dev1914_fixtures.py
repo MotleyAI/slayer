@@ -92,6 +92,16 @@ WINDOW_OK_BY_ORDER_MONTH = {"2024-01": 100.0, "2024-02": 250.0, "2024-03": 310.0
 WINDOW_COUNT_BY_ORDER_MONTH = {"2024-01": 1.0, "2024-02": 2.0, "2024-03": 4.0, "2024-04": 6.0}
 #: last(spend, signup_at, window='1y') by order month: c1; c2; c4 (Mar 20); c6 (Apr 18).
 WINDOW_LAST_BY_ORDER_MONTH = {"2024-01": 100.0, "2024-02": 150.0, "2024-03": 40.0, "2024-04": 30.0}
+#: sum(spend, window='1y', partition_by=tier) by tier × order month: gold c1, c3 (Mar), c6 (Apr); orderless c7 is NULL.
+PARTITIONED_WINDOW_BY_TIER_MONTH = {
+    ("bronze", "2024-03"): 40.0, ("gold", "2024-01"): 100.0, ("gold", "2024-03"): 160.0, ("gold", "2024-04"): 190.0,
+    ("gold", None): None, ("silver", "2024-02"): 150.0, ("silver", "2024-04"): 230.0,
+}
+#: The same with last(spend, signup_at, …): the latest signup among the tier's in-frame customers.
+PARTITIONED_WINDOW_LAST_BY_TIER_MONTH = {
+    ("bronze", "2024-03"): 40.0, ("gold", "2024-01"): 100.0, ("gold", "2024-03"): 60.0, ("gold", "2024-04"): 30.0,
+    ("silver", "2024-02"): 150.0, ("silver", "2024-04"): 80.0,
+}
 #: Customers-rooted sum(spend, window='1y') by orders.status × signup month, associated.
 WINDOW_BY_STATUS_SIGNUP = {
     ("new", "2024-01"): 100.0, ("new", "2024-02"): 250.0, ("new", "2024-03"): 290.0,
@@ -226,6 +236,41 @@ async def make_ranked_fanout_engine(*, dialect: str, keyed: bool) -> AsyncIterat
         pytest.importorskip("duckdb")
     async with seeded_exec_engine(dialect=dialect, seed=seed_with(dialect, ranked_fanout_statements()),
                                   datasets=ranked_fanout_datasets(keyed=keyed)) as (engine, _):
+        yield engine
+
+
+# --- A list child as the time axis: members (home) with a list of visit timestamps ---------------------------------
+#: (id, score, visits): M1 visits twice in January; M3 shares M1's score, so equal values stay separate rows.
+MEMBERS = [(1, 10.0, ["2024-01-10", "2024-01-20"]), (2, 20.0, ["2024-02-05"]), (3, 10.0, ["2024-01-15"])]
+VISIT_MONTH = [{"field": "members.visits.value", "granularity": "month"}]
+#: By visit month, each member once per bucket: plain = the month's visitors; windowed = the trailing year's.
+VISITS_PLAIN_COUNT = {"2024-01": 2.0, "2024-02": 1.0}
+VISITS_PLAIN_SUM = {"2024-01": 20.0, "2024-02": 20.0}
+VISITS_WINDOW_COUNT = {"2024-01": 2.0, "2024-02": 3.0}
+VISITS_WINDOW_SUM = {"2024-01": 20.0, "2024-02": 40.0}
+
+
+def list_axis_statements() -> list[str]:
+    rows = ", ".join(
+        f"({i}, {score}, [{', '.join(f'TIMESTAMP {_lit(v)}' for v in visits)}])" for i, score, visits in MEMBERS
+    )
+    return ["CREATE TABLE members (id INTEGER, score DOUBLE, visits TIMESTAMP[])", f"INSERT INTO members VALUES {rows}"]
+
+
+def list_axis_datasets(*, keyed: bool) -> list[SlayerDataset]:
+    return [SlayerDataset(
+        name="members", data_source="test", sql_table="members",
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=keyed),
+                DatasetField(name="score", datatype=DataType.FLOAT),
+                DatasetField(name="visits", datatype=DataType.ARRAY, element_type=DataType.DATETIME)],
+    )]
+
+
+async def make_list_axis_engine(*, keyed: bool) -> AsyncIterator[SlayerQueryEngine]:
+    """DuckDB: the members table with a native TIMESTAMP list."""
+    pytest.importorskip("duckdb")
+    async with seeded_exec_engine(dialect="duckdb", seed=seed_with("duckdb", list_axis_statements()),
+                                  datasets=list_axis_datasets(keyed=keyed)) as (engine, _):
         yield engine
 
 

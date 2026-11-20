@@ -133,10 +133,9 @@ class PrestoFamilyDialect(SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False, positioned: bool = False,
+        positioned: bool = False,
     ) -> ListRelation:
-        kept = non_null_elements(values)
-        relation = unnest_elements(anon("ARRAY_DISTINCT", kept) if distinct else kept, alias=alias)
+        relation = unnest_elements(non_null_elements(values), alias=alias)
         if positioned:
             relation.set("offset", exp.to_identifier(LIST_POSITION))
         return ListRelation(relation=relation)

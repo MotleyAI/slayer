@@ -14,7 +14,8 @@ status tags in `architecture/semantics.arc42.md`.
 A query dimension SHALL be attributable to an aggregate iff a chain of provably
 many-to-one join hops (per `models/join-cardinality` evidence) leads from the
 aggregate's root model to the dimension. Attributable dimensions retain exact per-cell
-values — the cells partition the root rows and sum to the total. Every other dimension —
+values — the cells partition the root rows, and an additive aggregate's cells sum to its
+total. Every other dimension —
 reached across a fanning or an unproven hop alike — resolves per the query's
 `to_many_handling` mode: when the mode is omitted or `"associate"`, each cell aggregates
 over the distinct root entities associated with it (per `queries/attribution-modes`),

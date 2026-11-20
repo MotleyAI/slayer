@@ -320,10 +320,8 @@ class EntityDedup(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    #: The root's identity keys in the producer's coordinates; empty with ``list_rows``.
+    #: The root's identity keys in the producer's coordinates.
     entity_keys: List[ValueKey] = Field(default_factory=list)
-    #: Every associated dimension is a list child of the root: the root row is the entity.
-    list_rows: bool = False
 
 
 class RankedProducerKernel(BaseModel):
@@ -397,9 +395,6 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
-    #: Every associated dimension is a list child of the root: level 1 is each root row once per distinct
-    #: element combination, with no key to group by.
-    list_rows: bool = False
 
 
 ProducerKernel = Union[

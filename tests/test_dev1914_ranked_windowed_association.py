@@ -20,12 +20,19 @@ from tests._dev1914_fixtures import (
     LOCAL_WINDOW_OK_JAN_FAN_DEFECT,
     OK,
     ORDERED_MONTH,
+    PARTITIONED_WINDOW_BY_TIER_MONTH,
+    PARTITIONED_WINDOW_LAST_BY_TIER_MONTH,
     RANKED_FIRST_BY_KIND,
     RANKED_LAST_BY_KIND,
     REAGG_LAST_BY_STATUS,
     SAME_ROW_C8_BUCKET,
     SAME_ROW_SPLIT_DEFECT,
     SIGNUP_MONTH,
+    VISIT_MONTH,
+    VISITS_PLAIN_COUNT,
+    VISITS_PLAIN_SUM,
+    VISITS_WINDOW_COUNT,
+    VISITS_WINDOW_SUM,
     WINDOW_BROADCAST_BY_SIGNUP,
     WINDOW_BY_ORDER_MONTH,
     WINDOW_BY_STATUS_SIGNUP,
@@ -40,6 +47,7 @@ from tests._dev1914_fixtures import (
     by_status_month,
     dev1900_datasets,
     make_exec_engine,
+    make_list_axis_engine,
     make_ranked_fanout_engine,
     make_same_row_engine,
     metric,
@@ -109,6 +117,10 @@ def _ordered(population: str, mode=None, **kw):
 def by_month_key(row) -> str | None:
     value = row["orders.ordered_at"]
     return None if value is None else str(value)[:7]
+
+
+def by_tier_month(resp, value: str) -> dict:
+    return {(r["customers.tier"], by_month_key(r)): num(r[value]) for r in resp.data}
 
 
 # --------------------------------------------------------------------------- #
@@ -220,6 +232,22 @@ class TestWindowedAssociation:
         got = by_month(resp, "lw")
         assert {k: got[k] for k in WINDOW_LAST_BY_ORDER_MONTH} == WINDOW_LAST_BY_ORDER_MONTH
 
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_partitioned_window_over_a_fanning_axis_associates(self, engine, mode) -> None:
+        resp = await engine.execute(_ordered("customers", mode, dimensions=["customers.tier"], metrics=[
+            metric("sum(customers.spend, window='1y', partition_by=customers.tier)", "w"),
+            metric("last(customers.spend, customers.signup_at, window='1y', partition_by=customers.tier)", "lw")]))
+        assert by_tier_month(resp, "w") == PARTITIONED_WINDOW_BY_TIER_MONTH
+        last = by_tier_month(resp, "lw")
+        assert {k: last[k] for k in PARTITIONED_WINDOW_LAST_BY_TIER_MONTH} == PARTITIONED_WINDOW_LAST_BY_TIER_MONTH
+
+    @pytest.mark.parametrize("mode", OUTSIDE)
+    async def test_partitioned_window_over_a_fanning_axis_refused_outside_association(self, engine, mode) -> None:
+        q = _ordered("customers", mode, dimensions=["customers.tier"],
+                     metrics=[metric("sum(customers.spend, window='1y', partition_by=customers.tier)", "w")])
+        with pytest.raises(TimeAxisError, match=ASSOCIATION_REMEDY):
+            await engine.execute(q)
+
     @pytest.mark.parametrize("mode", ALL_MODES)
     async def test_implicit_fanning_ranking_key_fails_closed(self, engine, mode) -> None:
         q = _ordered("customers", mode, metrics=[metric("last(customers.spend, window='1y')", "lw")])
@@ -263,6 +291,28 @@ class TestEmptyFrames:
             metric(f"collect(customers.tier, window='{window}'){clause}", "c")]))
         row = next(r for r in resp.data if by_month_key(r) == bucket)
         assert list(row["c"]) == []
+
+
+# --------------------------------------------------------------------------- #
+# A list child as the time axis: each home row once per bucket, however many of its elements fall in it
+# --------------------------------------------------------------------------- #
+@pytest.fixture(params=[True, False], ids=["keyed", "keyless"])
+async def list_axis(request):
+    async for e in make_list_axis_engine(keyed=request.param):
+        yield e
+
+
+class TestListChildTimeAxis:
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_each_member_counts_once_per_bucket(self, list_axis, mode) -> None:
+        resp = await list_axis.execute(query(mode, population="members", time_dimensions=VISIT_MONTH, metrics=[
+            metric("count(members.*)", "n"), metric("sum(members.score)", "s"),
+            metric("count(members.*, window='1y')", "wn"), metric("sum(members.score, window='1y')", "ws")]))
+        td = "members.visits.value"
+        assert by_month(resp, "n", td=td) == VISITS_PLAIN_COUNT
+        assert by_month(resp, "s", td=td) == VISITS_PLAIN_SUM
+        assert by_month(resp, "wn", td=td) == VISITS_WINDOW_COUNT
+        assert by_month(resp, "ws", td=td) == VISITS_WINDOW_SUM
 
 
 # --------------------------------------------------------------------------- #

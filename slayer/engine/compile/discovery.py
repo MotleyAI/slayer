@@ -8,6 +8,7 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
+from slayer.core.models import SlayerDataset
 from slayer.core.keys import (
     AggregateKey,
     ConsumerNode,
@@ -19,6 +20,7 @@ from slayer.core.keys import (
     is_row_attach_root,
     restricts_own_rows,
     walk_consumer_positions,
+    window_kwarg_of,
 )
 from slayer.core.scope import DatasetScope
 from slayer.engine.compile.shift import _series_mode
@@ -106,6 +108,7 @@ class _Walker:
         self.host = scope.population
         self.bundle = bundle
         self.grain = [dm.bound.value_key for dm in prebound.declared_metrics[:n_grain]]
+        self.active_td = prebound.main_time_key
 
     def emit(self, root: ValueKey, phase: RootPhase, routing: Routing, *,
              names: Tuple[str, ...] = (), declared_type: Optional[DataType] = None,
@@ -117,22 +120,27 @@ class _Walker:
             self.out.append(d)
 
     def local_broadcasts(self, k: ValueKey) -> bool:
-        """A local aggregate (plain, ranked or windowed) grouped by a dimension unattributable from the host."""
+        """A local aggregate (plain, ranked or windowed) grouped by a dimension unattributable from the host, or a
+        partitioned windowed one whose window axis is: both go through the mode gate."""
         host = self.host
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
-            or self.homes.target_rooted(k) or k.locus == "host" or k.partition_keys is not None
-            or self.crossing(k)
+            or self.homes.target_rooted(k) or k.locus == "host" or self.crossing(k)
         ):
             return False
+        if k.partition_keys is not None:
+            # Requested grain never broadcasts; only a fanning window axis needs association.
+            return window_kwarg_of(k) is not None and self.active_td is not None \
+                and not self._attributable(self.active_td, host=host)
         # The population's spine is counted over each home's own axis, never the product.
         return any(
-            reads_population_spine(g, host=host) or not grain_member_attributable(
-                key=g, target_path=(), root_dataset=host,
-                datasets_by_name=self.bundle.datasets_by_name, bundle=self.bundle,
-                host_dataset=host, host_name=host.name,
-            )
-            for g in self.grain
+            reads_population_spine(g, host=host) or not self._attributable(g, host=host) for g in self.grain
+        )
+
+    def _attributable(self, key: ValueKey, *, host: SlayerDataset) -> bool:
+        return grain_member_attributable(
+            key=key, target_path=(), root_dataset=host, datasets_by_name=self.bundle.datasets_by_name,
+            bundle=self.bundle, host_dataset=host, host_name=host.name,
         )
 
     def emit_named(self, k: ValueKey, phase: RootPhase, routing: Routing, *, top: bool,
@@ -186,12 +194,13 @@ class _Walker:
         if isinstance(k, TransformKey) and k.op == "time_shift":
             self.emit(k, "combined", "shifted", series=_series_mode(k.input, to_original={}))
         kind = combined_kind(k, homes=self.homes)
-        if kind is not None and self.classes.combined_admits(n, position=position, root=root):
+        associates = self.local_broadcasts(k)
+        if kind is not None and not associates and self.classes.combined_admits(n, position=position, root=root):
             if kind == "local":
                 self.emit(k, "combined", "local_producer", names=names)
             else:
                 self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
-        if self.local_broadcasts(k):
+        if associates:
             self.emit(k, "combined", "target_rooted", names=names)
         elif _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
             self.emit(k, "combined", "local_producer", names=names)

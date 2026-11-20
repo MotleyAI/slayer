@@ -225,7 +225,8 @@ mode unset inherits the refined query's mode.
 - **WHEN** the same query whose metrics are all computable at the full query grain runs
   once omitting the mode and once per mode value
 - **THEN** all four runs return identical executed values with no mode-related
-  warnings or errors, and every cell partitions the home rows and sums to the total
+  warnings or errors, every cell partitions the home rows, and an additive aggregate's
+  cells sum to its total
 
 #### Scenario: Unrecognized mode value fails
 - **WHEN** a query sets `to_many_handling` to a value outside the three modes

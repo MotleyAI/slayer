@@ -2272,7 +2272,6 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     picked_params: List[PickedParam] = []
     restricted_texts: List[str] = []
     entity_keys_root: List[ValueKey] = []
-    list_rows = False
     associated_metric: Optional[str] = None
     associated_dimensions: List[str] = []
 
@@ -2288,7 +2287,6 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             target_path=target_path, host_dataset=host_dataset,
             datasets_by_name=datasets_by_name, bundle=bundle,
         )
-        list_rows = entity.list_rows
         # The unattributable dims join back on the host key exactly like safe_pairs.
         safe_pairs = [*safe_pairs, *entity.assoc_pairs]
         inherited, restricted_texts = _association_inline_filters(
@@ -2445,7 +2443,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     )
     cm_attach_kwargs: Dict[str, Any] = (
         {"kernel": AssociationProducerKernel(
-            entity_keys=entity_keys_root, picked_params=picked_params, list_rows=list_rows,
+            entity_keys=entity_keys_root, picked_params=picked_params,
         )}
         if decision is not None and decision.reducer == "plain"
         else _decided_kernel(
@@ -2458,7 +2456,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     kernel = cm_attach_kwargs.get("kernel")
     if associate and isinstance(kernel, (RankedProducerKernel, TrailingWindowProducerKernel)):
         kernel = kernel.model_copy(update={
-            "association": EntityDedup(entity_keys=entity_keys_root, list_rows=list_rows),
+            "association": EntityDedup(entity_keys=entity_keys_root),
         })
         cm_attach_kwargs["kernel"] = kernel
     if isinstance(kernel, TrailingWindowProducerKernel):
@@ -2648,19 +2646,6 @@ def _check_attached_params_determined(
         )
 
 
-def _reached_by_root_lists(key: ValueKey, *, root_dataset: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset]) -> bool:
-    """``key`` (root coordinates) reads only the root's own list children."""
-    paths = [tuple(k.path) for k in walk_value_keys(key) if isinstance(k, (FieldKey, FieldSqlKey, StarKey))]
-    if not paths:
-        return False
-    for path in paths:
-        chain = follow(root=root_dataset, path=path, datasets_by_name=datasets_by_name) if path else None
-        if not chain or len(chain) != 1 or chain[0].lateral is None \
-                or chain[0].cardinality is not RelationshipCardinality.ONE_TO_MANY:
-            return False
-    return True
-
-
 def _primary_key_fields(dataset: SlayerDataset) -> List[str]:
     return [field.name for field in dataset.fields if field.primary_key]
 
@@ -2672,16 +2657,11 @@ class _AssociationEntity(NamedTuple):
 
     root_dataset: SlayerDataset
     assoc_pairs: List[Tuple[ValueKey, ValueKey]]
-    list_rows: bool
     keys: List[ValueKey]
     numbered: List[SlayerDataset]
-    #: What a parameter is judged against: the entity keys; for list rows, the root row's identity.
-    param_keys: List[ValueKey]
-    param_root: SlayerDataset
-    param_numbered: List[SlayerDataset]
 
     def host_grain(self, target_path: Tuple[str, ...]) -> Grain:
-        return Grain.of(_host_coordinates(k, target_path=target_path, root=self.param_root) for k in self.param_keys)
+        return Grain.of(_host_coordinates(k, target_path=target_path, root=self.root_dataset) for k in self.keys)
 
     def determines_param(
         self, *, value: ValueKey, target_path: Tuple[str, ...], host_dataset: SlayerDataset,
@@ -2690,9 +2670,9 @@ class _AssociationEntity(NamedTuple):
         # For a local home the initial grain seed reads the host dataset directly.
         return _param_is_determined(
             value=value, grain=self.host_grain(target_path),
-            host_dataset=host_dataset if target_path else self.param_root,
+            host_dataset=host_dataset if target_path else self.root_dataset,
             datasets_by_name={
-                **datasets_by_name, **{d.name: d for d in self.param_numbered}, self.param_root.name: self.param_root,
+                **datasets_by_name, **{d.name: d for d in self.numbered}, self.root_dataset.name: self.root_dataset,
             },
             bundle=bundle,
         )
@@ -2735,19 +2715,7 @@ def _association_entity(
     identified, numbered = identified_datasets(
         root=root_dataset, entity_keys=keys, datasets_by_name=bundle.datasets_by_name,
     )
-    # A list child's rows are its root row's own elements: association needs no key, the root row is the entity.
-    if assoc_pairs and all(
-        _reached_by_root_lists(rerooted, root_dataset=root_dataset, datasets_by_name=datasets_by_name)
-        for _key, rerooted in assoc_pairs
-    ):
-        return _AssociationEntity(
-            root_dataset=root_dataset, assoc_pairs=assoc_pairs, list_rows=True, keys=[], numbered=[],
-            param_keys=keys, param_root=identified, param_numbered=numbered,
-        )
-    return _AssociationEntity(
-        root_dataset=identified, assoc_pairs=assoc_pairs, list_rows=False, keys=keys, numbered=numbered,
-        param_keys=keys, param_root=identified, param_numbered=numbered,
-    )
+    return _AssociationEntity(root_dataset=identified, assoc_pairs=assoc_pairs, keys=keys, numbered=numbered)
 
 
 def _association_arm(

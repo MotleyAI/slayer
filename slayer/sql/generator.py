@@ -2526,7 +2526,6 @@ class SQLGenerator:
         from_expr, src_joins = self._build_from_and_joins(
             source_dataset=source_dataset, source_relation=source_relation,
             joined_paths=src_scope.relationship_paths.as_list(), bundle=bundle,
-            distinct_lists=association is not None and association.list_rows,
         )
         src_select = exp.Select().select(*src_cols).from_(from_expr)
         src_select = _apply_joins(select=src_select, joins=src_joins)
@@ -2596,7 +2595,7 @@ class SQLGenerator:
             entity_rows = self._window_entity_rows(
                 framed=exp.Select().from_(base_from).join(src_subq, on=on_range, join_type="LEFT"),
                 grain_aliases=grain_aliases, grain_keys=grain_keys,
-                n_entity_keys=n_entity_keys, list_rows=association.list_rows, picked=picked,
+                n_entity_keys=n_entity_keys, picked=picked,
             )
 
         def _framed(select: exp.Select) -> exp.Select:
@@ -2699,10 +2698,10 @@ class SQLGenerator:
 
     def _window_entity_rows(
         self, *, framed: exp.Select, grain_aliases: Sequence[str], grain_keys: Mapping[str, Any],
-        n_entity_keys: int, list_rows: bool, picked: Sequence[Tuple[str, Optional[DataType]]],
+        n_entity_keys: int, picked: Sequence[Tuple[str, Optional[DataType]]],
     ) -> exp.Subquery:
         """The range-joined rows as ``_src``, one per (bucket, cell, entity), each ``picked`` column read once; an
-        empty frame's NULL row stays one entity-less row. List rows are already one per root row."""
+        empty frame's NULL row stays one entity-less row."""
         def base(alias: str) -> exp.Column:
             return exp.Column(this=exp.to_identifier(alias, quoted=True), table=exp.to_identifier("_base"))
 
@@ -2711,16 +2710,14 @@ class SQLGenerator:
 
         select = framed
         for ga in grain_aliases:
-            shown = base(ga) if list_rows else self._grouped_display(base(ga), key=grain_keys.get(ga))
+            shown = self._grouped_display(base(ga), key=grain_keys.get(ga))
             select = select.select(shown.as_(exp.to_identifier(ga, quoted=True)))
         for name, input_type in picked:
-            value = src(name) if list_rows else self._pick_once(src(name), input_type=input_type)
-            select = select.select(value.as_(exp.to_identifier(name)))
-        if not list_rows:
-            for ga in grain_aliases:
-                select = select.group_by(self._grain_key(base(ga), key=grain_keys.get(ga)))
-            for i in range(n_entity_keys):
-                select = select.group_by(src(f"_w_ek{i}"))
+            select = select.select(self._pick_once(src(name), input_type=input_type).as_(exp.to_identifier(name)))
+        for ga in grain_aliases:
+            select = select.group_by(self._grain_key(base(ga), key=grain_keys.get(ga)))
+        for i in range(n_entity_keys):
+            select = select.group_by(src(f"_w_ek{i}"))
         return exp.Subquery(this=select, alias=exp.TableAlias(this=exp.to_identifier("_src")))
 
     def _ranked_scope_expr(
@@ -2950,23 +2947,21 @@ class SQLGenerator:
         regroup_attach_conditions = self._resolve_regroup_attach_conditions(
             regroup_join_specs=regroup_join_specs, scope=ranked_scope,
         )
-        dedup = association is not None and not association.list_rows
         entity_exprs = [
             render_value_key(key=ek, ctx=RenderContext(scope=ranked_scope, dialect=self._dialect))
-            for ek in (association.entity_keys if dedup and association is not None else [])
+            for ek in (association.entity_keys if association is not None else [])
         ]
         entity_refs = [ranked_scope.materialize_for(e, consumer=cte_scope) for e in entity_exprs]
 
         from_expr, joins = self._build_from_and_joins(
             source_dataset=root_dataset, source_relation=root_relation,
             joined_paths=ranked_scope.relationship_paths.as_list(), bundle=bundle,
-            distinct_lists=association is not None and association.list_rows,
         )
         inner = exp.Select()
         # A named projection list, never <relation>.*: the projection boundary keeps the rank column's name private.
         ranked_scope.apply_materializations(inner)
         inner = inner.select(build_rank_key(ranking_time))
-        if dedup:
+        if association is not None:
             if passing_first:
                 inner = inner.select(passing_first[0].this.copy().as_(RANK_PASS_FIELD))
         else:
@@ -2997,7 +2992,7 @@ class SQLGenerator:
                 exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
             )
         value_type = aggregation_source_type(local_key.source, field_type=ranked_scope.field_type)
-        if dedup:
+        if association is not None:
             for e in entity_exprs:
                 inner = inner.where(exp.Not(this=exp.Is(this=e.copy(), expression=exp.Null())))
             inner, value_ref = self._ranked_entity_rows(
@@ -3208,14 +3203,12 @@ class SQLGenerator:
             bundle=bundle, allocator=allocator, attached_fields=regroup_env,
         )
         ctx = RenderContext(scope=scope, dialect=self._dialect)
-        list_rows = getattr(kernel, "list_rows", False)
 
         inner_cols: List[Expr] = []
         group: List[Expression] = []
         for slot, alias in zip(grain_slots, grain_aliases):
             expr = render_value_key(key=slot.key, ctx=ctx)
-            shown = expr.copy() if list_rows else self._grouped_display(expr, key=slot.key)
-            inner_cols.append(shown.as_(exp.to_identifier(alias, quoted=True)))
+            inner_cols.append(self._grouped_display(expr, key=slot.key).as_(exp.to_identifier(alias, quoted=True)))
             group.append(self._grain_key(expr.copy(), key=slot.key))
         entity_exprs: List[Expression] = []
         for idx, ekey in enumerate(kernel.entity_keys):
@@ -3227,10 +3220,9 @@ class SQLGenerator:
 
         # Level 1 picks each input once per entity (MAX is arbitrary-but-correct:
         # the input is root-determined, constant per entity); ``count(*)`` keeps no
-        # value column — level 2 counts the entity rows. List rows are already one
-        # per root row and cell, so they read their values as is.
+        # value column — level 2 counts the entity rows.
         def pick(value: Expression, *, input_type: Optional[DataType]) -> Expression:
-            return value if list_rows else self._pick_once(value, input_type=input_type)
+            return self._pick_once(value, input_type=input_type)
 
         is_star = isinstance(agg_slot.key.source, StarKey)
         if agg_slot.key.filter is not None:
@@ -3330,7 +3322,7 @@ class SQLGenerator:
         )
         from_expr, joins = self._build_from_and_joins(
             source_dataset=source_dataset, source_relation=source_relation,
-            joined_paths=scope.relationship_paths.as_list(), bundle=bundle, distinct_lists=list_rows,
+            joined_paths=scope.relationship_paths.as_list(), bundle=bundle,
         )
         inner = exp.Select().select(*inner_cols).from_(from_expr)
         inner = _apply_joins(select=inner, joins=joins)
@@ -3356,7 +3348,7 @@ class SQLGenerator:
             source_relation=source_relation, bundle=bundle,
         ):
             inner = inner.where(cond)
-        for g in [] if list_rows else group:
+        for g in group:
             inner = inner.group_by(g)
 
         base_subq = exp.Subquery(
@@ -4539,7 +4531,6 @@ class SQLGenerator:
         source_relation: str,
         joined_paths: List[Tuple[str, ...]],
         bundle: ResolvedSourceBundle,
-        distinct_lists: bool = False,
     ):
         """Build ``(from_expr, joins)`` for a base SELECT; a list child root reads its parent's own rows."""
         joins: List = []
@@ -4572,7 +4563,6 @@ class SQLGenerator:
                     joins.append(self._hop_join(
                         edge=edge, prev_dataset=prev_dataset, next_dataset=next_dataset,
                         current_alias=current_alias, next_alias=next_alias, bundle=bundle,
-                        distinct_lists=distinct_lists,
                     ))
                     emitted_aliases.add(next_alias)
                 current_alias = next_alias
@@ -4581,7 +4571,7 @@ class SQLGenerator:
 
     def _list_relation(
         self, *, parent: SlayerDataset, field: str, parent_alias: str, alias: str, bundle, leading: bool,
-        distinct: bool = False, positioned: bool = False,
+        positioned: bool = False,
     ):
         """``parent``'s list ``field`` (read at ``parent_alias``) as its element relation ``alias``."""
         col = parent.get_field(field)
@@ -4591,17 +4581,15 @@ class SQLGenerator:
             FieldSqlKey(dataset=parent.name, field_name=field) if col.needs_expansion else FieldKey(leaf=field),
         )
         return self._dialect.list_relation(
-            values, alias=exp.to_identifier(alias), element=col.element_type, leading=leading, distinct=distinct,
-            positioned=positioned,
+            values, alias=exp.to_identifier(alias), element=col.element_type, leading=leading, positioned=positioned,
         )
 
     def _list_join(
-        self, *, parent, field: str, parent_alias: str, alias: str, bundle, distinct: bool = False,
-        positioned: bool = False,
+        self, *, parent, field: str, parent_alias: str, alias: str, bundle, positioned: bool = False,
     ):
         relation = self._list_relation(
             parent=parent, field=field, parent_alias=parent_alias, alias=alias, bundle=bundle, leading=False,
-            distinct=distinct, positioned=positioned,
+            positioned=positioned,
         )
         return relation.relation, None, relation.join_kind
 
@@ -4613,7 +4601,7 @@ class SQLGenerator:
 
     def _hop_join(
         self, *, edge: OrientedRelationship, prev_dataset: SlayerDataset, next_dataset: SlayerDataset, current_alias: str,
-        next_alias: str, bundle, distinct_lists: bool = False,
+        next_alias: str, bundle,
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
         """``(join_expr, on_expr, join_type)`` for one oriented hop; an unrelated product hop fails closed."""
         if is_unrelated_edge(edge):
@@ -4623,7 +4611,6 @@ class SQLGenerator:
                 raise ValueError(f"The hop from list child {prev_dataset.name!r} back to its parent is its own row.")
             return self._list_join(
                 parent=prev_dataset, field=edge.lateral, parent_alias=current_alias, alias=next_alias, bundle=bundle,
-                distinct=distinct_lists,
             )
         join_on_parts = [
             _key_equality(
