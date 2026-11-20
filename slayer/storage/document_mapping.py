@@ -7,7 +7,7 @@ import copy
 from typing import Any
 
 from slayer.core import slayer_extension as ext
-from slayer.core.enums import JoinType, RelationshipCardinality
+from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.field_expression import Expression, ExpressionObject
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
 from slayer.core.ossie_expression import OSIExpression
@@ -20,6 +20,14 @@ __all__ = ["OSSIE_CORE_TYPES", "as_expression", "core_source", "dataset_payload"
 
 OSSIE_CORE_TYPES = frozenset({"String", "Integer", "Decimal", "Float", "Boolean", "Date", "Time", "DateTime",
                               "DateTimeTz", "Opaque"})
+def core_datatype(datatype: DataType | None) -> str | None:
+    """A field's Ossie core ``datatype``: its own when Ossie has it, ``Opaque`` for a list (its ``SLAYER`` entry keeps
+    the list type)."""
+    if datatype is None:
+        return None
+    return datatype.value if datatype.value in OSSIE_CORE_TYPES else "Opaque"
+
+
 _FIELD_ONLY = ("hidden", "format", "granularity", "allowed_aggregations", "meta", "filter", "element_type", "db_type",
                "sampled", "sampled_values", "distinct_count")
 
@@ -205,8 +213,7 @@ class _Writer:
             if old is None or field.description != old.description:
                 _set(entity, "description", field.description)
             if old is None or field.datatype != old.datatype:
-                core_type = field.datatype.value if field.datatype is not None else None
-                _set(entity, "datatype", core_type if core_type in OSSIE_CORE_TYPES else None)
+                _set(entity, "datatype", core_datatype(field.datatype))
             _set_slayer(entity, field_payload(field, core_expression=entity["expression"]))
 
         if old is not None and field == old:

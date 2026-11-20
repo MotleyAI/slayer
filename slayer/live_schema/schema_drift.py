@@ -38,7 +38,7 @@ from slayer.core.query import QueryDimension, SlayerQuery, extension_dataset_nam
 from slayer.core.refs import IDENTIFIER_RE
 from slayer.core.vocabulary import name_twins
 from slayer.core.warnings import BrokenDependentWarning
-from slayer.sql.dialects.reflection import TableKeyReadFailure
+from slayer.sql.dialects.reflection import TableKeyReadFailure, info_schema_list_element
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.live_schema.introspect_utils import reflect_columns
 from slayer.live_schema.schema_scope import (
@@ -211,6 +211,39 @@ class RetypeFinding(BaseModel):
         )
 
 
+class UntypedFinding(BaseModel):
+    """A semantic-model document field that declares no datatype, and the live type cleanup writes into it."""
+
+    finding: Literal["untyped"] = "untyped"
+    dataset_name: str
+    data_source: str
+    semantic_model: str
+    field: str
+    live_type: DataType
+    live_element_type: DataType | None = None
+    live_db_type: str | None = None
+
+    @computed_field
+    @property
+    def summary(self) -> str:
+        live = f"{self.live_db_type} ({self.live_type.value})" if self.live_db_type else self.live_type.value
+        return (f"Field '{self.dataset_name}.{self.field}' of semantic model '{self.semantic_model}' declares no "
+                f"datatype; its live type is {live}. `slayer validate-datasets --force-clean` writes it in.")
+
+
+def untyped_finding(
+    *, dataset: SlayerDataset, field: DatasetField, live_type: DataType, live_db_type: str | None,
+    element_type: DataType | None = None,
+) -> UntypedFinding | None:
+    """The untyped finding of a document dataset's undeclared field; ``None`` off a document or when typed."""
+    if field.datatype is not None or dataset.semantic_model is None:
+        return None
+    element = element_type or (info_schema_list_element(live_db_type) if live_type is DataType.ARRAY else None)
+    return UntypedFinding(dataset_name=dataset.name, data_source=dataset.data_source,
+                          semantic_model=dataset.semantic_model, field=field.name, live_type=live_type,
+                          live_element_type=element, live_db_type=live_db_type)
+
+
 def touches(reads: StatementReads, entry: Any) -> bool:
     """Whether a drift entry or finding of a read dataset removes or re-types something the statement reads."""
     if isinstance(entry, WholeDatasetDelete):
@@ -246,11 +279,11 @@ class NarrowedAccessFinding(BaseModel):
     narrowed_by: list[str]
 
 
-#: Validation entries that report rather than delete.
-REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding)
+#: Validation entries that report rather than delete (cleanup writes an untyped finding in).
+REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding, UntypedFinding)
 
 #: One entry of a ``validate_datasets`` report.
-DriftReportEntry = EditDatasetDelete | WholeDatasetDelete | NarrowedAccessFinding | RetypeFinding
+DriftReportEntry = EditDatasetDelete | WholeDatasetDelete | NarrowedAccessFinding | RetypeFinding | UntypedFinding
 
 
 def unloadable_dataset_delete(*, error: StoredDocumentLoadError) -> WholeDatasetDelete:
@@ -410,16 +443,22 @@ def _retyped(*, persisted: DataType, live: DataType, temporal_text: bool) -> boo
 
 def retype_findings(
     *, dataset: SlayerDataset, live_table: LiveTable | None, temporal_text: bool = False,
-) -> list[RetypeFinding]:
-    """One finding per stored base field whose live column's type conflicts; a live list re-ingests."""
+) -> list[RetypeFinding | UntypedFinding]:
+    """One finding per stored base field whose live column's type conflicts (a live list re-ingests), or that a
+    document leaves untyped."""
     if live_table is None:
         return []
-    out: list[RetypeFinding] = []
+    out: list[RetypeFinding | UntypedFinding] = []
     for col in dataset.fields:
         if not col.is_physical_reader:
             continue
         name = col.physical_name
         live = live_table.columns.get(name)
+        if live is not None and col.datatype is None:
+            if untyped := untyped_finding(dataset=dataset, field=col, live_type=live,
+                                          live_db_type=live_table.db_types.get(name)):
+                out.append(untyped)
+            continue
         if live is not None and _retyped(persisted=col.datatype, live=live, temporal_text=temporal_text):
             out.append(RetypeFinding.of(
                 dataset=dataset, field=col, live_type=live, live_db_type=live_table.db_types.get(name),
@@ -430,13 +469,19 @@ def retype_findings(
 
 def sql_dataset_retype_findings(
     *, dataset: SlayerDataset, live_columns: dict[str, ResultColumnType] | None, temporal_text: bool = False,
-) -> list[RetypeFinding]:
-    """One finding per field of a sql-mode dataset whose result column's type conflicts."""
-    out: list[RetypeFinding] = []
+) -> list[RetypeFinding | UntypedFinding]:
+    """One finding per field of a sql-mode dataset whose result column's type conflicts, or that a document leaves
+    untyped."""
+    out: list[RetypeFinding | UntypedFinding] = []
     for col in dataset.fields:
         live = (live_columns or {}).get(col.name)
         if live is None and col.definition_sql is not None:
             live = (live_columns or {}).get(col.definition_sql.strip())
+        if live is not None and col.datatype is None:
+            if untyped := untyped_finding(dataset=dataset, field=col, live_type=live.type, live_db_type=live.db_type,
+                                          element_type=live.element_type):
+                out.append(untyped)
+            continue
         if live is not None and _retyped(persisted=col.datatype, live=live.type, temporal_text=temporal_text):
             out.append(RetypeFinding.of(
                 dataset=dataset, field=col, live_type=live.type, live_db_type=live.db_type,
@@ -2277,7 +2322,7 @@ async def _collect_sql_table_diffs(
     sql_table_datasets: list[SlayerDataset],
     available_in_ds: set[str],
     snapshot: DriftSnapshot | None = None,
-    findings: list[RetypeFinding] | None = None,
+    findings: list[RetypeFinding | UntypedFinding] | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Introspect live and diff each sql_table-mode dataset; re-type findings (SQLite's affinity probe's
     included) append to ``findings``."""
@@ -2363,7 +2408,7 @@ async def _collect_sql_diffs(
     sql_datasets: list[SlayerDataset],
     client: SqlClient,
     snapshot: DriftSnapshot | None = None,
-    findings: list[RetypeFinding] | None = None,
+    findings: list[RetypeFinding | UntypedFinding] | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Trial-execute each sql-mode dataset concurrently and produce its diff; re-type findings append to
     ``findings``."""
@@ -2400,7 +2445,7 @@ async def validate_datasource(
     client: SqlClient,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
-    findings_out: list[RetypeFinding] | None = None,
+    findings_out: list[RetypeFinding | UntypedFinding] | None = None,
 ) -> list[ToDeleteEntry]:
     """Validate ``datasets`` (all one DS) against the live schema through ``client``. Read-only.
 

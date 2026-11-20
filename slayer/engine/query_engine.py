@@ -2304,7 +2304,7 @@ class SlayerQueryEngine:
 
     async def _validate_read_set(
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
-        findings_out: "Optional[List[schema_drift.RetypeFinding]]" = None,
+        findings_out: "Optional[List[schema_drift.RetypeFinding | schema_drift.UntypedFinding]]" = None,
     ) -> "List[schema_drift.ToDeleteEntry]":
         """Drift entries for the read persisted datasets of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_dataset_identities()
@@ -2335,7 +2335,7 @@ class SlayerQueryEngine:
         """Raise ``SchemaDriftError`` if ``err`` is attributable to drift touching what the
         statement reads; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            found: List[schema_drift.RetypeFinding] = []
+            found: List[schema_drift.RetypeFinding | schema_drift.UntypedFinding] = []
             entries = await self._validate_read_set(
                 datasource=datasource, read_set=read_set, findings_out=found,
             )
@@ -2936,6 +2936,21 @@ class SlayerQueryEngine:
         """Delete a persisted dataset by name. Returns True if the dataset existed."""
         return await self.storage.delete_dataset(dataset_name, data_source=data_source)
 
+    async def apply_untyped_findings(self, findings: "Sequence[schema_drift.UntypedFinding]") -> List[str]:
+        """Write each untyped finding's live type into its document field; returns one message per failed write."""
+        errors: List[str] = []
+        for finding in findings:
+            try:
+                dataset = await self.storage.get_dataset(finding.dataset_name, data_source=finding.data_source)
+                if dataset is None:
+                    raise LookupError(f"dataset {finding.dataset_name!r} is gone")
+                await self.storage.save_dataset(dataset.model_copy(update={"fields": [
+                    f.model_copy(update={"datatype": finding.live_type, "element_type": finding.live_element_type})
+                    if f.name == finding.field else f for f in dataset.fields]}))
+            except Exception as exc:  # noqa: BLE001 — one failed write never stops the others
+                errors.append(f"{finding.dataset_name}.{finding.field}: {exc}")
+        return errors
+
     async def apply_drift_deletes(
         self,
         deletes: "Sequence[schema_drift.DriftReportEntry]",
@@ -3264,7 +3279,7 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         datasets, unloadable = await self.storage.load_datasets(data_source=data_source)
-        retypes: List[schema_drift.RetypeFinding] = []
+        retypes: List[schema_drift.RetypeFinding | schema_drift.UntypedFinding] = []
         entries = await schema_drift.validate_datasource(
             datasource=ds, datasets=datasets, client=self.client_for(ds), findings_out=retypes,
         )

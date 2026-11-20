@@ -350,8 +350,11 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
                 members[population.casefold()] = heads[population.casefold()] = frozenset({TIME_SPINE_FIELD})
             continue
         dataset_source, dataset = found
-        members[population.casefold()] = frozenset(
-            n.casefold() for n in [*(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name)])
+        if not dataset.awaits_fields:  # an unexpanded query-backed dataset's members are unknown
+            extended = [m.name for q in queries for e in q.extensions or [] if e.dataset.casefold() == population.casefold()
+                        for m in e.metrics or [] if m.name]
+            members[population.casefold()] = frozenset(n.casefold() for n in [
+                *(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name), *extended])
         aggregations[population.casefold()] = frozenset(a.name.casefold() for a in dataset.aggregations)
         own = [*(f.name for f in dataset.fields), *(r.name for r in dataset.relationships if r.name)]
         if any(not _is_alias(h, declared=[*names, *own], quoted=q) for h, q in dotted):

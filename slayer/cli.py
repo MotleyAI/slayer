@@ -64,6 +64,7 @@ from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     NarrowedAccessFinding,
     RetypeFinding,
+    UntypedFinding,
 )
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
@@ -2023,6 +2024,9 @@ def _format_validate_datasets_output(entries: Sequence[DriftReportEntry]) -> str
         if isinstance(entry, RetypeFinding):
             lines.append(f"RE-TYPE: {entry.summary}")
             continue
+        if isinstance(entry, UntypedFinding):
+            lines.append(f"UNTYPED: {entry.summary}")
+            continue
         if entry.tool == "delete_dataset":
             lines.append(
                 f"DELETE DATASET: {entry.dataset_name} (datasource: {entry.data_source})"
@@ -2207,15 +2211,28 @@ def _print_cardinality_section(report) -> None:
 
 async def _apply_force_clean(
     args: argparse.Namespace, engine: SlayerQueryEngine, entries: Sequence[DriftReportEntry],
+    untyped: Sequence[UntypedFinding] = (),
 ) -> None:
-    """Prompt for and apply the drift deletes; exits 1 on residual/errors."""
+    """Prompt for and apply the drift deletes and the untyped fields' types; exits 1 on residual/errors."""
+    changes = [f"{len(entries)} delete(s)"] * bool(entries) + [f"{len(untyped)} type write(s)"] * bool(untyped)
     if not _confirm(
-        f"\nApply {len(entries)} delete(s) to storage?",
+        f"\nApply {' and '.join(changes)} to storage?",
         assume_yes=bool(getattr(args, "yes", False)),
     ):
         print("Aborted; storage unchanged.")
         return
 
+    type_errors = await engine.apply_untyped_findings(untyped)
+    for finding in untyped:
+        print(f"Typed {finding.dataset_name}.{finding.field} as {finding.live_type.value}.")
+    if type_errors:
+        print(f"Type write errors ({len(type_errors)}):")
+        for err in type_errors:
+            print(f"  - {err}")
+        if not entries:
+            sys.exit(1)
+    if not entries:
+        return
     result = await engine.apply_drift_deletes(entries)
     print(f"\nApplied {len(result.applied)} entry/entries.")
     if result.errors:
@@ -2276,8 +2293,9 @@ async def _validate_datasets_workflow(args, engine: SlayerQueryEngine) -> None:
     _print_relationship_safety_section(relationship_safety)
     # Clean first: profiling a dataset we are about to repair is wasted work.
     deletes = [e for e in entries if not isinstance(e, REPORT_ONLY_FINDINGS)]
-    if bool(getattr(args, "force_clean", False)) and deletes:
-        await _apply_force_clean(args, engine, deletes)
+    untyped = [e for e in entries if isinstance(e, UntypedFinding)]
+    if bool(getattr(args, "force_clean", False)) and (deletes or untyped):
+        await _apply_force_clean(args, engine, deletes, untyped)
     report = await _collect_cardinality_report(args, engine)
     if report is not None:
         _print_cardinality_section(report)

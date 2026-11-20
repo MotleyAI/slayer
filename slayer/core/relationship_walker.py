@@ -528,10 +528,11 @@ def _refuse_edge_target_clash(
     *, current: SlayerDataset, edge: OrientedRelationship, incident: list[OrientedRelationship], token: str,
     quoted: bool,
 ) -> None:
-    """Raise when ``token`` names ``edge`` by its edge name and is also another incident edge's target dataset."""
+    """Raise when ``token`` names ``edge`` by its edge name and is also the target dataset of an incident edge into
+    another dataset."""
     if edge.name is None or match_name(name=token, declared=[edge.name], quoted=quoted) is None:
         return
-    other = next((e for e in incident if e is not edge and e.lateral is None and not is_product_edge(e)
+    other = next((e for e in incident if e.to != edge.to and e.lateral is None and not is_product_edge(e)
                   and match_name(name=token, declared=[e.target_spelling or e.to], quoted=quoted) is not None), None)
     if other is not None:
         raise AmbiguousHopError(dataset=current.spelling, segment=token, edge=edge.name,
