@@ -304,7 +304,7 @@ identity (per "Per-query row identity for keyless homes"), never refused.
   customer with two orders in one cell weighted once — with unchanged result grain and
   sibling values
 
-#### Scenario: Windowed or first/last combination fails closed under explicit associate
+#### Scenario: Windowed or first/last combination executes under explicit associate
 - **WHEN** a query with `to_many_handling: "associate"` needs association for an
   aggregate that also declares `window=` or uses `first`/`last`
 - **THEN** the combination no longer fails: the query executes with the per-cell values
