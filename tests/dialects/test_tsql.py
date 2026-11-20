@@ -59,7 +59,7 @@ def test_tsql_ds_type_aliases() -> None:
 def test_tsql_build_date_trunc_month() -> None:
     d = TsqlDialect()
     col = sqlglot.parse_one("created_at", dialect="tsql")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="tsql").lower()
     assert "datetrunc" in sql
     assert "month" in sql
@@ -69,7 +69,7 @@ def test_tsql_build_date_trunc_week_uses_iso_week() -> None:
     """Week must use ISO_WEEK (Monday-start) to be @@DATEFIRST-independent."""
     d = TsqlDialect()
     col = sqlglot.parse_one("created_at", dialect="tsql")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="tsql").lower()
     assert "datetrunc" in sql
     assert "iso_week" in sql
@@ -79,7 +79,7 @@ def test_tsql_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY composes DATEADD day offsets around the iso_week DATETRUNC."""
     d = TsqlDialect()
     col = sqlglot.parse_one("ordered_at", dialect="tsql")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="tsql").lower()
     assert "datetrunc" in sql
     assert "iso_week" in sql          # inner Monday-week truncation
@@ -91,7 +91,7 @@ def test_tsql_build_date_trunc_casts_non_column_to_timestamp() -> None:
     """``DATETRUNC`` needs a temporal type, so non-column operands are CAST."""
     d = TsqlDialect()
     lit = sqlglot.parse_one("'2025-01-01'", dialect="tsql")
-    out = d.build_date_trunc(lit, TimeGranularity.MONTH)
+    out = d.build_date_trunc(col_expr=lit, granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP)
     assert "CAST" in out.sql(dialect="tsql").upper()
 
 

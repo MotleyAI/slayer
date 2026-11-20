@@ -93,7 +93,7 @@ def test_bigquery_build_date_trunc_week_sunday_native() -> None:
     """BigQuery's native ``DATE_TRUNC(x, WEEK)`` is Sunday-based, so the generic +1d/-1d shift would double-count."""
     d = BigqueryDialect()
     col = exp.column("ordered_at")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="bigquery")
     assert "WEEK(SUNDAY)" in sql, f"WEEK(SUNDAY) dropped on emit: {sql}"
     assert "DATE_TRUNC" in sql.upper()
@@ -104,7 +104,7 @@ def test_bigquery_build_date_trunc_week_sunday_native() -> None:
 def test_bigquery_build_date_trunc_week_is_monday_anchored() -> None:
     """ISO ``week`` must not use BigQuery's Sunday-based bare ``WEEK``."""
     out = BigqueryDialect().build_date_trunc(
-        col_expr=exp.column("ordered_at"), granularity=TimeGranularity.WEEK,
+        col_expr=exp.column("ordered_at"), granularity=TimeGranularity.WEEK, operand=DataType.TIMESTAMP,
     )
     assert out.sql(dialect="bigquery") == "DATE_TRUNC(ordered_at, WEEK(MONDAY))"
 
@@ -113,7 +113,7 @@ def test_bigquery_build_date_trunc_non_week_delegates_to_base() -> None:
     """Non-WEEK_SUNDAY granularities fall through to the base DATE_TRUNC."""
     d = BigqueryDialect()
     col = exp.column("ordered_at")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP)
     up = out.sql(dialect="bigquery").upper()
     assert "DATE_TRUNC" in up
     assert "MONTH" in up

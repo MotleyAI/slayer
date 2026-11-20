@@ -97,7 +97,7 @@ def test_clickhouse_build_date_add_day() -> None:
 def test_clickhouse_build_date_trunc_month() -> None:
     d = ClickhouseDialect()
     col = sqlglot.parse_one("created_at", dialect="clickhouse")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="clickhouse").upper()
     # sqlglot transpiles to ClickHouse-appropriate date function
     assert "MONTH" in sql or "DATE_TRUNC" in sql
@@ -107,7 +107,7 @@ def test_clickhouse_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY reuses ClickHouse's native (Monday) week truncation with the +1d / -1d shift."""
     d = ClickhouseDialect()
     col = sqlglot.parse_one("ordered_at", dialect="clickhouse")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.TIMESTAMP)
     up = out.sql(dialect="clickhouse").upper()
     # sqlglot emits the canonical ClickHouse spelling ``dateTrunc``
     # (upper-cased here to ``DATETRUNC``). ClickHouse accepts both
@@ -131,7 +131,9 @@ async def test_clickhouse_orders_by_the_projection_not_its_dotted_alias() -> Non
         measures=[ModelMeasure(formula="count(*)")],
     )
     sql = await _engine_generate(query=query, model=model, dialect="clickhouse")
-    assert sql[sql.rindex("ORDER BY"):].split("\n", 1)[1].strip() == "dateTrunc('MONTH', orders.created_at) ASC"
+    assert sql[sql.rindex("ORDER BY"):].split("\n", 1)[1].strip() == (
+        "toDateTime64(dateTrunc('MONTH', toDateTime64(orders.created_at, 6)), 6) ASC"
+    )
 
 
 def test_clickhouse_windowed_projection_keeps_its_alias() -> None:

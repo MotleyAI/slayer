@@ -43,7 +43,7 @@ def _literal(dialect: str, value: date) -> str:
 
 
 def _flat(sql: str) -> str:
-    return re.sub(r"\s+", " ", sql)
+    return re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", re.sub(r"\s+", " ", sql)))
 
 
 @pytest.mark.parametrize("dialect", TIER1)
@@ -85,7 +85,7 @@ async def test_granularity_call_non_literal_comparison_truncates_both_sides(dial
     sql = _flat(await _sql(dialect, filters=["date_trunc('month', ts) = date_trunc('month', shipped_at)"], granularity="day"))
     d = get_dialect(dialect)
     for col in ("ts", "shipped_at"):
-        trunc = d.build_date_trunc(exp.column(col, table="ev"), TimeGranularity.MONTH).sql(dialect=d.sqlglot_name)
+        trunc = d.build_date_trunc(col_expr=exp.column(col, table="ev"), granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP).sql(dialect=d.sqlglot_name)
         assert _flat(trunc) in sql, (col, sql)
 
 

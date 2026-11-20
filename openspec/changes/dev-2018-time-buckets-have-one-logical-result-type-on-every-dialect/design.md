@@ -96,7 +96,6 @@ Principles in force:
     - trailing windows, `whole_periods_only`, consecutive periods and ±`time_shift` over DATE and TIMESTAMP;
     - `week_sunday` boundaries;
     - SQLite storage spellings and invalid text through buckets and comparisons;
-    - Ossie export text of DATE month and DATE hour buckets (`osi/exporter` renders through `render_value_key`);
     - Tier-2 inherited emission.
 
     Goldens are re-blessed only after confirming each changed line comes from a bucket or a promotion. (codex)

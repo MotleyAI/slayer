@@ -161,6 +161,8 @@ def _shifted_where(sql: str) -> str:
 
 # A quoted-identifier char (double-quote for most dialects, backtick for MySQL).
 _Q = r"[\"`]"
+# SQLite compares two temporal values as canonical text.
+_SQLITE_CANONICAL = r"(?:STRFTIME\('%Y-%m-%d %H:%M:%f',\s*)?"
 
 
 def _assert_grain_pair(
@@ -181,7 +183,7 @@ def _assert_grain_pair(
     pat = re.compile(
         r"base\." + _Q + r"([^\"`]*(?:" + col_regex + r")[^\"`]*)" + _Q
         + (r"([^\n]*?)" if lookup else r"()\s*")
-        + m + r"\s*shifted_\w+\." + _Q + r"\1" + _Q
+        + m + r"\s*" + _SQLITE_CANONICAL + r"shifted_\w+\." + _Q + r"\1" + _Q
     )
     found = pat.search(on_pred)
     assert found, (

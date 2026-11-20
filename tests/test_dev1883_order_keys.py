@@ -25,7 +25,7 @@ class TestOrderByProjectedBucket:
         by_column = await exec_engine.execute(_month_query("created_at"))
         assert by_functional.data == by_column.data
         assert [r["orders.created_at"] for r in by_functional.data] == [
-            "2025-03-01", "2024-02-01", "2024-01-01",
+            "2025-03-01 00:00:00", "2024-02-01 00:00:00", "2024-01-01 00:00:00",
         ]
 
     async def test_functional_order_over_functional_projection(self, exec_engine) -> None:
@@ -36,7 +36,7 @@ class TestOrderByProjectedBucket:
             order=[{"column": "date_trunc('month', created_at)", "direction": "asc"}],
         ))
         assert [r["orders.created_at"] for r in resp.data] == [
-            "2024-01-01", "2024-02-01", "2025-03-01",
+            "2024-01-01 00:00:00", "2024-02-01 00:00:00", "2025-03-01 00:00:00",
         ]
 
 

@@ -30,7 +30,7 @@ def test_postgres_log_native_flags() -> None:
 def test_postgres_build_date_trunc_month() -> None:
     d = PostgresDialect()
     col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="postgres")
     assert "DATE_TRUNC" in sql.upper()
     assert "'month'" in sql.lower()
@@ -40,7 +40,7 @@ def test_postgres_build_date_trunc_quarter() -> None:
     """Postgres has a native QUARTER unit for DATE_TRUNC — emitted as-is."""
     d = PostgresDialect()
     col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_date_trunc(col, TimeGranularity.QUARTER)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.QUARTER, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="postgres").lower()
     assert "date_trunc" in sql
     assert "quarter" in sql
@@ -49,7 +49,7 @@ def test_postgres_build_date_trunc_quarter() -> None:
 def test_postgres_build_date_trunc_casts_literal_to_timestamp() -> None:
     d = PostgresDialect()
     lit = sqlglot.parse_one("'2025-01-01'", dialect="postgres")
-    out = d.build_date_trunc(lit, TimeGranularity.MONTH)
+    out = d.build_date_trunc(col_expr=lit, granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP)
     assert "CAST" in out.sql(dialect="postgres").upper()
 
 
@@ -57,7 +57,7 @@ def test_postgres_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY = Monday-week of (col + 1 day) minus 1 day."""
     d = PostgresDialect()
     col = sqlglot.parse_one("ordered_at", dialect="postgres")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="postgres")
     up = sql.upper()
     assert "DATE_TRUNC('WEEK'" in up

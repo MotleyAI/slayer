@@ -946,14 +946,14 @@ class SqliteDialect(SqlDialect):
         self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
         """STRFTIME text, ``YYYY-MM-DD`` for a DATE bucket and ``YYYY-MM-DD HH:MM:SS`` for a TIMESTAMP one,
-        whatever the stored spelling; a CASE for quarter, weekday modifiers for weeks."""
+        whatever the stored spelling; a CASE for quarter, a weekday modifier for week."""
         midnight = "" if bucket_type(operand, granularity) is DataType.DATE else " 00:00:00"
         day = f"%Y-%m-%d{midnight}"
         if granularity == TimeGranularity.WEEK:
             # weekday 0 = Sunday on or after; back up to that week's Monday.
             return _strftime(day, col_expr, "weekday 0", "-6 days")
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            return _strftime(day, col_expr, "+1 day", "weekday 0", "-7 days")
+            return super().build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
         if granularity == TimeGranularity.QUARTER:
             return exp.DPipe(this=_strftime("%Y-", col_expr), expression=exp.Case(
                 ifs=[

@@ -55,7 +55,7 @@ def test_sqlite_build_date_trunc_strftime_forms(
 ) -> None:
     d = SqliteDialect()
     col = sqlglot.parse_one("created_at", dialect="sqlite")
-    out = d.build_date_trunc(col, granularity)
+    out = d.build_date_trunc(col_expr=col, granularity=granularity, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="sqlite")
     assert "STRFTIME" in sql.upper()
     assert expected_fmt in sql
@@ -65,7 +65,7 @@ def test_sqlite_build_date_trunc_week_uses_weekday_modifier() -> None:
     """Week truncation uses DATE(col, 'weekday 0', '-6 days')."""
     d = SqliteDialect()
     col = sqlglot.parse_one("created_at", dialect="sqlite")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="sqlite")
     assert "weekday 0" in sql
     assert "-6 days" in sql
@@ -75,10 +75,11 @@ def test_sqlite_build_date_trunc_week_sunday_emission() -> None:
     """WEEK_SUNDAY composes the date-add primitive around SQLite's Monday-week truncation."""
     d = SqliteDialect()
     col = sqlglot.parse_one("ordered_at", dialect="sqlite")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="sqlite")
     assert sql == (
-        "SLAYER_DATE_ADD(DATE(SLAYER_DATE_ADD(ordered_at, 1, 'day'), 'weekday 0', '-6 days'), -1, 'day')"
+        "SLAYER_DATE_ADD(STRFTIME('%Y-%m-%d 00:00:00', SLAYER_DATE_ADD(ordered_at, 1, 'day'), 'weekday 0', "
+        "'-6 days'), -1, 'day')"
     )
 
 
@@ -102,7 +103,7 @@ def test_sqlite_build_date_trunc_week_sunday_executes_to_sunday(
     d = SqliteDialect()
     col = sqlglot.parse_one("ts", dialect="sqlite")
     expr = d.build_date_trunc(
-        col, TimeGranularity.WEEK_SUNDAY
+        col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.DATE,
     ).sql(dialect="sqlite")
 
     with transaction(":memory:") as con:
@@ -117,7 +118,7 @@ def test_sqlite_build_date_trunc_quarter_uses_case_when() -> None:
     """Quarter truncation uses STRFTIME + CASE WHEN to map month→quarter start."""
     d = SqliteDialect()
     col = sqlglot.parse_one("created_at", dialect="sqlite")
-    out = d.build_date_trunc(col, TimeGranularity.QUARTER)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.QUARTER, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="sqlite").upper()
     assert "CASE" in sql
     assert "STRFTIME" in sql

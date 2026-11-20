@@ -29,6 +29,5 @@ None.
 - `slayer/core/keys.py` (bucket type rule, operand-coercion positions), `slayer/core/granularity.py`.
 - `slayer/sql/dialects/*` (`build_bucket` takes the operand type; new `demote_to_date`; `bucket_comparand` removed; SQLite temporal comparison form), `slayer/sql/render/{value_expr,row_expr,joins}.py`, `slayer/sql/generator.py` (bucket call sites, typed join-back pairs).
 - `slayer/facade/translator.py` (projection types).
-- Ossie export text for buckets (`slayer/osi/exporter.py` renders through the same renderer).
 - `architecture/python.sql.arc42.md`: new principle 14.
 - Goldens under `tests/golden/` and `tests/dialects/`; docs `docs/concepts/time.md` and the date-function / mixed-type references; notebooks with SQLite outputs.

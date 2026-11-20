@@ -35,9 +35,9 @@ class TestGranularitySuffixedKeys:
             for r in resp.data
         }
         assert rows == {
-            "2024-01-01": ("2024-01-01", 10.0),
-            "2024-02-01": ("2024-01-01", 60.0),
-            "2025-03-01": ("2025-01-01", 5.0),
+            "2024-01-01 00:00:00": ("2024-01-01 00:00:00", 10.0),
+            "2024-02-01 00:00:00": ("2024-01-01 00:00:00", 60.0),
+            "2025-03-01 00:00:00": ("2025-01-01 00:00:00", 5.0),
         }
 
     async def test_two_granularities_dotted_column_execution(self, exec_engine) -> None:
@@ -62,8 +62,8 @@ class TestGranularitySuffixedKeys:
             for r in resp.data
         }
         assert rows == {
-            "2023-05-01": ("2023-01-01", 50.0),
-            "2024-07-01": ("2024-01-01", 25.0),
+            "2023-05-01 00:00:00": ("2023-01-01 00:00:00", 50.0),
+            "2024-07-01 00:00:00": ("2024-01-01 00:00:00", 25.0),
         }
 
     async def test_explicit_form_gets_the_same_keys(self, exec_engine) -> None:

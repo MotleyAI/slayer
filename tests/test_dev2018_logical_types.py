@@ -159,11 +159,12 @@ class TestNestedBuckets:
 
     async def test_sub_day_point_against_a_day_bucket_of_a_date(self, ev_engine) -> None:
         _backend, eng = ev_engine
+        query = SlayerQuery.model_validate({
+            "source_model": "ev", "dimensions": ["id"],
+            "filters": ["date_add(date_trunc('month', d), 1, 'day') >= '2025-01-01 10:00:00'"],
+        })
         with pytest.raises(TimeLiteralError) as ei:
-            await eng.execute(SlayerQuery.model_validate({
-                "source_model": "ev", "dimensions": ["id"],
-                "filters": ["date_add(date_trunc('month', d), 1, 'day') >= '2025-01-01 10:00:00'"],
-            }))
+            await eng.execute(query)
         assert "day" in str(ei.value).lower()
 
 

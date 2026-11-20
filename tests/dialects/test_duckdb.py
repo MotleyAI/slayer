@@ -34,7 +34,7 @@ def test_duckdb_log_native_flags() -> None:
 def test_duckdb_build_date_trunc_month() -> None:
     d = DuckdbDialect()
     col = sqlglot.parse_one("created_at", dialect="duckdb")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP)
     sql = out.sql(dialect="duckdb").upper()
     assert "DATE_TRUNC" in sql
     assert "MONTH" in sql
@@ -45,7 +45,7 @@ def test_duckdb_build_date_trunc_week_sunday_shift() -> None:
     with the +1d / -1d shift. DuckDB emits unquoted ``INTERVAL 1 DAY``."""
     d = DuckdbDialect()
     col = sqlglot.parse_one("ordered_at", dialect="duckdb")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.TIMESTAMP)
     up = out.sql(dialect="duckdb").upper()
     assert "DATE_TRUNC('WEEK'" in up
     assert "+ INTERVAL 1 DAY" in up

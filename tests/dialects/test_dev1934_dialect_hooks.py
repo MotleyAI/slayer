@@ -96,13 +96,13 @@ class TestAggregateHooks:
     def test_date_trunc(self, name: str, granularity: TimeGranularity) -> None:
         d = get_dialect(name)
         _check(name, f"trunc|{granularity.value}", lambda: d.build_date_trunc(
-            col_expr=_created(), granularity=granularity,
+            col_expr=_created(), granularity=granularity, operand=DataType.TIMESTAMP,
         ))
 
     def test_date_trunc_expression_operand_is_cast(self, name: str) -> None:
         d = get_dialect(name)
         _check(name, "trunc_expr|month", lambda: d.build_date_trunc(
-            col_expr=exp.Literal.string("2024-01-15"), granularity=TimeGranularity.MONTH,
+            col_expr=exp.Literal.string("2024-01-15"), granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP,
         ))
 
     @pytest.mark.parametrize("granularity", [
@@ -120,7 +120,7 @@ class TestAggregateHooks:
     def test_date_trunc_tree_is_consistent(self, name: str) -> None:
         for g in TimeGranularity:
             _assert_tree_consistent(
-                get_dialect(name).build_date_trunc(col_expr=_created(), granularity=g),
+                get_dialect(name).build_date_trunc(col_expr=_created(), granularity=g, operand=DataType.TIMESTAMP),
             )
 
 

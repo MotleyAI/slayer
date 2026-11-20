@@ -298,7 +298,13 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         """``DATE_TRUNC`` keeps its input's type: a DATE is promoted to DATETIME for a sub-day bucket. Both weeks
         anchor explicitly (bare ``WEEK`` is Sunday-based); ``exp.Anonymous`` because sqlglot drops the weekday
         modifier from ``exp.DateTrunc``."""
-        source = col_expr if bucket_type(operand, granularity) is operand else self.promote_to_timestamp(col_expr)
+        if bucket_type(operand, granularity) is not operand or (
+                operand is DataType.TIMESTAMP and not isinstance(col_expr, (exp.Column, exp.Cast))):
+            source = self.promote_to_timestamp(col_expr)
+        elif not isinstance(col_expr, (exp.Column, exp.Cast)):
+            source = exp.Cast(this=col_expr, to=exp.DataType.build("DATE"))
+        else:
+            source = col_expr
         weekday = _WEEK_ANCHORS.get(granularity)
         if weekday is None:
             return exp.DateTrunc(this=source, unit=exp.Literal.string(granularity.value))

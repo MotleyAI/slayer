@@ -13,7 +13,7 @@
 - [x] 1.7 `temporal_type` / `value_type` unit cases: `hour(d)` TIMESTAMP, `fiscal_year(d)` DATE, `quarter_hour(d)` TIMESTAMP, `week_sunday(d)` DATE, `month(ts)` TIMESTAMP; `nullif(d, ts)` DATE.
 - [x] 1.8 `tests/dialects/`: `build_bucket(operand=…)` emission per Tier-1 dialect for each unit class and source type; promotion emission for comparisons, conditionals and join-backs; BigQuery zoned-`TIMESTAMP` buckets (built-in, custom, spine) read through `read_column` once; Tier-2 inherited emission. Verify: it fails today on the operand argument.
 - [x] 1.9 pg facade: a bucket projection advertises the DATE OID for month(DATE) and the TIMESTAMP OID for hour(DATE), with binary and text encoding (`tests/` pg-facade unit suite).
-- [x] 1.10 Ossie export: exported text for DATE month and DATE hour buckets on the portable reader and one dialect target.
+- [x] 1.10 Ossie export: none here — a bucket does not export as standard SQL (DEV-2266), and a column's `sql` is author SQL exported as written.
 - [x] 1.11 Integration type matrices (same assertions as 1.1 and 1.3) in `tests/integration/test_integration_{mysql,clickhouse,sqlserver,trino,snowflake}.py`.
 - [x] 1.12 Codex review of the tests against this change; resolve findings with the user.
 

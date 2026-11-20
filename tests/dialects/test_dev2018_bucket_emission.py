@@ -265,8 +265,10 @@ async def test_spine_over_a_date_axis(dialect, granularity) -> None:
     assert ons, sql
     if dialect == "sqlite":
         assert all(on.count(SQLITE_CANONICAL) >= 2 for on in ons), ons
-    else:
+    elif granularity == "month":  # a DATE month bucket meets the TIMESTAMP spine
         assert all(_promote_pattern(dialect).search(on) for on in ons), ons
+    else:  # an hour bucket of a DATE is already a TIMESTAMP
+        assert not any(_promote_pattern(dialect).search(on) for on in ons), ons
     bounds = _axis_comparisons(tree)
     assert bounds, sql
     for cmp in bounds:
@@ -303,7 +305,8 @@ async def test_bigquery_zoned_bucket_reads_the_column_once(query) -> None:
     for column in reads:
         read = column.parent
         assert _bq_datetime_cast(read), sql
-        assert read is not None and not _bq_datetime_cast(read.parent), sql
+        assert read is not None, sql
+        assert not _bq_datetime_cast(read.parent), sql
 
 
 async def test_bigquery_zoned_column_meets_a_date_as_midnight() -> None:

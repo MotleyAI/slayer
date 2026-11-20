@@ -108,16 +108,19 @@ async def test_consecutive_periods_over_date_column(
     assert [got[d[:width]] for d in dates] == [1, 2, 1, 2]
 
 
-@pytest.mark.parametrize("dim", ["d", "d_expr", "ts"])  # DATE, DATETIME and TIMESTAMP buckets
-@pytest.mark.parametrize("formula,comparison", [
-    ("consecutive_periods(sum(v) > 0)",
-     "CAST(`_cp_prev_ev___x` AS DATETIME) = DATETIME_ADD(CAST(`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH)"),
-    ("time_shift(sum(v), -1, 'month')",
-     "DATETIME_ADD(CAST(base.`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH) "
-     "IS NOT DISTINCT FROM CAST(shifted_x.`ev___{dim}` AS DATETIME)"),
+@pytest.mark.parametrize("dim,moved", [
+    ("d", "DATE_ADD(`{dim}`, INTERVAL -1 MONTH)"),
+    ("d_expr", "DATE_ADD(`{dim}`, INTERVAL -1 MONTH)"),
+    ("ts", "DATETIME_ADD(CAST(`{dim}` AS DATETIME), INTERVAL -1 MONTH)"),
 ])
-async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str, comparison: str) -> None:
-    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as DATETIME.
+@pytest.mark.parametrize("formula,comparison", [
+    ("consecutive_periods(sum(v) > 0)", "`_cp_prev_ev___x` = {moved}"),
+    ("time_shift(sum(v), -1, 'month')", "{moved_base} IS NOT DISTINCT FROM shifted_x.`ev___{dim}`"),
+])
+async def test_bigquery_bucket_comparisons_keep_the_bucket_type(
+    dim: str, moved: str, formula: str, comparison: str,
+) -> None:
+    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; a bucket meets its neighbour in its own type.
     model = _ev_model()
     model.columns.append(Column(name="d_expr", sql="DATE(ts)", type=DataType.DATE))
     sql = await _engine_generate(query=SlayerQuery.model_validate({
@@ -125,4 +128,8 @@ async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str,
         "time_dimensions": [{"dimension": dim, "granularity": "month"}],
         "measures": [{"formula": formula, "name": "x"}],
     }), model=model, dialect="bigquery", validate=False)
-    assert comparison.format(dim=dim) in sql
+    expected = comparison.format(
+        dim=dim, moved=moved.format(dim=f"ev___{dim}"), moved_base=moved.format(dim=f"ev___{dim}").replace(
+            f"`ev___{dim}`", f"base.`ev___{dim}`"),
+    )
+    assert expected in " ".join(sql.split()), sql
