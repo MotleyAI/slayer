@@ -82,6 +82,7 @@ from slayer.engine.population.inference import (
     DimensionAnchor,
     PopulationChoice,
     ambiguity_resolved_path,
+    declared_head_spellings,
     determined_path,
     infer_rows,
     infer_spine_population,
@@ -1757,7 +1758,7 @@ class SlayerQueryEngine:
     async def _named_population_of(
         self, *, query: SlayerQuery, data_source: Optional[str], sibling_stage_names: Set[str],
     ) -> "_StageInference":
-        """``query`` under the population it names."""
+        """``query`` under the population it names; rows are planned from its heads as declared."""
         spine_ds = None
         if query.population_name == TIME_SPINE_DATASET:
             spine_ds = await spine_datasource(
@@ -1765,7 +1766,11 @@ class SlayerQueryEngine:
                 sibling_stage_names=sibling_stage_names,
             )
         name = query.population_name
-        routed = await self._anchored_rows(query, data_source=data_source) if spine_ds is None else None
+        routed = None
+        if spine_ds is None:
+            spelled = await declared_head_spellings(query, storage=self.storage, data_source=data_source,
+                                                    siblings=sibling_stage_names)
+            routed = await self._anchored_rows(spelled, data_source=data_source)
         if routed is not None:
             plan, routed_ds = routed
             return _StageInference(

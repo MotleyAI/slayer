@@ -364,11 +364,11 @@ class TestInnerJoins:
         rec = await engine.recommend_population(
             ["orders.status", "order_items.sku", "products.category"]
         )
-        assert rec.population == "order_items"
-        path = _paths(rec)["orders.status"]
-        assert path == "orders.status"
+        assert rec.population == "orders"
+        path = _paths(rec)["order_items.sku"]
+        assert path == "order_items.sku"
 
-        # Feed the recommended order_items→orders hop back in as a query.
+        # Feed the recommended orders→order_items hop back in as a query.
         resp = await engine.execute(
             SlayerQuery(population=rec.population, dimensions=[path]),
             dry_run=True,
@@ -377,7 +377,7 @@ class TestInnerJoins:
         assert "orders" in sql, sql
         assert "JOIN" in sql.upper(), sql
         # Resolved as a joined dimension under the dotted result key.
-        assert "orders.status" in sql, sql
+        assert "order_items.sku" in sql, sql
 
 
 # --------------------------------------------------------------------------

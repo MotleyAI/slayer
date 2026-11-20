@@ -2187,13 +2187,17 @@ def _source_anchor(
     agg: AggregateKey, *, anchors: Mapping[Tuple[str, ...], Tuple[str, ...]], host_dataset: SlayerDataset,
     datasets_by_name: Dict[str, SlayerDataset],
 ) -> Optional[str]:
-    """The anchor ``agg``'s source was written from, when a query reference spelled it."""
-    for r in walk_value_keys(agg.source):
-        if isinstance(r, (FieldKey, FieldSqlKey, StarKey)):
-            parts = anchors.get(_canonical_path(r.path, root=host_dataset, datasets_by_name=datasets_by_name))
-            if parts is not None:
-                return parts[0]
-    return None
+    """The anchor ``agg``'s source was written from: the query reference spelling it, else (a saved measure composed
+    at a frame) the one spelling its longest prefix — the frame's."""
+    paths = [
+        _canonical_path(r.path, root=host_dataset, datasets_by_name=datasets_by_name)
+        for r in walk_value_keys(agg.source) if isinstance(r, (FieldKey, FieldSqlKey, StarKey))
+    ]
+    for path in paths:
+        if (parts := anchors.get(path)) is not None:
+            return parts[0]
+    prefixes = [path[:n] for path in paths for n in range(len(path) - 1, -1, -1) if path[:n] in anchors]
+    return anchors[max(prefixes, key=len)][0] if prefixes else None
 
 
 def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive target-rooted producer synthesis (root / safe-grain / broadcast / inputs / filter-inheritance / recursive plan / attach); the arms share the re-rooting coordinate state.

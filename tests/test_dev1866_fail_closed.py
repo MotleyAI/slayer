@@ -131,6 +131,13 @@ class TestFailClosed:
         assert "population" in str(err)  # advice: name the sibling explicitly
         _assert_stable_prefix(err)
 
+    @pytest.mark.parametrize("ref", ["customers.region", "CUSTOMERS.region"])
+    async def test_a_sibling_stage_precedes_a_same_named_dataset(self, storage, ref) -> None:
+        query = SlayerQuery(dimensions=[ref])
+        with pytest.raises(PopulationInferenceError) as ei:
+            await infer_population(query=query, storage=storage, sibling_stage_names={"Customers"})
+        assert ei.value.reason is PopulationErrorReason.SIBLING_STAGE
+
     async def test_measure_only_without_datasource_scopes_by_its_metrics(self, storage) -> None:
         """A metrics-only query with no data_source scopes by its metric homes."""
         query = SlayerQuery.model_validate({"metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]})

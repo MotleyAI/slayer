@@ -72,6 +72,12 @@ async def test_an_aggregation_reads_its_grain_from_its_home(engine, population) 
     assert table(resp, "regions.name", "orders.total_revenue") == rows(("North", 150), ("South", 300))
 
 
+async def test_a_named_population_routes_a_home_spelled_in_another_case(engine) -> None:
+    resp = await run(engine, population="regions", dimensions=["regions.name"],
+                     metrics=[{"metric": "sum(ORDERS.amount)", "alias": "rev"}])
+    assert table(resp, "regions.name", "rev") == rows(("North", 150), ("South", 300))
+
+
 async def test_a_filter_restricting_a_home_is_routed_from_that_home(engine) -> None:
     resp = await run(engine, dimensions=["regions.name"], metrics=["orders.total_revenue"],
                      filter=["customers.segment = 'retail'"])

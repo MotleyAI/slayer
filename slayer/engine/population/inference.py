@@ -675,9 +675,7 @@ async def _anchor_spellings(
     """``query`` with each first segment spelled as the dataset it anchors at; a bare name, ``count(*)`` or a first
     segment naming no dataset is refused as binding refuses it."""
     aliases = declared_aliases(query)
-    identities = await storage._list_all_dataset_identities()
-    names = sorted({n for ds, n in identities if data_source in (None, ds)} | siblings | {TIME_SPINE_DATASET})
-    anchors = {n: SlayerDataset.model_construct(name=n) for n in names}
+    anchors = await _anchor_table(storage=storage, data_source=data_source, siblings=siblings)
     respell: dict[str, str] = {}
     for tree in _entry_trees(query, metrics=True):
         for node, _agg in walk_references(tree):
@@ -689,6 +687,35 @@ async def _anchor_spellings(
             if name is not None and name != node.parts[0]:
                 respell[node.parts[0]] = name
     return _respelled_heads(query, respell) if respell else query
+
+
+async def declared_head_spellings(
+    query: SlayerQuery, *, storage: StorageBackend, data_source: str | None, siblings: set[str],
+) -> SlayerQuery:
+    """``query`` with each first segment naming a dataset spelled as declared; nothing refused (a named population
+    converts legacy forms where it binds)."""
+    anchors = await _anchor_table(storage=storage, data_source=data_source, siblings=siblings)
+    respell: dict[str, str] = {}
+    for tree in _entry_trees(query, metrics=True):
+        for node, _agg in walk_references(tree):
+            if not isinstance(node, DottedRef):
+                continue
+            hit = find_anchor(node.parts[0], quoted=node.quoted_at(0), reader=None, datasets_by_name=anchors)
+            if hit is not None and hit.name != node.parts[0]:
+                respell[node.parts[0]] = hit.name
+    return _respelled_heads(query, respell) if respell else query
+
+
+async def _anchor_table(
+    *, storage: StorageBackend, data_source: str | None, siblings: set[str],
+) -> dict[str, SlayerDataset]:
+    """Every name a first segment may anchor at: the visible datasets and the spine, and the sibling stages, spelled as
+    stages so they precede a same-named dataset."""
+    identities = await storage._list_all_dataset_identities()
+    names = sorted({n for ds, n in identities if data_source in (None, ds)} | {TIME_SPINE_DATASET})
+    table = {n: SlayerDataset.model_construct(name=n) for n in names}
+    table.update({f"<stage {s}>": SlayerDataset.model_construct(name=s).with_spelling(s) for s in sorted(siblings)})
+    return table
 
 
 async def _anchor_name(
