@@ -30,6 +30,7 @@ from slayer.search.index import build_in_memory_corpus
 from slayer.search.retrievers.embeddings import EmbeddingRetriever
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._loop_gated_stub import gated
 
 
 @pytest.fixture
@@ -547,3 +548,35 @@ async def test_delete_datasource_hook_is_no_op_today(
     await retriever.delete_datasource("dsx")
     post = await storage.list_embeddings(embedding_model_name="openai/x")
     assert {r.canonical_id for r in post} == {r.canonical_id for r in pre}
+
+
+# ---------------------------------------------------------------------------
+# Availability check runs off the event loop
+# ---------------------------------------------------------------------------
+
+
+async def _call_hook(retriever: EmbeddingRetriever, hook: str) -> object:
+    dataset = _make_dataset()
+    if hook == "retrieve":
+        return await retriever.retrieve(
+            query_entities=[], question="cents", all_memories=[], valid_canonicals=set(),
+            corpus=build_in_memory_corpus(memories=[], datasets=[dataset], datasources=["dsx"]),
+            datasource=None,
+        )
+    if hook == "upsert_memory":
+        return await retriever.upsert_memory(Memory(id="1", learning="hello", entities=["e1"]))
+    if hook == "refresh_datasource":
+        return await retriever.refresh_datasource(name="dsx", datasets=[dataset])
+    return await retriever.refresh_dataset_subtree(dataset)
+
+
+@pytest.mark.parametrize(
+    "hook", ["retrieve", "upsert_memory", "refresh_datasource", "refresh_dataset_subtree"],
+)
+async def test_availability_check_keeps_the_loop_free(
+    storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch, hook: str,
+) -> None:
+    check = gated()
+    monkeypatch.setattr(embedding_client, "is_available", check)
+    await _call_hook(EmbeddingRetriever(storage=storage, model_name="openai/x"), hook)
+    check.assert_loop_stayed_free()

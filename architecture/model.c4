@@ -80,6 +80,7 @@ model {
     search = bucket 'Search & embeddings' {
       metadata {
         packages ['slayer.search', 'slayer.embeddings']
+        specs ['search']
       }
     }
     memories = bucket 'Agent memories' {
