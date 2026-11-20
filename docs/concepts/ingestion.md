@@ -363,7 +363,7 @@ Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 
 ## Idempotent Re-Ingestion
 
-`slayer ingest` (and the equivalent MCP / REST entry points) is idempotent by default — re-runs are safe. For each in-scope live table:
+`slayer ingest` (and every other ingesting entry point: `slayer datasources create --ingest`, MCP `ingest_datasource` and `create_datasource`, REST `/ingest`, the startup ingest) is idempotent by default — re-runs are safe. For each in-scope live table:
 
 - **No persisted dataset with that name** → ingest from scratch via the path above.
 - **Existing `sql_table`-mode dataset** → append new fields and relationships from the live schema. Existing user metadata is **never** overwritten — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim. The only in-place updates are strictly additive gap-fills: a relationship's `cardinality` is set only when it is currently unset (a value you chose is never replaced), a field's `unique` is only ever turned on, never off, a dataset with no primary key takes the live one (a key you set is never changed), and an **empty** `description` (field and dataset level) is filled from the live DB comment. Filling any of these is enough to trigger a save, so a re-ingest that adds no fields or relationships still persists newly-discovered metadata. Filled descriptions are reported per dataset (`DatasetAddition.described_fields`, `dataset_described`; the CLI prints `+descriptions: …`). Other metadata fills are reported as `metadata_changed` (`+key metadata`).

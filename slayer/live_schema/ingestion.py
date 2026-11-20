@@ -2122,6 +2122,22 @@ async def _empty_ingest_message(
     return "\n".join(lines)
 
 
+def _ingest_result_is_empty(result: "schema_drift.IdempotentIngestResult") -> bool:
+    """True when an ingest reports nothing at all, live objects and failed key reads included."""
+    return not (
+        result.objects
+        or result.additions
+        or result.to_delete
+        or result.skipped
+        or result.skipped_schemas
+        or result.hidden_internals
+        or result.broken_dependents
+        or result.errors
+        or result.datasource_described
+        or result.key_read_failures
+    )
+
+
 _KIND_LABELS = {"view": " [view]", "materialized_view": " [materialized view]"}
 
 
