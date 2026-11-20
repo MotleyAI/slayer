@@ -294,7 +294,7 @@ class TestCaseInColumnSql:
         base = orders_dataset()
         await exec_engine.storage.save_dataset(base.model_copy(update={"fields": [
             *base.fields,
-            DatasetField(name="row_band", sql="CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
+            DatasetField(name="row_band", expression="CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
                    datatype=DataType.INTEGER),
         ]}))
         resp = await exec_engine.execute(_q(

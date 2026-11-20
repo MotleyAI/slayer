@@ -168,14 +168,14 @@ def orders_dataset() -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             # Same-dataset filtered field (no isolation):
-            DatasetField(name="ok_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="ok_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="status = 'ok'"),
             # Filtered-local probes (CASE-WHEN at aggregation time):
-            DatasetField(name="gold_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="gold_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="customers.tier = 'gold'"),
-            DatasetField(name="alpha_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="alpha_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="customers.segments.label = 'Alpha'"),
-            DatasetField(name="rush_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="rush_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="tags.kind = 'rush'"),
         ],
         relationships=[

@@ -54,7 +54,7 @@ CASES = [
 def _north_datasets() -> List[SlayerDataset]:
     models = dev1840_datasets()
     models[0].fields.append(DatasetField(
-        name="north_amount", datatype=DataType.FLOAT, sql="amount",
+        name="north_amount", datatype=DataType.FLOAT, expression="amount",
         filter="customers.regions.name = 'North'"))
     return models
 

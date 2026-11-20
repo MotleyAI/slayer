@@ -472,7 +472,7 @@ class TestMemories:
         customers = await storage.get_dataset("customers", data_source=DS)
         assert orders is not None
         assert customers is not None
-        extra = [DatasetField(name="tier_label", sql="region", datatype=DataType.STRING)] if clash else []
+        extra = [DatasetField(name="tier_label", expression="region", datatype=DataType.STRING)] if clash else []
         await storage.save_dataset(orders.model_copy(update={"data_source": _OTHER_DS}))
         await storage.save_dataset(customers.model_copy(update={
             "data_source": _OTHER_DS, "fields": [*customers.fields, *extra]}))

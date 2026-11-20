@@ -56,7 +56,7 @@ def mixed_numbers_dataset(*, data_source: str, explicit_sql: bool = False) -> Sl
                DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INTEGER),
                DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.FLOAT)]
     if explicit_sql:
-        columns = [c.model_copy(update={"sql": c.name}) for c in columns]
+        columns = [c.model_copy(update={"expression": c.name}) for c in columns]
     return SlayerDataset(name="mixed", sql_table="mixed", data_source=data_source, fields=columns)
 
 

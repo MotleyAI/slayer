@@ -73,7 +73,7 @@ ORDERS_METRICS: List[DatasetMetric] = [
 #: A filtered field whose predicate crosses the PROVEN customers → regions hop
 #: (safe cross-dataset input, so ``sum(north_spend)`` executes; cf. ``vip_spend``).
 _NORTH_SPEND = DatasetField(
-    name="north_spend", datatype=DataType.FLOAT, sql="spend",
+    name="north_spend", datatype=DataType.FLOAT, expression="spend",
     filter="regions.name = 'North'",
 )
 

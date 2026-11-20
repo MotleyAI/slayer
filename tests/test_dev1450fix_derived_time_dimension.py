@@ -23,6 +23,7 @@ Before the #4a implementation these all fail because
 from __future__ import annotations
 
 import os
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import AsyncIterator, Tuple
@@ -60,7 +61,7 @@ def _orders_dataset() -> SlayerDataset:
             # shipped date when present, else the created date.
             DatasetField(
                 name="effective_at",
-                sql="coalesce(shipped_at, created_at)",
+                expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="coalesce(shipped_at, created_at)")]),
                 datatype=DataType.DATETIME,
                 label="Effective date",
             ),
@@ -85,7 +86,7 @@ def _customers_dataset() -> SlayerDataset:
             # forward so it is unambiguously non-trivial).
             DatasetField(
                 name="signup_eff",
-                sql="datetime(signed_up_at, '+1 month')",
+                expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="datetime(signed_up_at, '+1 month')")]),
                 datatype=DataType.DATETIME,
             ),
         ],

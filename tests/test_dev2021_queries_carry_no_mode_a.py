@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import UnanalyzableAggregationParameterError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
@@ -75,7 +76,7 @@ def _datasets() -> list[SlayerDataset]:
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="amount", datatype=DataType.FLOAT),
-            DatasetField(name="scaled", sql="amount * {k}", datatype=DataType.FLOAT),
+            DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * {k}"), DialectEntry(dialect="SQLITE", expression="amount * {k}")]), datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
@@ -147,7 +148,7 @@ class TestEachRouteIsRefused:
             SlayerQuery.model_validate(payload)
 
     def test_legacy_root_extension_with_columns_is_refused(self) -> None:
-        legacy = {"source_name": "orders", "fields": [{"name": "leak", "sql": "(SELECT max(pw) FROM secrets)"}]}
+        legacy = {"source_name": "orders", "fields": [{"name": "leak", "expression": "(SELECT max(pw) FROM secrets)"}]}
         with pytest.raises(ValidationError, match="fields"):
             SlayerQuery.model_validate({"population": legacy, "metrics": ["count(*)"]})
 

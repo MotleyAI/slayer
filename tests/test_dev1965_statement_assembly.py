@@ -281,8 +281,8 @@ def _qb_datasets(data_source: str) -> list[SlayerDataset]:
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name=LONG, sql="tier", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name=LONG, expression="tier", datatype=DataType.STRING),
         ],
     )
     return [orders, customers]

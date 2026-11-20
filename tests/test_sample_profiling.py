@@ -13,6 +13,7 @@ import pytest_asyncio
 import slayer.engine.profiling as profiling
 import slayer.inspect.dataset_render as dataset_render
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import QueryDimension, SlayerQuery
@@ -31,9 +32,15 @@ from slayer.storage.sqlite_conn import transaction
 from typing import Any
 
 DS = "ds"
-BAD_SQL = "no_such_fn(orders.status)"
-BAD_NUM_SQL = "no_such_fn(orders.amount)"
 TTL = 3600.0
+
+
+def _sqlite_only(text: str) -> ExpressionObject:
+    return ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression=text)])
+
+
+BAD_EXPRESSION = _sqlite_only("no_such_fn(orders.status)")
+BAD_NUM_EXPRESSION = _sqlite_only("no_such_fn(orders.amount)")
 
 ROWS = [
     (1, "a", "paid", "web", None, 10.0, 1, None, "2024-01-01"),
@@ -69,7 +76,7 @@ def _all_bad() -> SlayerDataset:
         name="allbad", sql_table="t", data_source=DS,
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            *[DatasetField(name=f"b{i}", sql=f"no_such_fn(status, {i})", datatype=DataType.STRING) for i in range(5)],
+            *[DatasetField(name=f"b{i}", expression=_sqlite_only(f"no_such_fn(status, {i})"), datatype=DataType.STRING) for i in range(5)],
         ],
     )
 
@@ -202,7 +209,7 @@ def test_fingerprints_change_on_definition_edits() -> None:
     model = _orders()
     status = _cols(model, "status")[0]
     assert profiling._dataset_fingerprint(model.model_copy(update={"sql_table": "u"})) != profiling._dataset_fingerprint(model)
-    assert profiling._field_fingerprint(status.model_copy(update={"sql": "channel"})) != profiling._field_fingerprint(status)
+    assert profiling._field_fingerprint(status.model_copy(update={"expression": "channel"})) != profiling._field_fingerprint(status)
 
 
 def test_model_fingerprint_ignores_column_order() -> None:
@@ -232,8 +239,8 @@ async def test_owner_returns_input_columns_in_order(env) -> None:
 async def test_hidden_identifier_and_opaque_columns_are_never_profiled(env, monkeypatch: pytest.MonkeyPatch) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[
-        DatasetField(name="secret", sql="status", datatype=DataType.STRING, hidden=True),
-        DatasetField(name="blob", sql="status", datatype=DataType.OPAQUE),
+        DatasetField(name="secret", expression="status", datatype=DataType.STRING, hidden=True),
+        DatasetField(name="blob", expression="status", datatype=DataType.OPAQUE),
     ]))
     log = _record(engine=engine, monkeypatch=monkeypatch)
     cols = _cols(model, "id", "secret", "blob")
@@ -432,7 +439,7 @@ async def test_forced_filter_error_is_classified_via_probe(env, monkeypatch: pyt
 
 async def test_one_bad_column_on_healthy_model(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch, caplog) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", expression=BAD_EXPRESSION, datatype=DataType.STRING)]))
     model = model.model_copy(update={"fields": [
         model.get_field(n) for n in ("id", "status", "bad", "channel", "amount", "qty", "ordered_at")
     ]})
@@ -468,9 +475,9 @@ async def test_non_consecutive_bad_columns_probe_once(env, monkeypatch: pytest.M
         name="orders", sql_table="t", data_source=DS,
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="bad1", sql=BAD_SQL, datatype=DataType.STRING),
+            DatasetField(name="bad1", expression=BAD_EXPRESSION, datatype=DataType.STRING),
             DatasetField(name="status", datatype=DataType.STRING),
-            DatasetField(name="bad2", sql="no_such_fn(channel)", datatype=DataType.STRING),
+            DatasetField(name="bad2", expression=_sqlite_only("no_such_fn(channel)"), datatype=DataType.STRING),
             DatasetField(name="channel", datatype=DataType.STRING),
         ],
     ))
@@ -510,7 +517,7 @@ async def test_failing_numeric_batch_on_healthy_model(env: tuple[SlayerQueryEngi
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="amount", datatype=DataType.FLOAT),
-            DatasetField(name="badnum", sql=BAD_NUM_SQL, datatype=DataType.FLOAT),
+            DatasetField(name="badnum", expression=BAD_NUM_EXPRESSION, datatype=DataType.FLOAT),
             DatasetField(name="qty", datatype=DataType.INTEGER),
         ],
     ))
@@ -619,7 +626,7 @@ async def test_retry_after_ttl(env, monkeypatch: pytest.MonkeyPatch, clock) -> N
 
 async def test_column_failure_retried_after_ttl(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch, clock) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", expression=BAD_EXPRESSION, datatype=DataType.STRING)]))
     await _profile(engine=engine, storage=storage, dataset=model)
     log = _record(engine=engine, monkeypatch=monkeypatch)
     clock.now += TTL + 1
@@ -643,7 +650,7 @@ async def test_retry_after_model_edit(env, monkeypatch: pytest.MonkeyPatch) -> N
 
 async def test_retry_after_column_edit(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", expression=BAD_EXPRESSION, datatype=DataType.STRING)]))
     await _profile(engine=engine, storage=storage, dataset=model)
     reloaded = await storage.get_dataset("orders", data_source=DS)
     assert reloaded is not None
@@ -668,7 +675,7 @@ async def test_engines_do_not_share_failures(env, monkeypatch: pytest.MonkeyPatc
 
 async def test_failures_are_not_persisted(env: tuple[SlayerQueryEngine, StorageBackend]) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", expression=BAD_EXPRESSION, datatype=DataType.STRING)]))
     before = await _stored(storage, field="bad")
     await _profile(engine=engine, storage=storage, dataset=model)
     assert await _stored(storage, field="bad") == before
@@ -708,7 +715,7 @@ async def test_forced_refresh_ignores_failure_cache_and_records(env, monkeypatch
 
 async def test_forced_refresh_keeps_sample_of_failing_column(env: tuple[SlayerQueryEngine, StorageBackend]) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", expression=BAD_EXPRESSION, datatype=DataType.STRING)]))
     await storage.update_field_sampled(
         data_source=DS, dataset_name="orders", field_name="bad",
         sampled="KEEP", sampled_values=["KEEP"], distinct_count=1,
@@ -889,7 +896,7 @@ async def test_policy_engine_reuses_its_own_samples(env, monkeypatch: pytest.Mon
 
 async def test_policy_model_failure_still_returns_scoped_samples(env, monkeypatch: pytest.MonkeyPatch) -> None:
     _, storage = env
-    bad = [DatasetField(name=f"bad{i}", sql=f"no_such_fn(status, {i})", datatype=DataType.STRING) for i in range(3)]
+    bad = [DatasetField(name=f"bad{i}", expression=_sqlite_only(f"no_such_fn(status, {i})"), datatype=DataType.STRING) for i in range(3)]
     model = await _save(storage, _orders(extra=bad))
     engine = _policy_engine(storage)
     first = await _profile(engine=engine, storage=storage, dataset=model)
@@ -921,8 +928,8 @@ async def test_policy_failure_never_returns_persisted_samples(env: tuple[Any, St
 async def test_policy_never_returns_persisted_samples_on_unprofiled_columns(env: tuple[Any, StorageBackend]) -> None:
     _, storage = env
     await _save(storage, _orders(extra=[
-        DatasetField(name="secret", sql="status", datatype=DataType.STRING, hidden=True),
-        DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING),
+        DatasetField(name="secret", expression="status", datatype=DataType.STRING, hidden=True),
+        DatasetField(name="bad", expression=BAD_EXPRESSION, datatype=DataType.STRING),
     ]))
     for name in ("id", "secret", "bad"):
         await storage.update_field_sampled(

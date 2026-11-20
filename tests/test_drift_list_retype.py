@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema import ingestion
@@ -62,7 +63,7 @@ def _players(scores: DatasetField) -> SlayerDataset:
     return SlayerDataset(name="players", sql_table="players", data_source="ds", fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="team", datatype=DataType.STRING),
-        DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
+        DatasetField(name="bad", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="no_such_fn(id)")]), datatype=DataType.FLOAT),
         scores])
 
 
@@ -146,7 +147,7 @@ class TestReingest:
         assert (scores.datatype, scores.allowed_aggregations) == (DataType.ARRAY, ["count"])
 
     async def test_a_derived_column_named_like_a_live_list_untouched(self) -> None:
-        derived = DatasetField(name="scores", sql="CAST(id AS DOUBLE)", datatype=DataType.FLOAT)
+        derived = DatasetField(name="scores", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="CAST(id AS DOUBLE)")]), datatype=DataType.FLOAT)
         async with _env(_players(derived)) as (engine, ds):
             await engine.ingest_idempotent(ds, include_tables=["players"])
             loaded = await engine.storage.get_dataset("players", data_source="ds")
@@ -159,7 +160,7 @@ class TestReingest:
         """Twice re-ingested: kept fields survive, scalar-only fields drop, the second run changes nothing."""
         seen = DatasetField(name="seen", datatype=DataType.DATETIME, granularity="month",
                       format=NumberFormat(type=NumberFormatType.INTEGER), description="Sightings",
-                      label="Seen", meta={"owner": "ops"}, hidden=True, sql="seen", unique=True,
+                      label="Seen", meta={"owner": "ops"}, hidden=True, expression="seen", unique=True,
                       allowed_aggregations=["min", "max", "count"])
         events = SlayerDataset(name="events", sql_table="events", data_source="ds",
                              fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), seen])

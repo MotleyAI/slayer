@@ -48,6 +48,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
 import slayer.engine.bundle_builder
+from tests._field_builders import public_orders
 
 
 def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> List[str]:
@@ -126,7 +127,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 DatasetField(name="region_id", datatype=DataType.INTEGER),
                 DatasetField(name="revenue", datatype=DataType.FLOAT, label="Revenue"),
                 DatasetField(name="signup_at", datatype=DataType.DATETIME),
-                DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.FLOAT, label="Rev x2"),
+                DatasetField(name="rev_x2", expression="revenue * 2", datatype=DataType.FLOAT, label="Rev x2"),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
@@ -513,9 +514,9 @@ def _orders_named_dataset(metrics=None) -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
         ],
         metrics=metrics or [],
     )
@@ -613,9 +614,9 @@ class TestTimeShiftCteDecollision:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
@@ -667,9 +668,9 @@ class TestTimeShiftCteDecollision:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
@@ -699,19 +700,7 @@ class TestTimeShiftCteDecollision:
         consecutive_periods metrics are hidden inner slots that share the
         placeholder ``_consecutive_periods_inner`` — their cp_reset/cp_value
         CTEs and value aliases must be de-collided, exactly like time_shift."""
-        model = SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            default_time_dimension="created_at",
-            fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
-            ],
-        )
+        model = public_orders()
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.status")],

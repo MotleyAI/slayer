@@ -95,7 +95,7 @@ class TestModeASurfacesPreservedVerbatim:
             DatasetField(
                 name="region_name",
                 datatype=DataType.STRING,
-                sql="customers.regions.name",
+                expression="customers.regions.name",
             )
         ]
         stored = await _save_and_reload(m)
@@ -108,7 +108,7 @@ class TestModeASurfacesPreservedVerbatim:
             DatasetField(
                 name="region_amount",
                 datatype=DataType.FLOAT,
-                sql="amount",
+                expression="amount",
                 filter="customers.regions.name = 'EU'",
             )
         ]

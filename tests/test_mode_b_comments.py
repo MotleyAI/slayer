@@ -138,7 +138,7 @@ class TestExecution:
 
     async def test_markers_in_a_quoted_identifier_name_the_column(self) -> None:
         orders = orders_dataset()
-        orders.fields.append(DatasetField(name="x--y", sql="amount", datatype=DataType.FLOAT))
+        orders.fields.append(DatasetField(name="x--y", expression="amount", datatype=DataType.FLOAT))
         models = [orders, customers_dataset()]
         quoted = await emit(q(metrics=[m('sum(orders."x--y")')]), dialect="postgres", datasets=models)
         plain = await emit(q(metrics=[m("sum(orders.amount)")]), dialect="postgres", datasets=models)

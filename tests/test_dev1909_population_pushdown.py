@@ -180,7 +180,7 @@ class TestWindowedDerivedFanningAxisFailsClosed:
         cust = next(x for x in m if x.name == "customers")
         cust.fields.append(DatasetField(
             name="bad_date", datatype=DataType.DATE,
-            sql="CAST(regions.region_events.value AS DATE)"))
+            expression="CAST(regions.region_events.value AS DATE)"))
         return ResolvedSourceBundle(
             dialect="postgres",
             population=cust, referenced_datasets=[x for x in m if x.name != "customers"])

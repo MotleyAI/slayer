@@ -50,8 +50,8 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="weight", expression="weight", datatype=DataType.FLOAT),
         ],
     )
 
@@ -60,8 +60,8 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -71,19 +71,19 @@ def _line_items() -> SlayerDataset:
     return SlayerDataset(
         name="line_items", sql_table="line_items", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="order_id", sql="order_id", datatype=DataType.FLOAT),
-            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="order_id", expression="order_id", datatype=DataType.FLOAT),
+            DatasetField(name="qty", expression="qty", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _orders(*, extra=None, relationships_extra=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-        DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+        DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     joins = [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])]
@@ -137,7 +137,7 @@ class TestDev1527KwargExpansion:
         # A LOCAL derived field kwarg (no relationship) also collapses to a bare name
         # today (orders.dbl_qty, non-existent). After the fix it expands.
         orders = _orders(extra=[
-            DatasetField(name="dbl_qty", sql="quantity * 2", datatype=DataType.FLOAT),
+            DatasetField(name="dbl_qty", expression="quantity * 2", datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
             population="orders",
@@ -185,7 +185,7 @@ class TestDev1527KwargExpansion:
         # field crossing a relationship → its expansion is embedded as the second CORR
         # operand AND the relationship is registered (base-pulled).
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -208,7 +208,7 @@ class TestDev1527KwargExpansion:
         # weight operand is the expanded joined ref — not the bare, non-existent
         # ``orders.region_weight`` (Codex finding on the ROW-collector fold PR).
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -234,7 +234,7 @@ class TestDev1527KwargExpansion:
         # kwarg (customers__regions.weight) renders inside the CTE; the bare
         # non-existent orders.region_weight never appears.
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
@@ -306,7 +306,7 @@ class TestDev1527F1BasePull:
         # class-(d) crossed-argument ledger row). The proven-hop control
         # below pins the still-legal shape.
         orders = _orders(
-            extra=[DatasetField(name="li_weight", sql="line_items.qty", datatype=DataType.FLOAT)],
+            extra=[DatasetField(name="li_weight", expression="line_items.qty", datatype=DataType.FLOAT)],
             relationships_extra=[DatasetRelationship(
                 to="line_items", from_columns=["id"], to_columns=["order_id"])],
         )
@@ -327,7 +327,7 @@ class TestDev1527F1BasePull:
         # N:1 control (region_weight): isolates identically — the trigger is
         # structural (any crossing input), not cardinality-driven.
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(

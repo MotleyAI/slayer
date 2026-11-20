@@ -65,7 +65,7 @@ def _dataset(name: str, data_source: str) -> SlayerDataset:
         name=name,
         sql_table=name,
         data_source=data_source,
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)],
     )
 
 

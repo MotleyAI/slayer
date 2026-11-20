@@ -48,6 +48,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -376,7 +377,7 @@ class TestFirstLastDerivedGrain:
         materialisation must NOT mint that same name (it would make the outer
         ``_val_0`` reference ambiguous). The allocator reserves the target's
         physical column names, so the minted alias walks past ``_val_0``."""
-        customers_extra = [DatasetField(name="_val_0", sql="1", datatype=DataType.INTEGER)]
+        customers_extra = [DatasetField(name="_val_0", expression="1", datatype=DataType.INTEGER)]
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
@@ -396,7 +397,7 @@ class TestFirstLastDerivedGrain:
         ``DatasetField(name="renamed", sql="_val_0")`` exports ``_val_0`` through
         ``target.*``, so the allocator must reserve the physical name too — not
         just ``c.name`` (Codex)."""
-        customers_extra = [DatasetField(name="renamed", sql="_val_0", datatype=DataType.INTEGER)]
+        customers_extra = [DatasetField(name="renamed", expression="_val_0", datatype=DataType.INTEGER)]
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
@@ -441,7 +442,7 @@ class TestSiblingPathsDerivedGrain:
         gate, so it is a regression guard — must pass before AND after the fix."""
         # amt_hi's filter references a joined table → filtered-local isolation.
         orders_extra = [DatasetField(
-            name="amt_hi", sql="amount", datatype=DataType.FLOAT,
+            name="amt_hi", expression="amount", datatype=DataType.FLOAT,
             filter="customers_v2.lifetime_value > 15")]
         query = SlayerQuery(
             population="orders_x",
@@ -472,7 +473,7 @@ class TestUnchangedBehaviourGuards:
         """A HOST-LOCAL derived dim (``path == ()``) still broadcasts via CROSS
         JOIN — the shared-grain rendering is scoped to path-bearing dims."""
         orders_extra = [DatasetField(
-            name="amt_bucket", sql="amount * 2", datatype=DataType.FLOAT)]
+            name="amt_bucket", expression="amount * 2", datatype=DataType.FLOAT)]
         query = SlayerQuery(
             population="orders_x",
             dimensions=["orders_x.amt_bucket"],
@@ -584,9 +585,9 @@ def _sqlite_datasets() -> "list[SlayerDataset]":
                 DatasetField(name="region_id", datatype=DataType.INTEGER),
                 DatasetField(name="lifetime_value", datatype=DataType.FLOAT),
                 DatasetField(name="signup_at", datatype=DataType.DATETIME),
-                DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.FLOAT),
-                DatasetField(name="ltv_third", sql="lifetime_value / 3.0", datatype=DataType.INTEGER),
-                DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+                DatasetField(name="ltv_x2", expression="lifetime_value * 2", datatype=DataType.FLOAT),
+                DatasetField(name="ltv_third", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="lifetime_value / 3.0")]), datatype=DataType.INTEGER),
+                DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
             default_time_dimension="signup_at",
@@ -600,7 +601,7 @@ def _sqlite_datasets() -> "list[SlayerDataset]":
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
                 # Filter references a JOINED table → filtered-local
                 # isolation (used by the filtered-local + derived-grain test).
-                DatasetField(name="amt_hi", sql="amount", datatype=DataType.FLOAT,
+                DatasetField(name="amt_hi", expression="amount", datatype=DataType.FLOAT,
                        filter="customers_v2.lifetime_value > 15"),
             ],
             relationships=[DatasetRelationship(to="customers_v2", from_columns=["customer_id"], to_columns=["id"])],

@@ -16,6 +16,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
@@ -36,18 +37,17 @@ class TestSqliteJsonExtractInGenerator:
             sql_table="users",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="payload", sql="payload", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="payload", expression="payload", datatype=DataType.STRING),
                 DatasetField(
                     name="tier",
-                    sql="json_extract(payload, '$.tier')",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="json_extract(payload, '$.tier')") for d in ("POSTGRES", "SQLITE")]),
                     datatype=DataType.STRING,
                 ),
                 DatasetField(
                     name="is_gold",
-                    sql=(
-                        "CASE LOWER(json_extract(payload, '$.tier')) "
-                        "WHEN 'gold' THEN 1 ELSE 0 END"
+                    expression=(
+                        ExpressionObject(dialects=[DialectEntry(dialect=d, expression="CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END") for d in ("POSTGRES", "SQLITE")])
                     ),
                     datatype=DataType.FLOAT,
                 ),
@@ -91,8 +91,8 @@ class TestSqliteJsonExtractInGenerator:
             ),
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="tier", expression="tier", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
@@ -489,11 +489,11 @@ class TestTsqlDialect:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
             ],
         )
 

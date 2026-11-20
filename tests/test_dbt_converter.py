@@ -749,8 +749,8 @@ def _sample_slayer_dataset(name: str = "raw_events") -> SlayerDataset:
         sql_table="staging.raw_events",
         data_source="test_db",
         fields=[
-            DatasetField(name="event_id", sql="event_id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="event_type", sql="event_type", datatype=DataType.STRING),
+            DatasetField(name="event_id", expression="event_id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="event_type", expression="event_type", datatype=DataType.STRING),
         ],
     )
 
@@ -888,7 +888,7 @@ class TestHiddenModelDescriptionPrecedence:
             if c.name == "event_id":
                 c.description = "db comment on event_id"
         fake_model.fields.append(
-            DatasetField(name="db_only", sql="db_only", datatype=DataType.STRING,
+            DatasetField(name="db_only", expression="db_only", datatype=DataType.STRING,
                    description="db comment only")
         )
         with patch.object(converter_module, "introspect_table_to_dataset", new=AsyncMock(return_value=fake_model)):

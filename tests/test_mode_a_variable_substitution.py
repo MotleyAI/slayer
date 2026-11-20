@@ -7,6 +7,7 @@ sources, relationship targets and cross-dataset targets are out of scope (bounda
 All end-to-end cases run against a real file-backed SQLite datasource and
 assert on RESULT DATA, not just generated SQL strings.
 """
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.storage.sqlite_conn import transaction
 import tempfile
 from typing import Optional
@@ -35,7 +36,7 @@ from slayer.engine.query_engine import (
 from slayer.inspect.dataset_render import render_dataset_inspection
 from slayer.sql.dialects import _ALL_DIALECTS, MysqlDialect, SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
-
+from tests._field_builders import col, pk
 
 # ---------------------------------------------------------------------------
 # Shared SQLite fixture
@@ -102,10 +103,10 @@ class TestModelFiltersSubstitution:
             data_source="ds",
             filters=["region = '{region}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
             **kw,
         )
@@ -148,9 +149,9 @@ class TestColumnSqlSubstitution:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
 
@@ -192,11 +193,11 @@ class TestColumnFilterSubstitution:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
                 DatasetField(
                     name="region_amount",
-                    sql="amount",
+                    expression="amount",
                     filter="orders.region = '{region}'",
                     datatype=DataType.FLOAT,
                 ),
@@ -232,10 +233,10 @@ class TestModelSqlSubstitution:
                 "FROM orders WHERE amount >= {floor}"
             ),
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="floor_val", sql="floor_val", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="floor_val", expression="floor_val", datatype=DataType.FLOAT),
             ],
         )
 
@@ -281,9 +282,9 @@ class TestPrecedence:
             filters=["region = '{region}'"],
             query_variables={"region": "US"},  # lowest-priority default
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
 
@@ -335,9 +336,9 @@ class TestMissingVariable:
             data_source="ds",
             filters=["region = '{region}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
 
@@ -418,9 +419,9 @@ class TestEscapingEndToEnd:
             data_source="ds",
             filters=["status = '{v}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with_tricky_status(model)
@@ -442,9 +443,9 @@ class TestEscapingEndToEnd:
             sql_table="t",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                pk(),
+                col("status", DataType.STRING),
+                col("amount"),
             ],
         )
         engine, tmp = await _engine_with_tricky_status(model)
@@ -471,9 +472,9 @@ class TestEscapingEndToEnd:
             sql_table="t",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                pk(),
+                col("status", DataType.STRING),
+                col("amount"),
             ],
         )
         engine, tmp = await _engine_with_tricky_status(model)
@@ -498,9 +499,9 @@ class TestEscaping:
             data_source="ds",
             filters=["status = '{status}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -530,8 +531,8 @@ class TestBraceLiterals:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="j", sql="'{1,2,3}'", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="j", expression="'{1,2,3}'", datatype=DataType.STRING),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -559,9 +560,9 @@ class TestBraceLiterals:
             data_source="ds",
             filters=["status = '{status}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -585,9 +586,9 @@ class TestBraceLiterals:
                 "FROM orders WHERE amount >= {floor}"
             ),
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="tag_val", sql="tag_val", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="tag_val", expression="tag_val", datatype=DataType.STRING),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -616,8 +617,8 @@ class TestCrossModelConsistency:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
         orders = SlayerDataset(
@@ -626,9 +627,9 @@ class TestCrossModelConsistency:
             data_source="ds",
             filters=["amount >= {floor}"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}],
         )
@@ -718,10 +719,10 @@ class TestDeferredScope:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
                 # relationship-target DatasetField.sql var — not substituted → unsupported
-                DatasetField(name="scaled", sql="id * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="id * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         orders = SlayerDataset(
@@ -729,9 +730,9 @@ class TestDeferredScope:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}],
         )
@@ -784,8 +785,8 @@ class TestInspectShowsTemplate:
             data_source="ds",
             sql="SELECT id, amount FROM orders WHERE amount >= {floor}",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -919,17 +920,17 @@ class TestSubstituteHelperScope:
             sql="SELECT * FROM t WHERE r = '{region}'",
             filters=["a >= {floor}"],
             fields=[
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression="amount * {mult}", datatype=DataType.FLOAT),
                 DatasetField(
                     name="flt",
-                    sql="amount",
+                    expression="amount",
                     filter="r = '{region}'",
                     datatype=DataType.FLOAT,
                 ),
                 # Hidden field is still a Mode-A surface — it IS substituted
                 # (the helper iterates all fields, visible or not).
                 DatasetField(
-                    name="hid", sql="amount * {mult}", datatype=DataType.FLOAT, hidden=True
+                    name="hid", expression="amount * {mult}", datatype=DataType.FLOAT, hidden=True
                 ),
             ],
             # Saved metric expression: substituted under the Mode-B regime.
@@ -946,18 +947,18 @@ class TestSubstituteHelperScope:
         assert _literals(out.sql) == ["US"]
         assert len(out.filters) == 1
         assert _literals(out.filters[0]) == [5]
-        assert _literals(_col(out, "scaled").sql) == [2]
+        assert _literals(_col(out, "scaled").definition_sql) == [2]
         assert _literals(_col(out, "flt").filter) == ["US"]
-        assert _literals(_col(out, "hid").sql) == [2]
+        assert _literals(_col(out, "hid").definition_sql) == [2]
         # Saved metric expressions substitute (Mode-B regime); Aggregation.expression never does:
         assert _literals(out.metrics[0].text) == [2]
         assert out.aggregations[0].expression == "SUM({expr}) * {mult}"
         # Input dataset is NOT mutated — every Mode-A surface stays templated:
         assert model.sql == "SELECT * FROM t WHERE r = '{region}'"
         assert model.filters == ["a >= {floor}"]
-        assert model.get_field("scaled").sql == "amount * {mult}"
+        assert _col(model, "scaled").expression == "amount * {mult}"
         assert model.get_field("flt").filter == "r = '{region}'"
-        assert model.get_field("hid").sql == "amount * {mult}"
+        assert _col(model, "hid").expression == "amount * {mult}"
 
     def test_empty_variables_is_noop(self) -> None:
 
@@ -965,12 +966,12 @@ class TestSubstituteHelperScope:
             name="m",
             sql_table="t",
             data_source="ds",
-            fields=[DatasetField(name="j", sql="json_extract(x, '$.a')", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="j", expression="json_extract(x, '$.a')", datatype=DataType.FLOAT)],
         )
         out = _substitute_dataset_sql_surfaces(
             dataset=model, variables={}, dialect=SqliteDialect()
         )
-        assert _parse(_col(out, "j").sql) == _parse("json_extract(x, '$.a')")
+        assert _parse(_col(out, "j").definition_sql) == _parse("json_extract(x, '$.a')")
 
     def test_list_value_substituted_on_all_four_mode_a_surfaces(self) -> None:
         """One list variable bound into each of the four Mode-A surfaces."""
@@ -981,10 +982,11 @@ class TestSubstituteHelperScope:
             sql="SELECT * FROM t WHERE region IN ({regions})",
             filters=["region IN ({regions})"],
             fields=[
-                DatasetField(name="in_flag", sql="region IN ({regions})", datatype=DataType.BOOLEAN),
+                DatasetField(name="in_flag", expression=ExpressionObject(
+                    dialects=[DialectEntry(dialect="SQLITE", expression="region IN ({regions})")]), datatype=DataType.BOOLEAN),
                 DatasetField(
                     name="amt",
-                    sql="amount",
+                    expression="amount",
                     filter="region IN ({regions})",
                     datatype=DataType.FLOAT,
                 ),
@@ -996,7 +998,7 @@ class TestSubstituteHelperScope:
         assert _in_values(out.sql) == ["US", "CA"]
         assert len(out.filters) == 1
         assert _in_values(out.filters[0]) == ["US", "CA"]
-        assert _in_values(_col(out, "in_flag").sql) == ["US", "CA"]
+        assert _in_values(_col(out, "in_flag").native_texts[0]) == ["US", "CA"]
         assert _in_values(_col(out, "amt").filter) == ["US", "CA"]
 
 # ---------------------------------------------------------------------------
@@ -1010,10 +1012,10 @@ class TestQueryFilterRegression:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                pk(),
+                col("region", DataType.STRING),
+                col("status", DataType.STRING),
+                col("amount"),
             ],
         )
 
@@ -1062,9 +1064,9 @@ class TestModelImmutabilityAcrossExecutes:
             data_source="ds",
             filters=["region = '{region}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1114,9 +1116,9 @@ class TestMissingVariablePerSurface:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                pk(),
+                col("amount"),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1138,8 +1140,8 @@ class TestMissingVariablePerSurface:
             data_source="ds",
             sql="SELECT id, amount FROM orders WHERE amount >= {floor}",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1170,9 +1172,9 @@ class TestGetResultColumnTypesDefaults:
             data_source="ds",
             query_variables={"mult": 2},
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1191,9 +1193,9 @@ class TestGetResultColumnTypesDefaults:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                pk(),
+                col("amount"),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1214,9 +1216,9 @@ class TestGetResultColumnTypesDefaults:
             query_variables={"mult": 2},  # 'floor' intentionally missing
             filters=["amount >= {floor}"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.FLOAT),
+                pk(),
+                col("amount"),
+                DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="amount * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1237,9 +1239,9 @@ class TestGetResultColumnTypesDefaults:
             query_variables={"regions": ["US", "CA"]},
             filters=["region IN ({regions})"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1358,9 +1360,9 @@ class TestListModeAEndToEnd:
             data_source="ds",
             filters=["region IN ({regions})"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
             **kw,
         )
@@ -1462,10 +1464,10 @@ class TestListModeBEndToEnd:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                pk(),
+                col("region", DataType.STRING),
+                col("status", DataType.STRING),
+                col("amount"),
             ],
         )
 
@@ -1676,7 +1678,7 @@ class TestSubstituteModelSqlSurfacesDialect:
             name="m",
             data_source="ds",
             sql="SELECT * FROM t WHERE r = '{region}'",
-            fields=[DatasetField(name="a", sql="amount", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="a", expression="amount", datatype=DataType.FLOAT)],
         )
 
     def test_backslash_dialect_value_roundtrips(self) -> None:
@@ -1741,9 +1743,9 @@ class TestEngineDialectThreadingEndToEnd:
             data_source="ds",
             filters=["status = '{v}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         await storage.save_dataset(model)
@@ -1785,7 +1787,7 @@ class TestProbeModelDialectThreading:
             data_source="ds",
             sql="SELECT * FROM t WHERE r = '{region}'",
             query_variables={"region": "a\\'b"},
-            fields=[DatasetField(name="a", sql="amount", datatype=DataType.FLOAT)],
+            fields=[DatasetField(name="a", expression="amount", datatype=DataType.FLOAT)],
         )
 
     def test_probe_uses_backslash_dialect(self) -> None:
@@ -1845,9 +1847,9 @@ class TestModeBControlCharsEndToEnd:
             sql_table="t",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
 

@@ -278,11 +278,11 @@ def sample_dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -321,8 +321,8 @@ async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
                 sql_table="orders",
                 data_source="mydb",
                 fields=[
-                    DatasetField(name="id", sql="id", primary_key=True),
-                    DatasetField(name="amount", sql="amount"),
+                    DatasetField(name="id", expression="id", primary_key=True),
+                    DatasetField(name="amount", expression="amount"),
                 ],
             )
         )

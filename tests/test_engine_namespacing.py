@@ -35,9 +35,9 @@ def _orders(data_source: str, *, sql_table: str = "orders_t", relationships: lis
         sql_table=sql_table,
         data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=relationships or [],
     )
@@ -45,11 +45,11 @@ def _orders(data_source: str, *, sql_table: str = "orders_t", relationships: lis
 
 def _customers(data_source: str, *, sql_table: str = "customers_t", with_revenue: bool = False) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="region", sql="region", datatype=DataType.STRING),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="region", expression="region", datatype=DataType.STRING),
     ]
     if with_revenue:
-        cols.append(DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT))
+        cols.append(DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT))
     return SlayerDataset(
         name="customers",
         sql_table=sql_table,

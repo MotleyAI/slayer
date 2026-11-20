@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.field_expansion import expand_derived_refs_sync
@@ -41,8 +42,8 @@ def _regions() -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="population", datatype=DataType.FLOAT),
             # derived ON regions, referencing a regions field BARE
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
-            DatasetField(name="is_live", sql="status = 'live'", datatype=DataType.BOOLEAN),
+            DatasetField(name="pop_x2", expression="population * 2", datatype=DataType.FLOAT),
+            DatasetField(name="is_live", expression="status = 'live'", datatype=DataType.BOOLEAN),
         ],
     )
 
@@ -67,17 +68,17 @@ def _orders() -> SlayerDataset:
             DatasetField(name="amount", datatype=DataType.FLOAT),
             # 'status' ALSO exists on regions — same-name collision shape
             DatasetField(name="status", datatype=DataType.STRING),
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT),
+            DatasetField(name="doubled", expression="amount * 2", datatype=DataType.FLOAT),
             # --- the defect shapes: sql is ONE bare derived reference ---
-            DatasetField(name="alias_local", sql="doubled", datatype=DataType.FLOAT),
-            DatasetField(name="deep_pop", sql="customers.regions.pop_x2",
+            DatasetField(name="alias_local", expression="orders.doubled", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="customers.regions.pop_x2",
                    datatype=DataType.FLOAT),
-            DatasetField(name="deep_live", sql="customers.regions.is_live",
+            DatasetField(name="deep_live", expression="customers.regions.is_live",
                    datatype=DataType.BOOLEAN),
             # --- controls: same reference inside a larger expression ---
-            DatasetField(name="deep_pop_compound", sql="customers.regions.pop_x2 * 1",
+            DatasetField(name="deep_pop_compound", expression="customers.regions.pop_x2 * 1",
                    datatype=DataType.FLOAT),
-            DatasetField(name="deep_pop_paren", sql="(customers.regions.pop_x2)",
+            DatasetField(name="deep_pop_paren", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="(customers.regions.pop_x2)") for d in ("DUCKDB", "POSTGRES")]),
                    datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(

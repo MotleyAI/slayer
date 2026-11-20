@@ -134,8 +134,8 @@ def _pay(name: str, **extra) -> SlayerDataset:
 
 def table_datasets() -> list[SlayerDataset]:
     """The table-backed datasets (saved unvalidated, in this order)."""
-    hr_dept = DatasetField(name="dept_label", datatype=DataType.STRING, sql="hr.dept")
-    masked = DatasetField(name="gross_eng", datatype=DataType.FLOAT, sql="gross", filter="hr.dept = 'eng'")
+    hr_dept = DatasetField(name="dept_label", datatype=DataType.STRING, expression="hr.dept")
+    masked = DatasetField(name="gross_eng", datatype=DataType.FLOAT, expression="gross", filter="hr.dept = 'eng'")
     hr_total = DatasetMetric(name="hr_salary_total", expression="sum(hr.salary)")
     return [
         SlayerDataset(

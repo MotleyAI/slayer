@@ -45,7 +45,7 @@ def dev1841_datasets(**kw) -> List[SlayerDataset]:
     ``gold_spend`` = ``spend`` restricted (inside the aggregate) to gold tier."""
     models = dev1840_datasets(**kw)
     _customers(models).fields.append(
-        DatasetField(name="gold_spend", datatype=DataType.FLOAT, sql="spend",
+        DatasetField(name="gold_spend", datatype=DataType.FLOAT, expression="spend",
                filter="tier = 'gold'"),
     )
     return models
@@ -66,7 +66,7 @@ def crossing_input_datasets() -> List[SlayerDataset]:
     """Graph + a customers field filtering across the fanning customers→orders hop (an input not constant per customer)."""
     models = dev1840_datasets()
     _customers(models).fields.append(
-        DatasetField(name="vip_spend", datatype=DataType.FLOAT, sql="spend",
+        DatasetField(name="vip_spend", datatype=DataType.FLOAT, expression="spend",
                filter="orders.status = 'ok'"),
     )
     return models

@@ -52,7 +52,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 def _col(name: str, type_: DataType = DataType.STRING, pk: bool = False) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=type_, primary_key=pk)
+    return DatasetField(name=name, expression=name, datatype=type_, primary_key=pk)
 
 
 def _left(target: str, pairs: list[list[str]]) -> DatasetRelationship:

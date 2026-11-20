@@ -475,7 +475,7 @@ class TestPerIdFieldsAcrossList:
             # makes the bare name "shared" both a datasource and a dataset.
             await st.save_dataset(SlayerDataset(
                 name="shared", sql_table="shared", data_source="other",
-                fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER,
+                fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER,
                                 primary_key=True)],
             ))
             await st.set_datasource_priority(["shared", "other"])

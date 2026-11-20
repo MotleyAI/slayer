@@ -96,7 +96,7 @@ async def exec_net(request):
     """Engine whose orders carry a derived ``net`` field and a ``my_agg``."""
     models = dev1832_datasets()
     orders = next(m for m in models if m.name == "orders")
-    orders.fields.append(DatasetField(name="net", datatype=DataType.FLOAT, sql="amount - cost"))
+    orders.fields.append(DatasetField(name="net", datatype=DataType.FLOAT, expression="amount - cost"))
     orders.aggregations = [*(orders.aggregations or []),
                            Aggregation(name="my_agg", expression="AVG({value})")]
     async for e in make_exec_engine(request, datasets=models):

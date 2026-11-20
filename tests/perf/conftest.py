@@ -37,18 +37,18 @@ def _build_orders_dataset(ds_name: str) -> SlayerDataset:
         data_source=ds_name,
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="shop_id", sql="shop_id", datatype=DataType.FLOAT),
-            DatasetField(name="category", sql="category", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="completed_at", sql="completed_at", datatype=DataType.DATETIME),
-            DatasetField(name="cancelled_at", sql="cancelled_at", datatype=DataType.DATETIME),
-            DatasetField(name="total_cost", sql="cost", datatype=DataType.FLOAT),
-            DatasetField(name="avg_cost", sql="cost", datatype=DataType.FLOAT),
-            DatasetField(name="min_cost", sql="cost", datatype=DataType.FLOAT),
-            DatasetField(name="max_cost", sql="cost", datatype=DataType.FLOAT),
-            DatasetField(name="latest_cost", sql="cost", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="shop_id", expression="shop_id", datatype=DataType.FLOAT),
+            DatasetField(name="category", expression="category", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="completed_at", expression="completed_at", datatype=DataType.DATETIME),
+            DatasetField(name="cancelled_at", expression="cancelled_at", datatype=DataType.DATETIME),
+            DatasetField(name="total_cost", expression="cost", datatype=DataType.FLOAT),
+            DatasetField(name="avg_cost", expression="cost", datatype=DataType.FLOAT),
+            DatasetField(name="min_cost", expression="cost", datatype=DataType.FLOAT),
+            DatasetField(name="max_cost", expression="cost", datatype=DataType.FLOAT),
+            DatasetField(name="latest_cost", expression="cost", datatype=DataType.FLOAT),
         ],
     )
 
@@ -59,9 +59,9 @@ def _build_shops_dataset(ds_name: str) -> SlayerDataset:
         sql_table="shops",
         data_source=ds_name,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
     )
 
@@ -72,10 +72,10 @@ def _build_customers_dataset(ds_name: str) -> SlayerDataset:
         sql_table="customers",
         data_source=ds_name,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="segment", sql="segment", datatype=DataType.STRING),
-            DatasetField(name="primary_shop_id", sql="primary_shop_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="segment", expression="segment", datatype=DataType.STRING),
+            DatasetField(name="primary_shop_id", expression="primary_shop_id", datatype=DataType.FLOAT),
         ],
     )
 

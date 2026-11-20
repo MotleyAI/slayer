@@ -108,10 +108,10 @@ async def rls_storage(tmp_path):
             sql_table="customers",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="organization_uuid", sql="organization_uuid", datatype=DataType.STRING),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="organization_uuid", expression="organization_uuid", datatype=DataType.STRING),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
     )
@@ -121,10 +121,10 @@ async def rls_storage(tmp_path):
             sql_table="orders",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="organization_uuid", sql="organization_uuid", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="organization_uuid", expression="organization_uuid", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
@@ -135,8 +135,8 @@ async def rls_storage(tmp_path):
             sql_table="exchange_rates",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="day", sql="day", datatype=DataType.STRING),
-                DatasetField(name="rate", sql="rate", datatype=DataType.FLOAT),
+                DatasetField(name="day", expression="day", datatype=DataType.STRING),
+                DatasetField(name="rate", expression="rate", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -409,9 +409,9 @@ async def rls_join_storage(tmp_path):
             sql_table="customers",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="organization_uuid", sql="organization_uuid", datatype=DataType.STRING),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="organization_uuid", expression="organization_uuid", datatype=DataType.STRING),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
     )
@@ -422,9 +422,9 @@ async def rls_join_storage(tmp_path):
             sql_table="orders",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -434,9 +434,9 @@ async def rls_join_storage(tmp_path):
             sql_table="line_items",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="order_id", sql="order_id", datatype=DataType.INTEGER),
-                DatasetField(name="qty", sql="qty", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="order_id", expression="order_id", datatype=DataType.INTEGER),
+                DatasetField(name="qty", expression="qty", datatype=DataType.INTEGER),
             ],
         )
     )
@@ -446,8 +446,8 @@ async def rls_join_storage(tmp_path):
             sql_table="exchange_rates",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="day", sql="day", datatype=DataType.STRING),
-                DatasetField(name="rate", sql="rate", datatype=DataType.FLOAT),
+                DatasetField(name="day", expression="day", datatype=DataType.STRING),
+                DatasetField(name="rate", expression="rate", datatype=DataType.FLOAT),
             ],
         )
     )
