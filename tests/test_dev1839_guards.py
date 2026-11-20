@@ -40,8 +40,8 @@ class TestMixedWindowedRankedDeferred:
 
     async def test_mixed_windowed_grain_deferred(self) -> None:
         band = (
-            "rank(sum(amount, window='90d', partition_by=region) - "
-            "sum(amount, partition_by=city), direction='desc')"
+            "rank(sum(orders.amount, window='90d', partition_by=orders.region) - "
+            "sum(orders.amount, partition_by=orders.city), direction='desc')"
         )
         query = q(
             dimensions=["orders.region", "orders.city", {"field": band, "alias": "x"}],
@@ -54,8 +54,8 @@ class TestMixedWindowedRankedDeferred:
 
     async def test_mixed_first_last_grain_deferred(self) -> None:
         band = (
-            "rank(last(amount, partition_by=region) - "
-            "sum(amount, partition_by=city), direction='desc')"
+            "rank(last(orders.amount, partition_by=orders.region) - "
+            "sum(orders.amount, partition_by=orders.city), direction='desc')"
         )
         query = q(
             dimensions=["orders.region", "orders.city", {"field": band, "alias": "x"}],
@@ -71,8 +71,8 @@ class TestTransformKwargAgainstUnion:
 
     async def test_kwarg_outside_union_fails_cleanly(self) -> None:
         band = (
-            "rank(sum(amount, partition_by=region) - "
-            "sum(amount, partition_by=city), partition_by=channel, direction='desc')"
+            "rank(sum(orders.amount, partition_by=orders.region) - "
+            "sum(orders.amount, partition_by=orders.city), partition_by=orders.channel, direction='desc')"
         )
         query = q(
             dimensions=["orders.region", "orders.city", {"field": band, "alias": "x"}],
@@ -87,8 +87,8 @@ class TestTransformKwargAgainstUnion:
 class TestUnchangedGuards:
     async def test_cross_model_inner_source_still_rejected(self) -> None:
         band = (
-            "rank(sum(customers.spend, partition_by=region) - "
-            "sum(amount, partition_by=city), direction='desc')"
+            "rank(sum(customers.spend, partition_by=orders.region) - "
+            "sum(orders.amount, partition_by=orders.city), direction='desc')"
         )
         query = q(
             dimensions=["orders.region", "orders.city", {"field": band, "alias": "x"}],

@@ -131,8 +131,8 @@ class TestPostgresVerbatimExecution:
         ]}))
         query = SlayerQuery(
             population="orders_rx",
-            dimensions=[QueryDimension(field="rx")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders_rx.rx")],
+            metrics=[QueryMetric(metric="count(orders_rx.*)")],
         )
         result = await pg_env.execute(query=query)
         # No status matches the pattern, so REGEXP_REPLACE returns each unchanged.

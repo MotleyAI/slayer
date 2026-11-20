@@ -46,8 +46,8 @@ async def test_off_grain_row_expression_sorts_by_group_extremum(
 
 async def test_same_order_as_explicit_extremum(engine: SlayerQueryEngine) -> None:
     for direction, agg in (("asc", "min"), ("desc", "max")):
-        assert await _statuses(engine, column="amount - fee", direction=direction) == await _statuses(
-            engine, column=f"{agg}(amount - fee)", direction=direction,
+        assert await _statuses(engine, column="orders.amount - orders.fee", direction=direction) == await _statuses(
+            engine, column=f"{agg}(orders.amount - orders.fee)", direction=direction,
         )
 
 

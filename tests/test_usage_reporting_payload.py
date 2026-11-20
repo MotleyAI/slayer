@@ -20,6 +20,7 @@ import slayer.cli
 from slayer import usage_reporting
 from slayer.api.server import create_app
 from slayer.core.enums import BUILTIN_AGGREGATIONS, ALL_TRANSFORMS
+from slayer.core.names import spelled_name
 from slayer.flight.translator import TranslationError
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -190,9 +191,9 @@ def sentinel_store(usage_reporting_env) -> str:
 def test_cli_arguments_and_names_never_leave(sentinel_store: str, usage_reporting_env) -> None:
     query = {
         "population": f"{SENT}_model",
-        "dimensions": [{"field": f"{SENT}_col * 2", "alias": SENT}],
-        "metrics": [f"{SENT}_agg({SENT}_col)", {"metric": f"sum({SENT}_col)", "alias": f"{SENT}_m"}],
-        "filter": [f"{SENT}_col > 0 or '{HOSTILE}' == 'x'"],
+        "dimensions": [{"field": f"{SENT}_model.{SENT}_col * 2", "alias": SENT}],
+        "metrics": [f"{SENT}_agg({SENT}_model.{SENT}_col)", {"metric": f"sum({SENT}_model.{SENT}_col)", "alias": f"{SENT}_m"}],
+        "filter": [f"{SENT}_model.{SENT}_col > 0 or '{HOSTILE}' == 'x'"],
     }
     runs = [
         ["query", json.dumps(query), "--storage", sentinel_store],
@@ -219,7 +220,7 @@ async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) 
     async with create_connected_server_and_client_session(server, client_info=client) as session:
         await session.call_tool("query", {"query": {
             "population": f"{SENT}_model",
-            "metrics": [f"{SENT}_agg({SENT}_col)"],
+            "metrics": [f"{SENT}_agg({SENT}_model.{SENT}_col)"],
             "filter": [f"'{HOSTILE}' == '{HOSTILE}'"],
         }})
         await session.call_tool("inspect", {"entity_type": "dataset", "reference": HOSTILE, "compact": False})
@@ -237,8 +238,8 @@ def test_rest_paths_bodies_and_errors_never_leave(sentinel_store: str) -> None:
     client.get(f"/datasets/{SENT}_model")
     client.get(f"/datasets/{SENT}missing")
     client.get(f"/{SENT}/unmatched")
-    client.post("/query", json={"population": f"{SENT}_model", "metrics": [f"{SENT}_agg({SENT}_col)"]})
-    client.post("/query", json={"population": HOSTILE, "metrics": ["count(*)"]})
+    client.post("/query", json={"population": f"{SENT}_model", "metrics": [f"{SENT}_agg({SENT}_model.{SENT}_col)"]})
+    client.post("/query", json={"population": HOSTILE, "metrics": [f"count({spelled_name(HOSTILE)}.*)"]})
     client.post(f"/mcp/messages/?session_id={SENT}", json={"x": HOSTILE})
     end_process()
     assert_clean_everywhere()
@@ -283,7 +284,7 @@ def test_flight_sql_never_leaves(usage_reporting_env) -> None:
 
 
 def test_sent_report_never_carries_a_sentinel(sentinel_store: str, usage_reporting_env) -> None:
-    cli(["query", json.dumps({"population": HOSTILE, "metrics": ["count(*)"]}), "--storage", sentinel_store])
+    cli(["query", json.dumps({"population": HOSTILE, "metrics": [f"count({spelled_name(HOSTILE)}.*)"]}), "--storage", sentinel_store])
     cli(["datasets", "--storage", sentinel_store, "show", HOSTILE])
     make_due()
     cli(["datasets", "--storage", sentinel_store, "list"])
@@ -417,8 +418,8 @@ async def test_new_fields_never_carry_a_sentinel(sentinel_store: str) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=sentinel_store), _seed_help=False)
     client = Implementation(name=HOSTILE, version=HOSTILE)
     async with create_connected_server_and_client_session(server, client_info=client) as session:
-        await session.call_tool("query", {"query": {"population": f"{SENT}_model", "metrics": [f"sum({SENT}_col)"]}})
-        await session.call_tool("query", {"query": {"population": HOSTILE, "metrics": ["count(*)"]}})
+        await session.call_tool("query", {"query": {"population": f"{SENT}_model", "metrics": [f"sum({SENT}_model.{SENT}_col)"]}})
+        await session.call_tool("query", {"query": {"population": HOSTILE, "metrics": [f"count({spelled_name(HOSTILE)}.*)"]}})
     end_process()
     report = show()
     assert report["first_query_ok"]

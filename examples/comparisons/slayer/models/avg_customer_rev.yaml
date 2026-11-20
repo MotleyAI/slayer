@@ -3,7 +3,7 @@ name: avg_customer_rev
 source_queries:
   - name: per_customer
     population: orders
-    dimensions: [customer_id, status]
-    metrics: [{metric: "sum(amount)", alias: rev}]
+    dimensions: [orders.customer_id, orders.status]
+    metrics: [{metric: "sum(orders.amount)", alias: rev}]
   - population: per_customer
-    metrics: [{metric: "avg(rev)", alias: avg_rev}]
+    metrics: [{metric: "avg(per_customer.rev)", alias: avg_rev}]

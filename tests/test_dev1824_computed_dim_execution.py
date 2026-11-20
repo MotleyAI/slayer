@@ -158,7 +158,7 @@ class TestFirstLastInDimension:
 
 class TestWindowInDimension:
     WBAND = (
-        "CASE WHEN sum(amount, window='90d', partition_by=region) > 50 "
+        "CASE WHEN sum(orders.amount, window='90d', partition_by=orders.region) > 50 "
         "THEN 1 ELSE 0 END"
     )
 
@@ -212,7 +212,7 @@ class TestDimensionErrorSurface:
         query = q(
             dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="sum(sum(amount, partition_by=[region, city]), "
+                metric="sum(sum(orders.amount, partition_by=[orders.region, orders.city]), "
                         "window='90d')",
                 alias="w")])
         with pytest.raises(SlayerError) as ei:
@@ -266,7 +266,7 @@ class TestDimensionErrorSurface:
         # aggregate whose partition key is unreachable from its root still fails
         # closed, now naming the key.
         cband = (
-            "CASE WHEN sum(customers.spend, partition_by=region) > 100 "
+            "CASE WHEN sum(customers.spend, partition_by=orders.region) > 100 "
             "THEN 1 ELSE 0 END"
         )
         query = q(

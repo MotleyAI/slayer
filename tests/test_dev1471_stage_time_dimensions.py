@@ -346,8 +346,8 @@ class TestStageReBucketExecuted:
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "time_dimensions": [TimeDimension(field=col, granularity=TG.MONTH)],
-            "filter": [f"{col} >= '2025-01-01'"],
+            "time_dimensions": [TimeDimension(field=f"s1.{col}", granularity=TG.MONTH)],
+            "filter": [f"s1.{col} >= '2025-01-01'"],
             "metrics": [{"metric": "count(s1.*)", "alias": "cohort_size"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
@@ -361,7 +361,7 @@ class TestStageReBucketExecuted:
             assert got == {"2025-02-01": 2, "2025-03-01": 2}
             # Every granularity binds on an aggregate-output field — day too.
             day_outer = outer.model_copy(update={
-                "time_dimensions": [TimeDimension(field=col, granularity=TG.DAY)],
+                "time_dimensions": [TimeDimension(field=f"s1.{col}", granularity=TG.DAY)],
             })
             await engine.execute(query=[inner, day_outer], dry_run=True)  # must not raise
 

@@ -29,7 +29,7 @@ async def exec_engine(request):
 
 
 async def test_shifted_share_over_stage_time_dimension(exec_engine) -> None:
-    inner = monthly_q(name="s1", dimensions=["monthly.region"], time_dimensions=month_td(),
+    inner = monthly_q(name="s1", dimensions=["monthly.region"], time_dimensions=month_td("monthly"),
                       metrics=[QueryMetric(metric="sum(monthly.amount)", alias="rev")])
     outer = SlayerQuery.model_validate({
         "population": "s1", "dimensions": ["s1.region"],

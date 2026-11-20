@@ -25,7 +25,7 @@ from tests._dev1847_fixtures import (
 BAND = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
 # A second computed dimension whose expression nests an aggregate partitioned by
 # the attach-carrying spend_band (the doubly-nested attach).
-BAND2 = {"field": "CASE WHEN sum(amount, partition_by=spend_band) > 100 "
+BAND2 = {"field": "CASE WHEN sum(sales.amount, partition_by=spend_band) > 100 "
                        "THEN 'big' ELSE 'small' END", "alias": "size"}
 
 
@@ -84,7 +84,7 @@ class TestCombinedConsumerExemption:
         """The outer's OWN explicit partition key must be a query dimension."""
         query = sales_q(
             dimensions=["sales.region"],
-            metrics=[reagg("avg", INNER_CR, name="acr", partition_by="product")])
+            metrics=[reagg("avg", INNER_CR, name="acr", partition_by="sales.product")])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value)

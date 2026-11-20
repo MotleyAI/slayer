@@ -20,9 +20,9 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1900_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
 _MODEL_SETS = {"dev1900": dev1900_datasets}
-_REAGG_GOOD = ("weighted_avg(sum(amount, partition_by=customers.regions.id), "
+_REAGG_GOOD = ("weighted_avg(sum(orders.amount, partition_by=customers.regions.id), "
                "weight=customers.regions.derived_pop)")
-_REAGG_BAD = ("weighted_avg(sum(amount, partition_by=customers.regions.id), "
+_REAGG_BAD = ("weighted_avg(sum(orders.amount, partition_by=customers.regions.id), "
               "weight=customers.regions.bad_pop)")
 
 

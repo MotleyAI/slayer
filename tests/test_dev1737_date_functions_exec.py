@@ -70,14 +70,14 @@ class TestSpecScenarios:
         assert got == {5: 1, 7: 1, 1: 2, 3: 1}
 
     async def test_filter(self, orders_engine) -> None:
-        assert await _count(orders_engine, "date_diff('day', created_at, shipped_at) > 3") == 3
+        assert await _count(orders_engine, "date_diff('day', orders.created_at, orders.shipped_at) > 3") == 3
 
     async def test_case_insensitive_names(self, orders_engine) -> None:
-        assert await _count(orders_engine, "DATE_DIFF('DAY', created_at, shipped_at) > 3") == 3
+        assert await _count(orders_engine, "DATE_DIFF('DAY', orders.created_at, orders.shipped_at) > 3") == 3
 
     async def test_clock_calls(self, orders_engine) -> None:
-        assert await _count(orders_engine, "created_at <= now()") == 5
-        assert await _count(orders_engine, "order_date <= current_date()") == 5
+        assert await _count(orders_engine, "orders.created_at <= now()") == 5
+        assert await _count(orders_engine, "orders.order_date <= current_date()") == 5
 
     async def test_bucket_form_unchanged(self, orders_engine) -> None:
         resp = await orders_engine.execute(_q(dimensions=["date_trunc('month', orders.created_at)"], metrics=[{"metric": "count(orders.*)", "alias": "n"}]))
@@ -92,10 +92,10 @@ class TestSpecScenarios:
         assert resp.data[0]["a"] == resp.data[0]["b"] == 12
 
     async def test_hour_of_a_date(self, orders_engine) -> None:
-        assert set((await _by_id(orders_engine, "date_part('hour', order_date)")).values()) == {0}
+        assert set((await _by_id(orders_engine, "date_part('hour', orders.order_date)")).values()) == {0}
 
     async def test_mixed_date_and_timestamp(self, orders_engine) -> None:
-        assert (await _by_id(orders_engine, "date_diff('hour', order_date, created_at)"))[1] == 5
+        assert (await _by_id(orders_engine, "date_diff('hour', orders.order_date, orders.created_at)"))[1] == 5
 
     async def test_computed_count(self, orders_engine) -> None:
         got = await _by_id(orders_engine, "date_add(orders.order_date, orders.sla_days, 'day')")
@@ -141,15 +141,15 @@ class TestSpecScenarios:
         assert resp.data[0]["age"] == pytest.approx((1 + 5 + 5 + 5 + open_days) / 5, abs=0.21)
 
     async def test_literal_anchor(self, orders_engine) -> None:
-        assert await _count(orders_engine, "date_diff('day', '2024-01-01', created_at) < 30") == 0
-        assert await _count(orders_engine, "date_diff('day', '2024-01-01', created_at) < 31") == 1
+        assert await _count(orders_engine, "date_diff('day', '2024-01-01', orders.created_at) < 30") == 0
+        assert await _count(orders_engine, "date_diff('day', '2024-01-01', orders.created_at) < 31") == 1
 
     async def test_literal_inside_coalesce(self, orders_engine) -> None:
         resp = await orders_engine.execute(_q(metrics=[
             {"metric": "min(date_part('year', coalesce(orders.shipped_at, '2024-01-01')))", "alias": "y"},
         ]))
         assert resp.data[0]["y"] == 2024
-        assert (await _by_id(orders_engine, "date_part('year', coalesce(shipped_at, '2023-06-01'))"))[3] == 2023
+        assert (await _by_id(orders_engine, "date_part('year', coalesce(orders.shipped_at, '2023-06-01'))"))[3] == 2023
 
     async def test_placeholder(self, orders_engine) -> None:
         n = await _count(orders_engine, "date_diff('day', '{launch}', orders.created_at) >= 0", variables={"launch": "2024-05-01"})
@@ -188,8 +188,8 @@ class TestSpecScenarios:
         assert ops.columns == fn.columns
 
     async def test_chained_and_commuted_intervals(self, orders_engine) -> None:
-        assert await _count(orders_engine, "created_at + interval(1, 'month') + interval(2, 'hour') < now()") == 5
-        assert await _count(orders_engine, "interval(7, 'day') + order_date > current_date()") == 0
+        assert await _count(orders_engine, "orders.created_at + interval(1, 'month') + interval(2, 'hour') < now()") == 5
+        assert await _count(orders_engine, "interval(7, 'day') + orders.order_date > current_date()") == 0
 
     async def test_date_functions_in_order_and_filters(self, orders_engine) -> None:
         resp = await orders_engine.execute(_q(

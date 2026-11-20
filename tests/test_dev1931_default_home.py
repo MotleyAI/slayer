@@ -136,7 +136,7 @@ class TestDefinitionDefaultExecution:
         # month, not resolve owner-only to a bogus reverse-hop key.
         async def cells(formula):
             resp = await engine.execute(orders_q(
-                time_dimensions=month_td(),
+                time_dimensions=month_td("orders"),
                 metrics=[QueryMetric(metric=formula, alias="w")]))
             return {tuple(v for k, v in sorted(r.items()) if k != "w"):
                     r["w"] for r in resp.data}

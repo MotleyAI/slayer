@@ -287,16 +287,18 @@ _TWO_STAGE_ORACLE = {
                                         ("first", _TWO_STAGE_ORACLE["first"])])
 @pytest.mark.parametrize("backend", D71.BACKENDS)
 async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
-    windowed = [{"metric": f"{agg}(rev, window='60d')", "alias": "win"}]
+    def windowed(pop: str) -> list:
+        return [{"metric": f"{agg}({pop}.rev, window='60d')", "alias": "win"}]
+
     stage_outer = SlayerQuery.model_validate({
         "population": "s1",
         "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
-        "metrics": windowed,
+        "metrics": windowed("s1"),
     })
     model_query = SlayerQuery.model_validate({
         "population": "monthly",
         "time_dimensions": [TimeDimension(field="monthly.month_ts", granularity=TG.MONTH)],
-        "metrics": windowed,
+        "metrics": windowed("monthly"),
     })
     with tempfile.TemporaryDirectory() as tmp:
         stage_engine = await D71.make_engine(

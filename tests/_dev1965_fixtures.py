@@ -66,7 +66,7 @@ def q(**kw) -> SlayerQuery:
 
 
 def month_td() -> list[dict]:
-    return [{"field": "created_at", "granularity": "month"}]
+    return [{"field": "orders.created_at", "granularity": "month"}]
 
 
 def cumsum_chain(**kw) -> SlayerQuery:

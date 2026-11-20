@@ -37,7 +37,7 @@ def _cases() -> dict:
         "regroup/cross_model_partition": _q(
             dimensions=[
                 "orders.region",
-                {"field": "CASE WHEN sum(amount, partition_by=customers.region_id) "
+                {"field": "CASE WHEN sum(orders.amount, partition_by=customers.region_id) "
                                "> 10000 THEN 1 ELSE 0 END", "alias": "band"},
             ],
             metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],

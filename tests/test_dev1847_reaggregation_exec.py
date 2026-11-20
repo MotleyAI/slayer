@@ -104,7 +104,7 @@ class TestChainAttribution:
         partitions exactly with NO broadcast warning."""
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            metrics=[reagg("avg", "sum(amount, partition_by=customer_id)",
+            metrics=[reagg("avg", "sum(corders.amount, partition_by=corders.customer_id)",
                             name="acc")]))
         by = rows_by(resp, "customers.regions.name")
         for region, expected in CHAIN_AVG_BY_REGION.items():
