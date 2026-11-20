@@ -781,8 +781,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Custom aggregations, {"name": "sum_sq", "expression": "SUM({value} * {value})", '
-                '"params": [{"name": "weight", "sql": "quantity"}], "description": ...}; the expression '
-                "is SQL with {value} for the aggregated field."
+                '"params": [{"name": "weight", "sql": "quantity"}], "description": ..., "datatype": ...}; the expression '
+                "is SQL with {value} for the aggregated field; datatype (optional) is the result type, else inferred."
             ),
         )] = None,
         query: Annotated[Any | None, Field(
@@ -1000,7 +1000,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Custom aggregations to upsert by name, {"name", "expression" (SQL with {value} and '
-                '{param} placeholders), "params": [{"name", "sql"}], "description", "meta"}.'
+                '{param} placeholders), "params": [{"name", "sql"}], "description", "datatype" (result type; '
+                'omitted: inferred), "meta"}.'
             ),
         )] = None,
         relationships: Annotated[list[dict[str, Any]] | None, Field(

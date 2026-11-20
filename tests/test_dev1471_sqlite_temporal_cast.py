@@ -112,30 +112,29 @@ async def test_sqlite_derived_column_sql_has_no_temporal_cast() -> None:
     assert "AS TIMESTAMP" not in _norm(sql), sql
 
 
-# The rendered SQL for every non-SQLite dialect is byte-identical (whitespace-
-# normalized) to what it rendered before this change — the cast survives there.
+# Every other dialect renders the inferred timestamp aggregate bare (whitespace-normalized): it already is one.
 _EXPECTED_SQL = {
     "postgres": (
         'SELECT orders.customer_id AS "orders.customer_id", '
-        'CAST(MAX(orders.created_at) AS TIMESTAMP) AS "orders.created_at_max" '
+        'MAX(orders.created_at) AS "orders.created_at_max" '
         "FROM orders AS orders GROUP BY orders.customer_id "
         'ORDER BY "orders.customer_id" ASC'
     ),
     "duckdb": (
         'SELECT orders.customer_id AS "orders.customer_id", '
-        'CAST(MAX(orders.created_at) AS TIMESTAMP) AS "orders.created_at_max" '
+        'MAX(orders.created_at) AS "orders.created_at_max" '
         "FROM orders AS orders GROUP BY orders.customer_id "
         'ORDER BY "orders.customer_id" ASC'
     ),
     "tsql": (
         "SELECT orders.customer_id AS [orders___customer_id], "
-        "CAST(MAX(orders.created_at) AS DATETIME2) AS [orders___created_at_max] "
+        "MAX(orders.created_at) AS [orders___created_at_max] "
         "FROM orders AS orders GROUP BY orders.customer_id "
         "ORDER BY [orders___customer_id] ASC"
     ),
     "bigquery": (
         "SELECT orders.customer_id AS `orders___customer_id`, "
-        "CAST(MAX(orders.created_at) AS DATETIME) AS `orders___created_at_max` "
+        "MAX(orders.created_at) AS `orders___created_at_max` "
         "FROM orders AS orders GROUP BY `orders___customer_id` "
         "ORDER BY `orders___customer_id` ASC NULLS LAST"
     ),
@@ -143,7 +142,7 @@ _EXPECTED_SQL = {
 
 
 @pytest.mark.parametrize("dialect", sorted(_EXPECTED_SQL))
-async def test_other_dialects_keep_their_casts(dialect: str) -> None:
+async def test_other_dialects_render_the_bare_aggregate(dialect: str) -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["orders.customer_id"],

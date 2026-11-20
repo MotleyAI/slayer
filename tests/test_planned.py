@@ -46,7 +46,7 @@ _BASE = Stage(kind=StageKind.BASE)
 class TestValueSlot:
     def test_minimal(self):
         key = FieldKey(path=(), leaf="status")
-        s = ValueSlot(id="s1", key=key, declared_name="status", phase=Phase.ROW)
+        s = ValueSlot(type=DataType.INTEGER, id="s1", key=key, declared_name="status", phase=Phase.ROW)
         assert s.id == "s1"
         assert s.key == key
         assert s.declared_name == "status"
@@ -54,7 +54,7 @@ class TestValueSlot:
         assert s.public_aliases == []
         assert s.hidden is False
         assert s.label is None
-        assert s.type is None
+        assert s.type is DataType.INTEGER
 
     def test_with_metadata(self):
         key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
@@ -77,7 +77,7 @@ class TestValueSlot:
         # Order-only / filter-only refs intern as hidden slots with no
         # public alias (P11).
         key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
-        s = ValueSlot(
+        s = ValueSlot(type=DataType.INTEGER,
             id="h1",
             key=key,
             declared_name="_h_revenue_sum",
@@ -93,7 +93,7 @@ class TestValueSlot:
         # declared `name`s share one slot internally; both aliases appear
         # in the public projection.
         key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
-        s = ValueSlot(
+        s = ValueSlot(type=DataType.INTEGER,
             id="m1",
             key=key,
             declared_name="revenue_sum",
@@ -106,7 +106,7 @@ class TestValueSlot:
     def test_hidden_with_public_name_rejected(self):
         key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
         with pytest.raises(ValueError, match="hidden but carries"):
-            ValueSlot(
+            ValueSlot(type=DataType.INTEGER,
                 id="h",
                 key=key,
                 declared_name="_h",
@@ -118,7 +118,7 @@ class TestValueSlot:
     def test_hidden_with_public_aliases_rejected(self):
         key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
         with pytest.raises(ValueError, match="hidden but carries"):
-            ValueSlot(
+            ValueSlot(type=DataType.INTEGER,
                 id="h",
                 key=key,
                 declared_name="_h",
@@ -136,7 +136,7 @@ class TestValueSlot:
         # cached string).
         key = FieldKey(path=(), leaf="status")
         expr = BoundExpr(value_key=key)
-        s = ValueSlot(
+        s = ValueSlot(type=DataType.INTEGER,
             id="s1",
             key=key,
             declared_name="status",
@@ -241,7 +241,7 @@ class TestPlannedQuery:
     def test_minimal_zero_dimension_count(self):
         # The simplest possible PlannedQuery: just *:count on a dataset.
         agg_key = AggregateKey(source=StarKey(), agg="count")
-        slot = ValueSlot(
+        slot = ValueSlot(type=DataType.INTEGER,
             id="a1",
             key=agg_key,
             declared_name="_count",
@@ -268,7 +268,7 @@ class TestPlannedQuery:
 
     def test_with_dimension_and_filter(self):
         dim_key = FieldKey(path=(), leaf="status")
-        dim_slot = ValueSlot(
+        dim_slot = ValueSlot(type=DataType.INTEGER,
             id="d1",
             key=dim_key,
             declared_name="status",
@@ -278,7 +278,7 @@ class TestPlannedQuery:
             stage=_BASE,
         )
         agg_key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
-        agg_slot = ValueSlot(
+        agg_slot = ValueSlot(type=DataType.INTEGER,
             id="a1",
             key=agg_key,
             declared_name="revenue_sum",
@@ -288,7 +288,7 @@ class TestPlannedQuery:
             stage=_BASE,
         )
         mask_key = ArithmeticKey(op="!=", operands=(dim_key, dim_key))
-        mask_slot = ValueSlot(
+        mask_slot = ValueSlot(type=DataType.INTEGER,
             id="m1",
             key=mask_key,
             declared_name="__slayer_mask_0",
@@ -313,7 +313,7 @@ class TestPlannedQuery:
         a = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
         b = AggregateKey(source=StarKey(), agg="count")
         arith = ArithmeticKey(op="/", operands=(a, b))
-        slot = ValueSlot(
+        slot = ValueSlot(type=DataType.INTEGER,
             id="e1",
             key=arith,
             declared_name="aov",
@@ -331,7 +331,7 @@ class TestPlannedQuery:
         # against it (P6).
         ss = StageSchema(
             relation_name="stage_a",
-            fields=[StageField(name="rev", sql_alias="rev")],
+            fields=[StageField(name="rev", sql_alias="rev", datatype=DataType.FLOAT)],
         )
         pq = PlannedQuery(source_relation="orders", stage_schema=ss)
         assert pq.stage_schema is ss

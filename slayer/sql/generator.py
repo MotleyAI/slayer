@@ -959,6 +959,13 @@ class SQLGenerator:
             dt = slot.cast_type
         return self._dialect.declared_cast_type(dt)
 
+    def _typed_dimension(self, expr: Expression, *, slot: ValueSlot) -> Expression:
+        """Computed dimension ``slot``'s value as grouped, displayed and joined back: cast to its type (a cast
+        dimension already is its declared type, and a wide unsigned target must stay wide)."""
+        if isinstance(slot.key, CastKey):
+            return expr
+        return _wrap_cast_for_type(dialect=self._dialect, expr=expr, dt=self._slot_cast_type(slot))
+
     def _field_cast_type(self, col: DatasetField) -> Optional[DataType]:
         """The CAST target for derived field ``col``; none when it keeps its native type."""
         if keeps_native_type(col=col, dialect=self._dialect):
@@ -2199,14 +2206,19 @@ class SQLGenerator:
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, SLOT_COMPOSITE_KINDS) and slot.is_dimension:
-                    dim_expr = computed_dim_expr_by_sid[sid]
+                    # Grouped as displayed: MySQL refuses a SELECT CAST(e) grouped by e.
+                    dim_expr = self._typed_dimension(computed_dim_expr_by_sid[sid], slot=slot)
                     select_columns.append(self._grouped_display(dim_expr, key=key).as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, self._grain_key(dim_expr, key=key))
                     display_by_sid[sid] = dim_expr
                     _record_alias(sid, full_alias)
                 elif isinstance(key, LiteralKey) and slot.is_dimension:
                     # A constant needs no GROUP BY entry (a constant one is refused or read as a position).
-                    select_columns.append(_literal(key.value, dialect=self._dialect).as_(full_alias, quoted=True))
+                    shown = _wrap_cast_for_type(
+                        dialect=self._dialect, expr=_literal(key.value, dialect=self._dialect),
+                        dt=self._slot_cast_type(slot),
+                    )
+                    select_columns.append(shown.as_(full_alias, quoted=True))
                     _record_alias(sid, full_alias)
                 elif isinstance(key, SLOT_COMPOSITE_KINDS) or (
                     isinstance(key, LiteralKey) and not slot.is_dimension
@@ -2903,6 +2915,9 @@ class SQLGenerator:
                     key=member.ranked_key,
                     ctx=RenderContext(scope=ranked_scope, dialect=self._dialect),
                 )
+                if isinstance(member.ranked_key, SLOT_COMPOSITE_KINDS) and host_slot.is_dimension:
+                    # The join-back key equals the host's grain value.
+                    expr = self._typed_dimension(expr, slot=host_slot)
             else:
                 expr = self._ranked_scope_expr(
                     key=member.ranked_key, root_dataset=root_dataset,

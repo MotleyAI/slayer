@@ -5592,7 +5592,7 @@ class TestDev1501HiddenFirstLastRender:
                 f"operands:\n{sql}"
             )
             diff_match = _re.search(
-                r'(_cm_\w+)\."[^"]+" \+ (_cm_\w+)\."[^"]+" AS "diff"',
+                r'(?:CAST\()?(_cm_\w+)\."[^"]+" \+ (_cm_\w+)\."[^"]+"(?: AS DOUBLE PRECISION\))? AS "diff"',
                 _norm(sql),
             )
             assert diff_match is not None, (
@@ -5686,7 +5686,7 @@ class TestDev1501HiddenFirstLastRender:
             assert "_last_rn_f0" not in sql, sql
             assert "_match_f0" not in sql, sql
             assert _re.search(
-                rf'{_re.escape(names[0])}\."[^"]+" \+ 1 AS "plus1"',
+                rf'(?:CAST\()?{_re.escape(names[0])}\."[^"]+" \+ 1(?: AS DOUBLE PRECISION\))? AS "plus1"',
                 _norm(sql),
             ), (
                 f"the composite operand did not read the filtered aggregate's "
@@ -5716,7 +5716,7 @@ class TestDev1501HiddenFirstLastRender:
             names = self._ranked_ctes(sql)
             assert len(names) == 2, sql
             diff_match = _re.search(
-                r'(_cm_\w+)\."[^"]+" \+ (_cm_\w+)\."[^"]+" AS "diff"',
+                r'(?:CAST\()?(_cm_\w+)\."[^"]+" \+ (_cm_\w+)\."[^"]+"(?: AS DOUBLE PRECISION\))? AS "diff"',
                 _norm(sql),
             )
             assert diff_match is not None, (

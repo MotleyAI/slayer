@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from typing import Optional
 from datetime import date, datetime
 
 import pytest
@@ -19,11 +20,11 @@ from slayer.core.keys import (
     temporal_type,
     walk_value_keys,
 )
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import dimension_key_metadata, metric_key_type
+from slayer.engine.key_metadata import SlotTyping
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -33,6 +34,12 @@ from tests._dev1737_fixtures import customers_dataset, orders_dataset
 ORDERS = orders_dataset()
 CUSTOMERS = customers_dataset()
 BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[CUSTOMERS])
+
+
+def _key_type(*, dataset: SlayerDataset, key: ValueKey, bundle: Optional[ResolvedSourceBundle] = None) -> Optional[DataType]:
+    """The one derivation's type of ``key`` over ``dataset``."""
+    bundle = bundle or ResolvedSourceBundle(dialect="postgres", population=dataset)
+    return SlotTyping(scope=DatasetScope(population=dataset), bundle=bundle).value_type(key)
 
 
 def _bind(text: str) -> ValueKey:
@@ -361,7 +368,7 @@ class TestResultTypes:
         ("date_add(customers.signup_date, 1, 'year')", DataType.DATE),
     ])
     def test_dimension_metadata(self, text: str, expected: DataType) -> None:
-        dim_type, _fmt, _desc = dimension_key_metadata(dataset=ORDERS, key=_bind(text), bundle=BUNDLE)
+        dim_type = _key_type(dataset=ORDERS, key=_bind(text), bundle=BUNDLE)
         assert dim_type == expected
 
     @pytest.mark.parametrize("text,expected", [
@@ -375,7 +382,7 @@ class TestResultTypes:
         ("min(coalesce(shipped_at, created_at))", DataType.DATETIME),
     ])
     def test_measure_type(self, text: str, expected: DataType) -> None:
-        assert metric_key_type(dataset=ORDERS, key=_bind(text)) == expected
+        assert _key_type(dataset=ORDERS, key=_bind(text)) == expected
 
     async def test_query_backed_model_column_types(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(

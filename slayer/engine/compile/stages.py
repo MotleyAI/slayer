@@ -155,11 +155,12 @@ from slayer.engine.cardinality.unrelated import crosses_product_hop
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.stage_edges import inherited_edges, pass_through
 from slayer.engine.key_metadata import (
-    dimension_key_metadata,
+    SlotTyping,
+    minted_placeholders,
+    dimension_key_format_description,
     key_element_type,
     metric_key_format_description,
     metric_key_preserves_native_type,
-    metric_key_type,
 )
 from slayer.ir.prebound import (
     ModePolicy,
@@ -335,14 +336,14 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         used_names.add(candidate)
         return candidate
 
+    typing = SlotTyping(scope=DatasetScope(population=dataset), bundle=bundle) if dataset is not None else None
     grain_dms: List[DeclaredMetric] = []
     for pk in grain_keys:
+        d_type = typing.value_type(pk) if typing is not None else None
         if dataset is not None:
-            d_type, d_fmt, d_desc = dimension_key_metadata(
-                dataset=dataset, key=pk, bundle=bundle,
-            )
+            d_fmt, d_desc = dimension_key_format_description(dataset=dataset, key=pk)
         else:
-            d_type, d_fmt, d_desc = None, None, None
+            d_fmt, d_desc = None, None
         # A combined attach names its grain by the consumer's dimension name.
         name = grain_name_by_key.get(pk) or _unique(_regroup_grain_name(pk))
         grain_dms.append(DeclaredMetric(
@@ -367,12 +368,12 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
             or getattr(agg, "op", None)
             or "regroup"
         )
-        # A transform root has no dataset-metric metadata; a consumer's explicit type wins over the source field.
+        # A transform root has no dataset-metric metadata; a consumer's explicit type wins over the derived one.
+        a_type = typing.value_type(agg) if typing is not None else None
         if dataset is not None and isinstance(agg, AggregateKey):
-            a_type = metric_key_type(dataset=dataset, key=agg)
             a_fmt, a_desc = metric_key_format_description(dataset=dataset, key=agg)
         else:
-            a_type, a_fmt, a_desc = None, None, None
+            a_fmt, a_desc = None, None
         agg_dms.append(DeclaredMetric(
             bound=BoundExpr(value_key=agg),
             declared_name=canonical, public_name=canonical,
@@ -1952,6 +1953,8 @@ class ProducerContext(BaseModel):
     reserved_placeholders: FrozenSet[ValueKey] = frozenset()
     #: The one kernel-requiring aggregate this producer renders inline (its kernel's answer).
     kernel_answer: Optional[AggregateKey] = None
+    #: Placeholders it reads from an attach riding alongside it, each to its original key.
+    placeholder_originals: Mapping[ValueKey, ValueKey] = Field(default_factory=dict)
 
 
 def _materialised(
@@ -3162,6 +3165,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         producer_registry=producer_registry,
         population=population,
+        placeholder_originals={ph: c for c, ph in constituent_placeholders.items()},
     )
     # Keep any internal attach the outer plan desugared for an expression
     # grain key; the carrier rides alongside. Entity keys must render inside
@@ -3865,8 +3869,34 @@ def _plan_regroups(
 ) -> Tuple[PreboundQuery, List[RegroupAttachPlan]]:
     """Group the discovered roots and desugar them into producer stages +
     reserved-leaf placeholders (row attach at base FROM, combined at the combined
-    SELECT)."""
-    registry = RegroupPlaceholderRegistry(reserved=reserved_placeholders)
+    SELECT); producers compiled meanwhile read each placeholder's type here."""
+    registry = RegroupPlaceholderRegistry(
+        reserved=reserved_placeholders, typing=SlotTyping(scope=scope, bundle=bundle),
+    )
+    with minted_placeholders(registry.types):
+        return _desugar_regroups(
+            registry=registry, prebound=prebound, filter_typings=filter_typings, scope=scope,
+            bundle=bundle, stage_schemas=stage_schemas, producer_source_dataset=producer_source_dataset,
+            producer_registry=producer_registry, dispositions=dispositions, nests=nests, homes=homes,
+            population=population,
+        )
+
+
+def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged; run inside the minted-placeholder scope.
+    *,
+    registry: RegroupPlaceholderRegistry,
+    prebound: PreboundQuery,
+    filter_typings: Sequence[ConjunctTyping],
+    scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+    stage_schemas: Dict[str, StageSchema],
+    producer_source_dataset: Optional[str],
+    producer_registry: Dict[Hashable, PlannedQuery],
+    dispositions: Sequence[RootDisposition],
+    nests: Callable[[ValueKey, str], bool],
+    homes: AggregateHomes,
+    population: Population,
+) -> Tuple[PreboundQuery, List[RegroupAttachPlan]]:
     reagg_mapping: Dict[ValueKey, ValueKey] = {
         d.root: registry.placeholder_for(d.root)
         for d in dispositions if d.routing == "reaggregation"
@@ -4069,6 +4099,7 @@ def compile_synthesized(
     carried_attaches: Sequence[RegroupAttachPlan] = (),
     reserved_placeholders: AbstractSet[ValueKey] = frozenset(),
     kernel_answer: Optional[AggregateKey] = None,
+    placeholder_originals: Optional[Mapping[ValueKey, ValueKey]] = None,
 ) -> PlannedQuery:
     """Elaborate a compiler-synthesized producer — its aggregates' homes relative to
     its OWN root (D3) — and compile it. ``carried_attaches`` are outer attaches whose
@@ -4084,6 +4115,7 @@ def compile_synthesized(
         carried_attaches=tuple(carried_attaches),
         reserved_placeholders=frozenset(reserved_placeholders),
         kernel_answer=kernel_answer,
+        placeholder_originals=dict(placeholder_originals or {}),
     )
     routed = _route_producer(
         env, context=context,
@@ -4121,6 +4153,8 @@ class _Routed(BaseModel):
     kernel_answer: Optional[AggregateKey] = None
     #: Every aggregate's home, each rebuilt aggregate keeping its original's.
     homes: AggregateHomes
+    #: Placeholders read from an attach outside ``attaches``, each to its original key.
+    placeholder_originals: Mapping[ValueKey, ValueKey] = Field(default_factory=dict)
 
 
 def _shift_candidates(dispositions: Sequence[RootDisposition]) -> FrozenSet[ValueKey]:
@@ -4187,6 +4221,7 @@ def _route_producer(
         shift_candidates=_shift_candidates(dispositions),
         kernel_answer=context.kernel_answer,
         homes=_carried_homes(env.homes, before=prebound, after=routed_prebound),
+        placeholder_originals=context.placeholder_originals,
     )
 
 
@@ -4345,6 +4380,10 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         metrics=declared_metrics,
         filters=bound_filters,
         order=order_specs,
+        typing=SlotTyping(scope=scope, bundle=bundle, placeholders={
+            **routed.placeholder_originals,
+            **{s.placeholder: s.original_key for a in regroup_attach_plans for s in a.substitutions},
+        }),
         source_field_names=source_col_names,
         host_dataset_name=host_name,
     )

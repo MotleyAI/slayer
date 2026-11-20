@@ -277,7 +277,7 @@ A `TimeDimension` in a downstream stage of a multi-stage query SHALL bind agains
 
 ### Requirement: Re-bucketing a stage column is typed
 
-Planning SHALL fail with a typed error (a `ValueError` subclass naming the time dimension), raised by the checker before any SQL is generated, when a stage time dimension's column is not DATE / TIMESTAMP, when the column has no recorded type, or when the requested granularity does not equal the upstream bucket's granularity and the upstream granularity does not nest into it. Nesting is: `second → minute → hour → day`, `day → week`, `day → week_sunday`, `day → month → quarter → year`, closed under transitivity; every other pair (finer, or non-nesting such as `week` against `month` in either direction, or `week` against `week_sunday`) is rejected. The re-bucketing error MUST name both granularities and the remedy (request the same or a nesting-coarser granularity, or bucket the raw column instead), and MUST be the same message whether the bucketed column belongs to a stage or to a model — it does not refer to an upstream stage. An unknown stage column SHALL raise the existing unknown-reference error listing the stage's columns, and a dotted name against a stage SHALL keep the existing illegal-scope error.
+Planning SHALL fail with a typed error (a `ValueError` subclass naming the time dimension), raised by the checker before any SQL is generated, when a stage time dimension's column is not DATE / TIMESTAMP, or when the requested granularity does not equal the upstream bucket's granularity and the upstream granularity does not nest into it. Every stage column carries a type (per `queries/multi-stage` › Every stage column carries a type). Nesting is: `second → minute → hour → day`, `day → week`, `day → week_sunday`, `day → month → quarter → year`, closed under transitivity; every other pair (finer, or non-nesting such as `week` against `month` in either direction, or `week` against `week_sunday`) is rejected. The re-bucketing error MUST name both granularities and the remedy (request the same or a nesting-coarser granularity, or bucket the raw column instead), and MUST be the same message whether the bucketed column belongs to a stage or to a model — it does not refer to an upstream stage. An unknown stage column SHALL raise the existing unknown-reference error listing the stage's columns, and a dotted name against a stage SHALL keep the existing illegal-scope error.
 
 #### Scenario: Finer granularity rejected
 
@@ -296,8 +296,8 @@ Planning SHALL fail with a typed error (a `ValueError` subclass naming the time 
 
 #### Scenario: Untyped stage column fails closed
 
-- **WHEN** the outer stage declares a time dimension on an inner-stage column whose type is not recorded
-- **THEN** planning fails with the temporal-column typed error rather than binding
+- **WHEN** the outer stage declares a time dimension on an inner-stage column that projects only `null` (a stage column always carries a type; this one is INT)
+- **THEN** planning fails with the temporal-column typed error naming the observed type INT
 
 #### Scenario: Unknown and dotted names keep their binder errors
 

@@ -20,7 +20,7 @@ def _schema(grain: Optional[List[str]]) -> StageSchema:
         fields=[
             StageField(name="id", sql_alias="id", public_alias="id", datatype=DataType.INTEGER),
             StageField(name="tier", sql_alias="tier", public_alias="tier", datatype=DataType.STRING),
-            StageField(name="rev", sql_alias="rev", public_alias="rev"),
+            StageField(name="rev", sql_alias="rev", public_alias="rev", datatype=DataType.FLOAT),
         ],
         grain=grain,
     )
@@ -120,6 +120,3 @@ class TestColumnFacts:
         assert (rev.datatype, rev.granularity, rev.label, rev.format, rev.description) == (
             DataType.FLOAT, None, "Revenue", MONEY, "Total revenue",
         )
-
-    def test_untyped_column_defaults_to_double(self) -> None:
-        assert _col(_build(None), "rev").datatype == DataType.FLOAT

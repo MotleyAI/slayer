@@ -133,12 +133,14 @@ class TestReBucketingChecker:
         assert "String" in str(exc.value)
 
     def test_untyped_column_fails_closed(self) -> None:
+        # A NULL-only stage column is INT.
         with pytest.raises(TimeDimensionFieldError) as exc:
             check_time_dimension_field(
-                name="s1.mystery", field_type=None,
+                name="s1.mystery", field_type=DataType.INTEGER,
                 requested_granularity=TG.MONTH,
             )
         assert "temporal" in str(exc.value)
+        assert "Integer" in str(exc.value)
 
     def test_finer_granularity_rejected(self) -> None:
         with pytest.raises(TimeDimensionFieldError) as exc:
@@ -199,9 +201,9 @@ class TestStageBindingErrorsEndToEnd:
             await engine.execute(query=[inner, outer], dry_run=True)
 
     async def test_finer_rebucket_after_passthrough_end_to_end(self) -> None:
-        # s1 buckets month, s2 re-projects the bucket as a plain dimension (which
-        # drops its type from the stage schema), s3 re-buckets finer: the untyped
-        # fail-closed rule rejects it, so a silent wrong re-bucket never lands.
+        # s1 buckets month, s2 re-projects the bucket as a plain dimension (its month
+        # granularity carries through), s3 re-buckets finer: rejected, so a silent
+        # wrong re-bucket never lands.
         engine = await _dryrun_engine([orders_dataset()])
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
