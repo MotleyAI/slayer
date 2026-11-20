@@ -120,7 +120,7 @@ from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
 from slayer.storage.qualified_references import qualified_stages
 from slayer.storage.document_mapping import as_expression, with_dataset, without_dataset
-from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle
+from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle, warn_broken_model_metrics
 from slayer.storage.semantic_model_edits import UNSET, MetricSpec, edited_document, metric_spec, with_datasets
 from slayer.core.document_text import edit_text
 from slayer.storage.semantic_models import (
@@ -857,9 +857,10 @@ class StorageBackend(ABC):
         await self._validate_field_granularities(dataset)
         _validate_default_time_dimension(dataset)
         if failures.report:
-            warn_broken_dependents(
-                dataset=dataset, stored=await self.get_dataset(dataset.name, data_source=dataset.data_source), peers=peers,
-            )
+            stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
+            warn_broken_dependents(dataset=dataset, stored=stored, peers=peers)
+            warn_broken_model_metrics(dataset=dataset, stored=stored,
+                                      metrics=await self.list_model_scoped_metrics(dataset.data_source))
 
     async def _check_case_collisions(self, dataset: SlayerDataset) -> None:
         """Refuse a name that newly collides by case with another in its namespace (the datasource's dataset names

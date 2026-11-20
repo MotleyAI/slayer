@@ -5,20 +5,27 @@ unevaluable."""
 
 from __future__ import annotations
 
+import warnings
+
 from pydantic import BaseModel
 from sqlglot import exp
 
 from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, RESERVED_NAMES
+from slayer.core.deprecation import outside_stacklevel
 from slayer.core.errors import (
     AggArgumentError, AggFilterError, MetricCycleError, ModelMetricNameError, ModelMetricReferenceError,
+    UnevaluableEntityError,
     UnqualifiedModelMetricReferenceError,
 )
 from slayer.core.field_expression import Expression, ExpressionObject, portable_text
 from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.ossie_validity import columns, is_agg_call, parse_ossie_sql
+from slayer.core.models import SlayerDataset
 from slayer.core.semantic_model import ModelScopedMetric
+from slayer.storage.semantic_models import WINDOW_WARNING
 
-__all__ = ["DocumentScope", "check_model_metric", "metric_cycle", "metric_references", "visible_model_metrics"]
+__all__ = ["DocumentScope", "check_model_metric", "metric_cycle", "metric_references", "visible_model_metrics",
+           "warn_broken_model_metrics"]
 
 _OSSIE_SQL = "OSSIE_SQL_2026"
 RESERVED_WORDS = frozenset({"true", "false", "null", "and", "or", "not", "is", "in", "between", "like", "case", "when",
@@ -121,6 +128,8 @@ def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
     tree, problem = parse_ossie_sql(text, _OSSIE_SQL)
     if tree is None:
         raise ModelMetricReferenceError(metric=name, reference=text, reason=f"it does not parse ({problem})")
+    if tree.find(exp.Window) is not None:
+        raise UnevaluableEntityError(entity=f"Metric {name!r}", reason=WINDOW_WARNING)
     for call in [n for n in tree.find_all(exp.Anonymous) if is_agg_call(n)]:
         _check_agg(call, name=name, text=text, scope=scope)
     reads_metric = False
@@ -169,6 +178,38 @@ def metric_references(expression: Expression) -> tuple[set[str], set[str]]:
         for column in tree.find_all(exp.Column) if tree is not None else []:
             (datasets if column.table else metrics).add((column.table or column.name).casefold())
     return datasets, metrics
+
+
+def _leaf_references(expression: Expression) -> set[tuple[str, str]]:
+    """``(dataset, field or metric)`` of each qualified reference a model-scoped metric's every form names, folded."""
+    portable = portable_text(expression)
+    texts = [portable] if portable is not None else [
+        e.expression for e in (expression.dialects or [] if isinstance(expression, ExpressionObject) else [])]
+    out: set[tuple[str, str]] = set()
+    for text in texts:
+        tree, _ = parse_ossie_sql(text, _OSSIE_SQL)
+        out.update((c.table.casefold(), c.name.casefold()) for c in (tree.find_all(exp.Column) if tree else [])
+                   if c.table)
+    return out
+
+
+def warn_broken_model_metrics(
+    *, dataset: SlayerDataset, stored: SlayerDataset | None, metrics: list[ModelScopedMetric],
+) -> None:
+    """Warn once per model-scoped metric reading a field or metric of ``dataset`` that the save removes."""
+    if stored is None:
+        return
+    kept = {n.casefold() for n in [*(f.name for f in dataset.fields), *(m.name for m in dataset.metrics)]}
+    removed = {n.casefold() for n in [*(f.name for f in stored.fields), *(m.name for m in stored.metrics)]} - kept
+    home = dataset.name.casefold()
+    for metric in metrics:
+        for table, leaf in sorted(_leaf_references(metric.expression)):
+            if table == home and leaf in removed:
+                warnings.warn(
+                    f"Saving dataset {dataset.name!r}: model-scoped metric {metric.name!r} of semantic model "
+                    f"{metric.semantic_model!r} reads {dataset.name}.{leaf}, which the save removes.",
+                    UserWarning, stacklevel=outside_stacklevel(),
+                )
 
 
 def visible_model_metrics(metrics: list[ModelScopedMetric], *, hidden_datasets: set[str]) -> list[ModelScopedMetric]:

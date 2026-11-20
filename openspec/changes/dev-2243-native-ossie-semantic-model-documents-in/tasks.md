@@ -30,7 +30,7 @@
 - [ ] 2.4 Storage hooks on `StorageBackend` with typed-unsupported defaults; YAML (`semantic_models/<ds>/<name>.yaml`, per-document flock) and SQLite (`semantic_models` table via `sqlite_conn`, `BEGIN IMMEDIATE` patch) implementations; `graph_fingerprint` covers documents; verify custom-backend and concurrency tests pass
 - [ ] 2.5 Decomposition into datasets/relationships/model-scoped metrics, merged into `get_dataset`/`load_datasets`/`list_datasets`; per-datasource namespace with dependency-aware quarantine; unevaluable-entity load warnings; verify the decomposition and collision tests pass
 - [ ] 2.6 Owner lookup routing every dataset mutation (decision 25) and the lossless SLayer → Ossie-core-or-`SLAYER` mapping (decision 26) built from the exporter's classification; verify edit-through tests pass
-- [ ] 2.7 Delete cascades and broken-dependent warnings for document members and documents; save scope (decision 28); verify cascade and save-scope tests pass
+- [x] 2.7 Delete cascades and broken-dependent warnings for document members and documents; save scope (decision 28); verify cascade and save-scope tests pass
 - [x] 2.8 Access filtering of documents with transitive model-scoped metric pruning; verify access tests pass
 - [x] 2.9 Lift the relationship refusals: edge-name/dataset-name namespace, self-relationships (inert, refused when spelled), computed keys (emission at ON, semi-join spine, profiling); ambiguous-hop refusal; verify relationship-shape tests pass
 
