@@ -1914,9 +1914,9 @@ def _computed_value_type(
     temporal = temporal_type(key, field_type=field_type)
     if temporal is not None:
         return temporal
-    if isinstance(key, ScalarCallKey) and key.name in _INT_SCALARS and key.args and value_type(
-            key.args[0], field_type=field_type, aggregate_type=aggregate_type) is DataType.DECIMAL:
-        return DataType.DECIMAL
+    if isinstance(key, ScalarCallKey) and key.name in _INT_SCALARS and key.args and (
+            SCALAR_SPECS.get(key.name) is None or SCALAR_SPECS[key.name].result is None):
+        return _int_scalar_type(key, field_type=field_type, aggregate_type=aggregate_type)
     if integer_valued(key, field_type=field_type):
         return DataType.INTEGER
     if numeric_valued(key, field_type=field_type):
@@ -1926,6 +1926,23 @@ def _computed_value_type(
     if isinstance(key, TimeTruncKey):
         return value_type(key.source, field_type=field_type, aggregate_type=aggregate_type)
     return None
+
+
+def _int_scalar_type(
+    key: ScalarCallKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    """``abs`` / ``round`` / … from its operands' resolved types: a DECIMAL first operand keeps DECIMAL; integers (or
+    booleans) stay INT unless ``round`` takes digits; any other number is DOUBLE; all-NULL is ``None``."""
+    types = [value_type(a, field_type=field_type, aggregate_type=aggregate_type)
+             for a in key.args if not _is_null_arg(a)]
+    if not types:
+        return None
+    if types[0] is DataType.DECIMAL:
+        return DataType.DECIMAL
+    digits = key.name == "round" and len(key.args) > 1
+    if not digits and all(t in (DataType.INTEGER, DataType.BOOLEAN) for t in types):
+        return DataType.INTEGER
+    return DataType.FLOAT
 
 
 def _scalar_value_type(

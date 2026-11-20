@@ -188,11 +188,6 @@ def set_statement(*, name: str, value: int, kind: str | None = None) -> exp.Set:
     return exp.Set(expressions=[item])
 
 
-def microsecond_type(kind: DType) -> exp.DataType:
-    """``kind(6)``: a timestamp type at microsecond precision."""
-    return exp.DataType(this=kind, expressions=[exp.DataTypeParam(this=exp.Literal.number(6))])
-
-
 def anon(name: str, *args: Expression) -> exp.Anonymous:
     """``NAME(args)`` emitted as written on every dialect (no transpilation)."""
     return exp.Anonymous(this=name, expressions=[a.copy() for a in args])
@@ -884,10 +879,6 @@ class SqlDialect(BaseModel):
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
         """The CAST target for a value of type ``dt`` (``None`` skips the cast)."""
         return dt
-
-    def timestamp_cast_target(self, *, zoned: bool) -> exp.DataType:
-        """The CAST target for a timestamp; it keeps the value's sub-second precision and, when ``zoned``, its zone."""
-        return exp.DataType(this=exp.DataType.Type.TIMESTAMPTZ if zoned else exp.DataType.Type.TIMESTAMP)
 
     # Vendor-only types sqlglot parses for every dialect; a dialect lists the ones it has.
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset()

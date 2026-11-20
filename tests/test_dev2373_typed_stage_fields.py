@@ -18,10 +18,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import ScalarOperandTypeError, TimeDimensionFieldError
 from slayer.core.keys import ArithmeticKey, FieldKey, LiteralKey, Phase, value_type
 from slayer.core.models import Aggregation, DatasetMetric, SlayerDataset
+from slayer.core.query import SlayerQuery
 from slayer.core.scope import StageField, StageSchema
 from slayer.ir.planned import ValueSlot
 from slayer.ir.source_bundle import dataset_from_stage_schema
-from slayer.sql.dialects import get_dialect
 from slayer.sql.render.row_expr import data_type_target
 from tests._dev2373_fixtures import (
     DIALECTS,
@@ -58,7 +58,7 @@ def _both(first: dict[str, Any], expected: dict[str, Optional[DataType]], **kw: 
 
 
 def _pg(dt: DataType) -> str:
-    return data_type_target(dt, dialect=get_dialect("postgres")).sql(dialect="postgres").upper()
+    return data_type_target(dt).sql(dialect="postgres").upper()
 
 
 # --------------------------------------------------------------------------- #
@@ -182,11 +182,13 @@ CASES: dict[str, _Case] = {
     "cross-dataset-sum": _Case(_metric("sum(customers.spend)"), ["region"], DEC, {"N": 350.75, "S": 300.75},
                                cast=_pg(DEC), cast_alias="spend_sum_host"),
     "cross-dataset-max": _Case(_metric("max(customers.created_at)"), ["region"], TS,
-                               {"N": "2023-07-01", "S": "2023-06-01"}, cast=_pg(TS), cast_alias="created_at_max_host"),
+                               {"N": "2023-07-01", "S": "2023-06-01"}, cast=None, cast_alias="created_at_max_host"),
     "custom-avg": _Case(_metric("my_avg(orders.quantity)"), ["region"], DOUBLE, {"N": 3.0, "S": 4.0}, cast=_pg(DOUBLE)),
     "custom-count": _Case(_metric("trues(orders.flag)"), ["region"], INT, {"N": 2, "S": 1}, cast=None),
     "builtin-overridden": _Case(_metric("sum(orders.quantity)"), ["region"], DOUBLE, {"N": 4.5, "S": 4.0},
                                 cast=_pg(DOUBLE), datasets=_OVERRIDE),
+    "abs-of-overridden-built-in": _Case(_metric("abs(sum(orders.quantity))"), ["region"], DOUBLE, {"N": 4.5, "S": 4.0},
+                                        cast=_pg(DOUBLE), datasets=_OVERRIDE),
     # Transforms (design decision 15), monthly.
     "lag": _Case(_metric("lag(sum(orders.quantity), 1)", by="month"), ["ordered_at"], INT, [None, 5, 7], cast=None),
     "lead": _Case(_metric("lead(sum(orders.quantity), 1)", by="month"), ["ordered_at"], INT, [7, 5, None], cast=None),
@@ -287,39 +289,43 @@ def _computed_projections(sql: str, *, alias: str) -> list[Expression]:
 
 
 # --------------------------------------------------------------------------- #
-# A cast computed dimension: grouped as displayed, a timestamp keeping its sub-second precision.
+# A cast computed dimension groups as displayed; an inferred timestamp is not cast (design decision 7).
 # --------------------------------------------------------------------------- #
-_SHIFTED = q(population="orders", dimensions=["orders.id", d("date_add(orders.ordered_at, 1, 'hour')", "v")],
-             metrics=[m("count(orders.*)", "n")])
+def _by_id(expr: str) -> SlayerQuery:
+    return q(population="orders", dimensions=["orders.id", d(expr, "v")], metrics=[m("count(orders.*)", "n")])
 
 
-async def _shifted_select(dialect: str) -> tuple[exp.Select, Expression]:
-    sql = await _engine_generate(query=_SHIFTED, dataset=orders(), extra_datasets=[customers()], dialect=dialect)
+async def _projected(query: SlayerQuery, *, dialect: str, alias: str = "v") -> tuple[exp.Select, Expression]:
+    sql = await _engine_generate(query=query, dataset=orders(), extra_datasets=[customers()], dialect=dialect)
     tree = sqlglot.parse_one(sql, dialect=dialect)
-    (shown,) = [a.this for a in tree.find_all(exp.Alias) if a.alias == "v"]
+    (shown,) = [a.this for a in tree.find_all(exp.Alias) if a.alias == alias]
     return shown.find_ancestor(exp.Select), shown
 
 
 class TestCastComputedDimension:
-    @pytest.mark.parametrize(("dialect", "target"), [
-        ("mysql", "DATETIME(6)"), ("clickhouse", "Nullable(DateTime64(6))"), ("trino", "TIMESTAMP(6)"),
-        ("postgres", "TIMESTAMP"), ("duckdb", "TIMESTAMP"),
-    ])
-    async def test_timestamp_cast_keeps_sub_second_precision(self, dialect: str, target: str) -> None:
-        _select, shown = await _shifted_select(dialect)
-        assert isinstance(shown, exp.Cast), shown.sql(dialect=dialect)
-        assert shown.to.sql(dialect=dialect) == target
+    @pytest.mark.parametrize("dialect", ["mysql", "clickhouse", "trino", "presto", "postgres", "duckdb", "snowflake"])
+    async def test_an_inferred_timestamp_is_not_cast(self, dialect: str) -> None:
+        _select, shown = await _projected(_by_id("date_add(orders.ordered_at, 1, 'hour')"), dialect=dialect)
+        assert not isinstance(shown, exp.Cast), shown.sql(dialect=dialect)
 
-    @pytest.mark.parametrize(("dialect", "target"), [
-        ("postgres", "TIMESTAMPTZ"), ("duckdb", "TIMESTAMPTZ"), ("snowflake", "TIMESTAMPTZ"),
-        ("tsql", "DATETIMEOFFSET"), ("bigquery", "TIMESTAMP"), ("trino", "TIMESTAMP(6) WITH TIME ZONE"),
-    ])
-    def test_zoned_timestamp_cast_keeps_its_zone(self, dialect: str, target: str) -> None:
-        assert data_type_target(DataType.DATETIME_TZ, dialect=get_dialect(dialect)).sql(dialect=dialect) == target
+    async def test_a_declared_timestamp_is_cast(self) -> None:
+        query = q(population="orders", dimensions=["orders.region"],
+                  metrics=[m("max(orders.ordered_at)", "x", datatype="DateTime")])
+        _select, shown = await _projected(query, dialect="postgres", alias="x")
+        assert cast_target(shown) == "TIMESTAMP", shown.sql(dialect="postgres")
+
+    async def test_a_ranked_join_back_reads_the_same_cast_grain(self) -> None:
+        query = q(population="orders", dimensions=[d("orders.quantity + 1", "v")],
+                  metrics=[m("last(orders.amount)", "l"), m("sum(orders.amount)", "s")])
+        sql = await _engine_generate(query=query, dataset=orders(), extra_datasets=[customers()], dialect="postgres")
+        grains = [n for n in sqlglot.parse_one(sql, dialect="postgres").find_all(exp.Add)]
+        assert grains, sql
+        assert all(isinstance(g.parent, exp.Cast) for g in grains), sql
 
     @pytest.mark.parametrize("dialect", ["mysql", "postgres", "clickhouse"])
     async def test_grouped_by_the_displayed_cast(self, dialect: str) -> None:
-        select, shown = await _shifted_select(dialect)
+        select, shown = await _projected(_by_id("orders.quantity + 1"), dialect=dialect)
+        assert isinstance(shown, exp.Cast), shown.sql(dialect=dialect)
         group = select.args["group"].expressions
         assert any(g == shown for g in group), select.sql(dialect=dialect)
 

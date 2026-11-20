@@ -49,7 +49,6 @@ from slayer.sql.dialects.base import (
     as_text,
     case,
     lit,
-    microsecond_type,
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
@@ -363,10 +362,6 @@ class MysqlDialect(SqlDialect):
 
     def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
         return exp.Anonymous(this="TIMESTAMPDIFF", expressions=[exp.var("SECOND"), start, end])
-
-    def timestamp_cast_target(self, *, zoned: bool) -> exp.DataType:
-        """A bare ``DATETIME`` truncates to whole seconds; there is no zoned cast type."""
-        return microsecond_type(exp.DataType.Type.DATETIME)
 
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,

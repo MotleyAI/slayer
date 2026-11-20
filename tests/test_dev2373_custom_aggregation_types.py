@@ -7,6 +7,7 @@ Spec: openspec …/specs/aggregations/formula-templates — "A custom aggregatio
 from __future__ import annotations
 
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
+from slayer.sql.template_type import template_result_type
 from slayer.facade.catalog import build_local_view
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -107,6 +109,12 @@ class TestDeclaredDatatype:
         with pytest.raises(ValidationError) as info:
             SlayerDataset.model_validate(raw)
         assert any(e["loc"] and e["loc"][-1] == "datatype" for e in info.value.errors()), info.value.errors()
+        assert "trues" in str(info.value)
+
+    @pytest.mark.parametrize("bogus", [[], {}])
+    def test_a_non_string_declared_datatype_is_refused_naming_the_aggregation(self, bogus: Any) -> None:
+        with pytest.raises(ValidationError) as info:
+            Aggregation.model_validate({"name": "trues", "expression": "SUM({value})", "datatype": bogus})
         assert "trues" in str(info.value)
 
     async def test_an_invalid_declared_datatype_is_refused_by_the_mcp_save(self) -> None:
@@ -233,6 +241,12 @@ class TestFacadeAgreement:
         _, metrics = build_local_view(_facts(weighted))
         assert {mt.name: mt.data_type for mt in metrics}["qty_sum"] is None
 
+    def test_a_declared_datatype_wins_over_an_unbindable_default(self) -> None:
+        weighted = Aggregation(name="sum", expression="SUM({value} * {weight})", datatype=DataType.DECIMAL,
+                               params=[AggregationParam(name="weight", sql="customers.weight")])
+        _, metrics = build_local_view(_facts(weighted))
+        assert {mt.name: mt.data_type for mt in metrics}["qty_sum"] is DataType.DECIMAL
+
 
 # --------------------------------------------------------------------------- #
 # aggregations/boolean-inputs › A custom aggregation over a boolean takes its formula's type
@@ -240,3 +254,23 @@ class TestFacadeAgreement:
 class TestCustomAggregationOverABoolean:
     def test_takes_its_formulas_type_not_boolean(self) -> None:
         assert _types("trues(orders.flag)") == {INT}
+
+
+# --------------------------------------------------------------------------- #
+# The template typer: COALESCE over a boolean in a numeric position, literal-only bindings, cache keys.
+# --------------------------------------------------------------------------- #
+class TestTemplateTyper:
+    def test_a_boolean_through_coalesce_in_a_sum_is_read_as_its_integer(self) -> None:
+        typed = template_result_type(template="SUM(COALESCE({value}, FALSE))", bindings={"value": BOOL}, dialect="postgres")
+        assert typed is INT
+
+    def test_a_standalone_coalesce_over_a_boolean_stays_boolean(self) -> None:
+        assert template_result_type(template="COALESCE({value}, FALSE)", bindings={"value": BOOL}, dialect="postgres") is BOOL
+
+    def test_literal_only_bindings_are_typed(self) -> None:
+        assert template_result_type(template="SUM({value})", bindings={"value": Decimal(1)}, dialect="postgres") is INT
+
+    def test_equal_bindings_of_different_kinds_do_not_share_a_cached_type(self) -> None:
+        template = "{value}"
+        assert template_result_type(template=template, bindings={"value": True}, dialect="postgres") is BOOL
+        assert template_result_type(template=template, bindings={"value": Decimal(1)}, dialect="postgres") is INT

@@ -91,7 +91,7 @@ def _wrap_cast_for_type(
         return expr
     if isinstance(expr, exp.Column):
         return expr
-    target = data_type_target(dt, dialect=dialect)
+    target = data_type_target(dt)
     if isinstance(expr, exp.Cast):
         existing = expr.args.get("to")
         if isinstance(existing, exp.DataType) and (

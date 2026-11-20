@@ -24,7 +24,7 @@ Principles that apply: `system.arc42.md` §3.10 One typing (target DEV-2180 — 
 
 **Non-Goals:**
 - The check-side parallel derivations in `engine/elaborate_env.py` (`_text_valued`, `_count_type` / `_leaf_count_type`, `time_dimension_type`) and the §3.10 tag flip: DEV-2180.
-- Changing the cast policy (`ValueSlot.cast_type`, `_wrap_cast_for_type`).
+- Changing the cast policy (`ValueSlot.cast_type`, `_wrap_cast_for_type`), beyond decision 7's timestamp amendment.
 - Typing the result of a non-template (built-in) aggregation differently.
 - Distinguishing a NULL-only stage column from an INT one downstream.
 
@@ -37,6 +37,7 @@ Principles that apply: `system.arc42.md` §3.10 One typing (target DEV-2180 — 
 5. **A NULL-only value is INT.** Only a numeric type keeps every later-stage read working as on main (`sum` → NULL, `count` → 0); OPAQUE breaks them, TEXT breaks `sum` (`sum(TEXT)` is a type error by spec), refusing breaks projecting `null` today. INT matches DuckDB's resolution of an untyped NULL and does not reintroduce a FLOAT default. Inside branch folding a NULL literal stays absorbed. (default)
 6. **`ValueSlot.type` and `StageField.datatype` become required.** The structural guarantee: an untyped emission cannot be built. (default)
 7. **Casts follow the existing cast policy.** Newly typed values get exactly the casts `ValueSlot.cast_type` + `_wrap_cast_for_type` derive: none for an inferred aggregate INT, STRING, OPAQUE, ARRAY, a bare column or a preserved exact decimal; a CAST otherwise. Golden SQL is re-blessed. (default; wording sharpened per Codex #5)
+   Amended in review: an inferred DateTime / DateTimeTz value is not cast either. It already is a timestamp, so a cast could only narrow its precision (ClickHouse `DateTime64(9)`, Trino) or drop its zone. A declared type keeps its cast. (user; per CodeRabbit)
 8. **The formula typer lives in `slayer.sql`** (it owns sqlglot and `sql_template.py`); `core/keys.py` gains a hook parameter for it like `field_type`, and the engine supplies it. `core` has no arrow to `sql`; `engine -> sql` and `facade -> engine` exist, so no arrow is added. (default)
 9. **SQLite formulas are annotated under sqlglot's dialect-neutral rules**, since SQLite's annotator folds BOOLEAN and DECIMAL; other dialects annotate under their own rules. Formulas are parsed under the datasource's dialect. (default)
 10. **A declared ARRAY `datatype` has element type OPAQUE.** (default)

@@ -777,7 +777,7 @@ class Aggregation(DatasetPart):
     @field_validator("datatype", mode="before")
     @classmethod
     def _validate_datatype(cls, v: Any, info: ValidationInfo) -> Any:
-        if v is None or isinstance(v, DataType) or v in {t.value for t in DataType}:
+        if v is None or isinstance(v, DataType) or (isinstance(v, str) and v in {t.value for t in DataType}):
             return v
         allowed = ", ".join(t.value for t in DataType)
         raise ValueError(f"Aggregation '{info.data.get('name')}' has datatype {v!r}, not one of: {allowed}")

@@ -49,16 +49,18 @@ def template_result_type(
     *, template: str, bindings: Mapping[str, TemplateBinding], dialect: str,
 ) -> Optional[DataType]:
     """``template``'s result type with each placeholder bound per ``bindings``; ``None`` when it cannot be inferred."""
-    return _cached(template=template, bindings=tuple(sorted(bindings.items(), key=lambda kv: kv[0])), dialect=dialect)
+    # The repr keys the cache: equal bindings (``DataType.INTEGER == "Integer"``, ``True == Decimal(1)``) render apart.
+    keyed = tuple((name, repr(b), b) for name, b in sorted(bindings.items(), key=lambda kv: kv[0]))
+    return _cached(template=template, bindings=keyed, dialect=dialect)
 
 
 @lru_cache(maxsize=4096)
 def _cached(
-    *, template: str, bindings: Tuple[Tuple[str, TemplateBinding], ...], dialect: str,
+    *, template: str, bindings: Tuple[Tuple[str, str, TemplateBinding], ...], dialect: str,
 ) -> Optional[DataType]:
     schema: dict[str, str] = {}
     try:
-        exprs = {name: _bound(name=name, binding=b, schema=schema, dialect=dialect) for name, b in bindings}
+        exprs = {name: _bound(name=name, binding=b, schema=schema, dialect=dialect) for name, _key, b in bindings}
         root = sql_template(template, dialect).render(exprs)
     except (SqlTemplateError, SqlglotError):
         return None
@@ -91,21 +93,34 @@ def _placeholder(name: str, data_type: Optional[DataType], schema: dict[str, str
 
 def _annotate(root: Expression, *, schema: Mapping[str, str], dialect: Optional[str]) -> Expression:
     select = exp.select(root.copy().as_("r")).from_(_TABLE)
-    annotated = annotate_types(select, schema={_TABLE: dict(schema)}, dialect=dialect)
+    # Literal-only bindings read no column: an empty table schema is refused.
+    annotated = annotate_types(select, schema={_TABLE: dict(schema)} if schema else None, dialect=dialect)
     return annotated.selects[0].this
 
 
 def _booleans_as_integers(root: Expression, *, schema: Mapping[str, str]) -> Optional[Expression]:
-    """``root`` with every BOOLEAN column in a numeric position cast to INT, ``None`` when there is none."""
-    sites = [
-        c for c in root.find_all(exp.Column)
-        if schema.get(c.name) == "BOOLEAN" and isinstance(_unparenthesized_parent(c), _NUMERIC_POSITIONS)
-    ]
+    """``root`` with every BOOLEAN column in a numeric position — directly or through a ``COALESCE`` chain — cast to
+    INT (the outermost ``COALESCE`` as a whole), ``None`` when there is none."""
+    sites: list[Expression] = []
+    for column in root.find_all(exp.Column):
+        if schema.get(column.name) != "BOOLEAN":
+            continue
+        site, parent = _through_coalesce(column)
+        if isinstance(parent, _NUMERIC_POSITIONS) and not any(s is site for s in sites):
+            sites.append(site)
     if not sites:
         return None
     for site in sites:
         site.replace(exp.cast(site.copy(), to="INT"))
     return root
+
+
+def _through_coalesce(node: Expression) -> Tuple[Expression, object]:
+    """The outermost ``COALESCE`` wrapping ``node`` (else ``node``) and its parent, parentheses skipped."""
+    parent = _unparenthesized_parent(node)
+    while isinstance(parent, exp.Coalesce):
+        node, parent = parent, _unparenthesized_parent(parent)
+    return node, parent
 
 
 def _unparenthesized_parent(node: Expression) -> object:

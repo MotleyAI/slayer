@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import DataType, DatePart, TimeGranularity, TypeKind
+from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.keys import (
     CLOCK_FUNCTIONS,
     DATE_ADD_COUNT_ARG,
@@ -493,10 +493,8 @@ def _operand_type(key: ScalarCallKey, pos: int, *, field_type: FieldTypeFn) -> D
     return dt
 
 
-def data_type_target(dt: DataType, *, dialect: SqlDialect) -> exp.DataType:
-    """The CAST target for SLayer type ``dt`` on ``dialect``; INT is 64-bit."""
-    if dt.kind is TypeKind.TIMESTAMP:
-        return dialect.timestamp_cast_target(zoned=dt is DataType.DATETIME_TZ)
+def data_type_target(dt: DataType) -> exp.DataType:
+    """The CAST target for SLayer type ``dt``; INT is 64-bit."""
     return exp.DataType(this=exp.DataType.Type.BIGINT if dt is DataType.INTEGER else exp.DataType.Type(dt.kind.value))
 
 
