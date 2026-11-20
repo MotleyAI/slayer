@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 from typing_extensions import deprecated
 
+from slayer.core.field_expression import Expression, ExpressionObject, portable_text
 from slayer.core.models import (
     Aggregation,
     DatasetField,
@@ -39,6 +40,7 @@ from slayer.core.models import (
     SlayerDataset,
     field_type_text,
 )
+from slayer.core.semantic_model import AIContext, ModelScopedMetric
 from slayer.core.vocabulary import name_twins
 from slayer.memories.models import Memory
 
@@ -281,6 +283,39 @@ def render_metric_text(*, dataset: SlayerDataset, metric: DatasetMetric) -> str:
         lines.append(f"Description: {metric.description}")
     if metric.label:
         lines.append(f"Label: {metric.label}")
+    return "\n".join(lines)
+
+
+def expression_text(expression: Expression | None) -> str:
+    """An Ossie expression as text: its portable SQL, else each dialect's entry."""
+    portable = portable_text(expression)
+    if portable is not None or not isinstance(expression, ExpressionObject):
+        return portable or ""
+    return "; ".join(f"{e.dialect}: {e.expression}" for e in expression.dialects or [])
+
+
+def ai_context_text(ai_context: AIContext | None) -> str:
+    """An Ossie ``ai_context`` as one line."""
+    if ai_context is None or isinstance(ai_context, str):
+        return ai_context or ""
+    parts = [ai_context.instructions or "",
+             *(f"{label}: {', '.join(items)}" for label, items in
+               (("synonyms", ai_context.synonyms), ("examples", ai_context.examples)) if items)]
+    return "; ".join(p for p in parts if p)
+
+
+def render_model_scoped_metric_text(*, metric: ModelScopedMetric) -> str:
+    lines: list[str] = [
+        f"Metric: {metric.name} (model-scoped, semantic model {metric.semantic_model!r} "
+        f"of datasource {metric.data_source!r})",
+        f"Expression: {expression_text(metric.expression)}",
+    ]
+    if metric.description:
+        lines.append(f"Description: {metric.description}")
+    if ai := ai_context_text(metric.ai_context):
+        lines.append(f"AI context: {ai}")
+    if metric.load_warning:
+        lines.append(f"Load warning: {metric.load_warning}")
     return "\n".join(lines)
 
 

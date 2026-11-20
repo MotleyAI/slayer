@@ -1514,7 +1514,8 @@ class SlayerQuery(BaseModel):
         description=(
             'Values to return: expression strings or {"metric": ..., "alias": ...} (alias sets the '
             "result key). Every field, metric and row count names its dataset first: orders.amount, "
-            "orders.revenue (a saved metric), count(orders.*); a bare name is an alias of this query. "
+            "orders.revenue (a saved metric), count(orders.*); a bare name is an alias of this query, else a "
+            "model-scoped metric of a semantic model. AGG(orders.revenue) evaluates the dataset metric. "
             "The engine joins the datasets. Expressions combine aggregations with arithmetic, also "
             "across datasets: rooted at customers, sum(orders.amount) / count(customers.*) divides "
             "the orders' total by the number of customers.\n"

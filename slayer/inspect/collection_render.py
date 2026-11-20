@@ -17,6 +17,8 @@ from typing import Any
 
 from slayer.core.relationship_walker import addressable_token, neighbors
 from slayer.core.models import SlayerDataset, field_type_text
+from slayer.core.semantic_model import ModelScopedMetric
+from slayer.search.render import expression_text
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.inspect.dataset_render import (
     _markdown_table,
@@ -120,8 +122,9 @@ def render_datasets_summary(
     compact: bool,
     descriptions_max_chars: int | None = None,
     inherited_errors: Mapping[str, str] | None = None,
+    model_metrics: list[ModelScopedMetric] | None = None,
 ) -> str:
-    """Render a datasource's (already hidden-filtered + name-sorted) datasets.
+    """Render a datasource's (already hidden-filtered + name-sorted) datasets and its model-scoped metrics.
 
     Extracted from ``mcp/server.py::datasets_summary`` so both the tool and the
     ``inspect`` dataset collection (compact=False) render through one path. With
@@ -139,14 +142,37 @@ def render_datasets_summary(
     desc = _desc_fn(descriptions_max_chars)
     errors = inherited_errors or {}
     if fmt == "json":
-        return _datasets_summary_json(
+        out = json.loads(_datasets_summary_json(
             datasource_name=datasource_name, datasets=datasets, compact=compact,
             desc=desc, errors=errors,
-        )
-    return _datasets_summary_markdown(
+        ))
+        if model_metrics:
+            out["model_scoped_metrics"] = [_model_metric_payload(m, compact=compact, desc=desc) for m in model_metrics]
+        return json.dumps(out, indent=2)
+    text = _datasets_summary_markdown(
         datasource_name=datasource_name, datasets=datasets, compact=compact,
         desc=desc, errors=errors,
     )
+    return text + _model_metrics_markdown(model_metrics or [], compact=compact, desc=desc)
+
+
+def _model_metric_payload(metric: ModelScopedMetric, *, compact: bool, desc) -> dict[str, Any]:
+    payload: dict[str, Any] = {"name": metric.name, "semantic_model": metric.semantic_model}
+    if not compact:
+        payload.update(expression=expression_text(metric.expression), description=desc(metric.description))
+    return payload
+
+
+def _model_metrics_markdown(metrics: list[ModelScopedMetric], *, compact: bool, desc) -> str:
+    """The model-scoped metrics section; empty without any."""
+    if not metrics:
+        return ""
+    if compact:
+        return "\n\n## Model-scoped metrics\n" + ", ".join(f"`{m.name}` ({m.semantic_model})" for m in metrics)
+    rows = [{"name": m.name, "semantic_model": m.semantic_model, "expression": expression_text(m.expression),
+             "description": desc(m.description)} for m in metrics]
+    return "\n\n## Model-scoped metrics\n\n" + _markdown_table(
+        rows=rows, fields=["name", "semantic_model", "expression", "description"])
 
 
 def _desc_fn(descriptions_max_chars: int | None):

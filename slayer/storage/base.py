@@ -841,7 +841,8 @@ class StorageBackend(ABC):
         await self._validate_mode_a_placeholders(dataset)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_dataset_filters(dataset=dataset, reachable=peers)
-        check_evaluated_metrics(dataset=dataset, reachable=peers)
+        check_evaluated_metrics(dataset=dataset, reachable=peers, model_metrics={
+            m.name for m in await self.list_model_scoped_metrics(dataset.data_source)})
         self._validate_relationship_edges(dataset, peers=peers)
         await self._validate_aggregations(dataset)
         await self._validate_field_granularities(dataset)

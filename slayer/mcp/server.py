@@ -695,6 +695,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             fmt=fmt,
             compact=compact,
             inherited_errors=inherited_errors,
+            model_metrics=await storage.list_model_scoped_metrics(datasource_name),
         )
 
     @tool()

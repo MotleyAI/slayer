@@ -37,10 +37,12 @@ from slayer.inspect.dataset_render import (
 )
 from slayer.memories.help_seed import HELP_ID_PREFIX, RENAMED_HELP_IDS
 from slayer.memories.resolver import resolve_entity
+from slayer.core.names import match_name
 from slayer.search.render import (
     collect_dataset_entity_pairs,
     compact_description_from_learning,
     render_memory_text,
+    render_model_scoped_metric_text,
 )
 from slayer.storage.base import StorageBackend
 
@@ -791,6 +793,10 @@ class InspectService:
         descriptions_max_chars: int | None,
         warnings: list[str],
     ) -> _OneResult:
+        if entity_type == "metric" and "." not in reference:
+            scoped = await self._inspect_model_scoped(reference=reference, fmt=fmt, warnings=warnings)
+            if scoped is not None:
+                return scoped
         resolved = await self._resolve_single_canonical(
             reference=reference, warnings=warnings,
         )
@@ -832,6 +838,29 @@ class InspectService:
             ds_name=ds_name, dataset_name=dataset_name, pairs=pairs,
             match_count=len(matches),
         ))
+
+    async def _inspect_model_scoped(self, *, reference: str, fmt: str, warnings: list[str]) -> _OneResult | None:
+        """A bare model-scoped metric name, rendered as such; ``None`` when no datasource declares one."""
+        found = []
+        for ds in await self._storage.list_datasources():
+            metrics = await self._storage.list_model_scoped_metrics(ds)
+            name = match_name(name=reference, declared=[m.name for m in metrics], quoted=False)
+            found.extend(m for m in metrics if m.name == name)
+        if not found:
+            return None
+        if len(found) > 1:
+            places = sorted(f"{m.data_source}.{m.semantic_model}" for m in found)
+            return _OneResult(None, True, f"Model-scoped metric '{reference}' is declared in several datasources: "
+                                          f"{places}.")
+        metric = found[0]
+        canonical = f"{metric.data_source}.{metric.name}"
+        text = render_model_scoped_metric_text(metric=metric)
+        if fmt == "json":
+            return _OneResult(canonical, False, json.dumps({
+                "canonical_id": canonical, "entity_type": "metric", "semantic_model": metric.semantic_model,
+                "description": metric.description, "text": text, "warnings": warnings,
+            }))
+        return _OneResult(canonical, False, self._markdown_with_warnings(text, warnings))
 
     async def _maybe_refresh_leaf_sample(
         self,

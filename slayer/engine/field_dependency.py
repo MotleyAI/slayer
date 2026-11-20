@@ -18,7 +18,7 @@ remain authoritative.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Set as AbstractSet
 
 import sqlglot
 
@@ -622,9 +622,11 @@ def _filter_cycle(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]
     return visit(dataset.name)
 
 
-def check_evaluated_metrics(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:
-    """Refuse a metric of ``dataset`` whose ``AGG(…)`` is malformed or reads a field (``AggArgumentError``,
-    ``AggFilterError``); an argument whose path misses is left to query time."""
+def check_evaluated_metrics(
+    *, dataset: SlayerDataset, reachable: dict[str, SlayerDataset], model_metrics: AbstractSet[str] = frozenset(),
+) -> None:
+    """Refuse a metric of ``dataset`` whose ``AGG(…)`` is malformed or reads a field or one of the datasource's
+    ``model_metrics`` (``AggArgumentError``, ``AggFilterError``); an argument whose path misses is left to query time."""
     datasets = {**reachable, dataset.name: dataset}
     for metric in dataset.metrics:
         text = portable_text(metric.expression)
@@ -642,6 +644,10 @@ def check_evaluated_metrics(*, dataset: SlayerDataset, reachable: dict[str, Slay
             if terminal.get_metric(parts[-1]) is None and terminal.get_field(parts[-1]) is not None:
                 raise AggArgumentError(expression=f"Metric {metric.name!r}: AGG({'.'.join(parts)})",
                                        reason=f"{'.'.join(parts)!r} is a field")
+            if (len(parts) == 1 and terminal.get_metric(parts[0]) is None and terminal.get_field(parts[0]) is None
+                    and parts[0].casefold() in {n.casefold() for n in model_metrics}):
+                raise AggArgumentError(expression=f"Metric {metric.name!r}: AGG({parts[0]})",
+                                       reason=f"{parts[0]!r} is a model-scoped metric")
 
 
 def check_dataset_filters(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:
