@@ -344,9 +344,10 @@ async def test_an_unquoted_head_supplies_rows_in_any_case(backend: str, metrics:
     assert unit.row_count == 1
 
 
-async def test_row_supply_cells_read_the_stage_variables(backend: str) -> None:
+@pytest.mark.parametrize("head", ["orders", "ORDERS"])
+async def test_row_supply_cells_read_the_stage_variables(backend: str, head: str) -> None:
     async with seed_engine(backend) as eng:
-        resp = await run(eng, dimensions=[R], metrics=[REV, RET], filter=["orders.status = '{s}'"],
+        resp = await run(eng, dimensions=[R], metrics=[REV, RET], filter=[f"{head}.status = '{{s}}'"],
                          variables={"s": "completed"})
     assert table(resp, R, REV, RET) == rows(("EAST", 150, 25))
 

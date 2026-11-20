@@ -45,10 +45,9 @@ from slayer.core.syntax import (
     Ref,
     StarSource,
     call_keywords,
-    canonical_metric_text,
     drop_root_qualifier,
-    map_refs,
     parse_template,
+    respell_path_heads,
     root_relative,
     walk_parsed_refs,
     walk_references,
@@ -736,15 +735,9 @@ async def _anchor_name(
 
 
 def _respelled_heads(query: SlayerQuery, respell: dict[str, str]) -> SlayerQuery:
-    """``query`` with each first segment of ``respell`` written as its dataset's name."""
+    """``query`` with each unquoted first segment of ``respell`` written as its dataset's name, every other byte kept."""
     def heads(text: str) -> str:
-        try:
-            tree = parse_template(text)
-        except Exception:  # noqa: BLE001
-            return text
-        changed = map_refs(tree, lambda r: r.model_copy(update={"parts": (respell[r.parts[0]], *r.parts[1:])})
-                           if isinstance(r, DottedRef) and r.parts[0] in respell else r)
-        return text if changed is tree else canonical_metric_text(changed)
+        return respell_path_heads(text, respell=respell.get)
     return query.model_copy(update={
         "dimensions": [d.model_copy(update={"field": heads(d.field)}) for d in query.dimensions or []] or None,
         "time_dimensions": [td.model_copy(update={"field": heads(td.field)})
