@@ -632,18 +632,28 @@ async def _anchor_spellings(
             if isinstance(node, StarSource):
                 raise unqualified_count(await _would_infer(query, storage=storage, data_source=data_source,
                                                            siblings=siblings))
-            if isinstance(node, Ref):
-                if match_name(name=node.name, declared=aliases, quoted=node.quoted) is None:
-                    raise unknown_metric(node.name, datasets=(
-                        await _visible_datasets(storage=storage, data_source=data_source)).values())
-                continue
-            hit = find_anchor(node.parts[0], quoted=node.quoted_at(0), reader=None, datasets_by_name=anchors)
-            if hit is None:
-                visible = await _visible_datasets(storage=storage, data_source=data_source)
-                raise edge_first_refusal(node.parts, datasets_by_name=visible) or unknown_dataset(node.parts)
-            if hit.name != node.parts[0]:
-                respell[node.parts[0]] = hit.name
+            name = await _anchor_name(node, aliases=aliases, anchors=anchors, storage=storage,
+                                      data_source=data_source)
+            if name is not None and name != node.parts[0]:
+                respell[node.parts[0]] = name
     return _respelled_heads(query, respell) if respell else query
+
+
+async def _anchor_name(
+    node: Ref | DottedRef, *, aliases: list[str], anchors: dict[str, SlayerDataset], storage: StorageBackend,
+    data_source: str | None,
+) -> str | None:
+    """The dataset a dotted ``node`` anchors at (``None`` for an alias); a bare non-alias or unknown anchor refused."""
+    if isinstance(node, Ref):
+        if match_name(name=node.name, declared=aliases, quoted=node.quoted) is None:
+            raise unknown_metric(node.name, datasets=(
+                await _visible_datasets(storage=storage, data_source=data_source)).values())
+        return None
+    hit = find_anchor(node.parts[0], quoted=node.quoted_at(0), reader=None, datasets_by_name=anchors)
+    if hit is None:
+        visible = await _visible_datasets(storage=storage, data_source=data_source)
+        raise edge_first_refusal(node.parts, datasets_by_name=visible) or unknown_dataset(node.parts)
+    return hit.name
 
 
 def _respelled_heads(query: SlayerQuery, respell: dict[str, str]) -> SlayerQuery:
