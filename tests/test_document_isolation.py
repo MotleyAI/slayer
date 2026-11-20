@@ -41,14 +41,14 @@ GOOD_MEMORIES = ("good-a", "good-b")
 
 
 def _bad_orders() -> dict:
-    """Relationship keyed on an expression field: fails construction, not repaired on load."""
+    """Relationship keyed on a field reading another dataset: fails construction, not repaired on load."""
     return {
         "version": 10, "name": BAD, "sql_table": "orders", "data_source": DS,
         "columns": [
             {"name": "id", "type": "INT", "primary_key": True},
             {"name": "customer_id", "type": "INT"},
             {"name": "amount", "type": "INT"},
-            {"name": CAUSE, "type": "INT", "sql": "customer_id + 0"},
+            {"name": CAUSE, "type": "INT", "sql": "customers.id"},
         ],
         "joins": [{"target_model": "customers", "join_pairs": [[CAUSE, "id"]]}],
     }

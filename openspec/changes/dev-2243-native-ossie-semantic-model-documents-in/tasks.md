@@ -46,7 +46,7 @@
 
 - [ ] 4.1 `import-osi`: verbatim native store after the validity check, earlier-shape upgrades, legacy split with introspected fields, re-import replacing 1.x-converted datasets; retire `slayer/osi/converter.py` (keep the legacy-upgrade introspection); verify import tests pass
 - [ ] 4.2 `export-osi`: merged document per datasource, verbatim single-document case, `SLAYER` boundary entry, `AGG(…)` for model-scoped references; `slayer ossie-roundtrip`; verify export and grader tests pass
-- [ ] 4.3 `validate-datasets` untyped finding on all surfaces and CLI `--force-clean` write-in; verify drift-type tests pass
+- [x] 4.3 `validate-datasets` untyped finding on all surfaces and CLI `--force-clean` write-in; verify drift-type tests pass
 - [ ] 4.4 MCP tools, `inspect`/`datasets_summary`, REST `/semantic-models`, Python client (sync + async), CLI `semantic-models`; query-tool guidance and a help topic; search indexing of documents and model-scoped metrics; verify surface and search tests pass
 
 ## 5. CI, docs, architecture, tracker
