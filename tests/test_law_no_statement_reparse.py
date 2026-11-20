@@ -235,7 +235,7 @@ async def test_every_seam_composes_without_a_statement_render(seam: str, dialect
 async def test_query_backed_expansion_composes_without_a_statement_render(ds_type: str) -> None:
     _, sql = await _expand(
         ds_type=ds_type,
-        columns=[
+        fields=[
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],

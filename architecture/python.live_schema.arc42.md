@@ -46,6 +46,8 @@ flowchart TD
 1. **Ingestion is idempotent and additive-only**: user metadata is never
    overwritten by a re-ingest (documented exceptions: the `source_kind`
    refresh, and a non-list column re-typed to the list its live column is). [review]
+   **One ingest door**: surfaces ingest only through the idempotent pass.
+   [enforced: test:tests/test_law_ingest_door.py]
 2. **One treatment per model source**: an `sql`-mode model is typed,
    re-typed, validated and drift-checked exactly like a `sql_table` model
    wherever the live database can tell the same about both; any difference

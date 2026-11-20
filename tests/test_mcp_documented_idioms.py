@@ -253,7 +253,7 @@ async def test_per_customer_examples_keep_namesakes_apart(namesake_engine: Slaye
 async def test_time_spine_returns_every_bucket_of_the_range(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
         "time_dimensions": [json.loads(fx.SPINE_TIME_DIMENSION)],
-        "metrics": [{"metric": fx.SPINE_MEASURE, "alias": "total"}, {"metric": "count(orders.id)", "alias": "n"}],
+        "metrics": [{"metric": fx.SPINE_METRIC, "alias": "total"}, {"metric": "count(orders.id)", "alias": "n"}],
     })
     col = next(c for c in resp.columns if c.endswith("timestamp"))
     by_month = {str(r[col])[:7]: (fx.value(r, ".total"), fx.value(r, ".n")) for r in resp.data}
@@ -322,11 +322,11 @@ async def test_outer_stage_reads_flattened_inner_dimension(engine: SlayerQueryEn
             "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
         },
         {
-            "population": "per_customer", "dimensions": [f"per_customer.{fx.STAGE_COLUMN}"],
+            "population": "per_customer", "dimensions": [f"per_customer.{fx.STAGE_FIELD}"],
             "metrics": ["count(per_customer.*)", {"metric": "sum(per_customer.total)", "alias": "region_total"}],
         },
     ])
-    rows = fx.rows_by(resp, key=fx.STAGE_COLUMN)
+    rows = fx.rows_by(resp, key=fx.STAGE_FIELD)
     assert {k: (fx.value(r, "._count"), fx.value(r, ".region_total")) for k, r in rows.items()} == {
         "North": (2, 300), "South": (1, 190),
     }

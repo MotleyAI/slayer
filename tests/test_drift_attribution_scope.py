@@ -760,7 +760,7 @@ class TestUnreachableDatasource:
 
 _STAMP = "slayer_model"
 _FIT_MARKER_RE = re.compile(r"_[0-9a-f]{8}_")
-_LONG = "AnExtremelyLongModelNameThatForcesIdentifierFitting"
+_LONG = "AnExtremelyLongDatasetNameThatForcesIdentifierFitting"
 
 _QB_STAGES = [
     {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
@@ -905,8 +905,8 @@ class TestReadSetStamp:
         try:
             statement, touched, sql = await _render(engine, {
                 "population": f"{_LONG}Invoice",
-                "dimensions": ["AnExtremelyLongModelNameThatForcesIdentifierFittingInvoice.status", f"{_LONG}Customer.{_LONG}Consumer.lifetime_value"],
-                "metrics": [{"metric": "count(AnExtremelyLongModelNameThatForcesIdentifierFittingInvoice.*)"}],
+                "dimensions": ["AnExtremelyLongDatasetNameThatForcesIdentifierFittingInvoice.status", f"{_LONG}Customer.{_LONG}Consumer.lifetime_value"],
+                "metrics": [{"metric": "count(AnExtremelyLongDatasetNameThatForcesIdentifierFittingInvoice.*)"}],
             })
         finally:
             await engine.aclose()

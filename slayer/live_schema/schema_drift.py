@@ -1176,7 +1176,7 @@ def _field_ref_targets_dropped(
     return ref_col in state.cascadable(target.name), target
 
 
-def _first_dropped_sql_column_ref(
+def _first_dropped_sql_field_ref(
     *, col: DatasetField, dataset: SlayerDataset, state: _CascadeState
 ) -> tuple[SlayerDataset, str] | None:
     """``(target_dataset, ref_col)`` for the first ref in ``col``'s derived sql or filter resolving to a dropped field,
@@ -1210,7 +1210,7 @@ def _cascade_derived_fields(
     for col in dataset.fields:
         if col.name in dropped_set:
             continue
-        hit = _first_dropped_sql_column_ref(col=col, dataset=dataset, state=state)
+        hit = _first_dropped_sql_field_ref(col=col, dataset=dataset, state=state)
         if hit is None:
             continue
         target, ref_col = hit

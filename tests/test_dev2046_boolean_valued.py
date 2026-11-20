@@ -21,7 +21,7 @@ from tests._dev2046_fixtures import customers_dataset, orders_dataset
 ORDERS = orders_dataset()
 CUSTOMERS = customers_dataset()
 BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[CUSTOMERS])
-COLUMN_TYPE = dataset_field_type(dataset=ORDERS, datasets_by_name={"orders": ORDERS, "customers": CUSTOMERS})
+FIELD_TYPE = dataset_field_type(dataset=ORDERS, datasets_by_name={"orders": ORDERS, "customers": CUSTOMERS})
 
 
 def _bind(text: str) -> ValueKey:
@@ -83,7 +83,7 @@ def _bind(text: str) -> ValueKey:
     ("iif(flag, amount, 0) * 2", False),
 ])
 def test_recognition(text: str, expected: bool) -> None:
-    assert boolean_valued(_bind(text), field_type=COLUMN_TYPE) is expected
+    assert boolean_valued(_bind(text), field_type=FIELD_TYPE) is expected
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -108,7 +108,7 @@ def test_recognition(text: str, expected: bool) -> None:
     ("lower(status)", False),
 ])
 def test_numeric_recognition(text: str, expected: bool) -> None:
-    assert numeric_valued(_bind(text), field_type=COLUMN_TYPE) is expected
+    assert numeric_valued(_bind(text), field_type=FIELD_TYPE) is expected
 
 
 def test_stage_column() -> None:

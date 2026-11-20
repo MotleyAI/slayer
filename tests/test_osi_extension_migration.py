@@ -34,9 +34,9 @@ def _owner(doc: dict[str, Any], location: str) -> dict[str, Any]:
             "semantic_model": doc}[location]
 
 
-def _meta(model: SlayerDataset, location: str) -> dict[str, Any]:
-    owner: Any = {"model": model, "semantic_model": model, "column": model.get_field("amount"),
-                  "measure": model.get_metric("revenue"), "join": model.relationships[0]}[location]
+def _meta(dataset: SlayerDataset, location: str) -> dict[str, Any]:
+    owner: Any = {"model": dataset, "semantic_model": dataset, "column": dataset.get_field("amount"),
+                  "measure": dataset.get_metric("revenue"), "join": dataset.relationships[0]}[location]
     assert owner is not None
     return owner.meta or {}
 

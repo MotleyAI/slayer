@@ -27,16 +27,16 @@ class TestSearchLazyGC:
         the canonical set before BM25 ranks."""
         await storage.save_memory(
             learning="x",
-            entities=["mydb.orders.amount", "mydb.deleted_model"],
+            entities=["mydb.orders.amount", "mydb.deleted_dataset"],
         )
         svc = SearchService(storage=storage)
         resp = await svc.search(
-            entities=["mydb.orders.amount", "mydb.deleted_model"],
+            entities=["mydb.orders.amount", "mydb.deleted_dataset"],
         )
         memory_hits = [h for h in resp.results if h.kind == "memory" and h.query is None]
         assert memory_hits, "expected the live-tag memory to surface"
         for hit in memory_hits:
-            assert "mydb.deleted_model" not in hit.matched_entities
+            assert "mydb.deleted_dataset" not in hit.matched_entities
 
     async def test_recency_fallback_filter_excludes_stale_in_matched(
         self, storage: StorageBackend,

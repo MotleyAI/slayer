@@ -27,7 +27,7 @@ from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
-MONEY_COLUMNS = {
+MONEY_FIELDS = {
     ("orders", "subtotal"),
     ("orders", "tax_paid"),
     ("orders", "order_total"),
@@ -136,7 +136,7 @@ def _edges(datasets: dict[str, SlayerDataset]) -> set[tuple[str, str]]:
     return {(name, j.to) for name, m in datasets.items() for j in m.relationships}
 
 
-def _column(dataset: SlayerDataset, name: str) -> DatasetField:
+def _field(dataset: SlayerDataset, name: str) -> DatasetField:
     return next(c for c in dataset.fields if c.name == name)
 
 
@@ -186,7 +186,7 @@ def _store_affected_datasets(*, storage: YAMLStorage, store_dir: str) -> None:
         jaffle_shop.apply_demo_enrichment(model)
         model.relationships = []
         for column in model.fields:
-            if (model.name, column.name) in MONEY_COLUMNS:
+            if (model.name, column.name) in MONEY_FIELDS:
                 column.db_type = None
         run_sync(storage.save_dataset(model))
 
@@ -207,11 +207,11 @@ def _keys(datasets: dict[str, SlayerDataset]) -> dict[str, set[str]]:
     return {name: {c.name for c in m.fields if c.primary_key} for name, m in datasets.items()}
 
 
-def _strip_joins_and_edit(storage: YAMLStorage) -> None:
+def _strip_relationships_and_edit(storage: YAMLStorage) -> None:
     for model in _stored_datasets(storage).values():
         model.relationships = []
         if model.name == "orders":
-            _column(model, "order_total").description = "My own total"
+            _field(model, "order_total").description = "My own total"
         run_sync(storage.save_dataset(model))
 
 
@@ -231,7 +231,7 @@ def _reset_engines():
 
 
 class TestDemoKeysAndJoins:
-    def _assert_keys_and_joins(self, storage: YAMLStorage) -> None:
+    def _assert_keys_and_relationships(self, storage: YAMLStorage) -> None:
         models = _stored_datasets(storage)
         assert _edges(models) == EXPECTED_EDGES
         assert _keys(models) == EXPECTED_KEYS
@@ -239,13 +239,13 @@ class TestDemoKeysAndJoins:
 
     def test_demo_ingests_its_joins_and_keys(self, jaffle_generator, storage, store_dir) -> None:
         _setup(storage, store_dir)
-        self._assert_keys_and_joins(storage)
+        self._assert_keys_and_relationships(storage)
 
     def test_demo_keeps_joins_when_generic_key_reflection_raises(
         self, jaffle_generator, storage, store_dir, sa_without_generic_key_reflection,
     ) -> None:
         _setup(storage, store_dir)
-        self._assert_keys_and_joins(storage)
+        self._assert_keys_and_relationships(storage)
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ class TestDemoMoneyIsExact:
     def test_money_columns_are_decimal_12_2(self, jaffle_generator, storage, store_dir) -> None:
         _setup(storage, store_dir)
         types = _live_types(_db_path(store_dir))
-        for key in MONEY_COLUMNS:
+        for key in MONEY_FIELDS:
             assert types[key] == "DECIMAL(12,2)", key
         assert types[("stores", "tax_rate")] == "DOUBLE"
 
@@ -309,8 +309,8 @@ class TestDemoMoneyIsExact:
     def test_demo_models_declare_decimal_db_type(self, jaffle_generator, storage, store_dir) -> None:
         _setup(storage, store_dir)
         models = _stored_datasets(storage)
-        for table, column in MONEY_COLUMNS:
-            assert _column(models[table], column).db_type == "DECIMAL(12,2)", (table, column)
+        for table, column in MONEY_FIELDS:
+            assert _field(models[table], column).db_type == "DECIMAL(12,2)", (table, column)
 
     def test_enrichment_fills_only_an_empty_db_type(self) -> None:
         model = SlayerDataset(
@@ -323,16 +323,16 @@ class TestDemoMoneyIsExact:
             ],
         )
         jaffle_shop.apply_demo_enrichment(model)
-        assert _column(model, "order_total").db_type == "DECIMAL(12,2)"
-        assert _column(model, "subtotal").db_type == "NUMERIC(18,4)"
+        assert _field(model, "order_total").db_type == "DECIMAL(12,2)"
+        assert _field(model, "subtotal").db_type == "NUMERIC(18,4)"
 
     def test_user_set_db_type_survives_setup(self, jaffle_generator, storage: YAMLStorage, store_dir) -> None:
         _setup(storage, store_dir)
         orders = _stored_datasets(storage)["orders"]
-        _column(orders, "subtotal").db_type = "NUMERIC(18,4)"
+        _field(orders, "subtotal").db_type = "NUMERIC(18,4)"
         run_sync(storage.save_dataset(orders))
         _setup(storage, store_dir)
-        assert _column(_stored_datasets(storage)["orders"], "subtotal").db_type == "NUMERIC(18,4)"
+        assert _field(_stored_datasets(storage)["orders"], "subtotal").db_type == "NUMERIC(18,4)"
 
 
 # ---------------------------------------------------------------------------
@@ -399,12 +399,12 @@ class TestStaleDemoDatabase:
 class TestDemoSetupHealsModels:
     def test_joinless_models_regain_joins_without_rebuild(self, jaffle_generator, storage, store_dir) -> None:
         _setup(storage, store_dir)
-        _strip_joins_and_edit(storage)
+        _strip_relationships_and_edit(storage)
         _setup(storage, store_dir)
         models = _stored_datasets(storage)
         assert jaffle_generator.calls == 1
         assert _edges(models) == EXPECTED_EDGES
-        assert _column(models["orders"], "order_total").description == "My own total"
+        assert _field(models["orders"], "order_total").description == "My own total"
         assert _run(storage, README_QUERY)
 
     def test_a_demo_model_that_is_not_stored_fails_setup(
@@ -438,12 +438,12 @@ class TestDemoSetupHealsModels:
     ) -> None:
         _build_v141_db(db_path=_db_path(store_dir), data_dir=jafgen_dir, tmp_path=tmp_path)
         _store_affected_datasets(storage=storage, store_dir=store_dir)
-        _strip_joins_and_edit(storage)
+        _strip_relationships_and_edit(storage)
         _setup(storage, store_dir)
         models = _stored_datasets(storage)
         assert jaffle_generator.calls == 1
         assert _edges(models) == EXPECTED_EDGES
-        assert _column(models["orders"], "order_total").description == "My own total"
-        for table, column in MONEY_COLUMNS:
-            assert _column(models[table], column).db_type == "DECIMAL(12,2)", (table, column)
+        assert _field(models["orders"], "order_total").description == "My own total"
+        for table, column in MONEY_FIELDS:
+            assert _field(models[table], column).db_type == "DECIMAL(12,2)", (table, column)
         assert _run(storage, README_QUERY)

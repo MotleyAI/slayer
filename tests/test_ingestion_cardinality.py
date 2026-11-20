@@ -135,7 +135,7 @@ async def _setup(workspace: Path) -> tuple[YAMLStorage, DatasourceConfig, str]:
     return storage, ds, db_path
 
 
-def _join_to(dataset: SlayerDataset, target: str):
+def _relationship_to(dataset: SlayerDataset, target: str):
     return [j for j in dataset.relationships if j.to == target]
 
 
@@ -151,7 +151,7 @@ class TestCompositeFk:
         storage, _, _ = await _setup(workspace)
         mem = await storage.get_dataset("memberships", data_source="ds")
         assert mem is not None
-        org_joins = _join_to(mem, "org_units")
+        org_joins = _relationship_to(mem, "org_units")
         # Exactly ONE relationship, carrying BOTH key pairs — not two single-col relationships.
         assert len(org_joins) == 1
         assert {tuple(p) for p in org_joins[0].column_pairs} == {
@@ -253,14 +253,14 @@ class TestStructuralCardinality:
         storage, _, _ = await _setup(workspace)
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
-        j = _join_to(orders, "customers")[0]
+        j = _relationship_to(orders, "customers")[0]
         assert j.cardinality is RelationshipCardinality.MANY_TO_ONE
 
     async def test_pk_source_fk_join_is_one_to_one(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
         profiles = await storage.get_dataset("user_profiles", data_source="ds")
         assert profiles is not None
-        j = _join_to(profiles, "customers")[0]
+        j = _relationship_to(profiles, "customers")[0]
         # user_profiles.customer_id is the PK (source unique) and customers.id is
         # the PK (target unique) => one_to_one.
         assert j.cardinality is RelationshipCardinality.ONE_TO_ONE
@@ -269,7 +269,7 @@ class TestStructuralCardinality:
         storage, _, _ = await _setup(workspace)
         mem = await storage.get_dataset("memberships", data_source="ds")
         assert mem is not None
-        j = _join_to(mem, "org_units")[0]
+        j = _relationship_to(mem, "org_units")[0]
         assert j.cardinality is RelationshipCardinality.MANY_TO_ONE
 
     async def test_non_pk_unique_source_fk_is_one_to_one(
@@ -280,7 +280,7 @@ class TestStructuralCardinality:
         storage, _, _ = await _setup(workspace)
         accounts = await storage.get_dataset("accounts", data_source="ds")
         assert accounts is not None
-        j = _join_to(accounts, "customers")[0]
+        j = _relationship_to(accounts, "customers")[0]
         assert j.cardinality is RelationshipCardinality.ONE_TO_ONE
 
 

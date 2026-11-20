@@ -12,7 +12,7 @@ import pytest
 
 from slayer.core.models import SlayerDataset
 from tests._dev2171_fixtures import (
-    by_id, counts_by, cube_issues, datasets_of, has_column, import_cube, import_dbt, rows, seed, value,
+    by_id, counts_by, cube_issues, datasets_of, has_field, import_cube, import_dbt, rows, seed, value,
 )
 
 ID = {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True}
@@ -95,14 +95,14 @@ class TestHiddenReader:
         (helper,) = readers_of(imported["orders"], "status")
         (to_orders,) = imported["customers"].relationships
         assert to_orders.to_columns == [helper["name"]]
-        assert has_column(result, "customers", "order_status")
+        assert has_field(result, "customers", "order_status")
         assert not cube_issues(result, "order_status")
 
     def test_re_import_is_stable(self, db: Path) -> None:
         project = [cube(dimensions=[SELF_NAMED, dim("customer_id", "{CUBE}.legacy_ref", type="number"),
                                     dim("status_upper", "UPPER({CUBE}.status)")], joins=[JOIN]), CUSTOMERS]
         first, second = import_cube(project, db=db), import_cube(project, db=db)
-        assert has_column(first, "orders", "status")
+        assert has_field(first, "orders", "status")
         assert [d.model_dump(mode="json") for d in first.datasets] == [d.model_dump(mode="json") for d in second.datasets]
 
 

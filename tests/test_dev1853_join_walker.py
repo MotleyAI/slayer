@@ -23,11 +23,11 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.sql.field_expansion import resolve_ref_target
 
 
-def _dataset(name: str, cols: list[str], joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _dataset(name: str, cols: list[str], relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="ds", sql_table=name,
         fields=[DatasetField(name=c) for c in cols],
-        relationships=joins or [],
+        relationships=relationships or [],
     )
 
 

@@ -19,7 +19,7 @@ from slayer.engine.plan import _StagePlanner
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.dataset_render import dataset_skeleton_fields, render_dataset_inspection
 
-from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, orders_columns, orders_engine
+from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, orders_fields, orders_engine
 
 
 @pytest.fixture(params=BACKENDS)
@@ -302,7 +302,7 @@ async def test_a_spliced_backing_query_looks_up_what_it_reports(
     ('sum(iif("{x}" = 1, amount, 0))', []),
 ], ids=["looked-up", "doubled-brace", "digit-braces", "quoted-identifier"])
 def test_saved_measure_formula_demand(formula: str, required: list[str]) -> None:
-    model = SlayerDataset(name="m", sql_table="orders", data_source="test", fields=orders_columns(),
+    model = SlayerDataset(name="m", sql_table="orders", data_source="test", fields=orders_fields(),
                         metrics=[DatasetMetric(name="v", expression=formula)])
     assert dataset_skeleton_fields(dataset=model)["variables"]["required"] == required
 

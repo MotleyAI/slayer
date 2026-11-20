@@ -56,13 +56,13 @@ def _abc_chain(
     *,
     a_foo_sql: str,
     c_x_sql: str,
-    c_joins_back_to_a: bool = False,
+    c_relationships_back_to_a: bool = False,
 ) -> tuple[SlayerDataset, SlayerDataset, SlayerDataset]:
     """The canonical A → B → C three-dataset scaffold used by the strict
     alias-walk tests. ``foo`` on A and ``x`` on C are derived; their
     expressions are the per-test variable.
 
-    ``c_joins_back_to_a`` adds an ``a_id`` field + a C→A relationship, which
+    ``c_relationships_back_to_a`` adds an ``a_id`` field + a C→A relationship, which
     closes a back-edge needed to make a cycle through C.x reachable.
     """
     c_columns = [
@@ -70,7 +70,7 @@ def _abc_chain(
         DatasetField(name="x", sql=c_x_sql, datatype=DataType.FLOAT),
     ]
     c_joins = []
-    if c_joins_back_to_a:
+    if c_relationships_back_to_a:
         c_columns.insert(
             1, DatasetField(name="a_id", sql="a_id", datatype=DataType.FLOAT),
         )
@@ -365,7 +365,7 @@ async def test_save_model_detects_cycle_via_canonical_multihop_path_alias(
     # C.x has the back-reference into A.foo (C relates to A), so saving A
     # completes a cycle.
     model_a, model_b, model_c = _abc_chain(
-        a_foo_sql="B.C.x + 1", c_x_sql="A.foo + 1", c_joins_back_to_a=True,
+        a_foo_sql="B.C.x + 1", c_x_sql="A.foo + 1", c_relationships_back_to_a=True,
     )
     await storage.save_dataset(model_c, _validate=False)  # A doesn't exist yet
     await storage.save_dataset(model_b)

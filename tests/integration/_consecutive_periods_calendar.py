@@ -62,13 +62,13 @@ def streak_dataset(data_source: str) -> SlayerDataset:
 
 
 async def assert_calendar_streak(
-    engine: SlayerQueryEngine, *, column: str, granularity: str,
+    engine: SlayerQueryEngine, *, field: str, granularity: str,
 ) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "streak_events",
-        "time_dimensions": [{"field": f"streak_events.{column}", "granularity": granularity}],
+        "time_dimensions": [{"field": f"streak_events.{field}", "granularity": granularity}],
         "filter": [f"streak_events.series = '{granularity}'"],
         "metrics": [{"metric": "consecutive_periods(sum(streak_events.amount) > 0)", "alias": "v"}],
     }))
-    rows = sorted(resp.data, key=lambda r: str(r[f"streak_events.{column}"]))
+    rows = sorted(resp.data, key=lambda r: str(r[f"streak_events.{field}"]))
     assert [int(r["v"]) for r in rows] == [1, 2, 1, 2], rows

@@ -27,7 +27,7 @@ from tests._dev2102_fixtures import (
     addresses,
     customers,
     ext,
-    join,
+    relationship_to,
     q,
     rows,
     shop,
@@ -46,7 +46,7 @@ def dialect(request) -> str:
 
 
 def _vip(join_type: str = "inner") -> dict:
-    return ext("customers", relationships=[join("vip_list", VIP_PAIRS, join_type=join_type)])
+    return ext("customers", relationships=[relationship_to("vip_list", VIP_PAIRS, join_type=join_type)])
 
 
 def _tables(sql: str | None, name: str) -> int:
@@ -66,9 +66,9 @@ async def _outcome(engine: SlayerQueryEngine, query: SlayerQuery) -> Any:
 class TestRootAndStoredEdges:
     async def test_an_inner_join_a_later_extension_names_restricts_by_that_name(self, dialect) -> None:
         query = q(population="events", dimensions=["events.id"], extensions=[
-            ext("events", relationships=[join("users", [["user_id", "id"]], join_type="inner"),
-                                 join("users", [["id", "id"]], name="other")]),
-            ext("users", relationships=[join("events", [["id", "user_id"]], name="primary")])])
+            ext("events", relationships=[relationship_to("users", [["user_id", "id"]], join_type="inner"),
+                                 relationship_to("users", [["id", "id"]], name="other")]),
+            ext("users", relationships=[relationship_to("events", [["id", "user_id"]], name="primary")])])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
         assert values(resp, "events.id") == {1}
@@ -85,7 +85,7 @@ class TestRootAndStoredEdges:
 
     async def test_inner_over_a_stored_left_edge_restricts_without_a_parallel_edge(self, dialect) -> None:
         query = q(population="orders", extensions=[ext("orders", relationships=[
-            join("customers", CUSTOMER_PAIRS, name="c", join_type="inner")])],
+            relationship_to("customers", CUSTOMER_PAIRS, name="c", join_type="inner")])],
             dimensions=["orders.id", "orders.c.name", "customers.tier"])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
@@ -118,7 +118,7 @@ class TestRootAndStoredEdges:
 class TestPaths:
     async def test_fanning_path_restricts_by_existence_and_never_multiplies(self, dialect) -> None:
         query = q(population="customers",
-                  extensions=[ext("orders", relationships=[join("vip_orders", [["id", "order_id"]], join_type="inner")])],
+                  extensions=[ext("orders", relationships=[relationship_to("vip_orders", [["id", "order_id"]], join_type="inner")])],
                   dimensions=["customers.name"], metrics=[{"metric": "count(orders.id)", "alias": "n"}])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
@@ -126,7 +126,7 @@ class TestPaths:
 
     async def test_multi_hop_chain_through_a_stored_left_hop(self, dialect) -> None:
         query = q(population="orders",
-                  extensions=[ext("customers", relationships=[join("regions", REGION_PAIRS, join_type="inner")])],
+                  extensions=[ext("customers", relationships=[relationship_to("regions", REGION_PAIRS, join_type="inner")])],
                   dimensions=["orders.id"])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
@@ -134,14 +134,14 @@ class TestPaths:
 
     async def test_declaring_model_two_hops_from_the_root(self, dialect) -> None:
         query = q(population="orders", dimensions=["orders.id"], metrics=[{"metric": "count(orders.*)", "alias": "n"}],
-                  extensions=[ext("customers", relationships=[join("regions", REGION_PAIRS, join_type="left")]),
-                              ext("regions", relationships=[join("countries", [["country_id", "id"]], join_type="inner")])])
+                  extensions=[ext("customers", relationships=[relationship_to("regions", REGION_PAIRS, join_type="left")]),
+                              ext("regions", relationships=[relationship_to("countries", [["country_id", "id"]], join_type="inner")])])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
         assert rows(resp, "orders.id", "n") == [(1, 1), (2, 1), (3, 1)]
 
     async def test_adding_a_measure_never_changes_the_rows(self, dialect) -> None:
-        extensions = [ext("customers", relationships=[join("regions", REGION_PAIRS, join_type="inner")])]
+        extensions = [ext("customers", relationships=[relationship_to("regions", REGION_PAIRS, join_type="inner")])]
         base = {"population": "orders", "extensions": extensions, "dimensions": ["orders.status"]}
         async with shop(dialect) as engine:
             plain = await engine.execute(q(**base, metrics=[{"metric": "count(orders.*)", "alias": "n"}]))
@@ -154,7 +154,7 @@ class TestPaths:
         stage = q(name="big_spenders", population="orders", dimensions=["orders.customer_id"],
                   metrics=[{"metric": "sum(orders.amount)", "alias": "spent"}], filter=["spent > 25"])
         root = q(population="customers", extensions=[ext("customers", relationships=[
-            join("big_spenders", [["id", "customer_id"]], join_type="inner")])], dimensions=["customers.name"])
+            relationship_to("big_spenders", [["id", "customer_id"]], join_type="inner")])], dimensions=["customers.name"])
         async with shop(dialect) as engine:
             resp = await engine.execute([stage, root])
         assert values(resp, "customers.name") == BIG_SPENDERS
@@ -164,7 +164,7 @@ class TestPaths:
             "population": "orders", "dimensions": ["customers.id"],
             "metrics": [{"metric": "sum(orders.amount)", "alias": "spent"}], "filter": ["spent > 25"]})])
         root = q(population="customers", extensions=[ext("customers", relationships=[
-            join("big_spenders_qb", [["id", "customers__id"]], join_type="inner")])], dimensions=["customers.name"])
+            relationship_to("big_spenders_qb", [["id", "customers__id"]], join_type="inner")])], dimensions=["customers.name"])
         async with shop(dialect, with_datasets(qb)) as engine:
             resp = await engine.execute(root)
         assert values(resp, "customers.name") == BIG_SPENDERS
@@ -176,7 +176,7 @@ class TestPaths:
 
     @pytest.mark.parametrize("target", ["part_keys_b", "part_keys"], ids=["new-edge", "reversed-stored-edge"])
     async def test_composite_keys_with_partial_nulls_are_unmatched(self, dialect, target: str) -> None:
-        query = q(population="parts", extensions=[ext("parts", relationships=[join(target, PART_PAIRS, join_type="inner")])],
+        query = q(population="parts", extensions=[ext("parts", relationships=[relationship_to(target, PART_PAIRS, join_type="inner")])],
                   dimensions=["parts.id"])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
@@ -189,9 +189,9 @@ class TestReferenceBinding:
     async def _assert_as_written(self, engine: SlayerQueryEngine, *, root: str, m: str, target: str,
                                  pairs: list[list[str]], key: str, dims: list[str]) -> Any:
         declared = q(population=root, dimensions=dims,
-                     extensions=[ext(m, relationships=[join(target, pairs, join_type="inner")])])
+                     extensions=[ext(m, relationships=[relationship_to(target, pairs, join_type="inner")])])
         written = q(population=root, dimensions=dims, filter=[f"{m}.{target}.{key} IS NOT NULL"],
-                    extensions=[ext(m, relationships=[join(target, pairs, join_type="left")])])
+                    extensions=[ext(m, relationships=[relationship_to(target, pairs, join_type="left")])])
         got, expected = await _outcome(engine, declared), await _outcome(engine, written)
         assert got == expected
         return got
@@ -217,7 +217,7 @@ class TestReferenceBinding:
                 engine, root="orders", m="addresses", target="regions", pairs=REGION_PAIRS, key="id", dims=["orders.id"])
             assert got is UnresolvableDimensionRelationshipError
             declared = q(population="orders", dimensions=["orders.id"], extensions=[
-                ext("addresses", relationships=[join("regions", REGION_PAIRS, join_type="inner")])])
+                ext("addresses", relationships=[relationship_to("regions", REGION_PAIRS, join_type="inner")])])
             with pytest.raises(UnresolvableDimensionRelationshipError) as info:
                 await engine.execute(declared)
         message = str(info.value).lower()
@@ -240,7 +240,7 @@ class TestReferenceBinding:
 
     async def test_unreachable_declaration_fails_naming_it(self, dialect) -> None:
         query = q(population="orders", dimensions=["orders.id"],
-                  extensions=[ext("events", relationships=[join("users", [["user_id", "id"]], join_type="inner")])])
+                  extensions=[ext("events", relationships=[relationship_to("users", [["user_id", "id"]], join_type="inner")])])
         async with shop(dialect) as engine:
             with pytest.raises(SlayerError) as info:
                 await engine.execute(query)
@@ -267,7 +267,7 @@ class TestModes:
 
     async def test_declared_inner_on_the_stored_edge_keeps_left_traversal(self, dialect) -> None:
         query = q(population="orders", dimensions=["customers.tier"],
-                  extensions=[ext("orders", relationships=[join("customers", CUSTOMER_PAIRS, join_type="inner")])],
+                  extensions=[ext("orders", relationships=[relationship_to("customers", CUSTOMER_PAIRS, join_type="inner")])],
                   metrics=[{"metric": "count(orders.*)", "alias": "n"}])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)

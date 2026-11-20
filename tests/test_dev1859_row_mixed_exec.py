@@ -39,7 +39,7 @@ from tests._dev1847_fixtures import (
     COALESCE_CITY_MIXED_BY_REGION,
     COUNT_CITY_MIXED_BY_REGION,
     CORR_MIXED_BY_REGION,
-    CROSS_MODEL_MIXED_BY_REGION_ID,
+    CROSS_DATASET_MIXED_BY_REGION_ID,
     DEGENERATE_SUM_BY_REGION,
     DISTINCT_MIXED_BY_REGION,
     FILTERED_AVG_UP_BY_PRODUCT,
@@ -183,7 +183,7 @@ class TestOracleReDerivation:
         derived = defaultdict(float)
         for (_cid, rid) in _CUSTOMERS_ROWS:
             derived[rid] += rid * totals[rid]
-        assert dict(derived) == CROSS_MODEL_MIXED_BY_REGION_ID
+        assert dict(derived) == CROSS_DATASET_MIXED_BY_REGION_ID
         avg_p = _avg_up_by(lambda r: r[3])
         for region, expected in WAVG_MIXED_BY_REGION.items():
             rows = [r for r in _SALES_ROWS_WIDE if r[1] == region]
@@ -340,7 +340,7 @@ class TestCrossModelConstituent:
                         "partition_by=customers.region_id))",
                 alias="xm")]))
         by = rows_by(resp, "customers.region_id")
-        for rid, expected in CROSS_MODEL_MIXED_BY_REGION_ID.items():
+        for rid, expected in CROSS_DATASET_MIXED_BY_REGION_ID.items():
             assert float(by[(rid,)]["xm"]) == pytest.approx(expected)
 
 
@@ -444,7 +444,7 @@ class TestOuterModifiers:
 
 
 class TestWindowedConstituent:
-    _FORMULA = "sum(sales.qty * sum(sales.revenue, window='90d'))"
+    _EXPRESSION = "sum(sales.qty * sum(sales.revenue, window='90d'))"
 
     def test_windowed_inner_is_exactly_one_nested_producer(self):
         """Scenario: the windowed inner is exactly one nested producer at the
@@ -455,7 +455,7 @@ class TestWindowedConstituent:
             referenced_datasets=dev1846_datasets()[1:])
         planned = plan_query(
             query=SlayerQuery(population="sales", time_dimensions=month_td(),
-                              metrics=[QueryMetric(metric=self._FORMULA, alias="m")]),
+                              metrics=[QueryMetric(metric=self._EXPRESSION, alias="m")]),
             bundle=bundle)
         [attach] = planned.regroup_attach_plans
         assert attach.attach_phase == "row"
@@ -465,7 +465,7 @@ class TestWindowedConstituent:
         the raw-row oracle, cross-checked against the plain windowed metric."""
         resp = await exec_engine_1846.execute(SlayerQuery(
             population="sales", time_dimensions=month_td(),
-            metrics=[QueryMetric(metric=self._FORMULA, alias="m"),
+            metrics=[QueryMetric(metric=self._EXPRESSION, alias="m"),
                       QueryMetric(metric="sum(sales.revenue, window='90d')", alias="w"),
                       QueryMetric(metric="sum(sales.qty)", alias="q")]))
         got = {month_key(r["sales.ordered_at"]):

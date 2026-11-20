@@ -25,7 +25,7 @@ from tests._dev2219_fixtures import (
     by,
     customers,
     ext,
-    join,
+    relationship_to,
     kinds,
     m,
     orders,
@@ -123,13 +123,13 @@ class TestPassThrough:
         assert by(resp, key="region", value="total") == REVENUE_BY_REGION
 
     async def test_relationship_of_the_stages_own_extension_is_inherited(self, engine) -> None:
-        stage = q(name="s", population="orders", extensions=[ext("orders", join("regions", [("region_id", "id")]))],
+        stage = q(name="s", population="orders", extensions=[ext("orders", relationship_to("regions", [("region_id", "id")]))],
                   dimensions=["orders.region_id"], metrics=[m("sum(orders.amount)", "revenue")])
         resp = await engine.execute([stage, over("s", dimensions=["regions.name"])])
         assert by(resp, key="regions.name", value="total") == REVENUE_BY_ORDER_REGION
 
     async def test_extension_relationship_needs_its_key_passed_through(self, engine) -> None:
-        stage = q(name="s", population="orders", extensions=[ext("orders", join("regions", [("region_id", "id")]))],
+        stage = q(name="s", population="orders", extensions=[ext("orders", relationship_to("regions", [("region_id", "id")]))],
                   dimensions=["orders.status"], metrics=[m("sum(orders.amount)", "revenue")])
         stages = [stage, over("s", dimensions=["regions.name"])]
         with pytest.raises(UnrelatedDatasetError):
@@ -145,7 +145,7 @@ class TestPassThrough:
     async def test_one_source_edge_through_two_upstream_stages_is_inherited_once(self, engine) -> None:
         a = per_customer("a")
         b = q(name="b", population="orders", dimensions=["orders.customer_id"], metrics=[m("count(orders.*)", "nb")])
-        d = q(name="d", population="a", extensions=[ext("a", join("b", [("customer_id", "customer_id")]))],
+        d = q(name="d", population="a", extensions=[ext("a", relationship_to("b", [("customer_id", "customer_id")]))],
               dimensions=["a.customer_id", "b.customer_id"], metrics=[m("sum(a.revenue)", "rev_d")])
         resp = await engine.execute([a, b, d, over("d", dimensions=["customers.region"], metric="sum(d.rev_d)")])
         assert by(resp, key="customers.region", value="total") == REVENUE_BY_REGION
@@ -159,7 +159,7 @@ class TestPassThrough:
         inherited = [per_customer(), over("per_customer", dimensions=["customers.region"])]
         declared = [per_customer(), over(
             "per_customer", dimensions=["customers.region"],
-            extensions=[ext("per_customer", join("customers", [("customer_id", "id")]))])]
+            extensions=[ext("per_customer", relationship_to("customers", [("customer_id", "id")]))])]
         assert await outcome(engine, inherited) == await outcome(engine, declared)
         assert (await outcome(engine, inherited))[0] == "ok"
 
@@ -265,10 +265,10 @@ class TestDeclaredEdgesWin:
 
     async def test_declared_edge_of_the_same_name_wins(self, engine) -> None:
         zone = q(name="by_region", population="orders", dimensions=["orders.region_id"],
-                 extensions=[ext("orders", join("regions", [("region_id", "id")], name="zone"))],
+                 extensions=[ext("orders", relationship_to("regions", [("region_id", "id")], name="zone"))],
                  metrics=[m("sum(orders.amount)", "revenue"), m("count(orders.*)", "n")])
         root = q(population="by_region", dimensions=["by_region.region_id", "by_region.zone.name"], metrics=[m("sum(by_region.revenue)", "t")],
-                 extensions=[ext("by_region", join("regions", [("n", "id")], name="zone"))])
+                 extensions=[ext("by_region", relationship_to("regions", [("n", "id")], name="zone"))])
         inherited = await engine.execute([zone, root.model_copy(update={"extensions": []})])
         assert {r["by_region.region_id"]: r["by_region.zone.name"] for r in inherited.data} == {
             1: "North", 2: "South", 3: "East", None: None}
@@ -278,7 +278,7 @@ class TestDeclaredEdgesWin:
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_an_unnamed_identical_declared_edge_keeps_the_inherited_name_as_alias(self, dialect: str) -> None:
-        extension = [ext("per_customer", join("customers", [("customer_id", "id")]))]
+        extension = [ext("per_customer", relationship_to("customers", [("customer_id", "id")]))]
         async with shop(dialect, with_datasets(orders(customer_edge_name="buyer"))) as engine:
             by_target = await engine.execute([per_customer(), over("per_customer", dimensions=["customers.region"],
                                                                    extensions=extension)])
@@ -290,7 +290,7 @@ class TestDeclaredEdgesWin:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_identical_declared_edge_in_a_consuming_extension_applies_once(self, dialect: str) -> None:
         root = over("per_customer", dimensions=["customers.region"],
-                    extensions=[ext("per_customer", join("customers", [("customer_id", "id")]))])
+                    extensions=[ext("per_customer", relationship_to("customers", [("customer_id", "id")]))])
         async with shop(dialect) as engine:
             resp = await engine.execute([per_customer(), root])
             undeclared = await engine.execute([per_customer(), over("per_customer", dimensions=["customers.region"])])
@@ -299,7 +299,7 @@ class TestDeclaredEdgesWin:
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_differently_named_edges_on_the_same_keys_stay_parallel(self, dialect: str) -> None:
-        extension = [ext("per_customer", join("customers", [("customer_id", "id")], name="payer"))]
+        extension = [ext("per_customer", relationship_to("customers", [("customer_id", "id")], name="payer"))]
         async with shop(dialect, with_datasets(orders(customer_edge_name="buyer"))) as engine:
             stages = [self._stage(), over("per_customer", dimensions=["customers.name"], extensions=extension)]
             with pytest.raises(UnresolvableDimensionRelationshipError):

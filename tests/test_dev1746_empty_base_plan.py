@@ -43,7 +43,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
-from tests._cross_model_chain import (
+from tests._cross_dataset_chain import (
     _countries,
     _customers_v2,
     _gen,

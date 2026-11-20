@@ -24,7 +24,7 @@ from tests._engine_helpers import _engine_generate
 
 AMOUNT = FieldKey(path=(), leaf="amount")
 SPEND = FieldKey(path=("customers",), leaf="spend")
-COLUMNS = [
+FIELDS = [
     FieldKey(path=(), leaf="store_no"),
     SPEND,
     FieldSqlKey(path=(), dataset="orders", field_name="cust_spend"),
@@ -34,7 +34,7 @@ COLUMNS = [
 SOURCES = [AMOUNT, SPEND]
 
 
-def _column_id(col: FieldKey | FieldSqlKey) -> str:
+def _field_id(col: FieldKey | FieldSqlKey) -> str:
     return col.leaf if isinstance(col, FieldKey) else col.field_name
 
 
@@ -63,7 +63,7 @@ def _unsafe(agg: AggregateKey) -> bool:
 
 
 @pytest.mark.parametrize("source", SOURCES, ids=["local", "customers"])
-@pytest.mark.parametrize("col", COLUMNS, ids=_column_id)
+@pytest.mark.parametrize("col", FIELDS, ids=_field_id)
 class TestKeyLevelVerdicts:
     def test_home(self, source, col) -> None:
         plain, frag = _pair(source, col)
@@ -84,7 +84,7 @@ class TestKeyLevelVerdicts:
 
 
 def test_the_fanning_leaf_is_unsafe_in_both_spellings() -> None:
-    plain, frag = _pair(AMOUNT, COLUMNS[-1])
+    plain, frag = _pair(AMOUNT, FIELDS[-1])
     assert _unsafe(plain)
     assert _unsafe(frag)
 

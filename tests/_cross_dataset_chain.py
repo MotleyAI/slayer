@@ -15,7 +15,7 @@ Two groups live here:
   exercise: target-local (``ltv_x2``, ``ltv_third``), one-hop crossing
   (``deep_pop``, ``deep_pop_x2``, ``deep_weight``), two-hop crossing
   (``deep_gdp``), and a crossing derived TIME dim (``region_opened_eff``). Each
-  builder takes ``extra_columns`` so a module can add a shape it alone needs
+  builder takes ``extra_fields`` so a module can add a shape it alone needs
   without growing the shared chain.
 """
 
@@ -70,7 +70,7 @@ def _countries() -> SlayerDataset:
     )
 
 
-def _regions(*, extra_columns=None) -> SlayerDataset:
+def _regions(*, extra_fields=None) -> SlayerDataset:
     cols = [
         DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
         DatasetField(name="name", sql="name", datatype=DataType.STRING),
@@ -79,8 +79,8 @@ def _regions(*, extra_columns=None) -> SlayerDataset:
         DatasetField(name="country_id", sql="country_id", datatype=DataType.FLOAT),
         DatasetField(name="opened_at", sql="opened_at", datatype=DataType.DATETIME),
     ]
-    if extra_columns:
-        cols.extend(extra_columns)
+    if extra_fields:
+        cols.extend(extra_fields)
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=cols,
@@ -88,7 +88,7 @@ def _regions(*, extra_columns=None) -> SlayerDataset:
     )
 
 
-def _customers_v2(*, extra_columns=None) -> SlayerDataset:
+def _customers_v2(*, extra_fields=None) -> SlayerDataset:
     cols = [
         DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
         DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
@@ -109,8 +109,8 @@ def _customers_v2(*, extra_columns=None) -> SlayerDataset:
                sql="coalesce(regions.opened_at, signup_at)",
                datatype=DataType.DATETIME),
     ]
-    if extra_columns:
-        cols.extend(extra_columns)
+    if extra_fields:
+        cols.extend(extra_fields)
     return SlayerDataset(
         name="customers_v2", sql_table="customers", data_source="test",
         fields=cols,
@@ -119,7 +119,7 @@ def _customers_v2(*, extra_columns=None) -> SlayerDataset:
     )
 
 
-def _orders_x(*, extra_columns=None) -> SlayerDataset:
+def _orders_x(*, extra_fields=None) -> SlayerDataset:
     cols = [
         DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
         DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
@@ -127,8 +127,8 @@ def _orders_x(*, extra_columns=None) -> SlayerDataset:
         DatasetField(name="status", sql="status", datatype=DataType.STRING),
         DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
     ]
-    if extra_columns:
-        cols.extend(extra_columns)
+    if extra_fields:
+        cols.extend(extra_fields)
     return SlayerDataset(
         name="orders_x", sql_table="orders", data_source="test",
         fields=cols,
@@ -148,11 +148,11 @@ async def _gen(
     """Render ``query`` against the orders_x chain and return the SQL."""
     return await _engine_generate(
         query=query,
-        dataset=_orders_x(extra_columns=orders_extra),
+        dataset=_orders_x(extra_fields=orders_extra),
         dialect=dialect,
         extra_datasets=[
-            _customers_v2(extra_columns=customers_extra),
-            _regions(extra_columns=regions_extra),
+            _customers_v2(extra_fields=customers_extra),
+            _regions(extra_fields=regions_extra),
             _countries(),
         ],
     )

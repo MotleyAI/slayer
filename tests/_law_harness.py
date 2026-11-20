@@ -36,7 +36,7 @@ from tests._engine_helpers import seeded_exec_engine
 from tests._dev1837_fixtures import (
     DIM_FAMILY_DIMS,
     TD_TRANSFORM_OPS,
-    TRANSFORM_FORMULAS,
+    TRANSFORM_EXPRESSIONS,
     DatasetMetric,
     SlayerQuery,
     dim_key,
@@ -44,7 +44,7 @@ from tests._dev1837_fixtures import (
     month_td,
     q,
 )
-from tests.test_dev1837_dimension_measure_matrix import ATTACH_MEASURES, TD_ATTACH
+from tests.test_dev1837_dimension_measure_matrix import ATTACH_METRICS, TD_ATTACH
 
 LAW_SEED = 1869
 N_SHAPES = 40
@@ -54,15 +54,15 @@ DUCKDB_PAIR_STRIDE = 4
 
 #: Cross-dataset partitioned operands. A combined consumer needs its
 #: partition key among the query dimensions, so these pin to ``cmgrain``.
-CM_PARTITIONED_MEASURES = {
+CM_PARTITIONED_METRICS = {
     "cm_part": "sum(customers.spend, partition_by=customers.regions.name)",
     "cm_last": "last(customers.spend, partition_by=customers.regions.name)",
 }
-CM_PARTITIONED_OPERANDS = frozenset(CM_PARTITIONED_MEASURES)
-MEASURE_REQUIRED_FAMILY = {k: "cmgrain" for k in CM_PARTITIONED_MEASURES}
+CM_PARTITIONED_OPERANDS = frozenset(CM_PARTITIONED_METRICS)
+METRIC_REQUIRED_FAMILY = {k: "cmgrain" for k in CM_PARTITIONED_METRICS}
 
 #: A local ratio composite and a transform over it.
-RATIO_MEASURES = {
+RATIO_METRICS = {
     "ratio": "sum(orders.amount) / count(orders.*)",
     "ratio_cumsum": "cumsum(sum(orders.amount) / count(orders.*))",
 }
@@ -70,8 +70,8 @@ TD_RATIO = frozenset({"ratio_cumsum"})
 
 #: The full metric pool: every attach family + every transform op + the
 #: cross-dataset partitioned operands + the ratio composites.
-MEASURE_POOL = {
-    **ATTACH_MEASURES, **TRANSFORM_FORMULAS, **CM_PARTITIONED_MEASURES, **RATIO_MEASURES,
+METRIC_POOL = {
+    **ATTACH_METRICS, **TRANSFORM_EXPRESSIONS, **CM_PARTITIONED_METRICS, **RATIO_METRICS,
 }
 
 #: Law-local dimension families: the ``DIM_FAMILY_DIMS`` set plus the grain carrying the
@@ -89,7 +89,7 @@ FILTERS = {
     "fc": "customers.tier = 'gold'",
 }
 
-_MEASURE_ABBREV = {
+_METRIC_ABBREV = {
     "plain": "pl", "part": "pt", "win_part": "wp", "last_part": "lp",
     "wm": "wm", "rk": "rk", "cm": "cm", "time_shift": "ts", "lag": "lg",
     "lead": "ld", "change": "ch", "change_pct": "cp", "cumsum": "cs",
@@ -117,8 +117,8 @@ OPERANDS = {
     "last_part": "last(orders.amount, partition_by=orders.region)",
     "win_part": "sum(orders.amount, window='90d', partition_by=orders.region)",
     "cm": "sum(customers.spend)",
-    "cm_part": CM_PARTITIONED_MEASURES["cm_part"],
-    "cm_last": CM_PARTITIONED_MEASURES["cm_last"],
+    "cm_part": CM_PARTITIONED_METRICS["cm_part"],
+    "cm_last": CM_PARTITIONED_METRICS["cm_last"],
 }
 OPS = ("+", "-", "*")
 
@@ -149,37 +149,37 @@ class LawShape(BaseModel):
 
     shape_id: str
     dim_family: str
-    measure_keys: Tuple[str, ...]
+    metric_keys: Tuple[str, ...]
     filter: Optional[str]
 
     @property
     def with_month(self) -> bool:
         return any(
             k in TD_ATTACH or k in TD_TRANSFORM_OPS or k in TD_RATIO
-            for k in self.measure_keys
+            for k in self.metric_keys
         )
 
     def __str__(self) -> str:
         return (
             f"{self.shape_id}(family={self.dim_family}, "
-            f"measures={list(self.measure_keys)}, filter={self.filter!r})"
+            f"measures={list(self.metric_keys)}, filter={self.filter!r})"
         )
 
 
 def _shape(idx: int, family: str, keys: Sequence[str], ftag: str) -> LawShape:
-    pool_order = tuple(MEASURE_POOL)
+    pool_order = tuple(METRIC_POOL)
     ordered = tuple(sorted(keys, key=pool_order.index))
-    abbrev = "".join(_MEASURE_ABBREV[k] for k in ordered)
+    abbrev = "".join(_METRIC_ABBREV[k] for k in ordered)
     return LawShape(
         shape_id=f"s{idx:02d}-{family}-{abbrev}-{ftag}",
-        dim_family=family, measure_keys=ordered, filter=FILTERS[ftag],
+        dim_family=family, metric_keys=ordered, filter=FILTERS[ftag],
     )
 
 
 def _forced_family(keys: Sequence[str]) -> Optional[str]:
     """The family a constrained metric pins its shape to, else None."""
     for k in keys:
-        family = MEASURE_REQUIRED_FAMILY.get(k)
+        family = METRIC_REQUIRED_FAMILY.get(k)
         if family is not None:
             return family
     return None
@@ -192,14 +192,14 @@ def sample_shapes() -> Tuple[LawShape, ...]:
     forces its shape there."""
     rng = random.Random(LAW_SEED)
     families = tuple(LAW_DIM_FAMILY_DIMS)
-    measures = tuple(MEASURE_POOL)
+    measures = tuple(METRIC_POOL)
     ftags = tuple(FILTERS)
     cores: list[tuple[str, Sequence[str], str]] = []
     for idx, start in enumerate(range(0, len(measures), 3)):
         keys = measures[start:start + 3]
         family = _forced_family(keys) or families[idx % len(families)]
         cores.append((family, keys, ftags[idx % len(ftags)]))
-    cores.append(("col", tuple(RATIO_MEASURES), "f0"))
+    cores.append(("col", tuple(RATIO_METRICS), "f0"))
     covered = {family for family, _, _ in cores}
     for j, family in enumerate(families):
         if family not in covered:
@@ -215,13 +215,13 @@ def sample_shapes() -> Tuple[LawShape, ...]:
 
 def _assert_covering(shapes: Sequence[LawShape]) -> None:
     assert {s.dim_family for s in shapes} == set(LAW_DIM_FAMILY_DIMS)
-    assert {k for s in shapes for k in s.measure_keys} == set(MEASURE_POOL)
+    assert {k for s in shapes for k in s.metric_keys} == set(METRIC_POOL)
     assert {s.filter for s in shapes} == set(FILTERS.values())
-    assert any("cm" in s.measure_keys for s in shapes)
-    assert any(set(s.measure_keys) & {"wm", "win_part"} for s in shapes)
+    assert any("cm" in s.metric_keys for s in shapes)
+    assert any(set(s.metric_keys) & {"wm", "win_part"} for s in shapes)
     assert all(
-        s.dim_family == MEASURE_REQUIRED_FAMILY[k]
-        for s in shapes for k in s.measure_keys if k in MEASURE_REQUIRED_FAMILY
+        s.dim_family == METRIC_REQUIRED_FAMILY[k]
+        for s in shapes for k in s.metric_keys if k in METRIC_REQUIRED_FAMILY
     )
 
 
@@ -349,8 +349,8 @@ def build_query(
     kwargs: dict[str, Any] = {"dimensions": LAW_DIM_FAMILY_DIMS[shape.dim_family]}
     if not dims_only:
         kwargs["metrics"] = [
-            QueryMetric(metric=MEASURE_POOL[k], alias=f"m_{k}")
-            for k in shape.measure_keys if k != drop
+            QueryMetric(metric=METRIC_POOL[k], alias=f"m_{k}")
+            for k in shape.metric_keys if k != drop
         ]
     if shape.with_month:
         kwargs["time_dimensions"] = month_td()
@@ -565,10 +565,10 @@ def rootless_rows(resp, *, shape: RootlessShape) -> dict[tuple, dict]:
 
 
 __all__ = [
-    "CM_PARTITIONED_MEASURES", "CM_PARTITIONED_OPERANDS", "DEFERRAL_SITES",
+    "CM_PARTITIONED_METRICS", "CM_PARTITIONED_OPERANDS", "DEFERRAL_SITES",
     "DIMS_ONLY", "DUCKDB_PAIR_IDS", "DUCKDB_SHAPE_IDS",
     "EXPECTED_RAISES", "FILTERS", "LAW_DIM_FAMILY_DIMS", "LAW_SEED",
-    "MEASURE_POOL", "MEASURE_REQUIRED_FAMILY", "N_DUCKDB",
+    "METRIC_POOL", "METRIC_REQUIRED_FAMILY", "N_DUCKDB",
     "N_PAIRS", "N_SHAPES", "OPERANDS", "OPERAND_GRAIN", "OPS",
     "PAIRS_BY_GRAIN", "SHAPES", "CoherencePair", "DeferralSite", "LawShape",
     "DatasetMetric",

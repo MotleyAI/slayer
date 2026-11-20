@@ -80,13 +80,13 @@ class _Env:
 
 
 @contextlib.asynccontextmanager
-async def _env(tmp: Path, *models: SlayerDataset) -> AsyncGenerator[_Env]:
+async def _env(tmp: Path, *datasets: SlayerDataset) -> AsyncGenerator[_Env]:
     db_path = str(tmp / "live.db")
     with transaction(db_path) as conn:
         conn.executescript(_SCHEMA)
     storage = YAMLStorage(base_dir=str(tmp / "storage"))
     await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=db_path))
-    for m in models:
+    for m in datasets:
         await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     try:
@@ -108,8 +108,8 @@ async def _wrapped(engine: SlayerQueryEngine, query: Any) -> SchemaDriftError:
     return exc.value
 
 
-def _removes(err: SchemaDriftError, *, dataset: str, column: str) -> bool:
-    return any(isinstance(e, EditDatasetDelete) and e.dataset_name == dataset and column in e.remove.fields
+def _removes(err: SchemaDriftError, *, dataset: str, field: str) -> bool:
+    return any(isinstance(e, EditDatasetDelete) and e.dataset_name == dataset and field in e.remove.fields
                for e in err.to_delete)
 
 
@@ -145,13 +145,13 @@ class TestReadDriftWraps:
         async with _env(tmp_path, _t()) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
             err = await _wrapped(env.engine, {"population": "t", "metrics": [{"metric": "sum(t.x)"}]})
-        assert _removes(err, dataset="t", column="x"), err.to_delete
+        assert _removes(err, dataset="t", field="x"), err.to_delete
 
     async def test_a_read_dropped_column_beside_unrelated_drift(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t(ts=DataType.INTEGER)) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
             err = await _wrapped(env.engine, {"population": "t", "metrics": [{"metric": "sum(t.x)"}]})
-        assert _removes(err, dataset="t", column="x"), err.to_delete
+        assert _removes(err, dataset="t", field="x"), err.to_delete
 
     async def test_a_column_read_through_a_derived_column(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t()) as env:
@@ -170,7 +170,7 @@ class TestReadDriftWraps:
             env.live("ALTER TABLE orders DROP COLUMN amount")
             err = await _wrapped(env.engine, {"population": "customers", "dimensions": ["customers.region"],
                                               "metrics": [{"metric": formula, "alias": "total"}]})
-        assert _removes(err, dataset="orders", column="amount"), err.to_delete
+        assert _removes(err, dataset="orders", field="amount"), err.to_delete
 
     async def test_a_used_model_measure(self, tmp_path: Path) -> None:
         model = _t(metrics=[DatasetMetric(name="total", expression="sum(x)")])
@@ -209,7 +209,7 @@ def _inject(remove: RemoveSpec) -> Any:
     return patch.object(schema_drift, "validate_datasource", side_effect=_with_entry)
 
 
-def _join_removal() -> RemoveSpec:
+def _relationship_removal() -> RemoveSpec:
     join = _shop()[1].relationships[0]
     return RemoveSpec(relationship_edges=[RelationshipEdgeRef.of(join)])
 
@@ -217,12 +217,12 @@ def _join_removal() -> RemoveSpec:
 class TestInjectedRemovals:
     async def test_a_crossed_join(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
-            with _inject(_join_removal()):
+            with _inject(_relationship_removal()):
                 await _wrapped(env.engine, {**_ORDERS_BAD, "dimensions": ["customers.region"]})
 
     async def test_an_uncrossed_join(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
-            with _inject(_join_removal()):
+            with _inject(_relationship_removal()):
                 await _unwrapped(env.engine, _ORDERS_BAD)
 
     async def test_a_measure_used_by_name(self, tmp_path: Path) -> None:
@@ -273,8 +273,8 @@ def _retypes(entries: list[Any]) -> list[tuple[str, DataType, DataType]]:
     return [(e.field, e.stored_type, e.live_type) for e in entries if isinstance(e, RetypeFinding)]
 
 
-def _deletes(entries: list[Any], column: str) -> list[EditDatasetDelete]:
-    return [e for e in entries if isinstance(e, EditDatasetDelete) and column in e.remove.fields]
+def _deletes(entries: list[Any], field: str) -> list[EditDatasetDelete]:
+    return [e for e in entries if isinstance(e, EditDatasetDelete) and field in e.remove.fields]
 
 
 class TestSqliteTemporalOverText:

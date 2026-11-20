@@ -26,8 +26,8 @@ ORDERS_EXT = {"dataset": "orders", "metrics": [{"name": "double_amount", "expres
 #: ``ORDERS_EXT`` as a versioned (1.x) body spells it.
 ORDERS_EXT_1X = {"source_name": "orders", "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}]}
 WITH_FILTERS = {"dataset": "customers", "filters": ["credit > 5"]}
-MEASURES_ONLY = {"dataset": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
-ONE_MEASURE = [{"metric": "count(orders.*)"}]
+METRICS_ONLY = {"dataset": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
+ONE_METRIC = [{"metric": "count(orders.*)"}]
 
 
 def _query(**raw: Any) -> SlayerQuery:
@@ -111,7 +111,7 @@ class TestRejected:
     def test_a_model_s_stage_with_a_duplicate_is_rejected_too(self) -> None:
         with pytest.raises(ValidationError) as info:
             SlayerDataset.model_validate({"name": "qb", "source_queries": [{
-                "population": "orders", "metrics": ONE_MEASURE,
+                "population": "orders", "metrics": ONE_METRIC,
                 "extensions": [{"dataset": "customers"}, {"dataset": "customers"}]}]})
         _assert_rejected_naming(info.value, "customers")
 
@@ -167,13 +167,13 @@ class TestRestAndMcp:
     ], ids=["unknown-key", "duplicate"])
     def test_rest_body_rejects_malformed_extensions_with_422(self, rest_client, extensions) -> None:
         resp = rest_client.post("/query", json={
-            "population": "orders", "extensions": extensions, "metrics": ONE_MEASURE, "dry_run": True})
+            "population": "orders", "extensions": extensions, "metrics": ONE_METRIC, "dry_run": True})
         assert resp.status_code == 422, resp.text
 
     async def test_mcp_query_tool_rejects_an_unknown_extension_key(self, mcp_server) -> None:
         with pytest.raises(ToolError, match="filters"):
             await mcp_server.call_tool(name="query", arguments={
-                "query": {"population": "orders", "extensions": [WITH_FILTERS], "metrics": ONE_MEASURE},
+                "query": {"population": "orders", "extensions": [WITH_FILTERS], "metrics": ONE_METRIC},
                 "dry_run": True,
             })
 
@@ -187,10 +187,10 @@ class TestRoundTrip:
         assert all(isinstance(e, DatasetExtension) for e in again.extensions or [])
 
     def test_exclude_none_dump_is_what_the_author_wrote(self) -> None:
-        q = _query(population="orders", extensions=[MEASURES_ONLY])
+        q = _query(population="orders", extensions=[METRICS_ONLY])
         dumped = q.model_dump(exclude_none=True)
         assert dumped["population"] == "orders"
-        assert dumped["extensions"] == [MEASURES_ONLY]
+        assert dumped["extensions"] == [METRICS_ONLY]
 
     def test_no_extensions_key_when_unset(self) -> None:
         assert "extensions" not in SlayerQuery(population="orders").model_dump(exclude_none=True)

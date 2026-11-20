@@ -96,29 +96,29 @@ async def check_quarter_hour_year(engine: SlayerQueryEngine, *, data_source: str
     assert len(resp.data) == 35_040
 
 
-async def _buckets(engine: SlayerQueryEngine, *, data_source: str, dataset: str, column: str, granularity: str,
+async def _buckets(engine: SlayerQueryEngine, *, data_source: str, dataset: str, field: str, granularity: str,
                    series: str | None = None, width: int = 10) -> dict[str, float]:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": dataset, "metrics": [m(f"sum({dataset}.amount)", "s")],
-        "time_dimensions": [{"field": f"{dataset}.{column}", "granularity": granularity}],
+        "time_dimensions": [{"field": f"{dataset}.{field}", "granularity": granularity}],
         "filter": [f"{dataset}.series = '{series}'"] if series else [],
     }), data_source=data_source)
-    return {bucket_key(value(r, column), width=width): float(value(r, "s")) for r in resp.data}
+    return {bucket_key(value(r, field), width=width): float(value(r, "s")) for r in resp.data}
 
 
 async def check_custom_buckets(engine: SlayerQueryEngine, *, data_source: str) -> None:
     kw = {"engine": engine, "data_source": data_source}
-    assert await _buckets(**kw, dataset="fy_orders", column="order_date", granularity="fiscal_year") == {
+    assert await _buckets(**kw, dataset="fy_orders", field="order_date", granularity="fiscal_year") == {
         "2023-04-01": 10.0, "2024-04-01": 50.0, "2025-04-01": 40.0,
     }
     for column in ("ts", "d"):
-        assert await _buckets(**kw, dataset="events", column=column, granularity="billing_month", series="bill") == {
+        assert await _buckets(**kw, dataset="events", field=column, granularity="billing_month", series="bill") == {
             "2025-02-15": 1.0, "2025-03-15": 1.0,
         }
-        assert await _buckets(**kw, dataset="events", column=column, granularity="sprint", series="sprint") == {
+        assert await _buckets(**kw, dataset="events", field=column, granularity="sprint", series="sprint") == {
             "2024-12-23": 1.0, "2025-01-06": 1.0, "2025-01-20": 1.0,
         }
-    assert await _buckets(**kw, dataset="events", column="ts", granularity="quarter_hour", series="qh", width=16) == {
+    assert await _buckets(**kw, dataset="events", field="ts", granularity="quarter_hour", series="qh", width=16) == {
         "2025-06-02 10:00": 3.0, "2025-06-02 10:15": 4.0, "2025-06-02 10:30": 8.0,
     }
 

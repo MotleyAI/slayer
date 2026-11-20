@@ -54,7 +54,7 @@ def _metric(result: ConversionResult, name: str, dataset: str = "orders"):
     return next(m for m in _dataset(result, dataset).metrics if m.name == name)
 
 
-def _column_for(result: ConversionResult, expression: str, dataset: str = "orders"):
+def _field_for(result: ConversionResult, expression: str, dataset: str = "orders"):
     """The field referenced by the leading ``<agg>(<col>, ...)`` in an expression."""
     match = re.match(r"\s*\w+\(\s*(\w+)\s*[,)]", expression)
     assert match is not None, f"expression not in <agg>(<col>...) form: {expression!r}"
@@ -170,7 +170,7 @@ def test_sum_boolean_wraps_case_when() -> None:
     result = _convert(project)
     m = _metric(result, "paid_orders")
     assert re.fullmatch(r"sum\(\w+\)", m.text)
-    col = _column_for(result, m.text)
+    col = _field_for(result, m.text)
     assert col.sql is not None
     norm = col.sql.upper().replace(" ", "")
     assert "CASEWHEN" in norm
@@ -295,7 +295,7 @@ def test_metric_level_filter_pushes_into_leaf_column() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_revenue")
-    col = _column_for(result, m.text)
+    col = _field_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
@@ -358,7 +358,7 @@ def test_filter_accepts_list_intersection() -> None:
     )
     result = _convert(project)
     m = _metric(result, "scoped_revenue")
-    col = _column_for(result, m.text)
+    col = _field_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
     assert "status" in col.filter
@@ -710,8 +710,8 @@ def test_same_measure_different_filters_make_distinct_columns() -> None:
         ],
     )
     result = _convert(project)
-    us_col = _column_for(result, _metric(result, "us_rev").text)
-    eu_col = _column_for(result, _metric(result, "eu_rev").text)
+    us_col = _field_for(result, _metric(result, "us_rev").text)
+    eu_col = _field_for(result, _metric(result, "eu_rev").text)
     assert us_col.name != eu_col.name
     assert "US" in (us_col.filter or "")
     assert "EU" in (eu_col.filter or "")
@@ -733,8 +733,8 @@ def test_same_measure_same_filter_reuses_one_column() -> None:
         ],
     )
     result = _convert(project)
-    a = _column_for(result, _metric(result, "us_rev_a").text)
-    b = _column_for(result, _metric(result, "us_rev_b").text)
+    a = _field_for(result, _metric(result, "us_rev_a").text)
+    b = _field_for(result, _metric(result, "us_rev_b").text)
     assert a.name == b.name
 
 
@@ -771,7 +771,7 @@ def test_cross_model_filter_pushes_down_when_join_reachable() -> None:
     )
     result = _convert(_orders_customers_project(metric))
     m = _metric(result, "us_revenue", dataset="orders")
-    col = _column_for(result, m.text, dataset="orders")
+    col = _field_for(result, m.text, dataset="orders")
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
@@ -897,7 +897,7 @@ def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
     assert "web_revenue" in _metric(result, "web_rev_plus_one").text
     # And web_revenue itself materialized with a channel filter.
     web = _metric(result, "web_revenue")
-    col = _column_for(result, web.text)
+    col = _field_for(result, web.text)
     assert col.filter is not None
     assert "channel" in col.filter
 
@@ -1021,7 +1021,7 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_web_revenue")
-    col = _column_for(result, m.text)
+    col = _field_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
@@ -1286,7 +1286,7 @@ def test_filtered_percentile_metric_preserves_p() -> None:
     result = _convert(project)
     m = _metric(result, "us_latency_p95")
     assert re.fullmatch(r"percentile\(\w+, p=0\.95\)", m.text)
-    col = _column_for(result, m.text)
+    col = _field_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
 
@@ -1327,7 +1327,7 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
     result = _convert(project)
     m = _metric(result, "us_paid_orders")
     assert re.fullmatch(r"sum\(\w+\)", m.text)
-    col = _column_for(result, m.text)
+    col = _field_for(result, m.text)
     assert col.datatype == DataType.INTEGER
     norm = (col.sql or "").upper().replace(" ", "")
     assert "CASEWHEN" in norm

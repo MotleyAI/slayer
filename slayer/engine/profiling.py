@@ -240,12 +240,12 @@ class _Run:
         self.engine = engine
         self.storage = storage
         self.state = state
-        self.model_key = dataset_key
+        self.dataset_key = dataset_key
         self.result = result
         self.scoped = engine.policy is not None
         self.errors: list[str] = []
         self.healthy: bool | None = None
-        self.model_failed = False
+        self.dataset_failed = False
         self.streak: list[tuple[_Target, Exception]] = []
         self.pending = pending
 
@@ -254,7 +254,7 @@ class _Run:
 
     async def run(self, targets: list[_Target]) -> None:
         for t in (t for t in targets if _profile_type(t.field) in _CATEGORICAL_TYPES):
-            if self.model_failed:
+            if self.dataset_failed:
                 return
             try:
                 sample = await _profile_categorical(dataset=self.dataset, field=t.field, engine=self.engine)
@@ -263,9 +263,9 @@ class _Run:
                 continue
             await self._on_success(target=t, sample=sample)
         numeric = [t for t in targets if _profile_type(t.field) in _NUMERIC_TEMPORAL_TYPES]
-        if numeric and not self.model_failed:
+        if numeric and not self.dataset_failed:
             await self._run_numeric(numeric)
-        if not self.model_failed:
+        if not self.dataset_failed:
             self._flush_streak()
 
     async def _run_numeric(self, targets: list[_Target]) -> None:
@@ -276,7 +276,7 @@ class _Run:
         except Exception as exc:  # NOSONAR(S112) — classified, then isolated per field
             await self._on_failure(target=None, exc=exc)
             for t in targets:
-                if self.model_failed:
+                if self.dataset_failed:
                     return
                 try:
                     [sample] = await _profile_numeric_temporal(
@@ -305,9 +305,9 @@ class _Run:
 
     def _fail_dataset(self, *, exc: Exception) -> None:
         msg = _first_line(exc)
-        self.model_failed = True
+        self.dataset_failed = True
         self.streak.clear()
-        self.state.failures[self.model_key] = _Entry(expires_at=self._expiry(), error=msg)
+        self.state.failures[self.dataset_key] = _Entry(expires_at=self._expiry(), error=msg)
         logger.warning(
             "sample profiling: dataset %s.%s unavailable (%d fields skipped): %s",
             self.dataset.data_source, self.dataset.name, self.pending, msg,
@@ -329,7 +329,7 @@ class _Run:
         self._flush_streak()
         self.pending -= 1
         self.state.failures.pop(target.key, None)
-        self.state.failures.pop(self.model_key, None)
+        self.state.failures.pop(self.dataset_key, None)
         self.result[target.index] = target.field.model_copy(update=sample.model_dump())
         if self.scoped:
             self.state.samples[target.key] = _Entry(expires_at=self._expiry(), sample=sample)

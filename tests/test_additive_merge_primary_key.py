@@ -7,10 +7,10 @@ from slayer.core.models import DatasetField, SlayerDataset
 from slayer.live_schema.ingestion import _additive_merge_existing
 
 
-def _dataset(*, keys: set[str], columns: tuple[tuple[str, str | None], ...]) -> SlayerDataset:
+def _dataset(*, keys: set[str], fields: tuple[tuple[str, str | None], ...]) -> SlayerDataset:
     return SlayerDataset(
         name="supplies", sql_table="supplies", data_source="ds",
-        fields=[DatasetField(name=name, sql=sql, datatype=DataType.STRING, primary_key=name in keys) for name, sql in columns],
+        fields=[DatasetField(name=name, sql=sql, datatype=DataType.STRING, primary_key=name in keys) for name, sql in fields],
     )
 
 
@@ -23,7 +23,7 @@ def _keys(dataset: SlayerDataset) -> set[str]:
 
 def test_keyless_model_gains_the_live_composite_key():
     result = _additive_merge_existing(
-        persisted=_dataset(keys=set(), columns=_LIVE), fresh=_dataset(keys={"id", "sku"}, columns=_LIVE),
+        persisted=_dataset(keys=set(), fields=_LIVE), fresh=_dataset(keys={"id", "sku"}, fields=_LIVE),
     )
     assert _keys(result.merged) == {"id", "sku"}
     assert result.has_changes
@@ -31,21 +31,21 @@ def test_keyless_model_gains_the_live_composite_key():
 
 def test_stored_key_is_never_changed():
     result = _additive_merge_existing(
-        persisted=_dataset(keys={"cost"}, columns=_LIVE), fresh=_dataset(keys={"id", "sku"}, columns=_LIVE),
+        persisted=_dataset(keys={"cost"}, fields=_LIVE), fresh=_dataset(keys={"id", "sku"}, fields=_LIVE),
     )
     assert _keys(result.merged) == {"cost"}
     assert not result.has_changes
 
 
 def test_key_fills_onto_the_column_spelling_it():
-    stored = _dataset(keys=set(), columns=(("supply_id", "id"), ("sku", None), ("cost", None)))
-    result = _additive_merge_existing(persisted=stored, fresh=_dataset(keys={"id", "sku"}, columns=_LIVE))
+    stored = _dataset(keys=set(), fields=(("supply_id", "id"), ("sku", None), ("cost", None)))
+    result = _additive_merge_existing(persisted=stored, fresh=_dataset(keys={"id", "sku"}, fields=_LIVE))
     assert _keys(result.merged) == {"supply_id", "sku"}
 
 
 def test_new_live_key_column_does_not_widen_a_stored_key():
-    stored = _dataset(keys={"id"}, columns=(("id", None), ("cost", None)))
-    result = _additive_merge_existing(persisted=stored, fresh=_dataset(keys={"id", "sku"}, columns=_LIVE))
+    stored = _dataset(keys={"id"}, fields=(("id", None), ("cost", None)))
+    result = _additive_merge_existing(persisted=stored, fresh=_dataset(keys={"id", "sku"}, fields=_LIVE))
     assert result.new_fields == ["sku"]
     assert _keys(result.merged) == {"id"}
 
@@ -82,14 +82,14 @@ def test_computed_column_named_like_the_key_takes_no_key_metadata():
 
 
 def test_composite_key_lands_whole_or_not_at_all():
-    stored = _dataset(keys=set(), columns=(("id", "id || ''"), ("sku", None)))
-    result = _additive_merge_existing(persisted=stored, fresh=_dataset(keys={"id", "sku"}, columns=_LIVE))
+    stored = _dataset(keys=set(), fields=(("id", "id || ''"), ("sku", None)))
+    result = _additive_merge_existing(persisted=stored, fresh=_dataset(keys={"id", "sku"}, fields=_LIVE))
     assert _keys(result.merged) == set()
 
 
 def test_key_metadata_follows_the_physical_column():
     """A stored ``id`` reading physical ``sku`` describes ``sku``, not the live ``id``."""
-    stored = _dataset(keys=set(), columns=(("id", "sku"), ("sku", None)))
+    stored = _dataset(keys=set(), fields=(("id", "sku"), ("sku", None)))
     fresh = SlayerDataset(name="supplies", sql_table="supplies", data_source="ds", fields=[
         DatasetField(name="id", datatype=DataType.STRING, primary_key=True, unique=True),
         DatasetField(name="sku", datatype=DataType.STRING, primary_key=True),

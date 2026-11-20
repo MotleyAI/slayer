@@ -809,7 +809,7 @@ class CubeToSlayerConverter:
             datatype=DataType.BOOLEAN, hidden=not seg.public,
             label=seg.title, description=seg.description, meta=seg.meta))
         report.add(CubeConversionIssue(
-            category=CubeIssueCategory.SEGMENT_AS_COLUMN, severity="info",
+            category=CubeIssueCategory.SEGMENT_AS_FIELD, severity="info",
             cube=build.cube.name, member=seg.name,
             message=f"Segment '{seg.name}' mapped to a boolean field."))
 

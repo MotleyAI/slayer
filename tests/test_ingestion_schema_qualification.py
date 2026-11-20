@@ -783,10 +783,10 @@ class TestForeignKeysAreSchemaAware:
 
 
 class TestSelfHeal:
-    async def _persist_bare(self, storage: StorageBackend, ds, columns, *, extra=None):
+    async def _persist_bare(self, storage: StorageBackend, ds, fields, *, extra=None):
         model = SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            fields=columns,
+            fields=fields,
         )
         if extra:
             model = model.model_copy(update=extra)

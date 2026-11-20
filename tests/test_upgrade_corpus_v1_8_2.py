@@ -31,9 +31,9 @@ class TestOffline(OfflineChecks):
     corpus = CORPUS
 
 
-def _column(model: SlayerDataset | None, name: str) -> DatasetField:
-    assert model is not None
-    column = model.get_field(name)
+def _field(dataset: SlayerDataset | None, name: str) -> DatasetField:
+    assert dataset is not None
+    column = dataset.get_field(name)
     assert column is not None, name
     return column
 
@@ -42,18 +42,18 @@ def _column(model: SlayerDataset | None, name: str) -> DatasetField:
 async def test_the_store_holds_the_list_column_shapes(backend: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     storage = offline(CORPUS, backend=backend, tmp=tmp_path, monkeypatch=monkeypatch)
     contractors = await storage.get_dataset("contractors", data_source="shop")
-    pk = _column(contractors, "id")
+    pk = _field(contractors, "id")
     assert (pk.primary_key, pk.allowed_aggregations) == (True, ["count", "collect"])
-    assert (_column(contractors, "skills").datatype, _column(contractors, "skills").element_type) == (
+    assert (_field(contractors, "skills").datatype, _field(contractors, "skills").element_type) == (
         DataType.ARRAY, DataType.STRING)
-    assert (_column(contractors, "scores").datatype, _column(contractors, "scores").element_type) == (
+    assert (_field(contractors, "scores").datatype, _field(contractors, "scores").element_type) == (
         DataType.ARRAY, DataType.INTEGER)
     assert contractors is not None
     assert {m.text for m in contractors.metrics} >= {"collect(id)", "collect(skills.value)", "count(skills)"}
     dev_skills = await storage.get_dataset("dev_skills", data_source="shop")
     assert dev_skills is not None
     assert dev_skills.sql
-    assert (_column(dev_skills, "skills").datatype, _column(dev_skills, "skills").element_type) == (
+    assert (_field(dev_skills, "skills").datatype, _field(dev_skills, "skills").element_type) == (
         DataType.ARRAY, DataType.OPAQUE)
     go_teams = await storage.get_dataset("go_teams", data_source="shop")
     assert go_teams is not None

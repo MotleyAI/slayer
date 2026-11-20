@@ -83,8 +83,8 @@ def _by_month(expression: str, **kw):
     return query(dimensions=["customers.name"], time_dimensions=[MONTH_TD], metrics=[m(expression)], **kw)
 
 
-def _by_account(*measures, **kw):
-    return query(dimensions=["customers.name", ACCOUNT], metrics=list(measures), **kw)
+def _by_account(*metrics, **kw):
+    return query(dimensions=["customers.name", ACCOUNT], metrics=list(metrics), **kw)
 
 
 def _clean(resp: SlayerResponse) -> None:

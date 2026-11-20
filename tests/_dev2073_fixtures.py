@@ -101,8 +101,8 @@ def run_script(*, db_path: str, dialect: str, script: str) -> None:
         con.executescript(script)
 
 
-def edge_key(dataset: str, join: DatasetRelationship) -> EdgeKey:
-    return (dataset, join.to, tuple((p[0], p[1]) for p in join.column_pairs))
+def edge_key(dataset: str, relationship: DatasetRelationship) -> EdgeKey:
+    return (dataset, relationship.to, tuple((p[0], p[1]) for p in relationship.column_pairs))
 
 
 class Live(BaseModel):
@@ -183,11 +183,11 @@ BILLING_PAIRS = [["billing_address_id", "id"]]
 SHIPPING_PAIRS = [["shipping_address_id", "id"]]
 
 
-def join_to(pairs: list[list[str]], name: str | None = None, target: str = "addresses") -> DatasetRelationship:
+def relationship_to(pairs: list[list[str]], name: str | None = None, target: str = "addresses") -> DatasetRelationship:
     return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], name=name, cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
-def orders_with(*joins: DatasetRelationship) -> SlayerDataset:
+def orders_with(*relationships: DatasetRelationship) -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
@@ -198,7 +198,7 @@ def orders_with(*joins: DatasetRelationship) -> SlayerDataset:
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="status", datatype=DataType.STRING),
         ],
-        relationships=list(joins),
+        relationships=list(relationships),
     )
 
 
@@ -211,25 +211,25 @@ def addresses_dataset() -> SlayerDataset:
 
 
 def named_pair() -> tuple[DatasetRelationship, DatasetRelationship]:
-    return join_to(BILLING_PAIRS, "billing_address"), join_to(SHIPPING_PAIRS, "shipping_address")
+    return relationship_to(BILLING_PAIRS, "billing_address"), relationship_to(SHIPPING_PAIRS, "shipping_address")
 
 
 def unnamed_pair() -> tuple[DatasetRelationship, DatasetRelationship]:
-    return join_to(BILLING_PAIRS), join_to(SHIPPING_PAIRS)
+    return relationship_to(BILLING_PAIRS), relationship_to(SHIPPING_PAIRS)
 
 
 @contextlib.asynccontextmanager
-async def dataset_store(*models: SlayerDataset) -> AsyncGenerator[YAMLStorage]:
+async def dataset_store(*datasets: SlayerDataset) -> AsyncGenerator[YAMLStorage]:
     """A storage holding ``datasets`` under an in-memory SQLite datasource."""
     with tempfile.TemporaryDirectory() as tmp:
         store = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         await store.save_datasource(DatasourceConfig(name=DS, type="sqlite", database=":memory:"))
-        for model in models:
+        for model in datasets:
             await store.save_dataset(model)
         yield store
 
 
-async def stored_joins(storage: YAMLStorage, dataset: str = "orders") -> list[tuple[str | None, list[list[str]]]]:
+async def stored_relationships(storage: YAMLStorage, dataset: str = "orders") -> list[tuple[str | None, list[list[str]]]]:
     stored = await storage.get_dataset(dataset, data_source=DS)
     assert stored is not None
     return [(j.name, [list(p) for p in j.column_pairs]) for j in stored.relationships]

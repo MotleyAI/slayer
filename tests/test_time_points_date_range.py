@@ -73,12 +73,12 @@ class TestBounds:
         assert await ids_with_range(engine, ["2025-06", "2025-01"]) == set()
 
     async def test_date_column(self, engine) -> None:
-        got = await ids_with_range(engine, ["2025-01-15", "2025-03"], column="d", granularity="day")
+        got = await ids_with_range(engine, ["2025-01-15", "2025-03"], field="d", granularity="day")
         assert got == ids_in(D(2025, 1, 15), D(2025, 4, 1))
 
     async def test_sub_day_bound_on_date_column_fails_at_planning(self, engine) -> None:
         with pytest.raises(TimeLiteralError):
-            await ids_with_range(engine, ["2025-01-01 10:00:00", None], column="d", granularity="day")
+            await ids_with_range(engine, ["2025-01-01 10:00:00", None], field="d", granularity="day")
 
     async def test_monthly_buckets_with_open_upper(self, engine) -> None:
         got = await monthly(engine, metrics=[{"metric": "sum(ev.amount)", "alias": "s"}], date_range=["2026-06", None])

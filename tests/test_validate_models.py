@@ -67,8 +67,8 @@ POSTGRES = get_dialect("postgres")
 def _orders_dataset(
     *,
     data_source: str = "ds",
-    columns: list[DatasetField] | None = None,
-    joins: list[DatasetRelationship] | None = None,
+    fields: list[DatasetField] | None = None,
+    relationships: list[DatasetRelationship] | None = None,
     metrics: list[DatasetMetric] | None = None,
     filters: list[str] | None = None,
     sql_table: str = "orders",
@@ -77,14 +77,14 @@ def _orders_dataset(
         name="orders",
         sql_table=sql_table,
         data_source=data_source,
-        fields=columns
+        fields=fields
         or [
             DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="status", sql="status", datatype=DataType.STRING),
             DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
         ],
-        relationships=joins or [],
+        relationships=relationships or [],
         metrics=metrics or [],
         filters=filters or [],
     )
@@ -117,9 +117,9 @@ def _delete_for(dataset_name: str, entries: Sequence[DriftReportEntry]) -> objec
                  and isinstance(e, (EditDatasetDelete, WholeDatasetDelete))), None)
 
 
-def _retype_for(entries: Sequence[DriftReportEntry], column: str) -> dict:
+def _retype_for(entries: Sequence[DriftReportEntry], field: str) -> dict:
     (finding,) = [d for e in entries if (d := e.model_dump(mode="json")).get("finding") == "retype"
-                  and d.get("field") == column]
+                  and d.get("field") == field]
     return finding
 
 
@@ -253,7 +253,7 @@ class TestDiffSqlTableModel:
 
     def test_join_local_column_missing_drops_join(self) -> None:
         model = _orders_dataset(
-            joins=[
+            relationships=[
                 DatasetRelationship(
                     to="customers",
                     from_columns=["customer_id"], to_columns=["id"],
@@ -277,7 +277,7 @@ class TestDiffSqlTableModel:
 
     def test_join_target_model_not_in_datasource_drops_join(self) -> None:
         model = _orders_dataset(
-            joins=[
+            relationships=[
                 DatasetRelationship(
                     to="warehouses",
                     from_columns=["customer_id"], to_columns=["id"],  # using customer_id as the key
@@ -299,13 +299,13 @@ class TestDiffSqlTableModel:
         """
         # Dataset: ``customer_id`` semantic name maps to physical ``customer_fk``.
         model = _orders_dataset(
-            columns=[
+            fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(name="customer_id", sql="customer_fk", datatype=DataType.FLOAT),
             ],
-            joins=[
+            relationships=[
                 DatasetRelationship(
                     to="customers",
                     from_columns=["customer_id"], to_columns=["id"],  # semantic
@@ -527,7 +527,7 @@ class TestCascadeRules:
         itself dropped. Walks transitively across chains of derived fields.
         """
         model = _orders_dataset(
-            columns=[
+            fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
@@ -588,7 +588,7 @@ class TestCascadeRules:
         custom aggregation names instead of using the dataset's own aggs only.
         """
         orders = _orders_dataset(
-            joins=[
+            relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
             metrics=[
@@ -629,7 +629,7 @@ class TestCascadeRules:
         produces a relationship removal on the source dataset.
         """
         model = _orders_dataset(
-            joins=[
+            relationships=[
                 DatasetRelationship(
                     to="customers",
                     from_columns=["customer_id"], to_columns=["id"],
@@ -656,7 +656,7 @@ class TestCascadeRules:
         relationship removal on K.
         """
         orders = _orders_dataset(
-            joins=[
+            relationships=[
                 DatasetRelationship(
                     to="customers",
                     from_columns=["customer_id"], to_columns=["id"],
@@ -711,7 +711,7 @@ class TestCascadeRules:
         is cascade-dropped when ``customers.region`` is dropped.
         """
         orders = _orders_dataset(
-            columns=[
+            fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
@@ -722,7 +722,7 @@ class TestCascadeRules:
                     datatype=DataType.STRING,
                 ),
             ],
-            joins=[
+            relationships=[
                 DatasetRelationship(
                     to="customers",
                     from_columns=["customer_id"], to_columns=["id"],
@@ -852,7 +852,7 @@ class TestCascadeRules:
     def test_rule_7_pk_drop_does_not_cascade(self) -> None:
         """PK drops don't cascade into derived fields / metrics / filters."""
         model = _orders_dataset(
-            columns=[
+            fields=[
                 DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="status", sql="status", datatype=DataType.STRING),
@@ -1153,7 +1153,7 @@ class TestValidateModelsSqliteProbe:
         workspace: Path,
         *,
         values: list,
-        columns: list[DatasetField],
+        fields: list[DatasetField],
         metrics: list[DatasetMetric] | None = None,
         ds_type: str = "sqlite",
     ) -> tuple[SlayerQueryEngine, str]:
@@ -1174,7 +1174,7 @@ class TestValidateModelsSqliteProbe:
                 name="sensordata",
                 sql_table="sensordata",
                 data_source="ds",
-                fields=columns,
+                fields=fields,
                 metrics=metrics or [],
             )
         )
@@ -1186,7 +1186,7 @@ class TestValidateModelsSqliteProbe:
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 0.5, 0.7, 0.9, 0.99],
-            columns=[
+            fields=[
                 DatasetField(
                     name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
@@ -1207,7 +1207,7 @@ class TestValidateModelsSqliteProbe:
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 2, "abc", "xyz"],
-            columns=[
+            fields=[
                 DatasetField(
                     name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
@@ -1227,7 +1227,7 @@ class TestValidateModelsSqliteProbe:
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 2, 3, 4, 5],
-            columns=[
+            fields=[
                 DatasetField(
                     name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
@@ -1287,7 +1287,7 @@ class TestValidateModelsSqliteProbe:
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 0.5, 0.7],
-            columns=[
+            fields=[
                 DatasetField(
                     name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
@@ -1311,7 +1311,7 @@ class TestValidateModelsSqliteProbe:
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 0.5, 0.7, 0.9],
-            columns=[
+            fields=[
                 DatasetField(
                     name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
@@ -1334,7 +1334,7 @@ class TestValidateModelsSqliteProbe:
         engine, _ = await self._setup_sensordata(
             workspace,
             values=[1, 0.5, 0.7, 0.9],
-            columns=[
+            fields=[
                 DatasetField(
                     name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),

@@ -30,7 +30,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
             "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MODEL_SETS = {
+_DATASET_SETS = {
     "default": lambda: dev1840_datasets(),
     "weak": lambda: dev1840_datasets(strong_plans=False),
     "rev": lambda: dev1840_datasets(declare_reverse=True),
@@ -103,7 +103,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(case, dialect: str):
-    models = _MODEL_SETS[case["models"]]()
+    models = _DATASET_SETS[case["models"]]()
     try:
         return await _engine_generate(
             query=case["query"], dataset=models[0], extra_datasets=models[1:],

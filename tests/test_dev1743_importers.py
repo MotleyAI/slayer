@@ -230,7 +230,7 @@ def test_osi_walk_join_alias_does_not_split_legacy_dunder_chain(
     — must be UNRESOLVABLE (``None``), even though a naive ``__`` split could
     walk ``orders → customers → regions``.
 
-    Today ``OsiToSlayerConverter._walk_join_alias`` splits on ``__`` and returns
+    Today ``OsiToSlayerConverter._walk_relationship_alias`` splits on ``__`` and returns
     the terminal ``regions`` dataset, silently resolving a reference that should
     error/warn as unresolvable.
 
@@ -242,7 +242,7 @@ def test_osi_walk_join_alias_does_not_split_legacy_dunder_chain(
     conv._datasets = {m.name: m for m in chain_datasets()}  # orders → customers → regions
     orders = conv._datasets["orders"]
 
-    resolved = conv._walk_join_alias(host=orders, alias="customers__regions")
+    resolved = conv._walk_relationship_alias(host=orders, alias="customers__regions")
     assert resolved is None, (
         "legacy '__' split silently resolved customers__regions to a chain; "
         f"strict-D2 must treat it as an (absent) exact dataset name, got {resolved!r}"

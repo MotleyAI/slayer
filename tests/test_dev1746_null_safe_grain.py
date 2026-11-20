@@ -53,7 +53,7 @@ from slayer.sql.render.joins import (
 )
 from slayer.sql.scope_check import assert_scope_closed
 
-from tests._cross_model_chain import _gen
+from tests._cross_dataset_chain import _gen
 from tests._dev1746_fixtures import (
     NULL_STATUS_FEB_WINDOW,
     NULL_STATUS_JAN,

@@ -132,8 +132,8 @@ def regions() -> SlayerDataset:
         ("id", _INT), ("name", _TEXT), ("country_id", _INT), ("manager_id", _INT)))
 
 
-def customers(*joins: DatasetRelationship) -> SlayerDataset:
-    return SlayerDataset(name="customers", data_source=DS, sql_table="customers", relationships=list(joins), fields=_cols(
+def customers(*relationships: DatasetRelationship) -> SlayerDataset:
+    return SlayerDataset(name="customers", data_source=DS, sql_table="customers", relationships=list(relationships), fields=_cols(
         ("id", _INT), ("name", _TEXT), ("tier", _TEXT), ("credit", _DOUBLE), ("region_id", _INT),
         ("home_address_id", _INT)))
 
@@ -143,8 +143,8 @@ def vip_list(*, filters: list[str] | None = None) -> SlayerDataset:
                        fields=_cols(("customer_id", _INT), ("note", _TEXT), ("active", _INT), pk=None))
 
 
-def addresses(*joins: DatasetRelationship) -> SlayerDataset:
-    return SlayerDataset(name="addresses", data_source=DS, sql_table="addresses", relationships=list(joins), fields=_cols(
+def addresses(*relationships: DatasetRelationship) -> SlayerDataset:
+    return SlayerDataset(name="addresses", data_source=DS, sql_table="addresses", relationships=list(relationships), fields=_cols(
         ("id", _INT), ("city", _TEXT), ("customer_id", _INT), ("region_id", _INT)))
 
 
@@ -171,8 +171,8 @@ def orders() -> SlayerDataset:
     )
 
 
-def _plain(name: str, *spec: tuple[str, DataType], pk: str | None = None, joins: Iterable[DatasetRelationship] = ()) -> SlayerDataset:
-    return SlayerDataset(name=name, data_source=DS, sql_table=name, fields=_cols(*spec, pk=pk), relationships=list(joins))
+def _plain(name: str, *spec: tuple[str, DataType], pk: str | None = None, relationships: Iterable[DatasetRelationship] = ()) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source=DS, sql_table=name, fields=_cols(*spec, pk=pk), relationships=list(relationships))
 
 
 PART_PAIRS = [["pa", "ka"], ["pb", "kb"]]
@@ -186,9 +186,9 @@ def base_datasets() -> list[SlayerDataset]:
         _plain("users", ("id", _INT), ("name", _TEXT), pk="id"),
         _plain("parts", ("id", _INT), ("pa", _INT), ("pb", _INT), pk="id"),
         _plain("part_keys", ("ka", _INT), ("kb", _INT),
-               joins=[DatasetRelationship(to="parts", from_columns=["ka", "kb"], to_columns=["pa", "pb"])]),
+               relationships=[DatasetRelationship(to="parts", from_columns=["ka", "kb"], to_columns=["pa", "pb"])]),
         _plain("part_keys_b", ("ka", _INT), ("kb", _INT)),
-        _plain("shipments", ("id", _INT), ("address_id", _INT), pk="id", joins=[
+        _plain("shipments", ("id", _INT), ("address_id", _INT), pk="id", relationships=[
             DatasetRelationship(to="addresses", name="origin", from_columns=["address_id"], to_columns=["id"]),
             DatasetRelationship(to="addresses", name="dest", from_columns=["address_id"], to_columns=["id"]),
         ]),
@@ -226,7 +226,7 @@ def ext(dataset: str, **fields: Any) -> dict:
     return {"dataset": dataset, **fields}
 
 
-def join(target: str, pairs: list[list[str]], **fields: Any) -> dict:
+def relationship_to(target: str, pairs: list[list[str]], **fields: Any) -> dict:
     return {"to": target, "from_columns": [p[0] for p in pairs], "to_columns": [p[1] for p in pairs], **fields}
 
 
