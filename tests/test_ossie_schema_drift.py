@@ -231,13 +231,12 @@ def _fake_uv(monkeypatch: pytest.MonkeyPatch, *, returncode: int, written: dict[
     return envs
 
 
-@pytest.mark.parametrize("returncode", [0, 1])
-def test_the_harvest_replaces_the_output_with_the_staged_documents(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-                                                                   returncode: int) -> None:
+def test_the_harvest_replaces_the_output_with_the_staged_documents(monkeypatch: pytest.MonkeyPatch,
+                                                                   tmp_path: Path) -> None:
     out = tmp_path / "harvested"
     out.mkdir()
     (out / "stale.yaml").write_text("old\n", encoding="utf-8")
-    envs = _fake_uv(monkeypatch, returncode=returncode, written={"aaa.yaml": "a\n", "bbb.yaml": "b\n"})
+    envs = _fake_uv(monkeypatch, returncode=0, written={"aaa.yaml": "a\n", "bbb.yaml": "b\n"})
     assert drift_check.harvest(checkout=CORPUS, out=out) == drift_check.EXIT_SAME
     assert sorted(p.name for p in out.iterdir()) == ["aaa.yaml", "bbb.yaml"]
     assert envs[0][plugin.ENV_VALIDATE] == str(CORPUS / "validation" / "validate.py")
@@ -245,6 +244,7 @@ def test_the_harvest_replaces_the_output_with_the_staged_documents(monkeypatch: 
 
 
 @pytest.mark.parametrize(("returncode", "written"), [
+    pytest.param(1, {"aaa.yaml": "a\n"}, id="an-upstream-test-failed"),
     pytest.param(2, {"aaa.yaml": "a\n"}, id="pytest-could-not-run"),
     pytest.param(0, {}, id="nothing-harvested"),
 ])

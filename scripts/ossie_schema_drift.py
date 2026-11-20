@@ -149,9 +149,8 @@ def harvest(*, checkout: Path, out: Path) -> int:
         run = subprocess.run(harvest_command(checkout, uv=uv), cwd=checkout, env=env, capture_output=True, text=True,
                              check=False, timeout=HARVEST_TIMEOUT)
         print(run.stdout[-4000:])
-        # pytest: 0 = passed, 1 = some upstream test failed (its documents are still checked one by one).
-        if run.returncode not in (0, 1):
-            print(f"Upstream's validator tests did not run (pytest exit {run.returncode}):\n{run.stderr[-4000:]}",
+        if run.returncode != 0:
+            print(f"Upstream's validator tests did not pass (pytest exit {run.returncode}):\n{run.stderr[-4000:]}",
                   file=sys.stderr)
             return EXIT_HARVEST
         texts = {path.name: path.read_text(encoding="utf-8") for path in sorted(staged.glob("*.yaml"))}

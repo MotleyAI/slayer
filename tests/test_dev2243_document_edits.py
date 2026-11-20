@@ -9,6 +9,7 @@ import difflib
 import json
 import re
 import sqlite3
+import warnings
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -833,6 +834,35 @@ async def test_deleting_a_document_dataset_drops_inbound_relationships(tmp_path:
     assert not (await doc_of(storage)).get("relationships")
 
 
+BY_STATUS = SlayerDataset.model_validate({"name": "by_status", "data_source": DS, "source_queries": [
+    {"population": "orders", "dimensions": ["orders.status"],
+     "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue"}]}]})
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+@pytest.mark.parametrize("owner", ["standalone", "document"])
+async def test_deleting_a_dataset_a_stage_reads_cascades_alike_for_document_members(kind: str, owner: str) -> None:
+    async with document_engine(kind=kind, documents=(SALES,) if owner == "document" else ()) as engine:
+        storage = engine.storage
+        if owner == "standalone":
+            await storage.save_dataset(shop(customers_dataset()))
+            await storage.save_dataset(shop(orders_dataset()))
+        await engine.save_dataset(BY_STATUS)
+        resp = await engine.execute({"population": "by_status", "dimensions": ["by_status.status"]})
+        assert {r["by_status.status"] for r in resp.data} == {"completed", "open"}
+        await storage.save_memory(id="m1", learning="Revenue by status", entities=[f"{DS}.orders", f"{DS}.by_status"])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert await storage.delete_dataset("orders", data_source=DS) is True
+        assert not [w for w in caught if "by_status" in str(w.message)]
+        loaded, errs = await storage.load_datasets(data_source=DS)
+        assert {d.name for d in loaded} == {"customers", "by_status"}
+        assert errs == []
+        assert (await storage.get_memory("m1")).entities == [f"{DS}.by_status"]
+        with pytest.raises(ValueError, match="Dataset 'orders' not found"):
+            await engine.execute({"population": "by_status", "dimensions": ["by_status.status"]})
+
+
 @pytest.mark.parametrize("kind", STORAGES)
 async def test_deleting_a_whole_document_cascades_per_member(tmp_path: Path, kind: str) -> None:
     storage = make_storage(kind, tmp_path)
@@ -1070,9 +1100,23 @@ async def test_the_python_client_manages_semantic_models(tmp_path: Path) -> None
     assert await client.get_semantic_model("sales", data_source=DS) == replaced
     await client.delete_semantic_model("sales", data_source=DS)
     assert await storage.list_semantic_models() == []
-    for op in ("list", "get", "create", "replace", "delete"):
-        name = f"{op}_semantic_models_sync" if op == "list" else f"{op}_semantic_model_sync"
-        assert callable(getattr(client, name))
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+def test_the_python_clients_sync_twins_manage_semantic_models(tmp_path: Path, kind: str) -> None:
+    storage = make_storage(kind, tmp_path)
+    client = SlayerClient(storage=storage)
+    replaced = SALES.replace("description: Orders and customers.", "description: Replaced.")
+    client.create_semantic_model_sync(data_source=DS, content=SALES)
+    assert asyncio.run(storage.get_semantic_model_text("sales", data_source=DS)) == SALES
+    assert "sales" in str(client.list_semantic_models_sync(data_source=DS))
+    assert client.get_semantic_model_sync("sales", data_source=DS) == SALES
+    client.replace_semantic_model_sync("sales", data_source=DS, content=replaced)
+    assert asyncio.run(storage.get_semantic_model_text("sales", data_source=DS)) == replaced
+    assert client.get_semantic_model_sync("sales", data_source=DS) == replaced
+    client.delete_semantic_model_sync("sales", data_source=DS)
+    assert asyncio.run(storage.list_semantic_models()) == []
+    assert asyncio.run(storage.get_dataset("orders", data_source=DS)) is None
 
 
 def test_the_cli_lists_shows_and_deletes_semantic_models(tmp_path: Path) -> None:
