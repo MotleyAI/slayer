@@ -1,5 +1,5 @@
-"""The ``SLAYER`` vendor payload of an exported Ossie document is written at version 2 in the Ossie vocabulary;
-the importer reads a version-1 payload, checked against its fingerprint as written, like its version-2 re-export.
+"""The ``SLAYER`` vendor payload of an exported Ossie document is written at version 3 in the Ossie vocabulary;
+a native load reads a version-1 payload, checked against its fingerprint as written.
 
 ``tests/fixtures/ossie_vocabulary/export_payload_v1.osi.yaml`` was exported by the pre-rename release.
 
@@ -11,6 +11,7 @@ The pre-2.0 spellings below are deliberate: keep this file out of the vocabulary
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 from typing import Any
 
@@ -18,10 +19,10 @@ import yaml
 
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._deprecated_input_helpers import recorded
+from tests._model_access_fixtures import mcp_text
 from tests._osi_export_fixtures import customers, monthly_revenue, rich_orders
 from tests._osi_export_helpers import (
     Env,
-    convert_document,
     entities,
     export,
     make_env,
@@ -29,10 +30,11 @@ from tests._osi_export_helpers import (
     reimport,
     save,
     slayer_entries,
+    stored,
 )
 
 V1_DOCUMENT = Path(__file__).parent / "fixtures" / "ossie_vocabulary" / "export_payload_v1.osi.yaml"
-EDITED = "edited after export"
+STALE = re.compile(r"edited|stale|fingerprint", re.IGNORECASE)
 PRE_2_0_PAYLOAD_KEYS = frozenset({
     "columns", "column", "measures", "measure", "joins", "join", "model", "type", "formula", "target_model",
     "source_model", "dimension",
@@ -56,8 +58,9 @@ def v1_document() -> dict[str, Any]:
     return yaml.safe_load(V1_DOCUMENT.read_text())
 
 
-def edited(result: Any) -> list[str]:
-    return [e.message for e in result.entries if EDITED in e.message]
+async def inspected(env: Env, dataset: str) -> str:
+    return await mcp_text(YAMLStorage(base_dir=str(env.store)), "inspect", reference=f"{env.datasource}.{dataset}",
+                          entity_type="dataset", compact=False)
 
 
 async def stored_datasets(env: Env) -> dict[str, dict[str, Any]]:
@@ -92,9 +95,11 @@ async def test_an_export_writes_payload_version_3_in_the_new_keys(tmp_path: Path
 async def test_a_v1_payload_matches_its_fingerprint_as_written(tmp_path: Path) -> None:
     env = await make_env(tmp_path)
     with recorded() as caught:
-        result = convert_document(env, v1_document())
-    assert edited(result) == []
+        imported, _ = await reimport(env, v1_document())
     assert [w for w in caught if issubclass(w.category, FutureWarning)] == []
+    # The SLAYER-only measure applies, so the payload was read.
+    assert (await stored(imported, "orders")).get_metric("running") is not None
+    assert not STALE.search(await inspected(imported, "orders"))
 
 
 async def test_an_edited_v1_payload_fails_its_fingerprint(tmp_path: Path) -> None:
@@ -103,17 +108,24 @@ async def test_an_edited_v1_payload_fails_its_fingerprint(tmp_path: Path) -> Non
     [orders] = [b for b in slayer_payloads(document) if (b["kind"], b["entity"]) == ("dataset", "orders")]
     running = next(m for m in orders["measures"] if m["name"] == "running")
     running["formula"] = "cumsum(n)"
-    assert any("'orders'" in m for m in edited(convert_document(env, document)))
+    imported, _ = await reimport(env, document)
+    # Stale payload: core applies alone, with a load warning naming the dataset.
+    assert (await stored(imported, "orders")).get_metric("running") is None
+    text = await inspected(imported, "orders")
+    assert "orders" in text
+    assert "slayer" in text.lower()
+    assert STALE.search(text), text
 
 
-async def test_a_v1_export_imports_like_its_version_3_re_export(tmp_path: Path) -> None:
+async def test_a_v1_export_reexports_its_payloads_unchanged(tmp_path: Path) -> None:
     env = await make_env(tmp_path / "src")
     with recorded() as caught:
         from_v1, _ = await reimport(env, v1_document(), name="from_v1")
     assert [w for w in caught if issubclass(w.category, FutureWarning)] == []
-    v3_document = (await export(from_v1)).document
-    assert {b["version"] for b in slayer_payloads(v3_document)} == {3}
-    from_v3, _ = await reimport(env, v3_document, name="from_v3")
+    # A one-document datasource re-exports verbatim: its payloads stay at version 1.
+    re_export = await export(from_v1)
+    assert {b["version"] for b in slayer_payloads(re_export.document)} == {1}
+    from_re_export, _ = await reimport(env, re_export, name="from_re_export")
     imported_v1 = await stored_datasets(from_v1)
     assert sorted(imported_v1) == ["customers", "monthly_revenue", "orders"]
-    assert imported_v1 == await stored_datasets(from_v3)
+    assert imported_v1 == await stored_datasets(from_re_export)

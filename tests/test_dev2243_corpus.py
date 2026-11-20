@@ -1,0 +1,271 @@
+"""Spec: models/semantic-model-documents › The Ossie corpus loads, compiles and round-trips.
+
+The corpus root is ``$SLAYER_OSSIE_CORPUS`` (the weekly job points it at a fresh upstream fetch), defaulting to the
+vendored snapshot.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import re
+import shutil
+import subprocess
+from collections.abc import AsyncGenerator
+from pathlib import Path
+from typing import Any
+
+import pytest
+import sqlglot
+import yaml
+from sqlglot import exp
+from sqlglot.errors import ParseError
+
+from slayer.core.models import DatasourceConfig
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.osi.exporter import export_osi
+from slayer.storage.base import StorageBackend
+from tests._dev2243_fixtures import CORPUS, STORAGES, error, importer_module, make_storage, semantic_model_module
+from tests._engine_helpers import owned_query_engine
+
+ROOT = Path(os.environ.get("SLAYER_OSSIE_CORPUS") or CORPUS)
+DS = "corpus"
+SOURCES = ("examples/*.yaml", "compliance/portability/m[0-8]/*.ossie.yaml", "compliance/wide_table/*/*.ossie.yaml",
+           "compliance/query/scott/*.ossie.yaml", "harvested/*.yaml")
+
+
+def _is_semantic_model(path: Path) -> bool:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return isinstance(data, dict) and "datasets" in data
+
+
+DOCUMENTS = sorted({p for pattern in SOURCES for p in ROOT.glob(pattern) if _is_semantic_model(p)})
+IDS = [p.relative_to(ROOT).as_posix() for p in DOCUMENTS]
+
+
+def _load(path: Path) -> tuple[str, dict[str, Any]]:
+    text = path.read_text(encoding="utf-8")
+    return text, yaml.safe_load(text)
+
+
+# --------------------------------------------------------------------------- #
+# Upstream validate.py, once over the whole corpus, from a copy (it writes __pycache__ beside its loader)
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def upstream_reports(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+    """Each corpus document's report block from one upstream ``validate.py`` run; skips without uv."""
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not on PATH; the upstream Ossie validator runs through `uv run --script`")
+    copy = tmp_path_factory.mktemp("ossie_validator")
+    for part in ("validation", "core-spec", "python"):
+        shutil.copytree(ROOT / part, copy / part)
+    run = subprocess.run([uv, "run", "--script", str(copy / "validation" / "validate.py"), *map(str, DOCUMENTS)],
+                         capture_output=True, text=True, check=False, timeout=600)
+    blocks: dict[str, str] = {}
+    current: str | None = None
+    for line in run.stdout.splitlines():
+        if line.startswith("== "):
+            current = line[3:]
+            blocks[current] = ""
+        elif current is not None:
+            blocks[current] += line + "\n"
+    return blocks
+
+
+# --------------------------------------------------------------------------- #
+# Which metrics SLayer cannot evaluate yet (windows; model-scoped metrics Ossie rejects at query time)
+# --------------------------------------------------------------------------- #
+def _expression_text(expression: dict[str, Any]) -> str | None:
+    """The first readable candidate: top-level ``sql``, then OSSIE_SQL_2026, ANSI_SQL, any other entry."""
+    if expression.get("sql"):
+        return expression["sql"]
+    entries = expression.get("dialects") or []
+    for wanted in ("OSSIE_SQL_2026", "ANSI_SQL"):
+        for entry in entries:
+            if entry.get("dialect") == wanted:
+                return entry["expression"]
+    return entries[0]["expression"] if entries else None
+
+
+def _parse(sql: str | None) -> exp.Expr | None:
+    if not sql:
+        return None
+    try:
+        return sqlglot.parse_one(sql)
+    except ParseError:
+        return None
+
+
+#: Date-part units sqlglot reads as bare columns (``DATEDIFF(day, …)``).
+DATE_PARTS = frozenset({"year", "quarter", "month", "week", "day", "hour", "minute", "second", "millisecond",
+                        "microsecond", "dayofweek", "dayofyear", "isoweek", "isoyear"})
+
+
+def _is_agg_call(node: exp.Expr) -> bool:
+    return type(node).__name__ == "Agg" or (isinstance(node, exp.Anonymous) and node.name.upper() == "AGG")
+
+
+def _aggregated(node: exp.Expr) -> bool:
+    """Inside an aggregate call, its FILTER clause or an ``AGG(d.m)`` call."""
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.AggFunc | exp.Filter) or _is_agg_call(parent):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _model_scoped_rejection(tree: exp.Expr, *, metric_names: set[str]) -> str | None:
+    """Why Ossie rejects a model-scoped metric at query time (wide_table §5.2; qualified references), else None."""
+    for column in tree.find_all(exp.Column):
+        if not column.table and column.name.casefold() in DATE_PARTS:
+            continue
+        if _aggregated(column):
+            if not column.table:
+                return "unqualified field"
+        elif column.table:
+            return "unaggregated field"
+        elif column.name.casefold() not in metric_names:
+            return "unqualified field"
+    for aggregate in tree.find_all(exp.AggFunc):
+        if _is_agg_call(aggregate) or _aggregated(aggregate):
+            continue
+        homes = {c.table for c in aggregate.find_all(exp.Column) if c.table}
+        if len(homes) != 1:
+            return "aggregate grain"
+        if isinstance(aggregate.parent, exp.Filter) and {
+                c.table for c in aggregate.parent.expression.find_all(exp.Column) if c.table} - homes:
+            return "aggregate grain"
+    return None
+
+
+def expected_outcomes(data: dict[str, Any]) -> dict[str, str]:
+    """Metric reference → ``compiled`` or ``unevaluable``."""
+    outcomes: dict[str, str] = {}
+    for dataset in data["datasets"]:
+        windowed = {f["name"] for f in dataset.get("fields") or []
+                    if (t := _parse(_expression_text(f.get("expression") or {}))) is not None and t.find(exp.Window)}
+        for metric in dataset.get("metrics") or []:
+            tree = _parse(_expression_text(metric["expression"]))
+            unevaluable = tree is not None and (tree.find(exp.Window) is not None or any(
+                not c.table and c.name in windowed for c in tree.find_all(exp.Column)))
+            outcomes[f"{dataset['name']}.{metric['name']}"] = "unevaluable" if unevaluable else "compiled"
+    metric_names = {m["name"].casefold() for m in data.get("metrics") or []}
+    for metric in data.get("metrics") or []:
+        tree = _parse(_expression_text(metric["expression"]))
+        unevaluable = tree is not None and (tree.find(exp.Window) is not None
+                                            or _model_scoped_rejection(tree, metric_names=metric_names) is not None)
+        outcomes[metric["name"]] = "unevaluable" if unevaluable else "compiled"
+    return outcomes
+
+
+def _query(reference: str) -> dict[str, Any]:
+    """A dataset metric is read from its own dataset; a model-scoped metric root-less, by its bare name."""
+    if "." in reference:
+        return {"population": reference.split(".", 1)[0], "metrics": [reference]}
+    return {"metrics": [reference]}
+
+
+# --------------------------------------------------------------------------- #
+# Storage and engine over an empty datasource
+# --------------------------------------------------------------------------- #
+def _datasource(tmp: Path) -> DatasourceConfig:
+    return DatasourceConfig(name=DS, type="duckdb", database=str(tmp / "corpus.duckdb"))
+
+
+async def _store(storage: StorageBackend, *, text: str, data: dict[str, Any]) -> None:
+    await storage.save_semantic_model_text(data_source=DS, name=data["name"], text=text)
+
+
+@contextlib.asynccontextmanager
+async def _env(kind: str, tmp: Path) -> AsyncGenerator[tuple[StorageBackend, SlayerQueryEngine]]:
+    """Empty ``kind`` storage holding only the datasource, and an engine over it."""
+    storage = make_storage(kind, tmp)
+    async with owned_query_engine(storage=storage, datasources=[_datasource(tmp)]) as engine:
+        yield storage, engine
+
+
+# --------------------------------------------------------------------------- #
+# Tests
+# --------------------------------------------------------------------------- #
+def test_the_corpus_holds_every_source() -> None:
+    """Spec: the corpus is the examples, m0–m8, the wide_table models, scott and the harvested documents."""
+    assert {p.split("/")[0] for p in IDS} == {"examples", "compliance", "harvested"}
+    assert {p.split("/")[2] for p in IDS if p.startswith("compliance/portability/")} == {f"m{i}" for i in range(9)}
+    assert any(p.startswith("compliance/wide_table/retail/") for p in IDS)
+    assert any(p.startswith("compliance/wide_table/stores/") for p in IDS)
+    assert any(p.startswith("compliance/query/scott/") for p in IDS)
+    assert sum(p.startswith("examples/") for p in IDS) >= 4
+
+
+@pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
+def test_upstream_validate_passes(path: Path, upstream_reports: dict[str, str]) -> None:
+    assert "Validation PASSED" in upstream_reports.get(str(path), ""), upstream_reports.get(str(path))
+
+
+@pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
+def test_the_native_validity_check_agrees(path: Path) -> None:
+    _, data = _load(path)
+    assert semantic_model_module().ossie_validity_errors(data) == []
+
+
+@pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
+async def test_stores_and_loads_natively(path: Path, tmp_path: Path) -> None:
+    text, data = _load(path)
+    async with _env("yaml", tmp_path) as (storage, engine):
+        await _store(storage, text=text, data=data)
+        datasets, failures = await storage.load_datasets(data_source=DS)
+        assert failures == []
+        assert sorted(d.name for d in datasets) == sorted(d["name"] for d in data["datasets"])
+        metrics = await storage.list_model_scoped_metrics(DS)
+        assert sorted(m.name for m in metrics) == sorted(m["name"] for m in data.get("metrics") or [])
+
+
+@pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
+async def test_every_metric_binds_and_compiles(path: Path, tmp_path: Path) -> None:
+    """Every metric compiles to SQL; one SLayer cannot evaluate yet (or Ossie rejects) raises a typed error naming it."""
+    text, data = _load(path)
+    expected = expected_outcomes(data)
+    async with _env("yaml", tmp_path) as (storage, engine):
+        await _store(storage, text=text, data=data)
+        actual: dict[str, str] = {}
+        for reference in expected:
+            try:
+                response = await engine.execute(_query(reference), dry_run=True)
+            except (error("UnevaluableEntityError"), error("ModelMetricReferenceError")) as exc:
+                name = reference.rsplit(".", 1)[-1]
+                actual[reference] = "unevaluable" if re.search(re.escape(name), str(exc)) else f"unnamed: {exc}"
+            except Exception as exc:  # noqa: BLE001 — reported per metric
+                actual[reference] = f"{type(exc).__name__}: {exc}"
+            else:
+                actual[reference] = "compiled" if response.sql else "no SQL"
+        assert actual == expected
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+@pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
+async def test_store_load_save_unchanged_and_export_reproduce_the_text(path: Path, kind: str, tmp_path: Path) -> None:
+    text, data = _load(path)
+    async with _env(kind, tmp_path) as (storage, engine):
+        await _store(storage, text=text, data=data)
+        assert await storage.get_semantic_model_text(data["name"], DS) == text
+        for name in await storage.list_datasets(data_source=DS):
+            dataset = await storage.get_dataset(name, data_source=DS)
+            assert dataset is not None
+            await storage.save_dataset(dataset)
+        assert await storage.get_semantic_model_text(data["name"], DS) == text
+        exported = await export_osi(engine=engine, datasource=DS)
+        assert exported.text == text
+
+
+@pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
+async def test_every_corpus_document_round_trips(path: Path, tmp_path: Path) -> None:
+    """Every corpus document round-trips."""
+    text, data = _load(path)
+    async with _env("yaml", tmp_path) as (storage, engine):
+        result = await importer_module().import_osi(storage=storage, path=path, data_source=DS)
+        assert result.refused == []
+        assert result.stored == [data["name"]]
+        exported = await export_osi(engine=engine, datasource=DS)
+        assert exported.text == text

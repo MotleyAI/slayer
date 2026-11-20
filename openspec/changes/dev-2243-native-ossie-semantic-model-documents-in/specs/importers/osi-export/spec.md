@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Export writes one current-spec document per datasource
-`slayer export-osi --datasource X` and the Python export API SHALL write the datasource's semantic model — every stored semantic-model document and every standalone dataset of `X` — as one flat current-spec Ossie document (`version: 0.3.0.dev0`) that validates against the pinned upstream Ossie schema. When `X` holds exactly one semantic-model document and no standalone dataset, and no `--datasets` subset is given, the output SHALL be that document's stored text unchanged (converted to JSON only when the output file is JSON). Otherwise the document SHALL hold every dataset, relationship and model-scoped metric of `X`: document entities as stored, standalone datasets exported by the rules below; the document's `name` and `description` SHALL come from the datasource; and each source document's `name`, `description`, `ai_context`, non-portable extensions and the names of its datasets SHALL be carried in a document-level `SLAYER` entry, so that importing the export into an empty datasource restores each source document. Datasets SHALL be ordered by name, and fields, metrics and relationships in a deterministic order, so that exporting unchanged content twice produces identical documents. Export SHALL NOT access the database directly; any metadata it needs SHALL be read through the query engine.
+`slayer export-osi --datasource X` and the Python export API SHALL write the datasource's semantic model — every stored semantic-model document and every standalone dataset of `X` — as one flat current-spec Ossie document (`version: 0.3.0.dev0`) that validates against the pinned upstream Ossie schema. When `X` holds exactly one semantic-model document and no standalone dataset, no `--datasets` subset is given and extensions are not omitted, the output SHALL be that document's stored text unchanged (converted to JSON only when the output file is JSON). With `--no-extensions`, the output SHALL be that text with only its `SLAYER` entries removed, every other line kept. Otherwise the document SHALL hold every dataset, relationship and model-scoped metric of `X`: document entities as stored, standalone datasets exported by the rules below; the document's `name` and `description` SHALL come from the datasource; and each source document's `name`, `description`, `ai_context`, non-portable extensions and the names of its datasets SHALL be carried in a document-level `SLAYER` entry, so that importing the export into an empty datasource restores each source document. Datasets SHALL be ordered by name, and fields, metrics and relationships in a deterministic order, so that exporting unchanged content twice produces identical documents. Export SHALL NOT access the database directly; any metadata it needs SHALL be read through the query engine.
 
 #### Scenario: Exported document validates
 - **WHEN** a datasource with table-backed, sql-mode and query-backed models, joins and measures is exported
@@ -22,6 +22,10 @@
 #### Scenario: A single-document datasource exports verbatim
 - **WHEN** a datasource holds only the document `sales`, whose text carries comments, and is exported to YAML
 - **THEN** the output equals the stored text of `sales`
+
+#### Scenario: No extensions strips only SLAYER entries
+- **WHEN** a datasource holds only the document `sales`, one of whose datasets carries a `SLAYER` entry and a `DBT` entry, and is exported with `--no-extensions`
+- **THEN** the output equals the stored text without the `SLAYER` entry, and the `DBT` entry and every other line are kept
 
 #### Scenario: Two documents and a standalone dataset merge
 - **WHEN** a datasource holds documents `sales` and `support` and a standalone dataset `stores` with a relationship into `sales`'s dataset `orders`, and is exported and imported into an empty datasource

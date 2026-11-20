@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from sqlalchemy.dialects import oracle, postgresql
 
 from slayer.core.enums import DataType, type_display
@@ -29,7 +30,7 @@ from tests._ossie_vocabulary_fixtures import customers_doc, orders_doc, shop_sto
 from tests._osi_export_helpers import dataset as osi_dataset
 from tests._osi_export_helpers import export_datasets, make_env
 from tests._osi_export_helpers import field as osi_field
-from tests._osi_helpers import by_name, cols, convert, documents, ds, f, flat, seed_db
+from tests._osi_helpers import DATASOURCE, cols, ds, f, flat, seed_db
 
 OSSIE_NAMES = ["String", "Integer", "Decimal", "Float", "Boolean", "Date", "Time", "DateTime", "DateTimeTz", "Opaque",
                "Array"]
@@ -172,11 +173,16 @@ class TestKeptAsWritten:
         assert [(osi_field(exported, n) or {}).get("datatype") for n in ("amount", "at", "tod")] == [
             "Decimal", "DateTimeTz", "Time"]
 
-    def test_the_importer_keeps_an_ossie_type_as_written(self, tmp_path: Path) -> None:
+    async def test_the_importer_keeps_an_ossie_type_as_written(self, tmp_path: Path) -> None:
         db = seed_db(directory=tmp_path)
         doc = flat([ds("orders", fields=[f("order_id", "o_orderkey"), f("price", "o_totalprice", datatype="Decimal"),
                                          f("label", "UPPER(status)", datatype="String")])])
-        orders = by_name(convert(db=db, docs=documents(doc)))["orders"]
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await storage.save_datasource(DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db)))
+        await storage.save_semantic_model_text(data_source=DATASOURCE, name=doc["name"],
+                                               text=yaml.safe_dump(doc, sort_keys=False))
+        orders = await storage.get_dataset("orders", data_source=DATASOURCE)
+        assert orders is not None
         price, label = cols(orders)["price"], cols(orders)["label"]
         assert (price.datatype.value, label.datatype.value) == ("Decimal", "String")
         assert "osi_datatype" not in (price.meta or {})

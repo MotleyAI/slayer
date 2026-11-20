@@ -40,7 +40,7 @@ The importer SHALL accept a flat Ossie document that holds one semantic model at
 - **THEN** the stored document keeps that entry unchanged
 
 ### Requirement: Legacy wrapper documents keep importing
-A document whose root holds a `semantic_model` key and that does not declare `0.3.0.dev0` SHALL be treated as a legacy document. Each model of the wrapper (each element of an array, or the single object) SHALL be split into its own flat `0.3.0.dev0` document, carrying the model's content and every non-portable extension, as Ossie's migration guidance prescribes; no model SHALL be dropped and no existing document SHALL be overwritten by a split without the import naming it. A legacy dataset exposes its introspected source columns as well as its fields, so for each legacy dataset the importer SHALL introspect the datasource and write each source column that no field declares as a declared field reading that column, typed from the database; this upgrade alone SHALL require a reachable datasource. The report SHALL list each split and each field added.
+A document whose root holds a `semantic_model` key and that does not declare `0.3.0.dev0` SHALL be treated as a legacy document. Each model of the wrapper (each element of an array, or the single object) SHALL be split into its own flat `0.3.0.dev0` document, carrying the model's content and every non-portable extension, as Ossie's migration guidance prescribes; no model SHALL be dropped and no existing document SHALL be overwritten by a split without the import naming it. A legacy dataset exposes its introspected source columns as well as its fields, so for each legacy dataset the importer SHALL introspect the datasource and write each source column that no field declares as a declared field reading that column, typed from the database; this upgrade alone SHALL require a reachable datasource. The report SHALL list each split and each field added. A legacy model-level metric's bare reference that exactly one dataset of the model declares (as a field, or as a column added by this upgrade) SHALL be written as `dataset.name`; a metric holding an ambiguous or unresolvable bare reference SHALL be stored as written and reported as not evaluable. The report SHALL list each rewritten metric.
 
 #### Scenario: Legacy array with two models
 - **WHEN** a file holds `semantic_model: [ {name: a, datasets: [...]}, {name: b, datasets: [...]} ]`
@@ -57,6 +57,10 @@ A document whose root holds a `semantic_model` key and that does not declare `0.
 #### Scenario: Introspected columns become declared fields
 - **WHEN** a legacy dataset `orders` declares only the field `order_id` and its source also has the column `amount`
 - **THEN** the stored document's `orders` declares a field `amount` reading `amount`, and the report lists it
+
+#### Scenario: Unqualified legacy metrics are qualified
+- **WHEN** a legacy model declares `orders` with field `amount` and the model-level metric `total_amount: SUM(amount)`
+- **THEN** the stored document's metric reads `SUM(orders.amount)`, it answers by bare name, and the report lists the rewrite
 
 ### Requirement: Invalid documents are refused with every reason
 A document that is not valid Ossie SHALL be refused with every reason, each naming its entity: a root mixing both shapes or holding neither, an empty or malformed `semantic_model`, a wrapper declaring `0.3.0.dev0`, a key Ossie does not define, a duplicate name (compared as Ossie compares identifiers), a key or relationship naming an undeclared field, mismatched relationship key lengths, a relationship naming a dataset outside the document, a metric reference that breaks Ossie's metric scoping, an expression with neither `sql` nor a `dialects` entry, and an extension whose `data` is not a JSON object. A refused document SHALL store nothing; the other files of the same import SHALL still be imported, and the command SHALL exit non-zero when any file was refused.

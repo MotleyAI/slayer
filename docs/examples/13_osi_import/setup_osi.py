@@ -49,7 +49,7 @@ DB_PATH = CACHE_DIR / "shop.duckdb"
 DATASETS_DIR = CACHE_DIR / "slayer_datasets"
 
 # DuckDB DDL for the four tables the OSI config binds to. Mirrors the schema in
-# tests/test_cli_import_osi.py, with DuckDB-native types (DOUBLE / VARCHAR).
+# tests/fixtures/osi/shop.yaml's tables, with DuckDB-native types (DOUBLE / VARCHAR).
 _SCHEMA = [
     "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, "
     "product_id INTEGER, amount DOUBLE, quantity INTEGER, ordered_at DATE, status VARCHAR)",

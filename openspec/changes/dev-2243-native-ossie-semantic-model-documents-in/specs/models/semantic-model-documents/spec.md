@@ -52,11 +52,22 @@ Each Ossie dataset SHALL be visible as a native dataset of the document's dataso
 - **THEN** both fields carry the primary-key flag and neither is a sole identifier
 
 ### Requirement: Relationships decompose into named many-to-one relationships
-Each top-level relationship SHALL become a relationship on its `from` dataset, named by the relationship's `name`, targeting `to`, keyed by `from_columns` and `to_columns` (names of declared fields), with cardinality `many_to_one` and a LEFT join. The declared cardinality SHALL prove the hop to-one as `models/join-cardinality` specifies. Relationships of standalone datasets SHALL keep their own declared cardinality. A relationship SHALL name only datasets of its own document.
+Each top-level relationship SHALL become a relationship on its `from` dataset, named by the relationship's `name`, targeting `to`, keyed by `from_columns` and `to_columns` (names of declared fields), with cardinality `many_to_one` and a LEFT join unless its `SLAYER` entry declares otherwise. The declared cardinality SHALL prove the hop to-one as `models/join-cardinality` specifies. Relationships of standalone datasets SHALL keep their own declared cardinality. A relationship SHALL name only datasets of its own document.
 
 #### Scenario: A declared relationship proves determination
 - **WHEN** a document relates `orders` to `customers` by `orders_to_customers` on `[customer_id]` → `[id]`, and `customers` declares no primary key
 - **THEN** a query of `sum(orders.amount)` by `customers.region` evaluates each order once, as attributable
+
+### Requirement: SLAYER entries are read on every load
+An entity's `SLAYER` entry SHALL be applied on every load. Its content that duplicates Ossie core content SHALL apply only when the payload's fingerprint matches the entity's core content as stored; otherwise the core content SHALL apply alone. A payload that is malformed, of an unknown version, attached to an entity it does not describe, or one of several `SLAYER` entries on one entity SHALL be ignored; so SHALL a payload whose content would make its dataset invalid or names an entity the document does not hold. Each ignored payload SHALL produce a structured load warning naming the entity and the reason, visible on `inspect`, and SHALL affect no other entity. A relationship's `SLAYER` entry declaring a cardinality or join type SHALL override the many-to-one, LEFT default.
+
+#### Scenario: A hand edit makes its payload stale
+- **WHEN** a document dataset metric's core `sql` is edited by hand after its `SLAYER` entry recorded the formula `revenue / n`
+- **THEN** the metric evaluates its edited core `sql`, and `inspect` shows a load warning naming the metric
+
+#### Scenario: A relationship keeps its declared cardinality
+- **WHEN** `edit_dataset` adds a `one_to_many` relationship from document dataset `customers` to document dataset `orders`
+- **THEN** the relationship reads back as `one_to_many`
 
 ### Requirement: Top-level metrics decompose into model-scoped metrics
 Each top-level metric SHALL become a model-scoped metric of the document's datasource (`queries/model-scoped-metrics`), named by its `name`, with its `expression`, `description`, `datatype` and `ai_context` kept.
@@ -66,7 +77,7 @@ Each top-level metric SHALL become a model-scoped metric of the document's datas
 - **THEN** a query naming the metric `revenue_per_customer` returns that metric's value
 
 ### Requirement: Every construct the 1.x importer converted keeps its meaning natively
-Each Ossie construct `slayer import-osi` converted in 1.x SHALL evaluate natively, from the stored expression, with the meaning the 1.x conversion gave it: `agg(x) FILTER (WHERE p)` for every supported aggregation (including `COUNT(*)`, `COUNT(DISTINCT x)` and percentiles) as the aggregation over the rows where `p` holds, never removing result groups; `STDDEV_SAMP`, `STDDEV_POP`, `VAR_SAMP`, `VAR_POP`, `CORR`, `COVAR_SAMP`, `COVAR_POP` and `APPROX_COUNT_DISTINCT`; `ARRAY_AGG(DISTINCT x)` as `collect(x)`, `ARRAY_CONTAINS(a, v)` and `v = ANY(a)` as `contains(a, v)`, `ARRAY_LENGTH(a)` and `CARDINALITY(a)` as `length(a)`, with SLayer's NULL conventions; non-bare aggregate operands; `COUNT(list_field)` counting non-NULL lists; date literals compared with temporal fields as instants (a date-only literal at its midnight); and `source.column` in dataset-scoped metrics. A field expression with no form SLayer can run on the datasource SHALL be translated in memory at load from the first readable candidate (top-level `sql`, an `OSSIE_SQL_2026` entry, an `ANSI_SQL` entry, then any readable SQL dialect entry, document order within a step) and SHALL NOT be written back. A construct the 1.x importer reported as unconverted SHALL load per "Entities SLayer cannot evaluate yet still load".
+Each Ossie construct `slayer import-osi` converted in 1.x SHALL evaluate natively, from the stored expression, with the meaning the 1.x conversion gave it: `agg(x) FILTER (WHERE p)` for every supported aggregation (including `COUNT(*)`, `COUNT(DISTINCT x)` and percentiles) as the aggregation over the rows where `p` holds, never removing result groups; `STDDEV_SAMP`, `STDDEV_POP`, `VAR_SAMP`, `VAR_POP`, `CORR`, `COVAR_SAMP`, `COVAR_POP` and `APPROX_COUNT_DISTINCT`; `ARRAY_AGG(DISTINCT x)` as `collect(x)`, `ARRAY_CONTAINS(a, v)` and `v = ANY(a)` as `contains(a, v)`, `ARRAY_LENGTH(a)` and `CARDINALITY(a)` as `length(a)`, with SLayer's NULL conventions; non-bare aggregate operands; `COUNT(list_field)` counting non-NULL lists; date literals compared with temporal fields as instants (a date-only literal at its midnight); and `source.column` in dataset-scoped metrics. A field or metric expression with no form SLayer can run on the datasource SHALL be translated in memory at load from the first readable candidate (top-level `sql`, an `OSSIE_SQL_2026` entry, an `ANSI_SQL` entry, then any readable SQL dialect entry, document order within a step) and SHALL NOT be written back. A construct the 1.x importer reported as unconverted SHALL load per "Entities SLayer cannot evaluate yet still load".
 
 #### Scenario: A FILTER aggregate keeps every group
 - **WHEN** a dataset metric `paid` has expression `SUM(amount) FILTER (WHERE status = 'paid')` and a query groups it by `orders.region` where one region has no paid orders
@@ -75,6 +86,10 @@ Each Ossie construct `slayer import-osi` converted in 1.x SHALL evaluate nativel
 #### Scenario: An array function maps to the list library
 - **WHEN** a field `tag_count` has expression `CARDINALITY(tags)`
 - **THEN** it returns the count of non-NULL elements of `tags`, and NULL for a NULL list
+
+#### Scenario: A metric written only as a dialect entry runs
+- **WHEN** a document's model-scoped metric `gross_revenue` has only the entry `{dialect: ANSI_SQL, expression: SUM(orders.total_amount)}`
+- **THEN** a query naming `gross_revenue` returns the sum of `orders.total_amount`, and the document's text is unchanged
 
 ### Requirement: Entities SLayer cannot evaluate yet still load
 A field or metric of a valid document whose expression SLayer cannot evaluate yet — a window function, or a model-scoped metric Ossie itself rejects at query time — SHALL load with a structured load warning naming the entity and the reason, visible on `inspect`, `datasets_summary` and search results. Every query reading the entity SHALL fail with a typed error naming it and the reason; no other entity SHALL be affected.

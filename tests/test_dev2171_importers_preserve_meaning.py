@@ -12,10 +12,8 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
 from tests._dev2171_fixtures import (
-    by_id, column, counts_by, cube_issues, entries, has_metric, import_cube, import_dbt, import_osi,
-    datasets_of, rows, seed,
+    by_id, column, counts_by, cube_issues, entries, has_metric, import_cube, import_dbt, datasets_of, rows, seed,
 )
-from tests._osi_helpers import ds, f, flat, m, rel, unconverted
 
 PAID = [{"sql": "{CUBE}.status = 'paid'"}]
 CUBE_ID = {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True}
@@ -99,24 +97,6 @@ DBT_MODELS = [
      "dimensions": [{"name": "name", "type": "categorical"}]},
 ]
 
-OSI_DOCUMENT = flat([
-    ds("orders", fields=[
-        f("id"), f("status"), f("status_upper", "UPPER(status)"), f("tags"), f("note"), f("amount"),
-        f("customer_id"),
-        f("has_a", "ARRAY_CONTAINS(tags, 'a')"), f("n_tags", "CARDINALITY(tags)"),
-    ], metrics=[
-        m("with_b", "COUNT(*) FILTER (WHERE 'b' = ANY(tags))"), m("tag_cnt", "COUNT(tags)"),
-        m("obrien", "COUNT(*) FILTER (WHERE note = 'O''Brien\\x')"),
-        m("doubled", "SUM(amount * 2)"), m("padded", "SUM(LENGTH(LPAD(status, 12, 'x')))"),
-        m("tag_max", "MAX(tags)"), m("tag_kinds", "COUNT(DISTINCT tags)"),
-    ]),
-    ds("orders_clash", source="orders", fields=[f("id"), f("status", "state"), f("status_upper", "UPPER(status)")]),
-    ds("orders_self", source="orders", fields=[f("id"), f("status", "UPPER(status)")]),
-    ds("customers", fields=[f("id"), f("name")]),
-], relationships=[rel("o2c", src="orders", to="customers", from_columns=["customer_id"], to_columns=["id"])],
-   metrics=[m("statuses", "ARRAY_AGG(DISTINCT orders.status_upper)"),
-            m("plus_customer", "SUM(orders.amount + customers.id)")])
-
 
 @pytest.fixture
 def db(tmp_path: Path) -> Path:
@@ -180,20 +160,3 @@ async def test_dbt(db: Path) -> None:
         "paid_cnt": 2, "paid_bool": 2}
     assert await counts_by(datasets=models, db=db, dataset="orders_self", dimension="status") == UPPER_COUNTS
 
-
-async def test_osi(db: Path) -> None:
-    result = import_osi(OSI_DOCUMENT, db=db)
-    models = result.datasets
-    assert await counts_by(datasets=models, db=db, dataset="orders", dimension="status_upper") == UPPER_COUNTS
-    assert await by_id(datasets=models, db=db, dataset="orders", dimension="has_a") == [True, False, None]
-    assert await by_id(datasets=models, db=db, dataset="orders", dimension="n_tags") == [2, 1, None]
-    assert await _values(datasets=models, db=db, dataset="orders", names=[
-        "with_b", "tag_cnt", "obrien", "doubled", "padded", "plus_customer",
-    ]) == {"with_b": 2, "tag_cnt": 2, "obrien": 1, "doubled": 70, "padded": 36, "plus_customer": 339}
-    (statuses,) = (await _values(datasets=models, db=db, dataset="orders", names=["statuses"])).values()
-    assert sorted(statuses) == ["OPEN", "PAID"]
-    assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status") == STATE_COUNTS
-    for refused in ("tag_max", "tag_kinds"):
-        assert unconverted(result, refused), refused
-    assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status_upper") == UPPER_COUNTS
-    assert await counts_by(datasets=models, db=db, dataset="orders_self", dimension="status") == UPPER_COUNTS

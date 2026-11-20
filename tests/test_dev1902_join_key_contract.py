@@ -1,5 +1,5 @@
-"""The join-key spelling contract: ``join_pairs`` entries name declared base
-fields by ``DatasetField.name`` on each side; the physical spelling comes from one
+"""The join-key spelling contract: ``join_pairs`` entries name declared fields
+by ``DatasetField.name`` on each side; the physical spelling comes from one
 seam (``DatasetField.physical_name`` over ``join_key_columns``)."""
 
 from __future__ import annotations
@@ -121,13 +121,11 @@ class TestSourceSideAtConstruction:
         with pytest.raises(ValueError, match="relationship orders → customers key 'cust_fk'"):
             _orders(fk, pairs=[["cust_fk", "id"]])
 
-    def test_expression_source_key_rejected(self):
+    def test_computed_source_key_accepted(self):
+        # A computed key over the dataset's own source is a valid key.
         ck = DatasetField(name="ck", sql="CAST(id AS INT)")
-        with pytest.raises(ValueError) as exc:
-            _orders(ck, pairs=[["ck", "id"]])
-        msg = str(exc.value)
-        assert "relationship orders → customers key 'ck'" in msg
-        assert "base field" in msg
+        model = _orders(ck, pairs=[["ck", "id"]])
+        assert model.relationships[0].column_pairs == [("ck", "id")]
 
     def test_filtered_source_key_rejected(self):
         fk = DatasetField(name="customer_id", sql="cust_fk", filter="status = 'ok'")
@@ -186,7 +184,7 @@ class TestExtensionOverlay:
 
 
 class TestTargetSide:
-    async def test_save_rejects_expression_target_key(self):
+    async def test_save_accepts_computed_target_key(self):
         with tempfile.TemporaryDirectory() as d:
             storage = SQLiteStorage(db_path=os.path.join(d, "store.db"))
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
@@ -195,13 +193,8 @@ class TestTargetSide:
                 DatasetField(name="code", sql="UPPER(code_raw)")))
             engine = SlayerQueryEngine(storage=storage)
             orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
-            with pytest.raises(RelationshipKeyError) as exc:
-                await engine.save_dataset(orders)
-            first, *rest = str(exc.value).splitlines()
-            assert first.startswith("RelationshipKeyError: relationship orders → customers key 'code'")
-            assert any(line.lstrip().startswith("suggestion:") and "base field" in line
-                       for line in rest)
-            assert await storage.get_dataset("orders", data_source="test") is None
+            await engine.save_dataset(orders)
+            assert await storage.get_dataset("orders", data_source="test") is not None
 
     async def test_save_accepts_renamed_target_key(self):
         with tempfile.TemporaryDirectory() as d:
@@ -355,11 +348,9 @@ class TestDriftAndRefinement:
             dataset=orders_dataset(), target=customers_dataset(),
             src_cols=["customer_id"], tgt_cols=["id"]) is None
 
-    def test_detection_skips_non_base_target_key(self):
+    def test_detection_profiles_a_computed_target_key(self):
         target = _customers(DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                             DatasetField(name="code", sql="UPPER(code_raw)"))
         orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
-        note = _detection_skip_reason(
-            dataset=orders, target=target, src_cols=["customer_code"], tgt_cols=["code"])
-        assert note is not None
-        assert "code" in note
+        assert _detection_skip_reason(
+            dataset=orders, target=target, src_cols=["customer_code"], tgt_cols=["code"]) is None

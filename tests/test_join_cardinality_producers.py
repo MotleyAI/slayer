@@ -1,37 +1,13 @@
-"""dbt / OSI / facade producers set and carry relationship cardinality."""
-
-from collections.abc import AsyncIterator
-from pathlib import Path
-
-import pytest
-import sqlalchemy as sa
+"""dbt / facade producers set and carry relationship cardinality."""
 
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.relationship_walker import edges_between
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.models import DbtEntity, DbtProject, DbtSemanticModel
 from slayer.facade.catalog import FacadeRelationship, build_catalog, _facade_relationship_from
 from slayer.facade.translator import QueryResult, translate
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.parser import parse_osi_path
-from slayer.database.client import SlayerSQLClient
-
-from tests._engine_helpers import disposable_engine
-
-FIXTURES = Path(__file__).parent / "fixtures" / "osi"
-
-_OSI_SCHEMA = [
-    "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, "
-    "product_id INTEGER, amount REAL, quantity INTEGER, ordered_at DATE, status TEXT)",
-    "CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, region_id INTEGER, "
-    "name TEXT, segment TEXT)",
-    "CREATE TABLE products (product_id INTEGER PRIMARY KEY, category TEXT, price REAL)",
-    "CREATE TABLE regions (region_id INTEGER PRIMARY KEY, name TEXT, population INTEGER)",
-    "CREATE TABLE ckey_parent (k1 INTEGER, k2 INTEGER, label TEXT, PRIMARY KEY (k1, k2))",
-    "CREATE TABLE ckey_child (k1 INTEGER, k2 INTEGER, v REAL)",
-]
 
 
 def _foreign_primary_project() -> DbtProject:
@@ -145,38 +121,6 @@ class TestDbtConverterMirror:
         assert not any(j.to == "claim" for j in cov.relationships)
         rev = edges_between(source=cov, target=claim)[0]
         assert rev.cardinality is RelationshipCardinality.ONE_TO_ONE
-
-
-# ---------------------------------------------------------------------------
-# OSI
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def osi_client(tmp_path: Path) -> AsyncIterator[SlayerSQLClient]:
-    db_path = tmp_path / "shop.db"
-    with disposable_engine(f"sqlite:///{db_path}") as engine:
-        with engine.connect() as conn:
-            for ddl in _OSI_SCHEMA:
-                conn.execute(sa.text(ddl))
-            conn.commit()
-    client = SlayerSQLClient(datasource=DatasourceConfig(name="testds", type="sqlite", database=str(db_path)))
-    try:
-        yield client
-    finally:
-        await client.aclose()
-        client.close()
-
-
-class TestOsi:
-    async def test_relationship_is_many_to_one(self, osi_client: SlayerSQLClient) -> None:
-        doc = parse_osi_path(FIXTURES / "shop.yaml")[0]
-        converter = OsiToSlayerConverter(documents=[doc], data_source="testds")
-        await converter.collect_metadata(client=osi_client)
-        result = converter.convert()
-        orders = {m.name: m for m in result.datasets}["orders"]
-        cust_join = next(j for j in orders.relationships if j.to == "customers")
-        assert cust_join.cardinality is RelationshipCardinality.MANY_TO_ONE
 
 
 # ---------------------------------------------------------------------------

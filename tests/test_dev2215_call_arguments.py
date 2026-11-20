@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
@@ -96,7 +97,7 @@ class TestAggIsReserved:
     ], ids=["measure", "arithmetic", "filter", "dimension"])
     async def test_a_call_is_refused(self, engine: SlayerQueryEngine, query: dict) -> None:
         built = q(**query)
-        with pytest.raises(SlayerError, match="(?i)AGG.*reserved"):
+        with pytest.raises(getattr(core_errors, "AggArgumentError"), match="(?i)AGG takes a dataset metric"):
             await engine.execute(built)
 
     async def test_a_new_aggregation_is_refused(self, tmp_path) -> None:

@@ -3,14 +3,12 @@
 import json
 import re
 import warnings
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-import sqlalchemy as sa
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
-from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.models import SlayerDataset
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import (
     CubeCube,
@@ -37,12 +35,7 @@ from slayer.dbt.models import (
 from slayer.core.syntax import parse_expr
 from slayer.mcp.server import create_mcp_server
 from slayer.memories.help_seed import HELP_TOPICS
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.parser import parse_osi_path
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import disposable_engine
-from tests._osi_helpers import run_converter
-from tests.test_osi_converter import _SCHEMA
 
 _TESTS = Path(__file__).parent
 _DOCS = _TESTS.parent / "docs"
@@ -147,16 +140,6 @@ def _cube_project() -> CubeProject:
     )
 
 
-@pytest.fixture
-def shop_engine(tmp_path: Path) -> Iterator[sa.Engine]:
-    with disposable_engine(f"sqlite:///{tmp_path}/shop.db") as engine:
-        with engine.connect() as conn:
-            for ddl in _SCHEMA:
-                conn.execute(sa.text(ddl))
-            conn.commit()
-        yield engine
-
-
 def test_dbt_import_is_functional() -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
@@ -174,18 +157,6 @@ def test_cube_import_is_functional(source: str) -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         result = CubeToSlayerConverter(project=project, data_source="ds").convert()
-    _assert_functional(result.datasets)
-    _assert_no_spelling_warnings(rec)
-
-
-def test_osi_import_is_functional(shop_engine: sa.Engine) -> None:
-    doc = parse_osi_path(_TESTS / "fixtures" / "osi" / "shop.yaml")[0]
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        result = run_converter(
-            OsiToSlayerConverter(documents=[doc], data_source="ds"),
-            datasource=DatasourceConfig(name="ds", type="sqlite", database=shop_engine.url.database),
-        )
     _assert_functional(result.datasets)
     _assert_no_spelling_warnings(rec)
 

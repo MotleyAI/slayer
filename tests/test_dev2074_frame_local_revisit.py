@@ -10,6 +10,7 @@ import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
 
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType, RelationshipCardinality, TimeGranularity
 from slayer.core.errors import CircularRelationshipPathError
 from slayer.core.format import NumberFormat, NumberFormatType
@@ -509,7 +510,7 @@ class TestCancellationToTheNearestOccurrence:
                             owner_path=("customer", "last_order"), tokens=("orders",)) == (
             "customer", "last_order")
 
-    def test_incident_edge_name_hops_rather_than_cancels(self) -> None:
+    def test_incident_edge_name_colliding_with_another_edges_target_is_ambiguous(self) -> None:
         notes = SlayerDataset(
             name="notes", data_source=DS, sql_table="notes",
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
@@ -519,5 +520,28 @@ class TestCancellationToTheNearestOccurrence:
                 to="notes", name="orders", from_columns=["note_id"], to_columns=["id"], cardinality=M2O)],
         })
         models = {**_by_name(), "customers": cust, "notes": notes}
-        assert self._cancel(datasets=models, owner_path=("customer", "last_order", "customer"),
-                            tokens=("orders",)) == ("customer", "last_order", "customer", "orders")
+        # "orders" names customers' edge into notes and last_order's target: ambiguous.
+        with pytest.raises(getattr(core_errors, "AmbiguousHopError")) as ei:
+            self._cancel(datasets=models, owner_path=("customer", "last_order", "customer"), tokens=("orders",))
+        assert isinstance(ei.value, core_errors.AmbiguousReferenceError)
+        assert "orders" in str(ei.value)
+
+    def test_incident_edge_name_hops_rather_than_cancels(self) -> None:
+        # regions' edge "orders" collides with no other edge's target; orders is two hops back.
+        notes = SlayerDataset(
+            name="notes", data_source=DS, sql_table="notes",
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
+        regions = SlayerDataset(
+            name="regions", data_source=DS, sql_table="regions",
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="note_id", datatype=DataType.INTEGER)],
+            relationships=[DatasetRelationship(
+                to="notes", name="orders", from_columns=["note_id"], to_columns=["id"], cardinality=M2O)])
+        cust = _customers().model_copy(update={
+            "fields": [*_customers().fields, DatasetField(name="region_id", datatype=DataType.INTEGER)],
+            "relationships": [*_customers().relationships, DatasetRelationship(
+                to="regions", name="region", from_columns=["region_id"], to_columns=["id"], cardinality=M2O)],
+        })
+        models = {**_by_name(), "customers": cust, "regions": regions, "notes": notes}
+        assert self._cancel(datasets=models, owner_path=("customer", "region"),
+                            tokens=("orders",)) == ("customer", "region", "orders")

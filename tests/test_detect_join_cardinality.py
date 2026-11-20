@@ -274,18 +274,18 @@ class TestVerdicts:
         assert f.detected is RelationshipCardinality.MANY_TO_ONE
         assert f.verdict is CardinalityVerdict.REFINES
 
-    def test_expression_join_key_rejected_at_construction(self) -> None:
-        # An expression-backed relationship key is not a base field: the dataset never builds.
+    def test_computed_join_key_accepted_at_construction(self) -> None:
+        # A computed key over the dataset's own source is a valid relationship key.
         columns = [
             _col("id", pk=True),
             DatasetField(name="ck", sql="customer_id + 0", datatype=DataType.INTEGER),
         ]
         joins = [DatasetRelationship(to="customers", from_columns=["ck"], to_columns=["id"])]
-        with pytest.raises(ValueError, match=r"orders_expr.*customers.*'ck'"):
-            SlayerDataset(
-                name="orders_expr", sql_table="orders", data_source="ds",
-                fields=columns, relationships=joins,
-            )
+        model = SlayerDataset(
+            name="orders_expr", sql_table="orders", data_source="ds",
+            fields=columns, relationships=joins,
+        )
+        assert model.relationships[0].column_pairs == [("ck", "id")]
 
     async def test_skipped_unsupported_for_sql_mode_model(
         self, workspace: Path
