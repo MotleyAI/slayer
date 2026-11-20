@@ -1987,7 +1987,10 @@ def _population_footer(population: str | None) -> str:
 
 def _row_sources_footer(sources: list[str], *, after_population: bool) -> str:
     """Trailing note listing the row sources (markdown), its own paragraph unless it follows the population's."""
-    return "" if not sources else ("\n" if after_population else "\n\n") + f"Row sources: {', '.join(sources)}"
+    if not sources:
+        return ""
+    separator = "\n" if after_population else "\n\n"
+    return f"{separator}Row sources: {', '.join(sources)}"
 
 
 def _population_comment(population: str | None) -> str:
