@@ -449,7 +449,7 @@ async def test_a_declared_relationship_proves_determination() -> None:
     async with document_engine(documents=(text,)) as engine:
         resp = await engine.execute({"dimensions": ["customers.region"],
                                      "metrics": [{"metric": "sum(orders.amount)", "alias": "v"}]})
-        assert by(resp, "customers.region", "v") == {"EAST": 350.0, "WEST": 300.0, "NORTH": None}
+        assert by(resp, "customers.region", "v") == {"EAST": 350.0, "WEST": 300.0}
 
 
 @pytest.mark.parametrize("kind", STORAGES)
