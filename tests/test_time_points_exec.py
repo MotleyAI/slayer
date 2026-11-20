@@ -48,19 +48,19 @@ class TestPeriodLiterals:
         ("2020-W53", D(2020, 12, 28), D(2021, 1, 4)),
     ])
     async def test_equality_is_half_open_range(self, engine, literal, start, end) -> None:
-        assert await ids(engine, f"ts = '{literal}'") == ids_in(start, end)
+        assert await ids(engine, f"ev.ts = '{literal}'") == ids_in(start, end)
 
     @pytest.mark.parametrize(("literal", "start", "end"), [
         ("2025-03-15", D(2025, 3, 15), D(2025, 3, 16)),
         ("2024-02-29", D(2024, 2, 29), D(2024, 3, 1)),
     ])
     async def test_single_string_in_is_the_whole_day(self, engine, literal, start, end) -> None:
-        assert await ids(engine, f"ts in '{literal}'") == ids_in(start, end)
+        assert await ids(engine, f"ev.ts in '{literal}'") == ids_in(start, end)
 
     @pytest.mark.parametrize("literal", ["2021-W53", "2025-02-29", "2025-13", "2025-Q5"])
     async def test_non_existent_period_rejected(self, engine, literal) -> None:
         with pytest.raises(TimeLiteralError) as ei:
-            await ids(engine, f"ts = '{literal}'")
+            await ids(engine, f"ev.ts = '{literal}'")
         _assert_lists_forms(str(ei.value))
 
 
@@ -76,7 +76,7 @@ class TestUnparseable:
 
         monkeypatch.setattr(SlayerSQLClient, "execute", spy)
         with pytest.raises(TimeLiteralError) as ei:
-            await ids(engine, f"ts >= '{literal}'")
+            await ids(engine, f"ev.ts >= '{literal}'")
         _assert_lists_forms(str(ei.value))
         assert [s for s in calls if "slayer_rk_" not in s] == []
 
@@ -84,19 +84,19 @@ class TestUnparseable:
 class TestInstants:
     async def test_inclusive_instant(self, engine) -> None:
         bound = D(2024, 12, 31, 12)
-        assert await ids(engine, "ts <= '2024-12-31 12:00:00'") == ids_where(lambda t: t <= bound)
+        assert await ids(engine, "ev.ts <= '2024-12-31 12:00:00'") == ids_where(lambda t: t <= bound)
 
     async def test_t_separated_instant_equality(self, engine) -> None:
-        assert await ids(engine, "ts = '2024-06-01T10:00:00'") == {4}
+        assert await ids(engine, "ev.ts = '2024-06-01T10:00:00'") == {4}
 
     @pytest.mark.parametrize("literal", ["2025-01-01 10:00:00Z", "2025-01-01 10:00:00+02:00"])
     async def test_zone_offset_rejected(self, engine, literal) -> None:
         with pytest.raises(TimeLiteralError):
-            await ids(engine, f"ts >= '{literal}'")
+            await ids(engine, f"ev.ts >= '{literal}'")
 
     async def test_midnight_instant_is_not_a_day(self, engine) -> None:
-        assert await ids(engine, "ts = '2024-01-01 00:00:00'") == {1}
-        assert await ids(engine, "ts > '2024-12-31 00:00:00'") == ids_where(lambda t: t > D(2024, 12, 31))
+        assert await ids(engine, "ev.ts = '2024-01-01 00:00:00'") == {1}
+        assert await ids(engine, "ev.ts > '2024-12-31 00:00:00'") == ids_where(lambda t: t > D(2024, 12, 31))
 
 
 class TestComparisonTable:
@@ -138,7 +138,7 @@ class TestComparisonTable:
         assert await ids(engine, mirrored) == await ids(engine, plain)
 
     async def test_relative_bound(self, engine) -> None:
-        assert await ids(engine, "ts >= 'last month'") == ids_where(lambda t: t >= D(2026, 8, 1))
+        assert await ids(engine, "ev.ts >= 'last month'") == ids_where(lambda t: t >= D(2026, 8, 1))
 
     async def test_period_bound_combines_with_other_conditions(self, engine) -> None:
         got = await ids(engine, "ev.ts = '2025-Q1' and ev.amount > 10")
@@ -158,22 +158,22 @@ class TestRelativeTokensExecuted:
         ("12 months ago", D(2025, 9, 1), D(2025, 10, 1)),
     ])
     async def test_token_as_period(self, engine, token, start, end) -> None:
-        assert await ids(engine, f"ts = '{token}'") == ids_in(start, end)
+        assert await ids(engine, f"ev.ts = '{token}'") == ids_in(start, end)
 
     async def test_case_and_whitespace_normalised(self, engine) -> None:
-        assert await ids(engine, "ts = 'Last   Month'") == await ids(engine, "ts = 'last month'")
+        assert await ids(engine, "ev.ts = 'Last   Month'") == await ids(engine, "ev.ts = 'last month'")
 
 
 class TestSingleStringIn:
     async def test_in_period(self, engine) -> None:
-        assert await ids(engine, "ts in '2025-Q1'") == ids_in(D(2025, 1, 1), D(2025, 4, 1))
+        assert await ids(engine, "ev.ts in '2025-Q1'") == ids_in(D(2025, 1, 1), D(2025, 4, 1))
 
     async def test_not_in_relative(self, engine) -> None:
-        assert await ids(engine, "ts not in 'this month'") == ALL - ids_in(D(2026, 9, 1), D(2026, 10, 1))
+        assert await ids(engine, "ev.ts not in 'this month'") == ALL - ids_in(D(2026, 9, 1), D(2026, 10, 1))
 
     async def test_tuple_keeps_list_meaning(self, engine) -> None:
-        assert await ids(engine, "code in ('2025-Q1',)") == {2}
-        assert await ids(engine, "code in ('2025', '2025-Q1')") == {1, 2}
+        assert await ids(engine, "ev.code in ('2025-Q1',)") == {2}
+        assert await ids(engine, "ev.code in ('2025', '2025-Q1')") == {1, 2}
 
 
 class TestTemporalOperands:
@@ -212,7 +212,7 @@ class TestTemporalOperands:
         assert await ids(engine, "customers.created_at = '2025-Q1'") == {i for i in ALL if i % 3 == 0}
 
     async def test_derived_column(self, engine) -> None:
-        assert await ids(engine, "ts_copy = '2025-Q1'") == await ids(engine, "ts = '2025-Q1'")
+        assert await ids(engine, "ev.ts_copy = '2025-Q1'") == await ids(engine, "ev.ts = '2025-Q1'")
 
     async def test_stage_column(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
@@ -222,8 +222,8 @@ class TestTemporalOperands:
         assert resp.data[0]["r"] == pytest.approx(float(sum(ids_in(D(2025, 1, 1), D(2025, 4, 1)))))
 
     async def test_date_column_takes_periods(self, engine) -> None:
-        assert await ids(engine, "d = '2025-Q1'") == ids_in(D(2025, 1, 1), D(2025, 4, 1))
-        assert await ids(engine, "d <= '2024-12-31'") == ids_where(lambda t: t < D(2025, 1, 1))
+        assert await ids(engine, "ev.d = '2025-Q1'") == ids_in(D(2025, 1, 1), D(2025, 4, 1))
+        assert await ids(engine, "ev.d <= '2024-12-31'") == ids_where(lambda t: t < D(2025, 1, 1))
 
 
 class TestTypingErrors:
@@ -247,11 +247,11 @@ class TestTypingErrors:
         assert "`code` is not one" in msg, msg
 
     async def test_date_string_against_text_keeps_meaning(self, engine) -> None:
-        assert await ids(engine, "code = '2025'") == {1}
-        assert await ids(engine, "code = '2025-Q1'") == {2}
+        assert await ids(engine, "ev.code = '2025'") == {1}
+        assert await ids(engine, "ev.code = '2025-Q1'") == {2}
 
     async def test_plain_date_string_against_untyped_keeps_meaning(self, engine) -> None:
-        assert await ids(engine, "raw_ts >= '2026-09-01'") == ids_where(lambda t: t >= D(2026, 9, 1))
+        assert await ids(engine, "ev.raw_ts >= '2026-09-01'") == ids_where(lambda t: t >= D(2026, 9, 1))
 
     @pytest.mark.parametrize("filt", ["ev.d >= 'last 6 hours'", "ev.d = '2025-01-01 10:00:00'", "ev.d < 'this hour'"])
     async def test_sub_day_point_against_date(self, engine, filt) -> None:
@@ -260,10 +260,10 @@ class TestTypingErrors:
         assert "day" in str(ei.value).lower()
 
     async def test_date_function_interval_and_conditional_operands(self, engine) -> None:
-        assert await ids(engine, "date_add(ts, 1, 'day') >= 'last month'") == ids_where(lambda t: t >= D(2026, 7, 31))
-        assert await ids(engine, "ts - interval(1, 'day') < '2025-Q1'") == ids_where(lambda t: t < D(2025, 1, 2))
+        assert await ids(engine, "date_add(ev.ts, 1, 'day') >= 'last month'") == ids_where(lambda t: t >= D(2026, 7, 31))
+        assert await ids(engine, "ev.ts - interval(1, 'day') < '2025-Q1'") == ids_where(lambda t: t < D(2025, 1, 2))
         expected = {i for i in ALL if D(2025, 1, 1) <= (shipped_dt(i) or ev_dt(i)) < D(2025, 4, 1)}
-        assert await ids(engine, "coalesce(shipped_at, ts) in '2025-Q1'") == expected
+        assert await ids(engine, "coalesce(ev.shipped_at, ev.ts) in '2025-Q1'") == expected
         assert UNSHIPPED & expected  # an unshipped Q1 row matches through its ts
 
     async def test_iso_literal_inside_a_conditional_operand(self, engine) -> None:
@@ -288,14 +288,14 @@ class TestDateOnlyTextStorage:
         assert await ids(engine, filt, dataset="mixed") == {1, 2, 4, 5, 6}
 
     async def test_date_only_equality_matches_midnight_text(self, engine) -> None:
-        assert await ids(engine, "ts = '2025-03-01'", dataset="mixed") == {1, 2}
+        assert await ids(engine, "mixed.ts = '2025-03-01'", dataset="mixed") == {1, 2}
 
     async def test_millisecond_resolution(self, engine) -> None:
-        assert await ids(engine, "ts >= '2025-03-01 10:00:00.250'", dataset="mixed") == {4, 6}
-        assert await ids(engine, "ts < '2025-03-01 10:00:00.250'", dataset="mixed") == {1, 2, 3, 5}
+        assert await ids(engine, "mixed.ts >= '2025-03-01 10:00:00.250'", dataset="mixed") == {4, 6}
+        assert await ids(engine, "mixed.ts < '2025-03-01 10:00:00.250'", dataset="mixed") == {1, 2, 3, 5}
 
     async def test_below_the_day(self, engine) -> None:
-        assert await ids(engine, "ts < '2025-03-01'", dataset="mixed") == {3}
+        assert await ids(engine, "mixed.ts < '2025-03-01'", dataset="mixed") == {3}
 
 
 class TestSqliteTimestampSpelling:
@@ -309,16 +309,16 @@ class TestSqliteTimestampSpelling:
         "ts <= '2024-12-31'",
     ])
     async def test_t_storage_matches_space_storage(self, sqlite_engine, filt) -> None:
-        spaced = await ids(sqlite_engine, filt)
-        assert await ids(sqlite_engine, filt, dataset="ev_t") == spaced
+        spaced = await ids(sqlite_engine, f"ev.{filt}")
+        assert await ids(sqlite_engine, f"ev_t.{filt}", dataset="ev_t") == spaced
 
     async def test_t_storage_sub_day_bound(self, sqlite_engine) -> None:
-        assert await ids(sqlite_engine, "ts < '2025-03-01 10:00:00'", dataset="ev_t") & {12, 13} == {12}
+        assert await ids(sqlite_engine, "ev_t.ts < '2025-03-01 10:00:00'", dataset="ev_t") & {12, 13} == {12}
 
 
 class TestGranularityCalls:
     async def test_in_filter_lowers_to_exact_bound(self, engine) -> None:
-        assert await ids(engine, "date_trunc('month', ts) >= '2024-03-15'") == ids_where(lambda t: t >= D(2024, 4, 1))
+        assert await ids(engine, "date_trunc('month', ev.ts) >= '2024-03-15'") == ids_where(lambda t: t >= D(2024, 4, 1))
 
     @pytest.mark.parametrize(("filt", "pred"), [
         ("date_trunc('month', ev.ts) > '2025-01'", lambda t: t >= D(2025, 2, 1)),
@@ -334,16 +334,16 @@ class TestGranularityCalls:
         assert await ids(engine, filt) == ids_where(pred)
 
     async def test_compared_with_each_other(self, engine) -> None:
-        assert await ids(engine, "date_trunc('month', shipped_at) = date_trunc('month', ts)") == ALL - SHIPPED_NEXT_MONTH - UNSHIPPED
+        assert await ids(engine, "date_trunc('month', ev.shipped_at) = date_trunc('month', ev.ts)") == ALL - SHIPPED_NEXT_MONTH - UNSHIPPED
 
     async def test_against_instants(self, engine) -> None:
-        assert await ids(engine, "date_trunc('month', ts) = '2025-03-15 10:00:00'") == set()
-        assert await ids(engine, "date_trunc('month', ts) = '2025-03-01 00:00:00'") == ids_in(D(2025, 3, 1), D(2025, 4, 1))
-        assert await ids(engine, "date_trunc('month', ts) > '2025-03-15 10:00:00'") == ids_where(lambda t: t >= D(2025, 4, 1))
-        assert await ids(engine, "date_trunc('month', ts) <= '2025-03-15 10:00:00'") == ids_where(lambda t: t < D(2025, 4, 1))
+        assert await ids(engine, "date_trunc('month', ev.ts) = '2025-03-15 10:00:00'") == set()
+        assert await ids(engine, "date_trunc('month', ev.ts) = '2025-03-01 00:00:00'") == ids_in(D(2025, 3, 1), D(2025, 4, 1))
+        assert await ids(engine, "date_trunc('month', ev.ts) > '2025-03-15 10:00:00'") == ids_where(lambda t: t >= D(2025, 4, 1))
+        assert await ids(engine, "date_trunc('month', ev.ts) <= '2025-03-15 10:00:00'") == ids_where(lambda t: t < D(2025, 4, 1))
 
     async def test_case_insensitive_callee(self, engine) -> None:
-        assert await ids(engine, "DATE_TRUNC('MONTH', ts) >= '2024-03-15'") == await ids(engine, "date_trunc('month', ts) >= '2024-03-15'")
+        assert await ids(engine, "DATE_TRUNC('MONTH', ev.ts) >= '2024-03-15'") == await ids(engine, "date_trunc('month', ev.ts) >= '2024-03-15'")
 
     async def test_count_distinct_months(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({

@@ -123,6 +123,7 @@ Accepted at `DatasetField` construction:
 
 Rejected at `DatasetField` construction:
 
+<!-- docs-guard: skip -->
 ```json
 {"name": "x", "expression": "amount", "filter": "sum(revenue) > 100"}        // DSL aggregation
 {"name": "x", "expression": "amount", "filter": "cumsum(amount) > 0"}       // DSL transform call

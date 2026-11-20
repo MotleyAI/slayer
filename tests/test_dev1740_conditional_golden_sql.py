@@ -38,8 +38,8 @@ def _cases() -> dict:
         "measure/nested": _q(
             dimensions=["orders.region"],
             metrics=[
-                {"metric": "CASE WHEN sum(amount) >= 14000 THEN 2 "
-                            "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END",
+                {"metric": "CASE WHEN sum(orders.amount) >= 14000 THEN 2 "
+                            "WHEN sum(orders.amount) >= 8000 THEN 1 ELSE 0 END",
                  "alias": "tier"},
             ],
         ),

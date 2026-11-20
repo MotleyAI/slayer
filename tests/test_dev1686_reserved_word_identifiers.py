@@ -240,7 +240,7 @@ class TestReservedAliasQuoting:
                 DatasetField(name="label", sql="label", datatype=DataType.STRING),
             ],
         )
-        q = SlayerQuery.model_validate({"population": name, "dimensions": ["label"], "metrics": ["count(*)"]})
+        q = SlayerQuery.model_validate({"population": name, "dimensions": [f"{name}.label"], "metrics": [f"count({name}.*)"]})
         sql = await _gen(q, model, dialect="postgres")
         assert f'AS "{name}"' in _norm(sql), sql
         assert f'"{name}".label' in _norm(sql), sql

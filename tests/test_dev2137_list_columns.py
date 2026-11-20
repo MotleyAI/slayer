@@ -207,7 +207,7 @@ class TestEligibility:
 
     @pytest.mark.parametrize("agg", ["min", "max", "first", "last", "count_distinct_approx"])
     async def test_other_builtins_refused(self, engine, agg: str) -> None:
-        await _refused(engine, names=("skills",), metrics=[metric(f"{agg}(skills)", "n")])
+        await _refused(engine, names=("skills",), metrics=[metric(f"{agg}(contractors.skills)", "n")])
 
     async def test_counting_lists(self, engine) -> None:
         resp = await engine.execute(query(metrics=[metric("count(contractors.skills)", "n")],

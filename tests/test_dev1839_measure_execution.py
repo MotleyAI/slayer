@@ -92,8 +92,8 @@ class TestCompositeMeasureLift:
         query = q(
             dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=region) - "
-                        "sum(amount, partition_by=[])",
+                metric="sum(orders.amount, partition_by=orders.region) - "
+                        "sum(orders.amount, partition_by=[])",
                 alias="d",
             )],
         )

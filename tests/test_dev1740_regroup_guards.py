@@ -45,7 +45,7 @@ class TestAggregateReferencingDimGenerates:
         q = _q(
             dimensions=[
                 "orders.region",
-                {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
@@ -79,7 +79,7 @@ class TestDeferredShapesRaiseDev1824:
         q = _q(
             dimensions=[
                 "orders.region",
-                {"field": "CASE WHEN sum(amount, window='90d', partition_by=city) "
+                {"field": "CASE WHEN sum(orders.amount, window='90d', partition_by=orders.city) "
                                "> 5000 THEN 1 ELSE 0 END", "alias": "x"},
             ],
             time_dimensions=month_td(),
@@ -98,7 +98,7 @@ class TestDeferredShapesRaiseDev1824:
         q = _q(
             dimensions=[
                 "orders.region",
-                {"field": f"CASE WHEN {agg}(amount, partition_by=city) > 5000 "
+                {"field": f"CASE WHEN {agg}(orders.amount, partition_by=orders.city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "x"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
@@ -110,7 +110,7 @@ class TestDistinctDimensionValuesRejection:
     async def test_aggregate_dim_rejected_in_raw_rows_mode(self) -> None:
         q = _q(
             dimensions=[
-                {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
             distinct_dimension_values=False,

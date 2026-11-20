@@ -111,16 +111,18 @@ _MONTHLY_MODEL_TABLE = {
 async def test_windowed_aggregate_over_stage_time_dimension(backend: str) -> None:
     """rev:sum(window='60d') on the stage bucket equals the dataset-backed evaluation
     over a dataset holding the same monthly rows (transforms spec equivalence)."""
-    windowed = [{"metric": "sum(rev, window='60d')", "alias": "win"}]
+    def windowed(pop: str) -> list:
+        return [{"metric": f"sum({pop}.rev, window='60d')", "alias": "win"}]
+
     stage_outer = SlayerQuery.model_validate({
         "population": "s1",
         "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
-        "metrics": windowed,
+        "metrics": windowed("s1"),
     })
     model_query = SlayerQuery.model_validate({
         "population": "monthly",
         "time_dimensions": [TimeDimension(field="monthly.month_ts", granularity=TG.MONTH)],
-        "metrics": windowed,
+        "metrics": windowed("monthly"),
     })
     with tempfile.TemporaryDirectory() as tmp:
         stage_resp = await _exec_outer(backend, tmp, stage_outer)
@@ -153,7 +155,7 @@ async def test_time_shift_over_multi_hop_flat_time_dimension(backend: str) -> No
     col = "customers__regions__last_activity_at"
     outer = SlayerQuery.model_validate({
         "population": "s1",
-        "time_dimensions": [TimeDimension(field=col, granularity=TG.MONTH)],
+        "time_dimensions": [TimeDimension(field=f"s1.{col}", granularity=TG.MONTH)],
         "metrics": [
             {"metric": "sum(s1.n)"},
             {"metric": "time_shift(sum(s1.n), -1, 'month')", "alias": "prev"},

@@ -46,7 +46,7 @@ async def _rejected(engine: SlayerQueryEngine, expr: str, *needles: str) -> str:
 
 class TestPostgresMeaning:
     async def test_negative_left(self, engine: SlayerQueryEngine) -> None:
-        assert await _value(engine, "left(s, -2)") == "ABC"
+        assert await _value(engine, "left(lib.s, -2)") == "ABC"
 
     async def test_non_ascii_characters(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(lib_query({"field": "reverse(lib.s)", "alias": "v1"},
@@ -71,7 +71,7 @@ class TestPostgresMeaning:
         assert values == {1: "ABC", 8: "0ab"}
 
     async def test_concat_ws_skips_nulls(self, engine: SlayerQueryEngine) -> None:
-        assert await _value(engine, "concat_ws('-', 'x', p, 'z')", row=10) == "x-z"
+        assert await _value(engine, "concat_ws('-', 'x', lib.p, 'z')", row=10) == "x-z"
 
     async def test_plain_text_containment(self, engine: SlayerQueryEngine) -> None:
         assert lib_ids(await engine.execute(lib_query(filter=["contains(lib.tag, '5%')"]))) == {6}
@@ -86,10 +86,10 @@ class TestPostgresMeaning:
         assert float(await _value(engine, "cbrt(64)")) == 4.0
 
     async def test_cbrt_of_a_negative_number(self, engine: SlayerQueryEngine) -> None:
-        assert float(await _value(engine, "cbrt(x)", row=6)) == pytest.approx(-2.0)
+        assert float(await _value(engine, "cbrt(lib.x)", row=6)) == pytest.approx(-2.0)
 
     async def test_division_by_zero_column(self, engine: SlayerQueryEngine) -> None:
-        assert await _value(engine, "div(i, m)", row=3) is None
+        assert await _value(engine, "div(lib.i, lib.m)", row=3) is None
 
     async def test_asin_column_out_of_domain(self, engine: SlayerQueryEngine) -> None:
         values = lib_values(await engine.execute(lib_query("asin(lib.x)", filter=["lib.id IN (1, 2)"])))
@@ -132,7 +132,7 @@ class TestLiteralOutOfDomain:
 class TestSplitPartEmptyDelimiter:
     @pytest.mark.parametrize(("index", "expected"), [(1, "a/b/c"), (2, ""), (-1, "a/b/c"), (-2, "")])
     async def test_whole_value_is_the_one_field(self, engine: SlayerQueryEngine, index: int, expected: str) -> None:
-        assert await _value(engine, f"split_part(s, '', {index})", row=3) == expected
+        assert await _value(engine, f"split_part(lib.s, '', {index})", row=3) == expected
 
     @pytest.mark.parametrize(("index", "expected"), [(2, "b"), (-1, "c")])
     async def test_space_delimiter_is_not_empty(self, engine: SlayerQueryEngine, index: int, expected: str) -> None:
@@ -174,7 +174,7 @@ class TestVersionGating:
     @pytest.mark.parametrize("function", ["greatest", "least"])
     async def test_old_sql_server_fails_closed(self, monkeypatch: pytest.MonkeyPatch, function: str) -> None:
         patch_profile(monkeypatch, version=(15, 0))
-        query = lib_query(f"{function}(a, b)")
+        query = lib_query(f"{function}(lib.a, lib.b)")
         with pytest.raises(SlayerError) as info:
             await emit_lib(query, dialect="tsql")
         msg = str(info.value)
@@ -227,7 +227,7 @@ class TestTrimLowering:
     @pytest.mark.parametrize("dialect", ["bigquery", "trino"])
     @pytest.mark.parametrize("fn", ["trim", "ltrim", "rtrim"])
     async def test_whitespace_trimming_engines_trim_spaces_only(self, dialect: str, fn: str) -> None:
-        sql = await emit_lib(lib_query(f"{fn}(code)"), dialect=dialect)
+        sql = await emit_lib(lib_query(f"{fn}(lib.code)"), dialect=dialect)
         assert f"{fn.upper()}(LIB.CODE, ' ')" in sql.upper(), sql
 
 
@@ -312,7 +312,7 @@ class TestSQLServerCodePoints:
         base = lib_dataset()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
             name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", datatype=DataType.STRING)]})
-        sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", datasets=[model])).split())
+        sql = " ".join((await emit_lib(lib_query("lib.head"), dialect="tsql", datasets=[model])).split())
         assert "SUBSTRING(lib.s, 1, 2)" in sql, sql
         assert "POWER(lib.a, 2)" in sql, sql
         assert "COLLATE" not in sql, sql
@@ -328,13 +328,13 @@ class TestSQLServerCodePoints:
 
 class TestSQLServerNumbers:
     async def test_round_has_digits(self) -> None:
-        assert "ROUND(lib.x + 0.1, 0)" in await _tsql("round(x + 0.1)")
+        assert "ROUND(lib.x + 0.1, 0)" in await _tsql("round(lib.x + 0.1)")
 
     async def test_power_base_is_float(self) -> None:
-        assert "POWER(CAST(2 AS FLOAT), lib.a)" in await _tsql("power(2, a)")
+        assert "POWER(CAST(2 AS FLOAT), lib.a)" in await _tsql("power(2, lib.a)")
 
     async def test_cube_root_exponent_is_float(self) -> None:
-        assert "/ 3E0)" in await _tsql("cbrt(x)")
+        assert "/ 3E0)" in await _tsql("cbrt(lib.x)")
 
 
 class TestSQLServerQuirks:
@@ -360,7 +360,7 @@ async def _clickhouse(expr: str) -> str:
 
 class TestClickHouseLowering:
     async def test_cbrt_is_lowercase(self) -> None:
-        assert "cbrt(lib.x)" in await _clickhouse("cbrt(x)")
+        assert "cbrt(lib.x)" in await _clickhouse("cbrt(lib.x)")
 
     async def test_ln_reads_the_exact_log2(self) -> None:
         sql = await _clickhouse("ln(lib.x)")
@@ -377,7 +377,7 @@ class TestClickHouseLowering:
         assert "LOG(" not in sql.upper(), sql
 
     async def test_base_two_log_stays_native(self) -> None:
-        assert "log2(CASE WHEN lib.x > 0 THEN lib.x END)" in await _clickhouse("log(2, x)")
+        assert "log2(CASE WHEN lib.x > 0 THEN lib.x END)" in await _clickhouse("log(2, lib.x)")
 
     async def test_negative_right_keeps_a_length(self) -> None:
         sql = await _clickhouse("right(lib.s, -1)")

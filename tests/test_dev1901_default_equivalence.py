@@ -70,7 +70,7 @@ async def _value(engine, expression: str) -> float:
 
 async def _by(engine, expression: str, *, dim: str, **kw) -> dict:
     resp = await engine.execute(orders_q(
-        dimensions=[dim], metrics=[{"metric": expression, "alias": "w"}], **kw))
+        dimensions=[f"orders.{dim}"], metrics=[{"metric": expression, "alias": "w"}], **kw))
     return {r[f"orders.{dim}"]: float(r["w"]) for r in resp.data}
 
 
@@ -105,8 +105,8 @@ class TestExpressionDefaultEveryProducer:
     """``CASE`` defaults equal the expression-source spelling at the same home."""
 
     async def test_local(self, engine) -> None:
-        assert await _value(engine, "wcase(amount)") == pytest.approx(WCASE_LOCAL)
-        assert await _value(engine, f"sum(amount * {CASE_O})") == pytest.approx(WCASE_LOCAL)
+        assert await _value(engine, "wcase(orders.amount)") == pytest.approx(WCASE_LOCAL)
+        assert await _value(engine, f"sum(orders.amount * {CASE_O})") == pytest.approx(WCASE_LOCAL)
 
     async def test_cross_model(self, engine) -> None:
         assert await _value(engine, "wcase_c(customers.spend)") == pytest.approx(WCASE_CM)
@@ -124,13 +124,13 @@ class TestExpressionDefaultEveryProducer:
             engine, f"sum(customers.spend * {CASE_C_Q}, window='1y')") == WCASE_WINDOW
 
     async def test_second_order_outer(self, engine) -> None:
-        inner = "sum(amount, partition_by=customers.regions.id)"
+        inner = "sum(orders.amount, partition_by=customers.regions.id)"
         assert await _value(engine, f"wcase_pop({inner})") == pytest.approx(WCASE_SECOND_ORDER)
         assert await _value(
             engine, f"sum({inner} * {CASE_POP})") == pytest.approx(WCASE_SECOND_ORDER)
 
     async def test_string_fragment_twin(self, engine) -> None:
-        assert await _value(engine, f"wsum(amount, weight='{CASE_O}')") \
+        assert await _value(engine, f"wsum(orders.amount, weight='{CASE_O}')") \
             == pytest.approx(WCASE_LOCAL)
 
 
@@ -139,7 +139,7 @@ class TestDefaultInFilterAndOrder:
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_measure_position(self, engine, agg: str) -> None:
-        assert await _by(engine, f"{agg}(amount)", dim="status") == WCS_BY_STATUS
+        assert await _by(engine, f"{agg}(orders.amount)", dim="status") == WCS_BY_STATUS
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_filter_position(self, engine, agg: str) -> None:
@@ -167,9 +167,9 @@ class TestDefaultInFilterAndOrder:
 
 class TestStringFragments:
     async def test_string_equals_unquoted(self, engine) -> None:
-        assert await _value(engine, "wsum(amount, weight='customers.region_id')") \
+        assert await _value(engine, "wsum(orders.amount, weight='customers.region_id')") \
             == pytest.approx(W_REGION_ID)
-        assert await _value(engine, "wsum(amount, weight=customers.region_id)") \
+        assert await _value(engine, "wsum(orders.amount, weight=customers.region_id)") \
             == pytest.approx(W_REGION_ID)
 
 
@@ -198,7 +198,7 @@ class TestQuotedMixedFrameDefault:
     async def test_quoted_owner_column_plus_root_column(self, engine) -> None:
         assert await _value(engine, "wmix_q(customers.spend)") == pytest.approx(MIX_QUOTED)
         assert await _value(
-            engine, "sum(customers.spend * (customers.group + amount))") \
+            engine, "sum(customers.spend * (customers.group + orders.amount))") \
             == pytest.approx(MIX_QUOTED)
 
 
