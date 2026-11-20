@@ -196,7 +196,7 @@ Every in-scope definition (Decision 3) in `tests/` still spelled with an old wor
 
 ### Session-policy (RLS) name
 
-- `tests/_dev2189_fixtures.py`: `stub_has_column`, `stub_has_column(column)`, `stub_column_present`, `stub_column_present(column)`, `reference_scoped_sql(has_column)`
+- `tests/_dev2189_fixtures.py`: `_join`, `_join(joins)`, `stub_has_column`, `stub_has_column(column)`, `stub_column_present`, `stub_column_present(column)`, `reference_scoped_sql(has_column)`
 - `tests/integration/test_integration_rls.py`: `rls_join_storage`, `_join_policy`
 - `tests/test_client_policy.py`: `_join_policy`
 - `tests/test_dev2189_rls_parity.py`: `_join_policy`, `_join_policy(joins)`

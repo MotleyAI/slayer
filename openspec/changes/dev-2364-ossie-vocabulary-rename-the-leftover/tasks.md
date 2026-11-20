@@ -18,11 +18,11 @@
 
 ## 4. `tests/` sweep
 
-- [ ] 4.1 Probe the in-scope definitions (design Decision 3) with a throwaway scratchpad script; triage each hit (rename or keep, with reason). Verify: a triaged list exists before any edit.
-- [ ] 4.2 Rename the triaged identifiers with `dr-refactor rename-map --docs` in batches, each with Decision 14's `--keep` list; rename the two helper modules without stubs; review every string and comment edit separately from the identifier edits. Verify: `la-typecheck` reports no new errors; `ruff` clean.
-- [ ] 4.3 Rename `tests/fixtures/vocabulary_corpus/_cross_model_chain.json` and `_model_access_fixtures.json` to follow their modules and update their `_index.json` entries (Decision 16). Verify: `tests/test_vocabulary_corpus.py` passes.
-- [ ] 4.4 Re-run the probe after the rename; write every remaining in-scope old-word definition into design.md's "Kept test identifiers" appendix as `file: name — reason` (Decision 15). Verify: every remaining hit has a reason.
-- [ ] 4.5 Respell test-data name literals (Decision 4) by hand, per hit; re-bless goldens and key assertions that move only with a respelled name. Verify: the local test scope passes.
+- [x] 4.1 Probe the in-scope definitions (design Decision 3) with a throwaway scratchpad script; triage each hit (rename or keep, with reason). Verify: a triaged list exists before any edit.
+- [x] 4.2 Rename the triaged identifiers with `dr-refactor rename-map --docs` in batches, each with Decision 14's `--keep` list; rename the two helper modules without stubs; review every string and comment edit separately from the identifier edits. Verify: `la-typecheck` reports no new errors; `ruff` clean.
+- [x] 4.3 Rename `tests/fixtures/vocabulary_corpus/_cross_model_chain.json` and `_model_access_fixtures.json` to follow their modules and update their `_index.json` entries (Decision 16). Verify: `tests/test_vocabulary_corpus.py` passes.
+- [x] 4.4 Re-run the probe after the rename; write every remaining in-scope old-word definition into design.md's "Kept test identifiers" appendix as `file: name — reason` (Decision 15). Verify: every remaining hit has a reason.
+- [x] 4.5 Respell test-data name literals (Decision 4) by hand, per hit; re-bless goldens and key assertions that move only with a respelled name. Verify: the local test scope passes.
 
 ## 5. Finish
 
