@@ -18,6 +18,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError, UnreachableDefinitionError, UnresolvableDimensionRelationshipError
+from slayer.core.field_expression import DialectEntry, Expression, ExpressionObject
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
@@ -46,8 +47,8 @@ def events_dataset() -> SlayerDataset:
     )
 
 
-def _f(name: str, sql: str, datatype: DataType = DataType.STRING) -> DatasetField:
-    return DatasetField(name=name, datatype=datatype, sql=sql)
+def _f(name: str, expression: Expression, datatype: DataType = DataType.STRING) -> DatasetField:
+    return DatasetField(name=name, datatype=datatype, expression=expression)
 
 
 def _agg(name: str, weight: str) -> Aggregation:
@@ -72,9 +73,9 @@ CUSTOMER_METRICS = [
 ORDER_AGGREGATIONS = [_agg("w_bare", "amount"), _agg("w_quoted", '"amount"'), _agg("w_relationship", "customers.weight")]
 
 
-def definition_datasets(*, customer_filters: tuple[str, ...] = ()) -> list[SlayerDataset]:
+def definition_datasets(*, customer_filters: tuple[str, ...] = (), orders_managers: bool = True) -> list[SlayerDataset]:
     customers = customers_dataset(fields=CUSTOMER_FIELDS, metrics=CUSTOMER_METRICS, filters=list(customer_filters))
-    orders = orders_dataset(managers=True, aggregations=ORDER_AGGREGATIONS)
+    orders = orders_dataset(managers=orders_managers, aggregations=ORDER_AGGREGATIONS)
     return [*seed_datasets(managers=True, customers=customers, orders=orders), events_dataset()]
 
 
@@ -121,17 +122,21 @@ async def run_clean(engine: SlayerQueryEngine, body: dict[str, Any]) -> SlayerRe
 # --------------------------------------------------------------------------- #
 # The spec scenario
 # --------------------------------------------------------------------------- #
-async def test_stored_definitions_stay_dataset_local(engine: SlayerQueryEngine) -> None:
-    resp = await run_clean(engine, {
-        "population": "orders",
-        "dimensions": ["orders.order_id", "customers.region_label"],
-        "metrics": [{"metric": "customers.aov", "alias": "aov"}],
-    })
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_stored_definitions_stay_dataset_local(backend: str) -> None:
+    # One route from the ``customers`` home to ``orders``: no direct ``orders → managers`` edge.
+    async with definitions_engine(backend, datasets=definition_datasets(orders_managers=False)) as engine:
+        resp = await run_clean(engine, {
+            "population": "orders",
+            "dimensions": ["orders.order_id", "customers.region_label"],
+            "metrics": [{"metric": "customers.aov", "alias": "aov"}],
+        })
     assert {(r[column(resp, "order_id")], r[column(resp, "region_label")]) for r in resp.data} == {
         ("O1", "EAST"), ("O2", "EAST"), ("O3", "EAST"), ("O4", "WEST"),
     }
-    # aov per order row: the customer's orders' total over the customer's own row count (1).
-    assert values(resp, "order_id", "aov") == {"O1": 300.0, "O2": 300.0, "O3": 50.0, "O4": 300.0}
+    # aov per order row: the order's own amount (its home reads ``orders.order_id`` as itself) over the customer's own
+    # row count (1).
+    assert values(resp, "order_id", "aov") == {"O1": 100.0, "O2": 200.0, "O3": 50.0, "O4": 300.0}
 
 
 # --------------------------------------------------------------------------- #
@@ -266,7 +271,8 @@ async def test_list_element_saved_metric() -> None:
 
 
 async def test_list_element_field_and_filter() -> None:
-    datasets = _list_datasets(fields=[_f("knows_go", "list_contains(skills, 'go')", DataType.BOOLEAN)],
+    datasets = _list_datasets(fields=[_f("knows_go", ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="list_contains(skills, 'go')")]),
+                                         DataType.BOOLEAN)],
                               filters=["list_contains(skills, 'sql')"])
     async with list_engine(datasets=datasets) as eng:
         resp = await run_clean(eng, {"population": "assignments",
@@ -308,7 +314,9 @@ async def test_unreachable_definition(engine: SlayerQueryEngine, definition: str
 async def test_a_definition_never_becomes_an_unrelated_product(engine: SlayerQueryEngine) -> None:
     """A query may read ``events`` as an unrelated anchor; a definition reading it still refuses."""
     await engine.storage.save_dataset(
-        customers_dataset(fields=[_f("ev_amount", "events.amount", DataType.FLOAT)]), _validate=False)
+        customers_dataset(fields=[_f("ev_amount", ExpressionObject(dialects=[
+            DialectEntry(dialect=d, expression="events.amount") for d in ("SQLITE", "DUCKDB")]), DataType.FLOAT)]),
+        _validate=False)
     ok = await run_clean(engine, {"population": "customers",
                                   "metrics": [{"metric": "sum(events.amount)", "alias": "s"}]})
     assert _num(ok.data[0][column(ok, "s")]) == 12.0

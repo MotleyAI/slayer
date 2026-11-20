@@ -18,6 +18,7 @@ from sqlglot import exp
 
 from slayer.core.enums import RelationshipCardinality, JoinType
 from slayer.core.errors import DerivedFieldFanningError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetMetric
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -264,7 +265,7 @@ class TestReverseClosure:
             cust = await storage.get_dataset("customers", data_source="test")
             assert cust is not None
             cust.fields = [
-                *cust.fields, DatasetField(name="o_status", sql="orders.status"),
+                *cust.fields, DatasetField(name="o_status", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="orders.status")])),
             ]
             with pytest.raises(DerivedFieldFanningError) as ei:
                 await storage.save_dataset(cust)

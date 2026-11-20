@@ -184,7 +184,7 @@ class TestDirectedCycle:
             resp = await eng.execute({"population": "x", "dimensions": ["x.v"],
                                       "metrics": ["sum(z.amount)", "sum(x.z.amount)"]})
         assert resp.columns == ["x.v", "z.amount_sum", "x.z.amount_sum"]
-        assert table(resp, "x.v", "z.amount_sum", "x.z.amount_sum") == {("x1", 10.0, None), ("x2", 20.0, 30.0)}
+        assert table(resp, "x.v", "z.amount_sum", "x.z.amount_sum") == {("x1", None, None), ("x2", 30.0, 30.0)}
 
     async def test_a_rootless_query_across_the_cycle_fails_closed(self, backend: str) -> None:
         body = {"dimensions": ["x.v", "y.v", "z.v"]}

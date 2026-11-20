@@ -119,8 +119,8 @@ async def _seed_orders(storage: StorageBackend) -> None:
         sql_table="orders",
         data_source="mydb",
         fields=[
-            DatasetField(name="id", sql="id", primary_key=True),
-            DatasetField(name="amount", sql="amount"),
+            DatasetField(name="id", expression="id", primary_key=True),
+            DatasetField(name="amount", expression="amount"),
         ],
     ))
 

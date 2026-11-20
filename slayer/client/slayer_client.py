@@ -261,6 +261,7 @@ class SlayerClient:
             warnings=[*(result.get("warnings") or []), *(deprecations or [])],
             population=result.get("population"),
             population_inferred=bool(result.get("population_inferred", False)),
+            row_sources=list(result.get("row_sources") or []),
         )
 
     # ----- Async API -----

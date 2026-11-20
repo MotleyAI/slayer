@@ -190,9 +190,9 @@ class TestAdditive:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                    DatasetField(name="region", expression="region", datatype=DataType.STRING),
                 ],
             )
         )
@@ -203,12 +203,12 @@ class TestAdditive:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                     DatasetField(
                         name="customer_id",
-                        sql="customer_id",
+                        expression="customer_id",
                         datatype=DataType.FLOAT,
                     ),
                 ],
@@ -282,9 +282,9 @@ class TestSkipNonSqlTableModes:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -696,7 +696,7 @@ async def _persist_int_dataset(
     simulating an ingest from before SQLite widening."""
     col_kwargs: dict[str, Any] = {
         "name": field,
-        "sql": field,
+        "expression": field,
         "datatype": DataType.INTEGER,
         "format": field_format or NumberFormat(type=NumberFormatType.INTEGER),
         "description": description,
@@ -712,7 +712,7 @@ async def _persist_int_dataset(
             data_source=ds_name,
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                    name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
                 DatasetField(**col_kwargs),
             ],
@@ -783,11 +783,11 @@ class TestSqliteProbeWideningOnReingest:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                        name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                     ),
                     DatasetField(
                         name="tempstabidx",
-                        sql="tempstabidx",
+                        expression="tempstabidx",
                         datatype=DataType.INTEGER,
                         format=NumberFormat(type=NumberFormatType.INTEGER),
                         description="hand-authored note",
@@ -933,10 +933,10 @@ class TestSqliteProbeWideningOnReingest:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
+                        name="id", expression="id", datatype=DataType.INTEGER, primary_key=True,
                     ),
                     DatasetField(
-                        name="qty", sql="qty", datatype=DataType.FLOAT,
+                        name="qty", expression="qty", datatype=DataType.FLOAT,
                         format=NumberFormat(type=NumberFormatType.FLOAT),
                     ),
                 ],

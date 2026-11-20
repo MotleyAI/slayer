@@ -14,6 +14,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import AmbiguousRelationshipPathError, UnknownReferenceError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -114,14 +115,14 @@ async def integration_env(tmp_path) -> SlayerQueryEngine:
         data_source="test_sqlite",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
 
-            DatasetField(name="total_amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="latest_amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total_amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="latest_amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(orders_model)
@@ -132,9 +133,9 @@ async def integration_env(tmp_path) -> SlayerQueryEngine:
         sql_table="customers",
         data_source="test_sqlite",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
 
         ],
     )
@@ -1128,9 +1129,9 @@ async def joined_time_env(tmp_path):
     await storage.save_dataset(SlayerDataset(
         name="stores", sql_table="stores", data_source="db",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="opened_at", sql="opened_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="opened_at", expression="opened_at", datatype=DataType.DATETIME),
 
         ],
     ))
@@ -1138,25 +1139,25 @@ async def joined_time_env(tmp_path):
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="store_id", sql="store_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="store_id", expression="store_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
 
-            DatasetField(name="total_amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="latest_amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total_amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="latest_amount", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
     ))
     await storage.save_dataset(SlayerDataset(
         name="order_items", sql_table="order_items", data_source="db",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="order_id", sql="order_id", datatype=DataType.FLOAT),
-            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="order_id", expression="order_id", datatype=DataType.FLOAT),
+            DatasetField(name="qty", expression="qty", datatype=DataType.FLOAT),
 
-            DatasetField(name="qty_sum", sql="qty", datatype=DataType.FLOAT),
-            DatasetField(name="latest_qty", sql="qty", datatype=DataType.FLOAT),
+            DatasetField(name="qty_sum", expression="qty", datatype=DataType.FLOAT),
+            DatasetField(name="latest_qty", expression="qty", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="orders", from_columns=["order_id"], to_columns=["id"])],
     ))
@@ -1253,22 +1254,22 @@ async def cross_dataset_env(tmp_path):
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
 
-            DatasetField(name="total_amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total_amount", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     ))
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="db",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
 
-            DatasetField(name="avg_score", sql="score", datatype=DataType.FLOAT),
-            DatasetField(name="max_score", sql="score", datatype=DataType.FLOAT),
+            DatasetField(name="avg_score", expression="score", datatype=DataType.FLOAT),
+            DatasetField(name="max_score", expression="score", datatype=DataType.FLOAT),
         ],
     ))
 
@@ -1368,7 +1369,7 @@ async def test_cross_model_measure_with_target_join_filters(cross_dataset_env):
         fields=[
             DatasetField(name="policy_amount_identifier", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="policy_identifier", datatype=DataType.FLOAT),
-DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.FLOAT)
+DatasetField(name="total_policy_amount", expression="policy_amount", datatype=DataType.FLOAT)
         ],
         relationships=[
             DatasetRelationship(to="premium", from_columns=["policy_amount_identifier"], to_columns=["policy_amount_identifier"], join_type="inner"),
@@ -1379,7 +1380,7 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
         name="premium", sql_table="premium", data_source="db",
         fields=[
             DatasetField(name="policy_amount_identifier", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="has_premium", sql="1", datatype=DataType.STRING),
+            DatasetField(name="has_premium", expression="1", datatype=DataType.STRING),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
@@ -1754,17 +1755,17 @@ async def _mutual_relationship_engine(tmp_path, *, ab_name=None, ba_name=None):
 
     await storage.save_dataset(SlayerDataset(
         name="a", sql_table="a", data_source="db",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT),
-                    DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT),
+                    DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
 
         ],
         relationships=[DatasetRelationship(to="b", from_columns=["b_id"], to_columns=["id"], name=ab_name)],
     ))
     await storage.save_dataset(SlayerDataset(
         name="b", sql_table="b", data_source="db",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT),
-                    DatasetField(name="a_id", sql="a_id", datatype=DataType.FLOAT),
-                    DatasetField(name="unique_b_field", sql="id", datatype=DataType.FLOAT),
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT),
+                    DatasetField(name="a_id", expression="a_id", datatype=DataType.FLOAT),
+                    DatasetField(name="unique_b_field", expression="id", datatype=DataType.FLOAT),
 
         ],
         relationships=[DatasetRelationship(to="a", from_columns=["a_id"], to_columns=["id"], name=ba_name)],
@@ -1820,17 +1821,17 @@ async def test_model_filter_on_joined_column(tmp_path):
     await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="db",
         fields=[
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-DatasetField(name="total", sql="amount", datatype=DataType.FLOAT)
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+DatasetField(name="total", expression="amount", datatype=DataType.FLOAT)
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         filters=["customers.region == 'US'"],
     ))
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="db",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT),
-                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT),
+                    DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                    DatasetField(name="region", expression="region", datatype=DataType.STRING),
 
         ],
     ))
@@ -1997,7 +1998,7 @@ async def test_filtered_measure_sum(integration_env: SlayerQueryEngine):
     orders = await storage.get_dataset("orders")
     assert orders is not None
     orders.fields.append(
-        DatasetField(name="completed_revenue", sql="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
+        DatasetField(name="completed_revenue", expression="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
     )
     await storage.save_dataset(orders)
 
@@ -2024,7 +2025,7 @@ async def test_filtered_measure_count(integration_env: SlayerQueryEngine):
     orders = await storage.get_dataset("orders")
     assert orders is not None
     orders.fields.append(
-        DatasetField(name="completed_count", sql="id", filter="status = 'completed'", datatype=DataType.FLOAT)
+        DatasetField(name="completed_count", expression="id", filter="status = 'completed'", datatype=DataType.FLOAT)
     )
     await storage.save_dataset(orders)
 
@@ -2050,7 +2051,7 @@ async def test_filtered_measure_with_dimensions(integration_env: SlayerQueryEngi
     orders = await storage.get_dataset("orders")
     assert orders is not None
     orders.fields.append(
-        DatasetField(name="completed_revenue", sql="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
+        DatasetField(name="completed_revenue", expression="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
     )
     await storage.save_dataset(orders)
 
@@ -2083,7 +2084,7 @@ async def test_filtered_last_picks_correct_row(integration_env: SlayerQueryEngin
     orders = await storage.get_dataset("orders")
     assert orders is not None
     orders.fields.append(
-        DatasetField(name="completed_latest", sql="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
+        DatasetField(name="completed_latest", expression="amount", filter="status = 'completed'", datatype=DataType.FLOAT)
     )
     await storage.save_dataset(orders)
 
@@ -2159,7 +2160,7 @@ async def test_label_propagation_enrichment(integration_env: SlayerQueryEngine):
         if d.name == "status":
             d.label = "Order Status"
     orders.fields.append(
-        DatasetField(name="labeled_rev", sql="amount", label="Total Revenue", datatype=DataType.FLOAT)
+        DatasetField(name="labeled_rev", expression="amount", label="Total Revenue", datatype=DataType.FLOAT)
     )
     await storage.save_dataset(orders)
 
@@ -2313,14 +2314,14 @@ async def stat_env(tmp_path):
             sql_table="samples",
             data_source="stat_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="x", sql="x", datatype=DataType.FLOAT),
-                DatasetField(name="y", sql="y", datatype=DataType.FLOAT),
-                DatasetField(name="bucket", sql="bucket", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="x", expression="x", datatype=DataType.FLOAT),
+                DatasetField(name="y", expression="y", datatype=DataType.FLOAT),
+                DatasetField(name="bucket", expression="bucket", datatype=DataType.STRING),
                 # DatasetField.sql exercising scalar math UDFs
-                DatasetField(name="ln_x", sql="ln(x)", datatype=DataType.FLOAT),
-                DatasetField(name="sqrt_x", sql="sqrt(x)", datatype=DataType.FLOAT),
-                DatasetField(name="x_squared", sql="pow(x, 2)", datatype=DataType.FLOAT),
+                DatasetField(name="ln_x", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="ln(x)")]), datatype=DataType.FLOAT),
+                DatasetField(name="sqrt_x", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="sqrt(x)")]), datatype=DataType.FLOAT),
+                DatasetField(name="x_squared", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="pow(x, 2)")]), datatype=DataType.FLOAT),
             ],
         )
     )
@@ -2521,8 +2522,8 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
             sql_table="one",
             data_source="one_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="x", sql="x", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="x", expression="x", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -2596,12 +2597,12 @@ async def planets_env(tmp_path):
             sql_table="planets",
             data_source="planets_db",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="mass", expression="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
-                    sql="row_number() over (order by mass desc)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="row_number() over (order by mass desc)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -2661,13 +2662,12 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
             sql_table="households",
             data_source="hh_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="socioeconomic", sql="socioeconomic", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="socioeconomic", expression="socioeconomic", datatype=DataType.STRING),
                 DatasetField(
                     name="is_owner",
-                    sql=(
-                        "CASE LOWER(TRIM(json_extract(socioeconomic, '$.Tenure_Type'))) "
-                        "WHEN 'owned' THEN 1 ELSE 0 END"
+                    expression=(
+                        ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="CASE LOWER(TRIM(json_extract(socioeconomic, '$.Tenure_Type'))) WHEN 'owned' THEN 1 ELSE 0 END")])
                     ),
                     datatype=DataType.FLOAT,
                 ),
@@ -2723,11 +2723,11 @@ async def derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="B",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="foo_raw", expression="foo_raw", datatype=DataType.FLOAT),
                 DatasetField(
                     name="foo_normalized",
-                    sql="foo_raw / 100.0",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="foo_raw / 100.0")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -2739,23 +2739,23 @@ async def derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="A",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
-                DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
-                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="bar", expression="bar", datatype=DataType.FLOAT),
+                DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
+                DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_base",
-                    sql="A.bar / B.foo_raw",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="A.bar / B.foo_raw")]),
                     datatype=DataType.FLOAT,
                 ),
                 DatasetField(
                     name="ratio_using_derived",
-                    sql="A.bar / B.foo_normalized",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="A.bar / B.foo_normalized")]),
                     datatype=DataType.FLOAT,
                 ),
                 # Local derived chain: c1 derived; c2 references c1.
-                DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.FLOAT),
-                DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.FLOAT),
+                DatasetField(name="c1", expression="raw_a + 1", datatype=DataType.FLOAT),
+                DatasetField(name="c2", expression="A.c1 * 2", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
         )
@@ -2835,18 +2835,18 @@ async def orders_customers_env(tmp_path):
     await storage.save_dataset(SlayerDataset(
         name="customers", data_source="ds", sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
         name="orders", data_source="ds", sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
             DatasetField(
                 name="is_eu",
-                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                expression="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
                 datatype=DataType.FLOAT,
             ),
         ],
@@ -2909,10 +2909,10 @@ async def test_log10_round_trip_sqlite(tmp_path):
             sql_table="players",
             data_source="log_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="raw_score", sql="raw_score", datatype=DataType.FLOAT),
-                DatasetField(name="log_score", sql="log10(raw_score)", datatype=DataType.FLOAT),
-                DatasetField(name="log2_score", sql="log2(raw_score)", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="raw_score", expression="raw_score", datatype=DataType.FLOAT),
+                DatasetField(name="log_score", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="log10(raw_score)")]), datatype=DataType.FLOAT),
+                DatasetField(name="log2_score", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="log2(raw_score)")]), datatype=DataType.FLOAT),
             ],
         )
     )
@@ -3037,10 +3037,10 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
             sql_table="blobs",
             data_source="blob_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="score",
-                    sql="json_extract(payload, '$.score')",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="json_extract(payload, '$.score')")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -3358,9 +3358,9 @@ async def test_model_filter_with_lower_function_runs(tmp_path):
         data_source="ds",
         filters=["lower(status) = 'active'"],
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(model)
@@ -3383,12 +3383,12 @@ async def test_column_filter_with_lower_function_runs(tmp_path):
         sql_table="items",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             DatasetField(
                 name="active_amount",
-                sql="amount",
+                expression="amount",
                 filter="lower(status) = 'active'",
                 datatype=DataType.FLOAT,
             ),
@@ -3437,8 +3437,8 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
         sql_table="regions",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
         ],
     )
     customers_model = SlayerDataset(
@@ -3446,8 +3446,8 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
         sql_table="customers",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.INTEGER),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -3458,9 +3458,9 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
         # Mode A SQL filter with __-delimited relationship path through customers→regions.
         filters=["customers.regions.name = 'EU'"],
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
@@ -3506,9 +3506,9 @@ async def test_model_filter_with_json_extract_runs(tmp_path):
         data_source="ds",
         filters=["json_extract(metadata, '$.active') = 1"],
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="metadata", sql="metadata", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="metadata", expression="metadata", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(model)
@@ -3634,11 +3634,11 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
         # Intentionally no default_time_dimension — exercises the
         # no-default + explicit-time-arg branch end-to-end.
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME),
         ],
     )
     await storage.save_dataset(orders_model)
@@ -3713,26 +3713,26 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
     await storage.save_dataset(SlayerDataset(
         name="regions", data_source="ds", sql_table="regions",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
         name="customers", data_source="ds", sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     ))
     await storage.save_dataset(SlayerDataset(
         name="orders", data_source="ds", sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
             DatasetField(
                 name="region_pop",
-                sql="customers.regions.population",
+                expression="customers.regions.population",
                 datatype=DataType.FLOAT,
             ),
         ],
@@ -3853,17 +3853,17 @@ async def composite_score_env(tmp_path) -> SlayerQueryEngine:
     # don't duplicate the field-list boilerplate (Sonar
     # ``new_duplicated_lines_density``). Score body is the canonical
     # multi-term arithmetic shape from the bug report.
-    bare_cols = [DatasetField(name=n, sql=n, datatype=DataType.FLOAT) for n in ("a", "b", "c", "d")]
+    bare_cols = [DatasetField(name=n, expression=n, datatype=DataType.FLOAT) for n in ("a", "b", "c", "d")]
     model = SlayerDataset(
         name="entities",
         sql_table="entities",
         data_source="score_sqlite",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
             *bare_cols,
             DatasetField(
                 name="score",
-                sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
+                expression="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
                 datatype=DataType.FLOAT,
             ),
         ],

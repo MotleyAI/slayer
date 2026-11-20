@@ -14,6 +14,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import UnknownReferenceError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.scope import StageField
@@ -40,8 +41,8 @@ def _with_query_backed(datasets: List[SlayerDataset]) -> List[SlayerDataset]:
     regions = next(m for m in datasets if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
         to="region_amounts", from_columns=["id"], to_columns=["customers__region_id"]))
-    regions.fields.append(DatasetField(
-        name="qb_label", sql=f"region_amounts.{STALE}"))
+    regions.fields.append(DatasetField(name="qb_label", expression=ExpressionObject(
+        dialects=[DialectEntry(dialect=d, expression=f"region_amounts.{STALE}") for d in ("SQLITE", "DUCKDB")])))
     return [*datasets, SlayerDataset(
         name="region_amounts", data_source="test",
         source_queries=[orders_q(
@@ -78,7 +79,7 @@ def _ambiguous_qb_datasets() -> List[SlayerDataset]:
     regions = next(m for m in models if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
         to="pq", from_columns=["id"], to_columns=["customers__region_id"]))
-    regions.fields.append(DatasetField(name="amb", sql=f"pq.{STALE}"))
+    regions.fields.append(DatasetField(name="amb", expression=f"pq.{STALE}"))
     return [*models, SlayerDataset(
         name="pq", data_source="test", source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.hr.rname", "customers.hr2.rname"],
@@ -327,7 +328,7 @@ class TestQueryBackedConsumer:
     async def test_authored_columns_stay_exact(self, engine: SlayerQueryEngine) -> None:
         orders = await engine.storage.get_dataset("orders", data_source="test")
         assert orders is not None
-        orders.fields = [*orders.fields, DatasetField(name=CANON, sql="status")]
+        orders.fields = [*orders.fields, DatasetField(name=CANON, expression="status")]
         await engine.storage.save_dataset(orders)
         query = orders_q(dimensions=[f"orders.{STALE}"])
         with pytest.raises(UnknownReferenceError, match=STALE):

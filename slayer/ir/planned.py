@@ -44,9 +44,12 @@ __all__ = [
     "MaskEntry",
     "MaskTyping",
     "OrderEntry",
+    "EntityDedup",
     "PickedParam",
     "PlainProducerKernel",
     "PlannedQuery",
+    "PlannedRowBranch",
+    "PlannedRowSupply",
     "ProducerKernel",
     "RankedGrainMember",
     "RankedProducerKernel",
@@ -316,6 +319,15 @@ class PlainProducerKernel(BaseModel):
     kind: Literal["plain"] = "plain"
 
 
+class EntityDedup(BaseModel):
+    """Association's level 1 under a ranked / windowed reducer: one row per (cell, entity) picking each input once."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    #: The root's identity keys in the producer's coordinates.
+    entity_keys: List[ValueKey] = Field(default_factory=list)
+
+
 class RankedProducerKernel(BaseModel):
     """A ``first``/``last`` producer: one row per grain group, picked by ranking."""
 
@@ -324,6 +336,8 @@ class RankedProducerKernel(BaseModel):
     kind: Literal["ranked"] = "ranked"
     agg: Literal["first", "last"]
     ranking_time_key: ValueKey
+    #: Set when associating: the ranking runs over the deduplicated entity rows.
+    association: Optional[EntityDedup] = None
 
 
 class PickedParam(BaseModel):
@@ -361,6 +375,8 @@ class TrailingWindowProducerKernel(BaseModel):
     endpoints: Optional["PlannedQuery"] = None
     #: The producer's grain keys in ``endpoints``' column order.
     endpoint_keys: List[ValueKey] = Field(default_factory=list)
+    #: Set when associating: each frame's rows dedup per (bucket, cell, entity) before the reducer.
+    association: Optional[EntityDedup] = None
 
 
 class AssociationProducerKernel(BaseModel):
@@ -383,9 +399,6 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
-    #: Every associated dimension is a list child of the root: level 1 is each root row once per distinct
-    #: element combination, with no key to group by.
-    list_rows: bool = False
 
 
 ProducerKernel = Union[
@@ -417,8 +430,6 @@ class RegroupAttachPlan(BaseModel):
     producer_root_dataset: Optional[str] = None
     broadcast_metric: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
-    # Why the default mode broadcast instead of associating; ``None`` for a requested broadcast.
-    association_unsupported: Optional[str] = None
     # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).
@@ -462,7 +473,15 @@ class PlannedQuery(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    @property
+    def stage_field_relation(self) -> str:
+        """The relation this stage's field names drop from its result keys."""
+        return self.field_relation if self.field_relation is not None else self.source_relation
+
     source_relation: str
+    #: The relation a stage's field names drop from its result keys: its dimension anchor in an inferred stage
+    #: (``""``: none, for the unit or a product), else ``source_relation``.
+    field_relation: Optional[str] = None
     row_slots: List[ValueSlot] = Field(default_factory=list)
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
     regroup_attach_plans: List["RegroupAttachPlan"] = Field(default_factory=list)
@@ -504,6 +523,8 @@ class PlannedQuery(BaseModel):
     spine: Optional[SpineFactor] = None
     # This stage's own resolved ``to_many_handling``.
     mode_policy: ModePolicy = ModePolicy()
+    # An inferred stage's rows when several sources supply them: the union of the branches' cells.
+    row_supply: Optional["PlannedRowSupply"] = None
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
@@ -720,9 +741,23 @@ def _validate_stage_order(pq: "PlannedQuery") -> None:
         _validate_stage_order(attach.producer_plan)
 
 
+class PlannedRowBranch(BaseModel):
+    """A row source's cells (a dimension-only plan), kept where they agree with each ``restrict`` plan's cells."""
+
+    cells: PlannedQuery
+    restrict: List[PlannedQuery] = Field(default_factory=list)
+
+
+class PlannedRowSupply(BaseModel):
+    """The rows of an inferred stage: the null-safe union of its branches' cells (semantics 12.4)."""
+
+    branches: List[PlannedRowBranch]
+
+
 # ``producer_plan`` forward-references ``PlannedQuery``.
 RegroupAttachPlan.model_rebuild()
 TrailingWindowProducerKernel.model_rebuild()
+PlannedQuery.model_rebuild()
 
 
 def regroup_producer_identity(attach: RegroupAttachPlan) -> Hashable:

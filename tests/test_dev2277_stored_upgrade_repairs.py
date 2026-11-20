@@ -19,7 +19,7 @@ from tests._stored_upgrade_fixtures import (
 
 MODEL_V = CURRENT_VERSIONS["SlayerModel"]
 PRE_MODEL = MODEL_V - 1
-PRE_QUERY = CURRENT_VERSIONS["SlayerQuery"] - 1
+PRE_QUERY = 16  # before the qualified-reference step
 SPINE_FILTER = "timestamp >= '2024-01-01 00:00:00'"
 
 

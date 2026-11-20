@@ -573,7 +573,7 @@ class TestAdditiveMergeDescriptions:
             data_source="ds",
             description=description,
             fields=[
-                DatasetField(name="a", sql="a", datatype=DataType.INTEGER, description=col_description)
+                DatasetField(name="a", expression="a", datatype=DataType.INTEGER, description=col_description)
             ],
         )
 
@@ -584,7 +584,7 @@ class TestAdditiveMergeDescriptions:
             data_source="ds",
             description="fresh model desc",
             fields=[
-                DatasetField(name="a", sql="a", datatype=DataType.INTEGER, description="fresh col desc")
+                DatasetField(name="a", expression="a", datatype=DataType.INTEGER, description="fresh col desc")
             ],
         )
 

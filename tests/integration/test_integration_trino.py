@@ -24,6 +24,7 @@ from sqlglot import exp
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
@@ -207,28 +208,28 @@ def _base_datasets() -> list[SlayerDataset]:
         SlayerDataset(
             name="orders", sql_table="orders", data_source=_DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="created_on", sql="created_on", datatype=DataType.DATE),
-                DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="created_on", expression="created_on", datatype=DataType.DATE),
+                DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="avg_amount", expression="amount", datatype=DataType.FLOAT),
             ],
         ),
         SlayerDataset(
             name="customers", sql_table="customers", data_source=_DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         ),
         SlayerDataset(
             name="pct_amounts", sql_table="pct_amounts", data_source=_DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         ),
         streak_dataset(_DS),
@@ -289,8 +290,7 @@ class TestTrinoQueries:
         orders = await trino_env.storage.get_dataset("orders")
         assert orders is not None
         await trino_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
+            *orders.fields, DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="CASE WHEN status LIKE '%pend%' OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END")]), datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
@@ -634,22 +634,22 @@ def trino_cross_dataset_env(trino_container, tmp_path):
             SlayerDataset(
                 name="orders", sql_table="orders", data_source=_DS, default_time_dimension="created_at",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-                    DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                    DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                    DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+                    DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
                 ],
                 relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
             ),
             SlayerDataset(
                 name="customers", sql_table="customers", data_source=_DS,
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
-                    DatasetField(name="avg_score", sql="score", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                    DatasetField(name="region", expression="region", datatype=DataType.STRING),
+                    DatasetField(name="avg_score", expression="score", datatype=DataType.FLOAT),
                 ],
             ),
         ])
@@ -765,18 +765,18 @@ def trino_federation_env(tmp_path_factory):
                     SlayerDataset(
                         name="orders", sql_table="mysql.shop.orders", data_source="fed",
                         fields=[
-                            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-                            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+                            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                         ],
                         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
                     ),
                     SlayerDataset(
                         name="customers", sql_table="postgresql.public.customers", data_source="fed",
                         fields=[
-                            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                            DatasetField(name="region", expression="region", datatype=DataType.STRING),
                         ],
                     ),
                 ],
@@ -819,19 +819,19 @@ def trino_derived_chain_env(trino_container, tmp_path):
             SlayerDataset(
                 name="b_tbl", data_source=_DS, sql_table="b_tbl",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                    DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-                    DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="foo_raw", expression="foo_raw", datatype=DataType.FLOAT),
+                    DatasetField(name="foo_normalized", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="foo_raw / 100.0")]), datatype=DataType.FLOAT),
                 ],
             ),
             SlayerDataset(
                 name="a_tbl", data_source=_DS, sql_table="a_tbl",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                    DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
-                    DatasetField(name="b_id", sql="b_id", datatype=DataType.INTEGER),
-                    DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
-                    DatasetField(name="ratio_using_derived", sql="a_tbl.bar / b_tbl.foo_normalized", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="bar", expression="bar", datatype=DataType.FLOAT),
+                    DatasetField(name="b_id", expression="b_id", datatype=DataType.INTEGER),
+                    DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
+                    DatasetField(name="ratio_using_derived", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="a_tbl.bar / b_tbl.foo_normalized")]), datatype=DataType.FLOAT),
                 ],
                 relationships=[DatasetRelationship(to="b_tbl", from_columns=["b_id"], to_columns=["id"])],
             ),
@@ -861,10 +861,10 @@ def trino_log_env(trino_container, tmp_path):
         storage = _storage(str(tmp_path), _ds_config(trino_container, schema), [SlayerDataset(
             name="orders", sql_table="orders", data_source=_DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
-                DatasetField(name="log2_amount", sql="log2(amount)", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="log10(amount)")]), datatype=DataType.FLOAT),
+                DatasetField(name="log2_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="log2(amount)")]), datatype=DataType.FLOAT),
             ],
         )])
         yield SlayerQueryEngine(storage=storage)
@@ -897,10 +897,10 @@ def trino_planets_env(trino_container, tmp_path):
         storage = _storage(str(tmp_path), _ds_config(trino_container, schema), [SlayerDataset(
             name="planets", sql_table="planets", data_source=_DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
-                DatasetField(name="rn", sql="row_number() over (order by mass desc)", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="mass", expression="mass", datatype=DataType.FLOAT),
+                DatasetField(name="rn", expression=ExpressionObject(dialects=[DialectEntry(dialect="TRINO", expression="row_number() over (order by mass desc)")]), datatype=DataType.FLOAT),
             ],
         )])
         yield SlayerQueryEngine(storage=storage)
@@ -930,9 +930,9 @@ def _trino_esc_storage(trino_container, tmp_path_factory):
         yield _storage(str(tmp_path_factory.mktemp("trino_esc")), _ds_config(trino_container, schema), [SlayerDataset(
             name="esc", sql_table="esc", data_source=_DS, filters=["status = '{v}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )])
 

@@ -34,8 +34,8 @@ from tests._dev2277_fixtures import (
 from tests._stored_upgrade_fixtures import DS as STORE_DS
 from tests._stored_upgrade_fixtures import raw_store
 
-#: The pre-change stored versions (this change adds one step to each).
-PRE_MODEL, PRE_QUERY = CURRENT_VERSIONS["SlayerModel"] - 1, CURRENT_VERSIONS["SlayerQuery"] - 1
+#: The stored versions before the qualified-reference step.
+PRE_MODEL, PRE_QUERY = CURRENT_VERSIONS["SlayerModel"] - 1, 16
 
 
 def column(resp: SlayerResponse, suffix: str) -> str:
@@ -89,7 +89,7 @@ class TestDirectedCycle:
     async def test_binding_takes_the_to_one_path(self, backend: str) -> None:
         async with cycle_engine(backend) as eng:
             resp = await eng.execute({"population": "x", "dimensions": ["x.v"], "metrics": ["sum(z.amount)"]})
-        assert table(resp, "x.v", column(resp, "amount_sum")) == {("x1", 10.0), ("x2", 20.0)}
+        assert table(resp, "x.v", column(resp, "amount_sum")) == {("x1", None), ("x2", 30.0)}
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_binding_reads_a_dimension_through_the_to_one_path(self, backend: str) -> None:

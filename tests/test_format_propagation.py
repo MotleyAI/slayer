@@ -53,20 +53,20 @@ class TestInferAggregatedFormat:
             sql_table="orders",
             data_source="test_ds",
             fields=[
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
                 DatasetField(
                     name="revenue",
-                    sql="amount",
+                    expression="amount",
                     datatype=DataType.FLOAT,
                     format=NumberFormat(type=NumberFormatType.CURRENCY, symbol="€"),
                 ),
                 DatasetField(
                     name="margin",
-                    sql="margin",
+                    expression="margin",
                     datatype=DataType.FLOAT,
                     format=NumberFormat(type=NumberFormatType.PERCENT),
                 ),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
             ],
         )
 

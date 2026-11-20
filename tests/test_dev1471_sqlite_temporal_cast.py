@@ -28,7 +28,7 @@ _ROWS = [
     (5, 102, 50.0, "N", "2025-05-05", "2025-05-06"),
 ]
 
-_LAST_TOUCH = DatasetField(name="last_touch", sql="coalesce(shipped_at, created_at)", datatype=DataType.DATETIME)
+_LAST_TOUCH = DatasetField(name="last_touch", expression="coalesce(shipped_at, created_at)", datatype=DataType.DATETIME)
 
 
 def _norm(sql: str) -> str:

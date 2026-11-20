@@ -24,6 +24,7 @@ import re
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 
@@ -549,11 +550,11 @@ def orders_dataset_with_json() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="json_data",
-                sql="json_extract(blob, '$.k')",
+                expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="json_extract(blob, '$.k')") for d in ("POSTGRES", "SQLITE", "TSQL")]),
                 datatype=DataType.STRING,
             ),
         ],

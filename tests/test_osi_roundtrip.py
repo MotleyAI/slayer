@@ -145,9 +145,9 @@ def _masked_orders() -> SlayerDataset:
     return orders(
         name="masked_orders", relationships=[],
         fields=[*(c for c in orders_fields() if c.name in keep),
-                 col("m_amount", sql="amount", filter="status = 'completed'"),
-                 col("m_qty", DataType.INTEGER, sql="quantity", filter="region = 'US'"),
-                 col("m_paid", DataType.BOOLEAN, sql="is_paid", filter="status <> 'test'")],
+                 col("m_amount", expression="amount", filter="status = 'completed'"),
+                 col("m_qty", DataType.INTEGER, expression="quantity", filter="region = 'US'"),
+                 col("m_paid", DataType.BOOLEAN, expression="is_paid", filter="status <> 'test'")],
         metrics=[slayer_metric("n", "count(*)"), slayer_metric("s", "sum(m_amount)"), slayer_metric("c", "count(m_amount)"),
                   slayer_metric("cd", "count_distinct(m_amount)"), slayer_metric("a", "avg(m_amount)"),
                   slayer_metric("mx", "max(m_amount)"), slayer_metric("r", "corr(m_amount, other=m_qty)"),

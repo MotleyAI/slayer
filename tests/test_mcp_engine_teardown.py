@@ -71,16 +71,16 @@ async def _seed_storage(workspace: Path, *, with_sql_mode: bool = False) -> YAML
     await storage.save_dataset(SlayerDataset(
         name="t", data_source="lite", sql_table="t",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="v", sql="v", datatype=DataType.INTEGER),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="v", expression="v", datatype=DataType.INTEGER),
         ],
     ))
     if with_sql_mode:
         await storage.save_dataset(SlayerDataset(
             name="sv", data_source="lite", sql="SELECT id, v FROM t",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="v", sql="v", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="v", expression="v", datatype=DataType.INTEGER),
             ],
         ))
     return storage

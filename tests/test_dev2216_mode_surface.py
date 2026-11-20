@@ -1,22 +1,15 @@
-"""The optional ``to_many_handling`` field, refinement inheritance, the fallback warning payload and
+"""The optional ``to_many_handling`` field, refinement inheritance, the broadcast warning's hint and
 usage reporting (spec: queries/attribution-modes, queries/semantics › Loud degradation)."""
 
 from __future__ import annotations
 
 import re
-import warnings
 
 import pytest
-from xdist.remote import serialize_warning_message
-from xdist.workermanage import unserialize_warning_message
 
-from slayer.core.errors import BroadcastGrainWarning
-from slayer.core.query import QueryMetric, QueryRefinement, SlayerQuery, refine_query
+from slayer.core.query import QueryRefinement, SlayerQuery, refine_query
 from slayer.core.warnings import DICE_SLICE_HINT, BroadcastDimension, BroadcastGrainWarningPayload
 from slayer.usage_reporting.features import query_features
-from tests._dev1841_fixtures import make_exec_engine
-
-LAST = QueryMetric(metric="last(customers.spend, customers.signup_at)", alias="ls")
 
 
 def _saved(**kw) -> SlayerQuery:
@@ -57,48 +50,14 @@ class TestRefinement:
         assert _refined(_saved(to_many_handling=saved), to_many_handling="broadcast").to_many_handling == "broadcast"
 
 
-class TestFallbackPayload:
-    def _payload(self, **kw) -> BroadcastGrainWarningPayload:
-        return BroadcastGrainWarningPayload(
+class TestBroadcastPayload:
+    def test_hint_names_omitting_the_mode(self) -> None:
+        payload = BroadcastGrainWarningPayload(
             metric="ls", location="query",
-            dimensions=[BroadcastDimension(dimension="status", reason="crosses a fanning hop")], **kw)
-
-    def test_reason_defaults_to_none(self) -> None:
-        assert self._payload().association_unsupported is None
-
-    def test_reason_round_trips(self) -> None:
-        payload = self._payload(association_unsupported="first/last")
-        restored = BroadcastGrainWarningPayload.model_validate(payload.model_dump(mode="json"))
-        assert restored == payload
-        assert restored.association_unsupported == "first/last"
-
-    def test_ordinary_hint_names_omitting_the_mode(self) -> None:
-        assert self._payload().hint == DICE_SLICE_HINT
+            dimensions=[BroadcastDimension(dimension="status", reason="crosses a fanning hop")])
+        assert payload.hint == DICE_SLICE_HINT
         assert re.search(r"omit", DICE_SLICE_HINT, re.IGNORECASE)
         assert "to_many_handling" in DICE_SLICE_HINT
-
-
-@pytest.fixture(params=["sqlite", "duckdb"])
-async def engine(request):
-    async for engine in make_exec_engine(request):
-        yield engine
-
-
-class TestFallbackPythonWarning:
-    async def test_names_the_reason_and_survives_transport(self, engine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.status"], "metrics": [LAST]})
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            resp = await engine.execute(query)
-        (payload,) = [w for w in resp.warnings or [] if getattr(w, "kind", None) == "broadcast"]
-        assert payload.association_unsupported
-        emitted = [c.message for c in caught if isinstance(c.message, BroadcastGrainWarning)]
-        assert emitted
-        w = emitted[0]
-        assert re.search(r"first|last", str(w), re.IGNORECASE)
-        assert str(type(w)(*w.args)) == str(w)
-        wm = warnings.WarningMessage(message=w, category=type(w), filename="f.py", lineno=1)
-        assert str(w) in str(unserialize_warning_message(serialize_warning_message(wm)).message)
 
 
 class TestUsageReporting:

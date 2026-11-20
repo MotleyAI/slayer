@@ -55,18 +55,8 @@ _SQLITE_TYPE = {
 
 
 def _physical_columns(dataset: SlayerDataset) -> list[DatasetField]:
-    """Only bare/identity fields are real table columns; a ``sql`` expression
-    (derived/filtered) or a filter-bearing field is computed by the query."""
-    out: list[DatasetField] = []
-    for c in dataset.fields:
-        sql = getattr(c, "sql", None)
-        if getattr(c, "filter", None) is not None:
-            # a filtered field's PHYSICAL backing (its sql) is a separate col;
-            # only include if sql is a bare identifier equal-ish and not already present
-            continue
-        if sql is None or sql.strip() == c.name:
-            out.append(c)
-    return out
+    """Only unfiltered base fields are real table columns; the rest are computed by the query."""
+    return [c for c in dataset.fields if c.is_physical_reader]
 
 
 def _rand_value(dtype, rng: random.Random):

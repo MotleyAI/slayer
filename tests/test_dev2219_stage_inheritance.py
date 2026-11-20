@@ -62,7 +62,7 @@ class TestPassThrough:
     async def test_a_base_field_renamed_onto_its_column_is_inherited(self, dialect: str) -> None:
         renamed = orders()
         renamed = renamed.model_copy(update={
-            "fields": [*renamed.fields, DatasetField(name="cid", sql="customer_id", datatype=DataType.INTEGER)],
+            "fields": [*renamed.fields, DatasetField(name="cid", expression="customer_id", datatype=DataType.INTEGER)],
             "relationships": [rel("customers", [("cid", "id")], join_type=JoinType.LEFT,
                                   cardinality=RelationshipCardinality.MANY_TO_ONE)]})
         async with shop(dialect, with_datasets(renamed)) as engine:

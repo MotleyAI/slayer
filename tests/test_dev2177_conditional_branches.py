@@ -56,7 +56,7 @@ TEXT_AS_NUMBER = {"greatest", "least"}
 def datasets_with_unknown(*, data_source: str = "test") -> list[SlayerDataset]:
     orders, *rest = idiom_datasets(data_source=data_source)
     orders = orders.model_copy(update={"fields": [
-        *orders.fields, DatasetField(name="opaque", sql="amount * 2", datatype=DataType.OPAQUE),
+        *orders.fields, DatasetField(name="opaque", expression="amount * 2", datatype=DataType.OPAQUE),
     ]})
     return [orders, *rest]
 

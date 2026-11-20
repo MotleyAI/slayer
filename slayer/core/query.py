@@ -1483,12 +1483,17 @@ class SlayerQuery(BaseModel):
             "{\"metric\": \"sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))\", "
             '"alias": "orders_2025"} list every region, including those without orders (a count '
             "over no rows is 0, any other aggregate NULL). Always alias a conditional aggregate. "
-            "Otherwise root where the facts are (rows without facts then drop out), or omit to "
-            "infer the smallest dataset determining every dimension and row-level condition field "
-            "(reported in the response). A saved dataset or stage name. "
+            "Otherwise root where the facts are (rows without facts then drop out), or omit to infer "
+            "the rows: every dimension combination some metric's rows reach (the dimension values "
+            "alone with no metrics, one row with no dimensions), reported in the response. "
+            "A saved dataset or stage name. "
             "Write a per-query field as an expression in the position that uses it (a "
             "dimension, a filter, an aggregation's argument)."
         ),
+    )
+    population_inferred: bool = Field(
+        default=False,
+        description="Set by saving; keeps the rows inferred while `population` pins the anchor.",
     )
     extensions: list[DatasetExtension] | None = Field(
         default=None,
@@ -1761,6 +1766,8 @@ class SlayerQuery(BaseModel):
             _parsed_or_none(self.main_time_dimension)
         self._validate_distinct_dimension_values()
         check_unique_extensions(self.extensions)
+        if self.population_inferred and self.population is None:
+            raise ValueError("`population_inferred` needs `population`: it marks a pinned anchor")
         return self
 
     @model_validator(mode="after")

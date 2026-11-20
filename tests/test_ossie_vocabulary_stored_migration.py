@@ -32,7 +32,7 @@ from tests._upgrade_corpus import MEMORY_PREFIX, Corpus, load_all, offline, onli
 from tests._upgrade_corpus import run as run_recorded
 
 PRE = {"SlayerModel": 25, "SlayerQuery": 15, "Memory": 11, "Embedding": 1}
-CURRENT = {"SlayerModel": 28, "SlayerQuery": 17, "Memory": 13, "Embedding": 2}
+CURRENT = {"SlayerModel": 28, "SlayerQuery": 18, "Memory": 13, "Embedding": 2}
 CORPORA = {
     "v0_10_2": Corpus.load(release="v0_10_2", datasources=("shop", "cube", "lite"),
                            data_files=("data.duckdb", "data.sqlite")),

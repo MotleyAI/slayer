@@ -15,6 +15,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.population.inference import infer_population
 
 from tests._dev1866_fixtures import DS_CHAIN, make_inference_storage
+from tests._engine_helpers import owned_query_engine
 
 
 @pytest.fixture
@@ -69,12 +70,12 @@ class TestFoldPins:
             await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.NO_DATASOURCE
 
-    async def test_saved_measure_only_filter_stays_empty_determination(
+    @pytest.mark.xfail(strict=True, reason="a saved metric binds in a filter only when also projected until DEV-2387")
+    async def test_saved_measure_only_filter_has_the_unit_as_its_anchor(
         self, storage
     ) -> None:
-        """Precedence order survives the fold: nothing to infer from beats any
-        datasource verdict."""
-        query = SlayerQuery(filter=["orders.revenue > 100"])
-        with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(query=query, storage=storage)
-        assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
+        """A saved-measure filter alone contributes no anchor: the query's anchor is the unit, not a
+        population error."""
+        async with owned_query_engine(storage=storage) as engine:
+            resp = await engine.execute(SlayerQuery(filter=["orders.revenue > 100"]), dry_run=True)
+        assert resp.population is None

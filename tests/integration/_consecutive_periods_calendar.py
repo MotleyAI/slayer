@@ -52,11 +52,11 @@ def streak_dataset(data_source: str) -> SlayerDataset:
     return SlayerDataset(
         name="streak_events", sql_table="streak_events", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="series", sql="series", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="d", sql="d", datatype=DataType.DATE),
-            DatasetField(name="ts", sql="ts", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="series", expression="series", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="d", expression="d", datatype=DataType.DATE),
+            DatasetField(name="ts", expression="ts", datatype=DataType.DATETIME),
         ],
     )
 

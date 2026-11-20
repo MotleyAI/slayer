@@ -42,13 +42,13 @@ async def _seed(storage: YAMLStorage) -> None:
         data_source="mydb",
         description="One row per placed order.",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(
-                name="amount", sql="amount", datatype=DataType.FLOAT,
+                name="amount", expression="amount", datatype=DataType.FLOAT,
                 description="Order total in USD.",
             ),
             DatasetField(
-                name="customer_id", sql="customer_id", datatype=DataType.INTEGER,
+                name="customer_id", expression="customer_id", datatype=DataType.INTEGER,
                 description="FK to customers.",
             ),
         ],

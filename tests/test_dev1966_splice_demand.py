@@ -14,6 +14,7 @@ import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.errors import QueryBackedCycleError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.sql.render.cte_assembly import CteEntry, reachable_cte_entries
 from tests._dev1966_fixtures import (
@@ -112,7 +113,7 @@ class TestStoredJoinReads:
     async def test_a_derived_column_definition(self, dialect) -> None:
         clients = clients_dataset()
         clients = clients.model_copy(update={"fields": [
-            *clients.fields, DatasetField(name="top2", sql="cust_rev.top * 2", datatype=DataType.FLOAT)]})
+            *clients.fields, DatasetField(name="top2", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="cust_rev.top * 2"), DialectEntry(dialect="SQLITE", expression="cust_rev.top * 2")]), datatype=DataType.FLOAT)]})
         models = [orders_dataset(), customers_dataset(), clients, cust_rev_dataset()]
         async with dev1966_engine(dialect, datasets=models) as e:
             resp = await e.execute(query(population="clients", dimensions=["clients.id", "clients.top2"]))

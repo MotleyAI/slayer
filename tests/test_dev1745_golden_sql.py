@@ -50,6 +50,7 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -93,7 +94,7 @@ def _regions() -> SlayerDataset:
             DatasetField(name="population", datatype=DataType.FLOAT),
             DatasetField(name="weight", datatype=DataType.FLOAT),
             # DatasetField.sql — derived on a two-hop target
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
+            DatasetField(name="pop_x2", expression="population * 2", datatype=DataType.FLOAT),
         ],
     )
 
@@ -131,12 +132,12 @@ def _orders() -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             # a field named like a statement keyword
             DatasetField(name="select", datatype=DataType.STRING),
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT),
+            DatasetField(name="doubled", expression="amount * 2", datatype=DataType.FLOAT),
             # DatasetField.filter — Mode-A predicate crossing a relationship
-            DatasetField(name="eu_amount", sql="amount",
+            DatasetField(name="eu_amount", expression="amount",
                    filter="customers.tier = 'eu'", datatype=DataType.FLOAT),
             # raw ref that inlines to a constant (dual-scan contract)
-            DatasetField(name="flag_const", sql="1", datatype=DataType.INTEGER),
+            DatasetField(name="flag_const", expression="1", datatype=DataType.INTEGER),
             # Quoted dotted identifier. Mode-A is raw SQL for the TARGET
             # dialect, and this spelling is Postgres-flavoured: BigQuery quotes
             # identifiers with backticks and reads "..." as a STRING, so there
@@ -145,13 +146,13 @@ def _orders() -> SlayerDataset:
             # baseline entry records exactly that, which is what the dialect
             # does with this input rather than a defect to fix here. Mode-A
             # portability across quoting styles is a separate concern.
-            DatasetField(name="quoted_cross", sql='"customers"."spend"',
+            DatasetField(name="quoted_cross", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression='"customers"."spend"') for d in ("BIGQUERY", "DUCKDB", "POSTGRES", "SQLITE", "TSQL")]),
                    datatype=DataType.FLOAT),
             # derived-of-derived, two hops (currently BROKEN — see module doc)
-            DatasetField(name="deep_pop", sql="customers.regions.pop_x2",
+            DatasetField(name="deep_pop", expression="customers.regions.pop_x2",
                    datatype=DataType.FLOAT),
             DatasetField(name="multi_dataset",
-                   sql="customers.spend + customers.regions.population",
+                   expression="customers.spend + customers.regions.population",
                    datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(

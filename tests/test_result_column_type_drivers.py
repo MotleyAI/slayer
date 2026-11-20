@@ -345,7 +345,7 @@ class TestSqlServerDescribe:
     def test_a_fallback_decimal_keeps_its_native_type(self, scale: int) -> None:
         described = _describe("mssql", _row("m", Decimal, precision=10, scale=scale))
         assert described is not None
-        derived = DatasetField(name="d", sql="m * 2", datatype=described.type, db_type=described.db_type)
+        derived = DatasetField(name="d", expression="m * 2", datatype=described.type, db_type=described.db_type)
         assert keeps_native_type(col=derived, dialect=dialect_for_ds_type("mssql")), described
 
     def test_declared_type_names(self) -> None:

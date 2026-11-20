@@ -47,13 +47,13 @@ _YEAR_SUMS = {"2024-01-01": 300.0, "2025-01-01": 850.0}
 
 def _orders_fields(*, created_at_granularity=None) -> list[DatasetField]:
     return [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-        DatasetField(name="region", sql="region", datatype=DataType.STRING),
-        DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME,
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+        DatasetField(name="region", expression="region", datatype=DataType.STRING),
+        DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME,
                granularity=created_at_granularity),
-        DatasetField(name="shipped_at", sql="shipped_at", datatype=DataType.DATETIME),
+        DatasetField(name="shipped_at", expression="shipped_at", datatype=DataType.DATETIME),
     ]
 
 
@@ -368,15 +368,15 @@ class TestHandSetJoinPath:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME, granularity=TG.MONTH),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME, granularity=TG.MONTH),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )

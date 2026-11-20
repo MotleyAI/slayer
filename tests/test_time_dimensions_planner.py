@@ -146,7 +146,7 @@ def _orders_with_derived_temporal() -> SlayerDataset:
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="created_day",
-                sql="date_trunc('day', created_at)",
+                expression="date_trunc('day', created_at)",
                 datatype=DataType.DATETIME,
             ),
         ],

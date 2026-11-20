@@ -7,6 +7,7 @@ from sqlglot import exp, parse_one
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError, UnknownFunctionError, UnsupportedServerFunctionError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
@@ -311,7 +312,7 @@ class TestSQLServerCodePoints:
     async def test_author_sql_is_not_rewritten(self) -> None:
         base = lib_dataset()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
-            name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", datatype=DataType.STRING)]})
+            name="head", expression=ExpressionObject(dialects=[DialectEntry(dialect="TSQL", expression="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))")]), datatype=DataType.STRING)]})
         sql = " ".join((await emit_lib(lib_query("lib.head"), dialect="tsql", datasets=[model])).split())
         assert "SUBSTRING(lib.s, 1, 2)" in sql, sql
         assert "POWER(lib.a, 2)" in sql, sql

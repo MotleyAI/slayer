@@ -29,15 +29,15 @@ def _norm(s: str) -> str:
 
 
 def _pk() -> DatasetField:
-    return DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)
+    return DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)
 
 
 def _d(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.FLOAT)
+    return DatasetField(name=name, expression=name, datatype=DataType.FLOAT)
 
 
 def _t(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.STRING)
+    return DatasetField(name=name, expression=name, datatype=DataType.STRING)
 
 
 async def _save_chain(
@@ -54,7 +54,7 @@ async def _save_chain(
     await storage.save_dataset(SlayerDataset(
         name="Consumer", sql_table="Consumer", data_source="test",
         fields=[_pk(), _t("name"), _t("email"),
-                 DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME)],
+                 DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME)],
     ))
     customer_joins = (
         [] if drop_customer_consumer
@@ -75,7 +75,7 @@ async def _save_chain(
     invoice = SlayerDataset(
         name="Invoice", sql_table="Invoice", data_source="test",
         fields=[_pk(), _d("subscriptionId"), _d("customerId"), _d("amount"), _t("status"),
-                 DatasetField(name="issued_at", sql="issued_at", datatype=DataType.DATETIME)],
+                 DatasetField(name="issued_at", expression="issued_at", datatype=DataType.DATETIME)],
         relationships=invoice_joins,
     )
     await storage.save_dataset(invoice)

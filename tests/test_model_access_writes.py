@@ -9,6 +9,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AccessTagsEditError, HiddenContentConflictError, MemoryNotFoundError, SlayerError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.models import Embedding, EntityKind
@@ -82,7 +83,7 @@ async def test_save_warns_about_no_hidden_dependent_it_breaks(store: AccessStore
     await store.storage.save_dataset(pub_link.model_copy(update={"relationships": [*pub_link.relationships, extra]}), _validate=False)
     secret = SlayerDataset(
         name="secret", sql_table="pub_items", data_source=DS, access_tags=["hr"],
-        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="lbl", sql="pub_link.extra.label")],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="lbl", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="pub_link.extra.label"), DialectEntry(dialect="SQLITE", expression="pub_link.extra.label")]))],
         relationships=[DatasetRelationship(to="pub_link", from_columns=["id"], to_columns=["id"])],
     )
     await store.storage.save_dataset(secret, _validate=False)
@@ -114,7 +115,7 @@ class TestMergedModelWrites:
         fin = view(store, "fin")
         model = await must_get(fin, "fin")
         assert model.relationships == []
-        doubled = DatasetField(name="doubled", datatype=DataType.FLOAT, sql="amount * 2")
+        doubled = DatasetField(name="doubled", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * 2"), DialectEntry(dialect="SQLITE", expression="amount * 2")]))
         await save(fin, model.model_copy(update={"fields": [*model.fields, doubled]}), saver=saver)
         stored = await must_get(store.storage, "fin")
         assert stored.get_field("doubled") is not None
@@ -164,7 +165,7 @@ CONFLICTS: dict[str, tuple[Callable[[SlayerDataset, SlayerDataset], SlayerDatase
     "new-model-edge-named-like-hidden-model": (_new_dataset_with_edge_named_like_hidden_dataset, "hr", "pub_edge"),
     "edge-named-like-pruned-edge": (_edge_named_like_pruned_edge, None, "pub_link"),
     "removed-key-column": (_without_key_field, None, "fin"),
-    "expression-key-column": (lambda fin, _: _key_field(fin, sql="id + 0"), None, "fin"),
+    "expression-key-column": (lambda fin, _: _key_field(fin, expression="id + 0"), None, "fin"),
     "filtered-key-column": (lambda fin, _: _key_field(fin, filter="staff_id > 0"), None, "fin"),
 }
 

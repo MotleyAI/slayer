@@ -144,7 +144,7 @@ class TestUnprovenWarning:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),),
+            cols=(DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),),
             relationships=(_li_relationship(),),
         )
         with warnings.catch_warnings(record=True) as rec:
@@ -162,7 +162,7 @@ class TestUnprovenWarning:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="big_qty", sql="line_items.qty", datatype=DataType.FLOAT,
+            cols=(DatasetField(name="big_qty", expression="line_items.qty", datatype=DataType.FLOAT,
                          filter="line_items.qty >= 2"),),
             relationships=(_li_relationship(),),
         )
@@ -180,7 +180,7 @@ class TestFanningReferenceSpelling:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="li_qty", sql="orders.line_items.qty", datatype=DataType.FLOAT),),
+            cols=(DatasetField(name="li_qty", expression="orders.line_items.qty", datatype=DataType.FLOAT),),
             relationships=(_li_relationship(cardinality=RelationshipCardinality.ONE_TO_MANY),),
         )
         with pytest.raises(DerivedFieldFanningError) as ei:
@@ -195,7 +195,7 @@ class TestFanningReferenceSpelling:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="big_item", sql="amount", datatype=DataType.FLOAT,
+            cols=(DatasetField(name="big_item", expression="amount", datatype=DataType.FLOAT,
                          filter="line_items.qty >= 2"),),
             relationships=(_li_relationship(cardinality=RelationshipCardinality.ONE_TO_MANY),),
         )
@@ -213,12 +213,12 @@ class TestEngineDoorCrossModelAttribution:
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
         await storage.save_dataset(
-            _customers(cols=(DatasetField(name="bad", datatype=DataType.FLOAT, sql="spend",
+            _customers(cols=(DatasetField(name="bad", datatype=DataType.FLOAT, expression="spend",
                                     filter="regions.customers.spend > 0"),)),
             _validate=False,
         )
         orders = _orders(
-            cols=(DatasetField(name="outer", datatype=DataType.FLOAT, sql="customers.bad * 2"),),
+            cols=(DatasetField(name="outer", datatype=DataType.FLOAT, expression="customers.bad * 2"),),
             relationships=(DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                              cardinality=RelationshipCardinality.MANY_TO_ONE),),
         )

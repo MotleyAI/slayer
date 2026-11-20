@@ -151,6 +151,8 @@ class QueryResponse(BaseModel):
     # The effective population dataset and whether it was inferred.
     population: str | None = None
     population_inferred: bool = False
+    # The datasets supplying the rows (``["unit"]`` with no dimensions).
+    row_sources: list[str] = []
     # Advisories about the query itself — slack-normalization
     # rewrites and filters that were dropped as unreachable. One list, each
     # entry tagged with a ``kind`` discriminator the consumer switches on.
@@ -529,6 +531,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 ],
                 population=result.population,
                 population_inferred=result.population_inferred,
+                row_sources=list(result.row_sources),
             )
             if dry_run or explain:
                 response.sql = result.sql

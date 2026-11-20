@@ -93,7 +93,7 @@ def events_dataset() -> SlayerDataset:
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="amount", datatype=DataType.FLOAT),
-            DatasetField(name="amount_x2", datatype=DataType.FLOAT, sql="amount * 2"),
+            DatasetField(name="amount_x2", datatype=DataType.FLOAT, expression="amount * 2"),
             DatasetField(name="created_at", datatype=DataType.DATE),
             DatasetField(name="kind", datatype=DataType.STRING),
             DatasetField(name="user_id", datatype=DataType.INTEGER),

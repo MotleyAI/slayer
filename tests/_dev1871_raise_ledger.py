@@ -288,13 +288,9 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_windowed_time_axis_attributable", exc="TimeAxisError",
          message="The windowed aggregate needs the query's active time dimension ('…') attributable from …, but it crosses a fanning relationship."
          + AT + "metric …"
-         + SUGGEST + "…",
+         + SUGGEST + "Omit to_many_handling (or set 'associate') to count each home row once per bucket, "
+         "or declare relationship cardinality or a covering unique key on the target.",
          category="checker", family="cross-model", user=True, owner="checker"),
-    _row(module=_EE, function="check_association_windowed_ranked", exc="AssociationError",
-         message="The aggregate needs distinct-entity association over an unattributable dimension, which is unsupported in combination with window=/first/last."
-         + AT + "metric …"
-         + SUGGEST + "Drop the window/first-last or attribute the dimension.",
-         category="checker", family="association", user=True, owner="checker"),
     _row(module=_EE, function="check_parameter_determined", exc="ParameterGrainError",
          message="Parameter … is not determined by the operand grain (…); the aggregation reads one value per cell of that grain."
          + AT + "metric …"
