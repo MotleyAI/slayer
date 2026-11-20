@@ -23,11 +23,14 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
+from slayer.embeddings import client as embedding_client
 from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
+from slayer.search import graph as search_graph
+from slayer.search.service import SearchService, handle_edit_refresh
 from slayer.sql import engine_factory
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
@@ -45,6 +48,7 @@ from tests._gateway_harness import (
     shop_datasource,
     shop_storage,
 )
+from tests._loop_gated_stub import gated
 from tests._stored_upgrade_fixtures import raw_store
 
 REVENUE_BY_STATUS = {
@@ -360,3 +364,52 @@ class TestTheLoopStaysResponsive:
         assert statements
         assert threading.get_ident() not in checkouts + statements
         assert ticker.max_stall < _MAX_STALL_S
+
+    @pytest.mark.parametrize("route", ["ingest", "edit"])
+    async def test_dataset_subtree_refresh(
+        self, tmp_path: Path, shop_db: str, monkeypatch: pytest.MonkeyPatch, route: str,
+    ) -> None:
+        ds = shop_datasource(shop_db)
+        storage = await shop_storage(str(tmp_path / "store"), datasource=ds, models=[orders_model()])
+        engine = SlayerQueryEngine(storage=storage)
+        check = gated()
+        monkeypatch.setattr(embedding_client, "is_available", check)
+        try:
+            if route == "ingest":
+                await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
+            else:
+                await handle_edit_refresh(
+                    engine=engine, storage=storage, data_source=DS_NAME, model_name="orders",
+                    changed_columns={"status"}, model_level_change=False,
+                )
+        finally:
+            await engine.aclose()
+            engine.close()
+            engine_factory.invalidate_engine(ds)
+        check.assert_loop_stayed_free()
+
+    async def test_search_with_a_question(
+        self, tmp_path: Path, shop_db: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ds = shop_datasource(shop_db)
+        storage = await shop_storage(
+            str(tmp_path / "store"), datasource=ds, models=[orders_model(), customers_model()],
+        )
+        check = gated()
+        monkeypatch.setattr(embedding_client, "is_available", check)
+        response = await SearchService(storage=storage).search(question="orders amount")
+        check.assert_loop_stayed_free()
+        assert response.results
+
+    async def test_cypher_filtered_search(
+        self, tmp_path: Path, shop_db: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ds = shop_datasource(shop_db)
+        storage = await shop_storage(str(tmp_path / "store"), datasource=ds, models=[orders_model()])
+        check = gated()
+        monkeypatch.setattr(search_graph, "is_available", check)
+        response = await SearchService(storage=storage).search(
+            question="orders", cypher_filter="MATCH (n:Model) RETURN n.id AS id",
+        )
+        check.assert_loop_stayed_free()
+        assert response.results

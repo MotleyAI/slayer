@@ -1,4 +1,4 @@
-"""Graph-backed Cypher pre-filter for search (DEV-1464).
+"""Graph-backed Cypher pre-filter for search.
 
 Builds an ephemeral in-memory LadybugDB property graph from a StorageBackend
 and executes openCypher queries to return a frozenset of canonical IDs that
@@ -64,6 +64,11 @@ def is_available() -> bool:
         return False
 
 
+async def is_available_async() -> bool:
+    """``is_available()`` run in a worker thread, so its lazy import never blocks the loop."""
+    return await asyncio.to_thread(is_available)
+
+
 def _import_graph_module() -> Any:
     """Import LadybugDB."""
     try:
@@ -85,7 +90,7 @@ _MUTATION_RE = re.compile(
     r"\b(CREATE|MERGE|DELETE|SET|REMOVE|DROP|CALL)\b", re.IGNORECASE
 )
 _AS_ID_RE = re.compile(r"\bAS\s+id\b", re.IGNORECASE)
-# DEV-1464: the validator is fundamentally allowlist-shaped — start with
+# The validator is fundamentally allowlist-shaped — start with
 # MATCH or reject. A denylist over Kuzu's evolving keyword surface (LOAD,
 # IMPORT, EXPORT, INSTALL, UNWIND-from-the-front, …) is too fragile to
 # defend the search endpoint, since non-mutating but still-dangerous
@@ -233,7 +238,7 @@ def _insert_nodes(
 ) -> None:
     """Insert all node rows into the graph.
 
-    DEV-1549: ``datasource_descriptions`` carries
+    ``datasource_descriptions`` carries
     ``{ds_name → DatasourceConfig.description}`` so the graph schema
     can expose ``Datasource.description`` for cypher_filter queries,
     in parity with the lexical and embedding channels. Likewise
@@ -447,7 +452,7 @@ async def build_graph(storage: StorageBackend, *, failures: DocumentLoadFailures
 
     memories = await storage.list_memories(entities=None, failures=failures)
 
-    # DEV-1549: load datasource descriptions so the graph schema can
+    # Load datasource descriptions so the graph schema can
     # expose `Datasource.description` for cypher_filter queries.
     datasource_descriptions: dict[str, str | None] = {}
     for ds_name in datasource_names:
@@ -600,7 +605,7 @@ async def get_filtered_ids(
     Raises ``ValueError`` if the query fails validation or if LadybugDB
     is not installed.
     """
-    if not is_available():
+    if not await is_available_async():
         raise ValueError(
             "cypher_filter requires LadybugDB; "
             "install with: pip install motley-slayer[advanced_search]"

@@ -838,7 +838,7 @@ class SearchService:
         """
         if cypher_filter is None:
             return None, None, None
-        if _search_graph.is_available():
+        if await _search_graph.is_available_async():
             candidate_ids = await _search_graph.get_filtered_ids(
                 cypher=cypher_filter, storage=self._storage, failures=failures,
             )

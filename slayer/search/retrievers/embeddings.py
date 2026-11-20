@@ -1,5 +1,4 @@
-"""Embedding retriever — dense cosine over a sidecar embedding store
-(DEV-1514; absorbs the former ``slayer.embeddings.service``).
+"""Embedding retriever — dense cosine over a sidecar embedding store.
 
 Owns the litellm refresh pipeline (write side) and the cosine ranking
 (read side). The read side runs ``fetch_corpus`` ONCE, ``embed_question``
@@ -28,6 +27,13 @@ from slayer.search.render import (
 from slayer.search.retriever import RetrievalResult, Retriever
 from slayer.storage.base import StorageBackend
 
+try:  # the optional ``advanced_search`` extra
+    import numpy as np
+
+    from slayer.embeddings.ranker import normalise, normalise_matrix, top_k_cosine
+except ImportError:
+    np = None
+
 
 _log = logging.getLogger(__name__)
 
@@ -50,8 +56,7 @@ def _memory_id_from_canonical(canonical_id: str) -> str | None:
 
     Returns ``None`` when the input is not exactly of the shape
     ``memory:<non-empty-id>`` — a corrupted / stale embedding row
-    carrying ``foo:bar`` must not be mis-mapped to a memory hit
-    (DEV-1428 review)."""
+    carrying ``foo:bar`` must not be mis-mapped to a memory hit."""
     if not canonical_id.startswith(_MEMORY_PREFIX):
         return None
     memory_id = canonical_id[len(_MEMORY_PREFIX):]
@@ -69,7 +74,7 @@ def _filter_embedding_corpus_by_datasource(
     datasource: str,
     eligible_memory_canonicals: set[str],
 ) -> list[Embedding]:
-    """DEV-1409: narrow the embedding corpus to rows that survive a
+    """Narrow the embedding corpus to rows that survive a
     datasource filter. Memory rows must appear in
     ``eligible_memory_canonicals`` (already datasource-filtered
     upstream); entity rows must be rooted at ``datasource`` per the
@@ -201,7 +206,7 @@ class EmbeddingRetriever(Retriever):
         """
         if corpus is None or not question or not question.strip():
             return RetrievalResult()
-        if not embedding_client.is_available():
+        if not await embedding_client.is_available_async():
             # Deployment configuration, not something the caller can act on:
             # log it for the operator rather than returning it as a warning.
             _log.warning(
@@ -222,7 +227,7 @@ class EmbeddingRetriever(Retriever):
                 eligible_memory_canonicals=eligible_memory_canonicals,
             )
         # Drop sidecar rows that don't correspond to anything in the
-        # live tantivy corpus (DEV-1414).
+        # live tantivy corpus.
         live_canonicals = corpus.canonical_to_kind.keys()
         rows = [r for r in rows if r.canonical_id in live_canonicals]
         if not rows:
@@ -231,18 +236,7 @@ class EmbeddingRetriever(Retriever):
                 f"{self._model_name!r}. Run `slayer ingest` to populate.",
             ])
 
-        # Inline imports: ``numpy`` and ``slayer.embeddings.ranker``
-        # require the optional ``advanced_search`` extra. Importing here
-        # rather than at module scope keeps the rest of slayer working
-        # without the extra.
-        try:
-            import numpy as np
-            from slayer.embeddings.ranker import (
-                normalise,
-                normalise_matrix,
-                top_k_cosine,
-            )
-        except ImportError:
+        if np is None:
             # Same packaging gap as the is_available() check above, reached by
             # a different route: an operator concern, not a caller's.
             _log.warning(
@@ -302,7 +296,7 @@ class EmbeddingRetriever(Retriever):
         not configured", not a runtime failure (the search-side surface
         emits one user-visible warning into ``SearchResponse.warnings``
         on the next query)."""
-        if not embedding_client.is_available():
+        if not await embedding_client.is_available_async():
             return []
         pending = _PendingRefresh(
             canonical_id=_memory_canonical_id(memory.id),
@@ -321,14 +315,14 @@ class EmbeddingRetriever(Retriever):
         """Refresh the embedding for one datasource doc.
 
         Routes through the unified :func:`render_datasource_pair` so the
-        visibility filter is applied in exactly one place (DEV-1513).
+        visibility filter is applied in exactly one place.
 
-        DEV-1549: ``description`` (DatasourceConfig.description) is
+        ``description`` (DatasourceConfig.description) is
         woven into the rendered text so the embedding channel can match
         terms that live only in the description, in parity with the
         lexical channel.
         """
-        if not embedding_client.is_available():
+        if not await embedding_client.is_available_async():
             return []
         pair = render_datasource_pair(
             name=name, models=models, description=description,
@@ -347,9 +341,9 @@ class EmbeddingRetriever(Retriever):
         Routes through the unified :func:`collect_model_entity_pairs` so
         the "what counts as an indexable entity" filter rules (hidden
         model -> empty; hidden column skipped; unnamed measure skipped)
-        live in exactly one place (DEV-1513).
+        live in exactly one place.
         """
-        if not embedding_client.is_available():
+        if not await embedding_client.is_available_async():
             return []
         pending: list[_PendingRefresh] = [
             _PendingRefresh(
@@ -370,7 +364,7 @@ class EmbeddingRetriever(Retriever):
     ) -> list[str]:
         """Hash-skip, batch-embed, and persist. Returns warning strings.
 
-        DEV-1405: two batched storage round-trips per call — one
+        Two batched storage round-trips per call — one
         ``get_embeddings_for_canonical_ids`` for the hash-skip filter,
         one ``save_embeddings`` for the persist step.
         """
@@ -418,8 +412,7 @@ class EmbeddingRetriever(Retriever):
     ) -> tuple[list[_PendingRefresh], int]:
         """Drop pending entries whose stored content_hash already
         matches. Returns ``(stale_entries, fresh_skipped_count)``.
-        DEV-1405: one batched ``get_embeddings_for_canonical_ids`` call
-        replaces the previous M-iteration point-read loop."""
+        One batched ``get_embeddings_for_canonical_ids`` call."""
         existing = await self._storage.get_embeddings_for_canonical_ids(
             canonical_ids=[p.canonical_id for p in pending],
             embedding_model_name=self._model_name,
