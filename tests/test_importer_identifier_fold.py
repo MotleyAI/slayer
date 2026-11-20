@@ -32,7 +32,7 @@ from slayer.sql.dialects import SqliteDialect, get_dialect
 from slayer.sql.dialects.reflection import column_from_sa_type
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import (
-    collect_over_engine, column, cube_issues, cube_report_messages, datasets_of, run_cli, source_column, stored_dataset,
+    collect_over_engine, field_of, cube_issues, cube_report_messages, datasets_of, run_cli, source_field, stored_dataset,
     typing_notes, write_yaml,
 )
 from tests._engine_helpers import _engine_generate, disposable_engine
@@ -65,20 +65,20 @@ def _columns_read(sql: str, *, dialect: str = "postgres") -> set[str]:
 def test_postgres_stores_the_folded_table_and_columns() -> None:
     items = _datasets(_cube(ITEMS))["items"]
     assert items.sql_table == "sales.orderitems"
-    assert column(items, "amount").physical_name == "orderamount"
-    assert source_column(items, "total").physical_name == "orderamount"
+    assert field_of(items, "amount").physical_name == "orderamount"
+    assert source_field(items, "total").physical_name == "orderamount"
 
 
 def test_a_dialect_that_does_not_fold_stores_as_written() -> None:
     items = _datasets(_cube(ITEMS, dialect="duckdb"))["items"]
     assert items.sql_table == "Sales.OrderItems"
-    assert column(items, "amount").physical_name == "OrderAmount"
+    assert field_of(items, "amount").physical_name == "OrderAmount"
 
 
 def test_quoted_names_literals_comments_and_logical_references_kept() -> None:
     result = _cube({"name": "orders", "sql_table": "orders", "dimensions": [
         {"name": "label", "sql": "CONCAT({CUBE}.\"Status\", 'Paid', {CUBE}.Region) -- Note", "type": "string"}]})
-    assert column(_datasets(result)["orders"], "label").definition_sql == "CONCAT(\"Status\", 'Paid', region) -- Note"
+    assert field_of(_datasets(result)["orders"], "label").definition_sql == "CONCAT(\"Status\", 'Paid', region) -- Note"
 
 
 def test_names_local_to_a_source_query() -> None:
@@ -94,7 +94,7 @@ def test_names_local_to_a_source_query() -> None:
 def test_calculated_measure_with_a_mixed_case_operand() -> None:
     result = _cube({"name": "orders", "sql_table": "orders", "measures": [
         {"name": "paid_amount", "type": "number", "sql": "SUM(CASE WHEN {CUBE}.Status = 'paid' THEN {CUBE}.Amount END)"}]})
-    operand = source_column(_datasets(result)["orders"], "paid_amount").definition_sql
+    operand = source_field(_datasets(result)["orders"], "paid_amount").definition_sql
     assert operand is not None
     assert _columns_read(operand) == {"status", "amount"}
     assert "'paid'" in operand
@@ -111,8 +111,8 @@ def test_mixed_case_foreign_physical_join_keys() -> None:
     models = _datasets(result)
     (join,) = models["orders"].relationships
     ((src, tgt),) = join.column_pairs
-    assert column(models["orders"], src).physical_name == "custid"
-    assert column(models["customers"], tgt).physical_name == "custid"
+    assert field_of(models["orders"], src).physical_name == "custid"
+    assert field_of(models["customers"], tgt).physical_name == "custid"
 
 
 # ── FILTER_PARAMS ─────────────────────────────────────────────────────────
@@ -127,10 +127,10 @@ def test_filter_params_string_bodies_fold_and_keep_their_variables() -> None:
         "{CUBE}.CreatedAt > '2020-01-01' AND {FILTER_PARAMS.orders.CreatedOn.filter('CreatedAt')} "
         "AND {FILTER_PARAMS.orders.brand.filter('\"Brand\"')} AND {FILTER_PARAMS.orders.region.filter('Region')}")}]})
     orders = _datasets(result)["orders"]
-    assert column(orders, "recent").definition_sql == (
+    assert field_of(orders, "recent").definition_sql == (
         "createdat > '2020-01-01' AND {? createdat IN ({CreatedOn}) ?} "
         "AND {? \"Brand\" IN ({brand}) ?} AND region IN ({region})")
-    assert column(orders, "CreatedOn").physical_name == "createdat"
+    assert field_of(orders, "CreatedOn").physical_name == "createdat"
 
 
 def test_filter_params_arrow_body_folds() -> None:
@@ -143,7 +143,7 @@ def test_filter_params_arrow_body_folds() -> None:
     orders = _datasets(_cube(project=CubeProject(cubes=parsed.cubes, views=parsed.views)))["orders"]
     assert orders.sql == ("SELECT * FROM fol WHERE {? fol.createdat >= '{created_from}' "
                           "AND fol.\"FD\" <= '{created_to}' ?}")
-    assert column(orders, "created").physical_name == "createdat"
+    assert field_of(orders, "created").physical_name == "createdat"
 
 
 # ── unparseable fragments ─────────────────────────────────────────────────
@@ -278,7 +278,7 @@ def test_declared_type_matches_the_folded_column() -> None:
     result = _dbt({"name": "items", "model": "orders", "dimensions": [{"name": "Qty", "type": "categorical"}]},
                   regular=[{"name": "orders", "columns": [{"name": "Qty", "data_type": "integer"}]}],
                   dialect="postgres").convert()
-    assert column(datasets_of(result)["items"], "Qty").datatype is DataType.INTEGER
+    assert field_of(datasets_of(result)["items"], "Qty").datatype is DataType.INTEGER
 
 
 def test_source_resolution_report_survives_metadata_collection(tmp_path: Path) -> None:

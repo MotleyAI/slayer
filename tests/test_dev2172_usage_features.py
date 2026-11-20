@@ -36,8 +36,8 @@ def _counts(found: QueryFeatures) -> dict[str, Counter[str]]:
             "functions": Counter(found.functions), "flags": Counter(found.flags)}
 
 
-def _metrics(*formulas: str) -> QueryFeatures:
-    return query_features({"population": "m", "metrics": list(formulas)})
+def _metrics(*expressions: str) -> QueryFeatures:
+    return query_features({"population": "m", "metrics": list(expressions)})
 
 
 def _filters(*filters: str) -> QueryFeatures:
@@ -48,7 +48,7 @@ def _filters(*filters: str) -> QueryFeatures:
 # Expression → counts
 # --------------------------------------------------------------------------- #
 #: ``(metric expression, aggregations, transforms, functions, flags)``.
-MEASURE_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
+METRIC_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
     ("sum(x)::int", ["sum"], [], [], ["cast"]),
     ("CAST(avg(y) AS DOUBLE)", ["avg"], [], [], ["cast"]),
     ("TRY_CAST(sum(y) AS INT)", ["sum"], [], [], ["try_cast"]),
@@ -71,8 +71,8 @@ MEASURE_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
 ]
 
 
-@pytest.mark.parametrize(("formula", "aggregations", "transforms", "functions", "flags"), MEASURE_TABLE,
-                         ids=[row[0] for row in MEASURE_TABLE])
+@pytest.mark.parametrize(("formula", "aggregations", "transforms", "functions", "flags"), METRIC_TABLE,
+                         ids=[row[0] for row in METRIC_TABLE])
 def test_measure_formula_counts(formula: str, aggregations: list[str], transforms: list[str],
                                 functions: list[str], flags: list[str]) -> None:
     assert _counts(_metrics(formula)) == {

@@ -58,7 +58,7 @@ class TestTypeAndFormatInheritance:
     query-backed dataset whose backing stage selects it — identically to its
     hand-expanded twin."""
 
-    async def _virtual_column(self, metric_spec, col_name: str):
+    async def _virtual_field(self, metric_spec, col_name: str):
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(
@@ -81,12 +81,12 @@ class TestTypeAndFormatInheritance:
     async def test_saved_type_is_inherited(self) -> None:
         """``customers.typed_aov`` declares ``type=DOUBLE``; the virtual field
         carries it."""
-        col = await self._virtual_column(
+        col = await self._virtual_field(
             QueryMetric(metric="customers.typed_aov", alias="ta"), "ta")
         assert col.datatype == DataType.FLOAT
 
     async def test_query_level_type_overrides_saved_type(self) -> None:
-        col = await self._virtual_column(
+        col = await self._virtual_field(
             QueryMetric(metric="customers.typed_aov", alias="ti", datatype=DataType.INTEGER),
             "ti")
         assert col.datatype == DataType.INTEGER
@@ -94,17 +94,17 @@ class TestTypeAndFormatInheritance:
     async def test_inferred_type_matches_hand_expanded(self) -> None:
         """``customers.aov`` (no declared type) infers the SAME type as the
         hand-expanded ``sum(customers.spend) / count(customers.*)``."""
-        dotted = await self._virtual_column(
+        dotted = await self._virtual_field(
             QueryMetric(metric="customers.aov", alias="af"), "af")
-        hand = await self._virtual_column(
+        hand = await self._virtual_field(
             QueryMetric(metric="sum(customers.spend) / count(customers.*)", alias="af"),
             "af")
         assert dotted.datatype == hand.datatype
 
     async def test_format_matches_hand_expanded(self) -> None:
-        dotted = await self._virtual_column(
+        dotted = await self._virtual_field(
             QueryMetric(metric="customers.aov", alias="af"), "af")
-        hand = await self._virtual_column(
+        hand = await self._virtual_field(
             QueryMetric(metric="sum(customers.spend) / count(customers.*)", alias="af"),
             "af")
         assert dotted.format == hand.format

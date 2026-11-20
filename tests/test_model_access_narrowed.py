@@ -13,11 +13,11 @@ from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import SlayerWarning
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._model_access_fixtures import ACCESS_PARAMS, DS, AccessStore, access_store, mcp_text, must_get
+from tests._dataset_access_fixtures import ACCESS_PARAMS, DS, AccessStore, access_store, mcp_text, must_get
 
 NARROWED = {
     "hr_summary", "hr_rollup", "fin_hop", "fin_ordered", "fin_report",
-    "pay", "pay_col", "pay_colfilter", "pay_filter", "pay_measure", "pay_agg",
+    "pay", "pay_col", "pay_colfilter", "pay_filter", "pay_metric", "pay_agg",
 }
 NEVER_NARROWED = {"pub", "pub_link", "dangling"}
 OTHER_DS = "acme2"

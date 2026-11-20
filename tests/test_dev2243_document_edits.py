@@ -42,7 +42,7 @@ from tests._dev2243_fixtures import (
     make_storage, metric, place_document, relationship, store_document,
 )
 from tests._dev2277_fixtures import by, customers_dataset, orders_dataset, returns_dataset, scoped
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 
 
 # --------------------------------------------------------------------------- #

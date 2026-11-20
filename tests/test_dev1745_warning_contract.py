@@ -396,7 +396,7 @@ class TestInternalFailuresRaise:
                 "population": "orders",
                 "dimensions": [{"field": "orders.status", "alias": "status"}],
                 "metrics": [{"metric": "sum(customers.revenue)"}],
-                "filter": ["orders.no_such_column == 'X'"],
+                "filter": ["orders.no_such_field == 'X'"],
             })
             with pytest.raises(SlayerError):
                 await engine.execute(bad, dry_run=True)

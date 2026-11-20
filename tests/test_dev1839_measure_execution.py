@@ -23,7 +23,7 @@ from slayer.core.query import QueryMetric
 from tests._dev1839_fixtures import (
     CITY_TOTAL,
     GRAND_TOTAL,
-    MEASURE_DIFF,
+    METRIC_DIFF,
     MIXED_DIFF_OF,
     MIXED_RANK,
     MIXED_RANK_OF,
@@ -57,7 +57,7 @@ class TestCompositeMeasureLift:
         query = q(
             dimensions=["orders.region", "orders.city"],
             metrics=[
-                QueryMetric(metric=MEASURE_DIFF, alias="d"),
+                QueryMetric(metric=METRIC_DIFF, alias="d"),
                 QueryMetric(metric="sum(orders.amount)", alias="s"),
             ],
         )
@@ -110,7 +110,7 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["orders.region", "orders.city"],
-            metrics=[QueryMetric(metric=f"abs({MEASURE_DIFF})", alias="d")],
+            metrics=[QueryMetric(metric=f"abs({METRIC_DIFF})", alias="d")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -126,7 +126,7 @@ class TestCompositeMeasureLift:
         query = q(
             dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
-                metric=f"CASE WHEN {MEASURE_DIFF} > 0 THEN 1 ELSE 0 END",
+                metric=f"CASE WHEN {METRIC_DIFF} > 0 THEN 1 ELSE 0 END",
                 alias="d",
             )],
         )
@@ -194,7 +194,7 @@ class TestConformingSurfaces:
         )), "orders.region", "orders.city")
         query = q(
             dimensions=["orders.region", "orders.city"],
-            filter=[f"{MEASURE_DIFF} > 0"],
+            filter=[f"{METRIC_DIFF} > 0"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
@@ -213,14 +213,14 @@ class TestConformingSurfaces:
         _, engine = exec_backend
         measures = [
             QueryMetric(metric="sum(orders.amount)", alias="s"),
-            QueryMetric(metric=MEASURE_DIFF, alias="d"),
+            QueryMetric(metric=METRIC_DIFF, alias="d"),
         ]
         unfiltered = rows_by(await engine.execute(q(
             dimensions=["orders.region", "orders.city"], metrics=measures,
         )), "orders.region", "orders.city")
         resp = await engine.execute(q(
             dimensions=["orders.region", "orders.city"],
-            filter=[f"{MEASURE_DIFF} > 0"],
+            filter=[f"{METRIC_DIFF} > 0"],
             metrics=measures,
         ))
         by = rows_by(resp, "orders.region", "orders.city")

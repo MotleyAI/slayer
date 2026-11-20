@@ -19,7 +19,7 @@ from slayer.core.query import SlayerQuery
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1900_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_MODEL_SETS = {"dev1900": dev1900_datasets}
+_DATASET_SETS = {"dev1900": dev1900_datasets}
 _REAGG_GOOD = ("weighted_avg(sum(orders.amount, partition_by=customers.regions.id), "
                "weight=customers.regions.derived_pop)")
 _REAGG_BAD = ("weighted_avg(sum(orders.amount, partition_by=customers.regions.id), "
@@ -77,7 +77,7 @@ FAIL_CLOSED = {
 
 
 async def _generate_one(case, dialect: str):
-    models = _MODEL_SETS[case["models"]]()
+    models = _DATASET_SETS[case["models"]]()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:

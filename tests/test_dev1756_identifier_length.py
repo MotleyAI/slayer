@@ -123,8 +123,8 @@ GOLDEN_SQLITE_REPRO_ORDER = (
 
 def _chain_datasets(
     *,
-    case_colliding_columns: bool = False,
-    decoy_root_column: str | None = None,
+    case_colliding_fields: bool = False,
+    decoy_root_field: str | None = None,
 ) -> list[SlayerDataset]:
     consumer_columns = [
         DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
@@ -132,7 +132,7 @@ def _chain_datasets(
         DatasetField(name="email", sql="email", datatype=DataType.STRING),
         DatasetField(name="lifetimeValue", sql="lifetime_value", datatype=DataType.FLOAT),
     ]
-    if case_colliding_columns:
+    if case_colliding_fields:
         # Differs from ``email`` only by case; Postgres case-folds the namespace.
         consumer_columns.append(DatasetField(name="Email", sql="email", datatype=DataType.STRING))
     return [
@@ -145,8 +145,8 @@ def _chain_datasets(
                 DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INTEGER),
                 *([
                     # Root field named what a deep relationship path flattens to; names permit ``__``.
-                    DatasetField(name=decoy_root_column, sql="decoy", datatype=DataType.STRING),
-                ] if decoy_root_column else []),
+                    DatasetField(name=decoy_root_field, sql="decoy", datatype=DataType.STRING),
+                ] if decoy_root_field else []),
             ],
             relationships=[DatasetRelationship(
                 to="SandboxSubscription", from_columns=["subscription_id"], to_columns=["id"],
@@ -871,7 +871,7 @@ class TestVirtualModelShorts:
 
     async def test_case_colliding_result_names_are_refused(self, tmp_path) -> None:
         """``email`` and ``Email`` (grandfathered) as two result names: refused before SQL generation."""
-        engine, _ = await _build_engine(tmp_path, validate=False, case_colliding_columns=True)
+        engine, _ = await _build_engine(tmp_path, validate=False, case_colliding_fields=True)
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
                 QueryDimension(field=f"{DEEP}.email"),
                 QueryDimension(field=f"{DEEP}.Email"),
@@ -885,7 +885,7 @@ class TestVirtualModelShorts:
     async def test_two_dimensions_landing_on_one_short_raise(self, tmp_path) -> None:
         """Two dimensions whose shorts are exactly equal must be caught at the emission boundary."""
         flat = "SandboxSubscription__SandboxCustomer__SandboxConsumer__name"
-        engine, _ = await _build_engine(tmp_path, decoy_root_column=flat)
+        engine, _ = await _build_engine(tmp_path, decoy_root_field=flat)
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [QueryDimension(field=f"{DEEP}.name"), QueryDimension(field=flat)],

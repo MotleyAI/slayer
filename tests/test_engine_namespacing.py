@@ -29,7 +29,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _orders(data_source: str, *, sql_table: str = "orders_t", joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _orders(data_source: str, *, sql_table: str = "orders_t", relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table=sql_table,
@@ -39,7 +39,7 @@ def _orders(data_source: str, *, sql_table: str = "orders_t", joins: list[Datase
             DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
             DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
-        relationships=joins or [],
+        relationships=relationships or [],
     )
 
 
@@ -62,12 +62,12 @@ def _ds(name: str) -> DatasourceConfig:
     return DatasourceConfig(name=name, type="sqlite", database=":memory:")
 
 
-async def _engine_with(*models: SlayerDataset, datasources: list[str]) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
+async def _engine_with(*datasets: SlayerDataset, datasources: list[str]) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     for n in datasources:
         await storage.save_datasource(_ds(n))
-    for m in models:
+    for m in datasets:
         await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
@@ -155,7 +155,7 @@ class TestJoinTargetResolution:
         orders_a = _orders(
             "db_a",
             sql_table="db_a.orders_t",
-            joins=[DatasetRelationship(
+            relationships=[DatasetRelationship(
                 to="customers",
                 from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
@@ -186,7 +186,7 @@ class TestJoinTargetResolution:
         priority is configured → engine raises a relationship-resolution error."""
         orders_a = _orders(
             "db_a",
-            joins=[DatasetRelationship(
+            relationships=[DatasetRelationship(
                 to="customers",
                 from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
@@ -297,7 +297,7 @@ class TestCrossModelMeasureScoping:
         orders_a = _orders(
             "db_a",
             sql_table="db_a.orders_t",
-            joins=[DatasetRelationship(
+            relationships=[DatasetRelationship(
                 to="customers",
                 from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
@@ -329,7 +329,7 @@ class TestCrossModelMeasureScoping:
         orders_a = _orders(
             "db_a",
             sql_table="db_a.orders_t",
-            joins=[DatasetRelationship(
+            relationships=[DatasetRelationship(
                 to="customers",
                 from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
@@ -371,7 +371,7 @@ class TestJoinTargetStrictWhenParentScoped:
         orders_a = _orders(
             "db_a",
             sql_table="db_a.orders_t",
-            joins=[DatasetRelationship(
+            relationships=[DatasetRelationship(
                 to="customers",
                 from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,

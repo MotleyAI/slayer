@@ -59,22 +59,22 @@ def _seed_duckdb(db_path: str) -> None:
         con.close()
 
 
-_BASE_COLUMNS = (
+_BASE_FIELDS = (
     ("id", DataType.INTEGER), ("status", DataType.STRING), ("name", DataType.STRING),
     ("amount", DataType.FLOAT), ("created_at", DataType.DATE),
 )
 
 
-def _columns(*extra: DatasetField) -> list[DatasetField]:
-    return [DatasetField(name=n, datatype=t, primary_key=n == "id") for n, t in _BASE_COLUMNS] + list(extra)
+def _fields(*extra: DatasetField) -> list[DatasetField]:
+    return [DatasetField(name=n, datatype=t, primary_key=n == "id") for n, t in _BASE_FIELDS] + list(extra)
 
 
 def _table_dataset(*, filters: list[str] | None = None, extra: tuple[DatasetField, ...] = (), name: str = "orders") -> SlayerDataset:
-    return SlayerDataset(name=name, sql_table="orders", data_source=DS, filters=filters or [], fields=_columns(*extra))
+    return SlayerDataset(name=name, sql_table="orders", data_source=DS, filters=filters or [], fields=_fields(*extra))
 
 
 def _sql_dataset(sql: str, *, name: str = "orders_sql") -> SlayerDataset:
-    return SlayerDataset(name=name, sql=sql, data_source=DS, fields=_columns())
+    return SlayerDataset(name=name, sql=sql, data_source=DS, fields=_fields())
 
 
 def _query(source: str, expression: str, *, variables: dict[str, Any] | None = None, **extra: Any) -> SlayerQuery:

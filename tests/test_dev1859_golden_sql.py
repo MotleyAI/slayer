@@ -19,7 +19,7 @@ from tests._golden_harness import bind_golden_tests, record_raise
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1859_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_MODEL_SETS = {
+_DATASET_SETS = {
     "sales": dev1847_datasets,
     "sales_wsum": sales_wsum_datasets,
     "orders": dev1840_datasets,
@@ -96,7 +96,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(case, dialect: str):
-    models = _MODEL_SETS[case["models"]]()
+    models = _DATASET_SETS[case["models"]]()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:

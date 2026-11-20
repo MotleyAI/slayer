@@ -20,9 +20,9 @@ from slayer.core.relationship_walker import walk, walk_cancelling
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 
 
-def _m(name: str, cols: list[str], joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _m(name: str, cols: list[str], relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="ds", sql_table=name,
-                       fields=[DatasetField(name=c) for c in cols], relationships=joins or [])
+                       fields=[DatasetField(name=c) for c in cols], relationships=relationships or [])
 
 
 def _named_chain() -> dict[str, SlayerDataset]:

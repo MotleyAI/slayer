@@ -263,12 +263,12 @@ async def _count_by(engine: SlayerQueryEngine, *, dimension: str, **query: Any) 
     return {r[f"orders.{dimension}"]: int(r["n"]) for r in resp.data}
 
 
-async def _week_buckets(engine: SlayerQueryEngine, *, column: str, granularity: str) -> dict[str, int]:
+async def _week_buckets(engine: SlayerQueryEngine, *, field: str, granularity: str) -> dict[str, int]:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}],
-        "time_dimensions": [{"field": f"orders.{column}", "granularity": granularity}],
+        "time_dimensions": [{"field": f"orders.{field}", "granularity": granularity}],
     }))
-    return {str(r[f"orders.{column}"])[:10]: int(r["n"]) for r in resp.data}
+    return {str(r[f"orders.{field}"])[:10]: int(r["n"]) for r in resp.data}
 
 
 @pytest.mark.integration
@@ -381,19 +381,19 @@ class TestTrinoQueries:
 
     @pytest.mark.parametrize("column", ["created_at", "created_on"])
     async def test_month_granularity(self, trino_env: SlayerQueryEngine, column: str) -> None:
-        assert await _week_buckets(trino_env, column=column, granularity="month") == {
+        assert await _week_buckets(trino_env, field=column, granularity="month") == {
             "2024-01-01": 2, "2024-02-01": 2, "2024-03-01": 2,
         }
 
     @pytest.mark.parametrize("column", ["created_at", "created_on"])
     async def test_week_granularity(self, trino_env: SlayerQueryEngine, column: str) -> None:
-        assert await _week_buckets(trino_env, column=column, granularity="week") == {
+        assert await _week_buckets(trino_env, field=column, granularity="week") == {
             "2024-01-15": 2, "2024-02-05": 1, "2024-02-12": 1, "2024-02-26": 1, "2024-03-04": 1,
         }
 
     @pytest.mark.parametrize("column", ["created_at", "created_on"])
     async def test_week_sunday_granularity(self, trino_env: SlayerQueryEngine, column: str) -> None:
-        assert await _week_buckets(trino_env, column=column, granularity="week_sunday") == {
+        assert await _week_buckets(trino_env, field=column, granularity="week_sunday") == {
             "2024-01-14": 2, "2024-02-04": 1, "2024-02-11": 1, "2024-02-25": 1, "2024-03-10": 1,
         }
 
@@ -450,7 +450,7 @@ class TestTrinoQueries:
     async def test_consecutive_periods_breaks_on_calendar_gap(
         self, trino_env: SlayerQueryEngine, column: str, granularity: str,
     ) -> None:
-        await assert_calendar_streak(trino_env, column=column, granularity=granularity)
+        await assert_calendar_streak(trino_env, field=column, granularity=granularity)
 
     async def test_change_with_date_range(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery(

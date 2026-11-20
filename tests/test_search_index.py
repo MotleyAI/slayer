@@ -51,7 +51,7 @@ def _make_datasets() -> list[SlayerDataset]:
             ],
         ),
         SlayerDataset(
-            name="hidden_model",
+            name="hidden_dataset",
             sql_table="x",
             data_source="warehouse",
             hidden=True,
@@ -82,8 +82,8 @@ def test_build_index_skips_hidden_models_and_hidden_columns() -> None:
         datasources=["warehouse"],
     )
     # Hidden dataset entirely absent.
-    hits = search_index(index=idx, question="hidden_model", limit=10)
-    assert all("hidden_model" not in hit.id for hit in hits)
+    hits = search_index(index=idx, question="hidden_dataset", limit=10)
+    assert all("hidden_dataset" not in hit.id for hit in hits)
     # Hidden field entirely absent.
     hits = search_index(index=idx, question="hidden_col", limit=10)
     assert all("hidden_col" not in hit.id for hit in hits)

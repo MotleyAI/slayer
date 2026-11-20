@@ -30,9 +30,9 @@ from tests._dev2243_fixtures import (
 )
 from tests._dev2277_fixtures import SEED_TABLES
 from tests._engine_helpers import owned_query_engine
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 from tests._osi_export_fixtures import (
-    BASIC_MEASURES, DATASOURCE as EXPORT_DS, EXPORT_DDL, customers, monthly_revenue, orders, slayer_metric, visits,
+    BASIC_METRICS, DATASOURCE as EXPORT_DS, EXPORT_DDL, customers, monthly_revenue, orders, slayer_metric, visits,
 )
 
 SHOP_EXAMPLE = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_import" / "shop.osi.yaml"
@@ -199,7 +199,7 @@ async def test_exported_document_validates(tmp_path: Path) -> None:
     """Exported document validates."""
     config = seeded_config(tmp_path, statements=EXPORT_DDL, data_source=EXPORT_DS)
     async with engine_over(tmp_path, config,
-                           datasets=(customers(), orders(metrics=BASIC_MEASURES), visits(), monthly_revenue())) as engine:
+                           datasets=(customers(), orders(metrics=BASIC_METRICS), visits(), monthly_revenue())) as engine:
         result = await export(engine, data_source=EXPORT_DS)
     assert yaml.safe_load(result.text) == result.document
     assert_valid(result.document)
@@ -328,7 +328,7 @@ async def test_exported_documents_validate_upstream(tmp_path: Path) -> None:
     merged.write_text(text, encoding="utf-8")
     config = seeded_config(tmp_path / "std", statements=EXPORT_DDL, data_source=EXPORT_DS)
     async with engine_over(tmp_path / "std", config,
-                           datasets=(customers(), orders(metrics=BASIC_MEASURES), visits(), monthly_revenue())) as engine:
+                           datasets=(customers(), orders(metrics=BASIC_METRICS), visits(), monthly_revenue())) as engine:
         standalone = tmp_path / "standalone.osi.yaml"
         standalone.write_text((await export(engine, data_source=EXPORT_DS)).text, encoding="utf-8")
     done = upstream_validate([merged, standalone], tmp=tmp_path)
@@ -346,13 +346,13 @@ async def export_standalone(base: Path, *models: SlayerDataset, dialect: str = "
 
 async def test_dataset_scoped_metric(tmp_path: Path) -> None:
     """Dataset-scoped metric."""
-    doc = await export_standalone(tmp_path, customers(), orders(metrics=BASIC_MEASURES))
+    doc = await export_standalone(tmp_path, customers(), orders(metrics=BASIC_METRICS))
     assert same_sql(sql_of(metric_of(ds_of(doc, "orders"), "revenue")), "SUM(amount)")
 
 
 async def test_measure_over_another_model(tmp_path: Path) -> None:
     """Measure over another model."""
-    model = orders(metrics=[*BASIC_MEASURES, slayer_metric("customer_discount", "sum(customers.discount)")])
+    model = orders(metrics=[*BASIC_METRICS, slayer_metric("customer_discount", "sum(customers.discount)")])
     doc = await export_standalone(tmp_path / "src", customers(), model)
     assert any(same_sql(sql_of(m), "SUM(discount)") for m in ds_of(doc, "customers").get("metrics") or [])
     config = seeded_config(tmp_path / "db", statements=EXPORT_DDL, data_source=EXPORT_DS)
@@ -366,13 +366,13 @@ async def test_measure_over_another_model(tmp_path: Path) -> None:
 async def test_cross_model_ratio(tmp_path: Path) -> None:
     """Cross-model ratio."""
     ratio = slayer_metric("aov_per_customer", "sum(amount) / count_distinct(customers.id)")
-    doc = await export_standalone(tmp_path, customers(), orders(metrics=[*BASIC_MEASURES, ratio]))
+    doc = await export_standalone(tmp_path, customers(), orders(metrics=[*BASIC_METRICS, ratio]))
     assert same_sql(sql_of(metric_of(doc, "aov_per_customer")), "SUM(orders.amount) / COUNT(DISTINCT customers.id)")
 
 
 async def test_measure_reference_expanded(tmp_path: Path) -> None:
     """Measure reference expanded."""
-    doc = await export_standalone(tmp_path, customers(), orders(metrics=BASIC_MEASURES))
+    doc = await export_standalone(tmp_path, customers(), orders(metrics=BASIC_METRICS))
     assert same_sql(sql_of(metric_of(ds_of(doc, "orders"), "aov")), "SUM(amount) / COUNT(*)")
 
 
@@ -458,7 +458,7 @@ async def test_worked_example_round_trip(tmp_path: Path) -> None:
 @pytest.mark.parametrize("dialect", ["duckdb", "sqlite"])
 async def test_formula_restored(tmp_path: Path, dialect: str) -> None:
     """Formula restored."""
-    doc = await export_standalone(tmp_path / "src", customers(), orders(metrics=BASIC_MEASURES), dialect=dialect)
+    doc = await export_standalone(tmp_path / "src", customers(), orders(metrics=BASIC_METRICS), dialect=dialect)
     config = seeded_config(tmp_path / "db", statements=EXPORT_DDL, dialect=dialect, data_source=EXPORT_DS)
     async with engine_over(tmp_path / "dst", config) as engine:
         await import_text(engine.storage, yaml.safe_dump(doc, sort_keys=False), base=tmp_path / "in",

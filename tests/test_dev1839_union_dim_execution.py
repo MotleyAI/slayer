@@ -28,7 +28,7 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1839_fixtures import (
     CITY_TOTAL,
-    DUAL_MEASURE_RANK_OF,
+    DUAL_METRIC_RANK_OF,
     EXPLICIT_PART_RANK,
     EXPLICIT_PART_RANK_OF,
     KEYLESS_RANK,
@@ -85,7 +85,7 @@ def _cte_group_by_sets(sql: str, dialect: str) -> list:
     return out
 
 
-def _row_attach_joins(sql: str, dialect: str) -> list:
+def _row_attach_relationships(sql: str, dialect: str) -> list:
     """``(alias, on-column-name set)`` of every top-level ``_cm_*`` join."""
     tree = sqlglot.parse_one(sql, read=dialect)
     out = []
@@ -246,7 +246,7 @@ class TestUnionAttachStructure:
         ), dialect)
         # ``_cm_`` is the pinned attach-CTE naming contract (``cm_cte_bodies``
         # in the partitioned-metric suites relies on it), not renderer-private detail.
-        attaches = _row_attach_joins(sql, dialect)
+        attaches = _row_attach_relationships(sql, dialect)
         assert len(attaches) == 1, sql
         _, on_cols = attaches[0]
         assert {"region", "city"} <= on_cols, sql  # complete union grain
@@ -309,6 +309,6 @@ class TestDualRole:
         for key, r in by.items():
             region, city, _channel = key
             assert int(r["rr"]) == MIXED_RANK_OF[(region, city)], f"{key}"
-            assert int(r["rm"]) == DUAL_MEASURE_RANK_OF[key], f"{key}"
+            assert int(r["rm"]) == DUAL_METRIC_RANK_OF[key], f"{key}"
             assert float(r["s"]) == pytest.approx(RCC_TOTAL[key]), f"{key}"
         await _dry_scope_closed(engine, query, dialect)

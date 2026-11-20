@@ -130,20 +130,20 @@ def datasets_of(result: CubeConversionResult | ConversionResult) -> dict[str, Sl
     return {m.name: m for m in result.datasets}
 
 
-def column(dataset: SlayerDataset, name: str) -> DatasetField:
+def field_of(dataset: SlayerDataset, name: str) -> DatasetField:
     col = dataset.get_field(name)
     assert col is not None, f"field {name!r} missing on {dataset.name}: {[c.name for c in dataset.fields]}"
     return col
 
 
-def source_column(dataset: SlayerDataset, metric: str) -> DatasetField:
+def source_field(dataset: SlayerDataset, metric: str) -> DatasetField:
     """The field a single-aggregation metric aggregates."""
     found = dataset.get_metric(metric)
     assert found is not None, f"metric {metric!r} missing on {dataset.name}"
     parsed = parse_expr(found.text)
     assert isinstance(parsed, AggCall), found.expression
     assert isinstance(parsed.source, Ref), found.expression
-    return column(dataset, parsed.source.name)
+    return field_of(dataset, parsed.source.name)
 
 
 def has_metric(result: CubeConversionResult | ConversionResult, dataset: str, metric: str) -> bool:
@@ -151,7 +151,7 @@ def has_metric(result: CubeConversionResult | ConversionResult, dataset: str, me
     return found is not None and found.get_metric(metric) is not None
 
 
-def has_column(result: CubeConversionResult | ConversionResult, dataset: str, name: str) -> bool:
+def has_field(result: CubeConversionResult | ConversionResult, dataset: str, name: str) -> bool:
     found = datasets_of(result).get(dataset)
     return found is not None and found.get_field(name) is not None
 

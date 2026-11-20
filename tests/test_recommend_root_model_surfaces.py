@@ -163,7 +163,7 @@ class TestRestEndpoint:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
             "/recommend-population",
-            json={"items": ["orders.no_such_column"], "data_source": "mydb"},
+            json={"items": ["orders.no_such_field"], "data_source": "mydb"},
         )
         assert resp.status_code == 400
 

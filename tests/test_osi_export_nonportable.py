@@ -15,7 +15,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core import slayer_extension as ext
 from slayer.storage.document_keys import LEGACY_KEYS, dataset_in
 from tests._cli_inprocess import run_cli_in_process
-from tests._osi_export_fixtures import BASIC_MEASURES, col, customers, orders, orders_columns, rich_orders
+from tests._osi_export_fixtures import BASIC_METRICS, col, customers, orders, orders_fields, rich_orders
 from tests._osi_export_helpers import (
     SLAYER, dataset, entities, export, export_datasets, field, make_env, mentions, payload,
     reimport, save, slayer_entries, validate,
@@ -95,7 +95,7 @@ def _with_semantic(dataset: SlayerDataset, extensions: list[Any]) -> SlayerDatas
 async def test_malformed_document_level_entry_is_reported_and_omitted(env, extensions: bool,
                                                                       malformed: dict[str, Any]) -> None:
     def models(entries: list[Any]) -> list[SlayerDataset]:
-        return [_with_semantic(customers(), entries), _with_semantic(orders(metrics=BASIC_MEASURES), entries)]
+        return [_with_semantic(customers(), entries), _with_semantic(orders(metrics=BASIC_METRICS), entries)]
     clean = await export_datasets(env, *models([ACME]), extensions=extensions)
     result = await export_datasets(env, *models([malformed, ACME]), extensions=extensions)
     assert result.document == clean.document
@@ -106,7 +106,7 @@ async def test_malformed_document_level_entry_is_reported_and_omitted(env, exten
 # ──────────────────────── dataset stored by SLayer 1.8 ───────────────────────
 
 async def test_model_stored_before_the_shape_change(env) -> None:
-    await save(env, customers(), orders(metrics=BASIC_MEASURES))
+    await save(env, customers(), orders(metrics=BASIC_METRICS))
     path = env.store / "models" / env.datasource / "orders.yaml"
     stored = dataset_in(yaml.safe_load(path.read_text(encoding="utf-8")), LEGACY_KEYS)
     stored["version"] = 21
@@ -139,8 +139,8 @@ def test_ruamel_loader_reads_yaml_12_core() -> None:
 
 async def test_retypable_strings_round_trip(env, tmp_path: Path) -> None:
     meta = {f"v{i}": s for i, s in enumerate(_RETYPABLE)}
-    columns = [col("amount", meta=meta) if c.name == "amount" else c for c in orders_columns()]
-    await save(env, customers(), orders(columns=columns, metrics=BASIC_MEASURES))
+    columns = [col("amount", meta=meta) if c.name == "amount" else c for c in orders_fields()]
+    await save(env, customers(), orders(fields=columns, metrics=BASIC_METRICS))
     out = tmp_path / "shop.osi.yaml"
     result = run_cli_in_process(["export-osi", "--datasource", env.datasource, "--out", str(out),
                                  "--storage", str(env.store)])
@@ -154,8 +154,8 @@ async def test_retypable_strings_round_trip(env, tmp_path: Path) -> None:
 
 
 async def test_retypable_strings_quoted_outside_payloads(env, tmp_path: Path) -> None:
-    columns = [*orders_columns(), col("x1e3", DataType.STRING, "note", label="1e3", description="0o17")]
-    await save(env, customers(), orders(columns=columns, metrics=BASIC_MEASURES))
+    columns = [*orders_fields(), col("x1e3", DataType.STRING, "note", label="1e3", description="0o17")]
+    await save(env, customers(), orders(fields=columns, metrics=BASIC_METRICS))
     out = tmp_path / "shop.osi.yaml"
     assert run_cli_in_process(["export-osi", "--datasource", env.datasource, "--out", str(out),
                                "--storage", str(env.store), "--no-extensions"]).returncode == 0

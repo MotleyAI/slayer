@@ -526,8 +526,8 @@ def _collect_associated_warnings(
                 if dim not in dims:
                     dims.append(dim)
     return [
-        AssociatedWarningPayload(metric=measure, location=location, dimensions=dims)
-        for (location, measure), dims in dims_by_key.items()
+        AssociatedWarningPayload(metric=metric, location=location, dimensions=dims)
+        for (location, metric), dims in dims_by_key.items()
     ]
 
 

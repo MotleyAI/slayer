@@ -14,7 +14,7 @@ from slayer.sql.ossie_source import parse_source
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
-    BASIC_MEASURES, col, customers, monthly_revenue, orders, orders_columns, rich_orders, visits,
+    BASIC_METRICS, col, customers, monthly_revenue, orders, orders_fields, rich_orders, visits,
 )
 from tests._osi_export_helpers import (
     norm_value, dataset, dataset_names, eval_field, export, export_datasets, expression_sql, field, make_env,
@@ -35,7 +35,7 @@ def _values(data: list[Any]) -> list[list[str]]:
 # ─────────────────────────────── sources ───────────────────────────────────
 
 async def test_table_model_source_is_its_table(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS))
     parsed = parse_source(dataset(result.document, "orders")["source"])
     assert not parsed.is_query
     assert parsed.table == "orders"
@@ -49,8 +49,8 @@ async def test_sql_mode_model_source_is_its_query(env) -> None:
 
 
 async def test_filtered_table_model(env) -> None:
-    active = orders(name="active_orders", columns=[*orders_columns(), col("deleted_at", DataType.DATETIME)],
-                    joins=[], filters=["deleted_at IS NULL", "status <> 'test'"], metrics=BASIC_MEASURES)
+    active = orders(name="active_orders", fields=[*orders_fields(), col("deleted_at", DataType.DATETIME)],
+                    relationships=[], filters=["deleted_at IS NULL", "status <> 'test'"], metrics=BASIC_METRICS)
     result = await export_datasets(env, active)
     ds_ = dataset(result.document, "active_orders")
     source = ds_["source"]
@@ -60,7 +60,7 @@ async def test_filtered_table_model(env) -> None:
 
 
 async def test_query_backed_model_source_is_its_generated_sql(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), monthly_revenue())
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS), monthly_revenue())
     source = dataset(result.document, "monthly_revenue")["source"]
     assert parse_source(source).is_query
     assert "'US'" in source
@@ -69,11 +69,11 @@ async def test_query_backed_model_source_is_its_generated_sql(env) -> None:
 
 
 async def test_query_backed_model_reads_its_own_datasource(env, tmp_path: Path) -> None:
-    await save(env, customers(), orders(metrics=BASIC_MEASURES), monthly_revenue())
+    await save(env, customers(), orders(metrics=BASIC_METRICS), monthly_revenue())
     other = (await make_env(tmp_path / "other", datasource="aaa")).model_copy(update={"store": env.store})
     storage = YAMLStorage(base_dir=str(env.store))
     await storage.save_datasource(other.config)
-    await save(other, orders(sql_table=None, sql="SELECT * FROM orders WHERE amount > 1000", joins=[]))
+    await save(other, orders(sql_table=None, sql="SELECT * FROM orders WHERE amount > 1000", relationships=[]))
     await storage.set_datasource_priority(["aaa", env.datasource])
     source = dataset((await export(env)).document, "monthly_revenue")["source"]
     assert "1000" not in source
@@ -81,11 +81,11 @@ async def test_query_backed_model_reads_its_own_datasource(env, tmp_path: Path) 
 
 
 async def test_unsaved_query_backed_model_expands_through_the_priority_list(env, tmp_path: Path) -> None:
-    await save(env, customers(), orders(metrics=BASIC_MEASURES))
+    await save(env, customers(), orders(metrics=BASIC_METRICS))
     other = (await make_env(tmp_path / "other", datasource="aaa")).model_copy(update={"store": env.store})
     storage = YAMLStorage(base_dir=str(env.store))
     await storage.save_datasource(other.config)
-    await save(other, orders(sql_table=None, sql="SELECT * FROM orders WHERE amount > 1000", joins=[]))
+    await save(other, orders(sql_table=None, sql="SELECT * FROM orders WHERE amount > 1000", relationships=[]))
     await storage.set_datasource_priority(["aaa", env.datasource])
     engine = SlayerQueryEngine(storage=storage)
     try:
@@ -99,8 +99,8 @@ async def test_unsaved_query_backed_model_expands_through_the_priority_list(env,
 
 
 async def test_filter_on_joined_model_is_reported(env) -> None:
-    b2b = orders(name="b2b_orders", filters=["customers.segment = 'b2b'"], metrics=BASIC_MEASURES)
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), b2b)
+    b2b = orders(name="b2b_orders", filters=["customers.segment = 'b2b'"], metrics=BASIC_METRICS)
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS), b2b)
     assert "b2b_orders" not in dataset_names(result.document)
     [entry] = mentions(result, "b2b_orders", severity="dropped")
     assert "customers.segment = 'b2b'" in entry.message
@@ -110,7 +110,7 @@ async def test_filter_on_joined_model_is_reported(env) -> None:
 # ─────────────────────────────── fields ────────────────────────────────────
 
 async def test_renamed_column(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS))
     total = field(dataset(result.document, "orders"), "total_amount")
     assert total is not None
     assert same_sql(total["expression"]["sql"], "o_totalprice")
@@ -175,8 +175,8 @@ _DATATYPES = [
 ]
 
 
-def _one_column_orders(column: DatasetField) -> Any:
-    return orders(columns=[col("id", DataType.INTEGER, "o_orderkey", primary_key=True), column], joins=[],
+def _one_field_orders(field: DatasetField) -> Any:
+    return orders(fields=[col("id", DataType.INTEGER, "o_orderkey", primary_key=True), field], relationships=[],
                   metrics=[], default_time_dimension=None)
 
 
@@ -184,7 +184,7 @@ def _one_column_orders(column: DatasetField) -> Any:
 async def test_field_datatype(env, physical: str, type_: DataType, db_type: str | None,
                               datatype: str | None) -> None:
     column = col("v", type_, physical, db_type=db_type)
-    result = await export_datasets(env, _one_column_orders(column))
+    result = await export_datasets(env, _one_field_orders(column))
     v = field(dataset(result.document, "orders"), "v")
     assert v is not None
     assert v.get("datatype") == datatype
@@ -192,13 +192,13 @@ async def test_field_datatype(env, physical: str, type_: DataType, db_type: str 
 
 async def test_recorded_ossie_datatype_ignored_when_inconsistent(env) -> None:
     column = col("v", DataType.INTEGER, "quantity", meta={"osi_datatype": "String"})
-    v = field(dataset((await export_datasets(env, _one_column_orders(column))).document, "orders"), "v")
+    v = field(dataset((await export_datasets(env, _one_field_orders(column))).document, "orders"), "v")
     assert v is not None
     assert v["datatype"] == "Integer"
 
 
 async def test_temporal_column_has_no_explicit_time_role(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS))
     ordered_on = field(dataset(result.document, "orders"), "ordered_on")
     assert ordered_on is not None
     assert "dimension" not in ordered_on
@@ -221,7 +221,7 @@ async def test_explicit_time_role_survives(env, physical: str, datatype: str, is
 # ─────────────────────────────── keys ──────────────────────────────────────
 
 async def test_primary_and_unique_keys(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS))
     cust = dataset(result.document, "customers")
     assert cust["primary_key"] == ["id"]
     assert ["email"] in cust["unique_keys"]
@@ -229,9 +229,9 @@ async def test_primary_and_unique_keys(env) -> None:
 
 
 async def test_composite_primary_key(env) -> None:
-    model = orders(columns=[col("id", DataType.INTEGER, "o_orderkey", primary_key=True),
+    model = orders(fields=[col("id", DataType.INTEGER, "o_orderkey", primary_key=True),
                             col("customer_id", DataType.INTEGER, "o_custkey", primary_key=True), col("amount")],
-                   joins=[], default_time_dimension=None)
+                   relationships=[], default_time_dimension=None)
     assert dataset((await export_datasets(env, model)).document, "orders")["primary_key"] == ["id", "customer_id"]
 
 
@@ -252,7 +252,7 @@ async def test_key_on_filtered_column_is_reported(env) -> None:
 
 
 async def test_key_on_slayer_only_column_is_reported(env) -> None:
-    model = orders(metrics=BASIC_MEASURES, meta={"osi_unique_keys": [["id", "segment"]]})
+    model = orders(metrics=BASIC_METRICS, meta={"osi_unique_keys": [["id", "segment"]]})
     model.fields.append(col("segment", DataType.STRING, "customers.segment"))
     result = await export_datasets(env, customers(), model)
     assert ["id", "segment"] not in dataset(result.document, "orders").get("unique_keys", [])

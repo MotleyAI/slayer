@@ -19,10 +19,10 @@ from tests._engine_helpers import _engine_generate
 INT_TYPES = frozenset(exp.DataType.INTEGER_TYPES) - {exp.DataType.Type.BIT}
 
 
-async def _statement(dialect: str, *formulas: str, aggregations: Sequence[Aggregation] = ()) -> Expr:
+async def _statement(dialect: str, *expressions: str, aggregations: Sequence[Aggregation] = ()) -> Expr:
     model = orders_dataset()
     model.aggregations.extend(aggregations)
-    query = orders_q(metrics=[m(f, f"v{i}") for i, f in enumerate(formulas)])
+    query = orders_q(metrics=[m(f, f"v{i}") for i, f in enumerate(expressions)])
     sql = await _engine_generate(query=query, dataset=model, extra_datasets=[customers_dataset()], dialect=dialect)
     return sqlglot.parse_one(sql, read=dialect)
 

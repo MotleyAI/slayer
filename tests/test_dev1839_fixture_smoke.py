@@ -10,7 +10,7 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1839_fixtures import (
     CITY_TOTAL,
-    DUAL_MEASURE_RANK_OF,
+    DUAL_METRIC_RANK_OF,
     EXPLICIT_PART_RANK_OF,
     GRAND_TOTAL,
     KEYLESS_RANK_OF,
@@ -82,7 +82,7 @@ class TestOracleConsistency:
         broadcast = {
             (r, c, ch): MIXED_DIFF_OF[(r, c)] for (r, c, ch) in RCC_TOTAL
         }
-        assert DUAL_MEASURE_RANK_OF == _ranks_desc(broadcast)
+        assert DUAL_METRIC_RANK_OF == _ranks_desc(broadcast)
 
     def test_samegrain_oracles(self) -> None:
         sums = {r: REGION_TOTAL[r] + OK_REGION_TOTAL[r] for r in REGION_TOTAL}

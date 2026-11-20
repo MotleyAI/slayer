@@ -27,7 +27,7 @@ from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.ingest_report import ConversionResult
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev2171_fixtures import collect_over_engine, column, typing_notes, write_yaml
+from tests._dev2171_fixtures import collect_over_engine, field_of, typing_notes, write_yaml
 from tests._engine_helpers import disposable_engine, owned_query_engine
 
 pytest.importorskip("pytest_postgresql")
@@ -195,7 +195,7 @@ def _messages(result: ConversionResult) -> list[str]:
 
 
 def _typed(dataset: SlayerDataset, name: str) -> DataType:
-    return column(dataset, name).datatype
+    return field_of(dataset, name).datatype
 
 
 def _probed(live: Live) -> DataType:

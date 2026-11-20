@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.engine.query_engine import SlayerQueryEngine
+
 from tests._law_harness import (
     CM_PARTITIONED_OPERANDS,
     EXPECTED_RAISES,
+    LawShape,
     PAIRS_BY_GRAIN,
     SHAPES,
     execute_shape,
@@ -29,13 +32,13 @@ async def law_case(request):
         yield engine, shape
 
 
-async def test_removing_any_measure_preserves_groups_and_shared_cells(law_case):
+async def test_removing_any_measure_preserves_groups_and_shared_cells(law_case: tuple[SlayerQueryEngine, LawShape]):
     engine, shape = law_case
     full = await execute_shape(engine, shape)
     if full is None:
         return
     full_rows = keyed_rows(full, shape=shape)
-    for drop in shape.measure_keys:
+    for drop in shape.metric_keys:
         sub = await execute_shape(engine, shape, drop=drop)
         if sub is None:
             continue
@@ -49,7 +52,7 @@ async def test_removing_any_measure_preserves_groups_and_shared_cells(law_case):
             shape=shape,
         )
         for key, row in sub_rows.items():
-            for kept in shape.measure_keys:
+            for kept in shape.metric_keys:
                 if kept == drop:
                     continue
                 col = f"m_{kept}"

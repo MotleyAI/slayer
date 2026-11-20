@@ -29,8 +29,8 @@ from tests._dev2243_fixtures import (
 )
 from tests._dev2277_fixtures import SEED_TABLES
 from tests._engine_helpers import owned_query_engine
-from tests._osi_export_fixtures import BASIC_MEASURES, DATASOURCE as EXPORT_DS, EXPORT_DDL, customers, orders, \
-    orders_columns
+from tests._osi_export_fixtures import BASIC_METRICS, DATASOURCE as EXPORT_DS, EXPORT_DDL, customers, orders, \
+    orders_fields
 
 EXAMPLES = CORPUS / "examples"
 SHOP_EXAMPLE = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_import" / "shop.osi.yaml"
@@ -613,14 +613,14 @@ def to_custom_extensions(node: Any) -> Any:
 
 async def test_slayer_1_8_export_restores(tmp_path: Path) -> None:
     """SLayer 1.8 export restores."""
-    columns = orders_columns()
+    columns = orders_fields()
     for c in columns:
         if c.name == "amount":
             c.format = NumberFormat(type=NumberFormatType.CURRENCY, precision=2)
         if c.name == "note":
             c.hidden = True
     async with seeded(tmp_path / "src", statements=EXPORT_DDL, data_source=EXPORT_DS) as engine:
-        for model in (customers(), orders(columns=columns, metrics=BASIC_MEASURES)):
+        for model in (customers(), orders(fields=columns, metrics=BASIC_METRICS)):
             await engine.save_dataset(model)
         exported = (await export_osi(engine=engine, datasource=EXPORT_DS)).document
     assert '"vendor_name": "SLAYER"' in json.dumps(exported)

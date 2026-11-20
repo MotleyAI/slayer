@@ -12,7 +12,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
 from tests._dev2171_fixtures import (
-    by_id, column, counts_by, cube_issues, entries, has_metric, import_cube, import_dbt, datasets_of, rows, seed,
+    by_id, field_of, counts_by, cube_issues, entries, has_metric, import_cube, import_dbt, datasets_of, rows, seed,
 )
 
 PAID = [{"sql": "{CUBE}.status = 'paid'"}]
@@ -123,7 +123,7 @@ async def test_cube(db: Path) -> None:
         "paid_cnt", "paid_amount", "paid_sum", "via_dotted", "via_cube", "share", "tag_cnt",
     ]) == pytest.approx({"paid_cnt": 2, "paid_amount": 30, "paid_sum": 30, "via_dotted": 30, "via_cube": 30,
                          "share": 10, "tag_cnt": 2})
-    tags = column(datasets_of(result)["orders"], "tags")
+    tags = field_of(datasets_of(result)["orders"], "tags")
     assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.STRING)
     assert await _values(datasets=models, db=db, dataset="orders_self", names=["paid_sum"]) == {"paid_sum": 30}
     assert await _values(datasets=models, db=db, dataset="orders_view", names=["paid_sum"]) == {"paid_sum": 30}
@@ -148,7 +148,7 @@ async def test_dbt(db: Path) -> None:
     assert await counts_by(datasets=models, db=db, dataset="orders", dimension="customers.name") == {"Ann": 2, "Bo": 1}
     assert await _values(datasets=models, db=db, dataset="orders", names=["paid_cnt", "paid_bool", "total", "tag_cnt"]) \
         == {"paid_cnt": 2, "paid_bool": 2, "total": 35, "tag_cnt": 2}
-    tags = column(datasets_of(result)["orders"], "tags")
+    tags = field_of(datasets_of(result)["orders"], "tags")
     assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.STRING)
     assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status") == STATE_COUNTS
     assert not has_metric(result, "orders", "tag_kinds")

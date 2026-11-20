@@ -60,7 +60,7 @@ from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._cross_model_chain import (
+from tests._cross_dataset_chain import (
     _extract_cte_body,
     _gen,
     _joinback_on_predicate,

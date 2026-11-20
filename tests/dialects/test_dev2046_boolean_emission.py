@@ -35,9 +35,9 @@ def _bool_type(dialect: str):
     return cast.to.this
 
 
-async def _statement(dialect: str, *formulas: str, **kw) -> Expr:
+async def _statement(dialect: str, *expressions: str, **kw) -> Expr:
     model = kw.pop("model", None) or orders_dataset()
-    query = orders_q(metrics=[m(f, f"v{i}") for i, f in enumerate(formulas)], **kw)
+    query = orders_q(metrics=[m(f, f"v{i}") for i, f in enumerate(expressions)], **kw)
     sql = await _engine_generate(query=query, dataset=model, extra_datasets=[customers_dataset()], dialect=dialect)
     return sqlglot.parse_one(sql, read=dialect)
 

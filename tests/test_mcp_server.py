@@ -3044,12 +3044,12 @@ class TestSaveTimeSqlValidationMcp:
         _seed_live_db(db)
         await _register_live_ds(storage, db)
         result = await _call(mcp_server, name="create_dataset", arguments={
-            "name": "good_model", "sql": "SELECT id FROM orders",
+            "name": "good_dataset", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
             "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert "created" in result
-        assert await storage.get_dataset("good_model", data_source="livedb") is not None
+        assert await storage.get_dataset("good_dataset", data_source="livedb") is not None
 
     async def test_create_sql_mode_invalid_rejected(
         self, mcp_server, storage: YAMLStorage, tmp_path
@@ -3058,13 +3058,13 @@ class TestSaveTimeSqlValidationMcp:
         _seed_live_db(db)
         await _register_live_ds(storage, db)
         result = await _call(mcp_server, name="create_dataset", arguments={
-            "name": "bad_model", "sql": "SELECT nope FROM ghosts",
+            "name": "bad_dataset", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
             "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert "created" not in result
-        assert "bad_model" in result
-        assert await storage.get_dataset("bad_model", data_source="livedb") is None
+        assert "bad_dataset" in result
+        assert await storage.get_dataset("bad_dataset", data_source="livedb") is None
 
     async def test_edit_sql_to_invalid_rejected_and_original_intact(
         self, mcp_server, storage: YAMLStorage, tmp_path

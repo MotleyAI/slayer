@@ -42,7 +42,7 @@ def _line_items(*, extra: tuple[DatasetField, ...] = ()) -> SlayerDataset:
     )
 
 
-def _orders(*, li_column: DatasetField, joins: list[DatasetRelationship]) -> SlayerDataset:
+def _orders(*, li_field: DatasetField, relationships: list[DatasetRelationship]) -> SlayerDataset:
     """Declaring dataset with a per-test derived field and relationship set."""
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
@@ -50,20 +50,20 @@ def _orders(*, li_column: DatasetField, joins: list[DatasetRelationship]) -> Sla
             DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="status", sql="status", datatype=DataType.STRING),
             DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            li_column,
+            li_field,
         ],
-        relationships=joins,
+        relationships=relationships,
     )
 
 
-def _fanning_warnings(rec, *, column: str) -> list:
-    """Recorded warnings whose message names ``column`` (the arity channel)."""
-    return [w for w in rec if column in str(w.message)]
+def _fanning_warnings(rec, *, field: str) -> list:
+    """Recorded warnings whose message names ``field`` (the arity channel)."""
+    return [w for w in rec if field in str(w.message)]
 
 
-def _hop_warnings(rec, *, column: str, hop: str) -> list:
+def _hop_warnings(rec, *, field: str, hop: str) -> list:
     """Recorded warnings naming both the field and the hop (the contract)."""
-    return [w for w in rec if column in str(w.message) and hop in str(w.message)]
+    return [w for w in rec if field in str(w.message) and hop in str(w.message)]
 
 
 # --------------------------------------------------------------------------- #
@@ -130,8 +130,8 @@ async def test_sql_across_declared_one_to_many_rejected(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
-        joins=[DatasetRelationship(
+        li_field=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        relationships=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
@@ -161,11 +161,11 @@ async def test_filter_across_declared_one_to_many_rejected(tmp_path) -> None:
     await storage.save_dataset(_line_items())
     # Value SQL is host-local; only the filter crosses the fanning hop.
     orders = _orders(
-        li_column=DatasetField(
+        li_field=DatasetField(
             name="big_item", sql="amount", datatype=DataType.FLOAT,
             filter="line_items.qty >= 2",
         ),
-        joins=[DatasetRelationship(
+        relationships=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
@@ -186,10 +186,10 @@ async def test_host_prefixed_reference_rejected(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
-        li_column=DatasetField(
+        li_field=DatasetField(
             name="li_qty", sql="orders.line_items.qty", datatype=DataType.FLOAT,
         ),
-        joins=[DatasetRelationship(
+        relationships=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
@@ -218,8 +218,8 @@ async def test_join_declared_on_peer_side_rejected(tmp_path) -> None:
     )
     await storage.save_dataset(line_items)
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
-        joins=[],  # no relationship declared on orders — it resolves over the reverse edge
+        li_field=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        relationships=[],  # no relationship declared on orders — it resolves over the reverse edge
     )
     with pytest.raises(DerivedFieldFanningError) as ei:
         await storage.save_dataset(orders)
@@ -249,8 +249,8 @@ async def test_multihop_fanning_then_unproven_rejected(tmp_path) -> None:
     })
     await storage.save_dataset(line_items)
     orders = _orders(
-        li_column=DatasetField(name="pv", sql="line_items.parts.pval", datatype=DataType.FLOAT),
-        joins=[DatasetRelationship(
+        li_field=DatasetField(name="pv", sql="line_items.parts.pval", datatype=DataType.FLOAT),
+        relationships=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
@@ -328,7 +328,7 @@ async def test_declared_many_to_one_accepted_silently(tmp_path) -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_dataset(orders)
-    assert _fanning_warnings(rec, column="cust_region") == []
+    assert _fanning_warnings(rec, field="cust_region") == []
     assert await storage.get_dataset("orders", data_source=DS) is not None
 
 
@@ -352,7 +352,7 @@ async def test_proof_beats_contradictory_to_many_declaration(tmp_path) -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_dataset(orders)  # must not raise
-    assert _fanning_warnings(rec, column="item_qty") == []
+    assert _fanning_warnings(rec, field="item_qty") == []
 
 
 # --------------------------------------------------------------------------- #
@@ -366,13 +366,13 @@ async def test_reverse_pk_undeclared_hop_warns_and_saves(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
-        joins=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
+        li_field=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        relationships=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_dataset(orders)
-    assert _hop_warnings(rec, column="li_qty", hop="line_items")
+    assert _hop_warnings(rec, field="li_qty", hop="line_items")
     assert await storage.get_dataset("orders", data_source=DS) is not None
 
 
@@ -399,7 +399,7 @@ async def test_fully_undeclared_hop_warns_and_saves(tmp_path) -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_dataset(orders)
-    assert _hop_warnings(rec, column="wsum", hop="widgets")
+    assert _hop_warnings(rec, field="wsum", hop="widgets")
     assert await storage.get_dataset("orders", data_source=DS) is not None
 
 
@@ -408,16 +408,16 @@ async def test_filter_across_unproven_hop_warns_and_saves(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
-        li_column=DatasetField(
+        li_field=DatasetField(
             name="big_item", sql="amount", datatype=DataType.FLOAT,
             filter="line_items.qty >= 2",
         ),
-        joins=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
+        relationships=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_dataset(orders)
-    assert _hop_warnings(rec, column="big_item", hop="line_items")
+    assert _hop_warnings(rec, field="big_item", hop="line_items")
     assert await storage.get_dataset("orders", data_source=DS) is not None
 
 
@@ -426,16 +426,16 @@ async def test_unproven_warning_deduplicated_per_hop(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
-        li_column=DatasetField(
+        li_field=DatasetField(
             name="qtysum", sql="line_items.qty + line_items.order_id",
             datatype=DataType.FLOAT,
         ),
-        joins=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
+        relationships=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_dataset(orders)
-    assert len(_hop_warnings(rec, column="qtysum", hop="line_items")) == 1
+    assert len(_hop_warnings(rec, field="qtysum", hop="line_items")) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -448,8 +448,8 @@ async def test_unloaded_target_skipped(tmp_path) -> None:
     the hop's target is unloaded → skipped (no error, no warning)."""
     storage = _storage(tmp_path)
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
-        joins=[DatasetRelationship(
+        li_field=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        relationships=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
@@ -457,7 +457,7 @@ async def test_unloaded_target_skipped(tmp_path) -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_dataset(orders)  # must not raise
-    assert _fanning_warnings(rec, column="li_qty") == []
+    assert _fanning_warnings(rec, field="li_qty") == []
     assert await storage.get_dataset("orders", data_source=DS) is not None
 
 
@@ -475,7 +475,7 @@ async def test_unresolvable_reference_skipped(tmp_path) -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_dataset(orders)  # must not raise
-    assert _fanning_warnings(rec, column="ghost") == []
+    assert _fanning_warnings(rec, field="ghost") == []
     assert await storage.get_dataset("orders", data_source=DS) is not None
 
 
@@ -513,7 +513,7 @@ async def test_ambiguous_parallel_edge_rejected(tmp_path) -> None:
             await storage.save_dataset(orders)
     assert not isinstance(ei.value, DerivedFieldFanningError)
     assert ei.value.field == "wsum"
-    assert _fanning_warnings(rec, column="wsum") == []
+    assert _fanning_warnings(rec, field="wsum") == []
     assert await storage.get_dataset("orders", data_source=DS) is None
 
 
@@ -524,8 +524,8 @@ async def test_peer_save_does_not_reclassify_stored_column(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     fanning = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
-        joins=[DatasetRelationship(
+        li_field=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        relationships=[DatasetRelationship(
             to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
@@ -538,7 +538,7 @@ async def test_peer_save_does_not_reclassify_stored_column(tmp_path) -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         await storage.save_dataset(peer)  # must not raise about orders.li_qty
-    assert _fanning_warnings(rec, column="li_qty") == []
+    assert _fanning_warnings(rec, field="li_qty") == []
 
 
 # --------------------------------------------------------------------------- #

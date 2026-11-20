@@ -2828,13 +2828,13 @@ def test_left_join_target_model_unknown_errors(dialect) -> None:
     """An unknown subquery FROM falls through to the existing 'Unknown table' error."""
     sql = (
         'SELECT "X"."col" FROM "public"."orders" '
-        'LEFT JOIN (SELECT * FROM "public"."not_a_model") AS "X" '
+        'LEFT JOIN (SELECT * FROM "public"."not_a_dataset") AS "X" '
         '  ON "public"."orders"."store_id" = "X"."id"'
     )
     catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(sql=sql, catalog=catalog, dialect=dialect)
-    assert "not_a_model" in str(exc_info.value)
+    assert "not_a_dataset" in str(exc_info.value)
 
 
 def test_left_join_different_join_pairs_rejected(dialect) -> None:

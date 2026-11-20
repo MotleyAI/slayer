@@ -52,7 +52,7 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
-    dev1824_models,
+    dev1824_datasets,
     gen,
     make_exec_engine,
     month_key,
@@ -61,7 +61,7 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     rows_by,
 )
 
-dev1839_models = dev1824_models
+dev1839_datasets = dev1824_datasets
 
 # --------------------------------------------------------------------------- #
 # Dimension expressions under test.
@@ -82,7 +82,7 @@ EXPLICIT_PART_RANK = (
 SAMEGRAIN_RANK = (
     "rank(sum(orders.amount, partition_by=orders.region) + sum(orders.ok_amount, partition_by=orders.region), direction='desc')"
 )
-MEASURE_DIFF = "sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city)"
+METRIC_DIFF = "sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city)"
 SAMEGRAIN_DIFF = (
     "sum(orders.amount, partition_by=orders.region) - sum(orders.ok_amount, partition_by=orders.region)"
 )
@@ -131,7 +131,7 @@ RCC_TOTAL = {
     (None, "CityD", "web"): 60.0,
 }
 #: MIXED_RANK's expression as a metric at the (region, city, channel) grain.
-DUAL_MEASURE_RANK_OF = {
+DUAL_METRIC_RANK_OF = {
     ("North", "CityA", "web"): 1, ("North", "CityA", "app"): 1,
     ("North", "CityB", "web"): 4, ("North", None, "web"): 1,
     ("South", "CityC", "web"): 5, ("South", "CityC", "app"): 5,
@@ -143,13 +143,13 @@ OK_REGION_TOTAL = {"North": 100.0, "South": 25.0, None: 60.0}
 
 
 __all__ = [
-    "CITY_TOTAL", "FieldRef", "DUAL_MEASURE_RANK_OF", "EXPLICIT_PART_RANK",
+    "CITY_TOTAL", "FieldRef", "DUAL_METRIC_RANK_OF", "EXPLICIT_PART_RANK",
     "EXPLICIT_PART_RANK_OF", "GRAND_TOTAL", "KEYLESS_RANK", "KEYLESS_RANK_OF",
-    "MEASURE_DIFF", "MIXED_DIFF_OF", "MIXED_RANK", "MIXED_RANK_OF",
+    "METRIC_DIFF", "MIXED_DIFF_OF", "MIXED_RANK", "MIXED_RANK_OF",
     "DatasetMetric", "NESTED_RANK", "NESTED_RANK_OF", "OK_REGION_TOTAL",
     "RCC_TOTAL", "RCM_GROUPS", "RCM_TOTAL", "RC_GROUPS", "REGION_CUMSUM",
     "REGION_MONTH_TOTAL", "REGION_TOTAL", "SAMEGRAIN_DIFF", "SAMEGRAIN_DIFF_OF",
     "SAMEGRAIN_RANK", "SAMEGRAIN_RANK_OF", "SUBSET_RANK", "SUBSET_RANK_OF",
-    "SlayerQuery", "TimeDimension", "TimeGranularity", "dev1839_models", "gen",
+    "SlayerQuery", "TimeDimension", "TimeGranularity", "dev1839_datasets", "gen",
     "make_exec_engine", "month_key", "month_td", "q", "rows_by",
 ]

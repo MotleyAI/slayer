@@ -19,7 +19,7 @@ import yaml
 
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._deprecated_input_helpers import recorded
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 from tests._osi_export_fixtures import customers, monthly_revenue, rich_orders
 from tests._osi_export_helpers import (
     Env,

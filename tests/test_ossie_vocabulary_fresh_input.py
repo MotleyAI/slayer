@@ -23,7 +23,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core.query import QueryRefinement, SlayerQuery
 from tests._deprecated_input_helpers import deprecated_in, deprecations, payload_of, recorded
 from tests._engine_helpers import owned_query_engine
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 from tests._ossie_vocabulary_fixtures import (
     BACKENDS,
     SAVED_QUERY,

@@ -22,7 +22,7 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1835_fixtures import (
     BAND35,
-    dev1835_models,
+    dev1835_datasets,
     month_td,
     q,
 )
@@ -81,7 +81,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(query, dialect: str):
-    models = dev1835_models()
+    models = dev1835_datasets()
     try:
         return await _engine_generate(
             query=query, dataset=models[0], extra_datasets=models[1:],

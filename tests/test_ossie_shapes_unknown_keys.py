@@ -24,7 +24,7 @@ from slayer.core.warnings import SlayerWarning
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._deprecated_input_helpers import errors_in, recorded
 from tests._engine_helpers import owned_query_engine
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store, stored_document
 from tests._stored_upgrade_fixtures import DS
 

@@ -101,13 +101,13 @@ async def broken_dependents(
     """The definitions that plan over ``stored`` and fail over ``retyped`` (unsaved); a check that cannot run is
     found unchecked. ``client`` stays open; nothing is warned until ``report_broken``."""
     by_name = {m.name: m for m in stored}
-    columns = {m.name: cols for m in retyped if (cols := retyped_list_fields(stored=by_name[m.name], final=m))}
-    if not columns:
+    fields = {m.name: cols for m in retyped if (cols := retyped_list_fields(stored=by_name[m.name], final=m))}
+    if not fields:
         return []
-    dependents = _dependents(datasets=stored, retyped=columns)
+    dependents = _dependents(datasets=stored, retyped=fields)
     if not dependents:
         return []
-    finals = {m.name: m for m in retyped if m.name in columns}
+    finals = {m.name: m for m in retyped if m.name in fields}
     out: list[FoundBreak] = []
 
     def lend(_ds: DatasourceConfig) -> SqlClient:

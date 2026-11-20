@@ -21,7 +21,7 @@ from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     ALL_LOADABLE,
     DS,
@@ -33,7 +33,7 @@ from tests._model_access_fixtures import (
 )
 from tests._stored_upgrade_fixtures import customers_v10, orders_v10, raw_doc, raw_store
 
-MODELS = "MATCH (m:Dataset) RETURN m.id AS id"
+DATASETS = "MATCH (m:Dataset) RETURN m.id AS id"
 VISIBLE_TO_HR = ALL_LOADABLE - {"fin", "fin_hop", "fin_ordered", "fin_report"}
 
 
@@ -56,7 +56,7 @@ def canonical(names) -> set[str]:
 
 
 async def graph_datasets(storage: StorageBackend) -> set[str]:
-    return set(await search_graph.get_filtered_ids(MODELS, storage))
+    return set(await search_graph.get_filtered_ids(DATASETS, storage))
 
 
 class _NoFingerprintYAML(YAMLStorage):

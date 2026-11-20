@@ -14,7 +14,7 @@ from tests._stored_upgrade_fixtures import (
     DS,
     by_dimension,
     customers_v10,
-    measure_total,
+    metric_total,
     orders_v10,
     query_backed_v10,
     raw_store,
@@ -76,4 +76,4 @@ async def test_offset_date_range_returns_the_0_10_2_rows(tmp_path, shop_ds, date
     storage = await raw_store(backend="yaml", base=str(tmp_path), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), qb])
     resp = await run(storage, {"population": "rev_range", "metrics": ["sum(rev)"]})
-    assert measure_total(resp, measure="rev_sum") == expected
+    assert metric_total(resp, metric="rev_sum") == expected

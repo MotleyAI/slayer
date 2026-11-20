@@ -69,7 +69,7 @@ def _customers_dataset() -> SlayerDataset:
     )
 
 
-def _orders_with_customers_join() -> SlayerDataset:
+def _orders_with_customers_relationship() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="prod",
@@ -97,7 +97,7 @@ def _bundle_local() -> ResolvedSourceBundle:
 def _bundle_joined() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_with_customers_join(),
+        population=_orders_with_customers_relationship(),
         referenced_datasets=[_customers_dataset()],
     )
 
@@ -155,7 +155,7 @@ class TestResolveMainTimeDimension:
         assert resolved is td_b
 
     def test_multi_td_main_time_dimension_matches_by_full_name(self) -> None:
-        model = _orders_with_customers_join()
+        model = _orders_with_customers_relationship()
         td_a = TimeDimension(
             field="orders.created_at",
             granularity=TimeGranularity.MONTH,
@@ -331,7 +331,7 @@ class TestResolveMainTimeDimension:
         # AND a local TD ``reviewed_at``, and the host's default is set
         # to ``created_at`` (which doesn't match a local TD), the
         # resolver must return None rather than the joined match.
-        model = _orders_with_customers_join()
+        model = _orders_with_customers_relationship()
         model = model.model_copy(update={"default_time_dimension": "created_at"})
         td_joined = TimeDimension(
             field="customers.signed_up_at",

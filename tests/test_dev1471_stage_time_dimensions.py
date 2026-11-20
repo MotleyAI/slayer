@@ -62,9 +62,9 @@ def _bundle(stage: DatasetScope) -> ResolvedSourceBundle:
     return ResolvedSourceBundle(dialect="postgres", population=stage.population, referenced_datasets=[])
 
 
-def _stage(*columns: StageField) -> DatasetScope:
+def _stage(*fields: StageField) -> DatasetScope:
     """The dataset scope a later stage binds stage ``s1`` through."""
-    schema = StageSchema(relation_name="s1", fields=list(columns))
+    schema = StageSchema(relation_name="s1", fields=list(fields))
     return DatasetScope(population=dataset_from_stage_schema(name="s1", schema=schema, data_source="ds"))
 
 
@@ -105,7 +105,7 @@ class TestStageBinder:
 
     def test_unknown_stage_column_raises_unknown_reference(self) -> None:
         stage = _stage(StageField(name="created_at", sql_alias="created_at", datatype=DataType.DATETIME))
-        td = TimeDimension(field="not_a_column", granularity=TG.MONTH)
+        td = TimeDimension(field="not_a_field", granularity=TG.MONTH)
         bundle = _bundle(stage)
         with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's fields
             bind_time_dimension(td, scope=stage, bundle=bundle)

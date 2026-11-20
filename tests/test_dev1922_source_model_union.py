@@ -33,19 +33,19 @@ EXTENSION = {
     "dataset": "orders",
     "metrics": [{"expression": "sum(amount * 2)", "name": "double_amount"}],
 }
-EXTENSION_WITH_MEASURES = {
+EXTENSION_WITH_METRICS = {
     "dataset": "orders",
     "metrics": [{"expression": "sum(amount)", "name": "rev"}],
 }
 EXTENSION_WITH_FILTERS = {"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}
-INLINE_MODEL = {
+INLINE_DATASET = {
     "name": "ad_hoc",
     "sql_table": "things",
     "data_source": "ds",
     "fields": [{"name": "x", "sql": "x", "datatype": "Float"}],
 }
-JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
-ONE_MEASURE = [{"metric": "sum(amount)"}]
+RELATIONSHIP_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
+ONE_METRIC = [{"metric": "sum(amount)"}]
 
 
 def _leaf_types(tp) -> set:
@@ -163,12 +163,12 @@ class TestRejection:
             SlayerDataset.model_validate({
                 "name": "qb",
                 "source_queries": [{"population": "orders", "extensions": [EXTENSION_WITH_FILTERS],
-                                    "metrics": ONE_MEASURE}],
+                                    "metrics": ONE_METRIC}],
             })
 
     def test_rest_body_rejects_unknown_extension_key_with_422(self, rest_client) -> None:
         resp = rest_client.post("/query", json={
-            "population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_MEASURE,
+            "population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_METRIC,
             "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
@@ -176,14 +176,14 @@ class TestRejection:
 
     def test_rest_body_rejects_non_spec_value_with_422(self, rest_client) -> None:
         resp = rest_client.post("/query", json={
-            "population": 42, "metrics": ONE_MEASURE, "dry_run": True,
+            "population": 42, "metrics": ONE_METRIC, "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
 
     async def test_mcp_query_tool_rejects_unknown_extension_key(self, mcp_server) -> None:
         with pytest.raises(ToolError, match="filters"):
             await mcp_server.call_tool(name="query", arguments={
-                "query": {"population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_MEASURE},
+                "query": {"population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_METRIC},
                 "dry_run": True,
             })
 
@@ -197,8 +197,8 @@ class TestTypedAtConstruction:
     def test_legacy_extension_object_converts_typed(self) -> None:
         with pytest.warns(FutureWarning, match="extensions"):
             q = _query(population={
-                **EXTENSION_WITH_MEASURES,
-                "joins": [JOIN_TO_CUSTOMERS],
+                **EXTENSION_WITH_METRICS,
+                "joins": [RELATIONSHIP_TO_CUSTOMERS],
             })
         assert q.population == "orders"
         (sm,) = q.extensions or []
@@ -212,13 +212,13 @@ class TestTypedAtConstruction:
 
     def test_inline_model_object_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="(?i)inline"):
-            _query(population=INLINE_MODEL)
+            _query(population=INLINE_DATASET)
 
     def test_string_stays_a_string(self) -> None:
         assert SlayerQuery(population="orders").population == "orders"
 
     def test_model_instance_is_rejected(self) -> None:
-        model = SlayerDataset.model_validate(INLINE_MODEL)
+        model = SlayerDataset.model_validate(INLINE_DATASET)
         with pytest.raises(ValidationError, match="(?i)inline"):
             SlayerQuery(population=model)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
         with pytest.raises(ValidationError, match="(?i)inline"):
@@ -255,8 +255,8 @@ class TestRoundTrip:
         assert not isinstance(again.population, dict)
 
     def test_exclude_none_dump_is_the_minimal_object(self) -> None:
-        q = _query(population="orders", extensions=[EXTENSION_WITH_MEASURES])
-        assert q.model_dump(exclude_none=True)["extensions"] == [EXTENSION_WITH_MEASURES]
+        q = _query(population="orders", extensions=[EXTENSION_WITH_METRICS])
+        assert q.model_dump(exclude_none=True)["extensions"] == [EXTENSION_WITH_METRICS]
         assert SlayerQuery(population="orders").model_dump(exclude_none=True)["population"] == "orders"
 
 
@@ -295,18 +295,18 @@ class TestStageOrdering:
     def test_stage_ordering_walks_typed_specs_from_raw_objects(self) -> None:
         a = SlayerQuery(name="a", population="orders")
         c = SlayerQuery(name="c", population="orders")
-        via_join = SlayerQuery.model_validate({
-            "name": "via_join",
+        via_relationship = SlayerQuery.model_validate({
+            "name": "via_relationship",
             "population": "orders",
             "extensions": [{
                 "dataset": "orders",
                 "relationships": [{"to": "c", "from_columns": ["id"], "to_columns": ["id"]}],
             }],
         })
-        assert isinstance((via_join.extensions or [])[0], DatasetExtension)
-        root = SlayerQuery(population="via_join")
-        names = [q.name for q in topologically_order_stages([via_join, a, c, root])]
-        assert names.index("c") < names.index("via_join")
+        assert isinstance((via_relationship.extensions or [])[0], DatasetExtension)
+        root = SlayerQuery(population="via_relationship")
+        names = [q.name for q in topologically_order_stages([via_relationship, a, c, root])]
+        assert names.index("c") < names.index("via_relationship")
 
 
 # ---------------------------------------------------------------------------

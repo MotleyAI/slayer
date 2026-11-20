@@ -46,7 +46,7 @@ from tests._dev1837_fixtures import (
     REGION_TOTAL,
     TD_TRANSFORM_OPS,
     TRAILING_90D_REGION,
-    TRANSFORM_FORMULAS,
+    TRANSFORM_EXPRESSIONS,
     TRANSFORM_X,
     dim_key,
     make_exec_engine,
@@ -63,7 +63,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-ATTACH_MEASURES = {
+ATTACH_METRICS = {
     "plain": "sum(orders.amount)",
     "part": "sum(orders.amount, partition_by=orders.region)",
     "win_part": "sum(orders.amount, window='90d', partition_by=orders.region)",
@@ -82,11 +82,11 @@ TD_ATTACH = frozenset({"win_part", "wm"})
 XFAIL_CELLS: dict[tuple[str, str], str] = {}
 
 DIM_FAMILIES = tuple(DIM_FAMILY_DIMS)
-MEASURE_KEYS = tuple(ATTACH_MEASURES) + tuple(TRANSFORM_FORMULAS)
+METRIC_KEYS = tuple(ATTACH_METRICS) + tuple(TRANSFORM_EXPRESSIONS)
 
 
 def _expression(meas: str) -> str:
-    return ATTACH_MEASURES.get(meas) or TRANSFORM_FORMULAS[meas]
+    return ATTACH_METRICS.get(meas) or TRANSFORM_EXPRESSIONS[meas]
 
 
 def _needs_td(meas: str) -> bool:
@@ -107,7 +107,7 @@ def _expected_maps(family: str, meas: str):
     """``(m oracle, x oracle)`` keyed by the cell's group key."""
     m_map = GROUP_M_MONTH[family] if _needs_td(meas) else GROUP_M[family]
     keys = m_map.keys()
-    if meas in TRANSFORM_FORMULAS:
+    if meas in TRANSFORM_EXPRESSIONS:
         x_map = with_nulls(keys, TRANSFORM_X[(family, meas)])
     elif meas == "plain":
         x_map = dict(m_map)
@@ -150,7 +150,7 @@ def _assert_x(actual, expected, *, key) -> None:
 
 
 _SUPPORTED = [
-    (f, m) for f in DIM_FAMILIES for m in MEASURE_KEYS if (f, m) not in XFAIL_CELLS
+    (f, m) for f in DIM_FAMILIES for m in METRIC_KEYS if (f, m) not in XFAIL_CELLS
 ]
 _GUARDED = [
     pytest.param(
@@ -226,7 +226,7 @@ class TestCoexistenceTriples:
         dialect, engine = exec_backend
         m = QueryMetric(metric="sum(orders.amount)", alias="m")
         rt = QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt")
-        x = QueryMetric(metric=TRANSFORM_FORMULAS[op], alias="x")
+        x = QueryMetric(metric=TRANSFORM_EXPRESSIONS[op], alias="x")
         query = self._triple_query(family, metrics=[m, rt, x])
         m_map = GROUP_M_MONTH[family]
         x_map = with_nulls(m_map.keys(), TRANSFORM_X[(family, op)])
@@ -295,7 +295,7 @@ class TestPartitionedShiftFix:
             time_dimensions=month_td(),
             metrics=[
                 QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
-                QueryMetric(metric=TRANSFORM_FORMULAS[op], alias="x"),
+                QueryMetric(metric=TRANSFORM_EXPRESSIONS[op], alias="x"),
             ],
         )
         x_map = with_nulls(GROUP_M_MONTH["col"].keys(), TRANSFORM_X[("col", op)])

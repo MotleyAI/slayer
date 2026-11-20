@@ -9,8 +9,8 @@ import pytest
 from slayer.osi.exporter import OsiExportError
 from slayer.osi.models import OSIAIContextObject, explicit_description, render_description
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._model_access_fixtures import mcp_text
-from tests._osi_export_fixtures import BASIC_MEASURES, customers, orders
+from tests._dataset_access_fixtures import mcp_text
+from tests._osi_export_fixtures import BASIC_METRICS, customers, orders
 from tests._osi_export_helpers import dataset, export, export_datasets, make_env, reimport, slayer_entries, stored
 from tests._osi_helpers import ds, f, flat
 
@@ -48,7 +48,7 @@ async def test_unknown_model_raises(env) -> None:
 
 
 async def test_duplicate_slayer_payloads_are_reported_and_ignored(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, hidden=True))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS, hidden=True))
     edited = copy.deepcopy(result.document)
     orders_ds = dataset(edited, "orders")
     orders_ds["nonportable_extensions"] = slayer_entries(orders_ds) * 2

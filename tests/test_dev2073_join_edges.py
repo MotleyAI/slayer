@@ -19,7 +19,7 @@ from tests._dev2073_fixtures import (
     dataset_store,
     named_pair,
     orders_with,
-    stored_joins,
+    stored_relationships,
     unnamed_pair,
 )
 
@@ -58,7 +58,7 @@ class TestMcpEditModelAddressesOneEdge:
     async def test_remove_one_of_two_named_edges(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*named_pair()))
         assert _succeeded(await _edit(mcp_server, remove={"relationships": ["billing_address"]}))
-        assert await stored_joins(storage) == [("shipping_address", SHIPPING_PAIRS)]
+        assert await stored_relationships(storage) == [("shipping_address", SHIPPING_PAIRS)]
 
     async def test_ambiguous_target_reference_fails_listing_candidates(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*unnamed_pair()))
@@ -66,20 +66,20 @@ class TestMcpEditModelAddressesOneEdge:
         assert not _succeeded(text)
         assert "billing_address_id" in text
         assert "shipping_address_id" in text
-        assert len(await stored_joins(storage)) == 2
+        assert len(await stored_relationships(storage)) == 2
 
     async def test_upsert_names_the_matching_unnamed_edge(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*unnamed_pair()))
         spec = {"to": "addresses", "from_columns": [p[0] for p in SHIPPING_PAIRS], "to_columns": [p[1] for p in SHIPPING_PAIRS], "name": "shipping_address"}
         assert _succeeded(await _edit(mcp_server, relationships=[spec]))
-        assert await stored_joins(storage) == [(None, BILLING_PAIRS), ("shipping_address", SHIPPING_PAIRS)]
+        assert await stored_relationships(storage) == [(None, BILLING_PAIRS), ("shipping_address", SHIPPING_PAIRS)]
 
     async def test_upsert_matches_by_name_before_pairs(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*reversed(named_pair())))
         # The name selects billing; the pairs alone would select shipping.
         spec = {"to": "addresses", "from_columns": [p[0] for p in SHIPPING_PAIRS], "to_columns": [p[1] for p in SHIPPING_PAIRS], "name": "billing_address"}
         assert _succeeded(await _edit(mcp_server, relationships=[spec]))
-        assert await stored_joins(storage) == [
+        assert await stored_relationships(storage) == [
             ("shipping_address", SHIPPING_PAIRS), ("billing_address", SHIPPING_PAIRS),
         ]
 
@@ -87,24 +87,24 @@ class TestMcpEditModelAddressesOneEdge:
         await storage.save_dataset(orders_with(*unnamed_pair()))
         ref = {"to": "addresses", "from_columns": [p[0] for p in SHIPPING_PAIRS], "to_columns": [p[1] for p in SHIPPING_PAIRS]}
         assert _succeeded(await _edit(mcp_server, remove={"relationship_edges": [ref]}))
-        assert await stored_joins(storage) == [(None, BILLING_PAIRS)]
+        assert await stored_relationships(storage) == [(None, BILLING_PAIRS)]
 
     async def test_unnamed_join_to_an_already_parallel_target_is_rejected(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*named_pair()))
         text = await _edit(mcp_server, relationships=[{"to": "addresses", "from_columns": ["legacy_addr"], "to_columns": ["id"]}])
         assert not _succeeded(text)
         assert "name" in text
-        assert len(await stored_joins(storage)) == 2
+        assert len(await stored_relationships(storage)) == 2
 
 
 class TestEngineRemovalAddressesOneEdge:
     async def test_remove_by_edge_name(self, engine: SlayerQueryEngine, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*named_pair()))
         await engine.edit_dataset_remove(dataset_name="orders", data_source=DS, remove_relationships=["billing_address"])
-        assert await stored_joins(storage) == [("shipping_address", SHIPPING_PAIRS)]
+        assert await stored_relationships(storage) == [("shipping_address", SHIPPING_PAIRS)]
 
     async def test_ambiguous_target_reference_raises(self, engine: SlayerQueryEngine, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*unnamed_pair()))
         with pytest.raises(ValueError, match="shipping_address_id"):
             await engine.edit_dataset_remove(dataset_name="orders", data_source=DS, remove_relationships=["addresses"])
-        assert len(await stored_joins(storage)) == 2
+        assert len(await stored_relationships(storage)) == 2

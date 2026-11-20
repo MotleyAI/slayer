@@ -19,11 +19,11 @@ from slayer.core.relationship_walker import OrientedRelationship, resolve_hop
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _dataset(name: str, cols: list[str], joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _dataset(name: str, cols: list[str], relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="ds", sql_table=name,
         fields=[DatasetField(name=c) for c in cols],
-        relationships=joins or [],
+        relationships=relationships or [],
     )
 
 

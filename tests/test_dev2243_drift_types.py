@@ -25,7 +25,7 @@ from slayer.storage.base import StorageBackend
 from tests._cli_inprocess import run_cli_in_process
 from tests._dev2243_fixtures import DS, STORAGES, make_storage, store_document
 from tests._engine_helpers import owned_query_engine
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 
 LIVE = (
     "CREATE TABLE orders (order_id VARCHAR, amount DECIMAL(10,2), tags VARCHAR[], status VARCHAR)",

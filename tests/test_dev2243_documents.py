@@ -28,7 +28,7 @@ from tests._dev2243_fixtures import (
 )
 from tests._dev2277_fixtures import by, managers_dataset, returns_dataset
 from tests._engine_helpers import owned_query_engine
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 
 
 # --------------------------------------------------------------------------- #

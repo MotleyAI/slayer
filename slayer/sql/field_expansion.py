@@ -73,7 +73,7 @@ def is_trivial_base(*, field: DatasetField) -> bool:
 
 class _PathSink(Protocol):
     """A duck-typed ordered collector of relationship-path tuples (``.add(path)``), so
-    a caller can pass its own insertion-ordered set (``ScopeFrame.join_paths``)
+    a caller can pass its own insertion-ordered set (``ScopeFrame.relationship_paths``)
     and receive the crossed paths in emission order."""
 
     def add(self, path: Tuple[str, ...], /) -> None: ...
@@ -232,7 +232,7 @@ def _resolve_qualifiers(
                 source_dataset=source_dataset, datasets_by_name=datasets_by_name,
             )
             return None  # opaque single qualifier
-        _raise_if_broken_join_walk(
+        _raise_if_broken_relationship_walk(
             path=path, leaf=leaf,
             source_dataset=source_dataset, datasets_by_name=datasets_by_name,
         )
@@ -271,7 +271,7 @@ def raise_if_legacy_split_alias(
         )
 
 
-def _raise_if_broken_join_walk(
+def _raise_if_broken_relationship_walk(
     *,
     path: Tuple[str, ...],
     leaf: str,

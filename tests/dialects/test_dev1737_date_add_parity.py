@@ -31,11 +31,11 @@ def _ev_dataset() -> SlayerDataset:
     )
 
 
-def _query(granularity: str, *measures) -> dict:
+def _query(granularity: str, *metrics) -> dict:
     return {
         "population": "ev",
         "time_dimensions": [{"field": "ev.ts", "granularity": granularity}],
-        "metrics": list(measures),
+        "metrics": list(metrics),
     }
 
 

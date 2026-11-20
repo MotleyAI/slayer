@@ -17,8 +17,8 @@
    "corpus": "_consecutive_periods_calendar_fixtures.json"
   },
   {
-   "source": "tests/_cross_model_chain.py",
-   "corpus": "_cross_model_chain.json"
+   "source": "tests/_cross_dataset_chain.py",
+   "corpus": "_cross_dataset_chain.json"
   },
   {
    "source": "tests/_cube_helpers.py",
@@ -349,8 +349,8 @@
    "corpus": "_mcp_idiom_fixtures.json"
   },
   {
-   "source": "tests/_model_access_fixtures.py",
-   "corpus": "_model_access_fixtures.json"
+   "source": "tests/_dataset_access_fixtures.py",
+   "corpus": "_dataset_access_fixtures.json"
   },
   {
    "source": "tests/_osi_export_fixtures.py",
