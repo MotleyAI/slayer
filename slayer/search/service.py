@@ -842,7 +842,7 @@ class SearchService:
             return None, None, None
         cypher_filter, renamed = renamed_labels(cypher_filter)
         warnings.extend(w.human_message() for w in renamed)
-        if _search_graph.is_available():
+        if await _search_graph.is_available_async():
             candidate_ids = await _search_graph.get_filtered_ids(
                 cypher=cypher_filter, storage=self._storage, failures=failures,
             )

@@ -19,6 +19,7 @@ import unicodedata
 from decimal import Decimal
 from functools import lru_cache, partial
 from itertools import count
+from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import pyparsing as pp
@@ -1233,7 +1234,8 @@ def parse_expr(text: str) -> ParsedExpr:
     return reading.parsed
 
 
-def reference_spans(text: str) -> Tuple[ParsedExpr, Dict[int, Tuple[int, int]]]:
+@lru_cache(maxsize=8192)
+def reference_spans(text: str) -> Tuple[ParsedExpr, Mapping[int, Tuple[int, int]]]:
     """``text`` parsed, with the offsets of its reference nodes (``Ref``, ``DottedRef``, ``*``) keyed by node id.
 
     Raises ``ValueError`` when ``text`` does not parse.
@@ -1250,7 +1252,8 @@ def reference_spans(text: str) -> Tuple[ParsedExpr, Dict[int, Tuple[int, int]]]:
             raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
         finally:
             _STATE.refs = None
-    return parsed, {key: (start, start + len(text[start:end].rstrip())) for key, (_node, start, end) in found.items()}
+    return parsed, MappingProxyType(
+        {key: (start, start + len(text[start:end].rstrip())) for key, (_node, start, end) in found.items()})
 
 
 def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
@@ -1928,35 +1931,30 @@ _WORD_ARGUMENTS = frozenset({"direction"})
 def _reference_children(node: Any) -> Iterator[Tuple[Any, Optional[str]]]:
     """``(child, aggregation)`` of the reference-bearing children of ``node``; ``aggregation`` names a ``*``'s call."""
     if isinstance(node, (tuple, list)):
-        for item in node:
-            yield item, None
-        return
-    if not isinstance(node, _BaseNode):
-        return
-    if isinstance(node, TransformCall):
-        yield node.input, None
-        for arg in node.args:
-            if isinstance(arg, NamedArg) and arg.name in _TRANSFORM_REFERENCE_ARGUMENTS:
-                yield arg.value, None
-        for name, value in node.kwargs:
-            if name in _TRANSFORM_REFERENCE_ARGUMENTS:
-                yield value, None
-        return
-    if isinstance(node, NamedArg):
+        yield from ((item, None) for item in node)
+    elif isinstance(node, TransformCall):
+        yield from _transform_children(node)
+    elif isinstance(node, NamedArg):
         if node.name not in _WORD_ARGUMENTS:
             yield node.value, None
-        return
-    if isinstance(node, AggCall):
-        yield node.source, node.agg
-        yield node.args, None
-        for name, value in node.kwargs:
-            if name not in _WORD_ARGUMENTS:
-                yield value, None
-        yield node.filter, None
-        return
-    for field in type(node).model_fields:
-        if field != "written_args":
-            yield getattr(node, field), None
+    elif isinstance(node, AggCall):
+        yield from _aggregation_children(node)
+    elif isinstance(node, _BaseNode):
+        yield from ((getattr(node, f), None) for f in type(node).model_fields if f != "written_args")
+
+
+def _transform_children(node: TransformCall) -> Iterator[Tuple[Any, Optional[str]]]:
+    yield node.input, None
+    named = [a.value for a in node.args if isinstance(a, NamedArg) and a.name in _TRANSFORM_REFERENCE_ARGUMENTS]
+    keywords = [value for name, value in node.kwargs if name in _TRANSFORM_REFERENCE_ARGUMENTS]
+    yield from ((value, None) for value in (*named, *keywords))
+
+
+def _aggregation_children(node: AggCall) -> Iterator[Tuple[Any, Optional[str]]]:
+    yield node.source, node.agg
+    yield node.args, None
+    yield from ((value, None) for name, value in node.kwargs if name not in _WORD_ARGUMENTS)
+    yield node.filter, None
 
 
 def walk_references(node: Any, aggregation: Optional[str] = None) -> Iterator[Tuple[Any, Optional[str]]]:

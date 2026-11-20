@@ -1320,7 +1320,8 @@ class SlayerQueryEngine:
             conversions = Conversions()
             refinement = convert_refinement(
                 run.refinement, saved=final, conversions=conversions,
-                anchors=await anchor_names(self.storage, dataset.source_queries or [], data_source=prefer_data_source),
+                anchors=await anchor_names(self.storage, dataset.source_queries or [], data_source=prefer_data_source,
+                                           refinement=run.refinement),
             )
             deprecations_out.extend(conversions.payloads)
             dataset = dataset.model_copy(update={
@@ -2519,22 +2520,8 @@ class SlayerQueryEngine:
                 raw=raw, name=entity_ref, data_source=data_source,
             )
         else:
-            # Force a dotted item into ``data_source`` unless it already leads
-            # with it, so a dataset colliding with a datasource name still resolves
-            # and a foreign-datasource ref fails as cross-datasource.
-            resolution_input = entity_ref
-            if data_source and entity_ref.split(".")[0] != data_source:
-                resolution_input = f"{data_source}.{entity_ref}"
-            res = await resolve_entity(resolution_input, storage=self.storage)
-            warnings = res.warnings
-            segs = res.canonical_forms[0].split(".")
-            if len(segs) < 3:
-                raise ValueError(
-                    f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
-                    f"not a field or metric. recommend_population needs "
-                    f"'dataset.field' / 'dataset.metric' items."
-                )
-            ds, dataset_name, leaf = segs[0], segs[1], segs[2]
+            (ds, dataset_name, leaf), warnings = await self._resolve_dotted_recommend_item(
+                raw=raw, entity_ref=entity_ref, data_source=data_source)
         owning = await self.storage.get_dataset(dataset_name, data_source=ds)
         if owning is None:
             raise ValueError(
@@ -2561,6 +2548,26 @@ class SlayerQueryEngine:
             leaf=leaf, suffix=suffix, attachment=attachment,
         )
         return item, warnings
+
+    async def _resolve_dotted_recommend_item(
+        self, *, raw: str, entity_ref: str, data_source: str | None,
+    ) -> "tuple[tuple[str, str, str], list[str]]":
+        """``(datasource, dataset, leaf)`` of a dotted item, and the resolution's warnings."""
+        # Force a dotted item into ``data_source`` unless it already leads
+        # with it, so a dataset colliding with a datasource name still resolves
+        # and a foreign-datasource ref fails as cross-datasource.
+        resolution_input = entity_ref
+        if data_source and entity_ref.split(".")[0] != data_source:
+            resolution_input = f"{data_source}.{entity_ref}"
+        res = await resolve_entity(resolution_input, storage=self.storage)
+        segs = res.canonical_forms[0].split(".")
+        if len(segs) < 3:
+            raise ValueError(
+                f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
+                f"not a field or metric. recommend_population needs "
+                f"'dataset.field' / 'dataset.metric' items."
+            )
+        return (segs[0], segs[1], segs[2]), res.warnings
 
     async def _refuse_unqualified_item(self, raw: str, *, data_source: str | None) -> None:
         """A bare name or ``count(*)`` item is refused as a query refuses it, suggesting the qualified spellings."""

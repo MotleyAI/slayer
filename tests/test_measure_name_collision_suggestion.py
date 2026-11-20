@@ -50,7 +50,7 @@ async def test_suggests_the_derived_name() -> None:
 
 
 async def test_derived_name_taken_by_an_explicit_name() -> None:
-    assert _names(await _suggestion([_COLLIDING, {"metric": "count(*)", "alias": "credit_sum"}]), "credit_2")
+    assert _names(await _suggestion([_COLLIDING, {"metric": "count(customers.*)", "alias": "credit_sum"}]), "credit_2")
 
 
 @pytest.mark.parametrize("unnamed_first", [False, True])

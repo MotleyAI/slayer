@@ -70,8 +70,8 @@ def _cases() -> dict:
         "lifted/mixed_reagg": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"metric":
-                "sum(amount * min(sum(amount, partition_by=[region, ordered_at]), "
-                "partition_by=region))", "alias": "m"}]}},
+                "sum(monthly.amount * min(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at]), "
+                "partition_by=monthly.region))", "alias": "m"}]}},
         "lifted/mixed_collapse": {
             "source": "monthly", "mode": None,
             "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"metric":

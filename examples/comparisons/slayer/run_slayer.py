@@ -146,6 +146,8 @@ class SlayerBlock(BaseModel):
     extra_datasets: List[str] = Field(default_factory=list)
     create_dataset_from_query: Optional[SetupDataset] = None
     keys: Optional[List[str]] = None
+    # SLayer's own truth, where its documented answer differs from the probe's shared truth_sql.
+    truth_sql: Optional[str] = None
     values: Optional[List[str]] = None
     expect: Literal["match"] | SlayerExpect = "match"
     note: Optional[str] = None
@@ -221,6 +223,8 @@ def compute_truth(db_path: Path, probes: List[Probe]) -> Dict[Tuple[str, str], L
     for p in probes:
         for kind in ("truth", "contrast"):
             sql = getattr(p, f"{kind}_sql")
+            if kind == "truth" and p.slayer and p.slayer.truth_sql:
+                sql = p.slayer.truth_sql
             if sql:
                 out[(p.id, kind)] = con.execute(sql).fetchall()
     con.close()
@@ -363,7 +367,8 @@ class SessionResult(BaseModel):
 
 
 def run_sql(db_path: Path, sql: str) -> None:
-    # Through duckdb_engine, so the connection shares the MCP engine's open database instead of clashing with it.
+    # SLayer opens DuckDB files read-only, and DuckDB refuses a read-write open beside them: callers release SLayer's
+    # idle connections first.
     eng = sa.create_engine(f"duckdb:///{db_path}")
     try:
         with eng.begin() as con:
@@ -400,6 +405,7 @@ def run_session(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionResu
         server = create_mcp_server(storage)
         for step in block.steps:
             if step.sql is not None:
+                run_sync(server._slayer_engine.release_local_connections())
                 run_sql(db_path=db_path, sql=step.sql)
                 continue
             args = json.loads(json.dumps(step.args).replace("{db_path}", str(db_path)))

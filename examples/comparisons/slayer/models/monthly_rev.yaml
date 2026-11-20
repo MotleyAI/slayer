@@ -2,6 +2,6 @@
 name: monthly_rev
 source_queries:
   - population: orders
-    dimensions: [status]
-    time_dimensions: [{field: order_date, granularity: month}]
-    metrics: [{metric: "sum(amount)", alias: rev}]
+    dimensions: [orders.status]
+    time_dimensions: [{field: orders.order_date, granularity: month}]
+    metrics: [{metric: "sum(orders.amount)", alias: rev}]

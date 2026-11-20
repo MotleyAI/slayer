@@ -39,7 +39,7 @@ postgresql_proc = factories.postgresql_proc(port=None)
 
 MODES = [pytest.param({}, id="default"), pytest.param({"to_many_handling": "associate"}, id="associate")]
 REV_ROOTLESS = [metric("sum(orders.amount)", "rev")]
-REV_ROOTED = [metric("sum(amount)", "rev")]
+REV_ROOTED = [metric("sum(orders.amount)", "rev")]
 CUSTOMER_MEASURES = [
     metric("sum(customers.spend)", "sp"),
     metric("wsum(customers.spend)", "ws"),
@@ -76,14 +76,12 @@ def sales_statements(*, nullable: bool, keyed: bool = False) -> list[str]:
 
 
 def sales_query(*, source: str, mode: dict):
-    dimension = "tags.label" if source == "sales" else "label"
-    prefix = "" if source == "sales" else "sales."
     return query(
-        population=source, dimensions=[dimension],
+        population=source, dimensions=["tags.label"],
         metrics=[
-            metric(f"sum({prefix}amount)", "total"),
+            metric("sum(sales.amount)", "total"),
             metric("count(sales.*)", "n"),
-            metric(f"weighted_avg({prefix}amount, weight={prefix}weight)", "weighted"),
+            metric("weighted_avg(sales.amount, weight=sales.weight)", "weighted"),
         ],
         **mode,
     )

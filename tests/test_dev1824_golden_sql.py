@@ -28,7 +28,7 @@ WBAND = (
     "CASE WHEN sum(orders.amount, window='90d', partition_by=orders.region) > 50 THEN 1 ELSE 0 END"
 )
 CBAND = (
-    "CASE WHEN cumsum(sum(amount, partition_by=[region, ordered_at])) > 50 "
+    "CASE WHEN cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) > 50 "
     "THEN 1 ELSE 0 END"
 )
 
@@ -103,7 +103,7 @@ def _cases() -> dict:
         "lift/coexist_same_agg_both": q(
             dimensions=[
                 "orders.region",
-                {"field": "CASE WHEN sum(amount, partition_by=region) > 55 "
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
             metrics=[QueryMetric(
@@ -147,8 +147,8 @@ def _cases() -> dict:
         "lift/dim_two_partition_sets": q(
             dimensions=[
                 "orders.region",
-                {"field": "sum(amount, partition_by=city) - "
-                               "sum(amount, partition_by=region)", "alias": "gap"},
+                {"field": "sum(orders.amount, partition_by=orders.city) - "
+                               "sum(orders.amount, partition_by=orders.region)", "alias": "gap"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
@@ -180,7 +180,7 @@ def _cases() -> dict:
             to_many_handling="broadcast",
             dimensions=[
                 "orders.region",
-                {"field": "CASE WHEN sum(customers.spend, partition_by=region) "
+                {"field": "CASE WHEN sum(customers.spend, partition_by=orders.region) "
                                "> 100 THEN 1 ELSE 0 END", "alias": "cband"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],

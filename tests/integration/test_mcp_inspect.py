@@ -470,13 +470,13 @@ class TestStringAggregationRejection:
     @pytest.mark.parametrize("agg", ["sum", "avg", "median"])
     async def test_numeric_only_aggregations_rejected_on_string(self, env: InspectEnv, agg: str) -> None:
         with pytest.raises(ValueError, match="is not applicable to String field"):
-            await self._run(env, f"{agg}(status)")
+            await self._run(env, f"{agg}(orders.status)")
 
     async def test_min_max_allowed_on_string(self, env: InspectEnv) -> None:
         """min/max work on strings (alphabetical ordering) — should pass."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "min(status)"}, {"metric": "max(status)"}],
+            "metrics": [{"metric": "min(orders.status)"}, {"metric": "max(orders.status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data  # executed without error
@@ -485,7 +485,7 @@ class TestStringAggregationRejection:
         """count/count_distinct always work regardless of type."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(status)"}, {"metric": "count_distinct(status)"}],
+            "metrics": [{"metric": "count(orders.status)"}, {"metric": "count_distinct(orders.status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -494,7 +494,7 @@ class TestStringAggregationRejection:
         """avg/sum on the numeric `amount` field must still work."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}, {"metric": "avg(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}, {"metric": "avg(orders.amount)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -508,7 +508,7 @@ class TestPrimaryKeyAggregationRule:
         """`:sum` on a numeric primary-key field is rejected at enrichment."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(id)"}],
+            "metrics": [{"metric": "sum(orders.id)"}],
         })
         with pytest.raises(ValueError, match="primary-key field"):
             await env["engine"].execute(query=q)
@@ -517,7 +517,7 @@ class TestPrimaryKeyAggregationRule:
         """`:count` on a primary-key field is always allowed."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(id)"}],
+            "metrics": [{"metric": "count(orders.id)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data

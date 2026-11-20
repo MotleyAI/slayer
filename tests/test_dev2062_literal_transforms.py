@@ -61,7 +61,7 @@ async def test_rank_family_over_literal(exec_engine, formula) -> None:
 
 @pytest.mark.parametrize("formula", list(_RANK_FAMILY))
 async def test_partitioned_rank_family_over_literal(exec_engine, formula) -> None:
-    partitioned = f"{formula[:-1]}, partition_by=region)"
+    partitioned = f"{formula[:-1]}, partition_by=orders.region)"
     resp = await exec_engine.execute(orders_q(
         dimensions=["orders.region"], time_dimensions=month_td(),
         metrics=[m("sum(orders.amount)", "s"), m(partitioned, "v")],

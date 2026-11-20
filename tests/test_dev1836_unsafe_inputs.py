@@ -148,7 +148,7 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             dimensions=[{
-                "field": ("CASE WHEN sum(amount, partition_by="
+                "field": ("CASE WHEN sum(orders.amount, partition_by="
                                "customers.segments.label) > 10 "
                                "THEN 1 ELSE 0 END"),
                 "alias": "b",

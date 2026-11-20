@@ -132,7 +132,7 @@ def _two_branch_by_status() -> dict:
 class TestSameModelExpressions:
     async def test_arithmetic_expression(self, exec_backend):
         got = await _val(exec_backend, "sum(orders.amount - orders.cost)")
-        twin = await _val(exec_backend, "sum(amount) - sum(cost)")
+        twin = await _val(exec_backend, "sum(orders.amount) - sum(orders.cost)")
         assert got == pytest.approx(twin)
 
     async def test_scalar_function_inside(self, exec_backend):
@@ -158,7 +158,7 @@ class TestSameModelExpressions:
     async def test_derived_sql_column_operand(self, exec_net):
         # net = amount - cost; sum(net * 2) == 2 * sum(amount - cost).
         got = await _val(exec_net, "sum(orders.net * 2)")
-        twin = await _val(exec_net, "sum((amount - cost) * 2)")
+        twin = await _val(exec_net, "sum((orders.amount - orders.cost) * 2)")
         assert got == pytest.approx(twin)
 
     async def test_post_aggregation_filter(self, exec_backend):
@@ -177,7 +177,7 @@ class TestSameModelExpressions:
 # --------------------------------------------------------------------------- #
 class TestCrossModelExpressions:
     async def test_host_homed_expression(self, exec_backend):
-        assert await _val(exec_backend, "sum(amount - customers.discount)") == \
+        assert await _val(exec_backend, "sum(orders.amount - customers.discount)") == \
             pytest.approx(HOST_DISCOUNT_BY_STATUS)
 
     async def test_target_homed_expression_counts_each_customer_once(self, exec_backend):
@@ -202,14 +202,14 @@ class TestCrossModelExpressions:
 
     async def test_explicit_grain_matches_the_query_grain_value(self, exec_backend):
         # partition_by=status over a status-grouped query == the ungrouped homed value.
-        assert await _val(exec_backend, "sum(amount - customers.discount, partition_by=status)") == \
+        assert await _val(exec_backend, "sum(orders.amount - customers.discount, partition_by=orders.status)") == \
             pytest.approx(HOST_DISCOUNT_BY_STATUS)
 
     async def test_window_is_cardinality_neutral_and_valued_every_bucket(self, exec_backend):
         base = await exec_backend.execute(orders_q(
-            time_dimensions=month_td(), metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")]))
+            time_dimensions=month_td("orders"), metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")]))
         withw = await exec_backend.execute(orders_q(
-            time_dimensions=month_td(),
+            time_dimensions=month_td("orders"),
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="a"),
                       QueryMetric(metric="sum(orders.amount - customers.discount, window='90d')", alias="m")]))
         assert len(withw.data) == len(base.data)
@@ -235,8 +235,8 @@ class TestCrossModelExpressions:
     async def test_computed_dimension_position_bands(self, exec_backend):
         # Both statuses' host-discount sums are positive (39, 50) → band 'hi'.
         resp = await exec_backend.execute(orders_q(
-            dimensions=[{"field": "CASE WHEN sum(amount - customers.discount, "
-                         "partition_by=status) > 0 THEN 'hi' ELSE 'lo' END", "alias": "band"},
+            dimensions=[{"field": "CASE WHEN sum(orders.amount - customers.discount, "
+                         "partition_by=orders.status) > 0 THEN 'hi' ELSE 'lo' END", "alias": "band"},
                         "orders.status"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")]))
         assert {row["band"] for row in resp.data} == {"hi"}
@@ -334,7 +334,7 @@ class TestExpressionSourceTyping:
         assert got == pytest.approx(MIXED_SUM_BY_REGION)
 
     _ATTACHED_PARAM = ("weighted_avg(customers.spend, "
-                       "weight=sum(amount, partition_by=customers.regions.name))")
+                       "weight=sum(orders.amount, partition_by=customers.regions.name))")
 
     async def test_attached_parameter_accepted_under_associate(self, exec_backend):
         resp = await exec_backend.execute(orders_q(

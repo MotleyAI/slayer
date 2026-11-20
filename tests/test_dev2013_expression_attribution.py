@@ -60,7 +60,7 @@ from tests._dev1847_fixtures import (
 )
 from tests._engine_helpers import datasets_bundle, seeded_exec_engine
 
-INNER_CUST = "sum(amount, partition_by=customer_id)"
+INNER_CUST = "sum(corders.amount, partition_by=corders.customer_id)"
 
 #: avg(sum(amount, partition_by=[city, region])) by (region, city == 'Alpha').
 ALPHA_CELLS = {
@@ -93,7 +93,7 @@ CASE_CELLS = {
     ("South", "o"): 100.0, ("East", "o"): 60.0, ("Gap", "o"): 10.0, ("Void", "o"): None,
 }
 SINGLE_ALPHA = {(False,): 58.0, (True,): 35.0, (None,): 12.0}
-P_REGION = "sum(amount, partition_by=region)"
+P_REGION = "sum(sales.amount, partition_by=sales.region)"
 IIF_P_CELLS = {
     ("North", 90.0): 30.0, ("North", 0.0): 60.0, ("South", 140.0): 40.0,
     ("South", 0.0): 100.0, ("East", 0.0): 60.0, ("Gap", 0.0): 10.0, ("Void", 0.0): None,
@@ -345,7 +345,7 @@ class TestNegativeControls:
     async def test_explicit_outer_partition_does_not_warn(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region", _dim("sales.city == 'Alpha'", "is_alpha")],
-            metrics=[reagg("avg", INNER_CR, name="acr", partition_by="region")]))
+            metrics=[reagg("avg", INNER_CR, name="acr", partition_by="sales.region")]))
         cells = _cells(resp, ["sales.region", "is_alpha"], "acr",
                        norm=[str, _bool])
         assert set(cells) == set(ALPHA_CELLS)
@@ -426,8 +426,8 @@ class TestDiagnosticNaming:
         query = chain_q(
             dimensions=["customers.regions.name"],
             metrics=[QueryMetric(
-                metric="weighted_avg(sum(amount, partition_by=customers.regions.name), "
-                        "weight=id)", alias="w")])
+                metric="weighted_avg(sum(corders.amount, partition_by=customers.regions.name), "
+                        "weight=corders.id)", alias="w")])
         with pytest.raises(ParameterGrainError) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value)

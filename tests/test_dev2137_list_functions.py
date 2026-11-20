@@ -56,29 +56,29 @@ class TestContains:
         assert got == {"Ann": True, "Bob": False, "Cid": False, "Dee": None, "Eve": True}
 
     async def test_filtering_by_membership(self, engine) -> None:
-        assert await _count(engine, "contains(skills, 'go')") == 2
+        assert await _count(engine, "contains(contractors.skills, 'go')") == 2
 
     async def test_absence(self, engine) -> None:
-        assert await _names(engine, "NOT contains(skills, 'go')") == {"Bob", "Cid"}
+        assert await _names(engine, "NOT contains(contractors.skills, 'go')") == {"Bob", "Cid"}
 
     async def test_the_string_meaning_is_unchanged(self, engine) -> None:
-        assert await _names(engine, "contains(team, 'A')") == {"Ann", "Bob"}
+        assert await _names(engine, "contains(contractors.team, 'A')") == {"Ann", "Bob"}
 
 
 class TestContainsAnyAll:
     async def test_all_of_several_values(self, engine) -> None:
-        assert await _count(engine, "contains_all(skills, ['go', 'sql'])") == 1
+        assert await _count(engine, "contains_all(contractors.skills, ['go', 'sql'])") == 1
 
     async def test_any_of_several_values(self, engine) -> None:
-        assert await _count(engine, "contains_any(skills, ['go', 'sql'])") == 3
+        assert await _count(engine, "contains_any(contractors.skills, ['go', 'sql'])") == 3
 
     async def test_another_list_column(self, engine) -> None:
-        assert "Ann" in await _names(engine, "contains_any(skills, required)")
+        assert "Ann" in await _names(engine, "contains_any(contractors.skills, contractors.required)")
 
     async def test_an_empty_selection(self, engine) -> None:
         empty = {"variables": {"wanted": []}}
-        assert await _names(engine, "contains_all(skills, {wanted})", **empty) == {"Ann", "Bob", "Cid", "Eve"}
-        assert await _names(engine, "contains_any(skills, {wanted})", **empty) == set()
+        assert await _names(engine, "contains_all(contractors.skills, {wanted})", **empty) == {"Ann", "Bob", "Cid", "Eve"}
+        assert await _names(engine, "contains_any(contractors.skills, {wanted})", **empty) == set()
 
     async def test_null_list_is_null(self, engine) -> None:
         got = await _values(engine, "contains_any(contractors.skills, ['go'])")
@@ -136,13 +136,13 @@ class TestArrayLiterals:
             await _values(engine, "length([])")
 
     async def test_list_variable_in_contains_any(self, engine) -> None:
-        assert await _names(engine, "contains_any(skills, {wanted})", variables={"wanted": ["rust", "go"]}) == {
+        assert await _names(engine, "contains_any(contractors.skills, {wanted})", variables={"wanted": ["rust", "go"]}) == {
             "Ann", "Eve"}
 
 
 class TestArgumentTypes:
     async def test_a_numeric_list_and_a_text_literal(self, engine) -> None:
-        assert await _names(engine, "contains(scores, '5')") == {"Eve"}
+        assert await _names(engine, "contains(contractors.scores, '5')") == {"Eve"}
 
     async def test_incompatible_types(self, engine) -> None:
         with pytest.raises(SlayerError) as info:

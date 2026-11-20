@@ -63,7 +63,7 @@ class TestColumnAggregates:
     async def test_by_region(self, engine) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["orders.region"],
-            metrics=[m(f"{agg}(flag)", agg) for agg in ("sum", "avg", "min", "max")],
+            metrics=[m(f"{agg}(orders.flag)", agg) for agg in ("sum", "avg", "min", "max")],
         ))
         assert {r: v for r, v in by_dim(resp, "region", "sum").items()} == FLAG_BY_REGION["sum"]
         assert {r: pytest.approx(_num(v)) for r, v in by_dim(resp, "region", "avg").items()} == FLAG_BY_REGION["avg"]

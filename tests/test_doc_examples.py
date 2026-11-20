@@ -27,7 +27,7 @@ from tests._doc_examples import (
 COUNT = {"population": "orders", "metrics": ["count(orders.*)"]}
 MARKER = '!!! note "Illustrative schema"'
 NOT_A_QUERY = "<!-- doc-check: not-a-query -->"
-HYPOTHETICAL = '{"population": "orders", "metrics": ["sum(website_visits)"]}'
+HYPOTHETICAL = '{"population": "orders", "metrics": ["sum(orders.website_visits)"]}'
 
 
 def _md(*lines: str) -> str:
@@ -227,7 +227,7 @@ class TestMarkersAndGuard:
         assert [f.split(": ")[0] for f in failures] == ["page.md:7"]
 
     def test_query_returning_no_rows_fails(self, doc_demo_storage: YAMLStorage) -> None:
-        query = '{"population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["store_id"], "filter": ["order_total < 0"]}'
+        query = '{"population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.store_id"], "filter": ["orders.order_total < 0"]}'
         failures = _failures(doc_demo_storage, "```json", query, "```")
         assert failures == ["page.md:2: returned no rows"]
 

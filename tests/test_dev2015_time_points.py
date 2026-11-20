@@ -45,9 +45,9 @@ class TestCustomUnits:
         ("last 2 quarter_hours", D(2026, 9, 29, 11, 30), D(2026, 9, 29, 12)),
     ])
     async def test_resolves_to_the_custom_period(self, engine, token, start, end) -> None:
-        assert await ids(engine, f"ts in '{token}'") == ids_in(start, end)
-        assert await ids(engine, f"ts >= '{token}'") == ids_in(start, FAR_FUTURE)
-        assert await ids(engine, f"ts <= '{token}'") == ids_in(FAR_PAST, end)
+        assert await ids(engine, f"ev.ts in '{token}'") == ids_in(start, end)
+        assert await ids(engine, f"ev.ts >= '{token}'") == ids_in(start, FAR_FUTURE)
+        assert await ids(engine, f"ev.ts <= '{token}'") == ids_in(FAR_PAST, end)
 
     @pytest.mark.parametrize(("token", "start", "end"), [
         ("last fiscal_year", D(2025, 4, 1), D(2026, 4, 1)),

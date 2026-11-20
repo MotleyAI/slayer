@@ -147,7 +147,7 @@ class TestImplicitDefaultRefused:
         engine = await make_engine(str(tmp_path), orders_default="li_ts")
         await _refused(
             engine, "ranks/reads by li_ts", HOST_HOP, agg_key=agg_key,
-            metrics=[metric(f"{agg_key.agg}(amount)")], to_many_handling=mode,
+            metrics=[metric(f"{agg_key.agg}(orders.amount)")], to_many_handling=mode,
         )
 
     @pytest.mark.parametrize("mode", MODES)

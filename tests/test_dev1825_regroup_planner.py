@@ -102,8 +102,8 @@ class TestPlaceholderRegistry:
 # --------------------------------------------------------------------------- #
 class TestMultiOutputProducer:
     async def test_two_aggregates_one_partition_set_share_one_cte(self) -> None:
-        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
-                "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
+        band = ("CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
+                "AND count(orders.amount, partition_by=orders.city) > 1 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
@@ -115,7 +115,7 @@ class TestMultiOutputProducer:
             dimensions=[
                 "orders.region",
                 {"field": BAND, "alias": "band_hi"},
-                {"field": "CASE WHEN count(amount, partition_by=city) > 1 "
+                {"field": "CASE WHEN count(orders.amount, partition_by=orders.city) > 1 "
                                "THEN 1 ELSE 0 END", "alias": "band_n"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
@@ -204,7 +204,7 @@ class TestDiscoveryGuards:
         q = _q(
             dimensions=[
                 "orders.region",
-                {"field": "CASE WHEN sum(customers.spend, partition_by=city) "
+                {"field": "CASE WHEN sum(customers.spend, partition_by=orders.city) "
                                "> 100 THEN 1 ELSE 0 END", "alias": "band"},
             ],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],

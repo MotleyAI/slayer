@@ -203,11 +203,11 @@ CHANGE_PCT_OVER_LAST = {("North", "2024-02"): 0.5}
 # Union-grain oracles.
 # --------------------------------------------------------------------------- #
 UNION_WM_DIM = (
-    "rank(sum(amount, window='90d', partition_by=region) - "
-    "sum(amount, partition_by=region), direction='desc')"
+    "rank(sum(orders.amount, window='90d', partition_by=orders.region) - "
+    "sum(orders.amount, partition_by=orders.region), direction='desc')"
 )
 UNION_RK_DIM = (
-    "rank(last(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
+    "rank(last(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), direction='desc')"
 )
 UNION_WM_RANK = {
     ("North", "2024-01"): 5, ("North", "2024-02"): 1,
