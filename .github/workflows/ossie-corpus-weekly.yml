@@ -1,0 +1,39 @@
+name: Ossie corpus (upstream main)
+
+# Weekly: fetch apache/ossie main, harvest its validator test documents, and run the corpus, wide-table oracle and
+# portability-grader tests against that fresh copy. PRs run the same tests on the vendored snapshot. Never runs on PRs;
+# a red run is the signal to re-vendor tests/fixtures/ossie_corpus.
+on:
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Fetch apache/ossie main
+        run: git clone --depth 1 https://github.com/apache/ossie.git "$RUNNER_TEMP/ossie"
+
+      - name: Harvest upstream's validator test documents
+        run: poetry run python scripts/ossie_schema_drift.py --harvest "$RUNNER_TEMP/ossie" --out "$RUNNER_TEMP/ossie/harvested"
+
+      - name: Run the corpus, oracle and grader tests against upstream main
+        env:
+          SLAYER_OSSIE_CORPUS: ${{ runner.temp }}/ossie
+        run: >-
+          poetry run pytest tests/test_dev2243_corpus.py tests/test_dev2243_wide_table_oracle.py
+          tests/test_dev2243_portability_grader.py -m "not integration" -n logical --timeout=600

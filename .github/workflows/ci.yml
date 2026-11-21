@@ -81,6 +81,9 @@ jobs:
       - name: Install jafgen (for the demo and notebook tests, not on PyPI)
         run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
 
+      # The Ossie corpus tests run upstream's validator and portability grader through `uv run`.
+      - uses: astral-sh/setup-uv@v10.3.3
+
       - name: Run unit tests (shard ${{ matrix.shard }}/3)
         timeout-minutes: 20
         # One of three duration-balanced module groups (tests/_sharding.py); -n logical
