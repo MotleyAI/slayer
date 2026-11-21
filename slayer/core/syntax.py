@@ -2279,8 +2279,39 @@ def _json_key_list(name: str):
     return build
 
 
+def _ossie_unit(node: Any) -> Any:
+    """Ossie's bare date unit word (``DATEDIFF(day, …)``) as SLayer's unit literal."""
+    if isinstance(node, Ref) and not node.quoted and node.name.lower() in _UNIT_WORDS:
+        return Literal(value=node.name.lower())
+    return node
+
+
+def _datediff(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``DATEDIFF(unit, start, end)`` as ``date_diff``."""
+    if len(args) != 3:
+        raise _Problem("DATEDIFF takes (unit, start, end).")
+    return _dispatch_call("date_diff", args=(_ossie_unit(args[0]), *args[1:]), kwargs=(), original=_STATE.text)
+
+
+def _dateadd(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``DATEADD(unit, n, ts)`` as ``date_add(ts, n, unit)``."""
+    if len(args) != 3:
+        raise _Problem("DATEADD takes (unit, amount, timestamp).")
+    return _dispatch_call("date_add", args=(args[2], args[1], _ossie_unit(args[0])), kwargs=(), original=_STATE.text)
+
+
+def _current_timestamp(args: Tuple[Any, ...]) -> ParsedExpr:
+    """SQL ``CURRENT_TIMESTAMP()`` as ``now()``."""
+    if args:
+        raise _Problem("CURRENT_TIMESTAMP takes no arguments.")
+    return _dispatch_call("now", args=(), kwargs=(), original=_STATE.text)
+
+
 # Spellings collapsed into one library node (engine P2); each name is reserved (``SCALAR_SPELLINGS``).
 _SPELLINGS: Dict[str, Callable[[Tuple[Any, ...]], ParsedExpr]] = {
+    "datediff": _datediff,
+    "dateadd": _dateadd,
+    "current_timestamp": lambda args: _current_timestamp(args),
     "strpos": lambda args: ScalarCall(name="instr", args=args),
     "iff": lambda args: ScalarCall(name="iif", args=args),
     "cardinality": lambda args: ScalarCall(name="length", args=args),

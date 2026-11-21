@@ -2110,7 +2110,9 @@ def _field_agg_refusal(*, col: DatasetField, fields, agg: str, custom: bool) -> 
             return None
         return (f"field {leaf!r} restricts allowed_aggregations to "
                 f"{sorted(col.allowed_aggregations)}; got {agg!r}.")
-    # Dataset-custom aggregations are exempt from the type-default gate.
+    # Dataset-custom aggregations, and fields of a type still unknown, are exempt from the type-default gate.
+    if col.datatype is None:
+        return None
     allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.datatype, frozenset())
     if custom or agg in allowed:
         return None

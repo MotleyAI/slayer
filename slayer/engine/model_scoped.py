@@ -6,6 +6,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any, Dict, List, Optional, Tuple
 
 from slayer.core.errors import AggArgumentError, AmbiguousReferenceError, MetricCycleError, UnevaluableEntityError
+from slayer.core.field_expression import portable_text
 from slayer.core.names import match_name
 from slayer.core.query import OrderItem, SlayerQuery, declared_aliases
 from slayer.core.semantic_model import ModelScopedMetric
@@ -47,8 +48,7 @@ class ModelScope:
             raise MetricCycleError([*chain[chain.index(metric.name):], metric.name])
         key = (metric.data_source, metric.name)
         if key not in self._trees:
-            expression = metric.expression
-            text = expression if isinstance(expression, str) else expression.sql
+            text = portable_text(metric.expression)
             if text is None:
                 raise UnevaluableEntityError(entity=f"Metric '{metric.name}'", reason="has no portable SQL expression")
             self._trees[key] = self._expanded(parse_template(text), aliases=(), chain=(*chain, metric.name))
