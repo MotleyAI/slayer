@@ -151,6 +151,11 @@ def _normalised_timestamp(expr: Expression) -> Expression:
     return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string("%Y-%m-%d %H:%M:%f"), expr])
 
 
+def _timestamp_text(expr: Expression) -> Expression:
+    """``expr`` as ``YYYY-MM-DD HH:MM:SS.ffffff`` text through the registered UDF (``%f`` keeps only milliseconds)."""
+    return exp.Anonymous(this="slayer_timestamp_text", expressions=[expr])
+
+
 def _strftime_int(fmt: str, col_expr: Expression) -> Expression:
     return exp.Cast(this=_strftime(fmt, col_expr), to=exp.DataType.build("INTEGER"))
 
@@ -413,6 +418,12 @@ def _parse_sqlite_temporal(value) -> Optional[datetime]:
         return None
 
 
+def _slayer_timestamp_text(value) -> Optional[str]:
+    """Stored date / timestamp text as ``YYYY-MM-DD HH:MM:SS.ffffff``; NULL when it is not ISO temporal text."""
+    moment = _parse_sqlite_temporal(value)
+    return None if moment is None else moment.isoformat(sep=" ", timespec="microseconds")
+
+
 def _slayer_date_add(ts, n, unit):
     """``ts`` moved by ``n`` ``unit``s, month-based moves clamped at month-end; NULL on NULL / malformed input."""
     moment = _parse_sqlite_temporal(ts)
@@ -615,6 +626,7 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     dbapi_connection.create_function("pow", 2, _pow)
     dbapi_connection.create_function("power", 2, _pow)
     dbapi_connection.create_function("slayer_date_add", 3, _slayer_date_add)
+    dbapi_connection.create_function("slayer_timestamp_text", 1, _slayer_timestamp_text, deterministic=True)
     dbapi_connection.create_function("slayer_try_cast", 2, _slayer_try_cast)
     dbapi_connection.create_function("slayer_try_cast", 3, _slayer_try_integer)
 
@@ -982,8 +994,8 @@ class SqliteDialect(SqlDialect):
         return exp.Anonymous(this="DATE", expressions=[expr])
 
     def build_temporal_comparands(self, left: Expression, right: Expression) -> tuple[Expression, Expression]:
-        """Both sides as millisecond ISO text: equal instants compare equal whatever their stored spelling."""
-        return _normalised_timestamp(left), _normalised_timestamp(right)
+        """Both sides as microsecond ISO text: equal instants compare equal whatever their stored spelling."""
+        return _timestamp_text(left), _timestamp_text(right)
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         return exp.Anonymous(this="DATETIME", expressions=[expr.copy()])

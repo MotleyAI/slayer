@@ -519,6 +519,7 @@ def coerced_parts(
         int_value(p) if i in ints else dialect.promote_to_timestamp(p) if i in dates else p
         for i, p in enumerate(parts)
     ]
+    out = _typed_null_safe(key=key, parts=out, field_type=field_type, dialect=dialect)
     if temporal_pair(key, field_type=field_type) is not None:
         out = list(dialect.build_temporal_comparands(out[0], out[1]))
     return out
@@ -551,14 +552,16 @@ def render_mixed_nullif(*, args: List[Expression], date_position: int, dialect: 
 
 def date_typed_comparison(
     comparison: Tuple[TemporalComparisonOp, Any, date], *, field_type: FieldTypeFn,
-) -> Tuple[TemporalComparisonOp, Any, date]:
-    """A date-time literal compared with a DATE operand as the exact DATE bound: the column never converts."""
+) -> Tuple[TemporalComparisonOp, Any, date, bool]:
+    """A date-time literal compared with a DATE operand as the exact DATE bound, else with the operand read as its
+    midnight (the trailing flag)."""
     op, operand, value = comparison
     if isinstance(value, datetime) and temporal_type(operand, field_type=field_type) is DataType.DATE:
         bound = date_bound(op, value)
-        if bound is not None:
-            return _TEMPORAL_COMPARISON_OPS[bound[0]], operand, bound[1]
-    return comparison
+        if bound is None:
+            return op, operand, value, True
+        return _TEMPORAL_COMPARISON_OPS[bound[0]], operand, bound[1], False
+    return op, operand, value, False
 
 
 def iif_case_chain(
@@ -590,16 +593,46 @@ def iif_case_chain(
     return exp.Case(ifs=ifs, default=value(node))
 
 
-def _typed_member(value: Any, *, operand: Optional[DataType]) -> Any:
-    """An ISO string member of an ``IN`` over a temporal operand, typed to that operand; else ``value``."""
-    parsed = parse_temporal_value(value) if operand is not None and isinstance(value, str) else None
-    if parsed is None:
+def _parsed_temporal(value: Any) -> Optional[date]:
+    if isinstance(value, date):
         return value
-    if operand is DataType.DATETIME and not isinstance(parsed, datetime):
+    return parse_temporal_value(value) if isinstance(value, str) else None
+
+
+def _off_midnight(value: Any) -> bool:
+    parsed = _parsed_temporal(value)
+    return isinstance(parsed, datetime) and parsed.time() != datetime.min.time()
+
+
+def typed_temporal_literal(value: Any, *, operand: Optional[DataType]) -> Any:
+    """A literal compared with an ``operand`` value, typed to it when their temporal types differ; else ``value``,
+    its spelling kept. An off-midnight instant beside a DATE promotes the DATE instead."""
+    parsed = _parsed_temporal(value) if operand is not None else None
+    if operand is DataType.DATETIME and parsed is not None and not isinstance(parsed, datetime):
         return datetime.combine(parsed, datetime.min.time())
     if operand is DataType.DATE and isinstance(parsed, datetime) and parsed.time() == datetime.min.time():
         return parsed.date()
-    return parsed
+    return value
+
+
+def _typed_null_safe(
+    *, key: Any, parts: List[Expression], field_type: FieldTypeFn, dialect: SqlDialect,
+) -> List[Expression]:
+    """A null-safe comparison's temporal literal typed to the other side, as ``IN`` types its members."""
+    if not (isinstance(key, ArithmeticKey) and key.op in NULL_SAFE_COMPARISON_OPS and len(key.operands) == 2):
+        return parts
+    out = list(parts)
+    for i, literal in enumerate(key.operands):
+        other = key.operands[1 - i]
+        operand = temporal_type(other, field_type=field_type)
+        if not isinstance(literal, LiteralKey) or isinstance(other, LiteralKey) or operand is None:
+            continue
+        if operand is DataType.DATE and _off_midnight(literal.value):
+            out[1 - i], operand = dialect.promote_to_timestamp(out[1 - i]), DataType.DATETIME
+        typed = typed_temporal_literal(literal.value, operand=operand)
+        if typed is not literal.value:
+            out[i] = _literal(typed, dialect=dialect)
+    return out
 
 
 def render_in_predicate(
@@ -614,8 +647,11 @@ def render_in_predicate(
             "IS NOT NULL.",
         )
     operand = temporal_type(key.field, field_type=field_type)
+    if operand is DataType.DATE and any(_off_midnight(v.value) for v in key.values):
+        # No DATE equals an off-midnight instant: the column reads as its midnight instead.
+        column, operand = dialect.promote_to_timestamp(column), DataType.DATETIME
     node = exp.In(this=column, expressions=[
-        _literal(_typed_member(v.value, operand=operand), dialect=dialect) for v in key.values
+        _literal(typed_temporal_literal(v.value, operand=operand), dialect=dialect) for v in key.values
     ])
     return exp.Not(this=node) if key.negated else node
 
@@ -676,8 +712,9 @@ def _row_arithmetic(
 ) -> Expression:
     comparison = temporal_comparison(key)
     if comparison is not None:
-        op, operand, value = date_typed_comparison(comparison, field_type=field_type)
-        return render_temporal_comparison(op=op, operand=part(operand), value=value, dialect=dialect)
+        op, operand, value, midnight = date_typed_comparison(comparison, field_type=field_type)
+        rendered = dialect.promote_to_timestamp(part(operand)) if midnight else part(operand)
+        return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=dialect)
     rendered = list_keyed(key.operands, [part(o) for o in key.operands], dialect=dialect)
     operands = coerced_parts(key=key, parts=rendered, field_type=field_type, dialect=dialect)
     if key.op in NULL_SAFE_COMPARISON_OPS:

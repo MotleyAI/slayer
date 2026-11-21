@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any, Optional
 
 import pytest
@@ -30,7 +31,7 @@ UNITS = ["second", "hour", "day", "week", "week_sunday", "month", "quarter", "ye
 OPERANDS = [DataType.DATE, DataType.DATETIME]
 ZONED = {exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMESTAMPLTZ}
 _CUSTOM = {g["name"]: CustomGranularity.model_validate(g) for g in GRANULARITIES}
-SQLITE_CANONICAL = "STRFTIME('%Y-%m-%d %H:%M:%f',"
+SQLITE_CANONICAL = "SLAYER_TIMESTAMP_TEXT("
 
 
 def _unit(name: str) -> Granularity:
@@ -139,6 +140,26 @@ def test_bigquery_bucket_has_its_logical_type(unit, operand) -> None:
             assert datetime_casts, _render("bigquery", node)
 
 
+@pytest.mark.parametrize("unit", ["day", "hour"])
+def test_tsql_computed_timestamp_bucket_truncates_a_datetime2(unit) -> None:
+    computed = exp.Add(this=exp.column("a"), expression=exp.column("b"))
+    node = get_dialect("tsql").build_bucket(col_expr=computed, granularity=TimeGranularity(unit), operand=DataType.DATETIME)
+    sql = _render("tsql", node)
+    assert "AS DATETIME2)" in sql, sql
+
+
+@pytest.mark.parametrize("unit", ["second", "hour", "day", "month", "fiscal_year"])
+@pytest.mark.parametrize("operand", OPERANDS, ids=lambda o: o.value)
+def test_snowflake_bucket_timestamps_are_ntz(unit, operand) -> None:
+    sql = _render("snowflake", _bucket("snowflake", unit, operand))
+    assert "AS TIMESTAMP)" not in sql, sql
+
+
+def test_snowflake_timestamp_literal_is_ntz() -> None:
+    node = get_dialect("snowflake").build_temporal_literal(value=datetime(2025, 3, 1, 6), dt=DataType.DATETIME)
+    assert _render("snowflake", node) == "CAST('2025-03-01 06:00:00' AS TIMESTAMPNTZ)"
+
+
 @pytest.mark.parametrize("dialect", ["snowflake", "tsql", "trino", "bigquery"])
 @pytest.mark.parametrize("unit", ["second", "minute", "hour"])
 def test_sub_day_bucket_of_a_date_promotes_the_source(dialect, unit) -> None:
@@ -182,6 +203,28 @@ async def test_mixed_nullif_compares_at_midnight_and_returns_the_date(dialect) -
     }))
     assert _promoted(dialect, exp.column("d", table="mx")) in sql, sql
     assert "NULLIF(" not in sql.upper(), sql
+
+
+@pytest.mark.parametrize("dialect", PROMOTING)
+@pytest.mark.parametrize("filt", [
+    "mx.d = timestamp '2024-05-15 06:00:00'",
+    "mx.d != timestamp '2024-05-15 06:00:00'",
+    "mx.d in ('2024-05-16', '2024-05-15 06:00:00')",
+])
+async def test_date_meeting_an_off_midnight_literal_is_promoted(dialect, filt) -> None:
+    sql = _flat(await _sql(dialect, {"population": "mx", "dimensions": ["mx.id"], "filter": [filt]}))
+    assert _promoted(dialect, exp.column("d", table="mx")) in sql, sql
+
+
+@pytest.mark.parametrize("dialect", PROMOTING)
+@pytest.mark.parametrize("filt", [
+    "mx.d = timestamp '2024-05-15 00:00:00'",
+    "mx.d >= timestamp '2024-05-15 06:00:00'",
+    "mx.d in ('2024-05-16', '2024-05-15 00:00:00')",
+])
+async def test_date_meeting_an_exact_date_literal_stays_bare(dialect, filt) -> None:
+    sql = _flat(await _sql(dialect, {"population": "mx", "dimensions": ["mx.id"], "filter": [filt]}))
+    assert _promoted(dialect, exp.column("d", table="mx")) not in sql, sql
 
 
 @pytest.mark.parametrize("filt", ["mx.d = mx.ts", "mx.ts = mx.shipped_at", "mx.d is not distinct from mx.ts", "date_trunc('day', mx.ts) = mx.ts"])

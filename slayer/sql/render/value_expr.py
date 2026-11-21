@@ -416,8 +416,10 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, ArithmeticKey):
         comparison = temporal_comparison(key)
         if comparison is not None:
-            op, operand, value = date_typed_comparison(comparison, field_type=_known_field_types(ctx))
+            op, operand, value, midnight = date_typed_comparison(comparison, field_type=_known_field_types(ctx))
             rendered = render_value_key(key=operand, ctx=ctx)
+            if midnight:
+                rendered = ctx.dialect.promote_to_timestamp(rendered)
             if ctx.filters is not None and ctx.filters.paren_comparison_operands:
                 rendered = _paren_if_binary(rendered)
             return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)

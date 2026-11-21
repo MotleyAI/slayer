@@ -25,7 +25,7 @@
 ## 3. Dialect emission
 
 - [x] 3.1 `SqlDialect.build_bucket(col_expr, granularity, operand)` returns exactly the bucket type. Add the `demote_to_date` hook. Base / Postgres / DuckDB truncate `CAST(x AS TIMESTAMP)` and cast DATE results back. Custom granularities demote. `week_sunday` keeps the operand type. Verify: 1.8 base/Postgres/DuckDB and 1.1 on DuckDB and Postgres.
-- [x] 3.2 SQLite: canonical TIMESTAMP bucket text at every unit; spelling-independent temporal comparison form (decision 18) for non-literal pairs. Verify: 1.1, 1.3 and 1.4 on SQLite.
+- [x] 3.2 SQLite: canonical TIMESTAMP bucket text at every unit; spelling-independent temporal comparison form (decision 18) for non-literal pairs, through a registered canonical-timestamp UDF that keeps six fractional digits. Verify: 1.1, 1.3 and 1.4 on SQLite.
 - [x] 3.3 MySQL, ClickHouse, Snowflake, T-SQL, Trino and BigQuery overrides per decision 9. Verify: 1.8 for each, and 1.11 in the path-gated integration workflows.
 - [x] 3.4 `bucket_offset` / `bucket_step` take the bucket's type. Delete `bucket_comparand` and its generator call sites. Verify: 1.6 and the time-shift goldens.
 

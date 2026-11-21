@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity

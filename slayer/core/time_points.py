@@ -306,10 +306,13 @@ _DATE_BOUND_OPS: Mapping[str, tuple[str, timedelta]] = MappingProxyType({
 
 def date_bound(op: str, value: datetime) -> Optional[tuple[str, date]]:
     """``(op, day)`` with ``d <op> day`` exactly ``midnight(d) <op'> value`` for a DATE ``d``; ``None`` when no
-    such bound exists (an equality with a non-midnight instant)."""
+    such bound exists (an equality with a non-midnight instant, or a day past ``date.max``)."""
     if op in _DATE_BOUND_OPS:
         bound_op, nudge = _DATE_BOUND_OPS[op]
-        return bound_op, ceil_to(value + nudge, TimeGranularity.DAY).date()
+        try:
+            return bound_op, ceil_to(value + nudge, TimeGranularity.DAY).date()
+        except OverflowError:
+            return None
     if value.time() == datetime.min.time():
         return op, value.date()
     return None

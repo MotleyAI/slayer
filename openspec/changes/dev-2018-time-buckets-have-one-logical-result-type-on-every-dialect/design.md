@@ -102,7 +102,7 @@ Principles in force:
 
 17. **Rejected Codex finding: "mixed-type coercion exceeds the tracker scope; split it out".** Rejected because the user put it in scope (decisions 3 and 5): rule 2 alone would regress working filters and the spine join. (rejected (codex))
 
-18. **SQLite temporal comparisons are spelling-independent.** On SQLite, any comparison, `in`, null-safe equality or join-back between two non-literal temporal values renders both sides as `STRFTIME('%Y-%m-%d %H:%M:%f', ·)`, the form DEV-1999 uses for literal bounds. That covers DATE-only, TIMESTAMP-only and mixed pairs. Literal bounds keep DEV-1999's sargable path. Alternative: guarantee canonical storage only — rejected, the headline SQLite fix would hold for one spelling only. No existing issue covered it (closest DEV-1381, TEXT date formats for encoders). (user)
+18. **SQLite temporal comparisons are spelling-independent.** On SQLite, any comparison, `in`, null-safe equality or join-back between two non-literal temporal values renders both sides through SLayer's canonical-timestamp function (six fractional digits), so distinct instants stay distinct to the microsecond. That covers DATE-only, TIMESTAMP-only and mixed pairs. Literal bounds keep DEV-1999's sargable path. Alternative: guarantee canonical storage only — rejected, the headline SQLite fix would hold for one spelling only. No existing issue covered it (closest DEV-1381, TEXT date formats for encoders). (user)
 
 ## Risks / Trade-offs
 

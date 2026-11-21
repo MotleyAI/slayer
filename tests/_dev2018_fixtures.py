@@ -298,7 +298,9 @@ def check_bucket_values(
     col = [c for c, _ in table.columns].index(column)
     raw = {row[0]: parse(row[col]) for row in table.rows}
     expected_type = bucket_type(source, unit)
-    problems = []
+    rows = list(rows)
+    returned = sorted(i for i, _ in rows)
+    problems = [] if returned == sorted(raw) else [f"{column}/{unit}: ids {returned} != {sorted(raw)}"]
     for i, got in rows:
         want = oracle_bucket(raw[i], unit)
         if not same_instant(got, want):
@@ -391,6 +393,13 @@ MIXED_FILTER_CASES: list[tuple[str, Any]] = [
      lambda d, ts, s: known(s or d, ts) and (s or d) == ts),
     ("greatest(mx.d, mx.ts) = mx.ts and mx.d is not null and mx.ts is not null", lambda d, ts, s: known(d, ts) and max(d, ts) == ts),
     ("least(mx.d, mx.ts) = mx.d and mx.d is not null and mx.ts is not null", lambda d, ts, s: known(d, ts) and min(d, ts) == d),
+    ("mx.d = timestamp '2025-03-01 06:00:00'", lambda d, ts, s: known(d) and d == datetime(2025, 3, 1, 6)),
+    ("mx.d != timestamp '2025-03-01 06:00:00'", lambda d, ts, s: known(d) and d != datetime(2025, 3, 1, 6)),
+    ("mx.d is not distinct from timestamp '2025-03-01 00:00:00'", lambda d, ts, s: d == datetime(2025, 3, 1)),
+    ("mx.d is distinct from timestamp '2025-03-01 06:00:00'", lambda d, ts, s: True),
+    ("mx.ts is not distinct from '2025-03-02'", lambda d, ts, s: ts == datetime(2025, 3, 2)),
+    ("mx.d in ('2025-03-02', '2025-03-01 06:00:00')",
+     lambda d, ts, s: known(d) and d in {datetime(2025, 3, 2), datetime(2025, 3, 1, 6)}),
 ]
 
 

@@ -88,6 +88,22 @@ class TestNullif:
         assert all(physical_type_error(v, DataType.DATETIME, backend=backend) is None for v in got.values()), got
 
 
+class TestTransforms:
+    async def test_lag_of_a_date_meets_a_timestamp_at_midnight(self, any_engine) -> None:
+        _backend, eng = any_engine
+        resp = await eng.execute(SlayerQuery.model_validate({
+            "population": "mx", "time_dimensions": [{"field": "mx.ts", "granularity": "day"}],
+            "metrics": [{"metric": "iif(lag(max(mx.d)) = max(mx.ts), 1, 0)", "alias": "x"}],
+        }))
+        got = {_day(as_temporal(r["mx.ts"])): int(r["x"]) for r in resp.data if r["mx.ts"] is not None}
+        # Day 03-02: lag(max(d)) is 2025-03-02 and max(ts) is 2025-03-02 00:00.
+        assert got == {date(2025, 3, 1): 0, date(2025, 3, 2): 1}
+
+
+def _day(value: date | None) -> date | None:
+    return value.date() if isinstance(value, datetime) else value
+
+
 class TestConditionalValues:
     async def test_date_arm_of_a_timestamp_conditional_is_midnight(self, engine) -> None:
         backend, eng = engine
@@ -108,6 +124,11 @@ class TestSqliteStorageSpelling:
         ("date_trunc('day', sp.ts) = sp.d", SP_VALID),
         ("date_trunc('day', sp.ts) in ('2025-03-01')", SP_VALID),
         ("sp.ts < sp.ts2", set()),
+        ("sp.d is not distinct from timestamp '2025-03-01 00:00:00'", set(range(1, 8))),
+        ("sp.d is distinct from timestamp '2025-03-01 06:00:00'", set(range(1, 8))),
+        # A member of the column's own type keeps the author's spelling, as a literal bound does.
+        ("sp.ts in ('2025-03-01T10:00:00')", {5}),
+        ("sp.ts not in ('2025-03-01T10:00:00')", {1, 2, 3, 4, 6, 7}),
     ])
     async def test_comparisons(self, sqlite_engine, filt, expected) -> None:
         assert await ids(sqlite_engine, filt, model="sp") == set(expected)

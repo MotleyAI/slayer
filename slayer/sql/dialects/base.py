@@ -1489,7 +1489,7 @@ class SqlDialect(BaseModel):
 
     def _timestamp_operand(self, expr: Expression) -> Expression:
         """``expr`` as a TIMESTAMP, an existing TIMESTAMP cast kept."""
-        if isinstance(expr, exp.Cast) and expr.to.this is exp.DataType.Type.TIMESTAMP:
+        if isinstance(expr, exp.Cast) and expr.to.this is self.naive_timestamp_type().this:
             return expr
         return self.promote_to_timestamp(expr)
 
@@ -1562,12 +1562,17 @@ class SqlDialect(BaseModel):
         base, multiple, _ = granularity_parts(unit)
         return self.bucket_offset(bucket=bucket, count=count * multiple, unit=base, operand=operand)
 
+    def naive_timestamp_type(self) -> exp.DataType:
+        """SLayer's naive TIMESTAMP as this dialect's type."""
+        return exp.DataType.build("TIMESTAMP")
+
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         """A DATE value as the dialect's naive timestamp (midnight)."""
-        return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMP"))
+        return exp.Cast(this=expr.copy(), to=self.naive_timestamp_type())
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
-        return exp.Cast(this=exp.Literal.string(iso_text(value)), to=exp.DataType.build(dt.kind.value))
+        target = self.naive_timestamp_type() if dt.kind is TypeKind.TIMESTAMP else exp.DataType.build(dt.kind.value)
+        return exp.Cast(this=exp.Literal.string(iso_text(value)), to=target)
 
     def build_temporal_comparison(
         self, *, op: TemporalComparisonOp, operand: Expression, value: date,
@@ -1580,7 +1585,7 @@ class SqlDialect(BaseModel):
         return exp.CurrentDate()
 
     def build_current_timestamp(self) -> Expression:
-        return exp.Cast(this=exp.CurrentTimestamp(), to=exp.DataType.build("TIMESTAMP"))
+        return exp.Cast(this=exp.CurrentTimestamp(), to=self.naive_timestamp_type())
 
     def build_date_part(self, *, part: DatePart, expr: Expression, operand: DataType) -> Expression:
         """``date_part``: an integer; sub-day parts of a DATE are 0."""

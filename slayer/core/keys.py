@@ -1427,20 +1427,29 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
     if isinstance(key, TimeTruncKey):
         source = temporal_type(key.source, field_type=field_type)
         return None if source is None else bucket_type(source, key.granularity)
-    if isinstance(key, LiteralKey):
-        key = key.value
-    if isinstance(key, datetime):
-        return DataType.DATETIME
-    if isinstance(key, date):
-        return DataType.DATE
-    if isinstance(key, AggregateKey):
-        from_source = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
-        return temporal_type(key.source, field_type=field_type) if from_source else None
+    if isinstance(key, (LiteralKey, date)):
+        return _literal_temporal_type(key.value if isinstance(key, LiteralKey) else key)
+    if isinstance(key, (AggregateKey, TransformKey)):
+        return _derived_temporal_type(key, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         return _scalar_temporal_type(key, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type if key.data_type in TEMPORAL_TYPES else None
     return None
+
+
+def _derived_temporal_type(key: AggregateKey | TransformKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
+    """An aggregate's or transform's type when it keeps its input's (``max``, ``lag``, …), else ``None``."""
+    if isinstance(key, AggregateKey):
+        keeps = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
+        return temporal_type(key.source, field_type=field_type) if keeps else None
+    return temporal_type(key.input, field_type=field_type) if key.op in _VALUE_PRESERVING_TRANSFORMS else None
+
+
+def _literal_temporal_type(value: object) -> Optional[DataType]:
+    if isinstance(value, datetime):
+        return DataType.DATETIME
+    return DataType.DATE if isinstance(value, date) else None
 
 
 _CLOCK_TYPES: Mapping[str, DataType] = MappingProxyType({

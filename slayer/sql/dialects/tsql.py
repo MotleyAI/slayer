@@ -485,10 +485,11 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             return super().build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
         gran_str = granularity.value
         result = bucket_type(operand, granularity)
-        if result is not operand:
+        if result is DataType.DATETIME and (result is not operand or not isinstance(col_expr, (exp.Column, exp.Cast))):
+            # ``DATETIME2``: a legacy ``DATETIME`` rounds to 1/300 s, which can carry a value into the next bucket.
             col_expr = self.promote_to_timestamp(col_expr)
         elif not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build(result.value))
+            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("DATE"))
         tsql_gran = "iso_week" if gran_str == "week" else gran_str
         return exp.Anonymous(
             this="DATETRUNC",

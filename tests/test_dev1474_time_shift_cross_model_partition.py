@@ -161,7 +161,7 @@ def _shifted_where(sql: str) -> str:
 # A quoted-identifier char (double-quote for most dialects, backtick for MySQL).
 _Q = r"[\"`]"
 # SQLite compares two temporal values as canonical text.
-_SQLITE_CANONICAL = r"(?:STRFTIME\('%Y-%m-%d %H:%M:%f',\s*)?"
+_SQLITE_CANONICAL = r"(?:SLAYER_TIMESTAMP_TEXT\(\s*)?"
 
 
 def _assert_grain_pair(

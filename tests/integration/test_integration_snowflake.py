@@ -1019,7 +1019,7 @@ def sf_logical_types_storage(sf_transient_schema: str, sf_datasource: Datasource
     finally:
         try:
             for table in ("bk", "mx"):
-                cur.execute(f"DROP TABLE IF EXISTS {table}")
+                cur.execute(f"DROP TABLE IF EXISTS {sf_transient_schema}.{table}")
             conn.commit()
         finally:
             cur.close()

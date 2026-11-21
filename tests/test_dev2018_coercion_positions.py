@@ -91,6 +91,10 @@ class TestDateBound:
         ("<=", datetime(2024, 5, 15, 6), ("<", date(2024, 5, 16))),
         ("=", datetime(2024, 5, 15), ("=", date(2024, 5, 15))),
         ("=", datetime(2024, 5, 15, 6), None),
+        (">", datetime(9999, 12, 31), None),
+        ("<=", datetime(9999, 12, 31, 23, 59, 59), None),
+        (">=", datetime(9999, 12, 31, 6), None),
+        ("=", datetime(9999, 12, 31), ("=", date(9999, 12, 31))),
     ])
     def test_exact_for_every_date(self, op: str, value: datetime, expected) -> None:
         assert date_bound(op, value) == expected
