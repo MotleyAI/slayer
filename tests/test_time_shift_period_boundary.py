@@ -117,7 +117,7 @@ def test_aligned_shift_truncates_once():
     }, dry_run=True)
     shifted = [ln for ln in resp.sql.splitlines() if "'month')" in ln.lower()]
     assert shifted, resp.sql
-    assert all(ln.count("STRFTIME") == 0 for ln in shifted), resp.sql
+    assert not any("STRFTIME" in ln for ln in shifted), resp.sql
 
 
 def test_unaligned_shift_still_rebuckets():

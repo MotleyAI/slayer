@@ -32,6 +32,7 @@ from slayer.core.enums import (
     TimeGranularity,
     canonical_datatype,
 )
+from slayer.core.granularity import bucket_type
 from slayer.core.models import DatasetRelationship, SlayerDataset
 from slayer.core.refs import functional_agg_text
 from slayer.core.query import (
@@ -2334,7 +2335,9 @@ def _record_time_grain(
         plan.derived_dims.append(canonical)
     engine_alias = f"{table.name}.{dotted}"
     plan.field_name_mapping.append((engine_alias, item.projected_name))
-    plan.projection_types.append(item.time_grain_underlying.data_type)
+    underlying = item.time_grain_underlying.data_type
+    temporal = underlying in TEMPORAL_DATATYPES
+    plan.projection_types.append(bucket_type(underlying, item.time_grain) if temporal else underlying)
 
 
 def _record_extraction(
