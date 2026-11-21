@@ -202,7 +202,7 @@ def _edge_finding(
         message = (
             f"Relationship {dataset.name} → {relationship.to} is unproven: "
             f"dimensions across it are associated (cells may overlap; "
-            f"to_many_handling='broadcast' repeats the total instead) and "
+            f"partition_by=[] repeats the total instead) and "
             f"aggregation inputs across it are refused. Remedies: {_UNPROVEN_REMEDY}."
         )
     return RelationshipSafetyFinding(

@@ -252,7 +252,7 @@ grain resolves per `to_many_handling` (associated + warning by default), and an
 operand grain equal to the outer grain is the identity plus a degenerate
 warning naming the `partition_by=` remedy.
 The outer `partition_by=` follows the combined-position rule above: only inside a computed dimension may it be finer than the query dimensions, where the re-aggregation is computed at that grain and broadcast onto its rows.
-An outer dimension or explicit outer `partition_by=` key that the operand's grain determines is attributed even when the query root reaches it only across a to-many relationship (e.g. a joined dataset's time bucket); an explicit outer key the grain does not determine is associated by default and under `associate`, and an error under `broadcast` or `error`.
+An outer dimension or explicit outer `partition_by=` key that the operand's grain determines is attributed even when the query root reaches it only across a to-many relationship (e.g. a joined dataset's time bucket); an explicit outer key the grain does not determine is associated by default and under `associate`, and an error under `error`.
 
 ---
 

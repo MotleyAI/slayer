@@ -19,7 +19,7 @@ A `SlayerQuery` specifies what data to retrieve from a dataset.
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](time.md#whole_periods_only) |
-| `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-dataset-metrics). Omitted (the default) or `associate`: per-cell value over the distinct associated rows; `broadcast` (repeat the safe-grain value across the cells and warn), or `error` (refuse). Semi-join-pushed filters are always applied and never error. |
+| `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-dataset-metrics). Omitted (the default) or `associate`: per-cell value over the distinct associated rows; or `error` (refuse). Semi-join-pushed filters are always applied and never error. |
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
@@ -268,7 +268,7 @@ Query results are returned as a `SlayerResponse`:
 | `population_inferred` | bool | Whether the rows were inferred (no `population` given, or a saved stage's pinned anchor) |
 | `row_sources` | list[str] | The datasets whose rows supplied the result; `["unit"]` with no dimensions |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.metrics`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a [cross-dataset metric broadcast](#cross-dataset-metrics) (`"broadcast"` — `metric`, `location`, per-dimension `dimensions[].reason`), a distinct-entity attribution over an unattributable dimension (`"associated"` — `metric`, `location`, `dimensions`; cells overlap and are not additive), an aggregate over a dataset no relationship path reaches (`"unrelated_dataset"` — `dataset`, `population`, `metrics`, `location`), a semi-join-pushed filter (`"semi_join_pushed"` — `metric` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `field`, `granularities`, `location`), a [list](#list-fields) read as its element set (`"whole_list"` — `operation`: `group` or `count_distinct`, `list`), and a deprecated input form that was converted (`"deprecated_input"` — `old`, `new`, `removal`; see [Upgrading to 2.0](../upgrading/2.0.md)) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a value repeated by the deprecated `broadcast` mode (`"broadcast"` — `metric`, `location`, per-dimension `dimensions[].reason`, and `partition_by`, the dimensions giving the same values without a warning), a distinct-entity attribution over an unattributable dimension (`"associated"` — `metric`, `location`, `dimensions`; cells overlap and are not additive), an aggregate over a dataset no relationship path reaches (`"unrelated_dataset"` — `dataset`, `population`, `metrics`, `location`), a semi-join-pushed filter (`"semi_join_pushed"` — `metric` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `field`, `granularities`, `location`), a [list](#list-fields) read as its element set (`"whole_list"` — `operation`: `group` or `count_distinct`, `list`), and a deprecated input form that was converted (`"deprecated_input"` — `old`, `new`, `removal`; see [Upgrading to 2.0](../upgrading/2.0.md)) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then metrics,
@@ -450,7 +450,7 @@ A list field `skills` (datatype `ARRAY`, see [Data types](datasets.md#data-types
 {"population": "contractors", "dimensions": ["contractors.skills.value"], "metrics": ["count(contractors.*)"]}
 ```
 
-With `to_many_handling: "broadcast"`, a parent aggregate sliced by `contractors.skills.value` repeats its total on every element with a `broadcast` warning instead.
+A parent aggregate sliced by `contractors.skills.value` and given `partition_by=[]` repeats its total on every element instead.
 
 A whole list groups (a dimension or `partition_by=`), compares (`=`, `<>`, `IS [NOT] DISTINCT FROM`, `contractors.skills IN (['go'], ['sql'])`) and counts distinctly (`count_distinct(contractors.skills)`) as its element set, its distinct non-NULL elements in ascending order (`['go', 'sql', 'go']` and `['sql', 'go']` are one group, shown as `['go', 'sql']`, and `[NULL]` equals `[]`), with a `whole_list` warning naming `skills.value` for grouping and distinct counting, while a raw-rows query shows each list as stored.
 
@@ -597,7 +597,7 @@ Adding a second granularity of a saved time field (`{"time_dimensions": ["date_t
 Omit `population` and the rows are the **row supply**:
 
 - Each metric supplies the dimension values its home's filtered rows reach along the home's own relationship paths. A home row with no related row lands in the NULL value. The rows are the union over every metric.
-- A metric whose aggregates don't reach every dimension (`partition_by=`, an [unrelated dataset](#cross-dataset-metrics), a broadcast fallback) supplies the rows of the **dimension anchor** that agree with it.
+- A metric whose aggregates don't reach every dimension (`partition_by=`, an [unrelated dataset](#cross-dataset-metrics)) supplies the rows of the **dimension anchor** that agree with it.
 - With no metrics, the rows are the dimension anchor's: the smallest dataset that determines every dimension along to-one paths, read from the dimensions only, never from filters or metrics. Dimension groups no relationship path connects take the product of their anchors.
 - With no dimensions there is exactly one row, even when a filter matches nothing.
 - Filters restrict every home's rows (and the anchor's) before anything is counted. They never pick where rows come from, so adding a filter never adds a row or changes a result key.
@@ -818,20 +818,19 @@ fail with a clear error, as does a `readonly = 1` user whose profile leaves
 `allow_experimental_correlated_subqueries` off (the 25.4–25.7 default) — enable it
 in the user's profile, use `readonly = 2`, or upgrade to 25.8+.
 
-`to_many_handling` chooses how such a dimension resolves — omitted (association,
-the default above), `associate`, `broadcast` (the total over the safe grain,
-repeated across the dimension, with a `kind: "broadcast"` warning naming the
-metric and each broadcast dimension with the reason), or `error` (refuse) — where
-a stored query saved with the old `"broadcast"` default loads with the mode
-omitted, and a semi-join-pushed filter is applied, never erroring, in every mode.
+`to_many_handling` chooses how such a dimension resolves — omitted or `associate`
+(association, the default above), or `error` (refuse) — and a semi-join-pushed
+filter is applied, never erroring, in every mode.
 Example: `{"population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(customers.spend)"]}` gives each status the spend of the distinct customers with an order in it.
+To repeat a value across such a dimension instead, give the aggregate `partition_by=` with the dimensions it
+is attributable to: `sum(customers.spend, partition_by=[])` repeats the total on every status.
 
 Association serves every aggregate. A dataset without a primary key uses a
 per-query row identity. This includes datasets with a standalone unique field that may
 contain NULLs. Each source row counts separately, and copies made by a join count once.
 A list element is told apart by its parent row and its position in the list.
 
-`first`/`last` and `window=` associate too, local or cross-dataset. `first`/`last` picks among each cell's distinct home rows by a ranking key the home determines. A windowed aggregate counts a home row once in each bucket where one of its associated rows falls in the bucket's frame, so `{"population": "customers", "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}], "metrics": ["sum(customers.spend, window='1y')"]}` gives each month the spend of the customers with an order in the trailing year. A filter on the time axis's relationship binds to that same order. Under `broadcast` or `error`, a window whose time axis fans from its home is a typed error. An input crossing an unproven hop fails with a typed error in every mode. Each cell aggregates over the metric's own home rows by the home's relationship path, so an entity with no population row still counts in the cells its path reaches. An aggregate reads like a field of a dataset keyed by its grain, so an entity with no related row counts in the NULL cell whenever the result has one, however the query is rooted. A pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate- or transform-valued) parameter or source constituent is computed at its own home and attached per home row in every mode, so `weighted_avg(customers.spend, weight=sum(orders.amount, partition_by=customers.regions.name))` weights each customer by its region's order total under `broadcast`, `associate` and `error` alike.
+`first`/`last` and `window=` associate too, local or cross-dataset. `first`/`last` picks among each cell's distinct home rows by a ranking key the home determines. A windowed aggregate counts a home row once in each bucket where one of its associated rows falls in the bucket's frame, so `{"population": "customers", "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}], "metrics": ["sum(customers.spend, window='1y')"]}` gives each month the spend of the customers with an order in the trailing year. A filter on the time axis's relationship binds to that same order. Under `error`, a window whose time axis fans from its home is a typed error. An input crossing an unproven hop fails with a typed error in every mode. Each cell aggregates over the metric's own home rows by the home's relationship path, so an entity with no population row still counts in the cells its path reaches. An aggregate reads like a field of a dataset keyed by its grain, so an entity with no related row counts in the NULL cell whenever the result has one, however the query is rooted. A pushed filter binds to the same related row as a dimension it shares a hop with. An attached (aggregate- or transform-valued) parameter or source constituent is computed at its own home and attached per home row in every mode, so `weighted_avg(customers.spend, weight=sum(orders.amount, partition_by=customers.regions.name))` weights each customer by its region's order total in every mode.
 
 Every input of an aggregate — its source, arguments (`weight=`), definition defaults, and its field-level `filter=` — is traced recursively through derived-field definitions, and an input whose expansion crosses a fanning (not provably to-one) hop fails closed with a typed error instead of silently multiplying rows.
 
@@ -842,7 +841,7 @@ restricts the result rows, uniformly with local aggregate filters — groups tha
 fail the predicate are dropped, not returned with `NULL`.
 
 Cross-dataset aggregates also support `window=`, `partition_by=`, and `first` /
-`last` (broadcast, as above, where a dimension would need association), inside
+`last` (associating, as above), inside
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
 

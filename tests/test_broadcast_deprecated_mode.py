@@ -137,7 +137,9 @@ class TestFreshRun:
         [w] = deprecated_in(body["warnings"])
         assert_broadcast_deprecation(w)
         assert rows(body["data"]) == rows(reference.data)
-        assert body["sql"] == reference.sql
+        with recorded():
+            dry = client.post("/query", json={**CROSS_B, "dry_run": True}).json()
+        assert dry["sql"] == reference.sql
         assert [b["metric"] for b in body["warnings"] if b["kind"] == B] == ["cm"]
 
     async def test_mcp(self, engine: SlayerQueryEngine) -> None:
