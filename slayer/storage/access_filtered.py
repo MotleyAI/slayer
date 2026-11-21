@@ -30,6 +30,7 @@ from slayer.storage.model_metric_rules import metric_references, visible_model_m
 from slayer.storage.semantic_model_edits import metric_spec
 from slayer.storage.semantic_models import parse_document_text
 
+_SEMANTIC_MODEL = "semantic model"
 
 def can_access(dataset: SlayerDataset, *, tags: Iterable[str]) -> bool:
     """Untagged, or sharing a tag with the caller."""
@@ -278,11 +279,13 @@ class AccessFilteredStorage(StorageBackend):
         metrics = list(metrics)
         read = {_fold(d) for d in datasets}
         read |= {_fold(r.get(end)) for r in relationships for end in ("from", "to")}
-        for expression in [*expressions, *(as_expression(metric_spec(m)["expression"]) for m in metrics)]:
-            read |= metric_references(expression)[0]
         named = {_fold(n) for n in names} | {_fold(m.get("name")) for m in metrics}
+        for expression in [*expressions, *(as_expression(metric_spec(m)["expression"]) for m in metrics)]:
+            read_datasets, read_metrics = metric_references(expression)
+            read |= read_datasets
+            named |= read_metrics
         if read & hidden.datasets or named & (hidden.datasets | hidden.metrics):
-            raise HiddenContentConflictError(kind="semantic model", name=document)
+            raise HiddenContentConflictError(kind=_SEMANTIC_MODEL, name=document)
 
     async def _refuse_hidden_in_document(self, *, data_source: str, document: str, entities: dict[str, Any],
                                          datasets: Iterable[Any] = ()) -> None:
@@ -328,7 +331,7 @@ class AccessFilteredStorage(StorageBackend):
             if stored is None:
                 return False
             if (await self._hidden_entities(stored[0])).held_by(stored[2]):
-                raise HiddenContentConflictError(kind="semantic model", name=stored[1])
+                raise HiddenContentConflictError(kind=_SEMANTIC_MODEL, name=stored[1])
         return await self._inner.delete_semantic_model(name, data_source=data_source)
 
     async def semantic_model_owner(self, name: str, data_source: str) -> str | None:
@@ -364,7 +367,7 @@ class AccessFilteredStorage(StorageBackend):
                 "relationships") or [] if _touches(r, hidden=hidden)}
             touched = [*(edits.get("remove_relationships") or []), *(r.get("name") for r in relationships)]
             if {_fold(n) for n in touched} & hidden_relationships:
-                raise HiddenContentConflictError(kind="semantic model", name=name)
+                raise HiddenContentConflictError(kind=_SEMANTIC_MODEL, name=name)
             await self._refuse_hidden_names(data_source=data_source, document=name, relationships=relationships,
                                             datasets=edits.get("add_datasets") or [], metrics=edits.get("metrics") or [],
                                             names=edits.get("remove_metrics") or [])

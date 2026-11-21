@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import sqlite3
 import statistics
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
@@ -21,6 +20,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
+from slayer.storage.sqlite_conn import open_connection
 from tests._dev1737_fixtures import TableSpec
 from tests._dev2243_fixtures import (
     DS, SALES, STORAGES, dataset, document_engine, document_path, document_text, error, field, make_storage, metric,
@@ -93,7 +93,7 @@ async def test_sqlite_stores_the_text_verbatim(tmp_path: Path) -> None:
     await store_document(storage, SALES)
     assert "# owned by finance" in SALES
     assert await storage.get_semantic_model_text("sales", data_source=DS) == SALES
-    with contextlib.closing(sqlite3.connect(tmp_path / "store.db")) as con:
+    with open_connection(tmp_path / "store.db") as con:
         [(text,)] = con.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?", (DS, "sales"))
     assert text == SALES
 

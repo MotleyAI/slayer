@@ -8,7 +8,6 @@ import contextlib
 import difflib
 import json
 import re
-import sqlite3
 import warnings
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
@@ -37,6 +36,7 @@ from slayer.core.ossie_expression import OSIExpression
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.base import StorageBackend
+from slayer.storage.sqlite_conn import open_connection, transaction
 from tests._cli_inprocess import run_cli_in_process
 from tests._dev1737_fixtures import TableSpec
 from tests._dev2243_fixtures import (
@@ -103,7 +103,7 @@ def standalone_exists(kind: str, base: Path, name: str) -> bool:
     """A standalone dataset ``name`` is stored outside every document."""
     if kind == "yaml":
         return (base / "store" / "models" / DS / f"{name}.yaml").exists()
-    with contextlib.closing(sqlite3.connect(base / "store.db")) as con:
+    with open_connection(base / "store.db") as con:
         return bool(con.execute("SELECT 1 FROM models WHERE data_source = ? AND name = ?", (DS, name)).fetchall())
 
 
@@ -214,9 +214,8 @@ async def test_hand_placed_collisions_quarantine_dependents(tmp_path: Path) -> N
 async def test_hand_placed_collisions_quarantine_dependents_in_sqlite(tmp_path: Path) -> None:
     storage = make_storage("sqlite", tmp_path)
     await store_document(storage, QUARANTINE_A)
-    with contextlib.closing(sqlite3.connect(tmp_path / "store.db")) as con:
+    with transaction(tmp_path / "store.db") as con:
         con.execute("INSERT INTO semantic_models (data_source, name, text) VALUES (?, ?, ?)", (DS, "ledger", QUARANTINE_B))
-        con.commit()
     loaded, errs = await storage.load_datasets(data_source=DS)
     _assert_quarantined(loaded, errs)
 
@@ -641,9 +640,8 @@ async def test_an_external_sqlite_edit_is_seen_on_the_next_query(tmp_path: Path)
     async with document_engine(kind="sqlite", base=tmp_path) as engine:
         assert await single(engine, population="orders", metric_expr="sum(orders.amount)") == 650.0
         before = await engine.storage.graph_fingerprint()
-        with contextlib.closing(sqlite3.connect(tmp_path / "store.db")) as con:
+        with transaction(tmp_path / "store.db") as con:
             con.execute("UPDATE semantic_models SET text = ? WHERE data_source = ? AND name = ?", (SALES_UPPER, DS, "sales"))
-            con.commit()
         assert await engine.storage.graph_fingerprint() != before
         assert by(await engine.execute(UPPER_QUERY), "orders.status_upper", "n") == {"COMPLETED": 2.0, "OPEN": 2.0}
 
@@ -1056,6 +1054,9 @@ async def test_editing_a_document_through_the_view_keeps_its_hidden_entities(kin
     ("edit", {"metrics": [{"name": "raw_pay", "expression": {"dialects": [
         {"dialect": "ANSI_SQL", "expression": "COUNT(employees.employee_id)"},
         {"dialect": "SNOWFLAKE", "expression": "SUM(payroll.salary)"}]}}]}),
+    ("edit", {"metrics": [{"name": "pay_plus", "expression": "payroll_total + 1"}]}),
+    ("save", {"text": document_text(name="hr", datasets=[dataset("employees", fields=[field("employee_id")])],
+                                    metrics=[metric("pay_plus", "payroll_total + 1")])}),
     ("delete", {}),
 ])
 async def test_a_document_write_touching_hidden_entities_is_refused(edit: str, kwargs: dict[str, Any]) -> None:

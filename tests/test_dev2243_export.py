@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import sqlite3
 from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,7 @@ from slayer.core import slayer_extension as ext
 from slayer.sql.ossie_dialects import source_digest
 from slayer.osi.exporter import export_osi
 from slayer.storage.base import StorageBackend
+from slayer.storage.sqlite_conn import open_connection, transaction
 from tests._cli_inprocess import run_cli_in_process
 from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._dev2243_fixtures import (
@@ -98,10 +98,9 @@ LINES_QUERY = {"population": "lines", "metrics": ["lines.units", "lines.revenue"
 # --------------------------------------------------------------------------- #
 def seed_sql(path: Path, statements: list[str], *, dialect: str) -> None:
     if dialect == "sqlite":
-        with contextlib.closing(sqlite3.connect(path)) as con:
+        with transaction(path) as con:
             for statement in statements:
                 con.execute(statement)
-            con.commit()
         return
     with contextlib.closing(duckdb.connect(str(path))) as con:
         for statement in statements:
@@ -403,8 +402,8 @@ async def test_boolean_sum(tmp_path: Path, dialect: str) -> None:
                                   dialect=dialect)
     rendered = sqlglot.transpile(sql_of(metric_of(ds_of(doc, "orders"), "paid")), write=dialect)[0]
     db = tmp_path / f"seed.{'duckdb' if dialect == 'duckdb' else 'db'}"
-    connect = sqlite3.connect if dialect == "sqlite" else duckdb.connect
-    with contextlib.closing(connect(str(db))) as con:
+    connect = open_connection if dialect == "sqlite" else (lambda p: contextlib.closing(duckdb.connect(p)))
+    with connect(str(db)) as con:
         assert con.execute(f"SELECT {rendered} FROM orders").fetchall() == [(3,)]
 
 
