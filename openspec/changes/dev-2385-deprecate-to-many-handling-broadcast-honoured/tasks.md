@@ -28,4 +28,4 @@
 
 - [x] 5.1 Apply the approved `architecture/semantics.arc42.md` edits verbatim (design.md decisions log 5 and 6). Verify: `poetry run la-arch-check` green.
 - [x] 5.2 Local test scope (`la-affected-tests --base main` + tests reading changed help/docs), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline). Verify: all green.
-- [ ] 5.3 Gate before merge: re-check the Ossie Metrics and Querying working group for an answer on a named `associate` / `broadcast` / `error` control (DEV-2221); if it standardises `broadcast`, stop and raise it with the user before merging.
+- [x] 5.3 Gate before merge: re-check the Ossie Metrics and Querying working group for an answer on a named `associate` / `broadcast` / `error` control (DEV-2221); if it standardises `broadcast`, stop and raise it with the user before merging.
