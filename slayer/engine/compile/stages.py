@@ -3755,6 +3755,14 @@ def _anchor_witness(root: ValueKey, *, ctx: "_LocalRegroupContext") -> Optional[
     return None if route.unrelated else AggregateKey(source=StarKey(path=route.route), agg="count")
 
 
+def _producer_window_td(
+    prebound: PreboundQuery, *, windowed: bool, root: ValueKey, pks: Grain,
+) -> Optional[TimeTruncKey]:
+    """A windowed producer's active bucket; a transform producer keeps it too when its grain holds it."""
+    td = prebound.main_time_key
+    return td if windowed or (isinstance(root, TransformKey) and td in pks) else None
+
+
 def _synthesize_local_regroup(
     *, ctx: "_LocalRegroupContext", phase: Literal["row", "combined"], pks: Grain,
     windowed: bool, aggs: List[ValueKey], order_fn: Callable[[Grain], List[ValueKey]],
@@ -3795,12 +3803,11 @@ def _synthesize_local_regroup(
             if phase == "combined" and dm.type_is_explicit and dm.datatype is not None
         },
         grain_name_by_key=grain_names,
-        # A transform producer keeps the active bucket as its own when its grain holds it.
-        window_td_key=prebound.main_time_key if windowed or (
-            isinstance(aggs[0], TransformKey) and prebound.main_time_key in pks) else None,
+        window_td_key=_producer_window_td(prebound, windowed=windowed, root=aggs[0], pks=pks),
         mode_policy=prebound.mode_policy,
     )
     decision = _kernel_decision(answer=producer_aggs[0], windowed=windowed)
+    answer = own[aggs[0]]
     producer_plan = compile_synthesized(
         prebound=producer_prebound,
         source_dataset=ctx.producer_source_dataset,
@@ -3810,7 +3817,7 @@ def _synthesize_local_regroup(
         producer_registry=ctx.producer_registry,
         population=ctx.population,
         kernel_answer=_kernel_answer(decision),
-        domain_of=answer if isinstance(answer := own[aggs[0]], TransformKey) else None,
+        domain_of=answer if isinstance(answer, TransformKey) else None,
     )
     # A union-grain producer MAY carry nested attaches at any depth; the
     # complete-grain assert is the admission rule.
@@ -4285,7 +4292,7 @@ def _route_producer(
         prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle, homes=env.homes,
         transforms=TransformRouting(answers=frozenset(
             dm.bound.value_key for dm in prebound.declared_metrics if not dm.is_dimension
-        )),
+        ), spine=spine_field(scope.population) is not None),
     )
     routed_prebound, attaches = _plan_regroups(
         prebound=prebound, filter_typings=list(env.filter_typings),

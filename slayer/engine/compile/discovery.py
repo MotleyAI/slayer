@@ -3,7 +3,7 @@ its phase (from the consumer position) and routing (from its resolved home)."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
@@ -226,22 +226,28 @@ class _Walker:
 
         for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys,
                                          opaque=opaque):
-            if self.routes(n.key) and not n.dim_key and self.classes.combined_admits(n, position=position, root=vk):
-                self.emit(n.key, "combined", "local_producer", names=(name,) if name and n.key is vk else (),
-                          declared_type=declared if n.key is vk else None)
-                continue
-            if base is not None and base(n.key):
-                continue
-            top = n.key is vk
-            if is_reaggregation_key(n.key):
-                if self.classes.combined_admits(n, position=position, root=vk):
-                    self.emit_named(n.key, "combined", "reaggregation", top=top, name=name,
-                                    declared=declared)
-                continue
-            self.combined_node(n, root=vk, position=position,
-                               names=(name,) if name and top else (),
-                               declared=declared if top else None)
-            self.row_attach(n.key, attach_pk=n.attach_pk, names=containing)
+            self._consume(n, root=vk, position=position, base=base, name=name, declared=declared,
+                          containing=containing)
+
+    def _consume(
+        self, n: ConsumerNode, *, root: ValueKey, position: ConsumerPosition,
+        base: Optional[Callable[[ValueKey], bool]], name: Optional[str], declared: Optional[DataType],
+        containing: Sequence[str],
+    ) -> None:
+        top = n.key is root
+        if self.routes(n.key) and not n.dim_key and self.classes.combined_admits(n, position=position, root=root):
+            self.emit_named(n.key, "combined", "local_producer", top=top, name=name, declared=declared)
+            return
+        if base is not None and base(n.key):
+            return
+        if is_reaggregation_key(n.key):
+            if self.classes.combined_admits(n, position=position, root=root):
+                self.emit_named(n.key, "combined", "reaggregation", top=top, name=name, declared=declared)
+            return
+        self.combined_node(n, root=root, position=position,
+                           names=(name,) if name and top else (),
+                           declared=declared if top else None)
+        self.row_attach(n.key, attach_pk=n.attach_pk, names=containing)
 
     def combined_node(
         self, n: ConsumerNode, *, root: ValueKey, position: ConsumerPosition,

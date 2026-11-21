@@ -14,6 +14,7 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev2015_fixtures import (
     BACKENDS,
+    JAN_JUN,
     JAN_MAR,
     MONTHS,
     ORDERS_ROWS,
@@ -168,9 +169,15 @@ FORMS = {
                  {("N", "2025-02"): 170.0, ("N", "2025-03"): 70.0, ("S", "2025-02"): 50.0, ("S", "2025-03"): None}),
     "shifted": ("time_shift(sum(orders.amount), -1)",
                 {("N", "2025-02"): 100.0, ("N", "2025-03"): 70.0, ("S", "2025-02"): 50.0, ("S", "2025-03"): None}),
+    "shifted_keyword": ("time_shift(sum(orders.amount), periods=-1)",
+                        {("N", "2025-02"): 100.0, ("N", "2025-03"): 70.0, ("S", "2025-02"): 50.0,
+                         ("S", "2025-03"): None}),
     # evaluation bounds reach January: the shifted running total starts before the frame
     "series_shift": ("time_shift(cumsum(sum(orders.amount)), -1)",
                      {("N", "2025-02"): 100.0, ("N", "2025-03"): 170.0, ("S", "2025-02"): 50.0, ("S", "2025-03"): 50.0}),
+    "nested_shift": ("time_shift(time_shift(cumsum(sum(orders.amount)), -1), -1)",
+                     {("N", "2025-02"): None, ("N", "2025-03"): 100.0, ("S", "2025-02"): None,
+                      ("S", "2025-03"): 50.0}),
     "nested": ("lag(cumsum(sum(orders.amount)))", {("N", "2025-02"): None, ("N", "2025-03"): 70.0}),
     "ranked": ("rank(sum(orders.amount), direction='desc')", {("N", "2025-02"): 1.0, ("N", "2025-03"): None}),
     "first": ("first(sum(orders.amount))", {("N", "2025-02"): 70.0, ("N", "2025-03"): 70.0}),
@@ -204,6 +211,21 @@ async def test_per_group_running_totals_ignore_a_siblings_tuples(engine) -> None
     assert by_bucket(alone, ["cs"], by=["region"]) == {("N", "2025-02"): (70.0,), ("N", "2025-03"): (70.0,)}
     assert by_bucket(both, ["cs"], by=["region"]) == {
         ("N", "2025-02"): (70.0,), ("N", "2025-03"): (70.0,), ("S", "2025-02"): (None,), ("S", "2025-03"): (None,)}
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_an_anchor_supplied_measure_keeps_its_tuples_beside_a_coarse_one(backend: str) -> None:
+    # customers 2 (S) and 3 (E) sign up in frame; only S has orders
+    def query(*metrics: dict) -> SlayerQuery:
+        return spine_query(metrics=list(metrics), date_range=JAN_JUN, dimensions=["customers.id", "customers.region"])
+
+    rank, coarse = m("rank(customers.id, direction='asc')", "rk"), m("sum(orders.amount, partition_by=customers.region)", "o")
+    async with spine_engine(backend, datasets=spine_datasets(signed_up_at=True)) as eng:
+        alone = await eng.execute(query(rank))
+        both = await eng.execute(query(rank, coarse))
+    tuples = {(r["customers.id"], r["customers.region"]) for r in alone.data}
+    assert tuples == {(2, "S"), (3, "E")}
+    assert {(r["customers.id"], r["customers.region"]) for r in both.data} == tuples
 
 
 # ---------------------------------------------------------------------------

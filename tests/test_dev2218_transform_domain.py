@@ -105,10 +105,10 @@ REFUND = _mt("f", "sum(refunds.amount)")
 
 
 @contextlib.asynccontextmanager
-async def daily_engine(backend: str, *, april: bool = False) -> AsyncGenerator[SlayerQueryEngine]:
+async def daily_engine(backend: str, *, april: bool = False, sales: TableSpec = SALES) -> AsyncGenerator[SlayerQueryEngine]:
     days = ["2025-01-05", "2025-02-05", "2025-03-05", *(["2025-04-05"] if april else [])]
     refunds = _refunds(("F2", "2025-04-05", 7.0)) if april else _refunds()
-    tables = [_days(*days), SALES, refunds]
+    tables = [_days(*days), sales, refunds]
     async with seeded_exec_engine(dialect=backend, seed=lambda p: seed_backend(backend, p, tables),
                                   datasets=DAILY) as (eng, _):
         yield eng
@@ -277,12 +277,20 @@ async def test_consecutive_periods_is_not_extended_by_a_siblings_bucket(backend:
     assert both == {"2025-01": 1.0, "2025-02": None, "2025-03": 1.0}
 
 
-async def test_consecutive_periods_ignores_a_measure_filter(backend: str) -> None:
-    async with daily_engine(backend) as eng:
+DENSE_SALES = SALES.model_copy(update={"rows": [*SALES.rows, ("S3", "2025-02-05", 25.0)]})
+
+
+@pytest.mark.parametrize(("sales", "expected"), [
+    (SALES, {"2025-02": None, "2025-03": 1.0}),
+    # January is filtered out but still extends the streak
+    (DENSE_SALES, {"2025-02": 2.0, "2025-03": 3.0}),
+], ids=["sparse", "dense"])
+async def test_consecutive_periods_ignores_a_measure_filter(backend: str, sales: TableSpec, expected: dict) -> None:
+    async with daily_engine(backend, sales=sales) as eng:
         resp = await run(eng, time_dimensions=BY_DAY_MONTH,
                          metrics=[_mt("t", "consecutive_periods(sum(sales.amount) > 0)"), REFUND],
                          filter=["sum(refunds.amount) > 0 or sum(sales.amount) > 20"])
-    assert _monthly(resp, "t") == {"2025-02": None, "2025-03": 1.0}
+    assert _monthly(resp, "t") == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -583,3 +591,17 @@ async def test_a_null_time_bucket_is_adjacent_to_no_bucket(spend_engine) -> None
         "2024-03": (100.0, 350.0, 150.0, 110.0), "2024-04": (110.0, 460.0, 100.0, 110.0),
         None: (55.0, 55.0, None, 110.0),
     }
+
+
+@pytest.mark.parametrize("op", ["first", "last"])
+async def test_a_pick_over_only_a_null_time_bucket_is_null(backend: str, op: str) -> None:
+    # region E's customer has no orders: its only cell is the NULL order month
+    query = SlayerQuery.model_validate({
+        "population": "customers", "dimensions": [R],
+        "time_dimensions": [{"field": "orders.order_date", "granularity": "month"}],
+        "metrics": [m("count(customers.id)", "n"), m(f"{op}(count(customers.id))", "p")]})
+    async with spine_engine(backend) as eng:
+        resp = await eng.execute(query)
+    got = {(r[R], None if r["orders.order_date"] is None else str(r["orders.order_date"])[:7]): (r["n"], r["p"])
+           for r in resp.data}
+    assert got == {("N", "2025-01"): (1, 1), ("N", "2025-02"): (1, 1), ("S", "2025-01"): (1, 1), ("E", None): (1, None)}

@@ -70,7 +70,8 @@ Before measure-typed filters, `order` and `limit`, every query omitting `populat
 row and never changes a value in an existing row, transforms included; **home-row preservation** —
 every home row of a full-grain aggregate surviving the filters lands in a row, exactly one when
 the home determines the dimensions and the data respects declared cardinality; **filter
-non-expansion** — adding a field filter never adds a row and never changes a result key; and the
+non-expansion** — adding a field filter never adds a row and never changes a result key, except
+the value of a computed dimension read from an aggregate over the filtered rows; and the
 **unit** — a query with measures and no dimensions returns exactly one row. Filter non-expansion
 and the unit SHALL hold for a query naming `population` too.
 

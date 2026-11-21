@@ -34,6 +34,7 @@ from tests._dev2212_fixtures import (
     DS,
     HIDE_C3,
     NOTES,
+    customers_dataset,
     notes_dataset,
     orders_dataset,
     run,
@@ -86,6 +87,23 @@ async def test_active_customers_per_month_through_a_fanning_axis(backend: str) -
         ("EAST", "2025-01"): 2.0, ("EAST", "2025-02"): 1.0, ("EAST", "2025-03"): 0.0,
         ("WEST", "2025-01"): 0.0, ("WEST", "2025-02"): 1.0, ("WEST", "2025-03"): 0.0,
     }
+
+
+def _segment_dim(name: str) -> SlayerDataset:
+    return SlayerDataset(name=name, sql_table=name, data_source=DS,
+                         fields=[DatasetField(name="segment", datatype=DataType.STRING, primary_key=True)])
+
+
+async def test_product_only_neighbours_never_hide_the_fanning_axis(backend: str) -> None:
+    # each axis-less dimension reaches the spine only as a product and outranks orders by name
+    dims = [f"a{i}" for i in range(8)]
+    customers = customers_dataset(relationships=[
+        DatasetRelationship(to=n, from_columns=["segment"], to_columns=["segment"]) for n in dims])
+    datasets = seed_datasets(customers=customers, extra=tuple(_segment_dim(n) for n in dims))
+    async with seed_engine(backend, datasets=datasets) as eng:
+        resp = await run(eng, time_dimensions=[SPINE_MONTH], metrics=[CUSTOMERS])
+    assert _monthly(resp, "c") == {"2025-01": 2.0, "2025-02": 2.0, "2025-03": 0.0}
+    assert _associated(resp)
 
 
 async def test_a_model_filter_on_the_axis_dataset_limits_the_association(backend: str) -> None:

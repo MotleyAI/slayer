@@ -15,7 +15,8 @@ from slayer.core.errors import UnrelatedDatasetError, UnresolvableDimensionRelat
 from slayer.core.field_expression import portable_text
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import (
-    AggCall, DottedRef, Literal, Ref, StarSource, TransformCall, UnaryOp, call_keywords, parse_template, respell_bare_names,
+    AggCall, DottedRef, Literal, NamedArg, Ref, StarSource, TransformCall, UnaryOp, call_keywords, parse_template,
+    respell_bare_names,
     walk_parsed_refs,
 )
 from slayer.core.models import SlayerDataset
@@ -466,8 +467,8 @@ def _literal_text(node: Any) -> Optional[str]:
 
 def _shift_text(call: TransformCall) -> Optional[str]:
     """``time_shift(…)``'s argument tail (``, -1`` / ``, -1, 'month'``) when every argument is a literal."""
-    args = [_literal_text(a) for a in call.args]
-    kwargs = [(n, _literal_text(v)) for n, v in call.kwargs]
+    args = [_literal_text(a) for a in call.args if not isinstance(a, NamedArg)]
+    kwargs = [(n, _literal_text(v)) for n, v in call_keywords(call)]
     if any(a is None for a in args) or any(v is None for _, v in kwargs):
         return None
     return "".join(f", {a}" for a in args) + "".join(f", {n}={v}" for n, v in kwargs)
@@ -568,22 +569,19 @@ def _anchor_spine_cells(
     return _cells(free, population=anchor_datasets[0], filters=filters), framed
 
 
-def plan_spine_rows(
-    query: SlayerQuery, *, anchor: DimensionAnchor, datasets_by_name: dict[str, SlayerDataset],
-) -> RowPlan:
-    """An inferred spine stage's rows: every bucket × the union of each measure's non-time tuples with home rows in a
-    visible bucket — the anchor's in-frame tuples with no measures, the unit with no other dimensions."""
-    factor = spine_factor_out(query)
-    if not (factor.dimensions or factor.time_dimensions):
-        return RowPlan(population=TIME_SPINE_DATASET, supply=RowSupply(), row_sources=(UNIT,))
-    datasets = anchor.required() if not query.metrics else anchor.datasets
-    free = factor.model_copy(update={"metrics": query.metrics})
-    filters = _field_filters(free, datasets_by_name=datasets_by_name)
-    dims = determination_items(free, datasets_by_name=datasets_by_name)
-    broadcast = query.to_many_handling == "broadcast"
+class _SpineWitnesses(BaseModel):
+    """Per home, the witnesses of the measures it fully supplies; the coarser cells of the rest; whether any measure
+    leaves the anchor to supply the rows whole."""
+
     by_home: dict[str, list[str]] = {}
     coarse: list[CoarseCells] = []
-    whole_anchor = not query.metrics
+    whole_anchor: bool = False
+
+
+def _spine_witnesses(query: SlayerQuery, *, dims: list[str],
+                     datasets_by_name: dict[str, SlayerDataset]) -> _SpineWitnesses:
+    out = _SpineWitnesses(whole_anchor=not query.metrics)
+    broadcast = query.to_many_handling == "broadcast"
     for metric in query.metrics or []:
         try:
             tree = parse_template(metric.metric)
@@ -595,20 +593,48 @@ def plan_spine_rows(
                                        broadcast=broadcast)) is not None]
         full = [(op, agg, shifts) for op, agg, shifts in operands if op.full]
         for op, agg, shifts in full:
-            by_home.setdefault(op.home, []).append(_witness(op.home, agg=agg, shifts=shifts))
+            out.by_home.setdefault(op.home, []).append(_witness(op.home, agg=agg, shifts=shifts))
         if not full:
-            coarse.extend(CoarseCells(home=op.home, grain=op.grain) for op, _, _ in operands)
-        whole_anchor = whole_anchor or not found
+            out.coarse.extend(CoarseCells(home=op.home, grain=op.grain) for op, _, _ in operands)
+        out.whole_anchor = out.whole_anchor or not found
+    return out
+
+
+def _anchor_branches(query: SlayerQuery, *, free: SlayerQuery, anchor_datasets: tuple[str, ...],
+                     witnesses: _SpineWitnesses, filters: list[str],
+                     datasets_by_name: dict[str, SlayerDataset]) -> list[RowSupplyBranch]:
+    """The anchor's in-frame cells: whole for an anchor-supplied measure, and restricted to each coarser measure's
+    cells."""
+    anchor_cells, framed = _anchor_spine_cells(query, free=free, anchor_datasets=anchor_datasets, filters=filters,
+                                               datasets_by_name=datasets_by_name)
+    out: list[RowSupplyBranch] = []
+    for c in [*([None] if witnesses.whole_anchor else []), *witnesses.coarse]:
+        restrict = (_cells(free, population=c.home, filters=filters, grain=c.grain),) if c and c.grain else ()
+        out.append(RowSupplyBranch(cells=anchor_cells, restrict=(*framed, *restrict)))
+    return out
+
+
+def plan_spine_rows(
+    query: SlayerQuery, *, anchor: DimensionAnchor, datasets_by_name: dict[str, SlayerDataset],
+) -> RowPlan:
+    """An inferred spine stage's rows: every bucket × the union of each measure's non-time tuples with home rows in a
+    visible bucket — the anchor's in-frame tuples with no measures, the unit with no other dimensions."""
+    factor = spine_factor_out(query)
+    if not (factor.dimensions or factor.time_dimensions):
+        return RowPlan(population=TIME_SPINE_DATASET, supply=RowSupply(), row_sources=(UNIT,))
+    datasets = anchor.required() if not query.metrics else anchor.datasets
+    free = factor.model_copy(update={"metrics": query.metrics})
+    filters = _field_filters(free, datasets_by_name=datasets_by_name)
+    witnesses = _spine_witnesses(query, dims=determination_items(free, datasets_by_name=datasets_by_name),
+                                 datasets_by_name=datasets_by_name)
+    by_home, coarse = witnesses.by_home, witnesses.coarse
     branches = [RowSupplyBranch(cells=_spine_cells(query, population=h, witnesses=w, filters=filters))
                 for h, w in by_home.items()]
-    needs_anchor = whole_anchor or bool(coarse)
+    needs_anchor = witnesses.whole_anchor or bool(coarse)
     anchor_datasets = anchor.required() if needs_anchor else datasets
     if needs_anchor:
-        anchor_cells, framed = _anchor_spine_cells(query, free=free, anchor_datasets=anchor_datasets, filters=filters,
-                                                   datasets_by_name=datasets_by_name)
-        for c in coarse or [None]:
-            restrict = (_cells(free, population=c.home, filters=filters, grain=c.grain),) if c and c.grain else ()
-            branch = RowSupplyBranch(cells=anchor_cells, restrict=(*framed, *restrict))
+        for branch in _anchor_branches(query, free=free, anchor_datasets=anchor_datasets, witnesses=witnesses,
+                                       filters=filters, datasets_by_name=datasets_by_name):
             if branch not in branches:
                 branches.append(branch)
     row_sources = tuple(sorted({*by_home, *(anchor_datasets if needs_anchor else ())}))

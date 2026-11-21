@@ -290,10 +290,11 @@ def fanning_spine_routes(
     """Up to ``cap`` nearest routes ``dataset → time_spine`` crossing a fanning or unproven hop, never a product hop:
     its fanning axes (Axiom 15)."""
     # An axis is another dataset's: the route reaches it before its final hop into the spine.
-    found = [r for r in routes(root=dataset, target=TIME_SPINE_DATASET, datasets_by_name=datasets_by_name,
-                               hop_filter=HopFilter.ALL, cap=cap + 6)
-             if len(r.edges) > 1 and not any(e.product for e in r.edges)]
-    return [list(r.edges) for r in found if len(r.edges) == len(found[0].edges)][:cap] if found else []
+    def admit(edge: OrientedRelationship) -> bool:
+        return not edge.product and not (edge.source_dataset == dataset.name and edge.to == TIME_SPINE_DATASET)
+
+    return [list(r.edges) for r in routes(root=dataset, target=TIME_SPINE_DATASET, datasets_by_name=datasets_by_name,
+                                          hop_filter=HopFilter.ALL, cap=cap, shortest_only=True, admit_edge=admit)]
 
 
 def fanning_route_error(*, dataset: str, routes: list[list[OrientedRelationship]]) -> UnresolvableDimensionRelationshipError:
@@ -452,6 +453,37 @@ def key_broadcast_reason(
     return UNREACHABLE_NO_PATH
 
 
+def _reads_host_spine(field: ValueKey, *, product: bool, host: Optional[SlayerDataset], root_dataset: SlayerDataset) -> bool:
+    """``field`` reads the host's spine: a product hop, or a spine host's own timestamp from a non-spine root."""
+    if not isinstance(field, FieldKey):
+        return False
+    return product or (host is not None and is_spine(host) and not is_spine(root_dataset) and not field.path
+                       and field.leaf == TIME_SPINE_FIELD)
+
+
+def _onto_home_spine(
+    r: ValueKey, field: FieldKey, *, root_dataset: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[ValueKey]:
+    """``r`` re-read through the home's own spine route: its axis, else its fanning axis (Axiom 15)."""
+    route = home_spine_route(root_dataset=root_dataset, datasets_by_name=datasets_by_name, fanning=True)
+    if route is None:
+        return None
+    moved = field.model_copy(update={"path": route})
+    return moved if isinstance(r, FieldKey) else r.model_copy(update={"source": moved})
+
+
+def _resolved_by_root_sibling(
+    *, hp: Tuple[str, ...], via_host: Tuple[str, ...], target_path: Tuple[str, ...], root_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset],
+) -> bool:
+    """The host route is unsafe, but the root reaches the sibling through its own relationship."""
+    if not hp or _common_prefix_len(target_path, hp):
+        return False
+    return not safe_reachable(root=root_dataset, path=via_host, datasets_by_name=datasets_by_name) and safe_reachable(
+        root=root_dataset, path=hp, datasets_by_name=datasets_by_name,
+    )
+
+
 def _reroot_leaf_via_host(
     r: ValueKey, *, target_path: Tuple[str, ...], root_dataset: SlayerDataset,
     datasets_by_name: Dict[str, SlayerDataset], host_name: str,
@@ -461,18 +493,13 @@ def _reroot_leaf_via_host(
     if isinstance(r, TimeTruncKey) and not isinstance(r.source, (FieldKey, FieldSqlKey)):
         return None  # an expression's leaves reroot one by one
     hp = key_host_path(r)
-    host = datasets_by_name.get(host_name)
     field = r.source if isinstance(r, TimeTruncKey) else r
     product = isinstance(r, FieldKey) and _is_product_path(hp, host_name=host_name, datasets_by_name=datasets_by_name)
-    if isinstance(field, FieldKey) and (
-        product or (host is not None and is_spine(host) and not is_spine(root_dataset) and not field.path
-                    and field.leaf == TIME_SPINE_FIELD)
-    ):
-        # The host's spine, reached through the home's own route: its axis, else its fanning axis (Axiom 15).
-        route = home_spine_route(root_dataset=root_dataset, datasets_by_name=datasets_by_name, fanning=True)
-        if route is not None:
-            moved = field.model_copy(update={"path": route})
-            return moved if isinstance(r, FieldKey) else r.model_copy(update={"source": moved})
+    if _reads_host_spine(field, product=product, host=datasets_by_name.get(host_name), root_dataset=root_dataset):
+        moved = _onto_home_spine(r, cast(FieldKey, field), root_dataset=root_dataset,
+                                 datasets_by_name=datasets_by_name)
+        if moved is not None:
+            return moved
         if product:
             return r
     if hp[: len(target_path)] == target_path:
@@ -483,11 +510,8 @@ def _reroot_leaf_via_host(
         host_name=host_name, target_path=target_path, host_path=hp,
         datasets_by_name=datasets_by_name,
     )
-    if not safe_reachable(
-        root=root_dataset, path=via_host, datasets_by_name=datasets_by_name,
-    ) and hp and not _common_prefix_len(target_path, hp) and safe_reachable(
-        root=root_dataset, path=hp, datasets_by_name=datasets_by_name,
-    ):
+    if _resolved_by_root_sibling(hp=hp, via_host=via_host, target_path=target_path, root_dataset=root_dataset,
+                                 datasets_by_name=datasets_by_name):
         return None  # resolved through the root's own relationship to the sibling
     if isinstance(r, TimeTruncKey):
         return r.model_copy(update={

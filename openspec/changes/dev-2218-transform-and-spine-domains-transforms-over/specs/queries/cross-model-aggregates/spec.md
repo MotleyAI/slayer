@@ -29,7 +29,8 @@ no population cell SHALL be fabricated.
 #### Scenario: Inferred population
 - **WHEN** a query without `population` has `dimensions=[customers.name]` and selects
   `count(orders.id)`
-- **THEN** the population is `customers` and the childless customer's cell holds 0
+- **THEN** the population is `customers` and the childless customer has no row (no
+  measure's home rows reach it); with `"population": "customers"` named, its cell holds 0
 
 #### Scenario: Multi-hop count
 - **WHEN** a query rooted at `regions` groups by `name` and selects

@@ -335,7 +335,8 @@ enforced test ids as its instances land.
    cardinality (Ossie S1).
    [enforced: test:tests/test_law_home_row_preservation.py]
 9. **Filter non-expansion**: adding a field filter never adds a row or changes a
-   result key (Ossie S6).
+   result key, except the value of a computed dimension read from an aggregate over
+   the filtered rows (Ossie S6).
    [enforced: test:tests/test_law_filter_non_expansion.py]
 10. **Unit**: a query with measures and no dimensions returns exactly one row
     (Ossie §3.6). [enforced: test:tests/test_law_unit.py]

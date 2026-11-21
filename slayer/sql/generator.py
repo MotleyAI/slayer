@@ -5170,10 +5170,16 @@ class SQLGenerator:
                 fn=_RANK_WINDOW_FNS[op](), metric=metric, partition_by=partition_by,
                 descending=kwarg_map.get("direction") == "desc",
             )
+        # A pick never takes a NULL bucket's value: with no positioned candidate it reads NULL.
+        positioned = (
+            exp.Case(ifs=[exp.If(this=exp.Is(this=time_col.copy(), expression=exp.Null()), true=exp.Null())],
+                     default=metric)
+            if time_col is not None else metric
+        )
         if op == "first":
             assert null_bucket is not None and time_col is not None
             return _over(
-                exp.FirstValue(this=metric),
+                exp.FirstValue(this=positioned),
                 order=exp.Order(expressions=[self._window_ordered(null_bucket.copy()),
                                              self._window_ordered(time_col.copy())]),
                 spec=unbounded_frame,
@@ -5187,7 +5193,7 @@ class SQLGenerator:
             # last is first over the reversed time axis, so it takes the descending order.
             assert null_bucket is not None
             return _over(
-                exp.FirstValue(this=metric),
+                exp.FirstValue(this=positioned),
                 order=exp.Order(expressions=[
                     self._window_ordered(null_bucket.copy()),
                     self._window_ordered(time_col.copy(), descending=True),
