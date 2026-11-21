@@ -92,32 +92,44 @@ def _missing(prefix: str, where: str, names: list[str], owner: str) -> str:
             f"{listed}. {where} must be field names of {owner}.")
 
 
+def _dataset_keys(dataset: dict[str, Any], model: str) -> list[str]:
+    out: list[str] = []
+    declared = _field_names(dataset)
+    prefix = f"Dataset '{dataset['name']}' in model '{model}'"
+    owner = f"dataset '{dataset['name']}'"
+    for label, key in [("primary_key", dataset.get("primary_key")),
+                       *[(f"unique_keys {k}", k) for k in dataset.get("unique_keys") or []]]:
+        if key:
+            out += [f"[Unique] {prefix}: {label} names field '{d}' more than once" for d in _duplicates(key)]
+    if missing := _undeclared(dataset.get("primary_key") or [], declared):
+        out.append(_missing(prefix, "primary_key", missing, owner))
+    if missing := _undeclared([n for k in dataset.get("unique_keys") or [] for n in k], declared):
+        out.append(_missing(prefix, "unique_keys", missing, owner))
+    return out
+
+
+def _relationship_references(rel: dict[str, Any], *, by_name: dict[str, dict[str, Any]], model: str) -> list[str]:
+    out: list[str] = []
+    prefix = f"Relationship '{rel['name']}' in model '{model}'"
+    for end in ("from", "to"):
+        target = by_name.get(rel[end])
+        if target is None:
+            out.append(f"[Reference] {prefix} references unknown dataset '{rel[end]}'")
+        elif missing := _undeclared(rel[f"{end}_columns"], _field_names(target)):
+            out.append(_missing(prefix, f"{end}_columns", missing, f"the {end} dataset '{rel[end]}'"))
+    if len(rel["from_columns"]) != len(rel["to_columns"]):
+        out.append(f"[Arity] {prefix}: from_columns ({len(rel['from_columns'])}) and to_columns "
+                   f"({len(rel['to_columns'])}) must have the same number of columns")
+    return out
+
+
 def _keys_and_references(data: dict[str, Any], model: str) -> list[str]:
     out: list[str] = []
     by_name = {d["name"]: d for d in data["datasets"]}
     for dataset in data["datasets"]:
-        declared = _field_names(dataset)
-        prefix = f"Dataset '{dataset['name']}' in model '{model}'"
-        owner = f"dataset '{dataset['name']}'"
-        for label, key in [("primary_key", dataset.get("primary_key")),
-                           *[(f"unique_keys {k}", k) for k in dataset.get("unique_keys") or []]]:
-            if key:
-                out += [f"[Unique] {prefix}: {label} names field '{d}' more than once" for d in _duplicates(key)]
-        if missing := _undeclared(dataset.get("primary_key") or [], declared):
-            out.append(_missing(prefix, "primary_key", missing, owner))
-        if missing := _undeclared([n for k in dataset.get("unique_keys") or [] for n in k], declared):
-            out.append(_missing(prefix, "unique_keys", missing, owner))
+        out += _dataset_keys(dataset, model=model)
     for rel in data.get("relationships") or []:
-        prefix = f"Relationship '{rel['name']}' in model '{model}'"
-        for end in ("from", "to"):
-            target = by_name.get(rel[end])
-            if target is None:
-                out.append(f"[Reference] {prefix} references unknown dataset '{rel[end]}'")
-            elif missing := _undeclared(rel[f"{end}_columns"], _field_names(target)):
-                out.append(_missing(prefix, f"{end}_columns", missing, f"the {end} dataset '{rel[end]}'"))
-        if len(rel["from_columns"]) != len(rel["to_columns"]):
-            out.append(f"[Arity] {prefix}: from_columns ({len(rel['from_columns'])}) and to_columns "
-                       f"({len(rel['to_columns'])}) must have the same number of columns")
+        out += _relationship_references(rel, by_name=by_name, model=model)
     return out
 
 
@@ -234,6 +246,34 @@ def _agg_problem(call: exp.Anonymous, *, fields: dict[str, set[str]], dataset_me
     return f"AGG({arg.table}.{arg.name}): '{arg.name}' is not a dataset-scoped metric of dataset '{arg.table}'"
 
 
+def _agg_call_problem(call: exp.Anonymous, *, fields: dict[str, set[str]], dataset_metrics: dict[str, set[str]],
+                      model_metrics: dict[str, str]) -> str | None:
+    message = _agg_problem(call, fields=fields, dataset_metrics=dataset_metrics, model_metrics=model_metrics)
+    if message is None and isinstance(call.parent, exp.Filter):
+        return f"{call.sql()} has a FILTER (WHERE ...) clause; AGG does not take one"
+    return message
+
+
+def _expression_agg_errors(e: _Expr, *, model: str, fields: dict[str, set[str]],
+                           dataset_metrics: dict[str, set[str]], model_metrics: dict[str, str]) -> list[str]:
+    if e.dialect != PORTABLE_DIALECT or e.superseded:
+        return []
+    tree, _ = parse_ossie_sql(e.text, e.dialect)
+    if tree is None:
+        return []
+    calls = _agg_calls(tree)
+    if calls and e.kind != "model_metric":
+        where = "a field expression" if e.kind == "field" else "a dataset-scoped metric"
+        return [f"[Scope] {e.label(model)} calls AGG in {where}. This version allows AGG only in "
+                "model-scoped metrics, as AGG(dataset.metric)."]
+    out: list[str] = []
+    for call in calls:
+        message = _agg_call_problem(call, fields=fields, dataset_metrics=dataset_metrics, model_metrics=model_metrics)
+        if message:
+            out.append(f"[Reference] {e.label(model)}: {message}")
+    return out
+
+
 def _agg_rules(data: dict[str, Any], model: str) -> list[str]:
     fields: dict[str, set[str]] = {}
     dataset_metrics: dict[str, set[str]] = {}
@@ -243,24 +283,30 @@ def _agg_rules(data: dict[str, Any], model: str) -> list[str]:
     model_metrics = {n.casefold(): n for n in _names(data.get("metrics"))}
     out: list[str] = []
     for e in _all_expressions(data):
-        if e.dialect != PORTABLE_DIALECT or e.superseded:
-            continue
-        tree, _ = parse_ossie_sql(e.text, e.dialect)
-        if tree is None:
-            continue
-        calls = _agg_calls(tree)
-        if calls and e.kind != "model_metric":
-            where = "a field expression" if e.kind == "field" else "a dataset-scoped metric"
-            out.append(f"[Scope] {e.label(model)} calls AGG in {where}. This version allows AGG only in "
-                       "model-scoped metrics, as AGG(dataset.metric).")
-            continue
-        for call in calls:
-            message = _agg_problem(call, fields=fields, dataset_metrics=dataset_metrics, model_metrics=model_metrics)
-            if message is None and isinstance(call.parent, exp.Filter):
-                message = f"{call.sql()} has a FILTER (WHERE ...) clause; AGG does not take one"
-            if message:
-                out.append(f"[Reference] {e.label(model)}: {message}")
+        out += _expression_agg_errors(e, model=model, fields=fields, dataset_metrics=dataset_metrics,
+                                      model_metrics=model_metrics)
     return out
+
+
+def _scoped_references(tree: exp.Expr, *, dialect: str, names: set[str]) -> tuple[set[str], set[str], bool]:
+    """A dataset-scoped metric's qualifiers, undeclared fields and whether it reads ``source.column``, outside AGG."""
+    inside_agg = {id(c) for call in _agg_calls(tree) for c in call.find_all(exp.Column)} \
+        if dialect == PORTABLE_DIALECT else set()
+    stars = (c for c in tree.find_all(exp.Column) if isinstance(c.this, exp.Star) and c.table)
+    qualifiers: set[str] = set()
+    undeclared: set[str] = set()
+    uses_source = False
+    for col in (*columns(tree, dialect), *stars):
+        if id(col) in inside_agg:
+            continue
+        parts = [p.name for p in col.parts]
+        if len(parts) == 2 and parts[0].casefold() == _SOURCE:
+            uses_source = True
+        elif len(parts) > 1 and parts[0]:
+            qualifiers.add(parts[0])
+        elif parts and parts[0].casefold() not in names:
+            undeclared.add(parts[0])
+    return qualifiers, undeclared, uses_source
 
 
 def _metric_scoping(data: dict[str, Any], model: str) -> list[str]:
@@ -272,23 +318,8 @@ def _metric_scoping(data: dict[str, Any], model: str) -> list[str]:
         tree, _ = parse_ossie_sql(e.text, e.dialect)
         if tree is None:
             continue
-        inside_agg = {id(c) for call in _agg_calls(tree) for c in call.find_all(exp.Column)} \
-            if e.dialect == PORTABLE_DIALECT else set()
-        stars = (c for c in tree.find_all(exp.Column) if isinstance(c.this, exp.Star) and c.table)
-        qualifiers: set[str] = set()
-        undeclared: set[str] = set()
-        uses_source = False
         names = declared[e.dataset]
-        for col in (*columns(tree, e.dialect), *stars):
-            if id(col) in inside_agg:
-                continue
-            parts = [p.name for p in col.parts]
-            if len(parts) == 2 and parts[0].casefold() == _SOURCE:
-                uses_source = True
-            elif len(parts) > 1 and parts[0]:
-                qualifiers.add(parts[0])
-            elif parts and parts[0].casefold() not in names:
-                undeclared.add(parts[0])
+        qualifiers, undeclared, uses_source = _scoped_references(tree, dialect=e.dialect, names=names)
         prefix = f"[Scope] Dataset-scoped metric '{e.dataset}.{e.name}' in model '{model}' ({e.dialect})"
         if qualifiers:
             out.append(f"{prefix} uses qualified reference(s) {', '.join(repr(q) for q in sorted(qualifiers))}. A "

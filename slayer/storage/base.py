@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable, Hashable, Iterable, Set as AbstractSet
+from collections.abc import Awaitable, Callable, Hashable, Iterable, Set as AbstractSet
 
 from typing_extensions import deprecated
 
@@ -557,6 +557,10 @@ def _find_case_colliding_id(
     return None
 
 
+DATASOURCE_NAME = "datasource name"
+SEMANTIC_MODEL_NAME = "semantic model name"
+
+
 def _validate_path_component(value: str, *, kind: str) -> None:
     """Reject a user-supplied path component that could traverse the storage tree
     or cross the canonical-id namespace: empty/whitespace, ``..``, path separators,
@@ -1069,9 +1073,9 @@ class StorageBackend(ABC):
         return _handed_out(found) if found is not None else None
 
     async def _resolve_document(self, name: str, data_source: str | None) -> tuple[str, str] | None:
-        _validate_path_component(name, kind="semantic model name")
+        _validate_path_component(name, kind=SEMANTIC_MODEL_NAME)
         if data_source is not None:
-            _validate_path_component(data_source, kind="datasource name")
+            _validate_path_component(data_source, kind=DATASOURCE_NAME)
             return data_source, name
         matches = [(ds, n) for ds, n in await self._list_semantic_model_identities() if n == name]
         if len(matches) > 1:
@@ -1094,8 +1098,8 @@ class StorageBackend(ABC):
     async def save_semantic_model_text(self, *, data_source: str, name: str, text: str) -> None:
         """Store ``text`` verbatim as document ``name`` of ``data_source`` after the Ossie validity and namespace checks;
         replaces a stored document of that name."""
-        _validate_path_component(data_source, kind="datasource name")
-        _validate_path_component(name, kind="semantic model name")
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=SEMANTIC_MODEL_NAME)
         if not self._supports_semantic_models():
             raise self._unsupported()
         doc = checked_document(text=text, name=name)
@@ -1109,12 +1113,18 @@ class StorageBackend(ABC):
         """Store document ``name`` in place of the standalone datasets ``replacing`` (same names, so references keep
         resolving); the standalone datasets are restored when the document is refused."""
         replaced = [d for n in replacing if (d := await self.get_dataset(n, data_source=data_source)) is not None]
-        for dataset in replaced:
-            await self._delete_dataset_row(data_source=data_source, name=dataset.name)
+        await self._moving_standalone(data_source=data_source, datasets=replaced, write=lambda: self.save_semantic_model_text(
+            data_source=data_source, name=name, text=text))
+
+    async def _moving_standalone(self, *, data_source: str, datasets: list[SlayerDataset],
+                                 write: Callable[[], Awaitable[Any]]) -> None:
+        """Delete ``datasets``' standalone rows, then ``write`` the document taking them; any failure restores them."""
         try:
-            await self.save_semantic_model_text(data_source=data_source, name=name, text=text)
-        except Exception:
-            for dataset in replaced:
+            for dataset in datasets:
+                await self._delete_dataset_row(data_source=data_source, name=dataset.name)
+            await write()
+        except BaseException:  # cancellation too: the moved rows must come back
+            for dataset in datasets:
                 await self._save_dataset_impl(dataset)
             raise
 
@@ -1246,9 +1256,8 @@ class StorageBackend(ABC):
 
             return edit_text(stored, edit)
 
-        await self._patch_semantic_model_text(data_source=data_source, name=name, patch=patch)
-        for dataset in moved:
-            await self._delete_dataset_row(data_source=data_source, name=dataset.name)
+        await self._moving_standalone(data_source=data_source, datasets=moved, write=lambda: self._patch_semantic_model_text(
+            data_source=data_source, name=name, patch=patch))
 
     async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
         """Delete a document, cascading every member's embeddings and memory entities; ``False`` when absent."""
@@ -1358,7 +1367,7 @@ class StorageBackend(ABC):
             try:
                 for name, data in (await self._raw_datasource_dicts()).items():
                     with contextlib.suppress(ValueError):
-                        _validate_path_component(name, kind="datasource name")
+                        _validate_path_component(name, kind=DATASOURCE_NAME)
                         await self._with_library_granularities_renamed(name=name, data=data)
             finally:
                 _SETTLING.reset(token)
@@ -2062,7 +2071,7 @@ class StorageBackend(ABC):
     async def delete_datasource(self, name: str) -> bool:
         """Delete the datasource config and cascade-delete every embedding under its canonical prefix. Datasets in the datasource are NOT deleted — they become orphans; re-creating the datasource and re-ingesting repopulates embeddings."""
         # Sanitize the raw name before it composes a path / cascade prefix.
-        _validate_path_component(name, kind="datasource name")
+        _validate_path_component(name, kind=DATASOURCE_NAME)
         deleted = await self._delete_datasource_row(name)
         if deleted:
             await self.delete_embeddings_for_canonical(

@@ -72,7 +72,7 @@ def _check_name(name: str, *, scope: DocumentScope) -> None:
         raise ModelMetricNameError(name=name, reason="a dataset of the datasource has that name")
 
 
-def _check_agg(call: exp.Anonymous, *, name: str, text: str, scope: DocumentScope) -> None:
+def _check_agg(call: exp.Anonymous, *, text: str, scope: DocumentScope) -> None:
     if isinstance(call.parent, exp.Filter):
         raise AggFilterError(expression=text)
     args = call.expressions
@@ -132,7 +132,7 @@ def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
     if tree.find(exp.Window) is not None:
         raise UnevaluableEntityError(entity=f"Metric {name!r}", reason=WINDOW_WARNING)
     for call in [n for n in tree.find_all(exp.Anonymous) if is_agg_call(n)]:
-        _check_agg(call, name=name, text=text, scope=scope)
+        _check_agg(call, text=text, scope=scope)
     reads_metric = False
     for column in columns(tree, _OSSIE_SQL):
         if _inside_agg(column):
@@ -151,6 +151,10 @@ def _beyond_ossie(aggregate: exp.Expr) -> bool:
     return len(homes) > 1 or bool(filtered - homes)
 
 
+def _cycle_path(path: list[str], nxt: str) -> list[str]:
+    return [*path[path.index(nxt):], nxt] if nxt in path else [*path, nxt]
+
+
 def metric_cycle(dependencies: dict[str, set[str]]) -> None:
     """Refuse a cycle among model-scoped metrics (``name → names it reads``, case-folded)."""
     state: dict[str, int] = {}
@@ -159,7 +163,7 @@ def metric_cycle(dependencies: dict[str, set[str]]) -> None:
         state[node] = 1
         for nxt in sorted(dependencies.get(node, set())):
             if state.get(nxt) == 1:
-                raise MetricCycleError([*path[path.index(nxt):], nxt] if nxt in path else [*path, nxt])
+                raise MetricCycleError(_cycle_path(path, nxt=nxt))
             if nxt in dependencies and state.get(nxt) is None:
                 visit(nxt, [*path, nxt])
         state[node] = 2

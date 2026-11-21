@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
 
       - name: Fetch apache/ossie main
         run: git clone --depth 1 https://github.com/apache/ossie.git "$RUNNER_TEMP/ossie"

@@ -72,6 +72,9 @@ Refinement = QueryRefinement | Mapping[str, Any] | None
 Variables = Mapping[str, Any] | None
 
 
+def _semantic_model_path(*, data_source: str, name: str) -> str:
+    return f"/semantic-models/{quote(data_source, safe='')}/{quote(name, safe='')}"
+
 class SlayerClient:
     """Async-first client for the SLayer REST API, or direct local mode.
 
@@ -381,7 +384,7 @@ class SlayerClient:
         """A semantic model's text as stored; ``None`` when absent."""
         if self._storage is not None:
             return await self._storage.get_semantic_model_text(name, data_source=data_source)
-        found = await self._request_or_none(method="GET", path=f"/semantic-models/{data_source}/{name}")
+        found = await self._request_or_none(method="GET", path=_semantic_model_path(data_source=data_source, name=name))
         return found["text"] if found is not None else None
 
     async def create_semantic_model(
@@ -402,13 +405,13 @@ class SlayerClient:
             text = content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False)
             await self._storage.save_semantic_model_text(data_source=data_source, name=name, text=text)
             return
-        await self._request(method="PUT", path=f"/semantic-models/{data_source}/{name}", json={"content": content})
+        await self._request(method="PUT", path=_semantic_model_path(data_source=data_source, name=name), json={"content": content})
 
     async def delete_semantic_model(self, name: str, *, data_source: str) -> bool:
         """Delete a semantic model and its datasets; ``False`` when absent."""
         if self._storage is not None:
             return await self._storage.delete_semantic_model(name, data_source=data_source)
-        return await self._request_or_none(method="DELETE", path=f"/semantic-models/{data_source}/{name}") is not None
+        return await self._request_or_none(method="DELETE", path=_semantic_model_path(data_source=data_source, name=name)) is not None
 
     def list_semantic_models_sync(self, data_source: str | None = None) -> list[dict[str, str]]:
         return self._run_sync(self.list_semantic_models(data_source=data_source))

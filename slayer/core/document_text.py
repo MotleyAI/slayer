@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import json
 import re
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, MutableMapping, Sequence
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -54,18 +54,22 @@ def _named(items: list[Any]) -> bool:
     return len(names) == len(items) and all(isinstance(n, str) for n in names) and len(set(names)) == len(names)
 
 
+def _apply_named_list(node: list[Any], desired: list[Any]) -> None:
+    wanted = {d["name"]: d for d in desired}
+    for i in reversed(range(len(node))):
+        if node[i]["name"] not in wanted:
+            del node[i]
+    held = {item["name"]: item for item in node}
+    for item in desired:
+        if item["name"] in held:
+            _apply(held[item["name"]], item)
+        else:
+            node.append(item)
+
+
 def _apply_list(node: list[Any], desired: list[Any]) -> None:
     if node and desired and _named(node) and _named(desired):
-        wanted = {d["name"]: d for d in desired}
-        for i in reversed(range(len(node))):
-            if node[i]["name"] not in wanted:
-                del node[i]
-        held = {item["name"]: item for item in node}
-        for item in desired:
-            if item["name"] in held:
-                _apply(held[item["name"]], item)
-            else:
-                node.append(item)
+        _apply_named_list(node, desired)
         return
     kept = _subsequence(node, desired)
     if kept is not None:
@@ -119,56 +123,69 @@ def _is_json(text: str) -> bool:
     return text.lstrip().startswith("{")
 
 
-def _splice(*, ours: str, base: str, theirs: str) -> str:
-    """``ours`` with the line hunks turning ``base`` into ``theirs``; ``base`` is ``ours`` re-emitted, so its
-    formatting-only differences from ``ours`` outside the hunks keep ``ours``' text."""
-    o, b, t = ours.splitlines(keepends=True), base.splitlines(keepends=True), theirs.splitlines(keepends=True)
-    to_ours: dict[int, int] = {}
-    for i, j, n in SequenceMatcher(a=b, b=o, autojunk=False).get_matching_blocks():
-        to_ours.update({i + k: j + k for k in range(n)})
-    edits = SequenceMatcher(a=b, b=t, autojunk=False).get_opcodes()
+class _Pins:
+    """Where base lines fall in ``ours``, located through the base lines matched to it."""
 
-    def start_of(s: int) -> int | None:
+    def __init__(self, *, base: list[str], ours: list[str]) -> None:
+        self.to_ours: dict[int, int] = {}
+        for i, j, n in SequenceMatcher(a=base, b=ours, autojunk=False).get_matching_blocks():
+            self.to_ours.update({i + k: j + k for k in range(n)})
+        self.base_len = len(base)
+        self.ours_len = len(ours)
+
+    def start_of(self, s: int) -> int | None:
         """Where base line ``s`` starts in ``ours``, when a pinned neighbour locates it."""
-        if s in (0, len(b)):
-            return 0 if s == 0 else len(o)
-        if s - 1 in to_ours:
-            return to_ours[s - 1] + 1
-        return to_ours.get(s)
+        if s in (0, self.base_len):
+            return 0 if s == 0 else self.ours_len
+        if s - 1 in self.to_ours:
+            return self.to_ours[s - 1] + 1
+        return self.to_ours.get(s)
 
-    def end_of(lo: int, e: int) -> int | None:
+    def end_of(self, lo: int, e: int) -> int | None:
         """Where base lines ``lo:e`` end in ``ours``, when a pinned line locates it."""
-        if e > lo and e - 1 in to_ours:
-            return to_ours[e - 1] + 1
+        if e > lo and e - 1 in self.to_ours:
+            return self.to_ours[e - 1] + 1
         if e == lo:
-            return start_of(lo)
-        return len(o) if e == len(b) else to_ours.get(e)
+            return self.start_of(lo)
+        return self.ours_len if e == self.base_len else self.to_ours.get(e)
 
+
+def _regions(edits: Sequence[tuple[str, int, int, int, int]], *, pins: _Pins) -> list[list[int]]:
+    """The base line ranges the edits touch, widened to pinned bounds and merged when they meet."""
     regions: list[list[int]] = []
     for tag, i1, i2, _, _ in edits:
         if tag == "equal":
             continue
-        while start_of(i1) is None:
+        while pins.start_of(i1) is None:
             i1 -= 1
-        while end_of(i1, i2) is None:
+        while pins.end_of(i1, i2) is None:
             i2 += 1
         if regions and i1 <= regions[-1][1]:
             regions[-1][1] = max(regions[-1][1], i2)
         else:
             regions.append([i1, i2])
+    return regions
 
-    def to_theirs(i: int, *, end: bool) -> int:
-        """Where base line ``i`` falls in ``theirs``; at a hunk boundary, after (``end``) or before an insertion."""
-        hits = [j1 + (i - i1) if tag == "equal" else (j2 if i == i2 else j1) if end else (j1 if i == i1 else j2)
-                for tag, i1, i2, j1, j2 in edits if i1 <= i <= i2]
-        return hits[-1] if end else hits[0]
 
+def _to_theirs(i: int, *, edits: Sequence[tuple[str, int, int, int, int]], end: bool) -> int:
+    """Where base line ``i`` falls in ``theirs``; at a hunk boundary, after (``end``) or before an insertion."""
+    hits = [j1 + (i - i1) if tag == "equal" else (j2 if i == i2 else j1) if end else (j1 if i == i1 else j2)
+            for tag, i1, i2, j1, j2 in edits if i1 <= i <= i2]
+    return hits[-1] if end else hits[0]
+
+
+def _splice(*, ours: str, base: str, theirs: str) -> str:
+    """``ours`` with the line hunks turning ``base`` into ``theirs``; ``base`` is ``ours`` re-emitted, so its
+    formatting-only differences from ``ours`` outside the hunks keep ``ours``' text."""
+    o, b, t = ours.splitlines(keepends=True), base.splitlines(keepends=True), theirs.splitlines(keepends=True)
+    pins = _Pins(base=b, ours=o)
+    edits = SequenceMatcher(a=b, b=t, autojunk=False).get_opcodes()
     out: list[str] = []
     cursor = 0
-    for lo, hi in regions:
-        start, end = start_of(lo), end_of(lo, hi)
+    for lo, hi in _regions(edits, pins=pins):
+        start, end = pins.start_of(lo), pins.end_of(lo, hi)
         assert start is not None and end is not None
-        out += o[cursor:start] + t[to_theirs(lo, end=False):to_theirs(hi, end=True)]
+        out += o[cursor:start] + t[_to_theirs(lo, edits=edits, end=False):_to_theirs(hi, edits=edits, end=True)]
         cursor = end
     return "".join(out + o[cursor:])
 

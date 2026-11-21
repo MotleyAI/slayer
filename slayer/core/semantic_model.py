@@ -175,6 +175,17 @@ def _entity(node: Any, kind: str) -> str:
 _KINDS = {"datasets": "dataset", "fields": "field", "metrics": "metric", "relationships": "relationship"}
 
 
+def _indexed(items: Any, index: int | str) -> Any:
+    return items[index] if isinstance(items, list) and isinstance(index, int) and index < len(items) else None
+
+
+def _item_label(step: str, item: Any, index: int | str) -> str:
+    if step == "nonportable_extensions":
+        vendor = item.get("vendor_name") if isinstance(item, dict) else None
+        return f"extension {vendor!r}" if vendor is not None else f"extension #{index}"
+    return _entity(item, _KINDS.get(step, step))
+
+
 def _where(data: Any, loc: tuple[int | str, ...]) -> tuple[str, str | None]:
     """The entity path a schema error's location names, and its last key."""
     parts: list[str] = []
@@ -183,14 +194,9 @@ def _where(data: Any, loc: tuple[int | str, ...]) -> tuple[str, str | None]:
     while i < len(loc):
         step = loc[i]
         if isinstance(step, str) and i + 1 < len(loc) and isinstance(loc[i + 1], int) and isinstance(node, dict):
-            items = node.get(step)
             index = loc[i + 1]
-            item = items[index] if isinstance(items, list) and isinstance(index, int) and index < len(items) else None
-            if step == "nonportable_extensions":
-                vendor = item.get("vendor_name") if isinstance(item, dict) else None
-                parts.append(f"extension {vendor!r}" if vendor is not None else f"extension #{index}")
-            else:
-                parts.append(_entity(item, _KINDS.get(step, step)))
+            item = _indexed(node.get(step), index=index)
+            parts.append(_item_label(step, item=item, index=index))
             node, i = item, i + 2
             continue
         key = str(step)
@@ -211,21 +217,21 @@ def _schema_error(data: Any, error: Any) -> str:
     return f"{prefix}{key}: {detail}" if key else f"{prefix}{detail}"
 
 
+def _collect_extension_errors(node: Any, *, label: str, out: list[str]) -> None:
+    if not isinstance(node, dict):
+        return
+    for entry in node.get("nonportable_extensions") or []:
+        if (isinstance(entry, dict) and isinstance(entry.get("data"), dict)
+                and checked(vendor_name=entry.get("vendor_name") or "?", data=entry["data"]) is None):
+            out.append(f"{label}extension {entry.get('vendor_name')!r}: `data` holds a value that is not JSON")
+    for kind in ("datasets", "fields", "metrics", "relationships"):
+        for child in node.get(kind) or []:
+            _collect_extension_errors(child, label=f"{label}{_entity(child, _KINDS[kind])}, ", out=out)
+
+
 def _extension_errors(data: dict[str, Any]) -> list[str]:
     out: list[str] = []
-
-    def visit(node: Any, label: str) -> None:
-        if not isinstance(node, dict):
-            return
-        for entry in node.get("nonportable_extensions") or []:
-            if (isinstance(entry, dict) and isinstance(entry.get("data"), dict)
-                    and checked(vendor_name=entry.get("vendor_name") or "?", data=entry["data"]) is None):
-                out.append(f"{label}extension {entry.get('vendor_name')!r}: `data` holds a value that is not JSON")
-        for kind in ("datasets", "fields", "metrics", "relationships"):
-            for child in node.get(kind) or []:
-                visit(child, f"{label}{_entity(child, _KINDS[kind])}, ")
-
-    visit(data, "")
+    _collect_extension_errors(data, label="", out=out)
     return out
 
 

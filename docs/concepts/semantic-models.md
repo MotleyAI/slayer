@@ -139,7 +139,7 @@ A query without a population whose metrics read no dataset (`NOW()`) fails with 
 
 A save judges only what it adds or changes, plus whatever depends on that, so a stored metric SLayer cannot evaluate never blocks an unrelated edit.
 
-**Access tags.** Through an [access-filtered store](../configuration/storage.md#access-filtered-storage), a document dataset the caller cannot access reads as deleted, relationships into it are pruned, and every model-scoped metric reading it, directly or through other model-scoped metrics, is unknown.
+**Access tags.** Through an [access-filtered store](../configuration/storage.md#access-filtered-storage), a document dataset the caller cannot access reads as deleted, relationships into it are pruned, and every model-scoped metric reading it, directly or through other model-scoped metrics, is unknown. The document's text reads without those entities; a replace or edit keeps them, and a write that names one, or deleting a document that holds one, raises `HiddenContentConflictError`.
 
 ## Import and export
 

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from slayer.core.errors import AggArgumentError, AmbiguousReferenceError, MetricCycleError, UnevaluableEntityError
 from slayer.core.field_expression import portable_text
 from slayer.core.names import match_name
-from slayer.core.query import OrderItem, SlayerQuery, declared_aliases
+from slayer.core.query import OrderItem, QueryMetric, SlayerQuery, declared_aliases
 from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.syntax import DottedRef, Ref, canonical_metric_text, map_refs, parse_template
 from slayer.storage.base import StorageBackend
@@ -113,15 +113,7 @@ def expand_model_scoped(query: SlayerQuery, *, scope: ModelScope) -> SlayerQuery
     if not scope.names:
         return query
     aliases = declared_aliases(query)
-    metrics = []
-    for m in query.metrics or []:
-        own = [a for a in aliases if a != m.alias] if m.alias else aliases
-        named = None if m.alias else scope.bare(m.metric, aliases=own)
-        expanded = scope.text(m.metric, aliases=own)
-        if expanded == m.metric:
-            metrics.append(m)
-        else:
-            metrics.append(m.model_copy(update={"metric": expanded, **({"alias": named.name} if named else {})}))
+    metrics = [_metric_entry(m, scope=scope, aliases=aliases) for m in query.metrics or []]
     aliases = declared_aliases(query.model_copy(update={"metrics": metrics or None}))
     update: Dict[str, Any] = {}
     if metrics != list(query.metrics or []):
@@ -134,6 +126,16 @@ def expand_model_scoped(query: SlayerQuery, *, scope: ModelScope) -> SlayerQuery
     if any(a is not b for a, b in zip(order, query.order or [])):
         update["order"] = order
     return query.model_copy(update=update) if update else query
+
+
+def _metric_entry(m: QueryMetric, *, scope: ModelScope, aliases: Sequence[str]) -> QueryMetric:
+    """``m`` expanded; a bare model-scoped metric keys by its declared name."""
+    own = [a for a in aliases if a != m.alias] if m.alias else aliases
+    named = None if m.alias else scope.bare(m.metric, aliases=own)
+    expanded = scope.text(m.metric, aliases=own)
+    if expanded == m.metric:
+        return m
+    return m.model_copy(update={"metric": expanded, **({"alias": named.name} if named else {})})
 
 
 def _order_item(item: OrderItem, *, scope: ModelScope, aliases: Sequence[str]) -> OrderItem:

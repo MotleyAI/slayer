@@ -213,7 +213,7 @@ def test_the_harvest_runs_upstream_validator_tests_under_uv_with_the_plugin() ->
     withs = [command[i + 1] for i, arg in enumerate(command) if arg == "--with"]
     assert "pytest" in withs
     assert "sqlglot>=30.19.0" in withs
-    assert ["-p", drift_check.HARVEST_PLUGIN] == command[command.index("-p"):command.index("-p") + 2]
+    assert command[command.index("-p"):command.index("-p") + 2] == ["-p", drift_check.HARVEST_PLUGIN]
     assert str(CORPUS / "validation" / "test_validate.py") in command
     assert str(CORPUS / "validation" / "tests") in command
 

@@ -287,12 +287,18 @@ def _aggregated(node: exp.Expr) -> bool:
     return False
 
 
-def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> str | None:
-    """Why SLayer cannot evaluate a model-scoped metric (a field read unqualified or outside an aggregate, an aggregate
-    naming no dataset), else ``None``; an aggregate over several datasets evaluates as in a query."""
+def _parsed(expression: Expression) -> exp.Expr | None:
+    """A model-scoped metric's portable text (else its first dialect's) parsed; ``None`` when it does not parse."""
     text = expression if isinstance(expression, str) else (
         expression.sql or next((d.expression for d in expression.dialects or []), None))
     tree, _ = parse_ossie_sql(text, OSSIE_SQL) if text else (None, None)
+    return tree
+
+
+def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> str | None:
+    """Why SLayer cannot evaluate a model-scoped metric (a field read unqualified or outside an aggregate, an aggregate
+    naming no dataset), else ``None``; an aggregate over several datasets evaluates as in a query."""
+    tree = _parsed(expression)
     if tree is None:
         return None
     for column in columns(tree, OSSIE_SQL):
@@ -311,9 +317,7 @@ def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> s
 
 def expression_datasets(expression: Expression) -> tuple[set[str], set[str]]:
     """The datasets a model-scoped metric reads and the bare names it uses (other metrics), case-folded."""
-    text = expression if isinstance(expression, str) else (
-        expression.sql or next((d.expression for d in expression.dialects or []), None))
-    tree, _ = parse_ossie_sql(text, OSSIE_SQL) if text else (None, None)
+    tree = _parsed(expression)
     if tree is None:
         return set(), set()
     columns = list(tree.find_all(exp.Column))
@@ -374,20 +378,28 @@ def _admit(index: DocumentIndex, doc: Decomposition, *, known: set[str]) -> None
     """Admit ``doc``'s datasets and metrics, dropping each dependent of a quarantined dataset with a failure."""
     gone = set(index.quarantined)
     for ds in doc.datasets:
-        if ds.name.casefold() in gone:
-            for rel in ds.relationships:
-                index.failure(kind="relationship", name=rel.name or rel.to,
-                              cause=f"its dataset {ds.name!r} is unloadable: {index.quarantined[ds.name.casefold()]}")
-            continue
-        kept = []
+        _admit_dataset(index, ds, gone=gone)
+    _admit_metrics(index, doc, gone=gone, known=known)
+
+
+def _admit_dataset(index: DocumentIndex, ds: SlayerDataset, *, gone: set[str]) -> None:
+    if ds.name.casefold() in gone:
         for rel in ds.relationships:
-            if rel.to.casefold() in gone:
-                index.failure(kind="relationship", name=rel.name or rel.to,
-                              cause=f"its dataset {rel.to!r} is unloadable: {index.quarantined[rel.to.casefold()]}")
-            else:
-                kept.append(rel)
-        ds.relationships = kept
-        index.datasets[ds.name.casefold()] = ds
+            index.failure(kind="relationship", name=rel.name or rel.to,
+                          cause=f"its dataset {ds.name!r} is unloadable: {index.quarantined[ds.name.casefold()]}")
+        return
+    kept = []
+    for rel in ds.relationships:
+        if rel.to.casefold() in gone:
+            index.failure(kind="relationship", name=rel.name or rel.to,
+                          cause=f"its dataset {rel.to!r} is unloadable: {index.quarantined[rel.to.casefold()]}")
+        else:
+            kept.append(rel)
+    ds.relationships = kept
+    index.datasets[ds.name.casefold()] = ds
+
+
+def _admit_metrics(index: DocumentIndex, doc: Decomposition, *, gone: set[str], known: set[str]) -> None:
     pending = {m.name.casefold(): m for m in doc.metrics}
     dropped: set[str] = set()
     changed = True

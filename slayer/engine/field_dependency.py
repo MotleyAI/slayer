@@ -636,18 +636,27 @@ def check_evaluated_metrics(
             if not isinstance(node, (Ref, DottedRef)) or not node.evaluated:
                 continue
             parts = (node.name,) if isinstance(node, Ref) else node.parts
-            found = walk_terminal(root=dataset, path=parts[:-1], datasets_by_name=datasets) if parts[:-1] else (
-                dataset, ())
-            if found is None:
-                continue
-            terminal = found[0]
-            if terminal.get_metric(parts[-1]) is None and terminal.get_field(parts[-1]) is not None:
-                raise AggArgumentError(expression=f"Metric {metric.name!r}: AGG({'.'.join(parts)})",
-                                       reason=f"{'.'.join(parts)!r} is a field")
-            if (len(parts) == 1 and terminal.get_metric(parts[0]) is None and terminal.get_field(parts[0]) is None
-                    and parts[0].casefold() in {n.casefold() for n in model_metrics}):
-                raise AggArgumentError(expression=f"Metric {metric.name!r}: AGG({parts[0]})",
-                                       reason=f"{parts[0]!r} is a model-scoped metric")
+            _check_agg_argument(parts, metric_name=metric.name, dataset=dataset, datasets=datasets,
+                                model_metrics=model_metrics)
+
+
+def _check_agg_argument(
+    parts: tuple[str, ...], *, metric_name: str, dataset: SlayerDataset, datasets: dict[str, SlayerDataset],
+    model_metrics: AbstractSet[str],
+) -> None:
+    """Refuse ``AGG(parts)`` reading a field or a model-scoped metric; a path that misses passes."""
+    found = walk_terminal(root=dataset, path=parts[:-1], datasets_by_name=datasets) if parts[:-1] else (
+        dataset, ())
+    if found is None:
+        return
+    terminal = found[0]
+    if terminal.get_metric(parts[-1]) is None and terminal.get_field(parts[-1]) is not None:
+        raise AggArgumentError(expression=f"Metric {metric_name!r}: AGG({'.'.join(parts)})",
+                               reason=f"{'.'.join(parts)!r} is a field")
+    if (len(parts) == 1 and terminal.get_metric(parts[0]) is None and terminal.get_field(parts[0]) is None
+            and parts[0].casefold() in {n.casefold() for n in model_metrics}):
+        raise AggArgumentError(expression=f"Metric {metric_name!r}: AGG({parts[0]})",
+                               reason=f"{parts[0]!r} is a model-scoped metric")
 
 
 def check_dataset_filters(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:

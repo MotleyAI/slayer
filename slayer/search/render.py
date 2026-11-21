@@ -217,6 +217,21 @@ def _definition_lines(field: DatasetField) -> list[str]:
     return lines
 
 
+def _sample_lines(field: DatasetField) -> list[str]:
+    """Sample values: the structured list wins (``[]`` is authoritative), else the legacy ``sampled`` text."""
+    if field.sampled_values is None:
+        # ``sampled`` is a min/max range for numeric/temporal fields, or legacy data.
+        return [f"Sample values: {field.sampled}"] if field.sampled else []
+    if not field.sampled_values:
+        return []
+    # JSON keeps values containing commas unambiguous.
+    lines = ["Sample values: " + json.dumps(field.sampled_values, ensure_ascii=False)]
+    # Overflow signal only when the true cardinality strictly exceeds what we returned.
+    if field.distinct_count is not None and field.distinct_count > len(field.sampled_values):
+        lines.append(f"Distinct count: {field.distinct_count}")
+    return lines
+
+
 def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
     """Field doc: parent qualifier + per-field metadata + cached sample."""
     lines: list[str] = [
@@ -236,37 +251,7 @@ def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
     lines.extend(_definition_lines(field))
     if field.filter:
         lines.append(f"Filter: {field.filter}")
-    # Prefer the structured ``sampled_values`` list (full top-50)
-    # over the 20-truncated ``sampled`` text. ``is None`` gates the fallback
-    # so an authoritative empty list (``[]``) does not re-surface a stale
-    # ``sampled`` text; an empty list simply skips the line (avoids a bare
-    # ``Sample values: `` trailer in the indexed text).
-    if field.sampled_values is not None:
-        if field.sampled_values:
-            # JSON-encode the list to preserve values that contain commas
-            # (e.g. ``"R$ 1,000–3,000"``) — comma-joining would re-introduce
-            # the exact ambiguity that the structured ``sampled_values`` field
-            # was meant to solve.
-            lines.append(
-                "Sample values: "
-                + json.dumps(field.sampled_values, ensure_ascii=False)
-            )
-            # Overflow signal: render true cardinality on a follow-up line
-            # only when STRICTLY greater than the values we returned. Equal
-            # means we returned the entire set; emitting a hint would be
-            # noise. Gated on ``sampled_values is not None`` so the legacy
-            # ``"... (N distinct)"`` suffix in ``sampled`` text does not get
-            # duplicated by an extra line.
-            if (
-                field.distinct_count is not None
-                and field.distinct_count > len(field.sampled_values)
-            ):
-                lines.append(f"Distinct count: {field.distinct_count}")
-    elif field.sampled:
-        # Fallback for numeric/temporal fields (``sampled`` is a min/max
-        # range, not a list) and legacy data where the
-        # structured field was never populated.
-        lines.append(f"Sample values: {field.sampled}")
+    lines.extend(_sample_lines(field))
     if field.primary_key:
         lines.append("Primary key: yes")
     if field.load_warning:

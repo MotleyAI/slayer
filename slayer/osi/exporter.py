@@ -872,7 +872,7 @@ class _Exporter:
             tree = self._render(home, _instant_comparisons(key), scoped=False, portable=metric.portable)
         except Exception:  # noqa: BLE001 — the expanded form stands
             return None
-        for literal in list(tree.find_all(exp.Literal)):
+        for literal in tree.find_all(exp.Literal):
             if (hit := aggs.get(literal.this)) is not None:
                 dataset, name = hit
                 literal.replace(exp.Anonymous(this="AGG", expressions=[exp.Column(
@@ -922,19 +922,24 @@ class _Exporter:
             return first
         return None
 
-    def _document(self) -> dict[str, Any]:
-        semantic = self._shared_semantic_model()
+    def _document_header(self, semantic: dict[str, Any] | None) -> dict[str, Any]:
+        """Version, name, description and AI context: the shared semantic model's, else the datasource's."""
         document: dict[str, Any] = {"version": OSSIE_VERSION}
-        if semantic is not None:
-            document["name"] = semantic["name"]
-            if semantic.get("description"):
-                document["description"] = semantic["description"]
-            if semantic.get("ai_context"):
-                document["ai_context"] = semantic["ai_context"]
-        else:
+        if semantic is None:
             document["name"] = self.config.name
             if self.config.description:
                 document["description"] = self.config.description
+            return document
+        document["name"] = semantic["name"]
+        if semantic.get("description"):
+            document["description"] = semantic["description"]
+        if semantic.get("ai_context"):
+            document["ai_context"] = semantic["ai_context"]
+        return document
+
+    def _document(self) -> dict[str, Any]:
+        semantic = self._shared_semantic_model()
+        document = self._document_header(semantic)
         document["datasets"] = [self._verbatim(self.fixed[name]) if name in self.fixed else self._dataset_entity(ds)
                                 for name, ds in sorted(self.osi_datasets.items())]
         relationships = sorted(self.relationships,
@@ -1013,22 +1018,19 @@ class _Exporter:
         return entity
 
 
-async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: list[str] | None = None,
-                     extensions: bool = True) -> OsiExportResult:
-    """Export ``datasource``'s datasets (or the ``datasets`` subset) as an Ossie document and its report."""
-    storage = engine.storage
-    config = await storage.get_datasource(datasource)
-    if config is None:
-        raise OsiExportError(f"Datasource {datasource!r} not found.")
+async def _stored_datasets(*, storage: Any, datasource: str) -> dict[str, SlayerDataset]:
     stored: dict[str, SlayerDataset] = {}
     for name in sorted(await storage.list_datasets(data_source=datasource)):
         dataset = await storage.get_dataset(name, data_source=datasource)
         if dataset is not None:
             stored[name] = dataset
-    unknown = [m for m in datasets or [] if m not in stored]
-    if unknown:
-        raise OsiExportError(f"Unknown dataset(s) in datasource {datasource!r}: {', '.join(unknown)}.")
-    selected = sorted(set(datasets)) if datasets is not None else sorted(stored)
+    return stored
+
+
+async def _expanded_query_backed(
+    *, engine: SlayerQueryEngine, stored: dict[str, SlayerDataset], selected: list[str],
+) -> dict[str, SlayerDataset | Exception]:
+    """Each selected query-backed dataset's virtual expansion, or the exception expanding it raised."""
     virtual: dict[str, SlayerDataset | Exception] = {}
     for name in selected:
         if stored[name].source_queries:
@@ -1036,12 +1038,34 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
                 virtual[name] = await engine.expand_query_backed_dataset(stored[name])
             except Exception as exc:  # noqa: BLE001 — reported on the dataset
                 virtual[name] = exc
-    resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
+    return virtual
+
+
+async def _stored_documents(*, storage: Any, datasource: str) -> list[tuple[str, str]]:
+    """Each stored semantic-model document's name and text."""
     documents: list[tuple[str, str]] = []
     for _, name in await storage.list_semantic_models(datasource):
         text = await storage.get_semantic_model_text(name, data_source=datasource)
         if text is not None:
             documents.append((name, text))
+    return documents
+
+
+async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: list[str] | None = None,
+                     extensions: bool = True) -> OsiExportResult:
+    """Export ``datasource``'s datasets (or the ``datasets`` subset) as an Ossie document and its report."""
+    storage = engine.storage
+    config = await storage.get_datasource(datasource)
+    if config is None:
+        raise OsiExportError(f"Datasource {datasource!r} not found.")
+    stored = await _stored_datasets(storage=storage, datasource=datasource)
+    unknown = [m for m in datasets or [] if m not in stored]
+    if unknown:
+        raise OsiExportError(f"Unknown dataset(s) in datasource {datasource!r}: {', '.join(unknown)}.")
+    selected = sorted(set(datasets)) if datasets is not None else sorted(stored)
+    virtual = await _expanded_query_backed(engine=engine, stored=stored, selected=selected)
+    resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
+    documents = await _stored_documents(storage=storage, datasource=datasource)
     parsed = [yaml.safe_load(text) for _, text in documents]
     members = {d["name"] for doc in parsed for d in doc["datasets"]}
     if datasets is None and len(documents) == 1 and members == set(stored):

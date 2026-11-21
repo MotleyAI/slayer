@@ -80,6 +80,15 @@ def _slayer_data(entity: dict[str, Any]) -> dict[str, Any] | None:
     return found[0].get("data") if len(found) == 1 and isinstance(found[0].get("data"), dict) else None
 
 
+def _slayer_payload(entity: dict[str, Any]) -> ext.Payload | None:
+    """``entity``'s decoded ``SLAYER`` payload; ``None`` when it has none or it does not decode."""
+    data = _slayer_data(entity)
+    try:
+        return ext.decode(data) if data is not None else None
+    except ValueError:
+        return None
+
+
 def field_payload(field: DatasetField, *, core_expression: dict[str, Any]) -> dict[str, Any] | None:
     """``field``'s SLayer-only attributes as a ``SLAYER`` entry; ``None`` when it has none."""
     own = ossie_expression(field.expression) if field.expression is not None else None
@@ -196,29 +205,30 @@ class _Writer:
             if _fold(field.name) in self.extra_fields or not self._core_field(field):
                 self.slayer_fields.append(field)
 
+    def _write_core_field(self, doc: dict[str, Any], *, field: DatasetField, old: DatasetField | None,
+                          expression: dict[str, Any]) -> None:
+        name = field.name
+        entity = _find(_find(doc["datasets"], self.new.name).setdefault("fields", []), name)  # type: ignore[union-attr]
+        if entity is None:
+            entity = {"name": name, "expression": expression}
+            _find(doc["datasets"], self.new.name)["fields"].append(entity)  # type: ignore[index]
+        elif old is None or field.expression != old.expression:
+            entity["expression"] = expression
+        if old is None or field.label != old.label:
+            _set(entity, "label", field.label)
+        if old is None or field.description != old.description:
+            _set(entity, "description", field.description)
+        if old is None or field.datatype != old.datatype:
+            _set(entity, "datatype", core_datatype(field.datatype))
+        _set_slayer(entity, field_payload(field, core_expression=entity["expression"]))
+
     def _core_field(self, field: DatasetField) -> bool:
         old = self._old_field(field.name)
         name = field.name
         expression = ossie_expression(field.expression if field.expression is not None else name)
-
-        def apply(doc: dict[str, Any]) -> None:
-            entity = _find(_find(doc["datasets"], self.new.name).setdefault("fields", []), name)  # type: ignore[union-attr]
-            if entity is None:
-                entity = {"name": name, "expression": expression}
-                _find(doc["datasets"], self.new.name)["fields"].append(entity)  # type: ignore[index]
-            elif old is None or field.expression != old.expression:
-                entity["expression"] = expression
-            if old is None or field.label != old.label:
-                _set(entity, "label", field.label)
-            if old is None or field.description != old.description:
-                _set(entity, "description", field.description)
-            if old is None or field.datatype != old.datatype:
-                _set(entity, "datatype", core_datatype(field.datatype))
-            _set_slayer(entity, field_payload(field, core_expression=entity["expression"]))
-
         if old is not None and field == old:
             return _find(self.entry.get("fields"), name) is not None  # type: ignore[union-attr]
-        if self._try(apply):
+        if self._try(lambda doc: self._write_core_field(doc, field=field, old=old, expression=expression)):
             return True
         held = _find(self.entry.get("fields"), name)  # type: ignore[union-attr]
         if held is None:
@@ -257,11 +267,7 @@ class _Writer:
             if _fold(dataset.get("name")) == _fold(self.new.name):
                 continue
             for metric in dataset.get("metrics") or []:
-                data = _slayer_data(metric)
-                try:
-                    payload = ext.decode(data) if data is not None else None
-                except ValueError:
-                    payload = None
+                payload = _slayer_payload(metric)
                 if isinstance(payload, ext.MetricPayload) and _fold(payload.dataset) == _fold(self.new.name):
                     out[_fold(payload.metric.name)] = (dataset, metric)
         return out
@@ -295,28 +301,31 @@ class _Writer:
         slayer_only = metric.label is not None or metric.meta is not None or (
             metric.datatype is not None and metric.datatype.value not in OSSIE_CORE_TYPES)
 
-        def apply(doc: dict[str, Any]) -> None:
-            home = _find(doc["datasets"], self.new.name)
-            assert home is not None
-            entity = _find(home.setdefault("metrics", []), name)
-            if entity is None:
-                entity = {"name": name, "expression": expression}
-                home["metrics"].append(entity)
-            elif old is None or metric.expression != old.expression:
-                entity["expression"] = expression
-            if old is None or metric.description != old.description:
-                _set(entity, "description", metric.description)
-            if old is None or metric.datatype != old.datatype:
-                core_type = metric.datatype.value if metric.datatype is not None else None
-                _set(entity, "datatype", core_type if core_type in OSSIE_CORE_TYPES else None)
-            _set_slayer(entity, self._metric_entry(metric, core=entity["expression"]) if slayer_only else None)
-
-        if self._try(apply):
+        if self._try(lambda doc: self._write_core_metric(doc, metric=metric, old=old, expression=expression,
+                                                         slayer_only=slayer_only)):
             return True
         if held is not None:
             _set_slayer(held, self._metric_entry(metric, core=held["expression"]))
             return True
         return False
+
+    def _write_core_metric(self, doc: dict[str, Any], *, metric: DatasetMetric, old: DatasetMetric | None,
+                           expression: dict[str, Any], slayer_only: bool) -> None:
+        name = metric.name
+        home = _find(doc["datasets"], self.new.name)
+        assert home is not None
+        entity = _find(home.setdefault("metrics", []), name)
+        if entity is None:
+            entity = {"name": name, "expression": expression}
+            home["metrics"].append(entity)
+        elif old is None or metric.expression != old.expression:
+            entity["expression"] = expression
+        if old is None or metric.description != old.description:
+            _set(entity, "description", metric.description)
+        if old is None or metric.datatype != old.datatype:
+            core_type = metric.datatype.value if metric.datatype is not None else None
+            _set(entity, "datatype", core_type if core_type in OSSIE_CORE_TYPES else None)
+        _set_slayer(entity, self._metric_entry(metric, core=entity["expression"]) if slayer_only else None)
 
     def _metric_entry(self, metric: DatasetMetric, *, core: dict[str, Any]) -> dict[str, Any]:
         return ext.encode(ext.MetricPayload(entity=metric.name, dataset=self.new.name, metric=metric),
@@ -326,14 +335,9 @@ class _Writer:
 
     def _declared(self, rel: dict[str, Any]) -> bool:
         """``rel`` is one of this dataset's: declared on it by default or by its ``SLAYER`` entry."""
-        data = _slayer_data(rel)
-        if data is not None:
-            try:
-                payload = ext.decode(data)
-            except ValueError:
-                payload = None
-            if isinstance(payload, ext.RelationshipPayload):
-                return any(_fold(d.dataset) == _fold(self.new.name) for d in payload.declarations)
+        payload = _slayer_payload(rel)
+        if isinstance(payload, ext.RelationshipPayload):
+            return any(_fold(d.dataset) == _fold(self.new.name) for d in payload.declarations)
         return _fold(rel.get("from")) == _fold(self.new.name)
 
     def _relationships(self) -> None:
@@ -402,11 +406,7 @@ def with_dataset(doc: dict[str, Any], *, old: SlayerDataset | None, new: SlayerD
 
 def document_payload(doc: dict[str, Any]) -> ext.DocumentPayload:
     """``doc``'s document-level ``SLAYER`` payload (empty when it has none)."""
-    data = _slayer_data(doc)
-    try:
-        payload = ext.decode(data) if data is not None else None
-    except ValueError:
-        payload = None
+    payload = _slayer_payload(doc)
     return payload if isinstance(payload, ext.DocumentPayload) else ext.DocumentPayload(entity=str(doc.get("name")))
 
 

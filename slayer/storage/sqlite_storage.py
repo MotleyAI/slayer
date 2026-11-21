@@ -21,6 +21,7 @@ from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import (
+    DATASOURCE_NAME,
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
@@ -484,7 +485,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         # SQLite lookup is parameterised so injection isn't the risk —
         # validation here keeps the public ABC contract uniform across
         # backends.
-        _validate_path_component(name, kind="datasource name")
+        _validate_path_component(name, kind=DATASOURCE_NAME)
         raw = await asyncio.to_thread(self._get_datasource_sync, name)
         if raw is None:
             return None

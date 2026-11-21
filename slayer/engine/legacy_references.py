@@ -333,12 +333,7 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
     stages and the spine."""
     identities = await storage._list_all_dataset_identities()
     stage_names = {q.name for q in queries if q.name}
-    if not data_source:
-        sources = {ds for q in queries if (p := q.population_name) and p not in stage_names
-                   for ds, n in identities if n == _matched(p, identities=identities, data_source=ds)}
-        chosen = sources or {ds for ds, _ in identities}
-    else:
-        chosen = {data_source}
+    chosen = _chosen_data_sources(queries, identities=identities, stage_names=stage_names, data_source=data_source)
     names = {n for ds, n in identities if ds in chosen}
     names |= stage_names | {q.population_name for q in queries if q.population_name}
     names.add(TIME_SPINE_DATASET)
@@ -354,10 +349,7 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
             continue
         dataset_source, dataset = found
         if not dataset.awaits_fields:  # an unexpanded query-backed dataset's members are unknown
-            extended = [m.name for q in queries for e in q.extensions or [] if e.dataset.casefold() == population.casefold()
-                        for m in e.metrics or [] if m.name]
-            members[population.casefold()] = frozenset(n.casefold() for n in [
-                *(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name), *extended])
+            members[population.casefold()] = _member_names(dataset, queries=queries, population=population)
         aggregations[population.casefold()] = frozenset(a.name.casefold() for a in dataset.aggregations)
         own = [*(f.name for f in dataset.fields), *(r.name for r in dataset.relationships if r.name)]
         if any(not _is_alias(h, declared=[*names, *own], quoted=q) for h, q in dotted):
@@ -369,6 +361,26 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
         model_metrics.update(m.name for m in await storage.list_model_scoped_metrics(ds))
     return AnchorNames(names=frozenset(names), members=members, aggregations=aggregations, heads=heads,
                        model_metrics=frozenset(model_metrics))
+
+
+def _chosen_data_sources(
+    queries: Sequence[SlayerQuery], *, identities: Sequence[Tuple[str, str]], stage_names: set[str],
+    data_source: Optional[str],
+) -> set[str]:
+    """``data_source`` when pinned, else those the populations name a dataset in (every one when none does)."""
+    if data_source:
+        return {data_source}
+    sources = {ds for q in queries if (p := q.population_name) and p not in stage_names
+               for ds, n in identities if n == _matched(p, identities=identities, data_source=ds)}
+    return sources or {ds for ds, _ in identities}
+
+
+def _member_names(dataset: SlayerDataset, *, queries: Sequence[SlayerQuery], population: str) -> frozenset[str]:
+    """Casefolded fields and metrics of ``dataset``, plus the metrics ``queries`` extend ``population`` with."""
+    extended = [m.name for q in queries for e in q.extensions or [] if e.dataset.casefold() == population.casefold()
+                for m in e.metrics or [] if m.name]
+    return frozenset(n.casefold() for n in [
+        *(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name), *extended])
 
 
 def _dotted_heads(sources: Sequence[Any]) -> List[Tuple[str, bool]]:

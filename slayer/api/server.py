@@ -23,7 +23,6 @@ from slayer.core.errors import (
     AmbiguousDatasetError,
     MemoryNotFoundError,
     SchemaDriftError,
-    SlayerError,
 )
 from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerDataset
@@ -703,7 +702,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         try:
             await storage.create_semantic_model(data_source=body.data_source, name=body.name, content=body.content,
                                                 datasets=body.datasets)
-        except (ValueError, SlayerError) as e:
+        except ValueError as e:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "created"}
 
@@ -714,7 +713,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         text = body.content if isinstance(body.content, str) else yaml.safe_dump(body.content, sort_keys=False)
         try:
             await storage.save_semantic_model_text(data_source=data_source, name=name, text=text)
-        except (ValueError, SlayerError) as e:
+        except ValueError as e:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "replaced", "name": name}
 

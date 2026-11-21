@@ -82,7 +82,7 @@ jobs:
         run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
 
       # The Ossie corpus tests run upstream's validator and portability grader through `uv run`.
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
 
       - name: Run unit tests (shard ${{ matrix.shard }}/3)
         timeout-minutes: 20

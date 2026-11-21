@@ -23,7 +23,7 @@ from slayer.client import slayer_client as slayer_client_module
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.document_text import edit_text
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
-from slayer.core.errors import UnknownMetricError
+from slayer.core.errors import HiddenContentConflictError, UnknownMetricError
 from slayer.core.field_expression import portable_text
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Aggregation, DatasetMetric, DatasetRelationship, DatasourceConfig, SlayerDataset
@@ -1000,6 +1000,77 @@ async def test_a_write_through_the_view_merges_onto_the_full_document(kind: str)
         assert entry(doc, "employees")["description"] == "Staff."
 
 
+def _hr_view(engine: SlayerQueryEngine) -> AccessFilteredStorage:
+    return AccessFilteredStorage(engine.storage, tags=frozenset(), bypass=False)
+
+
+async def _hr_full(engine: SlayerQueryEngine) -> tuple[list[str], set[str], set[str], bool]:
+    doc = await doc_of(engine.storage, "hr")
+    return ([d["name"] for d in doc["datasets"]], {r["name"] for r in doc["relationships"]},
+            {m["name"] for m in doc["metrics"]}, "per_head" in json.dumps(doc))
+
+
+#: ``per_head`` is SLayer-only, so it lives in the document's ``SLAYER`` entry.
+HR_FULL = (["employees", "payroll", "payslips"], {"payroll_to_employees", "payslips_to_payroll"},
+           {"headcount", "payroll_total", "cost_per_head"}, True)
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_a_documents_text_through_the_view_omits_hidden_entities(kind: str) -> None:
+    async with hr_engine(kind) as engine:
+        view = _hr_view(engine)
+        doc = yaml.safe_load(await view.get_semantic_model_text("hr", data_source=DS) or "")
+        assert [d["name"] for d in doc["datasets"]] == ["employees", "payslips"]
+        assert doc["relationships"] == []
+        assert [m["name"] for m in doc["metrics"]] == ["headcount"]
+        assert not {"payroll", "payroll_total", "per_head"} & set(re.findall(r"\w+", json.dumps(doc)))
+        assert await view.semantic_model_owner("payroll", data_source=DS) is None
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_replacing_a_document_through_the_view_keeps_its_hidden_entities(kind: str) -> None:
+    async with hr_engine(kind) as engine:
+        view = _hr_view(engine)
+        text = await view.get_semantic_model_text("hr", data_source=DS) or ""
+        await view.save_semantic_model_text(data_source=DS, name="hr",
+                                            text=edit_text(text, lambda d: {**d, "description": "People."}))
+        assert await _hr_full(engine) == HR_FULL
+        assert (await doc_of(engine.storage, "hr"))["description"] == "People."
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_editing_a_document_through_the_view_keeps_its_hidden_entities(kind: str) -> None:
+    async with hr_engine(kind) as engine:
+        view = _hr_view(engine)
+        await view.edit_semantic_model("hr", data_source=DS, description="People.")
+        assert await _hr_full(engine) == HR_FULL
+
+
+@pytest.mark.parametrize(("edit", "kwargs"), [
+    ("save", {"text": document_text(name="hr", datasets=[dataset("payroll", fields=[field("payroll_id")])])}),
+    ("save", {"text": document_text(name="hr", datasets=[dataset("employees", fields=[field("employee_id")])],
+                                    metrics=[metric("raw_pay", "SUM(payroll.salary)")])}),
+    ("edit", {"remove_metrics": ["payroll_total"]}),
+    ("edit", {"remove_relationships": ["payroll_to_employees"]}),
+    ("edit", {"metrics": [{"name": "raw_pay", "expression": "SUM(payroll.salary)"}]}),
+    ("edit", {"metrics": [{"name": "raw_pay", "expression": {"dialects": [
+        {"dialect": "ANSI_SQL", "expression": "COUNT(employees.employee_id)"},
+        {"dialect": "SNOWFLAKE", "expression": "SUM(payroll.salary)"}]}}]}),
+    ("delete", {}),
+])
+async def test_a_document_write_touching_hidden_entities_is_refused(edit: str, kwargs: dict[str, Any]) -> None:
+    async with hr_engine() as engine:
+        view = _hr_view(engine)
+        write = {
+            "save": lambda: view.save_semantic_model_text(data_source=DS, name="hr", **kwargs),
+            "edit": lambda: view.edit_semantic_model("hr", data_source=DS, **kwargs),
+            "delete": lambda: view.delete_semantic_model("hr", data_source=DS),
+        }[edit]
+        with pytest.raises(HiddenContentConflictError):
+            await write()
+        assert await _hr_full(engine) == HR_FULL
+
+
 # --------------------------------------------------------------------------- #
 # Unknown datatypes
 # --------------------------------------------------------------------------- #
@@ -1109,6 +1180,50 @@ async def test_edit_semantic_model_edits_document_fields_metrics_relationships_a
     assert not standalone_exists("yaml", tmp_path, "returns")
 
 
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_a_failed_move_into_a_document_leaves_both_as_they_were(
+        tmp_path: Path, kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = make_storage(kind, tmp_path)
+    await store_document(storage, SALES)
+    await storage.save_dataset(shop(returns_dataset()).model_copy(update={"relationships": []}), _validate=False)
+    before = await storage.get_semantic_model_text("sales", data_source=DS)
+
+    async def refused(**_: Any) -> bool:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(storage, "_delete_dataset_row", refused)
+    with pytest.raises(OSError, match="disk full"):
+        await storage.edit_semantic_model("sales", data_source=DS, add_datasets=["returns"])
+    assert await storage.get_semantic_model_text("sales", data_source=DS) == before
+    assert standalone_exists(kind, tmp_path, "returns")
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_a_move_cancelled_mid_write_restores_the_standalone_dataset(
+        tmp_path: Path, kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = make_storage(kind, tmp_path)
+    await store_document(storage, SALES)
+    await storage.save_dataset(shop(returns_dataset()).model_copy(update={"relationships": []}), _validate=False)
+
+    async def cancelled(**_: Any) -> str:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(storage, "_patch_semantic_model_text", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await storage.edit_semantic_model("sales", data_source=DS, add_datasets=["returns"])
+    assert standalone_exists(kind, tmp_path, "returns")
+
+
+async def test_deleting_a_yaml_document_keeps_its_lock_file(tmp_path: Path) -> None:
+    """Unlinking the lock would let a waiter on the old inode and a new locker run concurrently."""
+    storage = make_storage("yaml", tmp_path)
+    await store_document(storage, SALES)
+    path = document_path(tmp_path, name="sales")
+    await storage.delete_semantic_model("sales", data_source=DS)
+    assert not path.exists()
+    assert Path(f"{path}.lock").exists()
+
+
 async def test_delete_semantic_model_tool_removes_the_document(tmp_path: Path) -> None:
     storage = make_storage("yaml", tmp_path)
     await store_document(storage, SALES)
@@ -1161,6 +1276,22 @@ async def test_the_remote_python_client_reports_a_missing_semantic_model(
     assert await client.get_semantic_model("nope", data_source=DS) is None
     assert await client.delete_semantic_model("nope", data_source=DS) is False
     assert await client.delete_semantic_model("sales", data_source=DS) is True
+
+
+async def test_the_remote_python_client_encodes_a_semantic_model_name(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    name = "q?a#b%c"
+    storage = make_storage("yaml", tmp_path)
+    app = create_app(storage=storage)
+    monkeypatch.setattr(slayer_client_module.httpx, "AsyncClient",
+                        lambda **_: AsyncClient(transport=ASGITransport(app=app), base_url="http://test"))
+    client = SlayerClient(url="http://test")
+    text = SALES.replace("name: sales", f"name: '{name}'", 1)
+    await client.create_semantic_model(data_source=DS, content=text)
+    assert await client.get_semantic_model(name, data_source=DS) == text
+    await client.replace_semantic_model(name, data_source=DS, content=text.replace("Orders and", "All"))
+    assert "All customers" in (await client.get_semantic_model(name, data_source=DS) or "")
+    assert await client.delete_semantic_model(name, data_source=DS) is True
 
 
 @pytest.mark.parametrize("kind", STORAGES)

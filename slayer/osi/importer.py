@@ -17,7 +17,7 @@ from sqlglot import exp
 
 from slayer.core import slayer_extension as ext
 from slayer.core.document_text import edit_text
-from slayer.core.models import SlayerDataset
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.ossie_validity import columns, parse_ossie_sql
 from slayer.core.semantic_model import OSSIE_VERSION, ossie_validity_errors
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -77,22 +77,27 @@ def _files(path: Path) -> list[Path]:
 
 # ---- legacy custom_extensions -------------------------------------------------
 
+def _decoded_legacy_entries(legacy: Any, *, owner: str) -> list[dict[str, Any]]:
+    """``legacy`` ``custom_extensions`` as ``nonportable_extensions`` entries."""
+    entries: list[dict[str, Any]] = []
+    for raw in legacy if isinstance(legacy, list) else [legacy]:
+        vendor = raw.get("vendor_name") if isinstance(raw, dict) else None
+        data = ext.decoded_legacy(raw.get("data")) if isinstance(raw, dict) else None
+        if ext.checked(vendor_name=vendor, data=data) is None:
+            raise _Refused(f"{owner}: the legacy custom_extensions entry of vendor {vendor!r} does not decode to "
+                           f"a JSON object")
+        entries.append({"vendor_name": vendor, "data": data})
+    return entries
+
+
 def _legacy_extensions(node: dict[str, Any], *, owner: str) -> bool:
     """Move ``node``'s and its members' legacy ``custom_extensions`` into ``nonportable_extensions``; ``True`` when any
     was found. Raises ``_Refused`` for a legacy entry whose string is not a JSON object."""
-    found = False
     legacy = node.pop("custom_extensions", None)
-    if legacy is not None:
-        found = True
-        entries = list(node.get("nonportable_extensions") or [])
-        for raw in legacy if isinstance(legacy, list) else [legacy]:
-            vendor = raw.get("vendor_name") if isinstance(raw, dict) else None
-            data = ext.decoded_legacy(raw.get("data")) if isinstance(raw, dict) else None
-            if ext.checked(vendor_name=vendor, data=data) is None:
-                raise _Refused(f"{owner}: the legacy custom_extensions entry of vendor {vendor!r} does not decode to "
-                               f"a JSON object")
-            entries.append({"vendor_name": vendor, "data": data})
-        node["nonportable_extensions"] = entries
+    found = legacy is not None
+    if found:
+        existing = list(node.get("nonportable_extensions") or [])
+        node["nonportable_extensions"] = existing + _decoded_legacy_entries(legacy, owner=owner)
     for key in _EXTENSIBLE:
         for item in node.get(key) or []:
             if isinstance(item, dict):
@@ -111,6 +116,25 @@ def _metric_text(expression: dict[str, Any]) -> tuple[str, str] | None:
         if str(entry.get("dialect", "")).upper() in ("ANSI_SQL", "OSSIE_SQL_2026"):
             return entry["dialect"], entry["expression"]
     return None
+
+
+def _declared_owners(doc: dict[str, Any]) -> dict[str, list[str]]:
+    """Each casefolded field name to the datasets that declare it."""
+    declared: dict[str, list[str]] = {}
+    for dataset in doc.get("datasets") or []:
+        for field in dataset.get("fields") or []:
+            declared.setdefault(str(field.get("name")).casefold(), []).append(dataset["name"])
+    return declared
+
+
+def _write_metric_text(metric: dict[str, Any], *, slot: str, text: str) -> None:
+    """Write ``text`` back into the metric's ``sql`` or its ``slot`` dialect entry."""
+    if slot == "sql":
+        metric["expression"]["sql"] = text
+        return
+    for entry in metric["expression"]["dialects"]:
+        if entry["dialect"] == slot:
+            entry["expression"] = text
 
 
 def _qualified(text: str, *, declared: dict[str, list[str]]) -> tuple[str | None, list[str], list[str]]:
@@ -181,6 +205,22 @@ def _sub_document(data: dict[str, Any], boundary: ext.DocumentBoundary) -> dict[
     return doc
 
 
+def _carried_fields(*, current: SlayerDataset, old: SlayerDataset) -> list[DatasetField]:
+    """``current``'s fields, each with its ``old`` counterpart's SLayer-only settings."""
+    fields = []
+    for field in current.fields:
+        before = old.get_field(field.name)
+        if before is None:
+            fields.append(field)
+            continue
+        fields.append(field.model_copy(update={
+            "format": before.format, "hidden": before.hidden, "allowed_aggregations": before.allowed_aggregations,
+            "granularity": before.granularity,
+            "meta": {k: v for k, v in (before.meta or {}).items() if not k.startswith("osi_")} or None,
+        }))
+    return fields
+
+
 # ---- the import ---------------------------------------------------------------
 
 class _Importer:
@@ -202,7 +242,7 @@ class _Importer:
         return self.result
 
     async def _file(self, file: Path) -> None:
-        text = file.read_text(encoding="utf-8")
+        text = file.read_text(encoding="utf-8")  # NOSONAR(S8707) — reading the file the CLI user names is the feature
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as exc:
@@ -302,32 +342,38 @@ class _Importer:
         engine = self.engine or SlayerQueryEngine(storage=self.storage)
         client = engine.client_for(datasource)
         for dataset in doc.get("datasets") or []:
-            parsed = parse_source(str(dataset.get("source", "")))
-            if parsed.is_query or parsed.table is None:
+            live = await self._introspected(client=client, dataset=dataset)
+            if live is None:
                 continue
-            try:
-                live = await introspect_table_to_dataset(client=client, table_name=parsed.table, ref=None,
-                                                         data_source=self.data_source, dataset_name=dataset["name"])
-            except Exception as exc:  # noqa: BLE001 — the upgrade needs the source; refused with the reason
-                raise _Refused(f"dataset {dataset['name']!r}: its source {dataset['source']!r} does not introspect "
-                               f"({exc}); a legacy document needs a reachable datasource to upgrade") from exc
-            declared = {str(f.get("name")).casefold() for f in dataset.get("fields") or []}
-            for column in live.fields:
-                if column.name.casefold() in declared:
-                    continue
-                field: dict[str, Any] = {"name": column.name, "expression": {"sql": column.name}}
-                if column.datatype is not None and column.datatype.value != "Array":
-                    field["datatype"] = column.datatype.value
-                dataset.setdefault("fields", []).append(field)
-                self.entry("field_added", f"source column {column.name!r} declared as a field of "
-                           f"{dataset['name']!r}", document=name, entity=f"{dataset['name']}.{column.name}")
+            self._declare_missing_fields(dataset=dataset, live=live, document=name)
+
+    def _declare_missing_fields(self, *, dataset: dict[str, Any], live: SlayerDataset, document: str) -> None:
+        declared = {str(f.get("name")).casefold() for f in dataset.get("fields") or []}
+        for column in live.fields:
+            if column.name.casefold() in declared:
+                continue
+            field: dict[str, Any] = {"name": column.name, "expression": {"sql": column.name}}
+            if column.datatype is not None and column.datatype.value != "Array":
+                field["datatype"] = column.datatype.value
+            dataset.setdefault("fields", []).append(field)
+            self.entry("field_added", f"source column {column.name!r} declared as a field of "
+                       f"{dataset['name']!r}", document=document, entity=f"{dataset['name']}.{column.name}")
+
+    async def _introspected(self, *, client: Any, dataset: dict[str, Any]) -> SlayerDataset | None:
+        """The legacy dataset's introspected source table; ``None`` for a query source."""
+        parsed = parse_source(str(dataset.get("source", "")))
+        if parsed.is_query or parsed.table is None:
+            return None
+        try:
+            return await introspect_table_to_dataset(client=client, table_name=parsed.table, ref=None,
+                                                     data_source=self.data_source, dataset_name=dataset["name"])
+        except Exception as exc:  # noqa: BLE001 — the upgrade needs the source; refused with the reason
+            raise _Refused(f"dataset {dataset['name']!r}: its source {dataset['source']!r} does not introspect "
+                           f"({exc}); a legacy document needs a reachable datasource to upgrade") from exc
 
     def _qualify_metrics(self, doc: dict[str, Any]) -> None:
         name = str(doc.get("name"))
-        declared: dict[str, list[str]] = {}
-        for dataset in doc.get("datasets") or []:
-            for field in dataset.get("fields") or []:
-                declared.setdefault(str(field.get("name")).casefold(), []).append(dataset["name"])
+        declared = _declared_owners(doc)
         for metric in doc.get("metrics") or []:
             slot = _metric_text(metric.get("expression") or {})
             if slot is None:
@@ -339,12 +385,7 @@ class _Importer:
                            entity=metric["name"])
             if text is None:
                 continue
-            if slot[0] == "sql":
-                metric["expression"]["sql"] = text
-            else:
-                for entry in metric["expression"]["dialects"]:
-                    if entry["dialect"] == slot[0]:
-                        entry["expression"] = text
+            _write_metric_text(metric, slot=slot[0], text=text)
             self.entry("qualified", f"metric {metric['name']!r}: {'; '.join(rewrites)}", document=name,
                        entity=metric["name"])
 
@@ -383,17 +424,7 @@ class _Importer:
         if current is None:
             return
         model_metrics = {str(m["name"]).casefold() for m in data.get("metrics") or []}
-        fields = []
-        for field in current.fields:
-            before = old.get_field(field.name)
-            if before is None:
-                fields.append(field)
-                continue
-            fields.append(field.model_copy(update={
-                "format": before.format, "hidden": before.hidden, "allowed_aggregations": before.allowed_aggregations,
-                "granularity": before.granularity,
-                "meta": {k: v for k, v in (before.meta or {}).items() if not k.startswith("osi_")} or None,
-            }))
+        fields = _carried_fields(current=current, old=old)
         for field in old.fields:
             if current.get_field(field.name) is None:
                 self.entry("unexpressed", f"field {field.name!r} of the replaced dataset {old.name!r} is not declared "

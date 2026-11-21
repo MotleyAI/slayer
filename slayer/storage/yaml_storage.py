@@ -40,6 +40,8 @@ from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.atomic_write import _atomic_write_text, _atomic_write_yaml
 from slayer.storage.base import (
+    DATASOURCE_NAME,
+    SEMANTIC_MODEL_NAME,
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
@@ -315,13 +317,13 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     def _dataset_path(self, data_source: str, name: str) -> str:
         """A dataset's YAML path; both components are validated where the path is composed."""
-        _validate_path_component(data_source, kind="datasource name")
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
         _validate_path_component(name, kind="dataset name")
         return os.path.join(self.models_dir, data_source, f"{name}.yaml")
 
     def _datasource_path(self, name: str) -> str:
         """A datasource's YAML path; ``name`` is validated where the path is composed."""
-        _validate_path_component(name, kind="datasource name")
+        _validate_path_component(name, kind=DATASOURCE_NAME)
         return os.path.join(self.datasources_dir, f"{name}.yaml")
 
     def _dataset_entry_exists(self, *, data_source: str, name: str) -> bool:
@@ -515,8 +517,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     # ---- semantic-model documents ------------------------------------------
 
     def _document_path(self, data_source: str, name: str) -> str:
-        _validate_path_component(data_source, kind="datasource name")
-        _validate_path_component(name, kind="semantic model name")
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=SEMANTIC_MODEL_NAME)
         return os.path.join(self.semantic_models_dir, data_source, f"{name}.yaml")
 
     def _document_exists(self, data_source: str, name: str) -> bool:
@@ -566,10 +568,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         if not self._document_exists(data_source, name):
             return False
         path = self._document_path(data_source, name)
+        # The lock file stays: unlinking it would let a waiter on the old inode and a new locker run concurrently.
         with self._document_lock(path):
             os.remove(path)
-        with contextlib.suppress(OSError):
-            os.remove(f"{path}.lock")
         return True
 
     async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:

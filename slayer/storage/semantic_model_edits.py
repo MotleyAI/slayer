@@ -46,6 +46,13 @@ def _fold(name: Any) -> str:
     return str(name).casefold()
 
 
+def _set_or_pop(doc: dict[str, Any], *, key: str, value: list[Any]) -> None:
+    if value:
+        doc[key] = value
+    else:
+        doc.pop(key, None)
+
+
 def with_datasets(doc: dict[str, Any], datasets: list[SlayerDataset], *, reader: str) -> dict[str, Any]:
     """``doc`` with ``datasets`` added: first without relationships, then with them, so relationships among the added
     datasets land in core."""
@@ -82,15 +89,9 @@ def edited_document(doc: dict[str, Any], *, description: Any = UNSET, ai_context
                 datatype=spec.entity.get("datatype"), ai_context=spec.entity.get("ai_context")))
         else:
             core.append({**held.get(_fold(spec.name), {}), **spec.entity})
-    if core:
-        out["metrics"] = core
-    else:
-        out.pop("metrics", None)
+    _set_or_pop(out, key="metrics", value=core)
     with_document_payload(out, payload)
     dropped = {_fold(n) for n in remove_relationships} | {_fold(r.get("name")) for r in relationships}
     rels = [r for r in out.get("relationships") or [] if _fold(r.get("name")) not in dropped] + list(relationships)
-    if rels:
-        out["relationships"] = rels
-    else:
-        out.pop("relationships", None)
+    _set_or_pop(out, key="relationships", value=rels)
     return out
