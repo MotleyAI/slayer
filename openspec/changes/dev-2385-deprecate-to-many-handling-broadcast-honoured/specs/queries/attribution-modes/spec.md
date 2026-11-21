@@ -22,7 +22,8 @@ aggregate naming the dimensions that aggregate attributes, which returns the sam
   SHALL persist `"broadcast"` as given.
 - **Concrete replacement.** Each `broadcast` warning SHALL carry `partition_by`: the query dimensions its
   aggregate attributes, spelled as the query spells them — a time dimension as its field, `[]` for the grand
-  total — and its hint SHALL name the aggregate call as written in the metric (a leaf of a composite metric by
+  total — and its hint SHALL name the aggregate call in canonical form, its references spelled as the query
+  spells them (a leaf of a composite metric by
   its own call, never an internal label) and the `partition_by=[…]` returning the same values, keeping the
   dice–slice disclosure.
 - **Not offered.** The published query and refinement schemas SHALL enumerate only `associate` and `error`, and

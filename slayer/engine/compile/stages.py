@@ -2135,7 +2135,7 @@ _KeyT = TypeVar("_KeyT", bound=ValueKey)
 
 
 def _query_spelling(key: ValueKey, *, context: _ProducerSynthesisContext) -> str:
-    """``key`` as the query writes it: each reference spelled from its query anchor, a time bucket by its field."""
+    """``key`` in canonical form, each reference spelled from its query anchor, a time bucket by its field."""
     if isinstance(key, TimeTruncKey):
         key = key.source
     datasets = {**context.datasets_by_name, context.host_dataset.name: context.host_dataset}

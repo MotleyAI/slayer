@@ -54,8 +54,9 @@ alone as provenance — SLayer re-validates dumped (versioned) queries internall
 `FutureWarning`s. (rejected (codex): the response payload is unaffected; only a fresh versioned dict loses the
 Python warning.)
 
-**D3. Concrete replacement carried from the compiler.** The planned attach gains the aggregate's original call
-text and its public `partition_by` spelling (the attributable grain dimensions as the query spells them; a time
+**D3. Concrete replacement carried from the compiler.** The planned attach gains the aggregate's call in canonical
+form (aliases such as `countd` resolved; one spelling per distinct aggregate) and its public `partition_by`
+spelling (the attributable grain dimensions as the query spells them; a time
 dimension by its field; `[]` for none). `BroadcastGrainWarningPayload` gains `partition_by: list[str]`; its hint
 names the call and `partition_by=[…]` and keeps `DICE_SLICE_HINT`. Never reverse-engineered from aliases. (codex)
 
