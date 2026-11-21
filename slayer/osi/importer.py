@@ -15,11 +15,11 @@ import yaml
 from pydantic import BaseModel
 from sqlglot import exp
 
+from slayer.core import slayer_extension as ext
 from slayer.core.document_text import edit_text
 from slayer.core.models import SlayerDataset
 from slayer.core.ossie_validity import columns, parse_ossie_sql
 from slayer.core.semantic_model import OSSIE_VERSION, ossie_validity_errors
-from slayer.core.slayer_extension import checked, decoded_legacy
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.ingestion import introspect_table_to_dataset
 from slayer.osi.yaml_writer import dump_yaml
@@ -87,8 +87,8 @@ def _legacy_extensions(node: dict[str, Any], *, owner: str) -> bool:
         entries = list(node.get("nonportable_extensions") or [])
         for raw in legacy if isinstance(legacy, list) else [legacy]:
             vendor = raw.get("vendor_name") if isinstance(raw, dict) else None
-            data = decoded_legacy(raw.get("data")) if isinstance(raw, dict) else None
-            if checked(vendor_name=vendor, data=data) is None:
+            data = ext.decoded_legacy(raw.get("data")) if isinstance(raw, dict) else None
+            if ext.checked(vendor_name=vendor, data=data) is None:
                 raise _Refused(f"{owner}: the legacy custom_extensions entry of vendor {vendor!r} does not decode to "
                                f"a JSON object")
             entries.append({"vendor_name": vendor, "data": data})
@@ -132,6 +132,50 @@ def _qualified(text: str, *, declared: dict[str, list[str]]) -> tuple[str | None
     if offenders or not rewrites:
         return None, rewrites, offenders
     return tree.sql(), rewrites, offenders
+
+
+# ---- merged exports -----------------------------------------------------------
+
+def _document_payload(data: dict[str, Any]) -> ext.DocumentPayload | None:
+    found = [e for e in data.get("nonportable_extensions") or [] if isinstance(e, dict) and ext.is_slayer(e)]
+    if len(found) != 1:
+        return None
+    try:
+        payload = ext.decode(found[0].get("data"))
+    except ValueError:
+        return None
+    return payload if isinstance(payload, ext.DocumentPayload) else None
+
+
+def _boundaries(data: dict[str, Any]) -> list[ext.DocumentBoundary]:
+    """The stored documents a merged export records in its document-level ``SLAYER`` entry."""
+    payload = _document_payload(data)
+    return list(payload.documents) if payload is not None else []
+
+
+def without_vendor_entry(data: dict[str, Any]) -> dict[str, Any]:
+    """``data`` without its document-level ``SLAYER`` entry."""
+    out = {k: v for k, v in data.items() if k != "nonportable_extensions"}
+    kept = [e for e in data.get("nonportable_extensions") or [] if not (isinstance(e, dict) and ext.is_slayer(e))]
+    return {**out, "nonportable_extensions": kept} if kept else out
+
+
+def _sub_document(data: dict[str, Any], boundary: ext.DocumentBoundary) -> dict[str, Any]:
+    """The document ``boundary`` records, its members taken from the merged ``data`` as written."""
+
+    def members(key: str, names: list[str]) -> list[dict[str, Any]]:
+        wanted = {n.casefold() for n in names}
+        return [e for e in data.get(key) or [] if str(e.get("name")).casefold() in wanted]
+
+    doc: dict[str, Any] = {"version": OSSIE_VERSION, "name": boundary.name}
+    for key, value in (("description", boundary.description), ("ai_context", boundary.ai_context),
+                       ("datasets", members("datasets", boundary.datasets)),
+                       ("relationships", members("relationships", boundary.relationships)),
+                       ("metrics", members("metrics", boundary.metrics)),
+                       ("nonportable_extensions", boundary.nonportable_extensions)):
+        if value:
+            doc[key] = value
+    return doc
 
 
 # ---- the import ---------------------------------------------------------------
@@ -193,7 +237,34 @@ class _Importer:
         if legacy:
             self.entry("legacy_extensions", "legacy `custom_extensions` entries read as `nonportable_extensions`",
                        document=name)
-        await self._store(name, text, yaml.safe_load(text))
+        data = yaml.safe_load(text)
+        boundaries = _boundaries(data)
+        if boundaries:
+            await self._split(data, boundaries)
+        else:
+            await self._store(name, text, data)
+
+    async def _split(self, data: dict[str, Any], boundaries: list[ext.DocumentBoundary]) -> None:
+        """A merged export: each stored document it records split back out, the other datasets standalone."""
+        reasons = ossie_validity_errors(data)
+        if reasons:
+            raise _Refused(*reasons)
+        claimed: set[str] = set()
+        for boundary in boundaries:
+            doc = _sub_document(data, boundary)
+            claimed |= {d["name"].casefold() for d in doc["datasets"]}
+            self.entry("split", f"semantic model {boundary.name!r} split out of the merged document",
+                       document=boundary.name)
+            await self._store(boundary.name, dump_yaml(doc), doc)
+        rest = [d["name"] for d in data["datasets"] if d["name"].casefold() not in claimed]
+        if not rest:
+            return
+        merged = dump_yaml(without_vendor_entry(data))
+        for dataset in await self.storage.standalone_datasets_of(text=merged, data_source=self.data_source,
+                                                                 names=rest):
+            await self.storage.save_dataset(dataset)
+            self.entry("standalone", f"dataset {dataset.name!r} stored as a standalone dataset",
+                       entity=dataset.name)
 
     async def _wrapper(self, data: dict[str, Any]) -> None:
         version = data.get("version")

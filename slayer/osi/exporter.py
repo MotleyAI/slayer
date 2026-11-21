@@ -51,6 +51,7 @@ from slayer.core.models import (
     relationship_key_error,
     rendered_expression,
 )
+from slayer.core.syntax import DottedRef, Ref, reference_spans, walk_parsed_refs
 from slayer.engine.binding import bind_dataset_expression
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionReport, ConversionWarning
@@ -181,6 +182,8 @@ def _time_role(field: DatasetField) -> bool:
 
 
 _AGGREGATE_MARK = "slayer_rendered_aggregate"
+#: Stands in for an ``AGG(d.m)`` operand while a model-scoped metric re-renders.
+_SENTINEL = 7_314_159_265_358
 
 
 def _ossie_division(tree: Expression) -> Expression:
@@ -268,6 +271,8 @@ class _Exporter:
         self.osi_datasets: dict[str, _Dataset] = {}
         self.relationships: list[_Relationship] = []
         self.model_metrics: list[dict[str, Any]] = []
+        #: Exported dataset-scoped metrics by (home dataset, SLayer name), case-folded: ``(dataset, exported name)``.
+        self.exported: dict[tuple[str, str], tuple[str, str]] = {}
         self.entries: list[ConversionWarning] = []
 
     # ---- report ----
@@ -319,6 +324,8 @@ class _Exporter:
                 self._relationship(name, relationship)
         metrics = [m for name in own for m in self._metrics(name)]
         self._name_entities(metrics)
+        self.exported = {(m.home.casefold(), (m.metric.name or "").casefold()): (m.dataset, m.name)
+                         for m in metrics if m.scope == "dataset" and m.name}
         for metric in metrics:
             self._place(metric)
         return OsiExportResult(document=self._document(), warnings=self.entries)
@@ -833,10 +840,50 @@ class _Exporter:
             if not rel.name:
                 rel.name = document.allocate(f"{rel.from_dataset}_{rel.to}")
 
+    def _referenced(self, home: SlayerDataset, ref: Ref | DottedRef) -> tuple[str, str] | None:
+        """The exported dataset-scoped metric ``ref`` (a metric reference of ``home``) names: ``(dataset, name)``."""
+        parts = (ref.name,) if isinstance(ref, Ref) else ref.parts
+        owner = terminal_dataset(root=home, path=parts[:-1], datasets_by_name=self.graph) if len(parts) > 1 else home
+        target = owner.get_metric(parts[-1]) if owner is not None else None
+        if target is None or target.name is None:
+            return None
+        return self.exported.get((owner.name.casefold(), target.name.casefold()))  # type: ignore[union-attr]
+
+    def _with_agg(self, metric: _Metric) -> exp.Expr | None:
+        """A model-scoped metric with each reference to an exported dataset-scoped metric written ``AGG(d.m)``
+        (Ossie's only way to refer to one); ``None`` when it has none or does not re-render."""
+        home = self.graph[metric.home]
+        text = metric.metric.text
+        try:
+            parsed, spans = reference_spans(text)
+        except ValueError:
+            return None
+        found = [(spans[id(r)], hit) for r in walk_parsed_refs(parsed)
+                 if isinstance(r, (Ref, DottedRef)) and id(r) in spans and (hit := self._referenced(home, r))]
+        if not found or str(_SENTINEL) in text:
+            return None
+        aggs: dict[str, tuple[str, str]] = {}
+        for k, ((start, end), hit) in enumerate(sorted(found, key=lambda f: f[0][0], reverse=True)):
+            aggs[str(_SENTINEL + k)] = hit
+            text = f"{text[:start]}({_SENTINEL + k}){text[end:]}"
+        try:
+            key = bind_dataset_expression(text, dataset=home, datasets=list(self.graph.values()), dialect=self.target)
+            tree = self._render(home, _instant_comparisons(key), scoped=False, portable=metric.portable)
+        except Exception:  # noqa: BLE001 — the expanded form stands
+            return None
+        for literal in list(tree.find_all(exp.Literal)):
+            if (hit := aggs.get(literal.this)) is not None:
+                dataset, name = hit
+                literal.replace(exp.Anonymous(this="AGG", expressions=[exp.Column(
+                    this=self._ident(name, list(self.osi_datasets[dataset].osi_fields)),
+                    table=self._ident(dataset, list(self.osi_datasets)))]))
+        return tree
+
     def _place(self, metric: _Metric) -> None:
         slayer_metric = metric.metric
         meta = slayer_metric.meta or {}
-        text = metric.tree.sql(dialect=PORTABLE_READER if metric.portable else self.target)
+        tree = (self._with_agg(metric) if metric.scope == "model" else None) or metric.tree
+        text = tree.sql(dialect=PORTABLE_READER if metric.portable else self.target)
         expression: dict[str, Any] = (
             {"sql": text} if metric.portable else {"dialects": [{"dialect": self.token, "expression": text}]})
         entity: dict[str, Any] = {"name": metric.name, "expression": expression}

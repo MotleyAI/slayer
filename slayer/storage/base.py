@@ -124,7 +124,7 @@ from slayer.storage.model_metric_rules import DocumentScope, check_model_metric,
 from slayer.storage.semantic_model_edits import UNSET, MetricSpec, edited_document, metric_spec, with_datasets
 from slayer.core.document_text import edit_text
 from slayer.storage.semantic_models import (
-    DocumentIndex, build_index, checked_document, decompose, expression_datasets,
+    DocumentIndex, build_index, checked_document, decompose, expression_datasets, parse_document_text,
 )
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.live_schema.type_refinement import (
@@ -1117,6 +1117,17 @@ class StorageBackend(ABC):
             for dataset in replaced:
                 await self._save_dataset_impl(dataset)
             raise
+
+    async def standalone_datasets_of(self, *, text: str, data_source: str, names: list[str]) -> list[SlayerDataset]:
+        """Datasets ``names`` of document ``text`` (its ``SLAYER`` entries applied) as unsaved standalone datasets."""
+        name = str((parse_document_text(text) or {}).get("name"))
+        checked_document(text=text, name=name)
+        datasource = await self.get_datasource(data_source)
+        decomposed = decompose(text=text, name=name, data_source=data_source,
+                               ds_type=datasource.type if datasource is not None else None)
+        wanted = {n.casefold() for n in names}
+        return [d.model_copy(deep=True, update={"semantic_model": None})
+                for d in decomposed.datasets if d.name.casefold() in wanted]
 
     async def _check_document_namespace(self, *, name: str, data_source: str, datasets: list[str],
                                         metrics: list[str], moving: set[str] = frozenset()) -> None:

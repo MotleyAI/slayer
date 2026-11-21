@@ -249,14 +249,39 @@ class _Writer:
 
     # ---- metrics ----
 
+    def _relocated(self) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+        """Another dataset's core metrics whose ``SLAYER`` entry restores them on this dataset (an export's relocated
+        metrics), by case-folded restored name: ``(that dataset's entry, the metric)``."""
+        out: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+        for dataset in self.doc["datasets"]:
+            if _fold(dataset.get("name")) == _fold(self.new.name):
+                continue
+            for metric in dataset.get("metrics") or []:
+                data = _slayer_data(metric)
+                try:
+                    payload = ext.decode(data) if data is not None else None
+                except ValueError:
+                    payload = None
+                if isinstance(payload, ext.MetricPayload) and _fold(payload.dataset) == _fold(self.new.name):
+                    out[_fold(payload.metric.name)] = (dataset, metric)
+        return out
+
+    def _old_metric(self, name: str) -> DatasetMetric | None:
+        return next((m for m in self.old.metrics if _fold(m.name) == _fold(name)), None) if self.old else None
+
     def _metrics(self) -> None:
         gone = self._removed([m.name for m in self.old.metrics] if self.old else [], [m.name for m in self.new.metrics])
+        relocated = self._relocated()
+        changed = {_fold(m.name) for m in self.new.metrics if m != self._old_metric(m.name)}
+        for name in (gone | changed) & set(relocated):
+            dataset, held = relocated.pop(name)
+            _set(dataset, "metrics", [m for m in dataset.get("metrics") or [] if m is not held])
         entry = self.entry
         assert entry is not None
         _set(entry, "metrics", [m for m in entry.get("metrics") or [] if _fold(m.get("name")) not in gone])
         for metric in self.new.metrics:
-            old = next((m for m in self.old.metrics if _fold(m.name) == _fold(metric.name)), None) if self.old else None
-            if metric.load_warning is not None and metric == old:
+            old = self._old_metric(metric.name)
+            if metric == old and (metric.load_warning is not None or _fold(metric.name) in relocated):
                 continue
             if _fold(metric.name) in self.extra_metrics or not self._core_metric(metric, old=old):
                 self.slayer_metrics.append(metric)

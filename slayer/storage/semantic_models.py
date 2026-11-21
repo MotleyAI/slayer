@@ -29,8 +29,8 @@ from slayer.sql.ossie_dialects import (
 )
 from slayer.storage.document_mapping import core_source
 from slayer.storage.document_extensions import (
-    apply_dataset_entry, apply_field_entry, digest as entry_digest, metric_entry, read_entry,
-    relationship_declarations, restore_metrics,
+    Restored, apply_dataset_entry, apply_field_entry, digest as entry_digest, metric_entry, read_entry,
+    relationship_declarations, relocate_metrics, restore_metrics,
 )
 
 __all__ = ["Decomposition", "DocumentIndex", "build_index", "checked_document", "decompose", "expression_datasets",
@@ -179,7 +179,7 @@ def _reads(expression: OssieExpression, names: set[str]) -> bool:
 
 
 def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: str, document: str,
-             restored: list[tuple[str, DatasetMetric]]) -> SlayerDataset:
+             members: set[str], restored: list[Restored]) -> SlayerDataset:
     primary = set(dataset.primary_key or [])
     unique = {k[0] for k in dataset.unique_keys or [] if len(k) == 1}
     notes: list[ExtensionNote] = []
@@ -192,9 +192,10 @@ def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: st
         entry = read_entry(raw.nonportable_extensions, kind="metric", entity=raw.name,
                            ossie=entry_digest(raw.expression), label=label, notes=notes)
         core = _metric(raw, target=target, windowed_fields=windowed)
-        metric, was_restored = metric_entry(core, entry, home=dataset.name, notes=notes, label=label)
-        if was_restored:
-            restored.append((dataset.name, core))
+        metric, restoration = metric_entry(core, entry, home=dataset.name, members=members, notes=notes,
+                                           label=label)
+        if restoration is not None:
+            restored.append(restoration)
         metrics.append(metric)
     built = SlayerDataset(
         name=dataset.name, data_source=data_source, description=dataset.description, fields=fields,
@@ -213,9 +214,11 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
     doc = checked_document(text=text, name=name)
     target = ossie_token(ds_type)
     reader = dialect_for_ds_type(ds_type).sqlglot_name
-    restored: list[tuple[str, DatasetMetric]] = []
+    restored: list[Restored] = []
+    members = {d.name.casefold() for d in doc.datasets}
     datasets = {d.name: _dataset(d, data_source=data_source, target=target, reader=reader, document=doc.name,
-                                 restored=restored) for d in doc.datasets}
+                                 members=members, restored=restored) for d in doc.datasets}
+    relocate_metrics(datasets, restored=restored)
     for rel in doc.relationships or []:
         notes = datasets[rel.from_dataset].extension_notes
         default = DatasetRelationship(

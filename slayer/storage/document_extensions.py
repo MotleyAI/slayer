@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import BaseModel
+
 from slayer.core import slayer_extension as ext
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
@@ -16,7 +18,8 @@ from slayer.core.semantic_model import OssieExpression
 from slayer.engine.binding import bind_dataset_expression
 from slayer.sql.ossie_dialects import expression_digest, source_digest
 
-__all__ = ["Entry", "apply_dataset_entry", "apply_field_entry", "metric_entry", "read_entry", "restore_metrics",
+__all__ = ["Entry", "Restored", "apply_dataset_entry", "apply_field_entry", "metric_entry", "read_entry",
+           "relocate_metrics", "restore_metrics",
            "STALE"]
 
 STALE = "its SLAYER entry was written for an earlier version of it (edited by hand; the fingerprint differs)"
@@ -125,41 +128,81 @@ def apply_dataset_entry(dataset: SlayerDataset, entry: Entry | None, *, notes: l
     return dataset.model_copy(update=update)
 
 
-def metric_entry(metric: DatasetMetric, entry: Entry | None, *, home: str, notes: list[ExtensionNote],
-                 label: str) -> tuple[DatasetMetric, bool]:
-    """``metric`` restored from its matching entry, and whether it was (its binding is checked once every dataset is
-    built)."""
+class Restored(BaseModel):
+    """A metric restored from its ``SLAYER`` entry: its document form on ``origin``, restored on ``home`` as ``name``
+    (another dataset of the document for an export's relocated metric)."""
+
+    origin: str
+    home: str
+    name: str
+    core: DatasetMetric
+
+
+def metric_entry(metric: DatasetMetric, entry: Entry | None, *, home: str, members: set[str],
+                 notes: list[ExtensionNote], label: str) -> tuple[DatasetMetric, Restored | None]:
+    """``metric`` restored from its matching entry, and the restoration (its binding is checked once every dataset is
+    built); a matching entry naming another dataset of the document (``members``, case-folded) relocates it there."""
     if entry is None:
-        return metric, False
+        return metric, None
     payload: ext.MetricPayload = entry.payload
     if payload.dataset.casefold() != home.casefold():
+        if entry.matched and payload.dataset.casefold() in members:
+            restored = payload.metric.model_copy(update={"description": metric.description
+                                                          or payload.metric.description})
+            return restored, Restored(origin=home, home=payload.dataset, name=restored.name, core=metric)
+        reason = "which the document does not hold" if payload.dataset.casefold() not in members else STALE
         notes.append(ExtensionNote(kind="metric", entity=metric.name, message=(
-            f"{label}: its SLAYER entry names dataset {payload.dataset!r}, which is not its dataset {home!r}; "
-            "ignored")))
-        return metric, False
+            f"{label}: its SLAYER entry names dataset {payload.dataset!r}, {reason}; ignored")))
+        return metric, None
     if not entry.matched:
         if payload.metric.expression != metric.expression:
             notes.append(ExtensionNote(kind="metric", entity=metric.name, message=f"{label}: {STALE}; its formula "
                                        "is read from the document"))
-        return metric.model_copy(update={"label": payload.metric.label, "meta": payload.metric.meta}), False
+        return metric.model_copy(update={"label": payload.metric.label, "meta": payload.metric.meta}), None
     restored = payload.metric.model_copy(update={"name": metric.name,
                                                  "description": metric.description or payload.metric.description})
-    return restored, True
+    return restored, Restored(origin=home, home=home, name=metric.name, core=metric)
 
 
-def restore_metrics(datasets: dict[str, SlayerDataset], *, restored: list[tuple[str, DatasetMetric]],
-                    dialect: str) -> None:
-    """Revert each restored metric (``(dataset, document form)``) that does not bind, with a note."""
+def _named(dataset: SlayerDataset, name: str) -> int | None:
+    return next((i for i, m in enumerate(dataset.metrics) if m.name.casefold() == name.casefold()), None)
+
+
+def relocate_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Restored]) -> None:
+    """Move each relocated metric to its home dataset; one whose name is taken there stays in its document form."""
+    by_fold = {name.casefold(): name for name in datasets}
+    for item in [r for r in restored if r.home.casefold() != r.origin.casefold()]:
+        origin, home = datasets[item.origin], datasets[by_fold[item.home.casefold()]]
+        i = _named(origin, item.name)
+        assert i is not None
+        metric = origin.metrics.pop(i)
+        if _named(home, item.name) is not None or home.get_field(item.name) is not None:
+            origin.metrics.insert(i, item.core)
+            restored.remove(item)
+            origin.extension_notes.append(ExtensionNote(kind="metric", entity=item.core.name, message=(
+                f"metric {item.core.name!r}: its SLAYER entry restores it as {home.name}.{item.name}, a name "
+                f"{home.name!r} already holds; ignored")))
+            continue
+        home.metrics.append(metric)
+        item.home = home.name
+
+
+def restore_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Restored], dialect: str) -> None:
+    """Revert each restored metric that does not bind to its document form, with a note."""
     peers = list(datasets.values())
-    for home, core in restored:
-        dataset = datasets[home]
-        i, metric = next((i, m) for i, m in enumerate(dataset.metrics) if m.name == core.name)
+    for item in restored:
+        dataset = datasets[item.home]
+        i = _named(dataset, item.name)
+        assert i is not None
+        metric = dataset.metrics[i]
         try:
             bind_dataset_expression(metric.text, dataset=dataset, datasets=peers, dialect=dialect)
         except Exception as exc:  # noqa: BLE001 — any binding failure keeps the document form
-            dataset.metrics[i] = core
-            dataset.extension_notes.append(ExtensionNote(kind="metric", entity=metric.name, message=(
-                f"metric {metric.name!r}: its SLAYER formula {metric.text!r} does not bind "
+            del dataset.metrics[i]
+            origin = datasets[item.origin]
+            origin.metrics.insert(len(origin.metrics) if origin is not dataset else i, item.core)
+            origin.extension_notes.append(ExtensionNote(kind="metric", entity=item.core.name, message=(
+                f"metric {item.core.name!r}: its SLAYER formula {metric.text!r} does not bind "
                 f"({str(exc).splitlines()[0]}); ignored")))
 
 
