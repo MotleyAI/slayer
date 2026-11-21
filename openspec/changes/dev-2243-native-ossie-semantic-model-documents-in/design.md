@@ -65,6 +65,7 @@ Each entry keeps its source tag: `(user)` the owner decided, `(default)` taken b
 33. **Corpus and edge-case tests** cover case-only collisions, composite and reordered keys, concurrent same-document writes, owner routing, fingerprint invalidation, transitive access pruning, memory/stage cleanup, member deletion and a dataset named `source`. (codex)
 34. **Every construct the 1.x converter mapped keeps its meaning natively** (FILTER aggregates, statistical and approximate aggregates, array functions, aggregate operands, list counts, date literals, `source.column`), through the one Mode B reader; expressions with no runnable form are translated in memory at load, never written back. (default; no regression)
 35. **A model-scoped metric Ossie rejects evaluates whenever SLayer evaluates the same expression in a query** (an aggregate reading several datasets, a FILTER on another dataset): SLayer is a superset of Ossie, so only what SLayer cannot evaluate loads unevaluable. Rejected: loading such metrics unevaluable; moving them into dataset scope. (user)
+36. **Entity `ai_context` and foreign extensions are read into metadata** (`meta.osi_ai_context`, `meta.osi_nonportable_extensions`, the 1.x keys) so agents keep seeing them; saves never write them back. DEV-2244 replaces this with first-class fields. Rejected: deferring to DEV-2244, which would regress 1.x-imported metadata in 2.0. (user)
 
 ## Risks / Trade-offs
 

@@ -158,7 +158,20 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: l
     label = f"field {field.name!r} of {dataset!r}"
     entry = read_entry(field.nonportable_extensions, kind="field", entity=field.name,
                        ossie=entry_digest(field.expression), label=label, notes=notes)
-    return apply_field_entry(built, entry, notes=notes, label=label, target=target)
+    built = apply_field_entry(built, entry, notes=notes, label=label, target=target)
+    return built.model_copy(update={"meta": with_ossie_meta(built.meta, field)})
+
+
+def with_ossie_meta(meta: dict[str, Any] | None, entity: Any) -> dict[str, Any] | None:
+    """``meta`` plus ``entity``'s ``ai_context`` and foreign extensions under the 1.x importer's ``osi_*`` keys."""
+    out = dict(meta or {})
+    if entity.ai_context is not None:
+        ai = entity.ai_context
+        out["osi_ai_context"] = ai.model_dump(exclude_none=True) if isinstance(ai, BaseModel) else ai
+    foreign = [e.model_dump(exclude_none=True) for e in entity.nonportable_extensions or [] if not ext.is_slayer(e)]
+    if foreign:
+        out["osi_nonportable_extensions"] = foreign
+    return out or None
 
 
 def _metric(metric: Any, *, target: str, windowed_fields: set[str]) -> DatasetMetric:
@@ -196,7 +209,7 @@ def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: st
                                            label=label)
         if restoration is not None:
             restored.append(restoration)
-        metrics.append(metric)
+        metrics.append(metric.model_copy(update={"meta": with_ossie_meta(metric.meta, raw)}))
     built = SlayerDataset(
         name=dataset.name, data_source=data_source, description=dataset.description, fields=fields,
         semantic_model=document, metrics=metrics, **_source(dataset),
@@ -205,6 +218,7 @@ def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: st
                        ossie=source_digest(dataset.source, reader=reader), label=f"dataset {dataset.name!r}",
                        notes=notes)
     built = apply_dataset_entry(built, entry, notes=notes, target=target)
+    built.meta = with_ossie_meta(built.meta, dataset)
     built.extension_notes = notes
     return built
 
@@ -231,7 +245,8 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
                                                          to_columns=list(rel.to_columns)),
                            label=f"relationship {rel.name!r}", notes=notes)
         for owner, declared in relationship_declarations(rel, entry, datasets=datasets, default=default, notes=notes):
-            datasets[owner].relationships.append(declared)
+            datasets[owner].relationships.append(
+                declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)}))
     restore_metrics(datasets, restored=restored, dialect=reader)
     metrics = []
     for m in doc.metrics or []:

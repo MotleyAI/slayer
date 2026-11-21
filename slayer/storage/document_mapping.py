@@ -377,11 +377,27 @@ class _Writer:
         return False
 
 
+def _own_meta(meta: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``meta`` without the ``osi_*`` keys a load reads from the document's own content."""
+    kept = {k: v for k, v in (meta or {}).items() if not k.startswith("osi_")}
+    return kept or None
+
+
+def _without_ossie_meta(dataset: SlayerDataset) -> SlayerDataset:
+    return dataset.model_copy(update={
+        "meta": _own_meta(dataset.meta),
+        "fields": [f.model_copy(update={"meta": _own_meta(f.meta)}) for f in dataset.fields],
+        "metrics": [m.model_copy(update={"meta": _own_meta(m.meta)}) for m in dataset.metrics],
+        "relationships": [r.model_copy(update={"meta": _own_meta(r.meta)}) for r in dataset.relationships],
+    })
+
+
 def with_dataset(doc: dict[str, Any], *, old: SlayerDataset | None, new: SlayerDataset, reader: str,
                  core: bool = True) -> dict[str, Any]:
     """``doc`` with ``new`` written over ``old`` (its decomposed current form; ``None`` adds it); ``core=False`` keeps
-    Ossie core as it is, writing every change as ``SLAYER`` entries."""
-    return _Writer(doc, old=old, new=new, reader=reader, core=core).run()
+    Ossie core as it is, writing every change as ``SLAYER`` entries. The ``osi_*`` metadata keys are never written."""
+    return _Writer(doc, old=_without_ossie_meta(old) if old is not None else None, new=_without_ossie_meta(new),
+                   reader=reader, core=core).run()
 
 
 def document_payload(doc: dict[str, Any]) -> ext.DocumentPayload:

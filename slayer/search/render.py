@@ -143,6 +143,8 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
     ]
     if dataset.description:
         lines.append(f"Description: {dataset.description}")
+    if ai := meta_ai_context_text(dataset.meta):
+        lines.append(f"AI context: {ai}")
     if dataset.sql_table:
         lines.append(f"sql_table: {dataset.sql_table}")
     if dataset.sql:
@@ -223,6 +225,8 @@ def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
     ]
     if field.description:
         lines.append(f"Description: {field.description}")
+    if ai := meta_ai_context_text(field.meta):
+        lines.append(f"AI context: {ai}")
     if field.label:
         lines.append(f"Label: {field.label}")
     if field.format:
@@ -283,6 +287,8 @@ def render_metric_text(*, dataset: SlayerDataset, metric: DatasetMetric) -> str:
     ]
     if metric.description:
         lines.append(f"Description: {metric.description}")
+    if ai := meta_ai_context_text(metric.meta):
+        lines.append(f"AI context: {ai}")
     if metric.label:
         lines.append(f"Label: {metric.label}")
     if metric.load_warning:
@@ -308,6 +314,14 @@ def ai_context_text(ai_context: AIContext | dict[str, Any] | None) -> str:
              *(f"{label}: {', '.join(items)}" for label, items in
                (("synonyms", ai_context.synonyms), ("examples", ai_context.examples)) if items)]
     return "; ".join(p for p in parts if p)
+
+
+def meta_ai_context_text(meta: dict[str, Any] | None) -> str:
+    """The Ossie ``ai_context`` a load recorded in ``meta`` as one line; empty when none or malformed."""
+    try:
+        return ai_context_text((meta or {}).get("osi_ai_context"))
+    except ValueError:
+        return ""
 
 
 def render_semantic_model_text(*, data_source: str, name: str, document: dict[str, Any]) -> str:

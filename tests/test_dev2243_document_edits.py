@@ -1176,6 +1176,32 @@ async def test_a_model_scoped_metric_is_found_by_its_synonym(tmp_path: Path) -> 
     assert f"{DS}.revenue_per_customer" in {h.id for h in hits.results}
 
 
+AI_AMOUNT = document_text(datasets=[dataset("orders", primary_key=["order_id"], fields=[
+    field("order_id"),
+    field("amount", datatype="Float", ai_context={"instructions": "Gross order value.", "synonyms": ["revenue", "gross"]},
+          nonportable_extensions=[{"vendor_name": "SNOWFLAKE", "data": {"unit": "usd"}}]),
+])])
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_a_fields_ai_context_reaches_inspect_and_search(tmp_path: Path, kind: str) -> None:
+    """Spec scenario: A field's ai_context reaches inspect and search."""
+    storage = make_storage(kind, tmp_path)
+    await store_document(storage, AI_AMOUNT)
+    shown = await mcp_text(storage, "inspect", reference="orders.amount", entity_type="field", compact=False)
+    assert "revenue" in shown and "gross" in shown
+    hits = await SearchService(storage=storage).search(question="gross", max_results=20)
+    assert f"{DS}.orders.amount" in {h.id for h in hits.results}
+    orders = await must_get(storage, "orders")
+    amount = orders.get_field("amount")
+    assert amount is not None and amount.meta is not None
+    assert amount.meta["osi_nonportable_extensions"] == [{"vendor_name": "SNOWFLAKE", "data": {"unit": "usd"}}]
+    await storage.save_dataset(orders)
+    assert await text_of(storage) == AI_AMOUNT
+    await storage.save_dataset(orders.model_copy(update={"description": "One row per order."}))
+    assert "osi_" not in (await text_of(storage) or "")
+
+
 async def test_search_indexes_documents_and_refreshes_on_edits(tmp_path: Path) -> None:
     storage = make_storage("yaml", tmp_path)
     await store_document(storage, SALES)
