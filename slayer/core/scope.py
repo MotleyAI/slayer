@@ -83,7 +83,7 @@ class StageField(BaseModel):
     name: str
     sql_alias: str
     public_alias: Optional[str] = None
-    datatype: Optional[DataType] = None
+    datatype: DataType
     element_type: Optional[DataType] = None
     # Set only for a field an upstream stage bucketed (a ``TimeTruncKey`` slot);
     # ``None`` means "not truncated", so any granularity re-binds.

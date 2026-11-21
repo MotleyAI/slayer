@@ -26,6 +26,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.keys import FieldKey, Phase, TransformKey
 from slayer.ir.planned import ValueSlot
 from slayer.sql.generator import SQLGenerator
@@ -40,10 +41,10 @@ def _render_ntile(n) -> str:
     gen = SQLGenerator(dialect="postgres")
     input_key = FieldKey(path=(), leaf="revenue")
     nt_key = TransformKey(op="ntile", input=input_key, kwargs=(("n", n),))
-    in_slot = ValueSlot(
+    in_slot = ValueSlot(type=DataType.INTEGER,
         id="s_in", key=input_key, declared_name="revenue", phase=Phase.ROW,
     )
-    nt_slot = ValueSlot(
+    nt_slot = ValueSlot(type=DataType.INTEGER,
         id="s_nt", key=nt_key, declared_name="bucket", phase=Phase.POST,
     )
     return gen._render_window_transform_sql(

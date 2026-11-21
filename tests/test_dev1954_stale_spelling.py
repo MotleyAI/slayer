@@ -12,6 +12,7 @@ from typing import AsyncIterator, List
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
@@ -200,7 +201,7 @@ class TestStageColumnRespellings:
         assert cols[STALE].respellings == ()
 
     def test_default_is_empty(self) -> None:
-        assert StageField(name="x", sql_alias="x").respellings == ()
+        assert StageField(name="x", sql_alias="x", datatype=DataType.FLOAT).respellings == ()
 
 
 # --------------------------------------------------------------------------- #

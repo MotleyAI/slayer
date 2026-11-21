@@ -22,6 +22,7 @@ from slayer.core.keys import (
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import auto_name_from_expression, key_display
 from slayer.engine.compile.projection import ValueRegistry
+from tests._slot_typing_fixtures import SHOP_TYPING
 from slayer.sql.naming import canonical_aggregate_alias, expression_source_leaf
 
 from tests._dev2070_fixtures import dev2070_datasets, make_exec_engine
@@ -196,12 +197,12 @@ def test_constituents_differing_only_in_locus_never_share_a_slot() -> None:
     assert alias == canonical_aggregate_alias(host, profile="stage_expression")
     assert alias is not None
 
-    public = ValueRegistry()
+    public = ValueRegistry(typing=SHOP_TYPING)
     public.intern(key=target, declared_name=alias, public_name=alias, phase=Phase.AGGREGATE)
     with pytest.raises(DuplicateMetricNameError):
         public.intern(key=host, declared_name=alias, public_name=alias, phase=Phase.AGGREGATE)
 
-    hidden = ValueRegistry()
+    hidden = ValueRegistry(typing=SHOP_TYPING)
     a = hidden.intern(key=target, declared_name=alias, phase=Phase.AGGREGATE, hidden=True)
     b = hidden.intern(key=host, declared_name=alias, phase=Phase.AGGREGATE, hidden=True)
     assert a != b

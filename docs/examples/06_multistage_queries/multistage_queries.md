@@ -19,6 +19,8 @@ Put these two together, and hey presto: any query automatically implies a datase
 
 Actually there's a bit more to it — for example, automatic propagation of metadata such as labels or descriptions from both the population and any labels defined in the query itself — but that is the basic idea.
 
+Every column a stage emits carries the type the query plan gives its value (an explicit `datatype` wins), and a later stage reads it with exactly that type: `sum(orders.amount) / count(orders.*)` reads as `Float`, `lower(orders.status)` as `String`, `rank(...)` as `Integer`, and a column that is only ever NULL as `Integer`.
+
 ## How queries as datasets enable multi-stage queries
 
 Combined with another powerful SLayer feature — [inline relationships and dimensions](../../concepts/queries.md#query-extensions) — this makes multi-stage queries a natural, effortless thing.

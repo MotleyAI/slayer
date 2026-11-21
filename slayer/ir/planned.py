@@ -12,7 +12,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TypeKind
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import Granularity
@@ -137,7 +137,7 @@ class ValueSlot(BaseModel):
     #: re-aggregates (False); None for non-transform values (D6).
     series: Optional[bool] = None
     label: Optional[str] = None
-    type: Optional[DataType] = None
+    type: DataType
     element_type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False
@@ -148,12 +148,14 @@ class ValueSlot(BaseModel):
 
     @property
     def cast_type(self) -> Optional[DataType]:
-        """Return only casts that preserve the inferred database value; a declared Decimal keeps an exact value."""
+        """Return only casts that preserve the inferred database value; a declared Decimal keeps an exact value, and an
+        inferred timestamp is already one (a cast could only narrow its precision or drop its zone)."""
         if self.type is DataType.ARRAY or (self.type is DataType.DECIMAL and self.preserve_native_type):
             return None
         if not self.type_is_explicit and (
             self.preserve_native_type
             or (self.type == DataType.INTEGER and self.phase != Phase.ROW)
+            or self.type.kind is TypeKind.TIMESTAMP
         ):
             return None
         return self.type

@@ -44,7 +44,7 @@ def _slot(name: str, *, type_: DataType | None = None, public_aliases: list[str]
     return ValueSlot(
         id=name, key=FieldKey(path=(), leaf=name), declared_name=name,
         public_aliases=[name] if public_aliases is None else public_aliases, phase=Phase.ROW,
-        type=type_, type_is_explicit=type_ is not None,
+        type=type_ or DataType.STRING, type_is_explicit=type_ is not None,
     )
 
 
@@ -201,7 +201,7 @@ def test_typed_slot_is_cast_wrapped() -> None:
 
 def _post_slot(slot_id: str, key: ValueKey, *, needs_field: bool = False) -> ValueSlot:
     stage = Stage(kind=StageKind.DERIVED, level=1)
-    return ValueSlot(id=slot_id, key=key, declared_name=slot_id, phase=Phase.ROW, stage=stage, needs_field=needs_field)
+    return ValueSlot(type=DataType.INTEGER, id=slot_id, key=key, declared_name=slot_id, phase=Phase.ROW, stage=stage, needs_field=needs_field)
 
 
 def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:

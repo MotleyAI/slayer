@@ -147,7 +147,7 @@ def _slot(
     declared_name: str = "x",
     public_name: str = "x",
     phase=Phase.AGGREGATE,
-    slot_type=None,
+    slot_type=DataType.INTEGER,
 ) -> ValueSlot:
     return ValueSlot(
         id=slot_id,

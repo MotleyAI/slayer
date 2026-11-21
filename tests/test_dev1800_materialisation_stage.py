@@ -23,6 +23,7 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.errors import MaterialisationStageError
+from slayer.core.enums import DataType
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     AggregateKey,
@@ -406,10 +407,10 @@ class TestValidatorRejects:
     def test_later_stage_reference_is_rejected_naming_the_value(self) -> None:
         agg = _agg_key()
         arith = ArithmeticKey(op="+", operands=(agg, LiteralKey(value=Decimal(1))))
-        agg_slot = ValueSlot(id="later_agg", key=agg, declared_name="amount_sum", hidden=True,
+        agg_slot = ValueSlot(type=DataType.INTEGER, id="later_agg", key=agg, declared_name="amount_sum", hidden=True,
                              phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.DERIVED, level=1),
                              needs_field=True)
-        arith_slot = ValueSlot(id="outer_composite", key=arith, declared_name="c", public_name="c",
+        arith_slot = ValueSlot(type=DataType.INTEGER, id="outer_composite", key=arith, declared_name="c", public_name="c",
                                public_aliases=["c"], phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.BASE))
         with pytest.raises((MaterialisationStageError, ValidationError)) as ei:
             PlannedQuery(source_relation="orders",
@@ -424,10 +425,10 @@ class TestValidatorRejects:
         every transform it reads — a hand-built equal-level plan is rejected."""
         inner = TransformKey(op="cumsum", input=_agg_key())
         outer = TransformKey(op="last", input=inner)
-        inner_slot = ValueSlot(id="t_inner", key=inner, declared_name="i", hidden=True,
+        inner_slot = ValueSlot(type=DataType.INTEGER, id="t_inner", key=inner, declared_name="i", hidden=True,
                                phase=Phase.POST, needs_field=True,
                                stage=Stage(kind=StageKind.DERIVED, level=1))
-        outer_slot = ValueSlot(id="t_outer", key=outer, declared_name="o", public_name="o",
+        outer_slot = ValueSlot(type=DataType.INTEGER, id="t_outer", key=outer, declared_name="o", public_name="o",
                                public_aliases=["o"], phase=Phase.POST,
                                stage=Stage(kind=StageKind.DERIVED, level=1))
         with pytest.raises((MaterialisationStageError, ValidationError)):
@@ -439,7 +440,7 @@ class TestValidatorRejects:
         nothing can ever emit it (Codex fold on D7)."""
         inner = TransformKey(op="cumsum", input=_agg_key())
         outer = TransformKey(op="last", input=inner)
-        outer_slot = ValueSlot(id="t_outer", key=outer, declared_name="o", public_name="o",
+        outer_slot = ValueSlot(type=DataType.INTEGER, id="t_outer", key=outer, declared_name="o", public_name="o",
                                public_aliases=["o"], phase=Phase.POST,
                                stage=Stage(kind=StageKind.DERIVED, level=2))
         with pytest.raises((MaterialisationStageError, ValidationError)) as ei:
@@ -448,14 +449,14 @@ class TestValidatorRejects:
         assert "t_outer" in str(ei.value)
 
     def test_unstaged_slot_is_rejected(self) -> None:
-        agg_slot = ValueSlot(id="a", key=_agg_key(), declared_name="amount_sum",
+        agg_slot = ValueSlot(type=DataType.INTEGER, id="a", key=_agg_key(), declared_name="amount_sum",
                              public_name="amount_sum", public_aliases=["amount_sum"],
                              phase=Phase.AGGREGATE, stage=None)
         with pytest.raises((MaterialisationStageError, ValidationError)):
             PlannedQuery(source_relation="orders", aggregate_slots=[agg_slot], projection=["a"])
 
     def test_unstaged_nested_producer_is_rejected(self) -> None:
-        unstaged = ValueSlot(id="p1", key=_agg_key("spend"), declared_name="spend_sum",
+        unstaged = ValueSlot(type=DataType.INTEGER, id="p1", key=_agg_key("spend"), declared_name="spend_sum",
                              public_name="spend_sum", public_aliases=["spend_sum"],
                              phase=Phase.AGGREGATE, stage=None)
         producer = PlannedQuery.model_construct(
@@ -463,7 +464,7 @@ class TestValidatorRejects:
             combined_expression_slots=[], regroup_attach_plans=[], transform_layers=[],
             masks=[], projection=["p1"], order=[],
         )
-        host_agg = ValueSlot(id="a", key=_agg_key(), declared_name="amount_sum",
+        host_agg = ValueSlot(type=DataType.INTEGER, id="a", key=_agg_key(), declared_name="amount_sum",
                              public_name="amount_sum", public_aliases=["amount_sum"],
                              phase=Phase.AGGREGATE, stage=Stage(kind=StageKind.BASE))
         # model_construct: the attach's own field validation would already reject
