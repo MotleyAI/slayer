@@ -127,6 +127,17 @@ class SlayerClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def _request_or_none(self, *, method: str, path: str) -> Any | None:
+        """``_request``, ``None`` when the server answers 404."""
+        if httpx is None:
+            return await self._request(method=method, path=path)
+        try:
+            return await self._request(method=method, path=path)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+
     def _request_sync(
         self,
         method: str,
@@ -370,7 +381,8 @@ class SlayerClient:
         """A semantic model's text as stored; ``None`` when absent."""
         if self._storage is not None:
             return await self._storage.get_semantic_model_text(name, data_source=data_source)
-        return (await self._request(method="GET", path=f"/semantic-models/{data_source}/{name}"))["text"]
+        found = await self._request_or_none(method="GET", path=f"/semantic-models/{data_source}/{name}")
+        return found["text"] if found is not None else None
 
     async def create_semantic_model(
         self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
@@ -393,11 +405,10 @@ class SlayerClient:
         await self._request(method="PUT", path=f"/semantic-models/{data_source}/{name}", json={"content": content})
 
     async def delete_semantic_model(self, name: str, *, data_source: str) -> bool:
-        """Delete a semantic model and its datasets."""
+        """Delete a semantic model and its datasets; ``False`` when absent."""
         if self._storage is not None:
             return await self._storage.delete_semantic_model(name, data_source=data_source)
-        await self._request(method="DELETE", path=f"/semantic-models/{data_source}/{name}")
-        return True
+        return await self._request_or_none(method="DELETE", path=f"/semantic-models/{data_source}/{name}") is not None
 
     def list_semantic_models_sync(self, data_source: str | None = None) -> list[dict[str, str]]:
         return self._run_sync(self.list_semantic_models(data_source=data_source))

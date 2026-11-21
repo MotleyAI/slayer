@@ -19,6 +19,7 @@ import yaml
 from httpx import ASGITransport, AsyncClient
 
 from slayer.api.server import create_app
+from slayer.client import slayer_client as slayer_client_module
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.document_text import edit_text
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
@@ -1145,6 +1146,21 @@ async def test_the_python_client_manages_semantic_models(tmp_path: Path) -> None
     assert await client.get_semantic_model("sales", data_source=DS) == replaced
     await client.delete_semantic_model("sales", data_source=DS)
     assert await storage.list_semantic_models() == []
+
+
+async def test_the_remote_python_client_reports_a_missing_semantic_model(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remote mode: an absent document reads as ``None`` and deletes as ``False``, as in local mode."""
+    storage = make_storage("yaml", tmp_path)
+    await store_document(storage, SALES)
+    app = create_app(storage=storage)
+    monkeypatch.setattr(slayer_client_module.httpx, "AsyncClient",
+                        lambda **_: AsyncClient(transport=ASGITransport(app=app), base_url="http://test"))
+    client = SlayerClient(url="http://test")
+    assert await client.get_semantic_model("sales", data_source=DS) == SALES
+    assert await client.get_semantic_model("nope", data_source=DS) is None
+    assert await client.delete_semantic_model("nope", data_source=DS) is False
+    assert await client.delete_semantic_model("sales", data_source=DS) is True
 
 
 @pytest.mark.parametrize("kind", STORAGES)

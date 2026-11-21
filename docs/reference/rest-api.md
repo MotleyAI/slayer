@@ -130,6 +130,26 @@ curl -X POST http://localhost:5143/datasets \
 
 A query-backed dataset's `fields` are generated at save, so supplying them returns 400.
 
+A dataset of a semantic model is updated and deleted inside its document.
+
+### Semantic models
+
+```
+GET    /semantic-models                        # List: [{"data_source", "name"}]; ?data_source= filters
+GET    /semantic-models/{data_source}/{name}   # {"data_source", "name", "text"}: the stored text
+POST   /semantic-models                        # Create
+PUT    /semantic-models/{data_source}/{name}   # Replace the document's text
+DELETE /semantic-models/{data_source}/{name}   # Delete it and its datasets
+```
+
+`POST` takes `{"data_source", "name", "content"}`, where `content` is an Ossie `0.3.0.dev0` document as YAML/JSON text or an object, or `{"data_source", "name", "datasets": [...]}` to move standalone datasets into a new document. `PUT` takes `{"content"}`. A refused document returns 400 with the reasons; an unknown document returns 404. See [Semantic models](../concepts/semantic-models.md).
+
+```bash
+curl -X POST http://localhost:5143/semantic-models \
+  -H "Content-Type: application/json" \
+  -d '{"data_source": "mydb", "name": "sales", "datasets": ["orders", "customers"]}'
+```
+
 ### Datasources
 
 ```
@@ -158,7 +178,7 @@ A bare dataset name that exists in several datasources resolves to the first lis
 
 ### Validate datasets
 
-`POST /validate-datasets` with body `{"data_source": null}` (or a datasource name) diffs the stored datasets against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype` and `narrowed_access` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
+`POST /validate-datasets` with body `{"data_source": null}` (or a datasource name) diffs the stored datasets against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype`, `narrowed_access` and `untyped` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
 
 ### Recommend a population
 
