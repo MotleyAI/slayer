@@ -11,26 +11,26 @@
 
 ## 2. Transform domain
 
-- [ ] 2.1 Domain plan in IR (`slayer/ir/planned.py`) and compile: per transform root, the operand's constituents' cells at the operand grain (full constituents supply, coarser extend to finer / `A`, nested transforms at their result grain, aggregate-free → `A`), interned by key; verify 1.1 domain scenarios plan
-- [ ] 2.2 Render the domain relation (UNION DISTINCT with casts, inner producers LEFT-joined null-safe, transform chain over it, attach on the result grain) in `slayer/sql/generator.py`; route computed-dimension transforms through it (replacing the host-rows domain of `_synthesize_local_regroup` / `effective_root_grain`); verify 1.1 and 1.2 pass on SQLite + DuckDB, and the anchored dimensionless law shape `r22-unit-ntile.ret` (`population: customers`, a transform over a cross-model aggregate, no dimensions: today an empty `_base` select list) passes `test_law_unit` and `test_law_filter_non_expansion`
-- [ ] 2.3 Series-regime `time_shift` and `consecutive_periods` read the domain relation; verify the calendar-step tests in 1.2
-- [ ] 2.4 Remove `PositionClasses.transform_dim_keys` / `dim_keys_for`; point `check_metrics_at_query_grain`, `discovery._Walker.consumer` / `check_combined_partition_keys` and `stages._rewrite_regrouped_prebound` at `dim_keys`; verify the dual-role tests
+- [x] 2.1 Domain plan in IR (`slayer/ir/planned.py`) and compile: per transform root, the operand's constituents' cells at the operand grain (full constituents supply, coarser extend to finer / `A`, nested transforms at their result grain, aggregate-free → `A`), interned by key; verify 1.1 domain scenarios plan
+- [x] 2.2 Render the domain relation (UNION DISTINCT with casts, inner producers LEFT-joined null-safe, transform chain over it, attach on the result grain) in `slayer/sql/generator.py`; route computed-dimension transforms through it (replacing the host-rows domain of `_synthesize_local_regroup` / `effective_root_grain`); verify 1.1 and 1.2 pass on SQLite + DuckDB, and the anchored dimensionless law shape `r22-unit-ntile.ret` (`population: customers`, a transform over a cross-model aggregate, no dimensions: today an empty `_base` select list) passes `test_law_unit` and `test_law_filter_non_expansion`
+- [x] 2.3 Series-regime `time_shift` and `consecutive_periods` read the domain relation; verify the calendar-step tests in 1.2
+- [x] 2.4 Remove `PositionClasses.transform_dim_keys` / `dim_keys_for`; point `check_metrics_at_query_grain`, `discovery._Walker.consumer` / `check_combined_partition_keys` and `stages._rewrite_regrouped_prebound` at `dim_keys`; verify the dual-role tests
 
 ## 3. Spine rows and bounds
 
-- [ ] 3.1 Route spine queries omitting `population` or carrying `population_inferred: true` through `infer_rows` / `plan_rows` with spine dimensions factored out; spine-specific supply classification (operand cells in visible buckets, every producer form); verify 1.3 population scenarios
-- [ ] 3.2 Split supply bounds from evaluation bounds; spine bounds restrict homes and `A` as field filters (to-one inline, fanning by association, detached unrestricted); `host_mask` no longer strips them from the supply; verify the first-visible-bucket tests
-- [ ] 3.3 Render spine rows as the series CROSS `_keys`; spine transform domain = in-frame non-time tuples × series; verify the dense-series scenarios
-- [ ] 3.4 Reporting: `population` and `row_sources` per the modified requirement; verify the reporting tests
+- [x] 3.1 Route spine queries omitting `population` or carrying `population_inferred: true` through `infer_rows` / `plan_rows` with spine dimensions factored out; spine-specific supply classification (operand cells in visible buckets, every producer form); verify 1.3 population scenarios
+- [x] 3.2 Split supply bounds from evaluation bounds; spine bounds restrict homes and `A` as field filters (to-one inline, fanning by association, detached unrestricted); `host_mask` no longer strips them from the supply; verify the first-visible-bucket tests
+- [x] 3.3 Render spine rows as the series CROSS `_keys`; spine transform domain = in-frame non-time tuples × series; verify the dense-series scenarios
+- [x] 3.4 Reporting: `population` and `row_sources` per the modified requirement; verify the reporting tests
 
 ## 4. Fanning-axis association
 
-- [ ] 4.1 Nearest-fanning-axis search in the spine-route API (`relationship_safety`), never through the spine, to-one routes first; `_detached_names` untouched; verify the non-spine regression test
-- [ ] 4.2 Association arm reroots the spine bucket over the fanning route with one shared identity per home and `(identity, bucket, non-time tuple)` dedup; model filters / RLS before association; verify 1.4 value tests
-- [ ] 4.3 Extend `spine_route_error` for fanning ties (routes spelled as fact time columns, time-dimension remedy), raised only when the route is needed and not under `broadcast`; verify the tie tests
+- [x] 4.1 Nearest-fanning-axis search in the spine-route API (`relationship_safety`), never through the spine, to-one routes first; `_detached_names` untouched; verify the non-spine regression test
+- [x] 4.2 Association arm reroots the spine bucket over the fanning route with one shared identity per home and `(identity, bucket, non-time tuple)` dedup; model filters / RLS before association; verify 1.4 value tests
+- [x] 4.3 Extend `spine_route_error` for fanning ties (routes spelled as fact time columns, time-dimension remedy), raised only when the route is needed and not under `broadcast`; verify the tie tests
 
 ## 5. Architecture, docs, gates
 
-- [ ] 5.1 Apply the approved `architecture/semantics.arc42.md` wording (design.md decision 16) verbatim; verify `poetry run la-arch-check`
-- [ ] 5.2 Docs: `docs/concepts/expressions.md` (rank family / `ntile` / `first`-`last` read the operand's cells), `docs/concepts/time.md` (spine rows, in-frame tuples, fanning axis, tie remedy), `docs/concepts/queries.md` (spine rows), new `docs/upgrading/2.0.md` section "Transforms read their operand's cells; spine rows follow the row supply" with a before/after per break; verify `zensical.toml` nav unchanged or updated
-- [ ] 5.3 Re-bless approved goldens on all 5 dialects; run the local test scope (`la-affected-tests --base main` plus goldens and spine / law suites), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`, LikeC4 validation
+- [x] 5.1 Apply the approved `architecture/semantics.arc42.md` wording (design.md decision 16) verbatim; verify `poetry run la-arch-check`
+- [x] 5.2 Docs: `docs/concepts/expressions.md` (rank family / `ntile` / `first`-`last` read the operand's cells), `docs/concepts/time.md` (spine rows, in-frame tuples, fanning axis, tie remedy), `docs/concepts/queries.md` (spine rows), new `docs/upgrading/2.0.md` section "Transforms read their operand's cells; spine rows follow the row supply" with a before/after per break; verify `zensical.toml` nav unchanged or updated
+- [x] 5.3 Re-bless approved goldens on all 5 dialects; run the local test scope (`la-affected-tests --base main` plus goldens and spine / law suites), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`, LikeC4 validation

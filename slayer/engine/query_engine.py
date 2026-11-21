@@ -92,7 +92,7 @@ from slayer.engine.population.inference import (
     spine_factor_out,
 )
 from slayer.engine.population.row_supply import (
-    RowPlan, anchored_rows, plan_rows, refuse_product_split, stored_rows,
+    RowPlan, anchored_rows, plan_rows, plan_spine_rows, refuse_product_split, stored_rows,
 )
 from slayer.core.time_points import host_clock
 from slayer.core.names import name_taken
@@ -1794,16 +1794,18 @@ class SlayerQueryEngine:
             data_source_p = await spine_datasource(queries=[query], storage=self.storage, data_source=data_source,
                                                    sibling_stage_names=sibling_stage_names)
         product = len(choice.datasets) > 1
-        if product and data_source_p is not None:
-            loaded, _unloaded = await self.storage.load_datasets(data_source=data_source_p)
+        loaded, _unloaded = await self.storage.load_datasets(data_source=data_source_p) \
+            if data_source_p is not None else ([], [])
+        datasets_by_name = {m.name: m for m in loaded}
+        if product:
             refuse_product_split(spine_factor_out(free).model_copy(update={"metrics": free.metrics}),
-                                 anchor_datasets=choice.datasets,
-                                 datasets_by_name={m.name: m for m in loaded})
+                                 anchor_datasets=choice.datasets, datasets_by_name=datasets_by_name)
+        anchor = DimensionAnchor(datasets=() if p == TIME_SPINE_DATASET else tuple(choice.datasets))
+        plan = plan_spine_rows(free, anchor=anchor, datasets_by_name=datasets_by_name)
         return _StageInference(
-            query=query.model_copy(update={"population": p, "population_inferred": True}),
-            data_source=data_source_p, reported=choice.display,
-            supply=RowSupply(product=product, anchor=None if product or p == TIME_SPINE_DATASET else p),
-            row_sources=sorted(choice.datasets) if p != TIME_SPINE_DATASET else [], pin=None if product else p,
+            query=query.model_copy(update={"population": plan.population, "population_inferred": True}),
+            data_source=data_source_p, reported=choice.display, supply=plan.supply,
+            row_sources=list(plan.row_sources), pin=None if product else p,
         )
 
     async def _anchored_rows(

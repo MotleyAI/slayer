@@ -264,7 +264,8 @@ class TestSavedSpineQueries:
         await engine.create_dataset_from_query(query=_monthly_stage(dimensions=["customers.region"]),
                                                name="saved_monthly")
         stored = await engine.storage.get_dataset("saved_monthly", data_source="test")
-        assert stored is not None and stored.source_queries is not None
+        assert stored is not None
+        assert stored.source_queries is not None
         assert [(s.population, s.population_inferred) for s in stored.source_queries] == [("customers", True)]
         direct = await engine.execute("saved_monthly")
         assert by_bucket(direct, ["o"], by=["region"]) == {k: v[:1] for k, v in PER_GROUP_ROWS.items()}

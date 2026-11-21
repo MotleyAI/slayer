@@ -49,6 +49,7 @@ __all__ = [
     "PlainProducerKernel",
     "PlannedQuery",
     "PlannedRowBranch",
+    "PlannedDomain",
     "PlannedRowSupply",
     "ProducerKernel",
     "RankedGrainMember",
@@ -459,6 +460,8 @@ class RegroupAttachPlan(BaseModel):
     degenerate_metric: Optional[str] = None
     degenerate_operand_grain: List[str] = Field(default_factory=list)
     degenerate_outer_grain: List[str] = Field(default_factory=list)
+    #: Producer grain slots the attach does not join on: a collapsing pick is constant along them (Axiom 11.3b).
+    collapsed: List[SlotId] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _shift_fields_only_on_shifted(self) -> "RegroupAttachPlan":
@@ -525,6 +528,8 @@ class PlannedQuery(BaseModel):
     mode_policy: ModePolicy = ModePolicy()
     # An inferred stage's rows when several sources supply them: the union of the branches' cells.
     row_supply: Optional["PlannedRowSupply"] = None
+    # A transform producer's rows when an attached constituent supplies cells (semantics Axiom 11.6).
+    domain: Optional["PlannedDomain"] = None
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
@@ -752,6 +757,17 @@ class PlannedRowSupply(BaseModel):
     """The rows of an inferred stage: the null-safe union of its branches' cells (semantics 12.4)."""
 
     branches: List[PlannedRowBranch]
+
+
+class PlannedDomain(BaseModel):
+    """A transform producer's rows: the null-safe union of its supplying constituents' cells (Axiom 11.6)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    #: The host's own grouped rows supply cells.
+    host: bool = False
+    #: Each supplying combined attach, by one of its placeholders.
+    placeholders: List[ValueKey] = Field(default_factory=list)
 
 
 # ``producer_plan`` forward-references ``PlannedQuery``.

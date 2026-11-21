@@ -1894,11 +1894,13 @@ class TestFields:
         assert "aov" in sql.lower()
 
 
-def _assert_rank_window(sql: str, *, fn: str, partition: list[str], descending: bool) -> None:
-    """The one rank-family window orders ``orders.revenue_sum`` and isolates NULL inputs."""
+def _assert_rank_window(
+    sql: str, *, fn: str, partition: list[str], descending: bool, ties: tuple[str, ...] = (),
+) -> None:
+    """The one rank-family window orders ``orders.revenue_sum`` (then ``ties``) and isolates NULL inputs."""
     [window] = rank_windows(sql, dialect="postgres")
-    assert (window.fn, window.order_sql, window.partition_sql, window.descending) == (
-        fn, '"orders.revenue_sum"', partition, descending), sql
+    assert (window.fn, window.order_sql, window.partition_sql, window.descending, tuple(window.tie_sql)) == (
+        fn, '"orders.revenue_sum"', partition, descending, ties), sql
     assert window.null_flag, sql
     assert window.null_guarded, sql
 
@@ -2006,7 +2008,7 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_dataset)
-        _assert_rank_window(sql, fn='NTILE', partition=[], descending=False)
+        _assert_rank_window(sql, fn='NTILE', partition=[], descending=False, ties=('"orders.status"',))
 
     async def test_ntile_with_partition(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
@@ -2021,7 +2023,8 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_dataset)
-        _assert_rank_window(sql, fn='NTILE', partition=['"orders.status"'], descending=False)
+        _assert_rank_window(sql, fn='NTILE', partition=['"orders.status"'], descending=False,
+                            ties=('"orders.status"', '"orders.customer_id"'))
 
     async def test_dense_rank_in_filter_top_5_distinct(
         self, generator: SQLGenerator, orders_dataset: SlayerDataset

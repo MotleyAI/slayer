@@ -340,6 +340,8 @@ Functions apply window operations to metrics:
 
 **Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the dataset's `default_time_dimension` is used if it's among the query's time dimensions. A downstream stage's own time dimension counts, so these transforms work over a re-bucketed stage column too. A stage has no dataset-level default, so set `main_time_dimension` when a stage has 2+ time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
 
+**Transforms read their operand's cells.** A transform evaluates over its operand's own cells — the cells its inner aggregates have at the operand grain (a dimension-anchor cell when it has no aggregate) — and its result attaches to the query's rows; a row outside those cells reads NULL. Another measure that adds rows never changes a transform's values: `lag` and `lead` step over the operand's present cells (a month with no rows is a gap, never a neighbour), and a rank-family transform or `first` / `last` ranks or picks among those cells only. A NULL time bucket is adjacent to no bucket: it is a running total of its own, `lag` reads NULL there, and `first` / `last` skip it. Over the [time spine](time.md#time-spine) the cells are filled: every bucket in range for each of the operand's tuples.
+
 Time-ordered window transforms partition by **every** projected non-time
 dimension — plain fields, joined and derived fields, and
 [computed (expression) dimensions](queries.md#grouping-by-an-expression-over-an-aggregate),
@@ -413,7 +415,7 @@ Use `show_sql=True` on the query to see what SQL is generated for complex expres
 
 ### Rank-family transforms
 
-The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timeless window-function transforms that order rows by the inner value and emit a per-row rank value. They do not need a time dimension and, unlike the time-ordered transforms (`cumsum`, `lag`, `lead`, `first`, `last`, …), they default to **no `PARTITION BY`** — every row in the result set is ranked against every other row.
+The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timeless window-function transforms that order rows by the inner value and emit a per-row rank value. They do not need a time dimension and, unlike the time-ordered transforms (`cumsum`, `lag`, `lead`, `first`, `last`, …), they default to **no `PARTITION BY`** — every cell of the operand is ranked against every other cell. `rank(sum(orders.revenue, partition_by=orders.region), direction='desc')` grouped by `orders.region` and `orders.city` ranks the regions by their totals, each city row carrying its region's rank.
 
 `rank` and `dense_rank` take a **required** `direction=` keyword: `direction='desc'` ranks the highest value 1, `direction='asc'` the lowest (`ascending` / `descending` and any case are accepted too). Leaving it out is an error that shows both spellings. The inner value may be any orderable type, so `rank(min(orders.created_at), direction='asc')` ranks the earliest first. `ntile` and `percent_rank` take no `direction=` and always order ascending: bucket `1` holds the lowest values and the lowest value has `percent_rank` `0`.
 
@@ -444,7 +446,7 @@ An unnamed rank metric's result key spells its direction as a bare value: `rank(
 - `rank(x, direction=...)` — ties share a rank, then the next rank is skipped (`1, 1, 3, 4`). Use for top-N or bottom-N rows.
 - `dense_rank(x, direction=...)` — ties share a rank, no gaps after (`1, 1, 2, 3`). Use for "top N distinct values" / tier counting.
 - `percent_rank(x)` — relative position in `[0, 1]` (`(rank - 1) / (count - 1)`), lowest value `0`. Use for normalized rankings comparable across queries with different result-set sizes.
-- `ntile(x, n=N)` — bucket every row into one of `N` equal-sized groups (`1` is the lowest bucket; required `n=` kwarg is a positive integer). Use for quartiles / deciles.
+- `ntile(x, n=N)` — bucket every cell into one of `N` equal-sized groups (`1` is the lowest bucket; required `n=` kwarg is a positive integer). Use for quartiles / deciles.
 
 Datasets and queries saved before `direction=` existed load with `direction='desc'` filled in on every `rank` / `dense_rank` call, keeping their meaning; their stored `ntile` / `percent_rank` results now order ascending.
 

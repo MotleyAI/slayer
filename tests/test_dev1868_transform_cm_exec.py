@@ -49,11 +49,10 @@ class TestTransformOverCrossModelPartitioned:
             assert row["r"] == RANK_PART_BY_TIER[tier]
 
     async def test_cumsum_without_the_time_key_fails(self, exec_engine) -> None:
+        query = q(dimensions=["customers.tier"], time_dimensions=month_td(),
+                  metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")])
         with pytest.raises(TimeAxisError):
-            await exec_engine.execute(q(
-                dimensions=["customers.tier"], time_dimensions=month_td(),
-                metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")],
-            ))
+            await exec_engine.execute(query)
 
 
 class TestChangeOverCrossModelRanked:

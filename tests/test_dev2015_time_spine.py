@@ -335,8 +335,9 @@ class TestPopulation:
         resp = await engine.execute(spine_query(metrics=[], date_range=JAN_MAR))
         assert sorted(bucket_key(r["time_spine.timestamp"]) for r in resp.data) == MONTHS[:3]
         # customers reaches the spine across two equal-distance fanning axes
+        per_region = spine_query(metrics=[], date_range=JAN_MAR, dimensions=["customers.region"])
         with pytest.raises(UnresolvableDimensionRelationshipError):
-            await engine.execute(spine_query(metrics=[], date_range=JAN_MAR, dimensions=["customers.region"]))
+            await engine.execute(per_region)
 
 
 def _monthly_stage(*, metrics=None, date_range=JAN_MAR, **extra) -> SlayerQuery:

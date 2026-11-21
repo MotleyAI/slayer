@@ -12,9 +12,11 @@ from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     ScalarCallKey,
+    TransformKey,
     walk_value_keys,
 )
 from slayer.engine.plan import plan_query
+from slayer.ir.planned import regroup_producer_identity
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from slayer.core.query import QueryMetric
@@ -78,21 +80,24 @@ class TestSharedInnerProducerShape:
         def _reads_placeholder(slot) -> bool:
             return any(k == sub.placeholder for k in walk_value_keys(slot.key))
 
-        transform_slots = [slots[sid] for layer in planned.transform_layers
-                           for sid in layer.slot_ids]
-        assert any(_reads_placeholder(s) for s in transform_slots)
         mask_slots = [slots[m.slot_id] for m in planned.masks]
         assert any(_reads_placeholder(s) for s in mask_slots)
         # The original cross-dataset aggregate survives in no slot.
         assert not [s.id for s in slots.values()
                     if any(k == sub.original_key for k in walk_value_keys(s.key))]
+        # The rank evaluates in its own producer, which attaches the same inner producer (rendered once).
+        [domain] = [a for a in planned.regroup_attach_plans
+                    if isinstance(a.substitutions[0].original_key, TransformKey)]
+        [inner] = [a for a in domain.producer_plan.regroup_attach_plans if a.producer_root_dataset == "customers"]
+        assert regroup_producer_identity(inner) == regroup_producer_identity(attach)
 
     async def test_emitted_sql_has_one_producer_relation(self) -> None:
         sql = await gen(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filter=[f"{CM_PART_TIER} > 100"],
             metrics=[QueryMetric(metric=f"rank({CM_PART_TIER}, direction='desc')", alias="c")]))
-        assert len(set(re.findall(r"_cm_\w+", sql))) == 1, sql
+        names = set(re.findall(r"_cm_\w+", sql))
+        assert len({n for n in names if "spend_sum" in n}) == 1, sql
 
 
 class TestCompositesBecomeCombinedSlots:

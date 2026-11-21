@@ -76,7 +76,7 @@ async def test_grain_union_broadcast(engine) -> None:
         dimensions=["customers.region"], date_range=JAN_MAR,
     ))
     got = by_bucket(resp, ["share", "events"], by=["region"])
-    assert len(got) == 9
+    assert len(got) == 6  # region E has no fact in range
     assert got[("N", "2025-01")][0] == pytest.approx(100 / 170)
     assert got[("N", "2025-02")][0] == pytest.approx(70 / 170)
     assert got[("S", "2025-01")][0] == pytest.approx(1.0)
@@ -84,7 +84,6 @@ async def test_grain_union_broadcast(engine) -> None:
     assert {k: v[1] for k, v in got.items()} == {
         ("N", "2025-01"): 1.0, ("N", "2025-02"): 2.0, ("N", "2025-03"): 0.0,
         ("S", "2025-01"): 1.0, ("S", "2025-02"): 0.0, ("S", "2025-03"): 1.0,
-        ("E", "2025-01"): 0.0, ("E", "2025-02"): 0.0, ("E", "2025-03"): 0.0,
     }
 
 

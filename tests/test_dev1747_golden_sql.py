@@ -327,7 +327,7 @@ _CHAIN_STEP_EXPECTATIONS: dict[str, dict[str, bool]] = {
     "chain/local_consecutive_periods": {"cp": True},
     "chain/cross_model_window": {"step1": True, "step2": False},
     "chain/local_nested_window": {"step1": True, "step2": True},
-    "chain/cross_model_nested_window": {"step1": True, "step2": True},
+    "chain/cross_model_nested_window": {"step1": True, "step2": False},
 }
 
 

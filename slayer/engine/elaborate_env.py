@@ -250,7 +250,7 @@ def check_metrics_at_query_grain(prebound: PreboundQuery) -> None:
         return
     dim_keys = position_classes(
         prebound.declared_metrics, n_grain=prebound.n_dims + prebound.n_time_dimensions,
-    ).dim_keys_for("metric")
+    ).dim_keys
     for dm in prebound.declared_metrics:
         if dm.is_dimension:
             continue
@@ -359,16 +359,10 @@ class PositionClasses(BaseModel):
     row_aggregates: frozenset
     #: Transforms over a grained aggregate inside a computed dimension.
     row_transform_roots: frozenset
-    #: Grain keys containing a transform.
-    transform_dim_keys: frozenset = frozenset()
 
     @property
     def row_attached(self) -> frozenset:
         return self.row_aggregates | self.row_transform_roots
-
-    def dim_keys_for(self, position: ConsumerPosition) -> frozenset:
-        """A position's dimension values; a transform-bearing dimension is none in a metric."""
-        return self.dim_keys - self.transform_dim_keys if position == "metric" else self.dim_keys
 
     def opaque(self, position: ConsumerPosition) -> Optional[Callable[[ValueKey], bool]]:
         """Keys a position's walk yields but never enters: a dimension's transform
@@ -407,10 +401,6 @@ def position_classes(declared_metrics: Sequence[DeclaredMetric], *, n_grain: int
     return PositionClasses(
         dim_keys=dim_keys,
         row_aggregates=frozenset(aggs), row_transform_roots=frozenset(troots),
-        transform_dim_keys=frozenset(
-            d for d in dim_keys
-            if any(isinstance(k, TransformKey) for k in walk_value_keys(d))
-        ),
     )
 
 
@@ -458,7 +448,7 @@ def check_combined_partition_keys(
         if dm.declared_name is not None
     ]
     for root, position, location in consumers:
-        for n in walk_consumer_positions(root, dim_keys=classes.dim_keys_for(position)):
+        for n in walk_consumer_positions(root, dim_keys=classes.dim_keys):
             if not (is_partitioned_consumer(n.key)
                     and classes.combined_admits(n, position=position, root=root)):
                 continue
@@ -853,32 +843,48 @@ def _temporal_axis_transforms(vk: ValueKey, *, is_dimension: bool):
                     )
 
 
+_CALENDAR_STEP_TRANSFORMS = frozenset({"time_shift", "change", "change_pct"})
+
+
+def _consumer_transforms(vk: ValueKey) -> Iterator[TransformKey]:
+    """Transforms outside every aggregation, calendar-step ones excluded."""
+    if isinstance(vk, AggregateKey):
+        return
+    if isinstance(vk, TransformKey) and vk.op not in _CALENDAR_STEP_TRANSFORMS:
+        yield vk
+    for c in vk.children():
+        yield from _consumer_transforms(c)
+
+
 def check_dimension_temporal_axis(
-    declared_metrics, *, bound_filters=(), order_specs=(),
+    declared_metrics, *, bound_filters=(), order_specs=(), query_grain: Grain = Grain.EMPTY,
+    active_bucket: Optional[ValueKey] = None,
 ) -> None:
-    """Fail closed if a time-ordered transform — in a dimension, or aggregated as
-    a source constituent in a metric / filter / order expression — evaluates at a
-    grain not containing its time axis."""
+    """Fail closed if a time-ordered transform evaluates at a grain not containing its time axis, in every
+    position (Axiom 11.3)."""
     roots = [
         (dm.bound.value_key, dm.is_dimension) for dm in declared_metrics
     ]
     roots += [(bf.value_key, False) for bf in bound_filters]
     roots += [(sp.bound.value_key, False) for sp in order_specs]
     for vk, is_dimension in roots:
-        for tk in _temporal_axis_transforms(vk, is_dimension=is_dimension):
-            if tk.op not in TIME_TRANSFORMS or tk.time_key is None:
+        timed = [(tk, regroup_root_grain(tk)) for tk in _temporal_axis_transforms(vk, is_dimension=is_dimension)]
+        if not is_dimension:
+            timed += [(tk, transform_operand_grain(tk.input, query_grain=query_grain, active_bucket=active_bucket))
+                      for tk in _consumer_transforms(vk)]
+        for tk, grain in timed:
+            if tk.op not in TIME_TRANSFORMS or tk.time_key is None or tk.time_key in grain:
                 continue
-            if tk.time_key not in regroup_root_grain(tk):
-                axis = dotted_key_display(tk.time_key)
-                raise TimeAxisError(
-                    summary=f"A time-ordered transform evaluates at a grain "
-                    f"that does not contain its time axis '{axis}'; a producer "
-                    f"bucketed by time joined back on the coarser grain would "
-                    f"duplicate result rows.",
-                    location=f"transform {tk.op!r}",
-                    suggestion="Include the time key in the aggregate's partition_by= "
-                    "so the transform accumulates within its own grain.",
-                )
+            axis = dotted_key_display(tk.time_key)
+            raise TimeAxisError(
+                summary=f"A time-ordered transform evaluates at a grain "
+                f"that does not contain its time axis '{axis}'; a producer "
+                f"bucketed by time joined back on the coarser grain would "
+                f"duplicate result rows.",
+                location=f"transform {tk.op!r}",
+                suggestion="Include the time key in the aggregate's partition_by= "
+                "so the transform accumulates within its own grain.",
+            )
 
 
 _AXIS_REMEDY = "Add a single time_dimensions entry, or set main_time_dimension to select among multiple time dimensions."

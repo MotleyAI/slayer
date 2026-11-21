@@ -42,7 +42,7 @@ from slayer.core.errors import (
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.field_expression import portable_text
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
-from slayer.core.time_spine import TIME_SPINE_FIELD, is_spine
+from slayer.core.time_spine import TIME_SPINE_DATASET, TIME_SPINE_FIELD, is_spine
 from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.relationship_walker import (
     OrientedRelationship,
@@ -223,6 +223,16 @@ class AggRenderSpec(BaseModel):
 
     #: A list aggregation's element type (the input's type).
     element_type: Optional[DataType] = None
+
+
+def _is_spine_bucket(key: Any) -> bool:
+    """A bucket of the spine field, as a spine stage's host reads it."""
+    return isinstance(key, TimeTruncKey) and isinstance(key.source, FieldKey) \
+        and key.source.leaf == TIME_SPINE_FIELD and source_anchor_path(key.source) in ((), (TIME_SPINE_DATASET,))
+
+
+#: Window transforms stepping along the time axis one value per cell.
+_ROW_STEP_TRANSFORMS = frozenset({"cumsum", "lag", "lead"})
 
 
 def _key_equality(left: Expression, right: Expression) -> exp.EQ:
@@ -3929,14 +3939,22 @@ class SQLGenerator:
                 )
                 combined_select = combined_select.where(_grouped(rendered))
 
-        spine_ctes = self._take_spine_ctes(since=spine_mark)
-        base_deps = [*[e.name for e in row_regroup_ctes], *reused_cm_ctes, *[e.name for e in spine_ctes]]
+        base_deps = [*[e.name for e in row_regroup_ctes], *reused_cm_ctes,
+                     *(e.name for e in self._gen_spine_ctes[spine_mark:])]
         supply_ctes: List[CteEntry] = []
         if planned_query.row_supply is not None:
             base_select, supply_ctes, base_deps = self._row_supply_base(
                 planned_query=planned_query, base_select=base_select, aliases_by_slot_id=aliases_by_slot_id,
                 slots_by_id=slots_by_id, bundle=bundle, base_deps=base_deps,
             )
+        elif planned_query.domain is not None:
+            base_select, supply_ctes, base_deps = self._domain_base(
+                planned_query=planned_query, base_select=base_select, aliases_by_slot_id=aliases_by_slot_id,
+                slots_by_id=slots_by_id, bundle=bundle, base_deps=base_deps,
+                joinbacks=dict(regroup_joinbacks),
+                cte_of={ph: attached.cte_name for ph, attached in regroup_placeholder_to_cm.items()},
+            )
+        spine_ctes = self._take_spine_ctes(since=spine_mark)
         if planned_query.transform_layers:
             return self._render_steps_and_post(
                 prelude_nodes=[
@@ -4141,14 +4159,22 @@ class SQLGenerator:
                 raise ValueError("a row-source plan projects a column that is no dimension of its stage")
             return body, {names[public[sid]]: col for sid, col in zip(plan.projection, outputs)}
 
+        # A spine stage's rows are every bucket × its tuples' union (semantics Axiom 15).
+        spine_sids = [sid for sid in dims if planned_query.spine is not None and _is_spine_bucket(slots_by_id[sid].key)]
+        tuple_sids = [sid for sid in dims if sid not in spine_sids]
         branches = [
-            self._row_supply_branch(index=i, branch=branch, cells=cells, dims=dims, key_names=key_names,
+            self._row_supply_branch(index=i, branch=branch, cells=cells, dims=tuple_sids, key_names=key_names,
                                     slots_by_id=slots_by_id)
             for i, branch in enumerate(planned_query.row_supply.branches)
         ]
         union: Expression = branches[0]
         for b in branches[1:]:
             union = exp.union(union, b, distinct=True)
+        series_mark = len(self._gen_spine_ctes)
+        if spine_sids:
+            union = self._spine_crossed(union=union, tuple_names=[key_names[sid] for sid in tuple_sids],
+                                        buckets=[(key_names[sid], slots_by_id[sid].key) for sid in spine_sids])
+        series_ctes = [e.name for e in self._gen_spine_ctes[series_mark:]]
         host, keys = allocator.allocate("_base_host"), allocator.allocate("_keys")
         local = [
             (sid, alias) for sid, als in aliases_by_slot_id.items() if sid not in key_names for alias in als
@@ -4169,9 +4195,74 @@ class SQLGenerator:
         ctes = [
             *hoisted,
             CteEntry(name=host, query=base_select, depends_on=list(base_deps)),
-            CteEntry(name=keys, query=union, depends_on=[e.name for e in hoisted]),
+            CteEntry(name=keys, query=union, depends_on=[*(e.name for e in hoisted), *series_ctes]),
         ]
         return wrapped, ctes, [host, keys]
+
+    def _domain_base(
+        self, *, planned_query, base_select: exp.Select, aliases_by_slot_id: Dict[str, List[str]],
+        slots_by_id: Dict[str, ValueSlot], bundle: ResolvedSourceBundle, base_deps: List[str],
+        joinbacks: Dict[str, List[Tuple[str, str]]], cte_of: Dict[Any, str],
+    ) -> Tuple[exp.Select, List[CteEntry], List[str]]:
+        """``_base`` over a transform producer's domain: the union of its supplying constituents' cells (each cast to
+        its dimension's type), left-joined to the host's own base (semantics Axiom 11.6). Returns ``(base, ctes, deps)``."""
+        domain = planned_query.domain
+        allocator = self._gen_allocator or self._new_allocator()
+        dims = [sid for sid in planned_query.grain or [] if aliases_by_slot_id.get(sid)]
+        key_names = {sid: aliases_by_slot_id[sid][0] for sid in dims}
+        host, keys = allocator.allocate("_base_host"), allocator.allocate("_keys")
+
+        def branch(table: str, key_of: Callable[[str], str]) -> exp.Select:
+            return exp.Select().select(*(
+                exp.Alias(
+                    this=_wrap_cast_for_type(
+                        dialect=self._dialect, expr=exp.column(key_of(sid), table=table, quoted=True),
+                        dt=self._dialect.declared_cast_type(slots_by_id[sid].type),
+                    ),
+                    alias=exp.to_identifier(key_names[sid], quoted=True),
+                )
+                for sid in dims
+            )).from_(table)
+
+        branches: List[exp.Select] = [branch(host, key_names.__getitem__)] if domain.host else []
+        sources: List[str] = []
+        for ph in domain.placeholders:
+            cte = cte_of[ph]
+            by_host = dict(joinbacks[cte])
+            branches.append(branch(cte, lambda sid, by_host=by_host: next(
+                by_host[a] for a in aliases_by_slot_id[sid] if a in by_host)))
+            sources.append(cte)
+        union: Expression = branches[0]
+        for b in branches[1:]:
+            union = exp.union(union, b, distinct=True)
+        if len(branches) == 1:
+            union = cast(exp.Select, union).distinct()
+        # Over the spine the domain is its tuples × every bucket in range (Axiom 11.6).
+        spine_sids = [sid for sid in dims if planned_query.spine is not None and _is_spine_bucket(slots_by_id[sid].key)]
+        series_mark = len(self._gen_spine_ctes)
+        if spine_sids:
+            union = self._spine_crossed(
+                union=union, tuple_names=[key_names[sid] for sid in dims if sid not in spine_sids],
+                buckets=[(key_names[sid], slots_by_id[sid].key) for sid in spine_sids])
+        sources.extend(e.name for e in self._gen_spine_ctes[series_mark:])
+        local = [(sid, alias) for sid, als in aliases_by_slot_id.items() if sid not in key_names for alias in als]
+        wrapped = exp.Select().select(
+            *(exp.column(key_names[sid], table=keys, quoted=True).as_(alias, quoted=True)
+              for sid in dims for alias in aliases_by_slot_id[sid]),
+            *(self._with_empty(exp.column(alias, table=host, quoted=True), slot=slots_by_id[sid], bundle=bundle)
+              .as_(alias, quoted=True) for sid, alias in local),
+        ).from_(keys)
+        keys_entry = CteEntry(name=keys, query=union, depends_on=[*([host] if domain.host else []), *sources])
+        if not local and not domain.host:
+            # The host contributes neither cells nor values.
+            return wrapped, [keys_entry], [keys]
+        on = build_grain_joinback_condition(pairs=self._keyed_pairs([
+            (exp.column(key_names[sid], table=keys, quoted=True), exp.column(key_names[sid], table=host, quoted=True),
+             slots_by_id[sid].key)
+            for sid in dims
+        ]), dialect=self._dialect)
+        wrapped = wrapped.join(host, on=on, join_type="LEFT")
+        return wrapped, [CteEntry(name=host, query=base_select, depends_on=list(base_deps)), keys_entry], [host, keys]
 
     def _row_supply_branch(
         self, *, index: int, branch: PlannedRowBranch, cells: Callable[[Any], Tuple[Expression, Dict[str, str]]],
@@ -4179,7 +4270,7 @@ class SQLGenerator:
     ) -> exp.Select:
         """One branch's cells, each dimension cast to its type, kept where every ``restrict`` plan has the cell."""
         body, by_dim = cells(branch.cells)
-        if set(by_dim) != set(dims):
+        if set(dims) - set(by_dim):
             raise ValueError("a row-source plan does not project every dimension of its stage")
         alias = f"_cells{index}"
         select = exp.Select().select(*(
@@ -4198,12 +4289,28 @@ class SQLGenerator:
             on = build_grain_joinback_condition(pairs=self._keyed_pairs([
                 (exp.column(col, table=r_alias, quoted=True), exp.column(by_dim[sid], table=alias, quoted=True),
                  slots_by_id[sid].key)
-                for sid, col in r_dim.items()
+                for sid, col in r_dim.items() if sid in by_dim
             ]), dialect=self._dialect)
             exists = exp.Select().select(exp.Literal.number(1)).from_(
                 exp.Subquery(this=r_body, alias=exp.TableAlias(this=exp.to_identifier(r_alias))))
             select = select.where(exp.Exists(this=exists.where(on) if on is not None else exists))
         return select
+
+    def _spine_crossed(
+        self, *, union: Expression, tuple_names: List[str], buckets: List[Tuple[str, Any]],
+    ) -> exp.Select:
+        """Each distinct tuple of ``union`` crossed with every bucket of the spine series."""
+        tuples = exp.Subquery(this=union, alias=exp.TableAlias(this=exp.to_identifier("_tuples")))
+        series = exp.Select().select(*(
+            self._build_date_trunc(exp.column(TIME_SPINE_FIELD, table="_series", quoted=True), key.granularity)
+            .as_(name, quoted=True)
+            for name, key in buckets
+        )).distinct().from_(self._spine_relation(alias="_series"))
+        return exp.Select().select(
+            *(exp.column(n, table="_tuples", quoted=True).as_(n, quoted=True) for n in tuple_names),
+            *(exp.column(n, table="_buckets", quoted=True).as_(n, quoted=True) for n, _ in buckets),
+        ).distinct().from_(tuples).join(
+            exp.Subquery(this=series, alias=exp.TableAlias(this=exp.to_identifier("_buckets"))), join_type="CROSS")
 
     def _with_empty(self, value: Expression, *, slot: ValueSlot, bundle: ResolvedSourceBundle) -> Expression:
         """``value`` with a missing cell read as the slot's empty value (Axiom 4)."""
@@ -4372,7 +4479,7 @@ class SQLGenerator:
                     prefix="_cm_",
                     alias=self._canonical_cross_dataset_alias(
                         source_relation=source_relation, key=seed_key,
-                    ),
+                    ) if isinstance(seed_key, AggregateKey) else attach.alias_hint,
                     allocator=allocator, dialect=self.dialect,
                     limit=self._dialect.max_identifier_bytes,
                 )
@@ -4796,6 +4903,7 @@ class SQLGenerator:
 
     def _rank_family_window(
         self, *, fn: Expression, metric: Expression, partition_by: Iterable[Expression], descending: bool,
+        ties: Sequence[Expression] = (),
     ) -> Expression:
         """``CASE WHEN v IS NULL THEN NULL ELSE fn OVER (PARTITION BY …, <v-is-null flag> ORDER BY v) END``: NULL rows rank NULL, outside the others' window."""
         null_flag = exp.Case(
@@ -4805,7 +4913,8 @@ class SQLGenerator:
         window = exp.Window(
             this=fn,
             partition_by=[*(c.copy() for c in partition_by), null_flag],
-            order=exp.Order(expressions=[self._window_ordered(metric.copy(), descending=descending)]),
+            order=exp.Order(expressions=[self._window_ordered(metric.copy(), descending=descending),
+                                         *(self._window_ordered(t.copy()) for t in ties)]),
         )
         return exp.Case(
             ifs=[exp.If(this=exp.Is(this=metric.copy(), expression=exp.Null()), true=exp.Null())],
@@ -4929,6 +5038,14 @@ class SQLGenerator:
                 args["spec"] = spec
             return exp.Window(**args)
 
+        # A NULL time bucket has no position on the axis (Axiom 11.3): a series of its own, skipped by a pick.
+        null_bucket = (
+            exp.Case(ifs=[exp.If(this=exp.Is(this=time_col.copy(), expression=exp.Null()),
+                                 true=exp.Literal.number(1))], default=exp.Literal.number(0))
+            if time_col is not None else None
+        )
+        if null_bucket is not None and key.op in _ROW_STEP_TRANSFORMS:
+            partition_by = [*partition_by, null_bucket]
         time_order = (
             exp.Order(expressions=[self._window_ordered(time_col.copy())])
             if time_col is not None
@@ -4986,9 +5103,12 @@ class SQLGenerator:
                 raise ValueError(
                     f"ntile requires a positive integer n, got {n!r}",
                 )
+            # ntile splits ties: ordered by the cell too, so a cell's tile never depends on the plan.
             return self._rank_family_window(
                 fn=exp.Ntile(this=exp.Literal.number(n)), metric=metric,
                 partition_by=partition_by, descending=False,
+                ties=[exp.column(available_alias_by_slot_id[sid], quoted=True) for sid in planned_query.grain or ()
+                      if sid in available_alias_by_slot_id and slots_by_id[sid].phase == Phase.ROW],
             )
         if op in _RANK_WINDOW_FNS:
             return self._rank_family_window(
@@ -4996,9 +5116,12 @@ class SQLGenerator:
                 descending=kwarg_map.get("direction") == "desc",
             )
         if op == "first":
+            assert null_bucket is not None and time_col is not None
             return _over(
                 exp.FirstValue(this=metric),
-                order=time_order, spec=unbounded_frame,
+                order=exp.Order(expressions=[self._window_ordered(null_bucket.copy()),
+                                             self._window_ordered(time_col.copy())]),
+                spec=unbounded_frame,
             )
         if op == "last":
             if time_col is None:
@@ -5007,9 +5130,11 @@ class SQLGenerator:
                     f"dimension (binder/planner gap; slot id={slot.id!r}).",
                 )
             # last is first over the reversed time axis, so it takes the descending order.
+            assert null_bucket is not None
             return _over(
                 exp.FirstValue(this=metric),
                 order=exp.Order(expressions=[
+                    self._window_ordered(null_bucket.copy()),
                     self._window_ordered(time_col.copy(), descending=True),
                 ]),
                 spec=unbounded_frame,
@@ -5182,10 +5307,6 @@ class SQLGenerator:
                  depends_on=[*h.depends_on, *self._reuse_deps_of(h.name)])
             for h in hoisted
         ]
-        entries.append(Node(
-            name=cte_name, phase="producer", query=body,
-            depends_on=[*[h.name for h in hoisted], *self._reuse_deps_of(cte_name)],
-        ))
         col_by_sid = {
             s.id: self._full_alias_for_slot(
                 slot=s, source_relation=producer.source_relation, alias_index={},
@@ -5193,6 +5314,15 @@ class SQLGenerator:
             for s in (*producer.row_slots, *producer.aggregate_slots,
                       *producer.combined_expression_slots)
         }
+        if attach.collapsed:
+            # A collapsing pick is constant along its axis: one row per remaining grain cell.
+            kept = [col_by_sid[sid] for sid in producer.projection if sid not in attach.collapsed]
+            body = exp.Select().select(*(exp.column(c, quoted=True) for c in kept)).distinct().from_(
+                exp.Subquery(this=body, alias=exp.TableAlias(this=exp.to_identifier("_picked"))))
+        entries.append(Node(
+            name=cte_name, phase="producer", query=body,
+            depends_on=[*[h.name for h in hoisted], *self._reuse_deps_of(cte_name)],
+        ))
         return entries, col_by_sid
 
     def _emit_time_shift_ctes_for_planned(
