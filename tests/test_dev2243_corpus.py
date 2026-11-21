@@ -117,8 +117,8 @@ def _aggregated(node: exp.Expr) -> bool:
 
 
 def _model_scoped_rejection(tree: exp.Expr, *, metric_names: set[str]) -> str | None:
-    """Why a model-scoped metric loads unevaluable (decision 35: an unqualified or unaggregated field read), else
-    None; an aggregate reading several datasets evaluates as it does in a query."""
+    """Why a model-scoped metric loads unevaluable (decision 35: an unqualified or unaggregated field read, an
+    aggregate naming no dataset), else None; an aggregate reading several datasets evaluates as in a query."""
     for column in tree.find_all(exp.Column):
         if not column.table and column.name.casefold() in DATE_PARTS:
             continue
@@ -129,6 +129,10 @@ def _model_scoped_rejection(tree: exp.Expr, *, metric_names: set[str]) -> str | 
             return "unaggregated field"
         elif column.name.casefold() not in metric_names:
             return "unqualified field"
+    for aggregate in tree.find_all(exp.AggFunc):
+        if not _is_agg_call(aggregate) and not _aggregated(aggregate) and not any(
+                c.table for c in aggregate.find_all(exp.Column)):
+            return "aggregate over no dataset"
     return None
 
 
@@ -143,7 +147,6 @@ REFUSED: dict[tuple[str, str], str] = {
     ("harvested/c82499fbddd2.yaml", "revenue"): "NoRowSourceError",
     ("harvested/fad5e6f81b85.yaml", "revenue"): "NoRowSourceError",
     ("compliance/wide_table/retail/retail_model.ossie.yaml", "order_less_return"): "UnsafeRelationshipInputError",
-    ("compliance/wide_table/retail/retail_model.ossie.yaml", "row_count"): "UnqualifiedRowCountError",
 }
 
 

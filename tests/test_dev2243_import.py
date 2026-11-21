@@ -14,6 +14,7 @@ import duckdb
 import pytest
 import yaml
 
+from slayer.core.document_text import without_vendor
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import SlayerError
 from slayer.core.format import NumberFormat, NumberFormatType
@@ -786,7 +787,8 @@ async def test_example_validates_and_imports(tmp_path: Path) -> None:
         rows = (await engine.execute({
             "population": "orders", "metrics": ["orders.total_amount"], "dimensions": ["customers.regions.name"],
             "order": [{"field": "customers.regions.name"}]})).data
-        assert [(r["customers.regions.name"], float(r["orders.total_amount"])) for r in rows] == [
+        # Result keys follow the canonical path: the hop's edge name.
+        assert [(r["customers.customers_to_regions.name"], float(r["orders.total_amount"])) for r in rows] == [
             ("North", 750.0), ("South", 650.0)]
         assert await scalar(engine, {"population": "orders", "metrics": ["orders.aov"]}, "orders.aov") == \
             pytest.approx(1400.0 / 6)
@@ -932,7 +934,12 @@ async def test_reimport_replaces_the_converted_datasets(legacy_1x: SlayerQueryEn
     assert await storage.semantic_model_owner("orders", DS) is None
     result = await _reimport(legacy_1x, tmp_path)
     assert result.stored == ["sales"]
-    assert await storage.get_semantic_model_text("sales", DS) == REIMPORT
+    text = await storage.get_semantic_model_text("sales", DS)
+    assert text is not None
+    # The file as written, plus the SLAYER entries carrying the replaced datasets' SLayer-only content.
+    assert without_vendor(yaml.safe_load(text), "SLAYER") == yaml.safe_load(REIMPORT)
+    kept = text.splitlines()
+    assert all(line in kept for line in REIMPORT.splitlines())
     for name in ("orders", "customers"):
         assert await storage.semantic_model_owner(name, DS) == "sales"
     names = await storage.list_datasets(DS)

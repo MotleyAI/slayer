@@ -270,8 +270,8 @@ def _aggregated(node: exp.Expr) -> bool:
 
 
 def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> str | None:
-    """Why SLayer cannot evaluate a model-scoped metric (a field read unqualified or outside an aggregate), else
-    ``None``; an aggregate over several datasets evaluates as in a query."""
+    """Why SLayer cannot evaluate a model-scoped metric (a field read unqualified or outside an aggregate, an aggregate
+    naming no dataset), else ``None``; an aggregate over several datasets evaluates as in a query."""
     text = expression if isinstance(expression, str) else (
         expression.sql or next((d.expression for d in expression.dialects or []), None))
     tree, _ = parse_ossie_sql(text, OSSIE_SQL) if text else (None, None)
@@ -285,6 +285,9 @@ def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> s
             return f"reads {column.table}.{column.name} outside an aggregate"
         elif column.name.casefold() not in metric_names:
             return f"reads the unqualified field {column.name!r}; qualify it by its dataset"
+    for aggregate in tree.find_all(exp.AggFunc):
+        if not _aggregated(aggregate) and not any(c.table for c in aggregate.find_all(exp.Column)):
+            return f"aggregates {aggregate.sql()} over no dataset; name its dataset, as in COUNT(<dataset>.*)"
     return None
 
 

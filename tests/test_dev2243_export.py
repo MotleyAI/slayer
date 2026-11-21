@@ -14,7 +14,7 @@ import pytest
 import sqlglot
 import yaml
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.field_expression import portable_text
 from slayer.core.models import DatasetField, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -61,7 +61,8 @@ STORES = SlayerDataset(
     fields=[DatasetField(name="store_id", datatype=DataType.STRING, primary_key=True),
             DatasetField(name="customer_id", datatype=DataType.STRING)],
     relationships=[DatasetRelationship(name="stores_to_orders", to="orders", from_columns=["customer_id"],
-                                       to_columns=["customer_id"])],
+                                       to_columns=["customer_id"],
+                                       cardinality=RelationshipCardinality.MANY_TO_ONE)],
 )
 BIG_ORDERS = SlayerDataset(
     name="big_orders", sql="SELECT order_id, amount FROM orders WHERE amount > 100", data_source=DS,
