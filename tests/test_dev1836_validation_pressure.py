@@ -41,7 +41,7 @@ class TestUnprovenJoins:
 
         flagged = by_edge[("customers", "segments")]
         message = flagged.message.lower()
-        assert "broadcast" in message
+        assert "partition_by=[]" in message
         assert "associat" in message
         # The remedies: declare cardinality, declare a covering unique key,
         # or run cardinality detection.
@@ -62,13 +62,13 @@ class TestUnprovenJoins:
 
     def test_unproven_forward_orientation_is_flagged_with_its_consequence(self) -> None:
         # Neither declared m:1/1:1 nor structurally proven — dimensions across it
-        # associate (broadcast on request), and validation says so (the fixture's
+        # associate (partition_by=[] repeats the total), and validation says so (the fixture's
         # only such declared orientation is customers → segments).
         findings = audit_relationship_safety(datasets=dev1836_datasets())
         by_edge = _findings_by_edge(findings)
         finding = by_edge[("customers", "segments")]
         assert finding.forward_provably_to_one is False
-        assert "broadcast" in finding.message.lower()
+        assert "partition_by=[]" in finding.message.lower()
         assert "associat" in finding.message.lower()
 
 
@@ -193,4 +193,4 @@ class TestCliValidateModels:
         ))
         out = capsys.readouterr().out
         assert "tags" in out
-        assert "broadcast" in out.lower()
+        assert "partition_by=[]" in out.lower()

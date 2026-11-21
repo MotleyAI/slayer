@@ -175,6 +175,10 @@ class SnowflakeDialect(SqlDialect):
     def normalize_reflected_name(self, name: str) -> str:
         return name.lower() if name == name.upper() else name
 
+    def naive_timestamp_type(self) -> exp.DataType:
+        """``TIMESTAMP_NTZ``: a bare ``TIMESTAMP`` follows the session's ``TIMESTAMP_TYPE_MAPPING``."""
+        return exp.DataType.build("TIMESTAMPNTZ")
+
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         return info_schema_comments_query(
             comment_column="comment", default_schema=call("CURRENT_SCHEMA"), location=location,

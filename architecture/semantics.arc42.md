@@ -167,11 +167,10 @@ principles every layer obeys.
    per-query row number)
    [enforced: test:tests/test_dev1841_association_exec.py]
    [enforced: test:tests/test_dev1910_home_rooted_association.py]
-   [enforced: test:tests/test_dev2216_keyless_association.py] [enforced: test:tests/test_dev2367_list_elements_across_joins.py]; broadcast (the
-   value repeats across the dimension's cells, with a self-announcing warning;
-   spec: `queries/semantics` › Loud degradation)
-   [enforced: test:tests/test_dev1836_broadcast_strict.py]; and error (refuse)
-   [enforced: test:tests/test_dev1841_error_mode.py]. Every aggregation associates — a windowed one per bucket, over the home rows with an associated row in the bucket's frame [enforced: test:tests/test_dev1914_ranked_windowed_association.py]; an explicit partition_by
+   [enforced: test:tests/test_dev2216_keyless_association.py] [enforced: test:tests/test_dev2367_list_elements_across_joins.py]; and error (refuse)
+   [enforced: test:tests/test_dev1841_error_mode.py]. A value repeated across a dimension's cells is a coarser grain
+   asked for by `partition_by=` (Axiom 10), never a mode: the deprecated broadcast mode (the same value, warned) is
+   refused from 3.0 [enforced: test:tests/test_law_removal_tripwire.py]. Every aggregation associates — a windowed one per bucket, over the home rows with an associated row in the bucket's frame [enforced: test:tests/test_dev1914_ranked_windowed_association.py]; an explicit partition_by
    naming a dimension unattributable only from a further (cross-model) root is an
    error outside associate mode
    [enforced: test:tests/test_dev1841_association_errors.py], but one whose own
@@ -313,7 +312,7 @@ enforced test ids as its instances land.
 4. **Position parity**: the same expression yields the same value as a
    measure, a filter, or an order key — positions differ only in what happens
    to the value. [review] [enforced: test:tests/test_dev2218_transform_domain.py]
-5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a groupby on `d` — exact for every aggregation under the default and associate; broadcast consciously trades this law away and must warn.
+5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a groupby on `d` — exact for every aggregation under the default, associate and error; the deprecated broadcast mode trades it away and warns.
    [enforced: test:tests/test_law_dice_slice.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 6. **Lowering soundness**: every emission trick is a pure optimization —

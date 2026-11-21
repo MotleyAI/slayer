@@ -21,7 +21,7 @@ wrappers catch and format them per their convention.
 from __future__ import annotations
 
 
-from slayer.core.query import SlayerQuery
+from slayer.core.query import SlayerQuery, broadcast_deprecations
 from slayer.memories.models import (
     ForgetMemoryResponse,
     SaveMemoryResponse,
@@ -139,7 +139,7 @@ class MemoryService:
             warnings.extend(p.human_message() for p in conversions)
             extraction = await extract_entities_from_query(query, storage=self._storage)
             canonical.extend(extraction.canonical_forms)
-            warnings.extend(p.human_message() for p in query.deprecated_inputs)
+            warnings.extend(p.human_message() for p in [*query.deprecated_inputs, *broadcast_deprecations([query])])
             attached_query = query
             warnings.extend(extraction.warnings)
 

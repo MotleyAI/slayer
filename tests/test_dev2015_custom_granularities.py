@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from sqlglot import exp
 
-from slayer.core.enums import TimeGranularity, boundaries_nest
+from slayer.core.enums import DataType, TimeGranularity, boundaries_nest
 from slayer.core.errors import (
     DateOperandTypeError,
     QueryTypeError,
@@ -433,5 +433,7 @@ class TestColumnGranularity:
 @pytest.mark.parametrize("dialect", ["mysql", "snowflake"])
 def test_bucket_index_floors_where_an_integer_cast_rounds(dialect: str) -> None:
     quarter_hour = CustomGranularity.model_validate({"name": "quarter_hour", "base": "minute", "multiple": 15})
-    bucket = get_dialect(dialect).build_bucket(col_expr=exp.column("t"), granularity=quarter_hour)
+    bucket = get_dialect(dialect).build_bucket(
+        col_expr=exp.column("t"), granularity=quarter_hour, operand=DataType.DATETIME,
+    )
     assert bucket.find(exp.Floor) is not None

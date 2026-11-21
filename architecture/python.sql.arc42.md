@@ -104,6 +104,7 @@ flowchart TD
     [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
     [enforced: test:tests/test_dev2063_grain_guarantee.py]
 13. **One relation door**: a model reaches SQL only through one door, as its filtered dataset (semantics Axiom 3.3) — never as its bare table, and never filtered afterwards by an enclosing WHERE. [enforced: test:tests/test_law_relation_door.py]
+14. **Emitted types are logical types**: on every dialect a rendered value has the type its key derives (system P10), and a DATE meeting a TIMESTAMP reads as its midnight instant. [enforced: test:tests/test_dev2018_logical_types.py]
 
 ## 4. Rationale
 

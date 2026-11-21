@@ -2451,7 +2451,7 @@ def check_reaggregation_no_window(*, alias: str, window_val) -> None:
 def check_reaggregation_dims_attributable(
     *, alias: str, policy: ModePolicy, unattributable_names: Sequence[str],
 ) -> None:
-    """Unattributable outer dims are a hard error under to_many_handling='error'; associate/broadcast resolution stays compiler-side."""
+    """Unattributable outer dims are a hard error under to_many_handling='error'; other modes resolve compiler-side."""
     if not policy.refuses or not unattributable_names:
         return
     names = ", ".join(unattributable_names)
@@ -2460,7 +2460,7 @@ def check_reaggregation_dims_attributable(
         f"to the operand dataset under to_many_handling='error'.",
         location=f"metric {alias!r}",
         suggestion="Add them to the inner partition_by= so the operand is grained "
-        "by them, or choose 'broadcast'/'associate'.",
+        "by them, or omit to_many_handling to associate them.",
     )
 
 

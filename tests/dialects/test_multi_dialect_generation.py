@@ -12,11 +12,15 @@ a new dialect, append it to ``ALL_DIALECTS`` here.
 
 from __future__ import annotations
 
+import re
+
 import pytest
+from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
+from slayer.sql.dialects import get_dialect
 from slayer.sql.generator import SQLGenerator
 
 from tests.dialects.conftest import _generate, _norm
@@ -35,6 +39,10 @@ _LOG2_NATIVE_DIALECTS = frozenset({
     "sqlite", "duckdb", "mysql", "clickhouse",
     "trino", "presto", "databricks", "spark",
 })
+
+
+def _flat(sql: str) -> str:
+    return re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", " ".join(sql.split())))
 
 
 class TestMultiDialectGeneration:
@@ -167,8 +175,7 @@ class TestMultiDialectGeneration:
         multiple overloads keyed on the second argument's type and rejects
         ``DATE_TRUNC('month', '2025-12-01')`` with ``AmbiguousFunctionError``.
 
-        Bare column references stay unwrapped — their live DB type is known,
-        and forcing a cast could strip ``TIMESTAMPTZ`` to ``TIMESTAMP``.
+        A bare column's bucket is the dialect's typed bucket of it: a naive TIMESTAMP, never zoned.
         """
         gen = SQLGenerator(dialect=dialect)
         model = literal_time_orders()
@@ -186,7 +193,7 @@ class TestMultiDialectGeneration:
         # so we don't assert the literal target-type spelling — only that the
         # literal is wrapped in a CAST.
         assert "CAST('2025-12-01' AS" in sql, sql
-        # Bare-column time dim — must NOT be cast.
+        # Bare-column time dim — the dialect's typed bucket.
         sql = await _generate(
             gen,
             SlayerQuery(
@@ -196,11 +203,12 @@ class TestMultiDialectGeneration:
             ),
             model,
         )
-        # Scoped to the TIME DIMENSION operand: a bare column keeps its live
-        # DB type and must not be cast. (A blanket "no CAST anywhere" check
-        # would now trip on the typed pipeline's result-type cast around the
-        # ``count(*)`` metric, which is unrelated to this contract.)
-        assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
+        d = get_dialect(dialect)
+        bucket = d.build_bucket(
+            col_expr=exp.column("created_at", table="orders"), granularity=TimeGranularity.MONTH,
+            operand=DataType.DATETIME,
+        ).sql(dialect=d.sqlglot_name)
+        assert _flat(bucket) in _flat(sql), sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     async def test_calendar_time_shift(self, dialect: str, orders_dataset: SlayerDataset) -> None:

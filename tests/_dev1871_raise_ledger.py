@@ -316,7 +316,7 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_reaggregation_dims_attributable", exc="ReaggregationError",
          message="The re-aggregation cannot attribute dimension(s) … to the operand dataset under to_many_handling='error'."
          + AT + "metric …"
-         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or choose 'broadcast'/'associate'.",
+         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or omit to_many_handling to associate them.",
          category="checker", family="reaggregation", user=True, owner="checker"),
     _row(module=_EE, function="check_reaggregation_outer_keys_determined", exc="PartitionKeyError",
          message="The re-aggregation's explicit outer partition_by key(s) … are not determined by its operand grain (…)."

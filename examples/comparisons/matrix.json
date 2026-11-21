@@ -1278,7 +1278,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>\"to_many_handling\": \"broadcast\" | \"associate\" | \"error\"</code>",
+     "how": "<code>\"to_many_handling\": \"associate\" | \"error\"</code>",
      "caveat": "Typed errors and structured warnings; every SLayer probe returns the right numbers or fails with a typed error (verified)."
     },
     "malloy": {

@@ -150,8 +150,8 @@ class TestGroupedAndUngrouped:
         )
         by_month = by_group(rows, key="orders.created_at", value="l")
 
-        assert by_month["2024-02-01"] == FILT_NEWER_NONMATCHING
-        assert by_month["2024-03-01"] == FAN_LAST
+        assert by_month["2024-02-01 00:00:00"] == FILT_NEWER_NONMATCHING
+        assert by_month["2024-03-01 00:00:00"] == FAN_LAST
         # The NULL-timestamp bucket survives, but its only key is NULL → NULL.
         assert None in by_month, f"the NULL-timestamp bucket vanished: {rows}"
         assert by_month[None] is None
@@ -789,9 +789,9 @@ class TestComposition:
         assert [
             (row["orders.created_at"], row["c"]) for row in rows
         ] == [
-            ("2024-01-01", pytest.approx(january)),
-            ("2024-02-01", pytest.approx(february)),
-            ("2024-03-01", pytest.approx(february + FAN_LAST)),
+            ("2024-01-01 00:00:00", pytest.approx(january)),
+            ("2024-02-01 00:00:00", pytest.approx(february)),
+            ("2024-03-01 00:00:00", pytest.approx(february + FAN_LAST)),
             (None, None),
         ]
 
