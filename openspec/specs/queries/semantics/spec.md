@@ -14,11 +14,12 @@ status tags in `architecture/semantics.arc42.md`.
 A query dimension SHALL be attributable to an aggregate iff a chain of provably
 many-to-one join hops (per `models/join-cardinality` evidence) leads from the
 aggregate's root model to the dimension. Attributable dimensions retain exact per-cell
-values — the cells partition the root rows and sum to the total. Every other dimension —
+values — the cells partition the root rows, and an additive aggregate's cells sum to its
+total. Every other dimension —
 reached across a fanning or an unproven hop alike — resolves per the query's
 `to_many_handling` mode: when the mode is omitted or `"associate"`, each cell aggregates
-over the distinct root entities associated with it (per `queries/attribution-modes`; an
-association-ineligible aggregate broadcasts by default, with the reason); under
+over the distinct root entities associated with it (per `queries/attribution-modes`),
+whatever its aggregation — `first`/`last` and windowed included; under
 `"broadcast"` the aggregate broadcasts across it (its value repeats across that
 dimension's cells); under `"error"` the query refuses. In no mode is an aggregation's
 input multiplied by a join across a fanning or unproven path.
@@ -68,8 +69,9 @@ in `queries/cross-model-aggregates`.
 ### Requirement: Grain guarantee
 For a query with at least one measure, and for a measure-less query with distinct
 dimension values enabled (the default), the result SHALL have exactly one row per
-combination of dimension values present among the row-filtered population's rows.
-Raw-row mode (`distinct_dimension_values=false`) is the documented exception and
+combination of dimension values present among the row-filtered population's rows — for a query
+omitting `population`, among its row supply (`queries/population` › Rows of an inferred query
+are the row supply), never one row twice. Raw-row mode (`distinct_dimension_values=false`) is the documented exception and
 returns one row per population row. A row-level filter that reaches the population root
 only across a non-determining path SHALL NOT multiply the population's rows, whatever the
 conjunct's boolean shape: raw-row mode returns each population row passing the restriction
@@ -84,7 +86,7 @@ dimension combination, or repeats one.
 
 #### Scenario: Raw rows are never multiplied by a population filter's join
 - **WHEN** a query rooted at `customers` selects `dimensions: ["tier"]` with
-  `distinct_dimension_values: false` and `filters: ["orders.status = 'ok'"]`, and one
+  `distinct_dimension_values: false` and `filter: ["orders.status = 'ok'"]`, and one
   customer has two `ok` orders
 - **THEN** by executed values the result has one row per customer with at least one `ok`
   order (five rows on the reference dataset), never one row per matching order
@@ -117,7 +119,9 @@ When aggregates at different grains combine in one expression, the expression's 
 SHALL be the union of its operands' grains, each operand broadcast from its own grain
 to that union; combining at different grains is never, by itself, an error. Broadcast
 SHALL only go from coarser to finer; consuming an aggregate at a strictly coarser
-grain SHALL fail with a typed error, never collapse implicitly.
+grain SHALL fail with a typed error, never collapse implicitly. The population supplies the
+rows — for a query omitting `population`, its row supply — and a cell an operand lacks
+contributes the operand's empty value.
 
 #### Scenario: Different-grain arithmetic broadcasts to the union
 - **WHEN** a measure divides a query-grain aggregate by a
@@ -203,14 +207,14 @@ related row.
 
 #### Scenario: Filter and dimension on one branch bind to the same row
 - **WHEN** a query rooted at `customers` selects `dimensions: ["orders.status"]`, the
-  local `sum(spend)`, and `filters: ["orders.amount = 20"]`, where the only order of
+  local `sum(spend)`, and `filter: ["orders.amount = 20"]`, where the only order of
   amount 20 has status `new` and its customer also has `ok` orders
 - **THEN** the result has exactly one cell, `new`, by executed values — the filter and
   the dimension are evaluated on the same joined row, never on the customer's other orders
 
 #### Scenario: Two branches restrict the population independently
 - **WHEN** a query rooted at `customers` selects `sum(spend)` with
-  `filters: ["orders.status = 'ok'", "regions.region_events.value >= 50"]`, where
+  `filter: ["orders.status = 'ok'", "regions.region_events.value >= 50"]`, where
   `customers → orders` and `regions → region_events` are one-to-many
 - **THEN** by executed values the metric counts exactly the customers with at least one
   `ok` order whose region has at least one event of value 50 or more, each once (280 on the
@@ -270,7 +274,7 @@ related row.
 
 #### Scenario: A materialised branch binds to the grouped row inside a multi-branch conjunct
 - **WHEN** a query rooted at `customers` selects `dimensions: ["orders.id"]` and no measures
-  with `filters: ["orders.status = 'ok' or regions.name = 'South'"]`
+  with `filter: ["orders.status = 'ok' or regions.name = 'South'"]`
 - **THEN** by executed values the result has one cell per order that is itself `ok` or whose
   customer's region is `South` (orders 1, 3, 5, 7, 9 and 10 on the reference dataset), plus the
   null-order cell for the orderless customer whose region is `South` (its LEFT-extended row
@@ -279,7 +283,7 @@ related row.
 
 #### Scenario: Out-of-scope conjunct without an inline aggregate keeps applying
 - **WHEN** a query rooted at `customers` selects `sum(spend, partition_by=tier)` by `tier`
-  with `filters: ["tier = 'bronze' or orders.status = 'ok'"]`, in any `to_many_handling`
+  with `filter: ["tier = 'bronze' or orders.status = 'ok'"]`, in any `to_many_handling`
   mode
 - **THEN** the conjunct keeps applying, now by association in the producer too: by executed
   values each tier cell equals the spend of that tier's distinct customers passing the
@@ -290,7 +294,7 @@ related row.
 
 #### Scenario: Out-of-scope conjunct in raw-row mode fails closed
 - **WHEN** a query rooted at `customers` selects `dimensions: ["tier"]` with
-  `distinct_dimension_values: false` and `filters: ["tier = 'bronze' or orders.status = 'ok'"]`,
+  `distinct_dimension_values: false` and `filter: ["tier = 'bronze' or orders.status = 'ok'"]`,
   and one customer has two `ok` orders
 - **THEN** the query no longer fails closed: by executed values the result has one row per
   bronze customer or customer with at least one `ok` order (six rows on the reference
@@ -329,18 +333,31 @@ related row.
 
 ### Requirement: Compositionality
 Each result cell's values SHALL depend only on the evaluated expression, the
-population, and the row-level filters — never on which other measures, measure-typed
-filters, or order entries the query contains. Adding or removing a projected measure
-SHALL NOT change the row set or any other column's values. A measure-typed filter
-masks result cells without changing any surviving cell's values; ORDER BY and LIMIT
+cell, and the row-level filters — never on which other measures, measure-typed
+filters, or order entries the query contains. In a query naming `population`, adding or
+removing a projected measure SHALL NOT change the row set or any other column's values. In a
+query omitting it with at least one measure, adding a measure SHALL NOT remove a row or change any value in an existing
+row, a row it adds carrying each other measure's value on its own grain there (its empty value
+where it has no cell). A transform over result rows
+(the rank family, `lag`, `lead`, cumulative and collapsing transforms) is exempt from the previous
+sentence and from the single-measure-split guarantee below until transforms evaluate over their
+operand's own cells (DEV-2218). A measure-typed
+filter masks result cells without changing any surviving cell's values; ORDER BY and LIMIT
 select and order rows without changing any cell's values. A multi-measure query SHALL
-return, cell by cell, the same values as its single-measure splits. Selecting an
+return, cell by cell, the same values as its single-measure splits in each split's rows, and
+in the rows only its siblings supply, its value on its own grain there (its empty value where it
+has no cell). Selecting an
 expression as a measure SHALL NOT make any other measure, filter or order entry that
 contains it fail.
 
 #### Scenario: Adding a measure changes nothing else
-- **WHEN** any supported query runs with and without one additional measure
+- **WHEN** any supported query naming `population` runs with and without one additional measure
 - **THEN** both runs return the same rows and identical values in all shared columns
+
+#### Scenario: Adding a measure to an inferred query only adds rows
+- **WHEN** a query without `population` grouping by `customers.region` and measuring
+  `orders.total_revenue` adds `returns.total_returns`
+- **THEN** EAST 350 and WEST 300 keep their values, and the added NORTH row carries NULL revenue
 
 #### Scenario: Measure-typed filter masks without altering values
 - **WHEN** a query filters on an aggregate predicate
@@ -383,10 +400,7 @@ SHALL turn it into an error (per the metadata and mode requirements in
 `queries/cross-model-aggregates` and `queries/attribution-modes`). A broadcast under
 explicit `"broadcast"` SHALL carry the dice–slice hint: filtering on the dimension
 restricts the metric by association while slicing broadcasts, and omitting the mode (or
-`"associate"`) reconciles the two. A broadcast fallback of an association-ineligible
-aggregate under the default SHALL instead carry the reason association is unsupported
-and the remedy, and one measure falling back for several reasons SHALL report each.
-Associated resolution SHALL warn that the cells' entity populations may overlap across
+`"associate"`) reconciles the two. Omitting the mode never broadcasts. Associated resolution SHALL warn that the cells' entity populations may overlap across
 the named dimensions and are not additive. Explicit `partition_by=` is requested grain
 and SHALL NOT warn — broadcasting and associating alike. Warnings and errors SHALL name
 a dimension by its query name — a named dimension's `name`, else its canonical dotted
@@ -405,10 +419,10 @@ path — never an internal alias.
   reconciliation, whether or not the query contains a filter
 
 #### Scenario: A fallback broadcast carries its reason instead
-- **WHEN** a query omitting the mode broadcasts a `first`/`last` aggregate that needs
+- **WHEN** a query omitting the mode selects a `first`/`last` aggregate that needs
   association
-- **THEN** the broadcast warning names the unsupported association reason and the
-  remedy, not the dice–slice hint
+- **THEN** there is no fallback broadcast: the response carries the associated-cells
+  warning and no broadcast warning
 
 #### Scenario: Associate warns about overlapping populations
 - **WHEN** a query omitting the mode, or under `"associate"`, resolves a metric over an
@@ -426,12 +440,9 @@ path — never an internal alias.
 
 ### Requirement: Dice–slice correspondence under associate
 When the mode is omitted or `to_many_handling: "associate"`, filtering the population to
-`d = v` SHALL yield the same value for an **association-eligible** aggregate as slicing
-the `v` cell of the same query grouped by `d`, by executed values, for any dimension `d`
-reachable from the population. An association-ineligible aggregate (`window=`,
-`first`/`last`, or a row-valued parameter the entity grain does not determine) is not
-subject to this rule — it broadcasts by default with its reason and fails with its typed
-error under explicit `"associate"`. Explicit `"broadcast"` does not satisfy this
+`d = v` SHALL yield the same value for every aggregate — `first`/`last` and windowed ones
+included — as slicing the `v` cell of the same query grouped by `d`, by executed values,
+for any dimension `d` reachable from the population. Explicit `"broadcast"` does not satisfy this
 correspondence; its warning hint (per Loud degradation) is the required disclosure.
 
 #### Scenario: Filtered value equals the sliced cell
@@ -440,6 +451,11 @@ correspondence; its warning hint (per Loud degradation) is the required disclosu
   groups by `status` instead
 - **THEN** the filtered run's value equals the `ok` cell of the grouped run, by
   executed values, across a generated family of query shapes
+
+#### Scenario: Filtered first/last and window equal the sliced cell
+- **WHEN** the same pair of queries selects `last(customers.spend, customers.signup_at)`,
+  and another pair selects `sum(customers.spend, window='1y')` by the month of `ordered_at`
+- **THEN** each filtered run equals the `ok` cell of its grouped run, by executed values
 
 ### Requirement: Second-order aggregation over attached values
 An aggregation whose source operand resolves entirely to attached values —
@@ -805,14 +821,15 @@ ungrained form on construction grounds is a closure violation.
 
 ### Requirement: Home dataset of a row-level aggregation source
 An aggregation over a row-level source SHALL run over the rows of exactly one home
-dataset (Axiom 2): the deepest join path from the query root from which every
-dependency of every input — each source leaf, each column-valued parameter and each
+dataset (Axiom 2): the source's anchor when every dependency of every input —
+each source leaf, each column-valued parameter and each
 non-overridden definition default, each taken through its dependency closure, and
 each grain member of every attached constituent (an aggregate or grained transform
 operand is opaque and stands for its grain: its explicit `partition_by=`, else the
 query's dimensions; a transform's grain is the union of its inner aggregates', where
 a windowed inner's grain always includes the query's time bucket whether or not its
-`partition_by=` names it) — is
+`partition_by=` names it) — is reachable from it over provably to-one hops, else the
+deepest join path from the query root from which every such dependency is
 reachable over provably to-one hops. A non-overridden definition default SHALL be
 resolved as a reference from the owning model — the source anchor that declares the
 aggregation — with each column reference (bare, or one inside an expression default)
@@ -827,7 +844,7 @@ closed rather than silently re-anchor at the root. An edge-name segment never
 cancels. Only a definition default cancels: a query-typed path that revisits a
 dataset stays refused with the circular-join error, and so does a default reference
 that is circular from the query root. (Whether a derived column whose
-own `Column.sql` revisits is likewise refused is out of scope here — DEV-1952.) A
+own `DatasetField.sql` revisits is likewise refused is out of scope here — DEV-1952.) A
 default is resolved once, when the query is bound, and is thereafter the same value as
 its explicit spelling — the column it resolves to, or for an expression default each
 of its references: it homes, is checked for input safety and renders exactly as that
@@ -840,9 +857,9 @@ to that dataset, exactly as spelling that column explicitly would; a definition
 default whose definition crosses a fanning hop SHALL fail closed even when other
 inputs widen the home away from the declaring model; and a cancelled or root-anchored
 default is never rendered as a join from the owner back to the dataset it names.
-Candidates are the input paths and their
-longest common prefix, deepest first; a tie prefers the source's anchor, the longest
-common prefix of the source leaves' own paths. The aggregation is computed over the
+Candidates are the source's anchor, the longest common prefix of the source leaves'
+own paths, tried first, then the input paths and their longest common prefix,
+deepest first. The aggregation is computed over the
 home's rows, each counted once, never over a join product. When no candidate
 determines every input the query SHALL fail with the input-safety error naming the
 offending leaf and hop. The home SHALL depend on the leaves' paths alone, never on
@@ -959,9 +976,10 @@ applies exactly as for a single-column source rooted at the home.
 #### Scenario: A reverse hop to a dataset not on the path stays refused
 - **WHEN** a query rooted at `regions` selects `wsum_cust_spend(pop)`, whose
   `regions`-declared default is `customers.spend`
-- **THEN** nothing cancels — `customers` is not on the path — and the query fails with
-  the same input-safety error naming `customers` that the explicit
-  `weight=customers.spend` twin raises
+- **THEN** nothing cancels — `customers` is not on the path — and, `customers → regions`
+  being to-one, the default homes on `customers`: the value equals the explicit
+  `weight=customers.spend` twin and `sum(regions.pop * spend)` rooted at `customers`,
+  by executed values
 
 #### Scenario: A query-typed revisit is refused
 - **WHEN** a query selects `sum(customers.regions.customers.spend)` from `orders`
@@ -1041,12 +1059,12 @@ applies exactly as for a single-column source rooted at the home.
   name and a `customers`-declared aggregation defaults its weight to that bare name
 - **THEN** the default reads the owner's (`customers`) column in every producer kind,
   equal by executed values on SQLite and DuckDB to the explicit
-  `weight=customers.<column>` twin
+  `weight=customers.<field>` twin
 
 #### Scenario: A mixed-frame expression default keeps a quoted column's identity
 - **WHEN** an expression default combines an owner-local column whose physical name
   must be quoted (mixed-case or a reserved word) with a root-anchored column
-  (`<owner column> + orders.amount`)
+  (`<owner field> + orders.amount`)
 - **THEN** the quoted column renders with its exact identity and the executed value on
   SQLite and DuckDB equals the explicit two-reference spelling
 
@@ -1113,3 +1131,95 @@ A division whose divisor evaluates to 0 SHALL be NULL on every backend and in ev
 
 - **WHEN** a query measures `sum(amount) / count(*)` and its filters keep no population row
 - **THEN** one row is returned whose ratio is NULL on SQLite and DuckDB, and the SQL emitted for every dialect guards the divisor with `NULLIF(…, 0)`
+
+### Requirement: The home, not the query root, decides where an aggregation is computed
+
+An aggregation over a row-level source whose home (per "Home dataset of a row-level aggregation source") is a dataset below the query root SHALL be computed over that home's rows exactly as when the query is rooted on any other dataset whose join paths reach the same home: the same value per cell it can attribute, the same input-safety outcome, the same refusal when it is refused. The longest common prefix of the source's own leaves (its anchor) SHALL NOT decide where it is computed. An aggregation homed on the query root, a second-order aggregation (homed on its operand dataset) and an aggregation in a query whose root is not a model SHALL keep their own evaluation.
+
+#### Scenario: A root column and a list element home on the list child
+- **WHEN** a query on `contractors` measures `sum(rate * length(skills.value))`, and a query on `assignments` measures `sum(contractors.rate * length(contractors.skills.value))`
+- **THEN** both return 230 — each element counted once with its contractor's rate — by executed values; grouped by `team` (by `contractors.team` from `assignments`) both return A 130 and B 100
+
+#### Scenario: A list-element definition default reads like from its home
+- **WHEN** a custom aggregation `w` declared on `contractors` as `SUM({value} * length({weight}))` defaults `weight` to `skills.value`, and `w(rate)` is measured from `contractors` and `w(contractors.rate)` from `assignments`
+- **THEN** both return 230, by executed values
+
+#### Scenario: A root column and a reverse to-many column home on the child dataset
+- **WHEN** a query on `contractors` measures `sum(rate * assignments.id)`, and a query on `assignments` measures `sum(contractors.rate * id)`
+- **THEN** both return 460, by executed values
+
+#### Scenario: Every producer kind is independent of the query root
+- **WHEN** an aggregation homed below the query root on `contractors` is a `FILTER` aggregation, a ranked or `first` / `last` aggregation, a windowed aggregation, an aggregation with an attached constituent, or an explicit `partition_by=` aggregation, and the same aggregation is spelled from `assignments`
+- **THEN** each returns the same values from both populations, or both populations refuse it with the same typed error
+
+#### Scenario: Undetermined inputs are refused from every population
+- **WHEN** an aggregation's inputs are determined by no single dataset over provably to-one hops
+- **THEN** it is refused with the same input-safety error from every population that reaches its inputs
+
+#### Scenario: A to-one input keeps the aggregation on its anchor
+- **WHEN** `orders` and `customers` are linked one-to-one by their primary keys, and a query on `orders` measures `scaled(price, scale='customers.weight')` with `scaled` defined as `SUM({value}) / MAX({scale})`
+- **THEN** it is computed over the rows of `orders`: an order with no matching customer still counts in `SUM(price)`
+
+#### Scenario: A home-changing default after a redundant partition still homes below the root
+- **WHEN** an aggregation homed below the query root also carries a redundant `partition_by=` that the query's grain already implies and a definition default that moves its home
+- **THEN** it is computed at the same home and returns the same value as without the redundant `partition_by=`
+
+### Requirement: Filters restrict every home of an inferred query
+In a query omitting `population`, a field-typed filter conjunct SHALL restrict the rows of every
+aggregation's home, and of the dimension anchor where its cells are supplied, before any tuple is
+taken: inlined where the dataset determines every reference of the conjunct, otherwise by
+association, exactly as a conjunct restricts a named population (each restricted row counted
+once, the restriction reported through the semi-join informational entry naming the aggregate).
+Each conjunct's references SHALL be routed from the dataset it restricts (`queries/references`).
+A query-declared INNER join SHALL restrict each dataset as the field filter "some row is reached
+along the route from that dataset to the join's declaring dataset". A conjunct reading several
+homes SHALL restrict each of them by its own disposition. A conjunct on a dataset that supplies no
+rows SHALL still restrict every home it reaches. No conjunct SHALL choose the dimension anchor or
+make an aggregation supply rows.
+
+#### Scenario: One filter, two homes
+- **WHEN** a query without `population` groups by `customers.region`, measures
+  `orders.total_revenue` and `returns.total_returns`, and filters `orders.amount > 100`, over the
+  seed of `queries/population` › Rows of an inferred query are the row supply
+- **THEN** revenue is restricted inline and returns by association: EAST (200, 25), WEST
+  (300, NULL)
+
+#### Scenario: A filter on a dataset no metric is homed on
+- **WHEN** the same query measures only `orders.total_revenue` and filters `visits.visit_id is
+  not null`
+- **THEN** the orders are restricted to customers with a visit: the only row is WEST 300
+
+#### Scenario: A query-declared INNER join restricts each home
+- **WHEN** a query without `population` declares an `inner` relationship from `customers` to a
+  dataset listing C1 and C4, groups by `customers.region` and measures `orders.total_revenue` and
+  `returns.total_returns`
+- **THEN** the rows are EAST (300, 25) and NORTH (NULL, 10)
+
+### Requirement: Row laws of inferred queries
+Before measure-typed filters, `order` and `limit`, every query omitting `population` SHALL obey:
+**measure monotonicity** — adding a measure to a query with at least one measure never removes a
+row and never changes a value in an existing row (transforms over result rows excepted until
+DEV-2218); **home-row preservation** —
+every home row of a full-grain aggregate surviving the filters lands in a row, exactly one when
+the home determines the dimensions and the data respects declared cardinality; **filter
+non-expansion** — adding a field filter never adds a row and never changes a result key; and the
+**unit** — a query with measures and no dimensions returns exactly one row. Filter non-expansion
+and the unit SHALL hold for a query naming `population` too.
+
+#### Scenario: Monotonicity over generated queries
+- **WHEN** the law harness generates root-less queries and adds a measure to each
+- **THEN** every row of the smaller query is a row of the larger one with the same values
+
+#### Scenario: Home rows are preserved
+- **WHEN** the law harness generates root-less queries over data with orphan home rows
+- **THEN** the sum of an additive full-grain measure over the result equals its total over the
+  home's filtered rows
+
+#### Scenario: Filters never expand
+- **WHEN** the law harness adds a field filter to generated queries, with and without `population`
+- **THEN** the filtered result's keys are a subset of the unfiltered result's keys
+
+#### Scenario: The unit
+- **WHEN** a query with measures and no dimensions runs, with and without `population`, with and
+  without a filter no row passes
+- **THEN** it returns exactly one row

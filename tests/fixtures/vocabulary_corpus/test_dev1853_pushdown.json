@@ -1,0 +1,151 @@
+{
+ "source": "tests/test_dev1853_pushdown.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = 'ok'"
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers.spend)",
+      "name": "cs"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = 'ok'"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(customers.spend)",
+      "alias": "cs"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = 'ok'"
+    ],
+    "measures": [
+     {
+      "formula": "sum(billing_customer.spend)",
+      "name": "cs"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = 'ok'"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(billing_customer.spend)",
+      "alias": "cs"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(billing_customer.regions.pop)",
+      "name": "rp"
+     }
+    ],
+    "filters": [
+     "billing_customer.tier = 'gold'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(billing_customer.regions.pop)",
+      "alias": "rp"
+     }
+    ],
+    "filter": [
+     "billing_customer.tier = 'gold'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "measures": [
+     {
+      "formula": "sum(regions.pop)",
+      "name": "rp"
+     }
+    ],
+    "filters": [
+     "billing_customer.status = 'ok'"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "metrics": [
+     {
+      "metric": "sum(regions.pop)",
+      "alias": "rp"
+     }
+    ],
+    "filter": [
+     "billing_customer.status = 'ok'"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "order_total",
+    "formula": "sum(orders.amount)"
+   },
+   "new": {
+    "name": "order_total",
+    "expression": "sum(orders.amount)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "customers.order_total",
+      "name": "x"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "customers.order_total",
+      "alias": "x"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  }
+ ]
+}

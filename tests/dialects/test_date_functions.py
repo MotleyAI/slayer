@@ -14,7 +14,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects import get_dialect
 from slayer.sql.render.value_expr import render_scalar_call
-from tests._dev1737_fixtures import PARTS, dt_model, matrix_cases
+from tests._dev1737_fixtures import PARTS, dt_dataset, matrix_cases
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -22,7 +22,7 @@ GOLDEN_PATH = Path(__file__).parent.parent / "golden" / "dev1737_date_functions.
 TIER1 = ["sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "snowflake", "bigquery"]
 SUB_DAY = [TimeGranularity.SECOND, TimeGranularity.MINUTE, TimeGranularity.HOUR]
 DAY_OR_COARSER = [g for g in TimeGranularity if g not in SUB_DAY]
-OPERANDS = [DataType.DATE, DataType.TIMESTAMP]
+OPERANDS = [DataType.DATE, DataType.DATETIME]
 
 
 def _cases() -> dict:
@@ -30,17 +30,17 @@ def _cases() -> dict:
     cases.update({
         "clock|current_date": "current_date()",
         "clock|now": "now()",
-        "literal|date": "date_diff('day', '2024-01-01', t1)",
+        "literal|date": "date_diff('day', '2024-01-01', dt.t1)",
         "literal|timestamp": "date_add('2024-01-01 10:00:00', 1, 'day')",
-        "literal|in_coalesce": "date_part('year', coalesce(t2, '2024-01-01'))",
+        "literal|in_coalesce": "date_part('year', coalesce(dt.t2, '2024-01-01'))",
     })
     return cases
 
 
 async def _generate_one(expr: str, dialect: str):
-    query = {"source_model": "dt", "dimensions": ["id", {"expression": expr, "name": "v"}]}
+    query = {"population": "dt", "dimensions": ["dt.id", {"field": expr, "alias": "v"}]}
     try:
-        return await _engine_generate(query=[query], model=dt_model(), dialect=dialect)
+        return await _engine_generate(query=[query], dataset=dt_dataset(), dialect=dialect)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)
 
@@ -122,12 +122,12 @@ class TestHooks:
 
     @pytest.mark.parametrize("value,dt", [
         (date(2024, 2, 29), DataType.DATE),
-        (datetime(2024, 2, 29, 10, 15, 30), DataType.TIMESTAMP),
+        (datetime(2024, 2, 29, 10, 15, 30), DataType.DATETIME),
     ])
     def test_temporal_literal(self, dialect: str, value, dt: DataType) -> None:
         sql = _assert_well_formed(get_dialect(dialect).build_temporal_literal(value=value, dt=dt), dialect)
         assert "2024-02-29" in sql
-        assert ("10:15:30" in sql) is (dt is DataType.TIMESTAMP)
+        assert ("10:15:30" in sql) is (dt is DataType.DATETIME)
 
 
 class TestDialectBranches:
@@ -174,7 +174,7 @@ class TestDialectBranches:
     @pytest.mark.parametrize("unit", SUB_DAY)
     def test_bigquery_sub_day_diff_uses_datetime_functions(self, unit: TimeGranularity) -> None:
         sql = _sql(get_dialect("bigquery").build_date_diff(
-            unit=unit, start=_col("s"), end=_col("e"), operand=DataType.TIMESTAMP), "bigquery")
+            unit=unit, start=_col("s"), end=_col("e"), operand=DataType.DATETIME), "bigquery")
         assert "DATETIME_DIFF(" in sql, sql
         assert "DATE_DIFF(" not in sql, sql
 
@@ -213,8 +213,8 @@ def _trunc_function(dialect: str) -> str:
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_computed_count_truncates_toward_zero(dialect: str) -> None:
-    computed = await _generate_one("date_add(d1, n, 'day')", dialect)
-    literal = await _generate_one("date_add(d1, 3, 'day')", dialect)
+    computed = await _generate_one("date_add(dt.d1, dt.n, 'day')", dialect)
+    literal = await _generate_one("date_add(dt.d1, 3, 'day')", dialect)
     assert isinstance(computed, str)
     assert isinstance(literal, str)
     fn = _trunc_function(dialect)

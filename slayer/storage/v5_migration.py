@@ -47,8 +47,8 @@ def _coerce_type_string(t: str | None) -> tuple[bool, str | None]:
     return True, t
 
 
-def _rewrite_columns_in_place(columns: list) -> None:
-    for col in columns:
+def _rewrite_fields_in_place(fields: list) -> None:
+    for col in fields:
         if not isinstance(col, dict):
             continue
         if "type" not in col:
@@ -60,7 +60,7 @@ def _rewrite_columns_in_place(columns: list) -> None:
             col["type"] = mapped
 
 
-def _walk_inline_source_models(d: dict) -> None:
+def _walk_inline_source_datasets(d: dict) -> None:
     """Recurse into ``source_queries[].source_model`` inline dicts so multi-
     stage models migrate cleanly.
     """
@@ -74,19 +74,19 @@ def _walk_inline_source_models(d: dict) -> None:
         if isinstance(sm, dict):
             cols = sm.get("columns")
             if isinstance(cols, list):
-                _rewrite_columns_in_place(cols)
+                _rewrite_fields_in_place(cols)
             # Recurse one more level — nested inline source_queries are rare
             # but supported by the model shape.
-            _walk_inline_source_models(sm)
+            _walk_inline_source_datasets(sm)
 
 
 @register_migration("SlayerModel", 4)
-def _model_v4_to_v5(data: dict) -> dict:
+def _dataset_v4_to_v5(data: dict) -> dict:
     """Rename legacy ``DataType`` values on every column; strip pseudo-type
     values so the field falls through to its default after Pydantic loads.
     """
     cols = data.get("columns")
     if isinstance(cols, list):
-        _rewrite_columns_in_place(cols)
-    _walk_inline_source_models(data)
+        _rewrite_fields_in_place(cols)
+    _walk_inline_source_datasets(data)
     return data

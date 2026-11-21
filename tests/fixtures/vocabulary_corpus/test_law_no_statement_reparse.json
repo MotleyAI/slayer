@@ -1,0 +1,48 @@
+{
+ "source": "tests/test_law_no_statement_reparse.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 183,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 239,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 240,
+   "reason": "not fully literal"
+  }
+ ]
+}

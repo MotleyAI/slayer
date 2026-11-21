@@ -12,13 +12,13 @@ from slayer.facade.translator import QueryResult, translate
 from slayer.pg_facade import types as t
 from slayer.pg_facade.protocol import OID_DATE, OID_TIMESTAMP
 
-from tests._dev2018_fixtures import all_models, lt_engine
+from tests._dev2018_fixtures import all_datasets, lt_engine
 
 _PG_EPOCH = datetime(2000, 1, 1)
 
 
 def _translate(sql: str) -> QueryResult:
-    result = translate(sql=sql, catalog=build_catalog(models_by_datasource={"test": all_models()}))
+    result = translate(sql=sql, catalog=build_catalog(datasets_by_datasource={"test": all_datasets()}))
     assert isinstance(result, QueryResult)
     return result
 

@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 import sqlglot
+from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import MissingDriverError
@@ -23,8 +24,8 @@ from slayer.sql.dialects.snowflake import (
 def test_snowflake_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY uses the generic shift over Snowflake's Monday ``DATE_TRUNC('week', ...)``."""
     d = SnowflakeDialect()
-    col = sqlglot.parse_one("ordered_at", dialect="snowflake")
-    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.TIMESTAMP)
+    col = exp.column("ordered_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.DATETIME)
     up = out.sql(dialect="snowflake").upper()
     assert "DATE_TRUNC('WEEK'" in up
     assert "DATEADD(DAY, 1, ORDERED_AT)" in up
@@ -207,7 +208,7 @@ def test_build_engine_recognizes_sentinel_in_connection_string_field() -> None:
         connect_mock.assert_called_once_with(connection_name="prod")
 
 
-def test_build_engine_missing_connector_extra_raises_actionable_error(monkeypatch) -> None:
+def test_build_engine_missing_connector_extra_raises_actionable_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Calling the creator when snowflake.connector isn't installed raises ``MissingDriverError`` with the extra."""
     ds = DatasourceConfig(name="sf", type="snowflake", connection_name="default")
     with patch("slayer.sql.dialects.snowflake.sa.create_engine") as create_engine_mock:
@@ -403,19 +404,19 @@ def test_statement_timeout_zero_seconds() -> None:
 @pytest.mark.parametrize(
     "type_code,expected",
     [
-        (0, DataType.INT),         # FIXED, scale 0
-        (1, DataType.DOUBLE),      # REAL
-        (2, DataType.TEXT),        # TEXT
+        (0, DataType.INTEGER),         # FIXED, scale 0
+        (1, DataType.FLOAT),      # REAL
+        (2, DataType.STRING),        # TEXT
         (3, DataType.DATE),        # DATE
-        (4, DataType.TIMESTAMP),   # TIMESTAMP
-        (5, DataType.TEXT),        # VARIANT
-        (6, DataType.TIMESTAMP),   # TIMESTAMP_LTZ
-        (7, DataType.TIMESTAMP),   # TIMESTAMP_TZ
-        (8, DataType.TIMESTAMP),   # TIMESTAMP_NTZ
-        (9, DataType.TEXT),        # OBJECT
+        (4, DataType.DATETIME),   # TIMESTAMP
+        (5, DataType.STRING),        # VARIANT
+        (6, DataType.DATETIME),   # TIMESTAMP_LTZ
+        (7, DataType.DATETIME),   # TIMESTAMP_TZ
+        (8, DataType.DATETIME),   # TIMESTAMP_NTZ
+        (9, DataType.STRING),        # OBJECT
         (10, DataType.ARRAY),      # ARRAY
-        (11, DataType.TEXT),       # BINARY
-        (12, DataType.TIMESTAMP),  # TIME
+        (11, DataType.STRING),       # BINARY
+        (12, DataType.DATETIME),  # TIME
         (13, DataType.BOOLEAN),    # BOOLEAN
     ],
 )

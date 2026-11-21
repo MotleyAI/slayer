@@ -1,6 +1,6 @@
 """Tests for SlayerClient — local-mode dispatch + HTTP-mode body shapes.
 
-Covers DEV-1437: the client mirrors the engine's full input union
+The client mirrors the engine's full input union
 ``SlayerQuery | dict | list[SlayerQuery | dict] | str`` on every public
 query entry point. Local-mode tests are contract smokes (engine already
 accepts every shape, so local-mode dispatch was already working by
@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._saved_query_refinement_fixtures import BY_REGION_MONTH, build_refine_storage, month
@@ -42,17 +42,17 @@ def client(storage: YAMLStorage) -> SlayerClient:
     return SlayerClient(storage=storage)
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders_t",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
         ],
     )
 
@@ -63,7 +63,7 @@ def _ds() -> DatasourceConfig:
 
 async def _save_orders(storage: YAMLStorage) -> None:
     await storage.save_datasource(_ds())
-    await storage.save_model(_orders_model())
+    await storage.save_dataset(_orders_dataset())
 
 
 # Minimal response payload that ``SlayerClient._parse_response`` consumes
@@ -72,7 +72,7 @@ _CANNED_RESP: dict[str, Any] = {
     "data": [],
     "columns": [],
     "sql": "SELECT 1",
-    "attributes": {"dimensions": {}, "measures": {}},
+    "attributes": {"dimensions": {}, "metrics": {}},
 }
 
 
@@ -157,7 +157,7 @@ class TestLocalMode:
     ) -> None:
         """Local-mode ``query_sync`` reaches the engine (not HTTP)."""
         await _save_orders(storage)
-        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         resp = client.query_sync(query, dry_run=True)
         assert resp.sql is not None
         assert "amount" in resp.sql.lower()
@@ -168,8 +168,8 @@ class TestLocalMode:
         """``query_sync`` accepts a plain dict (regression)."""
         await _save_orders(storage)
         query_dict = {
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }
         resp = client.query_sync(query_dict, dry_run=True)
         assert resp.sql is not None
@@ -181,8 +181,8 @@ class TestLocalMode:
         """``sql_sync`` accepts a plain dict (regression)."""
         await _save_orders(storage)
         query_dict = {
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }
         sql = client.sql_sync(query_dict)
         assert isinstance(sql, str)
@@ -196,13 +196,13 @@ class TestLocalMode:
         queries = [
             {
                 "name": "by_customer",
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "dimensions": [{"name": "customer_id"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.customer_id"],
             },
             {
-                "source_model": "by_customer",
-                "measures": [{"formula": "avg(amount_sum)"}],
+                "population": "by_customer",
+                "metrics": [{"metric": "avg(by_customer.amount_sum)"}],
             },
         ]
         resp = client.query_sync(queries, dry_run=True)
@@ -212,20 +212,20 @@ class TestLocalMode:
     async def test_query_sync_accepts_str_local_smoke(
         self, client: SlayerClient, storage: YAMLStorage
     ) -> None:
-        """``str`` input runs the backing query of a query-backed model."""
+        """``str`` input runs the backing query of a query-backed dataset."""
         await _save_orders(storage)
-        saved = SlayerModel(
+        saved = SlayerDataset(
             name="rev_by_region",
             data_source="ds",
             source_queries=[
                 SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
-                    "dimensions": ["region"],
+                    "population": "orders",
+                    "metrics": [{"metric": "sum(orders.amount)"}],
+                    "dimensions": ["orders.region"],
                 })
             ],
         )
-        await storage.save_model(saved)
+        await storage.save_dataset(saved)
         resp = client.query_sync("rev_by_region", dry_run=True)
         assert resp.sql is not None
         assert "amount" in resp.sql.lower()
@@ -241,13 +241,13 @@ class TestLocalMode:
         queries = (
             {
                 "name": "by_customer",
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "dimensions": [{"name": "customer_id"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.customer_id"],
             },
             {
-                "source_model": "by_customer",
-                "measures": [{"formula": "avg(amount_sum)"}],
+                "population": "by_customer",
+                "metrics": [{"metric": "avg(by_customer.amount_sum)"}],
             },
         )
         resp = client.query_sync(queries, dry_run=True)
@@ -262,8 +262,8 @@ class TestLocalMode:
         await _save_orders(storage)
         payload: Mapping[str, Any] = MappingProxyType(
             {
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
             }
         )
         resp = client.query_sync(payload, dry_run=True)
@@ -272,7 +272,7 @@ class TestLocalMode:
 
 
 # --------------------------------------------------------------------------- #
-# HTTP-mode body-shape tests (pins the DEV-1437 bug)
+# HTTP-mode body-shape tests
 # --------------------------------------------------------------------------- #
 
 
@@ -291,10 +291,10 @@ class TestHttpBodyShape:
         queries = [
             {
                 "name": "a",
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
             },
-            {"source_model": "a"},
+            {"population": "a"},
         ]
         resp = client.query_sync(queries)
         # Canned response wires through to a SlayerResponse.
@@ -319,10 +319,10 @@ class TestHttpBodyShape:
         client, cap = http_client_with_capture
         q = SlayerQuery.model_validate({
             "name": "a",
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
-        items: list[Any] = [q, {"source_model": "a"}]
+        items: list[Any] = [q, {"population": "a"}]
         client.query_sync(items)
         body = cap.last_body
         assert body is not None
@@ -332,10 +332,10 @@ class TestHttpBodyShape:
             mode="json", exclude_none=True
         )
         # Dict items are normalised through SlayerQuery (string-shorthand
-        # measures / dimensions become dict-form; defaults like ``version``
+        # metrics / dimensions become dict-form; defaults like ``version``
         # surface).
         assert body["queries"][1] == SlayerQuery.model_validate(
-            {"source_model": "a"}
+            {"population": "a"}
         ).model_dump(mode="json", exclude_none=True)
 
     # --- str ----------------------------------------------------------- #
@@ -357,13 +357,13 @@ class TestHttpBodyShape:
         """Dict input is round-tripped through ``SlayerQuery`` so the
         server sees the JSON-mode dump (string-shorthand normalised,
         defaults included). FastAPI's ``QueryRequest`` declares strict
-        list-of-dict types for measures/dimensions; the round-trip is
+        list-of-dict types for metrics/dimensions; the round-trip is
         the only way string-shorthand input doesn't 422 server-side.
         """
         client, cap = http_client_with_capture
         payload = {
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }
         client.query_sync(payload)
         body = cap.last_body
@@ -378,20 +378,17 @@ class TestHttpBodyShape:
         self,
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
-        """String-shorthand measures (e.g. ``"amount:sum"``) become
-        dict-form (``{"formula": "amount:sum"}``) before reaching the
+        """String-shorthand metrics (e.g. ``"sum(amount)"``) become
+        dict-form (``{"metric": "sum(amount)"}``) before reaching the
         server — otherwise FastAPI's ``QueryRequest`` rejects the body
         with HTTP 422.
         """
         client, cap = http_client_with_capture
-        payload = {"source_model": "orders", "measures": ["sum(amount)"]}
+        payload = {"population": "orders", "metrics": ["sum(orders.amount)"]}
         client.query_sync(payload)
         body = cap.last_body
         assert body is not None
-        # Each measure landed as a dict, not a bare string.
-        for m in body["measures"]:
-            assert isinstance(m, dict)
-            assert m.get("formula") == "sum(amount)"
+        assert body["metrics"] == ["sum(orders.amount)"]
 
     # --- SlayerQuery --------------------------------------------------- #
 
@@ -400,7 +397,7 @@ class TestHttpBodyShape:
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
-        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         client.query_sync(q)
         # JSON mode — see codex note (4); matches _coerce_linked_entities.
         assert cap.last_body == q.model_dump(mode="json", exclude_none=True)
@@ -415,10 +412,10 @@ class TestHttpBodyShape:
         items = [
             {
                 "name": "a",
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
             },
-            {"source_model": "a"},
+            {"population": "a"},
         ]
         client.query_sync(items, dry_run=True, explain=True)
         body = cap.last_body
@@ -445,11 +442,11 @@ class TestHttpBodyShape:
     ) -> None:
         client, cap = http_client_with_capture
         client.query_sync(
-            {"source_model": "orders"}, dry_run=True, explain=True
+            {"population": "orders"}, dry_run=True, explain=True
         )
         body = cap.last_body
         assert body is not None
-        assert body["source_model"] == "orders"
+        assert body["population"] == "orders"
         assert body["dry_run"] is True
         assert body["explain"] is True
 
@@ -459,7 +456,7 @@ class TestHttpBodyShape:
     ) -> None:
         """``dry_run=False`` / ``explain=False`` (defaults) → keys not present."""
         client, cap = http_client_with_capture
-        client.query_sync({"source_model": "orders"})
+        client.query_sync({"population": "orders"})
         body = cap.last_body
         assert body is not None
         assert "dry_run" not in body
@@ -473,8 +470,8 @@ class TestHttpBodyShape:
     ) -> None:
         client, _cap = http_client_with_capture
         payload = {
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }
         snapshot = dict(payload)
         client.query_sync(payload, dry_run=True, explain=True)
@@ -488,8 +485,8 @@ class TestHttpBodyShape:
     ) -> None:
         client, cap = http_client_with_capture
         items: list[dict[str, Any]] = [
-            {"name": "a", "source_model": "orders"},
-            {"source_model": "a"},
+            {"name": "a", "population": "orders"},
+            {"population": "a"},
         ]
         snapshot = [dict(item) for item in items]
         client.query_sync(items, dry_run=True)
@@ -521,7 +518,7 @@ class TestHttpBodyShape:
         client, cap = http_client_with_capture
         with pytest.raises(TypeError, match=r"query\[1\]"):
             client.query_sync(
-                [{"source_model": "orders"}, 42]  # type: ignore[list-item]
+                [{"population": "orders"}, 42]  # type: ignore[list-item]
             )
         assert cap.last_body is None
 
@@ -536,7 +533,7 @@ class TestHttpBodyShape:
         AND route through the SlayerQuery normalisation pipeline."""
         client, cap = http_client_with_capture
         payload: Mapping[str, Any] = MappingProxyType(
-            {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]}
+            {"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]}
         )
         client.query_sync(payload)
         assert cap.last_body == SlayerQuery.model_validate(
@@ -550,8 +547,8 @@ class TestHttpBodyShape:
         """``tuple`` is a ``Sequence`` but not a ``list`` — honoured."""
         client, cap = http_client_with_capture
         items = (
-            {"name": "a", "source_model": "orders"},
-            {"source_model": "a"},
+            {"name": "a", "population": "orders"},
+            {"population": "a"},
         )
         client.query_sync(items)
         body = cap.last_body
@@ -573,8 +570,8 @@ class TestHttpBodyShape:
         """A dict input's own ``variables`` reach the server verbatim."""
         client, cap = http_client_with_capture
         payload = {
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
             "variables": {"region": "US"},
         }
         client.query_sync(payload)
@@ -592,8 +589,8 @@ class TestHttpBodyShape:
         input must reach the transport with ``dry_run`` set."""
         client, cap = http_client_with_capture
         queries = [
-            {"name": "a", "source_model": "orders"},
-            {"source_model": "a"},
+            {"name": "a", "population": "orders"},
+            {"population": "a"},
         ]
         sql = client.sql_sync(queries)
         assert sql == "SELECT 1"
@@ -625,8 +622,8 @@ class TestHttpBodyShape:
         input must reach the transport with ``explain`` set."""
         client, cap = http_client_with_capture
         queries = [
-            {"name": "a", "source_model": "orders"},
-            {"source_model": "a"},
+            {"name": "a", "population": "orders"},
+            {"population": "a"},
         ]
         resp = client.explain_sync(queries)
         assert resp.sql == "SELECT 1"
@@ -674,12 +671,12 @@ class TestHttpBodyShape:
                 "data": [{"x": 1}, {"x": 2}],
                 "columns": ["x"],
                 "sql": "SELECT 1",
-                "attributes": {"dimensions": {}, "measures": {}},
+                "attributes": {"dimensions": {}, "metrics": {}},
             }
         monkeypatch.setattr(client, "_request_sync", _replace_sync_with_rows)
         queries = [
-            {"name": "a", "source_model": "orders"},
-            {"source_model": "a"},
+            {"name": "a", "population": "orders"},
+            {"population": "a"},
         ]
         df = client.query_df(queries)
         assert isinstance(df, pd.DataFrame)
@@ -705,8 +702,8 @@ class TestHttpBodyShape:
         """Async ``query`` mirrors sync ``query_sync`` body shape."""
         client, cap = http_client_with_capture
         queries = [
-            {"name": "a", "source_model": "orders"},
-            {"source_model": "a"},
+            {"name": "a", "population": "orders"},
+            {"population": "a"},
         ]
         await client.query(queries)
         expected = {
@@ -732,7 +729,7 @@ class TestHttpBodyShape:
 # Saved-query refinement
 # --------------------------------------------------------------------------- #
 
-REFINE = {"dimensions": ["region"]}
+REFINE = {"dimensions": ["orders.region"]}
 ONLY_BY_NAME = "refine applies only to a saved query run by name"
 
 
@@ -746,7 +743,7 @@ class TestRefine:
         assert cap.last_body is not None
         assert set(cap.last_body) == {"name", "refine"}
         assert cap.last_body["name"] == "monthly_revenue"
-        assert cap.last_body["refine"]["dimensions"] in (["region"], [{"name": "region"}])
+        assert cap.last_body["refine"]["dimensions"] in (["orders.region"], [{"name": "orders.region"}])
 
     def test_http_body_keeps_explicit_null(
         self,
@@ -773,9 +770,9 @@ class TestRefine:
         assert cap.last_body == {"name": "m", "refine": {"limit": 1}, "explain": True}
 
     @pytest.mark.parametrize("query", [
-        {"source_model": "orders"},
-        SlayerQuery(source_model="orders"),
-        [{"name": "a", "source_model": "orders"}, {"source_model": "a"}],
+        {"population": "orders"},
+        SlayerQuery(population="orders"),
+        [{"name": "a", "population": "orders"}, {"population": "a"}],
     ], ids=["dict", "query", "list"])
     def test_http_rejects_non_name(
         self,
@@ -793,7 +790,7 @@ class TestRefine:
     ) -> None:
         client, cap = http_client_with_capture
         with pytest.raises(ValueError, match=ONLY_BY_NAME):
-            client.query_sync({"source_model": "orders"}, refine={})
+            client.query_sync({"population": "orders"}, refine={})
         assert cap.last_body is None
 
     async def test_local_forwards_to_engine(self, tmp_path) -> None:
@@ -812,7 +809,7 @@ class TestRefine:
     async def test_local_rejects_non_name(self, tmp_path) -> None:
         client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
         with pytest.raises(ValueError, match=ONLY_BY_NAME):
-            await client.query({"source_model": "orders", "measures": ["count(*)"]}, refine=REFINE)
+            await client.query({"population": "orders", "metrics": ["count(orders.*)"]}, refine=REFINE)
 
     def test_over_http(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         storage = asyncio.run(build_refine_storage(str(tmp_path)))
@@ -842,14 +839,14 @@ class TestVariables:
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
-        client.query_sync([{"name": "a", "source_model": "orders"}, {"source_model": "a"}], variables={"x": 1})
+        client.query_sync([{"name": "a", "population": "orders"}, {"population": "a"}], variables={"x": 1})
         assert cap.last_body is not None
         assert cap.last_body["variables"] == {"x": 1}
 
     @pytest.mark.parametrize("query", [
-        {"source_model": "orders", "measures": ["count(*)"], "variables": {"a": "own", "b": "own"}},
+        {"population": "orders", "metrics": ["count(orders.*)"], "variables": {"a": "own", "b": "own"}},
         SlayerQuery.model_validate(
-            {"source_model": "orders", "measures": ["count(*)"], "variables": {"a": "own", "b": "own"}}
+            {"population": "orders", "metrics": ["count(orders.*)"], "variables": {"a": "own", "b": "own"}}
         ),
     ], ids=["dict", "query"])
     def test_http_single_query_runtime_wins(
@@ -867,7 +864,7 @@ class TestVariables:
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, _ = http_client_with_capture
-        query = {"source_model": "orders", "measures": ["count(*)"], "variables": {"a": "own"}}
+        query = {"population": "orders", "metrics": ["count(orders.*)"], "variables": {"a": "own"}}
         runtime = {"a": "runtime"}
         client.query_sync(query, variables=runtime)
         assert query["variables"] == {"a": "own"}
@@ -901,20 +898,20 @@ class TestVariables:
     async def test_local_refinement_with_runtime_variables(self, tmp_path) -> None:
         client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
         resp = await client.query(
-            "revenue_by_status", refine={"measures": ["count(*)"]}, variables={"status": "refunded"},
+            "revenue_by_status", refine={"metrics": ["count(orders.*)"]}, variables={"status": "refunded"},
         )
-        assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+        assert resp.data == [{"orders.region": "US", "revenue": 40.0, "orders._count": 1}]
 
     async def test_local_refinement_placeholder(self, tmp_path) -> None:
         client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
         resp = await client.query(
-            "monthly_revenue", refine={"filters": ["region = '{region}'"]}, variables={"region": "EU"},
+            "monthly_revenue", refine={"filter": ["orders.region = '{region}'"]}, variables={"region": "EU"},
         )
-        assert [(month(r["orders.ordered_at"]), r["orders.revenue"]) for r in resp.data] == [("2025-02", 105.0)]
+        assert [(month(r["orders.ordered_at"]), r["revenue"]) for r in resp.data] == [("2025-02", 105.0)]
 
     async def test_local_single_query(self, tmp_path) -> None:
         client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
-        query = {"source_model": "orders", "measures": ["count(*)"], "filters": ["status = '{status}'"]}
+        query = {"population": "orders", "metrics": ["count(orders.*)"], "filter": ["orders.status = '{status}'"]}
         resp = await client.query(query, variables={"status": "refunded"})
         assert resp.data == [{"orders._count": 1}]
 
@@ -922,10 +919,10 @@ class TestVariables:
         pd = pytest.importorskip("pandas")
         client = SlayerClient(storage=asyncio.run(build_refine_storage(str(tmp_path))))
         resp = client.query_sync("revenue_by_status", variables={"status": "refunded"})
-        assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0}]
+        assert resp.data == [{"orders.region": "US", "revenue": 40.0}]
         df = client.query_df("revenue_by_status", variables={"status": "refunded"})
         assert isinstance(df, pd.DataFrame)
-        assert df.to_dict("records") == [{"orders.region": "US", "orders.revenue": 40.0}]
+        assert df.to_dict("records") == [{"orders.region": "US", "revenue": 40.0}]
 
     def test_over_http(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         storage = asyncio.run(build_refine_storage(str(tmp_path)))
@@ -939,13 +936,13 @@ class TestVariables:
         client = SlayerClient(url="http://testserver")
         monkeypatch.setattr(client, "_request_sync", via_app)
         resp = client.query_sync(
-            "revenue_by_status", refine={"measures": ["count(*)"]}, variables={"status": "refunded"},
+            "revenue_by_status", refine={"metrics": ["count(orders.*)"]}, variables={"status": "refunded"},
         )
-        assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
-        single = {"source_model": "orders", "measures": ["count(*)"], "filters": ["status = '{status}'"],
+        assert resp.data == [{"orders.region": "US", "revenue": 40.0, "orders._count": 1}]
+        single = {"population": "orders", "metrics": ["count(orders.*)"], "filter": ["orders.status = '{status}'"],
                   "variables": {"status": "paid"}}
         assert client.query_sync(single, variables={"status": "refunded"}).data == [{"orders._count": 1}]
 
 
 def _by_region(rows: list[dict[str, Any]]) -> dict[tuple, Any]:
-    return {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in rows}
+    return {(r["orders.region"], month(r["orders.ordered_at"])): r["revenue"] for r in rows}

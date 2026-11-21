@@ -17,13 +17,13 @@ order). The order SHALL apply before `limit` and `offset`. A
 query that declares a non-empty `order` SHALL be ordered by it alone, with no columns appended.
 
 #### Scenario: Monthly revenue by store comes back sorted
-- **WHEN** `{"source_model": "orders", "measures": ["sum(order_total)"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}`
+- **WHEN** `{"population": "orders", "metrics": ["sum(order_total)"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}`
   runs
 - **THEN** rows are sorted by store name, then by month, both ascending
 
 #### Scenario: Identical to the explicit spelling
 - **WHEN** a query with dimensions `status` and `date_trunc('month', created_at)` and no `order` runs, and the same
-  query with `order: [{"column": "status", "direction": "asc"}, {"column": "date_trunc('month', created_at)", "direction": "asc"}]`
+  query with `order: [{"field": "status", "direction": "asc"}, {"field": "date_trunc('month', created_at)", "direction": "asc"}]`
   runs
 - **THEN** both return the same rows in the same order, and a row whose `status` is NULL comes after
   every non-NULL status
@@ -34,7 +34,7 @@ query that declares a non-empty `order` SHALL be ordered by it alone, with no co
 - **THEN** it returns `b` and `c`
 
 #### Scenario: An explicit order wins
-- **WHEN** a query with dimensions `status` and `region` declares `order: [{"column": "count(*)", "direction": "desc"}]`
+- **WHEN** a query with dimensions `status` and `region` declares `order: [{"field": "count(*)", "direction": "desc"}]`
 - **THEN** rows are ordered by the count descending only
 
 #### Scenario: Only the outermost query is ordered

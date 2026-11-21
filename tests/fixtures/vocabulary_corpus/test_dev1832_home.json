@@ -1,0 +1,100 @@
+{
+ "source": "tests/test_dev1832_home.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "ag",
+    "join_pairs": [
+     [
+      "opened_by",
+      "id"
+     ]
+    ],
+    "name": "opener"
+   },
+   "new": {
+    "to": "ag",
+    "name": "opener",
+    "from_columns": [
+     "opened_by"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "ag",
+    "join_pairs": [
+     [
+      "closed_by",
+      "id"
+     ]
+    ],
+    "name": "closer"
+   },
+   "new": {
+    "to": "ag",
+    "name": "closer",
+    "from_columns": [
+     "closed_by"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(opener.score - closer.score)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(opener.score - closer.score)",
+    "name": "m"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  }
+ ]
+}

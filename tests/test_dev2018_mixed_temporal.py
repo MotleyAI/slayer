@@ -51,7 +51,7 @@ async def sqlite_engine():
 class TestMixedComparisons:
     async def test_date_column_against_timestamp_column(self, any_engine) -> None:
         _backend, eng = any_engine
-        assert await ids(eng, "d = ts") == {1}
+        assert await ids(eng, "mx.d = mx.ts") == {1}
 
     @pytest.mark.parametrize(("filt", "pred"), MIXED_FILTER_CASES, ids=[c[0] for c in MIXED_FILTER_CASES])
     async def test_filter(self, engine, filt, pred) -> None:
@@ -59,9 +59,9 @@ class TestMixedComparisons:
         assert await ids(eng, filt) == mx_where(pred)
 
     @pytest.mark.parametrize(("filt", "expected"), [
-        ("date_trunc('hour', d) in ('2025-03-01 00:00:00', '2025-03-03 00:00:00')", {1, 2, 3, 6}),
-        ("date_trunc('day', ts) in ('2025-03-01', '2025-03-02')", {1, 2, 3, 4, 5}),
-        ("date_trunc('month', d) not in ('2025-02-01')", {1, 2, 3, 4, 6}),
+        ("date_trunc('hour', mx.d) in ('2025-03-01 00:00:00', '2025-03-03 00:00:00')", {1, 2, 3, 6}),
+        ("date_trunc('day', mx.ts) in ('2025-03-01', '2025-03-02')", {1, 2, 3, 4, 5}),
+        ("date_trunc('month', mx.d) not in ('2025-02-01')", {1, 2, 3, 4, 6}),
     ])
     async def test_in(self, engine, filt, expected) -> None:
         _backend, eng = engine
@@ -71,7 +71,7 @@ class TestMixedComparisons:
 class TestNullif:
     async def test_date_first_keeps_date(self, engine) -> None:
         backend, eng = engine
-        got = await by_id(eng, "nullif(d, ts)")
+        got = await by_id(eng, "nullif(mx.d, mx.ts)")
         assert {i: as_temporal(v) for i, v in got.items()} == {
             1: None, 2: date(2025, 3, 1), 3: date(2025, 3, 1), 4: date(2025, 3, 2), 5: None,
             6: date(2025, 3, 3), 7: None,
@@ -80,12 +80,12 @@ class TestNullif:
 
     async def test_timestamp_first_keeps_timestamp(self, engine) -> None:
         backend, eng = engine
-        got = await by_id(eng, "nullif(ts, d)")
+        got = await by_id(eng, "nullif(mx.ts, mx.d)")
         assert {i: as_temporal(v) for i, v in got.items()} == {
             1: None, 2: D(2025, 3, 1, 10), 3: D(2025, 3, 2), 4: D(2025, 3, 1, 23), 5: D(2025, 3, 1),
             6: None, 7: None,
         }
-        assert all(physical_type_error(v, DataType.TIMESTAMP, backend=backend) is None for v in got.values()), got
+        assert all(physical_type_error(v, DataType.DATETIME, backend=backend) is None for v in got.values()), got
 
 
 class TestConditionalValues:
@@ -97,17 +97,17 @@ class TestConditionalValues:
 
 class TestSqliteStorageSpelling:
     @pytest.mark.parametrize(("filt", "expected"), [
-        ("date_trunc('day', ts) = ts", SP_MIDNIGHT),
-        ("ts = ts2", SP_VALID),
-        ("ts is not distinct from ts2", SP_VALID),
-        ("ts is distinct from ts2", {6}),
-        ("d = ts", SP_MIDNIGHT),
-        ("d is not distinct from ts", SP_MIDNIGHT),
-        ("ts >= d", SP_VALID),
-        ("date_trunc('hour', ts) = date_trunc('hour', ts2)", SP_VALID),
-        ("date_trunc('day', ts) = d", SP_VALID),
-        ("date_trunc('day', ts) in ('2025-03-01')", SP_VALID),
-        ("ts < ts2", set()),
+        ("date_trunc('day', sp.ts) = sp.ts", SP_MIDNIGHT),
+        ("sp.ts = sp.ts2", SP_VALID),
+        ("sp.ts is not distinct from sp.ts2", SP_VALID),
+        ("sp.ts is distinct from sp.ts2", {6}),
+        ("sp.d = sp.ts", SP_MIDNIGHT),
+        ("sp.d is not distinct from sp.ts", SP_MIDNIGHT),
+        ("sp.ts >= sp.d", SP_VALID),
+        ("date_trunc('hour', sp.ts) = date_trunc('hour', sp.ts2)", SP_VALID),
+        ("date_trunc('day', sp.ts) = sp.d", SP_VALID),
+        ("date_trunc('day', sp.ts) in ('2025-03-01')", SP_VALID),
+        ("sp.ts < sp.ts2", set()),
     ])
     async def test_comparisons(self, sqlite_engine, filt, expected) -> None:
         assert await ids(sqlite_engine, filt, model="sp") == set(expected)
@@ -119,7 +119,7 @@ class TestSqliteStorageSpelling:
         ("month", {i: "2025-03-01 00:00:00" for i in SP_VALID}),
     ])
     async def test_buckets_are_canonical(self, sqlite_engine, unit, expected) -> None:
-        got = await by_id(sqlite_engine, f"date_trunc('{unit}', ts)", model="sp")
+        got = await by_id(sqlite_engine, f"date_trunc('{unit}', sp.ts)", model="sp")
         assert got == {**expected, 6: None}
 
     @pytest.mark.parametrize(("unit", "expected"), [
@@ -128,11 +128,11 @@ class TestSqliteStorageSpelling:
     ])
     async def test_spine_join(self, sqlite_engine, unit, expected) -> None:
         resp = await sqlite_engine.execute(SlayerQuery.model_validate({
-            "measures": [{"formula": "count(sp.id)", "name": "n"}],
-            "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": unit,
+            "metrics": [{"metric": "count(sp.id)", "alias": "n"}],
+            "time_dimensions": [{"field": "time_spine.timestamp", "granularity": unit,
                                  "date_range": ["2025-03-01", "2025-03-01"]}],
         }))
-        got = {str(r["time_spine.timestamp"]).replace("T", " "): r[next(k for k in r if k.endswith(".n"))]
+        got = {str(r["time_spine.timestamp"]).replace("T", " "): r["n"]
                for r in resp.data}
         assert {k: int(v) for k, v in got.items() if v} == expected
 

@@ -1,10 +1,10 @@
 """Guard rework (design D5) — both directions.
 
 Lifted direction: a row regroup attach (computed dimension) with a transform
-measure renders in both chains; the old catch-all arm is gone from the
+metric renders in both chains; the old catch-all arm is gone from the
 source, and the windowed/ranked arm is lifted (its absence is
-scanned in tests/test_dev1835_guards.py); the cross-model arm is lifted
-(row-attach × cross-model now broadcasts); the CTE-body arms are lifted
+scanned in tests/test_dev1835_guards.py); the cross-dataset arm is lifted
+(row-attach × cross-dataset now broadcasts); the CTE-body arms are lifted
 (nested attaches hoist — the positive contract below and
 the residue scan in tests/test_dev1838_cte_body_lifts.py). Also pinned: the
 two stale stage_planner issue refs re-pointed (D5).
@@ -24,16 +24,17 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1837_fixtures import (
     BAND35,
-    ModelMeasure,
-    dev1837_models,
+    dev1837_datasets,
     gen,
     month_td,
     q,
 )
 
-BAND = {"expression": BAND35, "name": "band"}
+BAND = {"field": BAND35, "alias": "band"}
 
 #: The lifted windowed/ranked arm — kept only as the no-residue scan needle
 #: (tests/test_dev1835_guards.py imports it).
@@ -41,7 +42,7 @@ ARM_WINDOWED_RANKED = (
     "A row regroup attach (computed dimension) combined with a windowed or "
     "ranked measure is not yet supported (DEV-1835)."
 )
-ARM_CROSS_MODEL = (
+ARM_CROSS_DATASET = (
     "A row regroup attach (computed dimension) combined with a cross-model "
     "measure is not yet supported (DEV-1836)."
 )
@@ -86,38 +87,38 @@ def _sources_containing(fragment: str) -> list:
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1837_models()
+    models = dev1837_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
 class TestLiftedDirection:
     @pytest.mark.parametrize(
-        "formula", ["cumsum(sum(amount))", "time_shift(sum(amount), -1)"],
+        "formula", ["cumsum(sum(orders.amount))", "time_shift(sum(orders.amount), -1)"],
     )
     async def test_band_with_transform_renders(self, formula: str) -> None:
         sql = await gen(q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula=formula, name="x"),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric=formula, alias="x"),
             ],
         ))
         assert "__regroup__" not in sql, sql
 
     async def test_band_with_partitioned_and_transform_renders(self) -> None:
-        """The cross-model chain's lifted direction (Codex F8 — behavioral
+        """The cross-dataset chain's lifted direction (Codex F8 — behavioral
         negative alongside the source scan)."""
         sql = await gen(q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -131,11 +132,11 @@ class TestRemainingArmsExactMessages:
         """Lifted direction: the former windowed-arm shape renders
         (executed ground truth: the band-wm matrix cell)."""
         sql = await gen(q(
-            dimensions=["region", BAND],
+            dimensions=["orders.region", BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -143,27 +144,27 @@ class TestRemainingArmsExactMessages:
     async def test_ranked_measure_renders(self) -> None:
         """Lifted direction: the former ranked-arm shape renders."""
         sql = await gen(q(
-            dimensions=["region", BAND],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="last(amount)", name="l"),
+            dimensions=["orders.region", BAND],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="last(orders.amount)", alias="l"),
             ],
         ))
         assert "__regroup__" not in sql, sql
 
     async def test_cross_model_measure_arm_is_lifted(self) -> None:
-        """The band × cross-model arm is lifted: it renders (the cross-model
-        measure broadcasts across the host-derived band) and the old arm message
+        """The band × cross-dataset arm is lifted: it renders (the cross-dataset
+        metric broadcasts across the host-derived band) and the old arm message
         is gone from the sources."""
         sql = await gen(q(
-            dimensions=["region", BAND],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(customers.spend)", name="cm"),
+            dimensions=["orders.region", BAND],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ))
         assert "__regroup__" not in sql, sql
-        assert not _sources_containing(ARM_CROSS_MODEL)
+        assert not _sources_containing(ARM_CROSS_DATASET)
 
 
 class TestCteBodyArms:
@@ -190,17 +191,17 @@ class TestCteBodyArms:
     def test_row_attach_renders_as_hoistable_cte_body(self) -> None:
         bundle = _bundle()
         planned = plan_query(query=q(
-            dimensions=["region", BAND],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            dimensions=["orders.region", BAND],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
     def test_combined_attach_renders_as_hoistable_cte_body(self) -> None:
         bundle = _bundle()
         planned = plan_query(query=q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
@@ -222,14 +223,14 @@ class TestStalePlannerRefsRepointed:
     ) -> None:
         # The blanket "cross-model source in a computed dimension" guard is
         # lifted; the residual check is attributability — `region` is a host
-        # column, unreachable from the customers root.
+        # field, unreachable from the customers root.
         cband = (
-            "CASE WHEN sum(customers.spend, partition_by=region) > 100 "
+            "CASE WHEN sum(customers.spend, partition_by=orders.region) > 100 "
             "THEN 1 ELSE 0 END"
         )
         query = q(
-            dimensions=["region", {"expression": cband, "name": "cband"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            dimensions=["orders.region", {"field": cband, "alias": "cband"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:

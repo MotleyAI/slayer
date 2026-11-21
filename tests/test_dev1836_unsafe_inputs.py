@@ -15,10 +15,11 @@ import pytest
 from slayer.core.errors import SlayerError
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
     AMOUNT_BY_TIER_STATUS,
-    ModelMeasure,
     make_exec_engine,
     q,
     rows_by,
@@ -33,7 +34,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 def _assert_clear(ei, *needles: str, remedy: bool = False) -> None:
@@ -53,21 +54,21 @@ class TestUnsafeInputs:
         """customers.seg_label reads segments.label across the unproven hop."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
-            measures=[ModelMeasure(formula="count(customers.seg_label)",
-                                   name="x")],
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric="count(customers.seg_label)",
+                                   alias="x")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
         _assert_clear(ei, "segments", remedy=True)
 
     async def test_column_filter_over_unproven_hop_errors(self, exec_backend):
-        """customers.vip_spend's Column.filter references segments.label."""
+        """customers.vip_spend's DatasetField.filter references segments.label."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
-            measures=[ModelMeasure(formula="sum(customers.vip_spend)",
-                                   name="x")],
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric="sum(customers.vip_spend)",
+                                   alias="x")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -79,8 +80,8 @@ class TestUnsafeInputs:
         _, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="last(customers.spend, ordered_at)",
-                                   name="x")],
+            metrics=[QueryMetric(metric="last(customers.spend, orders.ordered_at)",
+                                   alias="x")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -91,13 +92,13 @@ class TestUnsafeExplicitPartitionKeys:
     async def test_cross_model_partition_key_over_unsafe_hop_errors(
         self, exec_backend,
     ):
-        """F4 — a cross-model aggregate whose declared grain crosses the 1:N
+        """F4 — a cross-dataset aggregate whose declared grain crosses the 1:N
         edge: hard error naming the key and the remedy, never a fanning join."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, partition_by=status)", name="x",
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=orders.status)", alias="x",
             )],
             to_many_handling="broadcast",
         )
@@ -113,9 +114,9 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, partition_by=customers.segments.label)",
-                name="x",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.segments.label)",
+                alias="x",
             )],
         )
         with pytest.raises(RAISES) as ei:
@@ -129,10 +130,10 @@ class TestUnsafeExplicitPartitionKeys:
         safe but customers → segments is not."""
         _, engine = exec_backend
         query = q(
-            dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="sum(amount, partition_by=customers.segments.label)",
-                name="x",
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(
+                metric="sum(orders.amount, partition_by=customers.segments.label)",
+                alias="x",
             )],
         )
         with pytest.raises(RAISES) as ei:
@@ -147,12 +148,12 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             dimensions=[{
-                "expression": ("CASE WHEN sum(amount, partition_by="
+                "field": ("CASE WHEN sum(orders.amount, partition_by="
                                "customers.segments.label) > 10 "
                                "THEN 1 ELSE 0 END"),
-                "name": "b",
+                "alias": "b",
             }],
-            measures=[M],
+            metrics=[M],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -161,9 +162,9 @@ class TestUnsafeExplicitPartitionKeys:
     async def test_errors_apply_in_strict_mode_alike(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            to_many_handling="error", dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, partition_by=status)", name="x",
+            to_many_handling="error", dimensions=["orders.status"],
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=orders.status)", alias="x",
             )],
         )
         with pytest.raises(RAISES) as ei:
@@ -177,16 +178,16 @@ class TestSafeJoinedPartitionKey:
         key when every hop is provably many-to-one."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier", "status"],
-            measures=[M, ModelMeasure(
-                formula="sum(amount, partition_by=customers.tier)", name="pt",
+            dimensions=["customers.tier", "orders.status"],
+            metrics=[M, QueryMetric(
+                metric="sum(orders.amount, partition_by=customers.tier)", alias="pt",
             )],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.customers.tier", "orders.status")
+        by = rows_by(resp, "customers.tier", "orders.status")
         assert set(by) == set(AMOUNT_BY_TIER_STATUS)
         for (tier, status), row in by.items():
-            assert float(row["orders.pt"]) == pytest.approx(
+            assert float(row["pt"]) == pytest.approx(
                 AMOUNT_BY_TIER[tier],
             ), (tier, status)
         dry = await engine.execute(query, dry_run=True)

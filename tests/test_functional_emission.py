@@ -1,4 +1,4 @@
-"""SLayer emits only the functional aggregation spelling: importer formulas, tool descriptions, help and docs."""
+"""SLayer emits only the functional aggregation spelling: importer expressions, tool descriptions, help and docs."""
 
 import json
 import re
@@ -10,7 +10,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import (
     CubeCube,
@@ -55,8 +55,8 @@ _COLON_AGG_TEXT = re.compile(
 _COLON_ANY = re.compile(r"(?<![\w-])(?!memory:|https?:)(?:[A-Za-z_][\w.]*|\*)(?<!\.):[a-z_]\w*\b")
 
 
-def _assert_functional(models: list[SlayerModel]) -> None:
-    formulas = [(m.name, mm.name, mm.formula) for m in models for mm in m.measures]
+def _assert_functional(datasets: list[SlayerDataset]) -> None:
+    formulas = [(m.name, mm.name, mm.text) for m in datasets for mm in m.metrics]
     assert formulas
     for model, measure, formula in formulas:
         assert ":" not in _LITERAL.sub("''", formula), (model, measure, formula)
@@ -161,7 +161,7 @@ def test_dbt_import_is_functional() -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         result = DbtToSlayerConverter(project=_dbt_project(), data_source="ds").convert()
-    _assert_functional(result.models)
+    _assert_functional(result.datasets)
     _assert_no_spelling_warnings(rec)
 
 
@@ -174,7 +174,7 @@ def test_cube_import_is_functional(source: str) -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
         result = CubeToSlayerConverter(project=project, data_source="ds").convert()
-    _assert_functional(result.models)
+    _assert_functional(result.datasets)
     _assert_no_spelling_warnings(rec)
 
 
@@ -186,20 +186,20 @@ def test_osi_import_is_functional(shop_engine: sa.Engine) -> None:
             OsiToSlayerConverter(documents=[doc], data_source="ds"),
             datasource=DatasourceConfig(name="ds", type="sqlite", database=shop_engine.url.database),
         )
-    _assert_functional(result.models)
+    _assert_functional(result.datasets)
     _assert_no_spelling_warnings(rec)
 
 
 def test_cube_emitters_render_functional() -> None:
     result = CubeToSlayerConverter(project=_cube_project(), data_source="ds").convert()
-    formulas = {(m.name, mm.name): mm.formula for m in result.models for mm in m.measures}
+    formulas = {(m.name, mm.name): mm.text for m in result.datasets for mm in m.metrics}
     assert formulas[("orders", "count")] == "count(*)"
     assert formulas[("orders", "count_7d")] == "count(*, window='7d')"
     assert formulas[("orders", "revenue_30d")] == "sum(amount, window='30d')"
     assert formulas[("overview", "count")] == "count(*)"
     assert formulas[("overview", "revenue")] == "sum(amount)"
     assert formulas[("overview", "customers_count")] == "count(customers.*)"
-    assert formulas[("overview", "customers_ltv")] == "sum(customers.ltv_col)"
+    assert formulas[("overview", "customers_ltv")] == "sum(customers.ltv_raw)"
 
 
 @pytest.mark.parametrize(
@@ -214,8 +214,8 @@ def test_cube_emitters_render_functional() -> None:
 )
 def test_dbt_mapped_aggs_render_functional(measure: str, expected: str) -> None:
     result = DbtToSlayerConverter(project=_dbt_project(), data_source="ds").convert()
-    orders = next(m for m in result.models if m.name == "orders")
-    assert {mm.name: mm.formula for mm in orders.measures}[measure] == expected
+    orders = next(m for m in result.datasets if m.name == "orders")
+    assert {mm.name: mm.expression for mm in orders.metrics}[measure] == expected
 
 
 # ── agent-facing text ─────────────────────────────────────────────────────────
@@ -228,8 +228,8 @@ async def test_mcp_tool_descriptions_are_functional(tmp_path: Path) -> None:
         text = (tool.description or "") + json.dumps(tool.inputSchema)
         assert not _COLON_ANY.search(text), (tool.name, _COLON_ANY.findall(text))
     assert not _COLON_ANY.search(server.instructions or "")
-    create_model = next(t for t in tools if t.name == "create_model")
-    assert "sum_sq(column)" in (create_model.description or "")
+    create_model = next(t for t in tools if t.name == "create_dataset")
+    assert "sum_sq(field)" in (create_model.description or "")
 
 
 def test_help_content_is_functional() -> None:

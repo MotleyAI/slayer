@@ -1,8 +1,8 @@
 """Numpy-based top-k cosine similarity for embedding retrieval (DEV-1386).
 
 Pure numpy on the assumption that the embedding corpus stays in the
-low-thousands of docs (memories + every non-hidden datasource / model /
-column / measure / aggregation). Loading the matrix into RAM per search
+low-thousands of docs (memories + every non-hidden datasource / dataset /
+field / metric / aggregation). Loading the matrix into RAM per search
 call costs O(N*dim) memory + one matmul; both are negligible at this
 scale and avoid the operational burden of a persistent ANN index.
 

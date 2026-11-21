@@ -14,7 +14,7 @@ import pytest
 import sqlalchemy.exc
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig
+from slayer.core.models import DatasetField, DatasourceConfig
 from slayer.database import client as sql_client
 from slayer.database.client import ResultColumnType, SlayerSQLClient, get_result_column_types_sync
 from slayer.sql.dialects import dialect_for_ds_type
@@ -41,28 +41,28 @@ def _describe(ds_type: str, row: tuple[Any, ...]) -> ResultColumnType | None:
 # ─────────────────────────── Postgres / Redshift ────────────────────────────
 
 _PG_ROWS = [
-    (_row("c", 21), ResultColumnType(type=DataType.INT, db_type="smallint")),
-    (_row("c", 23), ResultColumnType(type=DataType.INT, db_type="integer")),
-    (_row("c", 20), ResultColumnType(type=DataType.INT, db_type="bigint")),
-    (_row("c", 26), ResultColumnType(type=DataType.INT, db_type="oid")),
-    (_row("c", 700), ResultColumnType(type=DataType.DOUBLE, db_type="real")),
-    (_row("c", 701), ResultColumnType(type=DataType.DOUBLE, db_type="double precision")),
-    (_row("c", 790), ResultColumnType(type=DataType.DOUBLE, db_type="money")),
-    (_row("c", 1700, precision=10, scale=0), ResultColumnType(type=DataType.INT, db_type="numeric(10,0)")),
-    (_row("c", 1700, precision=10, scale=2), ResultColumnType(type=DataType.DOUBLE, db_type="numeric(10,2)")),
-    (_row("c", 1700), ResultColumnType(type=DataType.DOUBLE, db_type="numeric")),
+    (_row("c", 21), ResultColumnType(type=DataType.INTEGER, db_type="smallint")),
+    (_row("c", 23), ResultColumnType(type=DataType.INTEGER, db_type="integer")),
+    (_row("c", 20), ResultColumnType(type=DataType.INTEGER, db_type="bigint")),
+    (_row("c", 26), ResultColumnType(type=DataType.INTEGER, db_type="oid")),
+    (_row("c", 700), ResultColumnType(type=DataType.FLOAT, db_type="real")),
+    (_row("c", 701), ResultColumnType(type=DataType.FLOAT, db_type="double precision")),
+    (_row("c", 790), ResultColumnType(type=DataType.FLOAT, db_type="money")),
+    (_row("c", 1700, precision=10, scale=0), ResultColumnType(type=DataType.INTEGER, db_type="numeric(10,0)")),
+    (_row("c", 1700, precision=10, scale=2), ResultColumnType(type=DataType.FLOAT, db_type="numeric(10,2)")),
+    (_row("c", 1700), ResultColumnType(type=DataType.FLOAT, db_type="numeric")),
     (_row("c", 16), ResultColumnType(type=DataType.BOOLEAN, db_type="boolean")),
-    (_row("c", 25), ResultColumnType(type=DataType.TEXT, db_type="text")),
-    (_row("c", 1043), ResultColumnType(type=DataType.TEXT, db_type="character varying")),
-    (_row("c", 1042), ResultColumnType(type=DataType.TEXT, db_type="character")),
-    (_row("c", 18), ResultColumnType(type=DataType.TEXT, db_type='"char"')),
+    (_row("c", 25), ResultColumnType(type=DataType.STRING, db_type="text")),
+    (_row("c", 1043), ResultColumnType(type=DataType.STRING, db_type="character varying")),
+    (_row("c", 1042), ResultColumnType(type=DataType.STRING, db_type="character")),
+    (_row("c", 18), ResultColumnType(type=DataType.STRING, db_type='"char"')),
     (_row("c", 1082), ResultColumnType(type=DataType.DATE, db_type="date")),
-    (_row("c", 1114), ResultColumnType(type=DataType.TIMESTAMP, db_type="timestamp without time zone")),
-    (_row("c", 1184), ResultColumnType(type=DataType.TIMESTAMP, db_type="timestamp with time zone")),
-    (_row("c", 114), ResultColumnType(type=DataType.UNKNOWN, db_type="json")),
-    (_row("c", 3802), ResultColumnType(type=DataType.TEXT, db_type="jsonb")),
-    (_row("c", 2950), ResultColumnType(type=DataType.TEXT, db_type="uuid")),
-    (_row("c", 99999), ResultColumnType(type=DataType.TEXT)),
+    (_row("c", 1114), ResultColumnType(type=DataType.DATETIME, db_type="timestamp without time zone")),
+    (_row("c", 1184), ResultColumnType(type=DataType.DATETIME, db_type="timestamp with time zone")),
+    (_row("c", 114), ResultColumnType(type=DataType.OPAQUE, db_type="json")),
+    (_row("c", 3802), ResultColumnType(type=DataType.STRING, db_type="jsonb")),
+    (_row("c", 2950), ResultColumnType(type=DataType.STRING, db_type="uuid")),
+    (_row("c", 99999), ResultColumnType(type=DataType.STRING)),
 ]
 
 
@@ -89,22 +89,22 @@ def _mysql_row(code: int, length: int, scale: int = 0) -> tuple[Any, ...]:
 
 _MYSQL_ROWS = [
     pytest.param(_mysql_row(1, 1), DataType.BOOLEAN, id="bool"),
-    pytest.param(_mysql_row(1, 4), DataType.INT, id="tinyint"),
+    pytest.param(_mysql_row(1, 4), DataType.INTEGER, id="tinyint"),
     pytest.param(_mysql_row(16, 1), DataType.BOOLEAN, id="bit-1"),
-    pytest.param(_mysql_row(16, 8), DataType.TEXT, id="bit-8"),
-    pytest.param(_mysql_row(2, 6), DataType.INT, id="smallint"),
-    pytest.param(_mysql_row(3, 11), DataType.INT, id="int"),
-    pytest.param(_mysql_row(8, 20), DataType.INT, id="bigint"),
-    pytest.param(_mysql_row(9, 9), DataType.INT, id="mediumint"),
-    pytest.param(_mysql_row(13, 4), DataType.INT, id="year"),
-    pytest.param(_mysql_row(4, 12, 31), DataType.DOUBLE, id="float"),
-    pytest.param(_mysql_row(5, 22, 31), DataType.DOUBLE, id="double"),
-    pytest.param(_mysql_row(246, 11), DataType.INT, id="decimal-scale-0"),
-    pytest.param(_mysql_row(246, 12, 2), DataType.DOUBLE, id="decimal-scale-2"),
+    pytest.param(_mysql_row(16, 8), DataType.STRING, id="bit-8"),
+    pytest.param(_mysql_row(2, 6), DataType.INTEGER, id="smallint"),
+    pytest.param(_mysql_row(3, 11), DataType.INTEGER, id="int"),
+    pytest.param(_mysql_row(8, 20), DataType.INTEGER, id="bigint"),
+    pytest.param(_mysql_row(9, 9), DataType.INTEGER, id="mediumint"),
+    pytest.param(_mysql_row(13, 4), DataType.INTEGER, id="year"),
+    pytest.param(_mysql_row(4, 12, 31), DataType.FLOAT, id="float"),
+    pytest.param(_mysql_row(5, 22, 31), DataType.FLOAT, id="double"),
+    pytest.param(_mysql_row(246, 11), DataType.INTEGER, id="decimal-scale-0"),
+    pytest.param(_mysql_row(246, 12, 2), DataType.FLOAT, id="decimal-scale-2"),
     pytest.param(_mysql_row(10, 10), DataType.DATE, id="date"),
-    pytest.param(_mysql_row(12, 19), DataType.TIMESTAMP, id="datetime"),
-    pytest.param(_mysql_row(7, 19), DataType.TIMESTAMP, id="timestamp"),
-    pytest.param(_mysql_row(253, 50), DataType.TEXT, id="varchar"),
+    pytest.param(_mysql_row(12, 19), DataType.DATETIME, id="datetime"),
+    pytest.param(_mysql_row(7, 19), DataType.DATETIME, id="timestamp"),
+    pytest.param(_mysql_row(253, 50), DataType.STRING, id="varchar"),
 ]
 
 
@@ -129,16 +129,16 @@ class TestMysqlDescriptions:
 
 class TestSnowflakeDescriptions:
     @pytest.mark.parametrize(("row", "expected"), [
-        (_row("c", 0, precision=38, scale=0), ResultColumnType(type=DataType.INT, db_type="NUMBER(38,0)")),
-        (_row("c", 0, precision=10, scale=2), ResultColumnType(type=DataType.DOUBLE, db_type="NUMBER(10,2)")),
-        (_row("c", 1), ResultColumnType(type=DataType.DOUBLE, db_type="FLOAT")),
+        (_row("c", 0, precision=38, scale=0), ResultColumnType(type=DataType.INTEGER, db_type="NUMBER(38,0)")),
+        (_row("c", 0, precision=10, scale=2), ResultColumnType(type=DataType.FLOAT, db_type="NUMBER(10,2)")),
+        (_row("c", 1), ResultColumnType(type=DataType.FLOAT, db_type="FLOAT")),
     ])
     def test_numbers(self, row: tuple[Any, ...], expected: ResultColumnType) -> None:
         assert _describe("snowflake", row) == expected
 
     @pytest.mark.parametrize(("code", "expected"), [
-        (2, DataType.TEXT), (3, DataType.DATE), (4, DataType.TIMESTAMP), (6, DataType.TIMESTAMP),
-        (7, DataType.TIMESTAMP), (8, DataType.TIMESTAMP), (13, DataType.BOOLEAN),
+        (2, DataType.STRING), (3, DataType.DATE), (4, DataType.DATETIME), (6, DataType.DATETIME),
+        (7, DataType.DATETIME), (8, DataType.DATETIME), (13, DataType.BOOLEAN),
     ])
     def test_scalar_codes(self, code: int, expected: DataType) -> None:
         described = _describe("snowflake", _row("c", code))
@@ -158,30 +158,30 @@ class TestSnowflakeDescriptions:
 
 class TestTypeNameCodes:
     @pytest.mark.parametrize(("ds_type", "name", "expected"), [
-        ("duckdb", "INTEGER", DataType.INT),
-        ("duckdb", "HUGEINT", DataType.INT),
-        ("duckdb", "DECIMAL(18,0)", DataType.INT),
-        ("duckdb", "DECIMAL(18,2)", DataType.DOUBLE),
-        ("duckdb", "DOUBLE", DataType.DOUBLE),
-        ("duckdb", "VARCHAR", DataType.TEXT),
+        ("duckdb", "INTEGER", DataType.INTEGER),
+        ("duckdb", "HUGEINT", DataType.INTEGER),
+        ("duckdb", "DECIMAL(18,0)", DataType.INTEGER),
+        ("duckdb", "DECIMAL(18,2)", DataType.FLOAT),
+        ("duckdb", "DOUBLE", DataType.FLOAT),
+        ("duckdb", "VARCHAR", DataType.STRING),
         ("duckdb", "BOOLEAN", DataType.BOOLEAN),
         ("duckdb", "DATE", DataType.DATE),
-        ("duckdb", "TIMESTAMP WITH TIME ZONE", DataType.TIMESTAMP),
-        ("duckdb", "INTERVAL", DataType.TEXT),
+        ("duckdb", "TIMESTAMP WITH TIME ZONE", DataType.DATETIME),
+        ("duckdb", "INTERVAL", DataType.STRING),
         ("duckdb", "INTEGER[]", DataType.ARRAY),
-        ("duckdb", "MAP(VARCHAR, INTEGER)", DataType.TEXT),
-        ("duckdb", "JSON", DataType.TEXT),
-        ("bigquery", "INTEGER", DataType.INT),
-        ("bigquery", "FLOAT", DataType.DOUBLE),
-        ("bigquery", "NUMERIC", DataType.DOUBLE),
-        ("bigquery", "STRING", DataType.TEXT),
-        ("bigquery", "RECORD", DataType.TEXT),
-        ("trino", "bigint", DataType.INT),
-        ("trino", "decimal(10,2)", DataType.DOUBLE),
+        ("duckdb", "MAP(VARCHAR, INTEGER)", DataType.STRING),
+        ("duckdb", "JSON", DataType.STRING),
+        ("bigquery", "INTEGER", DataType.INTEGER),
+        ("bigquery", "FLOAT", DataType.FLOAT),
+        ("bigquery", "NUMERIC", DataType.FLOAT),
+        ("bigquery", "STRING", DataType.STRING),
+        ("bigquery", "RECORD", DataType.STRING),
+        ("trino", "bigint", DataType.INTEGER),
+        ("trino", "decimal(10,2)", DataType.FLOAT),
         ("trino", "array(integer)", DataType.ARRAY),
-        ("trino", "row(a integer)", DataType.TEXT),
-        ("clickhouse", "Nullable(Int32)", DataType.INT),
-        ("clickhouse", "UInt8", DataType.INT),
+        ("trino", "row(a integer)", DataType.STRING),
+        ("clickhouse", "Nullable(Int32)", DataType.INTEGER),
+        ("clickhouse", "UInt8", DataType.INTEGER),
         ("clickhouse", "Date32", DataType.DATE),
         ("clickhouse", "Array(Int32)", DataType.ARRAY),
     ])
@@ -284,22 +284,22 @@ class TestFirstRowFallback:
         result = _probe_sync(engines, "SELECT 1", db_type="duckdb")
         assert result == {
             "b": ResultColumnType(type=DataType.BOOLEAN),
-            "i": ResultColumnType(type=DataType.DOUBLE),
-            "f": ResultColumnType(type=DataType.DOUBLE),
-            "n": ResultColumnType(type=DataType.DOUBLE),
-            "ts": ResultColumnType(type=DataType.TIMESTAMP),
+            "i": ResultColumnType(type=DataType.FLOAT),
+            "f": ResultColumnType(type=DataType.FLOAT),
+            "n": ResultColumnType(type=DataType.FLOAT),
+            "ts": ResultColumnType(type=DataType.DATETIME),
             "d": ResultColumnType(type=DataType.DATE),
-            "s": ResultColumnType(type=DataType.TEXT),
-            "z": ResultColumnType(type=DataType.TEXT),
-            "x": ResultColumnType(type=DataType.TEXT),
+            "s": ResultColumnType(type=DataType.STRING),
+            "z": ResultColumnType(type=DataType.STRING),
+            "x": ResultColumnType(type=DataType.STRING),
         }
 
     def test_fallback_is_per_column(self) -> None:
         description = [_row("a", "INTEGER"), _row("b", None)]
         engines = _Engines(lambda _sql: _Result(keys=["a", "b"], rows=[(1, 2.5)], description=description))
         assert _probe_sync(engines, "SELECT 1", db_type="duckdb") == {
-            "a": ResultColumnType(type=DataType.INT, db_type="INTEGER"),
-            "b": ResultColumnType(type=DataType.DOUBLE),
+            "a": ResultColumnType(type=DataType.INTEGER, db_type="INTEGER"),
+            "b": ResultColumnType(type=DataType.FLOAT),
         }
 
 
@@ -320,8 +320,8 @@ async def test_postgres_probe_runs_on_the_async_engine(monkeypatch: pytest.Monke
     assert engines.async_connects == 1
     assert any("SELECT 1 AS x" in s for s in engines.log)
     assert result == {
-        "x": ResultColumnType(type=DataType.INT, db_type="integer"),
-        "n": ResultColumnType(type=DataType.INT, db_type="numeric(12,0)"),
+        "x": ResultColumnType(type=DataType.INTEGER, db_type="integer"),
+        "n": ResultColumnType(type=DataType.INTEGER, db_type="numeric(12,0)"),
     }
 
 
@@ -345,7 +345,7 @@ class TestSqlServerDescribe:
     def test_a_fallback_decimal_keeps_its_native_type(self, scale: int) -> None:
         described = _describe("mssql", _row("m", Decimal, precision=10, scale=scale))
         assert described is not None
-        derived = Column(name="d", sql="m * 2", type=described.type, db_type=described.db_type)
+        derived = DatasetField(name="d", expression="m * 2", datatype=described.type, db_type=described.db_type)
         assert keeps_native_type(col=derived, dialect=dialect_for_ds_type("mssql")), described
 
     def test_declared_type_names(self) -> None:
@@ -359,11 +359,11 @@ class TestSqlServerDescribe:
         engines = _Engines(lambda sql: _Result(keys=list(_DESCRIBE_COLUMNS), rows=rows if _is_describe(sql) else []))
         result = _probe_sync(engines, _TSQL_SQL, db_type="mssql")
         assert result == {
-            "i": ResultColumnType(type=DataType.INT, db_type="int"),
-            "m": ResultColumnType(type=DataType.DOUBLE, db_type="decimal(10,2)"),
-            "t": ResultColumnType(type=DataType.TIMESTAMP, db_type="datetime2(7)"),
-            "s": ResultColumnType(type=DataType.TEXT, db_type="nvarchar(50)"),
-            "rv": ResultColumnType(type=DataType.TEXT, db_type="timestamp"),
+            "i": ResultColumnType(type=DataType.INTEGER, db_type="int"),
+            "m": ResultColumnType(type=DataType.FLOAT, db_type="decimal(10,2)"),
+            "t": ResultColumnType(type=DataType.DATETIME, db_type="datetime2(7)"),
+            "s": ResultColumnType(type=DataType.STRING, db_type="nvarchar(50)"),
+            "rv": ResultColumnType(type=DataType.STRING, db_type="timestamp"),
         }
         [describe] = [s for s in engines.log if _is_describe(s)]
         assert "<> ''x''" in describe
@@ -373,8 +373,8 @@ class TestSqlServerDescribe:
         rows = [(False, 1, "g", True, 240, None, -1, 0, 0), (False, 2, "i", True, 56, "int", 4, 10, 0)]
         engines = _Engines(lambda sql: _Result(keys=list(_DESCRIBE_COLUMNS), rows=rows if _is_describe(sql) else []))
         assert _probe_sync(engines, "SELECT g, i FROM dbo.t", db_type="mssql") == {
-            "g": ResultColumnType(type=DataType.TEXT),
-            "i": ResultColumnType(type=DataType.INT, db_type="int"),
+            "g": ResultColumnType(type=DataType.STRING),
+            "i": ResultColumnType(type=DataType.INTEGER, db_type="int"),
         }
 
     @pytest.mark.parametrize("code", [11500, 11526, 11541])
@@ -398,14 +398,14 @@ class TestSqlServerDescribe:
         engines = _Engines(respond)
         result = _probe_sync(engines, "SELECT * FROM #t", db_type="mssql")
         assert result == {
-            "i": ResultColumnType(type=DataType.INT),
-            "m": ResultColumnType(type=DataType.DOUBLE, db_type="decimal(10,2)"),
-            "m0": ResultColumnType(type=DataType.INT, db_type="decimal(10,0)"),
-            "t": ResultColumnType(type=DataType.TIMESTAMP),
+            "i": ResultColumnType(type=DataType.INTEGER),
+            "m": ResultColumnType(type=DataType.FLOAT, db_type="decimal(10,2)"),
+            "m0": ResultColumnType(type=DataType.INTEGER, db_type="decimal(10,0)"),
+            "t": ResultColumnType(type=DataType.DATETIME),
             "d": ResultColumnType(type=DataType.DATE),
-            "s": ResultColumnType(type=DataType.TEXT),
+            "s": ResultColumnType(type=DataType.STRING),
             "b": ResultColumnType(type=DataType.BOOLEAN),
-            "f": ResultColumnType(type=DataType.DOUBLE),
+            "f": ResultColumnType(type=DataType.FLOAT),
         }
         assert any("TOP 0" in s and not _is_describe(s) for s in engines.log)
 
@@ -432,4 +432,4 @@ class TestSqlServerDescribe:
             name="ms", type="mssql", connection_string="mssql+pyodbc://u@db.invalid/d",
         ))
         result = asyncio.run(client.get_result_column_types("SELECT 1 AS i"))
-        assert result == {"i": ResultColumnType(type=DataType.INT, db_type="int")}
+        assert result == {"i": ResultColumnType(type=DataType.INTEGER, db_type="int")}

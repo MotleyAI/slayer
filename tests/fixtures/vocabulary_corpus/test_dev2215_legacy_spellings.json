@@ -1,0 +1,115 @@
+{
+ "source": "tests/test_dev2215_legacy_spellings.py",
+ "pairs": [
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "paid_orders",
+    "data_source": "test",
+    "source_queries": [
+     {
+      "source_model": "orders",
+      "measures": [
+       {
+        "formula": "count(*)",
+        "name": "n"
+       }
+      ],
+      "filters": [
+       "status == 'paid' and region is not None"
+      ]
+     }
+    ]
+   },
+   "new": {
+    "name": "paid_orders",
+    "data_source": "test",
+    "source_queries": [
+     {
+      "population": "orders",
+      "metrics": [
+       {
+        "metric": "count(*)",
+        "alias": "n"
+       }
+      ],
+      "filter": [
+       "status == 'paid' and region is not None"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "paid_orders",
+    "source_queries": [
+     {
+      "source_model": "orders",
+      "measures": [
+       {
+        "formula": "count(*)",
+        "name": "n"
+       }
+      ],
+      "filters": [
+       "status == 'paid' and region is not None"
+      ]
+     }
+    ]
+   },
+   "new": {
+    "name": "paid_orders",
+    "source_queries": [
+     {
+      "population": "orders",
+      "metrics": [
+       {
+        "metric": "count(*)",
+        "alias": "n"
+       }
+      ],
+      "filter": [
+       "status == 'paid' and region is not None"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "field",
+   "old": {
+    "name": "status",
+    "type": "TEXT"
+   },
+   "new": {
+    "name": "status",
+    "datatype": "String"
+   }
+  },
+  {
+   "kind": "field",
+   "old": {
+    "name": "amount",
+    "type": "DOUBLE"
+   },
+   "new": {
+    "name": "amount",
+    "datatype": "Float"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "paid",
+    "formula": "sum(iif(status == 'paid', amount, 0))"
+   },
+   "new": {
+    "name": "paid",
+    "expression": "sum(iif(status == 'paid', amount, 0))"
+   }
+  }
+ ],
+ "skipped": []
+}

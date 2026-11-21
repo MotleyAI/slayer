@@ -55,17 +55,17 @@ refresh-samples`.
 
 ### Requirement: Sample refresh is a datasources command
 `slayer datasources refresh-samples` SHALL re-profile and persist sample values for table-backed
-models, optionally limited to one datasource (`--data-source`) and to named models (`--model`,
+models, optionally limited to one datasource (`--data-source`) and to named models (`--dataset`,
 repeatable), printing text or, with `--format json`, a JSON result envelope. A named model that does
 not resolve in scope SHALL make the command exit with status 1. It SHALL NOT write anything other
 than the refreshed sample values.
 
 #### Scenario: Refresh one model
-- **WHEN** `slayer datasources refresh-samples --data-source jaffle_shop --model orders` runs
+- **WHEN** `slayer datasources refresh-samples --data-source jaffle_shop --dataset orders` runs
 - **THEN** `orders`' sample values are refreshed and persisted and the command exits 0
 
 #### Scenario: Unknown model
-- **WHEN** `slayer datasources refresh-samples --data-source jaffle_shop --model nope --format json`
+- **WHEN** `slayer datasources refresh-samples --data-source jaffle_shop --dataset nope --format json`
   runs
 - **THEN** the JSON envelope lists `jaffle_shop.nope` as unresolved and the exit status is 1
 
@@ -79,12 +79,42 @@ other cells as their plain value. `--format json` output SHALL carry the raw val
 - **THEN** the table cell shows `$193.65K` and the JSON output carries the unformatted value
 
 ### Requirement: export-osi writes an Ossie document
-`slayer export-osi --datasource X --out <file>` SHALL write the datasource's models as an Ossie document to `<file>`, as JSON when the file name ends in `.json` and as YAML otherwise, and SHALL print the export report. `--models` SHALL limit the export to the named models, and `--no-extensions` SHALL omit the `SLAYER` extensions. An unknown datasource or an unknown model name SHALL fail as a CLI error and write no file.
+`slayer export-osi --datasource X --out <file>` SHALL write the datasource's models as an Ossie document to `<file>`, as JSON when the file name ends in `.json` and as YAML otherwise, and SHALL print the export report. `--datasets` SHALL limit the export to the named models, and `--no-extensions` SHALL omit the `SLAYER` extensions. An unknown datasource or an unknown model name SHALL fail as a CLI error and write no file.
 
 #### Scenario: Export to YAML
 - **WHEN** `slayer export-osi --datasource jaffle_shop --out shop.osi.yaml` runs
 - **THEN** `shop.osi.yaml` holds a YAML Ossie document of the datasource's models, the report is printed, and the exit status is 0
 
 #### Scenario: Unknown model
-- **WHEN** `slayer export-osi --datasource jaffle_shop --models nope --out shop.osi.yaml` runs
+- **WHEN** `slayer export-osi --datasource jaffle_shop --datasets nope --out shop.osi.yaml` runs
 - **THEN** stderr holds one `Error: ` line naming `nope`, no file is written, and the exit status is 1
+
+### Requirement: datasources create --ingest runs the idempotent ingest
+`slayer datasources create <url> --ingest` SHALL ingest the new datasource exactly as `slayer ingest` would with the same scope flags (`--schema`, `--all-schemas`, `--include`, `--exclude`, `--no-views`, `--surface-internals`): it SHALL create missing datasets and additively merge existing ones, never overwriting a stored dataset's user metadata, and SHALL NOT ask before touching stored datasets. It SHALL print the result as `slayer ingest` does (`Created:` / `Updated:` lines, then the description, drift, skipped, skipped-schema, key-read-failure, hidden, broken-dependent and error sections). Once the datasource is saved, it SHALL exit 0 whatever the ingest reports — skipped objects, per-dataset errors, or nothing ingested. An exception raised by the ingest SHALL print one `Ingestion failed: <message>` error and exit 1, the datasource staying created.
+
+#### Scenario: Fresh create
+- **WHEN** `slayer datasources create sqlite:///app.db --ingest` runs against a database with tables `a` and `b`
+- **THEN** datasets `a` and `b` are stored, the output has `Created: a` and `Created: b` lines, and the exit status is 0
+
+#### Scenario: Re-create keeps dataset edits
+- **WHEN** dataset `a` of datasource `app` is stored with a user-written description, and `slayer datasources create sqlite:///app.db --name app --ingest --yes` runs again
+- **THEN** dataset `a` keeps its user-written description, no prompt mentions overwriting datasets, and the exit status is 0
+
+#### Scenario: Skipped object
+- **WHEN** `slayer datasources create <url> --ingest` runs and one object cannot be modelled
+- **THEN** the output lists it under `Skipped`, and the exit status is 0
+
+#### Scenario: Ingest raises
+- **WHEN** the ingest raises after the datasource is saved
+- **THEN** stderr has one `Ingestion failed:` error line, the exit status is 1, and the datasource is stored
+
+### Requirement: The empty-ingest message needs an empty result
+`slayer ingest` and `slayer datasources create --ingest` SHALL print the "No tables or views found" message only when the ingest reports nothing at all: no live objects, no dataset changes, no drift, no skipped objects or schemas, no failed key reads, no hidden internals, no broken dependents, no errors and no imported description. Otherwise they SHALL print the result's sections. `slayer ingest` SHALL keep exiting 1 on an empty result or on any skip or error.
+
+#### Scenario: Every requested schema skipped
+- **WHEN** `slayer ingest --datasource ds --schema missing` runs and the requested schema is skipped with a reason
+- **THEN** the output lists `missing` under `Skipped schemas` with its reason, and does not say "No tables or views found"
+
+#### Scenario: Truly empty
+- **WHEN** `slayer ingest` runs against a schema with no tables or views
+- **THEN** the output says "No tables or views found" and the exit status is 1

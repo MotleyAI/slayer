@@ -3,66 +3,63 @@
 Run after `docker compose up -d`:
     python examples/clickhouse/verify.py
 
-ClickHouse has no FK constraints, so no rollup joins are generated.
+ClickHouse has no FK constraints, so no rollup relationships are generated.
 """
 
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from verify_common import (
+from verify_common import (  # ALLOW(import-not-top): sys.path bootstrap for the shared verify_common helper
     run_common_checks,
     check_rollup,
     check_median_percentile,
     check_stddev_var,
     check_corr_covar,
     check,
-    check_column_types,
+    check_field_types,
     summary,
 )
 
 if __name__ == "__main__":
-    models = run_common_checks()
-    check("4 models (no rollup)", len(models) == 4)
+    datasets = run_common_checks()
+    check("4 datasets (no rollup)", len(datasets) == 4)
     check_rollup(expect_rollup=False)
-    # Regression for issue #62 — ClickHouse Int32 / Float64 / DateTime must
-    # round-trip as the right DataType, not as STRING. DataType vocabulary is
-    # the sqlglot-aligned set from DEV-1361 (INT / DOUBLE / TEXT / TIMESTAMP /
-    # DATE / BOOLEAN).
-    check_column_types(
-        model_name="orders",
+    # ClickHouse Int32 / Float64 / DateTime must round-trip as their DataType, not as String.
+    check_field_types(
+        dataset_name="orders",
         expected_types={
-            "id": "INT",
-            "customer_id": "INT",
-            "product_id": "INT",
-            "quantity": "INT",
-            "status": "TEXT",
-            "created_at": "TIMESTAMP",
+            "id": "Integer",
+            "customer_id": "Integer",
+            "product_id": "Integer",
+            "quantity": "Integer",
+            "status": "String",
+            "created_at": "DateTime",
         },
     )
-    check_column_types(
-        model_name="customers",
+    check_field_types(
+        dataset_name="customers",
         expected_types={
-            "id": "INT",
-            "name": "TEXT",
-            "email": "TEXT",
-            "region_id": "INT",
+            "id": "Integer",
+            "name": "String",
+            "email": "String",
+            "region_id": "Integer",
         },
     )
-    check_column_types(
-        model_name="products",
+    check_field_types(
+        dataset_name="products",
         expected_types={
-            "id": "INT",
-            "name": "TEXT",
-            "category": "TEXT",
-            "price": "DOUBLE",
+            "id": "Integer",
+            "name": "String",
+            "category": "String",
+            "price": "Float",
         },
     )
-    check_column_types(
-        model_name="regions",
+    check_field_types(
+        dataset_name="regions",
         expected_types={
-            "id": "INT",
-            "name": "TEXT",
+            "id": "Integer",
+            "name": "String",
         },
     )
     # Exercises the parametric quantile(p)(x) syntax SLayer emits for ClickHouse.

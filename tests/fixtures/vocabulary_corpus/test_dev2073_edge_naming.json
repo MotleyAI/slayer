@@ -1,0 +1,32 @@
+{
+ "source": "tests/test_dev2073_edge_naming.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "addresses",
+    "join_pairs": [
+     [
+      "legacy_addr",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "addresses",
+    "from_columns": [
+     "legacy_addr"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,20 +1,20 @@
-"""DEV-1745 (W2) — custom-aggregation template fragments must register the
-joins they cross, in EVERY scope that renders them.
+"""W2 — custom-aggregation template fragments must register the
+relationships they cross, in EVERY scope that renders them.
 
 The Mode-A custom-aggregation template mechanism (``{value}`` / ``{param}``
-substitution) stays as a feature; only its join discovery moves onto the single
-Mode-A door, so registration becomes a side effect of resolution (P-A).
+substitution) stays as a feature; only its relationship-path discovery moves onto
+the single Mode-A door, so registration becomes a side effect of resolution (P-A).
 
 Today the fragment scan exists ONLY on the host render path
 (``_resolve_agg_inputs_via_scope`` -> ``_resolve_fragment_kwargs``). The
-cross-model ``_cm_`` CTE builds its FROM purely from ``cte_scope.join_paths``
-and registers only source / positional args / typed column kwargs — never
-string fragments nor the model-default
+cross-dataset ``_cm_`` CTE builds its FROM purely from ``cte_scope.join_paths``
+and registers only source / positional args / typed field kwargs — never
+string fragments nor the dataset-default
 ``AggregationParam.sql`` values. A crossing fragment therefore renders a
 reference to a table that is not in the CTE's FROM.
 
 The shifted (``time_shift``) CTE has the same gap but is unreachable today —
-``time_shift`` combined with a cross-model aggregate raises first. That half is
+``time_shift`` combined with a cross-dataset aggregate raises first. That half is
 tracked separately.
 """
 
@@ -24,16 +24,16 @@ import duckdb
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey, ColumnKey
+from slayer.core.keys import AggregateKey, FieldKey
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
-from slayer.core.scope import ModelScope
+from slayer.core.query import QueryDimension, SlayerQuery
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -43,73 +43,73 @@ from tests._engine_helpers import _engine_generate
 
 
 # ---------------------------------------------------------------------------
-# Fixtures — the aggregation is declared on the JOINED model so the planner
+# Fixtures — the aggregation is declared on the JOINED dataset so the planner
 # roots a _cm_ CTE at `customers`, and its default param crosses one hop
 # further to `regions`.
 # ---------------------------------------------------------------------------
 
 
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="weight", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         aggregations=[
             Aggregation(
-                name="wscaled_sum", formula="SUM({value} * {w})",
+                name="wscaled_sum", expression="SUM({value} * {w})",
                 params=[AggregationParam(name="w", sql="regions.weight")],
             ),
         ],
     )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
     )
 
 
-def _orders_local_agg() -> SlayerModel:
-    """Host-rooted variant: the aggregation is declared on the ROOT model with
+def _orders_local_agg() -> SlayerDataset:
+    """Host-rooted variant: the aggregation is declared on the ROOT dataset with
     a crossing default param. This path already scans fragments today and must
     not regress."""
-    return SlayerModel(
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
         aggregations=[
             Aggregation(
-                name="wscaled_sum", formula="SUM({value} * {w})",
+                name="wscaled_sum", expression="SUM({value} * {w})",
                 params=[AggregationParam(
                     name="w", sql="customers.regions.weight",
                 )],
@@ -119,11 +119,11 @@ def _orders_local_agg() -> SlayerModel:
 
 
 async def _sql(
-    query: SlayerQuery, *, model: SlayerModel, dialect: str = "postgres",
+    query: SlayerQuery, *, dataset: SlayerDataset, dialect: str = "postgres",
 ) -> str:
     return await _engine_generate(
-        query=query, model=model, dialect=dialect, validate=False,
-        extra_models=[_customers(), _regions()],
+        query=query, dataset=dataset, dialect=dialect, validate=False,
+        extra_datasets=[_customers(), _regions()],
     )
 
 
@@ -136,12 +136,12 @@ class TestOnlySubstitutedKwargsAreSql:
     never handed to a SQL parser."""
 
     @staticmethod
-    def _kwargs(formula: str) -> dict:
+    def _kwargs(expression: str) -> dict:
         orders = _orders()
         key = bind_expr(
-            parse_expr(formula), scope=ModelScope(source_model=orders),
-            bundle=ResolvedSourceBundle(dialect="postgres", source_model=orders,
-                                        referenced_models=[_customers(), _regions()]),
+            parse_expr(expression), scope=DatasetScope(population=orders),
+            bundle=ResolvedSourceBundle(dialect="postgres", population=orders,
+                                        referenced_datasets=[_customers(), _regions()]),
         ).value_key
         assert isinstance(key, AggregateKey), key
         return dict(key.kwargs)
@@ -149,14 +149,14 @@ class TestOnlySubstitutedKwargsAreSql:
     def test_reserved_marker_kwarg_is_not_parsed_as_sql(self) -> None:
         kwargs = self._kwargs("wscaled_sum(customers.spend, window='90d')")
         assert kwargs["window"] == "90d"
-        assert kwargs["w"] == ColumnKey(path=("customers", "regions"), leaf="weight")
+        assert kwargs["w"] == FieldKey(path=("customers", "regions"), leaf="weight")
 
     def test_marker_that_is_not_parseable_sql_is_still_skipped(self) -> None:
         assert self._kwargs("wscaled_sum(customers.spend, window='%Y-%m')")["window"] == "%Y-%m"
 
     def test_a_substituted_kwarg_is_still_bound(self) -> None:
         assert self._kwargs("wscaled_sum(customers.spend, w='customers.regions.weight')") == {
-            "w": ColumnKey(path=("customers", "regions"), leaf="weight")}
+            "w": FieldKey(path=("customers", "regions"), leaf="weight")}
 
 
 def _cm_body(sql: str, *, dialect: str = "postgres") -> str:
@@ -185,13 +185,13 @@ class TestCrossModelFragmentJoins:
     async def test_cm_cte_joins_the_fragment_target(self) -> None:
         sql = await _sql(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[{"formula": "status", "name": "status"}],
-                measures=[{
-                    "formula": "wscaled_sum(customers.spend)", "name": "m0",
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status", alias="status")],
+                metrics=[{
+                    "metric": "wscaled_sum(customers.spend)", "alias": "m0",
                 }],
             ),
-            model=_orders(),
+            dataset=_orders(),
         )
         body = _cm_body(sql)
         # the fragment renders regions.weight, anchored at the CTE's own root ...
@@ -207,14 +207,14 @@ class TestCrossModelFragmentJoins:
     async def test_cm_cte_with_sibling_local_measure(self) -> None:
         sql = await _sql(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[{"formula": "status", "name": "status"}],
-                measures=[
-                    {"formula": "wscaled_sum(customers.spend)", "name": "m0"},
-                    {"formula": "sum(amount)", "name": "m1"},
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status", alias="status")],
+                metrics=[
+                    {"metric": "wscaled_sum(customers.spend)", "alias": "m0"},
+                    {"metric": "sum(orders.amount)", "alias": "m1"},
                 ],
             ),
-            model=_orders(),
+            dataset=_orders(),
         )
         body = _cm_body(sql)
         assert "regions.weight" in body, body
@@ -233,11 +233,11 @@ class TestHostPathFragmentJoinsStillWork:
     async def test_host_rooted_fragment_join_registered(self) -> None:
         sql = await _sql(
             SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": [{"formula": "status", "name": "status"}],
-                "measures": [{"formula": "wscaled_sum(amount)", "name": "m0"}],
+                "population": "orders",
+                "dimensions": [{"field": "orders.status", "alias": "status"}],
+                "metrics": [{"metric": "wscaled_sum(orders.amount)", "alias": "m0"}],
             }),
-            model=_orders_local_agg(),
+            dataset=_orders_local_agg(),
         )
         assert "customers__regions.weight" in sql, sql
         assert "JOIN regions" in sql, sql
@@ -245,14 +245,14 @@ class TestHostPathFragmentJoinsStillWork:
     async def test_query_time_string_kwarg_override(self) -> None:
         sql = await _sql(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[{"formula": "status", "name": "status"}],
-                measures=[{
-                    "formula": "wscaled_sum(amount, w='customers.regions.weight')",
-                    "name": "m0",
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status", alias="status")],
+                metrics=[{
+                    "metric": "wscaled_sum(orders.amount, w='customers.regions.weight')",
+                    "alias": "m0",
                 }],
             ),
-            model=_orders_local_agg(),
+            dataset=_orders_local_agg(),
         )
         assert "customers__regions.weight" in sql, sql
         assert "JOIN regions" in sql, sql
@@ -263,11 +263,11 @@ async def test_cross_model_fragment_executes_on_duckdb() -> None:
     """A missing join is not a cosmetic difference — the SQL does not bind."""
     sql = await _sql(
         SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": [{"formula": "status", "name": "status"}],
-            "measures": [{"formula": "wscaled_sum(customers.spend)", "name": "m0"}],
+            "population": "orders",
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
+            "metrics": [{"metric": "wscaled_sum(customers.spend)", "alias": "m0"}],
         }),
-        model=_orders(), dialect="duckdb",
+        dataset=_orders(), dialect="duckdb",
     )
     with duckdb.connect() as con:
         con.execute(

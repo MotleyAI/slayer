@@ -6,7 +6,7 @@ Stored-only: a fresh payload is never rewritten.
 from typing import Any
 
 from slayer.storage.migrations import register_migration
-from slayer.storage.rank_direction_migration import rewrite_model_texts, rewrite_query_texts, stamp_memory_query
+from slayer.storage.rank_direction_migration import rewrite_dataset_texts, rewrite_query_texts, stamp_memory_query
 
 
 def _dotted(value: Any) -> Any:
@@ -28,11 +28,11 @@ def rewrite_query_time_dimensions(data: dict) -> dict:
     return rewrite_query_texts(data, lambda text: text)
 
 
-def mark_model_queries(data: dict) -> dict:
+def mark_dataset_queries(data: dict) -> dict:
     """Mark nested stored queries as stored."""
-    return rewrite_model_texts(data, lambda text: text)
+    return rewrite_dataset_texts(data, lambda text: text)
 
 
-register_migration(entity="SlayerModel", source_version=16, stored_only=True)(mark_model_queries)
+register_migration(entity="SlayerModel", source_version=16, stored_only=True)(mark_dataset_queries)
 register_migration(entity="SlayerQuery", source_version=7, stored_only=True)(rewrite_query_time_dimensions)
 register_migration(entity="Memory", source_version=5, stored_only=True)(stamp_memory_query)

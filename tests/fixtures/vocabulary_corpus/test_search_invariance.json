@@ -1,0 +1,76 @@
+{
+ "source": "tests/test_search_invariance.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount_paid)"
+   },
+   "new": {
+    "metric": "sum(amount_paid)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 133,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  }
+ ]
+}

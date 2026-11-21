@@ -1,0 +1,46 @@
+{
+ "source": "tests/test_save_time_sql_validation.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 217,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 219,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 280,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 284,
+   "reason": "not fully literal"
+  }
+ ]
+}

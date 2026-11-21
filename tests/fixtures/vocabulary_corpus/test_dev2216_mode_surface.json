@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_dev2216_mode_surface.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.signup_at)",
+    "name": "ls"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.signup_at)",
+    "name": "ls"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  }
+ ]
+}

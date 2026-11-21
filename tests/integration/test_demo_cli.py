@@ -47,13 +47,13 @@ async def test_create_demo_with_ingest_end_to_end(tmp_path):
     assert ds is not None
     assert ds.type == "duckdb"
 
-    # Models ingested with expected default_time_dimension overrides
-    models = await storage.list_models()
+    # Datasets ingested with expected default_time_dimension overrides
+    models = await storage.list_datasets()
     assert "orders" in models
     assert "tweets" in models
 
-    orders = await storage.get_model("orders")
+    orders = await storage.get_dataset("orders")
     assert orders.default_time_dimension == "ordered_at"
 
-    tweets = await storage.get_model("tweets")
+    tweets = await storage.get_dataset("tweets")
     assert tweets.default_time_dimension == "tweeted_at"

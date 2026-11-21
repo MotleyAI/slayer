@@ -1,4 +1,4 @@
-"""DEV-1935 golden SQL — the boolean-total pushdown shapes across the seven
+"""Golden SQL — the boolean-total pushdown shapes across the seven
 Tier-1 dialects. Each ``mixed_or``/``multi_branch`` shape restricts the population
 by one correlated EXISTS whose subquery holds the whole boolean predicate (the
 disjunction stays inside the EXISTS, never an operand of the outer OR); a
@@ -9,7 +9,7 @@ materialised branch to the outer query and quantifies only the rest.
 Today every ``mixed_or``/``multi_branch`` case fails closed or drops-and-warns, so
 the committed baseline records that; ``test_new_shapes_generate_sql`` is the RED
 tripwire that flips to real SQL once the lowering lands, re-blessed per the
-DEV-1742 ALLOWED_DELTAS protocol.
+ALLOWED_DELTAS protocol.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from tests._dev1935_fixtures import (
     NOT_GOLD_AND_OK,
     OR_MIX_LOCAL,
     REDUCED_PUSH_OR,
-    dev1900_models,
+    dev1900_datasets,
 )
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -42,57 +42,57 @@ def _cases() -> dict:
         # spine shape when the predicate can hold on the hop's null-extended row.
         "mixed_or/structural": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
-                   "filters": [OR_MIX_LOCAL]}},
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
+                   "filter": [OR_MIX_LOCAL]}},
         "mixed_or/gold_null_extended": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
-                   "filters": [GOLD_OR_OK]}},
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
+                   "filter": [GOLD_OR_OK]}},
         "mixed_or/negation": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
-                   "filters": [NOT_GOLD_AND_OK]}},
-        # is_null/* — a null-test on a related column reads as absence (spine).
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
+                   "filter": [NOT_GOLD_AND_OK]}},
+        # is_null/* — a null-test on a related field reads as absence (spine).
         "is_null/absence": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
-                   "filters": [NO_ORDERS]}},
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
+                   "filter": [NO_ORDERS]}},
         # multi_branch/* — cross-path refs spanning several branches, or an atom
         # comparing two branches — judged on the product.
         "multi_branch/or": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
-                   "filters": [NEW_OR_EVENT]}},
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
+                   "filter": [NEW_OR_EVENT]}},
         "multi_branch/atom": {
             "source": "customers",
-            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
-                   "filters": [ATOM_TWO_BRANCH]}},
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
+                   "filter": [ATOM_TWO_BRANCH]}},
         # materialised/host_base — a materialised branch (orders.id dimension) binds
         # to the outer query; only the regions branch is quantified.
         "materialised/host_base": {
             "source": "customers",
-            "kw": {"dimensions": ["orders.id"], "filters": [MATERIALISED_OR]}},
+            "kw": {"dimensions": ["orders.id"], "filter": [MATERIALISED_OR]}},
         # materialised/reduced_push — the orders branch binds to the outer query;
         # only the regions branch is quantified (D6).
         "materialised/reduced_push": {
             "source": "customers",
-            "kw": {"dimensions": ["orders.id"], "filters": [REDUCED_PUSH_OR]}},
+            "kw": {"dimensions": ["orders.id"], "filter": [REDUCED_PUSH_OR]}},
         # producer/* — a host-rooted producer inherits the population semi-join.
         "producer/mixed_or_partitioned": {
             "source": "customers",
-            "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": "sum(spend, partition_by=tier)",
-                                 "name": "pt"}],
-                   "filters": [OR_MIX_LOCAL]}},
+            "kw": {"dimensions": ["customers.tier"],
+                   "metrics": [{"metric": "sum(customers.spend, partition_by=customers.tier)",
+                                 "alias": "pt"}],
+                   "filter": [OR_MIX_LOCAL]}},
     }
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1900_models()
+    models = dev1900_datasets()
     try:
-        query = SlayerQuery(source_model=case["source"], **case["kw"])
+        query = SlayerQuery(population=case["source"], **case["kw"])
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

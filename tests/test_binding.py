@@ -1,5 +1,5 @@
-"""ExpressionBinder + FilterBinder tests: ``ParsedExpr`` + scope (``ModelScope``
-with joins / flat ``StageSchema``) → typed ``BoundExpr`` of resolved ``ValueKey``s.
+"""ExpressionBinder + FilterBinder tests: ``ParsedExpr`` + scope (``DatasetScope``
+with relationships / a stage's dataset) → typed ``BoundExpr`` of resolved ``ValueKey``s.
 Covers self-prefix stripping (C14) and phase classification (P8)."""
 
 from __future__ import annotations
@@ -10,29 +10,28 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    IllegalScopeReferenceError,
     IllegalWindowInFilterError,
     UnknownReferenceError,
-    UnresolvableDimensionJoinError,
+    UnresolvableDimensionRelationshipError,
 )
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     LiteralKey,
     Phase,
     ScalarCallKey,
     StarKey,
     TransformKey,
 )
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import (
     bind_expr,
     bind_filter,
 )
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from slayer.core.syntax import Ref, parse_expr
 
 
@@ -41,62 +40,62 @@ from slayer.core.syntax import Ref, parse_expr
 # ---------------------------------------------------------------------------
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="prod",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(
                 name="revenue_2",
-                type=DataType.DOUBLE,
-                sql="amount * 2",
+                datatype=DataType.FLOAT,
+                expression="amount * 2",
             ),
         ],
-        joins=[
-            ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+        relationships=[
+            DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
             ),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         data_source="prod",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="name", type=DataType.TEXT),
-            Column(
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(
                 name="revenue_doubled",
-                type=DataType.DOUBLE,
-                sql="revenue * 2",
+                datatype=DataType.FLOAT,
+                expression="revenue * 2",
             ),
         ],
-        joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
         ],
     )
 
 
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions",
         data_source="prod",
         sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -104,13 +103,13 @@ def _regions() -> SlayerModel:
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=_orders(),
-        referenced_models=[_customers(), _regions()],
+        population=_orders(),
+        referenced_datasets=[_customers(), _regions()],
     )
 
 
-def _scope() -> ModelScope:
-    return ModelScope(source_model=_orders())
+def _scope() -> DatasetScope:
+    return DatasetScope(population=_orders())
 
 
 # ---------------------------------------------------------------------------
@@ -123,20 +122,20 @@ class TestRowRefs:
         bound = bind_expr(
             parse_expr("amount"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(path=(), leaf="amount")
+        assert bound.value_key == FieldKey(path=(), leaf="amount")
 
     def test_dotted_one_hop(self):
         bound = bind_expr(
             parse_expr("customers.name"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(path=("customers",), leaf="name")
+        assert bound.value_key == FieldKey(path=("customers",), leaf="name")
 
     def test_dotted_multi_hop(self):
         bound = bind_expr(
             parse_expr("customers.regions.name"),
             scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(
+        assert bound.value_key == FieldKey(
             path=("customers", "regions"), leaf="name",
         )
 
@@ -144,20 +143,20 @@ class TestRowRefs:
         bound = bind_expr(
             parse_expr("revenue_2"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnSqlKey(
-            path=(), model="orders", column_name="revenue_2",
+        assert bound.value_key == FieldSqlKey(
+            path=(), dataset="orders", field_name="revenue_2",
         )
 
     def test_cross_model_derived_column_carries_path(self):
-        # Joined derived column: ColumnSqlKey.path is the join walk.
+        # Joined derived field: FieldSqlKey.path is the relationship walk.
         bound = bind_expr(
             parse_expr("customers.revenue_doubled"),
             scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnSqlKey(
+        assert bound.value_key == FieldSqlKey(
             path=("customers",),
-            model="customers",
-            column_name="revenue_doubled",
+            dataset="customers",
+            field_name="revenue_doubled",
         )
 
     def test_unknown_ref_raises(self):
@@ -171,10 +170,10 @@ class TestRowRefs:
             bind_expr(expr, scope=scope, bundle=bundle)
 
     def test_unknown_join_target_raises(self):
-        # DEV-1856: an unreachable short form is route-aware-rejected (was UnknownReferenceError).
+        # An unreachable short form is route-aware-rejected (was UnknownReferenceError).
         expr = parse_expr("warehouses.id")
         scope, bundle = _scope(), _bundle()
-        with pytest.raises(UnresolvableDimensionJoinError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             bind_expr(expr, scope=scope, bundle=bundle)
 
 
@@ -185,11 +184,11 @@ class TestRowRefs:
 
 class TestSelfPrefixStripping:
     def test_self_prefix_stripped(self):
-        # orders.status over an orders-rooted query → ColumnKey(path=(), leaf="status").
+        # orders.status over an orders-rooted query → FieldKey(path=(), leaf="status").
         bound = bind_expr(
             parse_expr("orders.status"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(path=(), leaf="status")
+        assert bound.value_key == FieldKey(path=(), leaf="status")
 
     def test_self_prefix_with_join_continues(self):
         # orders.customers.name → strip orders, then walk customers.
@@ -197,7 +196,7 @@ class TestSelfPrefixStripping:
             parse_expr("orders.customers.name"),
             scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(
+        assert bound.value_key == FieldKey(
             path=("customers",), leaf="name",
         )
 
@@ -213,7 +212,7 @@ class TestAggregations:
             parse_expr("sum(amount)"), scope=_scope(), bundle=_bundle(),
         )
         assert bound.value_key == AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="sum",
+            source=FieldKey(path=(), leaf="amount"), agg="sum",
         )
 
     def test_star_count(self):
@@ -230,7 +229,7 @@ class TestAggregations:
             scope=_scope(), bundle=_bundle(),
         )
         assert bound.value_key == AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="revenue"),
+            source=FieldKey(path=("customers",), leaf="revenue"),
             agg="sum",
         )
 
@@ -242,9 +241,9 @@ class TestAggregations:
         key = bound.value_key
         assert isinstance(key, AggregateKey)
         assert key.agg == "weighted_avg"
-        # Kwargs canonicalised; weight=ColumnKey(...).
+        # Kwargs canonicalised; weight=FieldKey(...).
         assert dict(key.kwargs) == {
-            "weight": ColumnKey(path=(), leaf="customer_id"),
+            "weight": FieldKey(path=(), leaf="customer_id"),
         }
 
     def test_aggregation_phase_is_aggregate(self):
@@ -286,7 +285,7 @@ class TestComposite:
         key = bound.value_key
         assert isinstance(key, ArithmeticKey)
         assert key.op == "+"
-        assert key.operands[0] == ColumnKey(path=(), leaf="amount")
+        assert key.operands[0] == FieldKey(path=(), leaf="amount")
         assert key.operands[1] == LiteralKey(value=Decimal(1))
 
     def test_arithmetic_phase_max(self):
@@ -314,9 +313,9 @@ class TestComposite:
         assert bound.value_key == LiteralKey(value=Decimal(42))
 
     def test_aggregates_nested_in_scalar_call_stay_bound(self):
-        # DEV-1484 backfill from the deleted
-        # test_formula.py::TestPlaceholderLeakRegression (DEV-1341). The legacy
-        # parser flattened such formulas to a SQL string with ``__aggN__``
+        # Backfill from the deleted
+        # test_formula.py::TestPlaceholderLeakRegression. The legacy
+        # parser flattened such expressions to a SQL string with ``__aggN__``
         # placeholders, so an aggregate nested inside a non-transform call
         # (``nullif`` / ``coalesce``) could fail to register and leak its
         # placeholder into emitted SQL. The typed pipeline keeps structure, so
@@ -334,14 +333,14 @@ class TestComposite:
         assert isinstance(wrapped, ScalarCallKey)
         assert wrapped.name == "nullif"
         assert wrapped.args[0] == AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="max",
+            source=FieldKey(path=(), leaf="amount"), agg="max",
         )
         # An aggregate anywhere inside the scalar call makes the whole
         # expression aggregate-phase.
         assert key.phase == Phase.AGGREGATE
 
     def test_coalesce_wrapped_aggregate_plus_outside_aggregate(self):
-        # DEV-1484 backfill: ``coalesce(sum(amount), 0) + avg(amount)`` — one
+        # ``coalesce(sum(amount), 0) + avg(amount)`` — one
         # aggregate wrapped by a scalar, one outside it. Both must bind.
         bound = bind_expr(
             parse_expr("coalesce(sum(amount), 0) + avg(amount)"),
@@ -352,15 +351,15 @@ class TestComposite:
         wrapped, outside = key.operands
         assert isinstance(wrapped, ScalarCallKey)
         assert wrapped.args[0] == AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="sum",
+            source=FieldKey(path=(), leaf="amount"), agg="sum",
         )
         assert outside == AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="avg",
+            source=FieldKey(path=(), leaf="amount"), agg="avg",
         )
 
 
 # ---------------------------------------------------------------------------
-# IllegalScopeReferenceError — `__` in ModelScope
+# IllegalScopeReferenceError — `__` in DatasetScope
 # ---------------------------------------------------------------------------
 
 
@@ -372,7 +371,7 @@ class TestIllegalScopeRefs:
         bound = bind_expr(
             parse_expr("amount"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(path=(), leaf="amount")
+        assert bound.value_key == FieldKey(path=(), leaf="amount")
 
 
 # ---------------------------------------------------------------------------
@@ -383,59 +382,66 @@ class TestIllegalScopeRefs:
 def _stage_schema_with_flat_names() -> StageSchema:
     return StageSchema(
         relation_name="stage1",
-        columns=[
-            StageColumn(
+        fields=[
+            StageField(
                 name="status", sql_alias="status", public_alias="status",
-                type=DataType.TEXT,
+                datatype=DataType.STRING,
             ),
-            StageColumn(
+            StageField(
                 name="robot_details__modelseriesval",
                 sql_alias="robot_details__modelseriesval",
                 public_alias="robot_details.modelseriesval",
-                type=DataType.TEXT,
+                datatype=DataType.STRING,
             ),
-            StageColumn(
+            StageField(
                 name="rev", sql_alias="rev", public_alias="rev",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
 
 
+def _stage_dataset_scope() -> tuple[DatasetScope, ResolvedSourceBundle]:
+    """The dataset scope a later stage binds ``stage1`` through, and its bundle."""
+    stage = dataset_from_stage_schema(name="stage1", schema=_stage_schema_with_flat_names(), data_source="prod")
+    bundle = ResolvedSourceBundle(
+        dialect="postgres", population=stage, referenced_datasets=[_orders(), _customers(), _regions()],
+    )
+    return DatasetScope(population=stage), bundle
+
+
 class TestStageSchemaScope:
     def test_flat_name_resolves(self):
-        # In a StageSchema scope, refs resolve as flat names — no join
-        # walking.
-        scope = _stage_schema_with_flat_names()
+        # A stage's fields resolve by their flat names.
+        scope, bundle = _stage_dataset_scope()
         bound = bind_expr(
-            parse_expr("status"), scope=scope, bundle=_bundle(),
+            parse_expr("status"), scope=scope, bundle=bundle,
         )
-        assert bound.value_key == ColumnKey(path=(), leaf="status")
+        assert bound.value_key == FieldKey(path=(), leaf="status")
 
     def test_dotted_ref_in_stage_schema_rejected(self):
-        # DEV-1449: downstream stages see a flat schema — dotted refs
-        # are illegal in StageSchema scope.
-        scope = _stage_schema_with_flat_names()
-        expr, bundle = parse_expr("robot_details.modelseriesval"), _bundle()
-        with pytest.raises(IllegalScopeReferenceError):
+        # A dotted spelling of a flattened field fails as from a stored root.
+        scope, bundle = _stage_dataset_scope()
+        expr = parse_expr("robot_details.modelseriesval")
+        with pytest.raises(UnknownReferenceError):
             bind_expr(expr, scope=scope, bundle=bundle)
 
     def test_flat_underscore_name_resolves(self):
-        # The flat name `robot_details__modelseriesval` IS a column on
+        # The flat name `robot_details__modelseriesval` IS a field on
         # the stage schema — it resolves.
-        scope = _stage_schema_with_flat_names()
+        scope, bundle = _stage_dataset_scope()
         # The syntax parser rejects `__` in user identifiers — bind_expr
         # is given a pre-parsed ParsedExpr that explicitly uses the flat
-        # column name via the Ref constructor.
+        # field name via the Ref constructor.
         bound = bind_expr(Ref(name="robot_details__modelseriesval"),
-                          scope=scope, bundle=_bundle())
-        assert bound.value_key == ColumnKey(
+                          scope=scope, bundle=bundle)
+        assert bound.value_key == FieldKey(
             path=(), leaf="robot_details__modelseriesval",
         )
 
     def test_unknown_flat_name_raises(self):
-        scope = _stage_schema_with_flat_names()
-        expr, bundle = parse_expr("nope"), _bundle()
+        scope, bundle = _stage_dataset_scope()
+        expr = parse_expr("nope")
         with pytest.raises(UnknownReferenceError):
             bind_expr(expr, scope=scope, bundle=bundle)
 
@@ -482,12 +488,12 @@ class TestFilterBinder:
         )
         refs = set(bound.referenced_keys)
         assert any(
-            isinstance(k, ColumnKey) and k.leaf == "status" for k in refs
+            isinstance(k, FieldKey) and k.leaf == "status" for k in refs
         )
         assert any(isinstance(k, AggregateKey) for k in refs)
 
     def test_referenced_keys_include_aggregate_inside_scalar_call(self):
-        # DEV-1484 backfill from the deleted
+        # Backfill from the deleted
         # test_formula.py::TestPlaceholderLeakRegression::
         # test_predicate_with_nullif_wrapper — ``nullif(count(*), 0) > 5`` is a
         # predicate whose aggregate is buried inside a scalar call. It must
@@ -504,29 +510,29 @@ class TestFilterBinder:
 
 
 # ---------------------------------------------------------------------------
-# Windowed Column.sql in filter → IllegalWindowInFilterError
+# Windowed DatasetField.sql in filter → IllegalWindowInFilterError
 # ---------------------------------------------------------------------------
 
 
 class TestWindowInFilter:
     def test_filter_on_windowed_column_sql_raises(self):
-        # A Column.sql containing a window function. A filter referencing
-        # that column raises IllegalWindowInFilterError (DEV-1369: no
+        # A DatasetField.sql containing a window function. A filter referencing
+        # that field raises IllegalWindowInFilterError (no
         # auto-promotion).
         model = _orders().model_copy(update={
-            "columns": list(_orders().columns) + [
-                Column(
+            "fields": list(_orders().fields) + [
+                DatasetField(
                     name="rolling_rank",
-                    type=DataType.INT,
-                    sql="RANK() OVER (PARTITION BY status ORDER BY amount)",
+                    datatype=DataType.INTEGER,
+                    expression="RANK() OVER (PARTITION BY status ORDER BY amount)",
                 ),
             ],
         })
-        scope = ModelScope(source_model=model)
+        scope = DatasetScope(population=model)
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=model,
-            referenced_models=[_customers(), _regions()],
+            population=model,
+            referenced_datasets=[_customers(), _regions()],
         )
         expr = parse_expr("rolling_rank > 1")
         with pytest.raises(IllegalWindowInFilterError):
@@ -538,7 +544,7 @@ class TestNestedAggregateParamDimAliasMap:
         # dim_alias_map must thread into a nested aggregate param's partition_by.
         parsed = parse_expr(
             "weighted_avg(amount, weight=count(id, partition_by=my_dim))")
-        computed = ColumnKey(leaf="status")
+        computed = FieldKey(leaf="status")
         outer = bind_expr(
             parsed=parsed, scope=_scope(), bundle=_bundle(),
             dimension_alias_map={"my_dim": computed},

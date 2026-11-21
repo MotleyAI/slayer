@@ -1,0 +1,174 @@
+{
+ "source": "tests/test_sample_profiling.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 236,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 281,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 282,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 307,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 309,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 309,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 311,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 313,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 314,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 354,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 372,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 383,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 435,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 467,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 470,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 471,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 472,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 473,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 474,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 508,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 511,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 512,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 513,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 514,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 622,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 646,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 671,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 711,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 892,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 924,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 925,
+   "reason": "not fully literal"
+  }
+ ]
+}

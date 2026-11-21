@@ -1,0 +1,50 @@
+{
+ "source": "tests/test_dev1835_guards.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90x')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90x')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='90d')",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": []
+}

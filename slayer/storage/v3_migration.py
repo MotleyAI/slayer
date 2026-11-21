@@ -40,18 +40,18 @@ def _query_v2_to_v3(data: dict) -> dict:
     for k in dropped:
         data.pop(k, None)
     identifier = data.get("name") or _source_label(data.get("source_model")) or "<anonymous>"
-    msg = (
-        f"SlayerQuery '{identifier}': dropped legacy field(s) "
-        f"{{{', '.join(dropped)}}} during v2→v3 migration; pass these as "
-        f"engine.execute(..., dry_run=..., explain=...) kwargs instead."
+    template = (
+        "SlayerQuery '%s': dropped legacy field(s) {%s} during v2→v3 migration; pass these as "
+        "engine.execute(..., dry_run=..., explain=...) kwargs instead."
     )
-    logger.warning(msg)
-    warnings.warn(msg, DeprecationWarning, stacklevel=2)
+    fields = ", ".join(dropped)
+    logger.warning(template, identifier, fields)
+    warnings.warn(template % (identifier, fields), DeprecationWarning, stacklevel=2)
     return data
 
 
 @register_migration("SlayerModel", 2)
-def _model_v2_to_v3(data: dict) -> dict:
+def _dataset_v2_to_v3(data: dict) -> dict:
     """v3 SlayerModel: identical at the model level, but ``source_queries``
     entries (which are raw SlayerQuery dicts, not validated model fields) are
     walked through the SlayerQuery migration chain so any nested ``dry_run``

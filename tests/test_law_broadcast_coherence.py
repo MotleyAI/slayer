@@ -1,5 +1,5 @@
 """LAW broadcast coherence (semantics.arc42.md §3 law 2): coercing then
-combining equals combining then coercing — a formula measure ``a ⊕ b`` matches
+combining equals combining then coercing — an expression metric ``a ⊕ b`` matches
 its operands queried separately and combined client-side (SQL NULL
 propagation), and coercions compose along grain chains."""
 
@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._law_harness import (
     OPERANDS,
-    ModelMeasure,
     canon,
     make_law_engine,
     month_key,
@@ -35,20 +36,20 @@ async def exec_engine(request):
 
 def _pair_kwargs(pair, grain: str) -> dict:
     if grain == "rc":
-        kwargs: dict = {"dimensions": ["region", "city"]}
+        kwargs: dict = {"dimensions": ["orders.region", "orders.city"]}
         if pair.with_month:
             kwargs["time_dimensions"] = month_td()
     elif grain == "rn":
-        kwargs = {"dimensions": ["region", "customers.regions.name"]}
+        kwargs = {"dimensions": ["orders.region", "customers.regions.name"]}
         if pair.with_month:
             kwargs["time_dimensions"] = month_td()
     else:
-        kwargs = {"dimensions": ["region"], "time_dimensions": month_td()}
+        kwargs = {"dimensions": ["orders.region"], "time_dimensions": month_td()}
     return kwargs
 
 
 def _row_key(row: dict, kwargs: dict) -> tuple:
-    key = tuple(row[f"orders.{d}"] for d in kwargs["dimensions"])
+    key = tuple(row[d] for d in kwargs["dimensions"])
     if "time_dimensions" in kwargs:
         key += (month_key(row["orders.ordered_at"]),)
     return key
@@ -64,15 +65,15 @@ def _combine(op: str, a, b):
 async def test_formula_equals_client_side_combine(pair_case):
     engine, pair, grain = pair_case
     kwargs = _pair_kwargs(pair=pair, grain=grain)
-    left = await engine.execute(q(**kwargs, measures=[
-        ModelMeasure(formula=f"{OPERANDS[pair.a]} {pair.op} {OPERANDS[pair.b]}",
-                     name="x"),
+    left = await engine.execute(q(**kwargs, metrics=[
+        QueryMetric(metric=f"{OPERANDS[pair.a]} {pair.op} {OPERANDS[pair.b]}",
+                     alias="x"),
     ]))
-    right = await engine.execute(q(**kwargs, measures=[
-        ModelMeasure(formula=OPERANDS[pair.a], name="a"),
-        ModelMeasure(formula=OPERANDS[pair.b], name="b"),
+    right = await engine.execute(q(**kwargs, metrics=[
+        QueryMetric(metric=OPERANDS[pair.a], alias="a"),
+        QueryMetric(metric=OPERANDS[pair.b], alias="b"),
     ]))
-    left_rows = {_row_key(row=r, kwargs=kwargs): r["orders.x"] for r in left.data}
+    left_rows = {_row_key(row=r, kwargs=kwargs): r["x"] for r in left.data}
     right_rows = {_row_key(row=r, kwargs=kwargs): r for r in right.data}
     assert len(left_rows) == len(left.data), "duplicate group keys (left)"
     assert len(right_rows) == len(right.data), "duplicate group keys (right)"
@@ -81,9 +82,9 @@ async def test_formula_equals_client_side_combine(pair_case):
         f"pair={pair} grain={grain}"
     )
     for key, row in right_rows.items():
-        expected = _combine(op=pair.op, a=row["orders.a"], b=row["orders.b"])
+        expected = _combine(op=pair.op, a=row["a"], b=row["b"])
         assert values_equal(a=left_rows[key], b=expected), (
-            f"LAW broadcast coherence violated — cell {key}: formula gave "
+            f"LAW broadcast coherence violated — cell {key}: expression gave "
             f"{left_rows[key]!r}, client-side combine gave {expected!r}; "
             f"pair={pair} grain={grain}"
         )
@@ -91,19 +92,19 @@ async def test_formula_equals_client_side_combine(pair_case):
 
 async def test_ill_typed_operand_refuses_identically_in_both_phrasings(exec_engine):
     """part(city) outside a city-bearing grain is ill-typed (axiom 6); the
-    typed refusal must not depend on phrasing (formula vs separate measures).
+    typed refusal must not depend on phrasing (expression vs separate metrics).
     The rm-grain pair sample excludes part_city for exactly this reason."""
-    kwargs: dict = {"dimensions": ["region"], "time_dimensions": month_td()}
-    refusal = r"partition_by column 'city' is not a query dimension"
-    as_formula = q(**kwargs, measures=[
-        ModelMeasure(
-            formula=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",
-            name="x",
+    kwargs: dict = {"dimensions": ["orders.region"], "time_dimensions": month_td()}
+    refusal = r"partition_by field 'city' is not a query dimension"
+    as_formula = q(**kwargs, metrics=[
+        QueryMetric(
+            metric=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",
+            alias="x",
         ),
     ])
-    as_separate = q(**kwargs, measures=[
-        ModelMeasure(formula=OPERANDS["part_city"], name="a"),
-        ModelMeasure(formula=OPERANDS["plain"], name="b"),
+    as_separate = q(**kwargs, metrics=[
+        QueryMetric(metric=OPERANDS["part_city"], alias="a"),
+        QueryMetric(metric=OPERANDS["plain"], alias="b"),
     ])
     with pytest.raises(ValueError, match=refusal):
         await exec_engine.execute(as_formula)
@@ -115,18 +116,18 @@ async def test_region_grain_operand_agrees_along_the_grain_chain(exec_engine):
     """Coercions compose: one region-grain operand read at (region),
     (region, city), and (region, city, month) yields the same per-region value
     all along the chain."""
-    rt = ModelMeasure(formula=OPERANDS["part_region"], name="rt")
+    rt = QueryMetric(metric=OPERANDS["part_region"], alias="rt")
     per_region: list[dict] = []
     for kwargs in (
-        {"dimensions": ["region"]},
-        {"dimensions": ["region", "city"]},
-        {"dimensions": ["region", "city"], "time_dimensions": month_td()},
+        {"dimensions": ["orders.region"]},
+        {"dimensions": ["orders.region", "orders.city"]},
+        {"dimensions": ["orders.region", "orders.city"], "time_dimensions": month_td()},
     ):
-        resp = await exec_engine.execute(q(**kwargs, measures=[rt]))
+        resp = await exec_engine.execute(q(**kwargs, metrics=[rt]))
         values: dict = {}
         for row in resp.data:
             values.setdefault(row["orders.region"], set()).add(
-                canon(row["orders.rt"]),
+                canon(row["rt"]),
             )
         for region, seen in values.items():
             assert len(seen) == 1, (

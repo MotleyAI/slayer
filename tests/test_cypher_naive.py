@@ -23,8 +23,8 @@ from slayer.search.cypher_naive import parse_naive_label_filter
 
 
 def test_single_label_model() -> None:
-    kinds = parse_naive_label_filter("MATCH (n:Model) RETURN n.id AS id")
-    assert kinds == {"model"}
+    kinds = parse_naive_label_filter("MATCH (n:Dataset) RETURN n.id AS id")
+    assert kinds == {"dataset"}
 
 
 def test_single_label_memory() -> None:
@@ -33,8 +33,8 @@ def test_single_label_memory() -> None:
 
 
 def test_single_label_column() -> None:
-    kinds = parse_naive_label_filter("MATCH (n:Column) RETURN n.id AS id")
-    assert kinds == {"column"}
+    kinds = parse_naive_label_filter("MATCH (n:Field) RETURN n.id AS id")
+    assert kinds == {"field"}
 
 
 def test_single_label_datasource() -> None:
@@ -43,8 +43,8 @@ def test_single_label_datasource() -> None:
 
 
 def test_single_label_measure() -> None:
-    kinds = parse_naive_label_filter("MATCH (n:Measure) RETURN n.id AS id")
-    assert kinds == {"measure"}
+    kinds = parse_naive_label_filter("MATCH (n:Metric) RETURN n.id AS id")
+    assert kinds == {"metric"}
 
 
 def test_single_label_aggregation() -> None:
@@ -54,24 +54,24 @@ def test_single_label_aggregation() -> None:
 
 def test_multi_label_colon_separated_two() -> None:
     kinds = parse_naive_label_filter(
-        "MATCH (n:Model:Column) RETURN n.id AS id"
+        "MATCH (n:Dataset:Field) RETURN n.id AS id"
     )
-    assert kinds == {"model", "column"}
+    assert kinds == {"dataset", "field"}
 
 
 def test_multi_label_colon_separated_three() -> None:
     kinds = parse_naive_label_filter(
-        "MATCH (n:Memory:Model:Column) RETURN n.id AS id"
+        "MATCH (n:Memory:Dataset:Field) RETURN n.id AS id"
     )
-    assert kinds == {"memory", "model", "column"}
+    assert kinds == {"memory", "dataset", "field"}
 
 
 def test_all_six_labels_together() -> None:
     kinds = parse_naive_label_filter(
-        "MATCH (n:Memory:Datasource:Model:Column:Measure:Aggregation) "
+        "MATCH (n:Memory:Datasource:Dataset:Field:Metric:Aggregation) "
         "RETURN n.id AS id"
     )
-    assert kinds == {"memory", "datasource", "model", "column", "measure", "aggregation"}
+    assert kinds == {"memory", "datasource", "dataset", "field", "metric", "aggregation"}
 
 
 # ---------------------------------------------------------------------------
@@ -80,25 +80,25 @@ def test_all_six_labels_together() -> None:
 
 
 def test_case_insensitive_keyword() -> None:
-    kinds = parse_naive_label_filter("match (n:Model) return n.id as id")
-    assert kinds == {"model"}
+    kinds = parse_naive_label_filter("match (n:Dataset) return n.id as id")
+    assert kinds == {"dataset"}
 
 
 def test_case_insensitive_label() -> None:
-    kinds = parse_naive_label_filter("MATCH (n:model) RETURN n.id AS id")
-    assert kinds == {"model"}
+    kinds = parse_naive_label_filter("MATCH (n:dataset) RETURN n.id AS id")
+    assert kinds == {"dataset"}
 
 
 def test_whitespace_around_labels() -> None:
     kinds = parse_naive_label_filter(
-        "MATCH ( n : Model : Column ) RETURN n.id AS id"
+        "MATCH ( n : Dataset : Field ) RETURN n.id AS id"
     )
-    assert kinds == {"model", "column"}
+    assert kinds == {"dataset", "field"}
 
 
 def test_extra_whitespace_in_return() -> None:
-    kinds = parse_naive_label_filter("MATCH (n:Model)  RETURN  n.id  AS  id")
-    assert kinds == {"model"}
+    kinds = parse_naive_label_filter("MATCH (n:Dataset)  RETURN  n.id  AS  id")
+    assert kinds == {"dataset"}
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ def test_unknown_label_raises_slayer_error() -> None:
 
 def test_unknown_label_in_multi_raises_slayer_error() -> None:
     with pytest.raises(SlayerError, match="(?i)unknown"):
-        parse_naive_label_filter("MATCH (n:Model:Foo) RETURN n.id AS id")
+        parse_naive_label_filter("MATCH (n:Dataset:Foo) RETURN n.id AS id")
 
 
 # ---------------------------------------------------------------------------
@@ -124,21 +124,21 @@ def test_unknown_label_in_multi_raises_slayer_error() -> None:
 def test_complex_cypher_with_where_raises_advanced_search_error() -> None:
     with pytest.raises(SlayerError, match="(?i)advanced_search"):
         parse_naive_label_filter(
-            "MATCH (n:Model) WHERE n.name = 'orders' RETURN n.id AS id"
+            "MATCH (n:Dataset) WHERE n.name = 'orders' RETURN n.id AS id"
         )
 
 
 def test_complex_cypher_with_relationship_raises() -> None:
     with pytest.raises(SlayerError, match="(?i)advanced_search"):
         parse_naive_label_filter(
-            "MATCH (m:Memory)-[:MENTIONS]->(e:Model) RETURN m.id AS id"
+            "MATCH (m:Memory)-[:MENTIONS]->(e:Dataset) RETURN m.id AS id"
         )
 
 
 def test_complex_cypher_multi_clause_raises() -> None:
     with pytest.raises(SlayerError, match="(?i)advanced_search"):
         parse_naive_label_filter(
-            "MATCH (m:Memory) MATCH (e:Model) RETURN m.id AS id"
+            "MATCH (m:Memory) MATCH (e:Dataset) RETURN m.id AS id"
         )
 
 
@@ -155,9 +155,9 @@ def test_bare_match_no_label_raises_advanced_search_error() -> None:
 def test_missing_as_id_raises_slayer_error() -> None:
     """Queries without 'AS id' are invalid even for the naive path."""
     with pytest.raises(SlayerError):
-        parse_naive_label_filter("MATCH (n:Model) RETURN n.id")
+        parse_naive_label_filter("MATCH (n:Dataset) RETURN n.id")
 
 
 def test_wrong_alias_raises_slayer_error() -> None:
     with pytest.raises(SlayerError):
-        parse_naive_label_filter("MATCH (n:Model) RETURN n.id AS entity_id")
+        parse_naive_label_filter("MATCH (n:Dataset) RETURN n.id AS entity_id")

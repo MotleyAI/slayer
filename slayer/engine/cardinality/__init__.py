@@ -1,4 +1,4 @@
-"""Join cardinality and association."""
+"""Relationship cardinality and association."""
 
 from typing import TYPE_CHECKING
 

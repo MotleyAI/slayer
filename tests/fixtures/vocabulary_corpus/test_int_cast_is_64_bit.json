@@ -1,0 +1,44 @@
+{
+ "source": "tests/test_int_cast_is_64_bit.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "dimensions": [
+     "big"
+    ],
+    "order": [
+     {
+      "column": "big"
+     }
+    ]
+   },
+   "new": {
+    "population": "t",
+    "dimensions": [
+     "big"
+    ],
+    "order": [
+     {
+      "field": "big"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  }
+ ]
+}

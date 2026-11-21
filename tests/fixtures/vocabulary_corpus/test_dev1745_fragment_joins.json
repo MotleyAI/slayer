@@ -1,0 +1,195 @@
+{
+ "source": "tests/test_dev1745_fragment_joins.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "status",
+      "name": "status"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "wscaled_sum(customers.spend)",
+      "name": "m0"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "status",
+      "alias": "status"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "wscaled_sum(customers.spend)",
+      "alias": "m0"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 235,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 247,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 265,
+   "reason": "no positional counterpart"
+  }
+ ]
+}

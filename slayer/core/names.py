@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, List, Optional, Sequence
 
 from slayer.core.errors import AmbiguousReferenceError
 
 
+#: An unquoted name: letters, digits and underscores, not starting with a digit.
+NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
+
+
 def quoted_name(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
+
+
+def spelled_name(name: str) -> str:
+    """``name`` as a Mode-B reference segment: bare when it is a plain name, else double-quoted."""
+    return name if NAME_PATTERN.match(name) else quoted_name(name)
+
+
+def qualified_reference(*segments: str) -> str:
+    """The dotted reference of ``segments`` (a dataset first), each spelled as a segment."""
+    return ".".join(spelled_name(s) for s in segments)
 
 
 def match_name(*, name: str, declared: Iterable[str], quoted: bool) -> Optional[str]:
@@ -48,7 +63,7 @@ def _unique(*, name: str, hits: List[str]) -> Optional[str]:
 
 
 def name_taken(name: str, taken: Iterable[str]) -> bool:
-    """Whether ``name`` equals one of ``taken`` in any case (a model's names are one case-insensitive namespace)."""
+    """Whether ``name`` equals one of ``taken`` in any case (a dataset's names are one case-insensitive namespace)."""
     folded = name.casefold()
     return any(t.casefold() == folded for t in taken)
 

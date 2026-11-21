@@ -1,10 +1,4 @@
-"""DEV-1866 — a rootless query executes identically to its explicit twin.
-
-Runs on SQLite and DuckDB. The inferred-population query and the same query
-with that population named explicitly must agree on SQL, data, columns,
-attributes, and warnings; only the reported ``population`` / ``population_inferred``
-metadata differs.
-"""
+"""A rootless query's rows and reported population against its explicit twins, on SQLite and DuckDB."""
 
 from __future__ import annotations
 
@@ -17,6 +11,7 @@ from tests._dev1866_fixtures import (
     make_chain_exec_engine,
     rows_by,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -31,7 +26,7 @@ def _canon(rows: list[dict]) -> list[tuple]:
     return sorted((tuple(sorted(r.items())) for r in rows), key=repr)
 
 
-async def _assert_twin(engine, *, rootless: SlayerQuery, explicit: SlayerQuery,
+async def _assert_twin(engine: SlayerQueryEngine, *, rootless: SlayerQuery, explicit: SlayerQuery,
                        population: str) -> None:
     r = await engine.execute(rootless)
     e = await engine.execute(explicit)
@@ -47,36 +42,26 @@ async def _assert_twin(engine, *, rootless: SlayerQuery, explicit: SlayerQuery,
 
 class TestExplicitTwinParity:
     async def test_canonical_customers_population(self, chain_engine) -> None:
-        await _assert_twin(
-            chain_engine,
-            rootless=SlayerQuery.model_validate({
-                "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
-            }),
-            explicit=SlayerQuery.model_validate({
-                "source_model": "customers",
-                "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
-            }),
-            population="customers",
-        )
+        """The anchor is ``customers``, but West, which no order reaches, is not a row."""
+        resp = await chain_engine.execute(SlayerQuery.model_validate({
+            "dimensions": ["customers.region"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+        }))
+        assert (resp.population, resp.population_inferred) == ("customers", True)
+        assert {r["customers.region"] for r in resp.data} == {"North", "South"}
 
-    async def test_field_filter_pulls_to_orders(self, chain_engine) -> None:
-        await _assert_twin(
-            chain_engine,
-            rootless=SlayerQuery.model_validate({
-                "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(amount)", "name": "rev"}],
-                "filters": ["orders.status = 'ok'"],
-            }),
-            explicit=SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(amount)", "name": "rev"}],
-                "filters": ["orders.status = 'ok'"],
-            }),
-            population="orders",
-        )
+    async def test_field_filter_keeps_the_anchor(self, chain_engine) -> None:
+        """An ``orders`` filter restricts the rows and never moves the anchor off ``customers``."""
+        query = {
+            "dimensions": ["customers.region"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+            "filter": ["orders.status = 'ok'"],
+        }
+        r = await chain_engine.execute(SlayerQuery.model_validate(query))
+        e = await chain_engine.execute(SlayerQuery.model_validate({"population": "orders", **query}))
+        assert _canon(r.data) == _canon(e.data)
+        assert r.columns == e.columns
+        assert (r.population, r.population_inferred) == ("customers", True)
 
     async def test_raw_row_mode(self, chain_engine) -> None:
         rootless = SlayerQuery(
@@ -87,7 +72,7 @@ class TestExplicitTwinParity:
             chain_engine,
             rootless=rootless,
             explicit=SlayerQuery(
-                source_model="customers",
+                population="customers",
                 dimensions=["customers.region"],
                 distinct_dimension_values=False,
             ),
@@ -105,34 +90,34 @@ class TestExplicitOverride:
         """Explicit source_model=orders is honored even though inference would
         pick customers — proven by West (a region with no orders) being absent."""
         resp = await chain_engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         }))
         assert resp.population == "orders"
         assert resp.population_inferred is False
-        regions = {r["orders.customers.region"] for r in resp.data}
+        regions = {r["customers.region"] for r in resp.data}
         assert regions == {"North", "South"}  # rooted at orders ⇒ no West row
 
     async def test_explicit_bridge_owning_no_queried_field(self, chain_engine) -> None:
         """customers owns neither the queried dimension; it's a valid explicit
         bridge, and no inference runs (inference alone would pick regions)."""
         resp = await chain_engine.execute(SlayerQuery(
-            source_model="customers",
+            population="customers",
             dimensions=["regions.name"],
         ))
         assert resp.population == "customers"
         assert resp.population_inferred is False
-        assert {r["customers.regions.name"] for r in resp.data} == {"North", "South", "West"}
+        assert {r["regions.name"] for r in resp.data} == {"North", "South", "West"}
 
 
 class TestNullAttachment:
-    async def test_region_without_orders_attaches_null(self, chain_engine) -> None:
+    async def test_region_without_orders_is_not_a_row(self, chain_engine) -> None:
         resp = await chain_engine.execute(SlayerQuery.model_validate({
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         }))
         assert resp.population == "customers"
         assert resp.population_inferred is True
-        got = rows_by(resp, key="customers.region", value="customers.rev")
-        assert got == CHAIN_REVENUE_BY_REGION
+        got = rows_by(resp, key="customers.region", value="rev")
+        assert got == {region: v for region, v in CHAIN_REVENUE_BY_REGION.items() if v is not None}

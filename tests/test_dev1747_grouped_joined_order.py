@@ -1,19 +1,19 @@
-"""DEV-1747 / DEV-1735 — grouped ORDER BY on a JOINED row column.
+"""Grouped ORDER BY on a JOINED row field.
 
-Today a grouped query whose sort key is an unprojected JOINED column raises
+Today a grouped query whose sort key is an unprojected JOINED field raises
 ``UnresolvableOrderColumnError`` (``stage_planner.py``), because an
 ``AggregateKey`` with a non-empty ``source.path`` always routes to a
 TARGET-rooted CTE, which for a host-grain sort key degenerates to a scalar
 CROSS JOIN — every group would get the same global value and the sort would
 silently do nothing.
 
-DEV-1747 gives the wrap a structural marker (``AggregateKey.locus == "host"``)
-that routes it to the DEV-1709 HOST-ROOTED isolated CTE instead: the crossed
+The wrap gets a structural marker (``AggregateKey.locus == "host"``)
+that routes it to the HOST-ROOTED isolated CTE instead: the crossed
 join is pulled inside that CTE, the wrap is computed there, the CTE is grouped
 on the query grain, and it joins back null-safe. The reference shape already
-exists in production for a crossing DERIVED column (see
+exists in production for a crossing DERIVED field (see
 ``test_dev1747_derived_crossing_order.py``); this module holds the bare joined
-column to the same contract.
+field to the same contract.
 
 Two things are asserted that SQL-shape alone cannot establish:
 
@@ -29,9 +29,6 @@ D10: the wrap is DIRECTION-AWARE — ``MIN`` on ASC, ``MAX`` on DESC — replaci
 today's unconditional ``MAX``. The corpus is built so the two disagree: group
 ``A`` spans ``Alpha``..``Zulu`` and group ``B`` sits on ``Bravo`` between them,
 so ASC-by-MIN yields ``[A, B]`` while ASC-by-MAX yields ``[B, A]``.
-
-Refs: DEV-1747 (D2, D9, D10), DEV-1735, DEV-1709 (the host-rooted vehicle),
-DEV-1742 P-C.
 """
 from __future__ import annotations
 
@@ -42,7 +39,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery
 from tests._dev1747_fixtures import (
     GROUP_A_AMOUNT,
     GROUP_B_AMOUNT,
@@ -51,7 +48,7 @@ from tests._dev1747_fixtures import (
     all_conjuncts_null_safe,
     base_from_join_aliases,
     cte_map,
-    dev1747_models,
+    dev1747_datasets,
     grain_join_back_predicates,
     isolated_cte_bodies,
     make_sqlite_engine,
@@ -63,14 +60,14 @@ from tests._dev1747_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-_MEASURE = [{"formula": "sum(amount)", "name": "rev"}]
+_METRIC = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 
 def _wrap_functions(sql: str, column: str, *, dialect: str = "postgres") -> list[str]:
     """Aggregate functions applied to ``column`` — by AST, not by substring.
 
     ``"MIN(" in sql`` is satisfied by a MIN over ANY column, so it cannot
-    distinguish "the sort key is wrapped in MIN" from "some unrelated measure
+    distinguish "the sort key is wrapped in MIN" from "some unrelated metric
     is". D10 is precisely a claim about which function wraps which column.
     """
     tree = sqlglot.parse_one(sql, dialect=dialect)
@@ -80,14 +77,14 @@ def _wrap_functions(sql: str, column: str, *, dialect: str = "postgres") -> list
     ]
 
 
-def _grouped_order_query(*, model: str, name: str, direction: str) -> SlayerQuery:
-    """Grouped by ``orders.status``, ordered by an UNPROJECTED joined column."""
+def _grouped_order_query(*, dataset: str, name: str, direction: str) -> SlayerQuery:
+    """Grouped by ``orders.status``, ordered by an UNPROJECTED joined field."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=_MEASURE,
+        population="orders",
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=_METRIC,
         order=[OrderItem(
-            column=ColumnRef(name=name, model=model), direction=direction,
+            field=f"{dataset}.{name}", direction=direction,
         )],
     )
 
@@ -101,25 +98,25 @@ async def _execute(query: SlayerQuery):
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
-    models = dev1747_models()
+    models = dev1747_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:], dialect=dialect,
+        query=query, dataset=models[0], extra_datasets=models[1:], dialect=dialect,
     )
 
 
 # ---------------------------------------------------------------------------
-# Group 1 — it resolves at all (the DEV-1735 headline)
+# Group 1 — it resolves at all (the headline)
 # ---------------------------------------------------------------------------
 class TestGroupedJoinedOrderResolves:
     async def test_one_hop_joined_sort_key_resolves(self) -> None:
         sql = await _sql(_grouped_order_query(
-            model="customers", name="tier", direction="asc",
+            dataset="customers", name="tier", direction="asc",
         ))
         assert order_by_text(sql), "grouped joined sort key produced no ORDER BY"
 
     async def test_multi_hop_joined_sort_key_resolves(self) -> None:
         sql = await _sql(_grouped_order_query(
-            model="customers.regions", name="name", direction="asc",
+            dataset="customers.regions", name="name", direction="asc",
         ))
         assert order_by_text(sql), "multi-hop joined sort key produced no ORDER BY"
 
@@ -127,17 +124,17 @@ class TestGroupedJoinedOrderResolves:
         """The wrap is HIDDEN — it must not leak into the public projection,
         or adding a sort silently adds a result column."""
         response = await _execute(_grouped_order_query(
-            model="customers.regions", name="name", direction="asc",
+            dataset="customers.regions", name="name", direction="asc",
         ))
         assert response.data
         for row in response.data:
-            assert set(row) == {"orders.status", "orders.rev"}, (
+            assert set(row) == {"orders.status", "rev"}, (
                 f"hidden order wrap leaked into the result row: {sorted(row)}"
             )
 
 
 # ---------------------------------------------------------------------------
-# Group 2 — per-group, not a global constant (DEV-1735 acceptance)
+# Group 2 — per-group, not a global constant
 # ---------------------------------------------------------------------------
 class TestPerGroupSortKey:
     async def test_ascending_uses_each_group_own_minimum(self) -> None:
@@ -148,31 +145,31 @@ class TestPerGroupSortKey:
         the old unconditional MAX would give B, A, N — both distinguishable.
         """
         response = await _execute(_grouped_order_query(
-            model="customers.regions", name="name", direction="asc",
+            dataset="customers.regions", name="name", direction="asc",
         ))
         assert response_column_values(response.data, "orders.status") == ["A", "B", "N"]
 
     async def test_descending_uses_each_group_own_maximum(self) -> None:
         """DESC by each group's MAX → Zulu > Bravo > NULL(last) → A, B, N."""
         response = await _execute(_grouped_order_query(
-            model="customers.regions", name="name", direction="desc",
+            dataset="customers.regions", name="name", direction="desc",
         ))
         assert response_column_values(response.data, "orders.status") == ["A", "B", "N"]
 
     async def test_sibling_measure_values_are_untouched(self) -> None:
         """Adding a sort key must not change any other field's value — the
-        core principle. Distinct per group so a wrong column cannot match."""
+        core principle. Distinct per group so a wrong field cannot match."""
         response = await _execute(_grouped_order_query(
-            model="customers.regions", name="name", direction="asc",
+            dataset="customers.regions", name="name", direction="asc",
         ))
-        by_status = {r["orders.status"]: r["orders.rev"] for r in response.data}
+        by_status = {r["orders.status"]: r["rev"] for r in response.data}
         assert by_status == {
             "A": GROUP_A_AMOUNT, "B": GROUP_B_AMOUNT, "N": GROUP_NULL_AMOUNT,
         }
 
     async def test_host_cardinality_is_unchanged(self) -> None:
         response = await _execute(_grouped_order_query(
-            model="customers.regions", name="name", direction="asc",
+            dataset="customers.regions", name="name", direction="asc",
         ))
         assert len(response.data) == 3
 
@@ -183,7 +180,7 @@ class TestPerGroupSortKey:
 class TestDirectionAwareWrap:
     async def test_ascending_emits_min_not_max(self) -> None:
         sql = await _sql(_grouped_order_query(
-            model="customers.regions", name="name", direction="asc",
+            dataset="customers.regions", name="name", direction="asc",
         ))
         assert _wrap_functions(sql, "customers__regions.name") == ["MIN"], (
             f"ASC must wrap THE SORT KEY in MIN and nothing else (D10); got:\n{sql}"
@@ -191,22 +188,22 @@ class TestDirectionAwareWrap:
 
     async def test_descending_emits_max(self) -> None:
         sql = await _sql(_grouped_order_query(
-            model="customers.regions", name="name", direction="desc",
+            dataset="customers.regions", name="name", direction="desc",
         ))
         assert _wrap_functions(sql, "customers__regions.name") == ["MAX"], (
             f"DESC must wrap THE SORT KEY in MAX (D10); got:\n{sql}"
         )
 
     async def test_local_row_column_wrap_is_direction_aware_too(self) -> None:
-        """D10 also changes the EXISTING local grouped wrap, which has emitted
-        an unconditional ``MAX`` since DEV-1703 Phase 1. Both shapes must agree
+        """D10 also changes the EXISTING local grouped wrap, which used to emit
+        an unconditional ``MAX``. Both shapes must agree
         or the two order paths mean different things by ``ASC``."""
         sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=_MEASURE,
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
             order=[OrderItem(
-                column=ColumnRef(name="created_at"), direction="asc",
+                field="orders.created_at", direction="asc",
             )],
         ))
         assert _wrap_functions(sql, "created_at") == ["MIN"], (
@@ -215,19 +212,19 @@ class TestDirectionAwareWrap:
 
     async def test_two_directions_on_one_column_are_distinct_slots(self) -> None:
         """``ORDER BY a ASC, a DESC`` needs MIN(a) and MAX(a) — two different
-        aggregates over one column. The order-key remap must therefore be
+        aggregates over one field. The order-key remap must therefore be
         keyed by (key, direction), not by key alone, or the second entry
         silently reuses the first's slot.
 
         Asserted per COLUMN: a statement-wide "contains MIN and MAX" would also
         pass if both wraps landed on the same column, which is the bug."""
         sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=_MEASURE,
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
             order=[
-                OrderItem(column=ColumnRef(name="created_at"), direction="asc"),
-                OrderItem(column=ColumnRef(name="amount"), direction="desc"),
+                OrderItem(field="orders.created_at", direction="asc"),
+                OrderItem(field="orders.amount", direction="desc"),
             ],
         ))
         assert _wrap_functions(sql, "created_at") == ["MIN"], f"\n{sql}"
@@ -243,16 +240,16 @@ class TestFanoutContainment:
 
     def _tag_ordered(self, direction: str = "asc") -> SlayerQuery:
         return _grouped_order_query(
-            model="order_tags", name="name", direction=direction,
+            dataset="order_tags", name="name", direction=direction,
         )
 
     async def test_sibling_sum_is_not_multiplied_by_the_fanout(self) -> None:
         response = await _execute(self._tag_ordered())
-        by_status = {r["orders.status"]: r["orders.rev"] for r in response.data}
+        by_status = {r["orders.status"]: r["rev"] for r in response.data}
         assert by_status == {
             "A": GROUP_A_AMOUNT, "B": GROUP_B_AMOUNT, "N": GROUP_NULL_AMOUNT,
         }, (
-            "sibling measure changed when a 1:N sort key was added — the "
+            "sibling metric changed when a 1:N sort key was added — the "
             "crossed join leaked into the host base (P-C violation)."
         )
 
@@ -297,7 +294,7 @@ class TestFanoutContainment:
 class TestIsolatedCteShape:
     async def test_crossed_join_lives_in_a_cte_not_the_base(self) -> None:
         sql = await _sql(_grouped_order_query(
-            model="customers.regions", name="name", direction="asc",
+            dataset="customers.regions", name="name", direction="asc",
         ))
         base_joins = base_from_join_aliases(sql)
         assert "customers__regions" not in base_joins, (
@@ -312,7 +309,7 @@ class TestIsolatedCteShape:
     async def test_join_back_is_null_safe(self, dialect: str) -> None:
         """A NULL grain member must still join back (P-I). The corpus has no
         NULL status, so this asserts the emitted PREDICATE rather than a row —
-        the executed NULL-grain case is owned by the DEV-1746 suite.
+        the executed NULL-grain case is owned by the null-safe grain suite.
 
         Asserted on the AST of the isolated CTE's own ``ON`` clause: a text
         search for ``" IS "`` also matches an ``IS NULL`` anywhere else in the
@@ -321,7 +318,7 @@ class TestIsolatedCteShape:
         """
         sql = await _sql(
             _grouped_order_query(
-                model="customers.regions", name="name", direction="asc",
+                dataset="customers.regions", name="name", direction="asc",
             ),
             dialect=dialect,
         )
@@ -347,7 +344,7 @@ class TestIsolatedCteShape:
         a sort term that names a relation the statement actually defines."""
         sql = await _sql(
             _grouped_order_query(
-                model="customers.regions", name="name", direction="asc",
+                dataset="customers.regions", name="name", direction="asc",
             ),
             dialect=dialect,
         )
@@ -376,7 +373,7 @@ class TestIsolatedCteShape:
         CTE against the pulled join, and the host base computes no such wrap.
         """
         sql = await _sql(_grouped_order_query(
-            model="customers.regions", name="name", direction="asc",
+            dataset="customers.regions", name="name", direction="asc",
         ))
         bodies = isolated_cte_bodies(sql)
         assert bodies, f"no isolated CTE was emitted:\n{sql}"
@@ -412,7 +409,7 @@ class TestRejectRemoved:
         # failure this test exists to catch, and letting it propagate gives the
         # real traceback instead of a re-worded ``pytest.fail`` (Sonar S8714).
         sql = await _sql(_grouped_order_query(
-            model=model, name=name, direction="asc",
+            dataset=model, name=name, direction="asc",
         ))
         assert order_by_text(sql), (
             f"grouped joined ORDER BY on {model}.{name} emitted no sort term:"

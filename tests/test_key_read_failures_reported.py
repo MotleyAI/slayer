@@ -17,8 +17,8 @@ from sqlalchemy import event
 from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.cli import _run_ingest
-from slayer.core.enums import JoinCardinality
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.enums import RelationshipCardinality
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -85,12 +85,12 @@ def _assert_one_lost_primary_key(entries: list[Any], *, table: str = "customers"
     assert LOST in entry.error
 
 
-def _pk(model: SlayerModel) -> list[str]:
-    return [c.name for c in model.columns if c.primary_key]
+def _pk(dataset: SlayerDataset) -> list[str]:
+    return [c.name for c in dataset.fields if c.primary_key]
 
 
-def _cardinality(model: SlayerModel, target: str) -> JoinCardinality | None:
-    return next(j.cardinality for j in model.joins if j.target_model == target)
+def _cardinality(dataset: SlayerDataset, target: str) -> RelationshipCardinality | None:
+    return next(j.cardinality for j in dataset.relationships if j.to == target)
 
 
 def _naming_the_loss(text: str) -> list[str]:
@@ -194,7 +194,7 @@ class TestIngestResults:
         fail_key_read(monkeypatch, table="customers")
         report = await _scan(shop)
         _assert_one_lost_primary_key(report.key_read_failures)
-        models = {m.name: m for m in report.models}
+        models = {m.name: m for m in report.datasets}
         assert report.skipped == []
         assert _pk(models["customers"]) == []
         assert _cardinality(models["orders"], "customers") is None
@@ -205,7 +205,7 @@ class TestIngestResults:
         fail_key_read(monkeypatch, table="customers")
         result = await _ingest(shop, storage)
         _assert_one_lost_primary_key(result.key_read_failures)
-        customers = await storage.get_model("customers", data_source=DS_NAME)
+        customers = await storage.get_dataset("customers", data_source=DS_NAME)
         assert customers is not None
         assert _pk(customers) == []
 
@@ -213,14 +213,14 @@ class TestIngestResults:
         self, shop: DatasourceConfig, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         fail_key_read(monkeypatch, table="customers")
-        real = ingestion._columns_to_model
+        real = ingestion._fields_to_dataset
 
-        def _refuse_customers(*args: Any, **kwargs: Any) -> SlayerModel:
+        def _refuse_customers(*args: Any, **kwargs: Any) -> SlayerDataset:
             if kwargs.get("sql_table") == "customers":
                 raise ValueError("synthetic per-object failure")
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(ingestion, "_columns_to_model", _refuse_customers)
+        monkeypatch.setattr(ingestion, "_fields_to_dataset", _refuse_customers)
         report = await _scan(shop)
         assert [s.table_name for s in report.skipped] == ["customers"]
         _assert_one_lost_primary_key(report.key_read_failures)
@@ -263,7 +263,7 @@ class TestIngestResults:
             gateway = cast(Any, _PreChangeGateway(inner))
             report = await ingestion.ingest_datasource_report_async(shop, client=gateway)
         assert report.key_read_failures == []
-        assert {"customers", "orders"} <= {m.name for m in report.models}
+        assert {"customers", "orders"} <= {m.name for m in report.datasets}
 
     async def test_a_reingest_fills_the_lost_key(
         self, shop: DatasourceConfig, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
@@ -273,12 +273,12 @@ class TestIngestResults:
             await _ingest(shop, storage)
         result = await _ingest(shop, storage)
         assert result.key_read_failures == []
-        customers = await storage.get_model("customers", data_source=DS_NAME)
-        orders = await storage.get_model("orders", data_source=DS_NAME)
+        customers = await storage.get_dataset("customers", data_source=DS_NAME)
+        orders = await storage.get_dataset("orders", data_source=DS_NAME)
         assert customers is not None
         assert orders is not None
         assert _pk(customers) == ["id"]
-        assert _cardinality(orders, "customers") is JoinCardinality.MANY_TO_ONE
+        assert _cardinality(orders, "customers") is RelationshipCardinality.MANY_TO_ONE
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@ class TestSurfaces:
         fail_key_read(monkeypatch, table="customers")
         server = create_mcp_server(storage=storage)
         blocks, _ = cast(Any, await server.call_tool(
-            name="ingest_datasource_models", arguments={"datasource_name": DS_NAME},
+            name="ingest_datasource", arguments={"datasource_name": DS_NAME},
         ))
         assert len(_naming_the_loss(blocks[0].text)) == 1, blocks[0].text
 

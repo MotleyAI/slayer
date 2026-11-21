@@ -38,7 +38,7 @@ def _probe(sql: str) -> TypeProbe:
 
 
 def _numeric_x(types: dict[str, ResultColumnType]) -> bool:
-    return list(types) == ["x"] and types["x"].type in (DataType.INT, DataType.DOUBLE)
+    return list(types) == ["x"] and types["x"].type in (DataType.INTEGER, DataType.FLOAT)
 
 
 def _skipped(record: list[warnings.WarningMessage]) -> list[StatementTimeoutSkippedWarning]:
@@ -61,7 +61,7 @@ def execute(request: pytest.FixtureRequest):
 
 
 class TestTimeoutTravelsBesideTheStatement:
-    def test_statement_bytes_unchanged_and_setting_in_request(self, monkeypatch, execute) -> None:
+    def test_statement_bytes_unchanged_and_setting_in_request(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse()
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -71,7 +71,7 @@ class TestTimeoutTravelsBesideTheStatement:
         assert params[CH_TIMEOUT_KEY] == 30
         assert set(fake.statements()) == {PROFILE_SQL, VERBATIM_SQL}
 
-    def test_sql_own_setting_sent_unchanged(self, monkeypatch, execute) -> None:
+    def test_sql_own_setting_sent_unchanged(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         sql = "SELECT sleep(2) SETTINGS max_execution_time = 5"
         fake = FakeClickHouse()
         with fake_ch_engine(fake) as engine:
@@ -80,14 +80,14 @@ class TestTimeoutTravelsBesideTheStatement:
         (params,) = fake.params_for(sql)
         assert params[CH_TIMEOUT_KEY] == 1
 
-    def test_setting_removed_after_call(self, monkeypatch, execute) -> None:
+    def test_setting_removed_after_call(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse()
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
             execute(SlayerSQLClient(datasource=ch_datasource()), "SELECT 1", 30)
             assert CH_TIMEOUT_KEY not in pooled_ch_settings(engine)
 
-    def test_prior_value_restored_after_call(self, monkeypatch, execute) -> None:
+    def test_prior_value_restored_after_call(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse()
         with fake_ch_engine(fake, ch_settings={CH_TIMEOUT_KEY: 77}) as engine:
             route_engine(monkeypatch, engine)
@@ -95,7 +95,7 @@ class TestTimeoutTravelsBesideTheStatement:
             assert pooled_ch_settings(engine)[CH_TIMEOUT_KEY] == 77
         assert fake.params_for("SELECT 1")[0][CH_TIMEOUT_KEY] == 30
 
-    def test_prior_value_restored_when_statement_raises(self, monkeypatch, execute) -> None:
+    def test_prior_value_restored_when_statement_raises(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse(fail_marker="boom_marker")
         with fake_ch_engine(fake, ch_settings={CH_TIMEOUT_KEY: 77}) as engine:
             route_engine(monkeypatch, engine)
@@ -104,7 +104,7 @@ class TestTimeoutTravelsBesideTheStatement:
                 execute(client, "SELECT 'boom_marker'", 30)
             assert pooled_ch_settings(engine)[CH_TIMEOUT_KEY] == 77
 
-    def test_absence_restored_when_statement_raises(self, monkeypatch, execute) -> None:
+    def test_absence_restored_when_statement_raises(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse(fail_marker="boom_marker")
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -115,7 +115,7 @@ class TestTimeoutTravelsBesideTheStatement:
 
 
 class TestReadonlyUsers:
-    def test_readonly_1_runs_without_setting_and_warns(self, monkeypatch, execute) -> None:
+    def test_readonly_1_runs_without_setting_and_warns(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse(readonly=1)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -130,7 +130,7 @@ class TestReadonlyUsers:
         assert fake.permission_checks() == 1
         assert all(CH_TIMEOUT_KEY not in p for p in fake.params_for("SELECT 1"))
 
-    def test_readonly_1_failing_query_still_warns(self, monkeypatch, execute) -> None:
+    def test_readonly_1_failing_query_still_warns(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse(readonly=1, fail_marker="boom_marker")
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -141,7 +141,7 @@ class TestReadonlyUsers:
                     execute(client, "SELECT 'boom_marker'", 30)
         assert _skipped(record) == [_readonly_payload(30)]
 
-    def test_readonly_2_gets_timeout_without_warning(self, monkeypatch, execute) -> None:
+    def test_readonly_2_gets_timeout_without_warning(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse(readonly=2)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -152,7 +152,7 @@ class TestReadonlyUsers:
         assert _skipped(record) == []
         assert fake.params_for("SELECT 1")[0][CH_TIMEOUT_KEY] == 30
 
-    def test_permission_checked_before_setting(self, monkeypatch, execute) -> None:
+    def test_permission_checked_before_setting(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse()
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -160,7 +160,7 @@ class TestReadonlyUsers:
         assert fake.statements() == [PROFILE_SQL, "SELECT 1"]
         assert CH_TIMEOUT_KEY not in fake.params_for(PROFILE_SQL)[0]
 
-    def test_checked_once_per_engine_across_clients_and_paths(self, monkeypatch) -> None:
+    def test_checked_once_per_engine_across_clients_and_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(readonly=1)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -169,7 +169,7 @@ class TestReadonlyUsers:
             asyncio.run(SlayerSQLClient(datasource=ch_datasource()).get_result_column_types(_probe("SELECT 1")))
         assert fake.permission_checks() == 1
 
-    def test_each_engine_checks_on_its_own(self, monkeypatch) -> None:
+    def test_each_engine_checks_on_its_own(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(readonly=1)
         for _ in range(2):
             with fake_ch_engine(fake) as engine:
@@ -177,7 +177,7 @@ class TestReadonlyUsers:
                 SlayerSQLClient(datasource=ch_datasource()).execute_sync("SELECT 1")
         assert fake.permission_checks() == 2
 
-    def test_checked_once_under_concurrent_threads(self, monkeypatch) -> None:
+    def test_checked_once_under_concurrent_threads(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(readonly=1, permission_delay=0.05)
         errors: list[BaseException] = []
         barrier = threading.Barrier(8, timeout=10)
@@ -201,7 +201,7 @@ class TestReadonlyUsers:
         assert errors == []
         assert fake.permission_checks() == 1
 
-    def test_failing_permission_check_propagates(self, monkeypatch, execute) -> None:
+    def test_failing_permission_check_propagates(self, monkeypatch: pytest.MonkeyPatch, execute) -> None:
         fake = FakeClickHouse(fail_permission=True)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -215,7 +215,7 @@ class TestReadonlyUsers:
 
 
 class TestTypeProbe:
-    def test_probe_carries_timeout_setting(self, monkeypatch) -> None:
+    def test_probe_carries_timeout_setting(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse()
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
@@ -228,7 +228,7 @@ class TestTypeProbe:
         assert "SELECT 1 AS x" in probe
         assert fake.params_for(probe)[0][CH_TIMEOUT_KEY] == _TYPE_PROBE_TIMEOUT_SECONDS
 
-    def test_readonly_probe_runs_without_setting_and_warns(self, monkeypatch) -> None:
+    def test_readonly_probe_runs_without_setting_and_warns(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(readonly=1)
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)

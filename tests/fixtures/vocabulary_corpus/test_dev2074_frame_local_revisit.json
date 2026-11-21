@@ -1,0 +1,473 @@
+{
+ "source": "tests/test_dev2074_frame_local_revisit.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "order_total",
+    "formula": "sum(customer.amount)"
+   },
+   "new": {
+    "name": "order_total",
+    "expression": "sum(customer.amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "latest_total",
+    "formula": "sum(last_order.amount)"
+   },
+   "new": {
+    "name": "latest_total",
+    "expression": "sum(last_order.amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "latest_big_share",
+    "formula": "avg(last_order.big)"
+   },
+   "new": {
+    "name": "latest_big_share",
+    "expression": "avg(last_order.big)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "last_ranked",
+    "formula": "last(customer.amount)"
+   },
+   "new": {
+    "name": "last_ranked",
+    "expression": "last(customer.amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "bad",
+    "formula": "count(last_order.customer.id)"
+   },
+   "new": {
+    "name": "bad",
+    "expression": "count(last_order.customer.id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "id",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(customer.last_amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "max(customer.last_amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customer.name",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "customer.name",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "id",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "z",
+    "dimensions": [
+     "id",
+     "xzv"
+    ],
+    "order": [
+     {
+      "column": "id",
+      "direction": "asc"
+     }
+    ]
+   },
+   "new": {
+    "population": "z",
+    "dimensions": [
+     "id",
+     "xzv"
+    ],
+    "order": [
+     {
+      "field": "id",
+      "direction": "asc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "z",
+    "dimensions": [
+     "x.y.z.v"
+    ]
+   },
+   "new": {
+    "population": "z",
+    "dimensions": [
+     "x.y.z.v"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "dimensions": [
+     "id",
+     "to_b.abw"
+    ],
+    "order": [
+     {
+      "column": "id",
+      "direction": "asc"
+     }
+    ]
+   },
+   "new": {
+    "population": "a",
+    "dimensions": [
+     "id",
+     "to_b.abw"
+    ],
+    "order": [
+     {
+      "field": "id",
+      "direction": "asc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customer.name",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "customer.name",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "id",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customer.name",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "customer.name",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customer.last_order.amount)",
+    "name": "h"
+   },
+   "new": {
+    "expression": "sum(customer.last_order.amount)",
+    "name": "h"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     {
+      "formula": "avg(last_order.big)",
+      "name": "s"
+     },
+     {
+      "formula": "sum(last_order.amount)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     {
+      "metric": "avg(last_order.big)",
+      "alias": "s"
+     },
+     {
+      "metric": "sum(last_order.amount)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customer.name",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "customer.name",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customer.last_ordered_at",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "customer.last_ordered_at",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer.last_order.amount"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer.last_order.amount"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer.last_amount"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer.last_amount"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 150,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 153,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 513,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 515,
+   "reason": "not fully literal"
+  }
+ ]
+}

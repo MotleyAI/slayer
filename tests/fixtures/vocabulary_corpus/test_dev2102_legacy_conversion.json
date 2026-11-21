@@ -1,0 +1,86 @@
+{
+ "source": "tests/test_dev2102_legacy_conversion.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 32,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "the respelled literal keeps a deprecated form"
+  },
+  {
+   "line": 120,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 179,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 180,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 181,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 181,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 206,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  }
+ ]
+}

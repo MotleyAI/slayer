@@ -16,9 +16,9 @@ Register SLayer as an MCP server — Claude Code will spawn it automatically whe
 claude mcp add slayer -- uvx --from 'motley-slayer[advanced_search]' slayer mcp --ingest-on-startup
 ```
 
-`--ingest-on-startup` walks every configured datasource on boot and runs idempotent auto-ingestion before the MCP channel opens, so models are available on the agent's first tool call. Drop it to defer ingestion to a manual `ingest_datasource_models` call.
+`--ingest-on-startup` walks every configured datasource on boot and runs idempotent auto-ingestion before the MCP channel opens, so datasets are available on the agent's first tool call. Drop it to defer ingestion to a manual `ingest_datasource` call.
 
-The `advanced_search` extra enables semantic search over models and memories. When it's installed **and** a provider API key is in the environment (`OPENAI_API_KEY` by default; override the embedding model with `SLAYER_EMBEDDING_MODEL=voyage/voyage-3` + `VOYAGE_API_KEY`, etc.), the boot-time ingest pass also refreshes per-entity embeddings — hash-skipped, so steady-state boots make zero embedding API calls. Without the extra (or without a provider key), search and ingest still work; the embedding channel is silently disabled.
+The `advanced_search` extra enables semantic search over datasets and memories. When it's installed **and** a provider API key is in the environment (`OPENAI_API_KEY` by default; override the embedding model with `SLAYER_EMBEDDING_MODEL=voyage/voyage-3` + `VOYAGE_API_KEY`, etc.), the boot-time ingest pass also refreshes per-entity embeddings — hash-skipped, so steady-state boots make zero embedding API calls. Without the extra (or without a provider key), search and ingest still work; the embedding channel is silently disabled.
 
 For databases other than SQLite, add the driver extra alongside (see [full list](../configuration/datasources.md#database-drivers)):
 
@@ -77,13 +77,13 @@ schema_name: public
 
 Datasource configs are **hot-reloaded** — you can add or edit YAML files while the server is running, and the next MCP tool call will pick up the changes. No restart needed.
 
-Once the datasource file is in place, the recommended setup runs MCP with `--ingest-on-startup` (above), which walks every configured datasource on every boot and runs idempotent auto-ingestion before the MCP channel opens. Models are then available on the agent's first tool call — no `ingest_datasource_models` call required.
+Once the datasource file is in place, the recommended setup runs MCP with `--ingest-on-startup` (above), which walks every configured datasource on every boot and runs idempotent auto-ingestion before the MCP channel opens. Datasets are then available on the agent's first tool call — no `ingest_datasource` call required.
 
 If you didn't start with `--ingest-on-startup`, fall back to asking your agent:
 
-> "Ingest models from the mydb datasource and show me what's available"
+> "Ingest datasets from the mydb datasource and show me what's available"
 
-The agent will call `ingest_datasource_models` to generate models from the database schema, then `models_summary(datasource_name="mydb")` to list them.
+The agent will call `ingest_datasource` to generate datasets from the database schema, then `datasets_summary(datasource_name="mydb")` to list them.
 
 You can also create datasources conversationally via the `create_datasource` MCP tool — see the [MCP Reference](../reference/mcp.md#datasource-management) for details.
 
@@ -91,12 +91,12 @@ You can also create datasources conversationally via the `create_datasource` MCP
 
 Ask your agent:
 
-> "List the available SLayer models"
+> "List the available SLayer datasets"
 
-The agent should call `list_datasources` and then `models_summary(datasource_name="mydb")` and return a list of your tables/models. If it says "no models found", check that:
+The agent should call `list_datasources` and then `datasets_summary(datasource_name="mydb")` and return a list of your tables/datasets. If it says "no datasets found", check that:
 
 1. The `--storage` path matches where your datasource YAML files are
-2. Models have been ingested (via `slayer mcp --ingest-on-startup`, `ingest_datasource_models`, or `create_datasource` with auto-ingest)
+2. Datasets have been ingested (via `slayer mcp --ingest-on-startup`, `ingest_datasource`, or `create_datasource` with auto-ingest)
 3. Environment variables referenced in the datasource config are set
 
 ## Search & memories
@@ -112,7 +112,7 @@ Try it conversationally:
 >
 > "Search for what we know about orders.status"
 
-The agent calls `save_memory` then `search` and gets back a `SearchResponse` with `results: [...]` — each hit carries a `kind` discriminator (`"memory"` for prior notes, `"column"` / `"model"` / etc. for entity discovery hits) and a `score`.
+The agent calls `save_memory` then `search` and gets back a `SearchResponse` with `results: [...]` — each hit carries a `kind` discriminator (`"memory"` for prior notes, `"field"` / `"dataset"` / etc. for entity discovery hits) and a `score`.
 
 The same `search` call also accepts `cypher_filter` for graph-shaped narrowing (full openCypher with `advanced_search` installed, naive `MATCH (n:Label) RETURN n.id AS id` kind-filter without). The embedding channel needs `motley-slayer[advanced_search]` plus a provider API key — without those, search degrades to BM25 + Tantivy with a single warning in `SearchResponse.warnings`.
 

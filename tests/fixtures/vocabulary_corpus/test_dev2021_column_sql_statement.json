@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_dev2021_column_sql_statement.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  }
+ ]
+}

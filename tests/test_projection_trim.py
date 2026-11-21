@@ -1,7 +1,7 @@
-"""Outermost SELECT must project exactly user-declared dims+measures.
+"""Outermost SELECT must project exactly user-declared dims+metrics.
 
 These tests pin the contract that the rendered outermost SELECT projects
-only the user-declared ``dimensions + time_dimensions + measures`` of the
+only the user-declared ``dimensions + time_dimensions + metrics`` of the
 final stage, in declared order — never the intermediate columns that the
 engine hoists into CTEs for SQL feasibility (window functions, scalar
 arithmetic over aggregates, ORDER BY aggregates, filter post-conditions).
@@ -18,13 +18,14 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 import slayer.engine.query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
+from tests._field_builders import col, pk, to_customers
 
 
 # SQL inspection helpers — implementation-agnostic. They walk the rendered
@@ -80,56 +81,56 @@ def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> list[s
 
 
 # Fixtures
-async def _generate(query: SlayerQuery, model: SlayerModel, *, dialect: str = "postgres") -> str:
+async def _generate(query: SlayerQuery, dataset: SlayerDataset, *, dialect: str = "postgres") -> str:
     """Render a query's SQL through the typed pipeline. The typed
     pipeline emits the outer projection trim directly — the legacy
     ``render_mode`` parameter is gone, so callers just inspect the emitted SQL.
     """
-    return await _engine_generate(query=query, model=model, dialect=dialect)
+    return await _engine_generate(query=query, dataset=dataset, dialect=dialect)
 
 
 @pytest.fixture
-def funds_model() -> SlayerModel:
+def funds_dataset() -> SlayerDataset:
     """Mirrors the ``exchange_traded_funds.funds`` shape from the original repros."""
-    return SlayerModel(
+    return SlayerDataset(
         name="funds",
         sql_table="funds",
         data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="geozone", sql="geozone", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="expensenet", sql="expensenet", type=DataType.DOUBLE),
-            Column(name="benchmarkexp", sql="benchmarkexp", type=DataType.DOUBLE),
-            Column(name="average_daily_value_traded_3m", sql="adv3m", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="geozone", expression="geozone", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="expensenet", expression="expensenet", datatype=DataType.FLOAT),
+            DatasetField(name="benchmarkexp", expression="benchmarkexp", datatype=DataType.FLOAT),
+            DatasetField(name="average_daily_value_traded_3m", expression="adv3m", datatype=DataType.FLOAT),
         ],
     )
 
 
 @pytest.fixture
-def orders_model() -> SlayerModel:
-    """Generic orders model used by edge-case tests."""
-    return SlayerModel(
+def orders_dataset() -> SlayerDataset:
+    """Generic orders dataset used by edge-case tests."""
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
-            Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
         ],
     )
 
 
 async def _save_test_datasource(storage: YAMLStorage) -> None:
     """Persist a sqlite ``test`` datasource so dry-run/
-    execute paths can resolve a dialect for any model whose
+    execute paths can resolve a dialect for any dataset whose
     ``data_source='test'``."""
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:")
@@ -138,47 +139,47 @@ async def _save_test_datasource(storage: YAMLStorage) -> None:
 
 @pytest.fixture
 async def orders_customers_engine(tmp_path):
-    """A storage + engine with orders→customers join for cross-model tests."""
+    """A storage + engine with an orders→customers relationship for cross-dataset tests."""
     storage = YAMLStorage(base_dir=str(tmp_path))
     await _save_test_datasource(storage)
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="revenue", sql="lifetime_revenue", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="revenue", expression="lifetime_revenue", datatype=DataType.FLOAT),
         ],
     ))
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            pk(),
+            col("customer_id"),
+            col("status", DataType.STRING),
+            col("created_at", DataType.DATETIME),
+            col("revenue", expression="amount"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[to_customers()],
     )
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
     return SlayerQueryEngine(storage=storage), orders
 
 
 # Group A — the literal three issue reproducers.
 class TestProjectionTrimRepros:
     async def test_repro1_order_by_aggregate_not_projected(
-        self, funds_model: SlayerModel,
+        self, funds_dataset: SlayerDataset,
     ) -> None:
         """Repro (1): ORDER BY ``sum(expensenet)`` with one declared dim and no
-        declared measure must project exactly ``[funds.geozone]`` — the
+        declared metric must project exactly ``[funds.geozone]`` — the
         aggregate must not leak into the outer projection."""
         query = SlayerQuery(
-            source_model="funds",
-            dimensions=[ColumnRef(name="geozone")],
-            order=[OrderItem.model_validate({"column": "sum(expensenet)", "direction": "desc"})],
+            population="funds",
+            dimensions=[QueryDimension(field="funds.geozone")],
+            order=[OrderItem.model_validate({"field": "sum(funds.expensenet)", "direction": "desc"})],
             limit=3,
         )
-        sql = await _generate(query, funds_model)
+        sql = await _generate(query, funds_dataset)
         outer_cols = _outer_select_columns(sql)
         assert outer_cols == ["funds.geozone"], (
             f"Outer SELECT must project exactly [funds.geozone], got {outer_cols}.\n"
@@ -190,20 +191,20 @@ class TestProjectionTrimRepros:
         assert "LIMIT 3" in sql
 
     async def test_repro2_rank_of_col_agg_hides_intermediate(
-        self, funds_model: SlayerModel,
+        self, funds_dataset: SlayerDataset,
     ) -> None:
         """Repro (2): ``rank(sum(expensenet), direction='desc')`` named ``expense_rank`` must
         produce a 2-column outer SELECT (geozone, expense_rank). The hoisted
         ``expensenet_sum`` stays inside a CTE, never in the outer projection."""
         query = SlayerQuery(
-            source_model="funds",
-            dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="rank(sum(expensenet), direction='desc')", name="expense_rank")],
+            population="funds",
+            dimensions=[QueryDimension(field="funds.geozone")],
+            metrics=[QueryMetric(metric="rank(sum(funds.expensenet), direction='desc')", alias="expense_rank")],
             limit=3,
         )
-        sql = await _generate(query, funds_model)
+        sql = await _generate(query, funds_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["funds.geozone", "funds.expense_rank"], (
+        assert outer_cols == ["funds.geozone", "expense_rank"], (
             f"Outer SELECT must project [funds.geozone, funds.expense_rank], "
             f"got {outer_cols}.\nSQL:\n{sql}"
         )
@@ -217,20 +218,20 @@ class TestProjectionTrimRepros:
         assert outer_cols.count("funds.expensenet_sum") == 0
 
     async def test_repro3_scalar_formula_subaggs_hidden(
-        self, funds_model: SlayerModel,
+        self, funds_dataset: SlayerDataset,
     ) -> None:
         """Repro (3): ``avg(expensenet) + avg(benchmarkexp)`` named ``combined_avg``
         must produce a 2-column outer SELECT (geozone, combined_avg). Both
         hoisted sub-aggregates stay in CTEs."""
         query = SlayerQuery(
-            source_model="funds",
-            dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="avg(expensenet) + avg(benchmarkexp)", name="combined_avg")],
+            population="funds",
+            dimensions=[QueryDimension(field="funds.geozone")],
+            metrics=[QueryMetric(metric="avg(funds.expensenet) + avg(funds.benchmarkexp)", alias="combined_avg")],
             limit=3,
         )
-        sql = await _generate(query, funds_model)
+        sql = await _generate(query, funds_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["funds.geozone", "funds.combined_avg"], (
+        assert outer_cols == ["funds.geozone", "combined_avg"], (
             f"Outer SELECT must project [funds.geozone, funds.combined_avg], "
             f"got {outer_cols}.\nSQL:\n{sql}"
         )
@@ -241,26 +242,26 @@ class TestProjectionTrimRepros:
 # Group B — Projection order.
 class TestProjectionOrder:
     async def test_dims_then_measures_in_declared_order(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Outer SELECT emits columns in declared order: dims first (in
-        declared order), then measures (in declared order). Not alphabetical."""
+        declared order), then metrics (in declared order). Not alphabetical."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             # Intentionally non-alphabetical
-            dimensions=[ColumnRef(name="status"), ColumnRef(name="region")],
-            measures=[
-                ModelMeasure(formula="sum(revenue)", name="z_total"),
-                ModelMeasure(formula="count(*)", name="a_count"),
+            dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.region")],
+            metrics=[
+                QueryMetric(metric="sum(orders.revenue)", alias="z_total"),
+                QueryMetric(metric="count(orders.*)", alias="a_count"),
             ],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
         expected = [
             "orders.status",
             "orders.region",
-            "orders.z_total",
-            "orders.a_count",
+            "z_total",
+            "a_count",
         ]
         assert outer_cols == expected, (
             f"Outer SELECT order must match declared order.\n"
@@ -268,151 +269,151 @@ class TestProjectionOrder:
         )
 
     async def test_time_dimensions_included_in_projection(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Time dimensions are always public — they appear in the outer
         projection alongside regular dimensions, in
-        ``dimensions + time_dimensions + measures`` declared order."""
+        ``dimensions + time_dimensions + metrics`` declared order."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="count(*)", name="rows")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="rows")],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        # Exact projection: dim, then time-dim, then measure, in declared order.
-        assert outer_cols == ["orders.status", "orders.created_at", "orders.rows"], (
-            f"Outer SELECT must project [dim, time_dim, measure] in declared "
+        # Exact projection: dim, then time-dim, then metric, in declared order.
+        assert outer_cols == ["orders.status", "orders.created_at", "rows"], (
+            f"Outer SELECT must project [dim, time_dim, metric] in declared "
             f"order.\ngot: {outer_cols}\nSQL:\n{sql}"
         )
 
 
 # Group C — Window-transform argument reuse (structural equality).
 # Spec rule 4: when a window transform's argument structurally equals an
-# already-declared measure's canonical inner expression, reuse that
+# already-declared metric's canonical inner expression, reuse that
 # alias inside OVER(...) and skip the duplicate hoist.
 class TestWindowArgReuse:
-    # 12 of the 13 spec-listed window transforms have a single measure as
+    # 12 of the 13 spec-listed window transforms have a single metric as
     # their inner argument — those are the ones where structural-equality
     # reuse fires when ``sum(revenue)`` is independently declared. The 13th,
     # ``consecutive_periods``, takes a boolean predicate (``sum(revenue) > 0``)
-    # rather than a single measure; its projection-trim contract is exercised
+    # rather than a single metric; its projection-trim contract is exercised
     # by ``test_consecutive_periods_projection_trim`` further down.
     @pytest.mark.parametrize(
         "transform_formula,measure_name",
         [
-            ("rank(sum(revenue), direction='desc')",                       "r_rank"),
-            ("percent_rank(sum(revenue))",               "r_pct_rank"),
-            ("dense_rank(sum(revenue), direction='desc')",                 "r_dense"),
-            ("ntile(sum(revenue), n=3)",                 "r_ntile"),
-            ("cumsum(sum(revenue))",                     "r_cumsum"),
-            ("lag(sum(revenue), -1)",                    "r_lag"),
-            ("lead(sum(revenue), 1)",                    "r_lead"),
-            ("first(sum(revenue))",                      "r_first"),
-            ("last(sum(revenue))",                       "r_last"),
-            ("time_shift(sum(revenue), -1, 'year')",     "r_shift"),
-            ("change(sum(revenue))",                     "r_change"),
-            ("change_pct(sum(revenue))",                 "r_change_pct"),
+            ("rank(sum(orders.revenue), direction='desc')",                       "r_rank"),
+            ("percent_rank(sum(orders.revenue))",               "r_pct_rank"),
+            ("dense_rank(sum(orders.revenue), direction='desc')",                 "r_dense"),
+            ("ntile(sum(orders.revenue), n=3)",                 "r_ntile"),
+            ("cumsum(sum(orders.revenue))",                     "r_cumsum"),
+            ("lag(sum(orders.revenue), -1)",                    "r_lag"),
+            ("lead(sum(orders.revenue), 1)",                    "r_lead"),
+            ("first(sum(orders.revenue))",                      "r_first"),
+            ("last(sum(orders.revenue))",                       "r_last"),
+            ("time_shift(sum(orders.revenue), -1, 'year')",     "r_shift"),
+            ("change(sum(orders.revenue))",                     "r_change"),
+            ("change_pct(sum(orders.revenue))",                 "r_change_pct"),
         ],
     )
     async def test_window_transform_with_declared_inner_measure(
         self,
-        orders_model: SlayerModel,
+        orders_dataset: SlayerDataset,
         transform_formula: str,
         measure_name: str,
     ) -> None:
         """When the inner ``sum(revenue)`` is independently declared as a
-        named measure, the outer SELECT projects exactly the dim + named
-        measure + transform measure, and the OVER (...) clause references
-        the declared measure's alias rather than a freshly-hoisted intermediate.
+        named metric, the outer SELECT projects exactly the dim + named
+        metric + transform metric, and the OVER (...) clause references
+        the declared metric's alias rather than a freshly-hoisted intermediate.
         """
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="sum(revenue)", name="total"),
-                ModelMeasure(formula=transform_formula, name=measure_name),
+            metrics=[
+                QueryMetric(metric="sum(orders.revenue)", alias="total"),
+                QueryMetric(metric=transform_formula, alias=measure_name),
             ],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        expected = ["orders.created_at", "orders.total", f"orders.{measure_name}"]
+        expected = ["orders.created_at", "total", measure_name]
         assert outer_cols == expected, (
             f"{transform_formula}: outer SELECT must be {expected}, got {outer_cols}.\n"
             f"SQL:\n{sql}"
         )
-        # No `_inner_*` duplicate hoist of the inner measure.
+        # No `_inner_*` duplicate hoist of the inner metric.
         assert "_inner_" not in sql, (
             f"{transform_formula}: no _inner_* duplicate hoist expected.\nSQL:\n{sql}"
         )
         # The reused alias (orders.total) must appear inside the SQL — it
         # is the OVER clause's reference target.
-        assert '"orders.total"' in sql, (
-            f"{transform_formula}: declared measure alias 'orders.total' must "
+        assert '"total"' in sql, (
+            f"{transform_formula}: declared metric alias 'orders.total' must "
             f"be referenced (typically inside OVER (...)).\nSQL:\n{sql}"
         )
 
     async def test_consecutive_periods_projection_trim(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """The 13th transform — ``consecutive_periods`` — takes a boolean
-        predicate, not a single measure, so structural-equality reuse does
+        predicate, not a single metric, so structural-equality reuse does
         not naturally fire. The projection-trim contract still applies: the
         outer SELECT projects only the declared dim + time-dim + ``streak``,
         and the staged ``cp_reset_*`` / ``cp_value_*`` CTE columns stay
         internal."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="consecutive_periods(sum(revenue) > 0)", name="streak")],
+            metrics=[QueryMetric(metric="consecutive_periods(sum(orders.revenue) > 0)", alias="streak")],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.status", "orders.created_at", "orders.streak"], (
+        assert outer_cols == ["orders.status", "orders.created_at", "streak"], (
             f"consecutive_periods: outer projection must be trimmed.\n"
             f"got: {outer_cols}\nSQL:\n{sql}"
         )
         # The internal reset/value CTE aliases must not leak.
-        for col in outer_cols:
-            assert "_cp_reset_" not in col
-            assert "_cp_value_" not in col
+        for column in outer_cols:
+            assert "_cp_reset_" not in column
+            assert "_cp_value_" not in column
 
 
 # Group D — ORDER BY policy.
 class TestOrderByPolicy:
     async def test_order_by_named_measure_uses_alias(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """When order column matches a declared measure name, ORDER BY
-        renders via that measure's alias."""
+        """When the order field matches a declared metric name, ORDER BY
+        renders via that metric's alias."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="sum(revenue)", name="total")],
-            order=[OrderItem(column=ColumnRef(name="total"), direction="desc")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.revenue)", alias="total")],
+            order=[OrderItem(field="total", direction="desc")],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.status", "orders.total"]
+        assert outer_cols == ["orders.status", "total"]
         # ORDER BY references the declared alias.
         norm = _norm(sql)
-        assert 'ORDER BY "orders.total"' in norm or '"orders.total" DESC' in norm
+        assert 'ORDER BY "total"' in norm or '"total" DESC' in norm
 
     async def test_order_by_unbound_agg_not_projected(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """An unbound ORDER BY aggregate (no matching declared measure) must
+        """An unbound ORDER BY aggregate (no matching declared metric) must
         NOT leak into the outer projection — the outer SELECT projects only
         the declared dim. The typed pipeline orders by the aggregate inline
         (``ORDER BY SUM(orders.amount)``); whether it's inline or hoisted as a
@@ -420,12 +421,12 @@ class TestOrderByPolicy:
         user-facing trim contract + that the ORDER BY does sort by the
         aggregate."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            order=[OrderItem(column="sum(revenue)", direction="desc")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem(field="sum(orders.revenue)", direction="desc")],
             limit=5,
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
         # Outer projects only the declared dim — the order-by aggregate is
         # never projected (the core trim contract).
@@ -446,16 +447,16 @@ class TestOrderByPolicy:
         assert "LIMIT 5" in sql
 
     async def test_order_by_raw_dim_passthrough(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """ORDER BY a declared dim alias works unchanged."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="count(*)")],
-            order=[OrderItem(column=ColumnRef(name="status"), direction="asc")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            order=[OrderItem(field="orders.status", direction="asc")],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
         assert "orders.status" in outer_cols
         assert "ORDER BY" in sql.upper()
@@ -464,7 +465,7 @@ class TestOrderByPolicy:
 # Group E — Response attributes alignment.
 class TestResponseAttributesAlignment:
     async def test_attributes_have_no_entries_for_hidden_columns(
-        self, funds_model: SlayerModel, tmp_path,
+        self, funds_dataset: SlayerDataset, tmp_path,
     ) -> None:
         """The response's attributes dict must not contain entries keyed by
         hidden / auto-extracted aliases (``funds.expensenet_sum``,
@@ -474,16 +475,16 @@ class TestResponseAttributesAlignment:
         """
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_model(funds_model)
+        await storage.save_dataset(funds_dataset)
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
-            source_model="funds",
-            dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="avg(expensenet) + avg(benchmarkexp)", name="combined_avg")],
+            population="funds",
+            dimensions=[QueryDimension(field="funds.geozone")],
+            metrics=[QueryMetric(metric="avg(funds.expensenet) + avg(funds.benchmarkexp)", alias="combined_avg")],
             limit=3,
         )
         resp = await engine.execute(query=query, dry_run=True)
-        all_attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
+        all_attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.metrics)
         for hidden in ("funds.expensenet_avg", "funds.benchmarkexp_avg"):
             assert hidden not in all_attr_keys, (
                 f"Hidden alias {hidden!r} must not appear in response attributes.\n"
@@ -491,33 +492,33 @@ class TestResponseAttributesAlignment:
             )
 
     async def test_attributes_match_outer_projection_for_repros(
-        self, funds_model: SlayerModel, tmp_path,
+        self, funds_dataset: SlayerDataset, tmp_path,
     ) -> None:
         """The attribute keys are a subset of the outer projection — never a
         superset. (One-to-one not required by the ResponseAttributes contract.)
         """
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_model(funds_model)
+        await storage.save_dataset(funds_dataset)
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
-            source_model="funds",
-            dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="rank(sum(expensenet), direction='desc')", name="expense_rank")],
+            population="funds",
+            dimensions=[QueryDimension(field="funds.geozone")],
+            metrics=[QueryMetric(metric="rank(sum(funds.expensenet), direction='desc')", alias="expense_rank")],
             limit=3,
         )
         resp = await engine.execute(query=query, dry_run=True)
         # resp.columns must match the outer projection (set + order).
-        assert resp.columns == ["funds.geozone", "funds.expense_rank"], (
+        assert resp.columns == ["funds.geozone", "expense_rank"], (
             f"dry_run resp.columns must match outer projection.\n"
             f"got: {resp.columns}"
         )
         # No hidden alias in attributes.
-        all_attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
+        all_attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.metrics)
         assert "funds.expensenet_sum" not in all_attr_keys
 
     async def test_attributes_omit_filter_extracted_hidden_aliases(
-        self, orders_model: SlayerModel, tmp_path,
+        self, orders_dataset: SlayerDataset, tmp_path,
     ) -> None:
         """Filter expressions like ``change(sum(revenue)) > 0`` auto-extract
         hidden EnrichedTransform / EnrichedExpression entries internally
@@ -527,19 +528,19 @@ class TestResponseAttributesAlignment:
         .transforms`` unconditionally when building attributes."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_model(orders_model)
+        await storage.save_dataset(orders_dataset)
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="sum(revenue)", name="total")],
-            filters=["change(sum(revenue)) > 0"],
+            metrics=[QueryMetric(metric="sum(orders.revenue)", alias="total")],
+            filter=["change(sum(orders.revenue)) > 0"],
         )
         resp = await engine.execute(query=query, dry_run=True)
-        all_attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
+        all_attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.metrics)
         # No filter-extracted ``_ts*`` / ``_ft*`` / ``_inner_*`` aliases.
         for key in all_attr_keys:
             assert "_ts" not in key, (
@@ -555,25 +556,25 @@ class TestResponseAttributesAlignment:
                 f"Hidden change(...) alias {key!r} leaked into attributes."
             )
         # The declared public columns are the only valid attribute keys.
-        assert all_attr_keys.issubset({"orders.created_at", "orders.total"}), (
+        assert all_attr_keys.issubset({"orders.created_at", "total"}), (
             f"attributes contain non-public keys: "
-            f"{all_attr_keys - {'orders.created_at', 'orders.total'}}"
+            f"{all_attr_keys - {'orders.created_at', 'total'}}"
         )
 
 
 # Group F — Edge cases.
 class TestEdgeCases:
     async def test_dim_only_dedup_unchanged(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Dim-only queries still emit GROUP BY <all dims> and project exactly
         the declared dims."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status"), ColumnRef(name="region")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.region")],
             limit=100,
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
         assert outer_cols == ["orders.status", "orders.region"]
         assert "GROUP BY" in sql.upper()
@@ -584,119 +585,119 @@ class TestEdgeCases:
         assert upper.index("GROUP BY") < upper.index("LIMIT 100")
 
     async def test_measure_only_query(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """Measure-only queries project exactly the declared measures."""
+        """Metric-only queries project exactly the declared metrics."""
         query = SlayerQuery(
-            source_model="orders",
-            measures=[
-                ModelMeasure(formula="sum(revenue)", name="total"),
-                ModelMeasure(formula="count(*)", name="n"),
+            population="orders",
+            metrics=[
+                QueryMetric(metric="sum(orders.revenue)", alias="total"),
+                QueryMetric(metric="count(orders.*)", alias="n"),
             ],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.total", "orders.n"]
+        assert outer_cols == ["total", "n"]
 
     async def test_filter_on_hidden_change_field_does_not_leak(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Filters that auto-extract a hidden change/transform field still
         filter correctly, but the hidden field never appears in the outer
         projection."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="sum(revenue)", name="total")],
-            filters=["change(sum(revenue)) > 0"],
+            metrics=[QueryMetric(metric="sum(orders.revenue)", alias="total")],
+            filter=["change(sum(orders.revenue)) > 0"],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.created_at", "orders.total"], (
+        assert outer_cols == ["orders.created_at", "total"], (
             f"Outer SELECT must project only [created_at, total].\n"
             f"got: {outer_cols}\nSQL:\n{sql}"
         )
         # No hidden ``change_*`` or ``_ft*`` alias leaking into the projection.
-        for col in outer_cols:
-            assert "change" not in col.lower()
-            assert "_ft" not in col
+        for column in outer_cols:
+            assert "change" not in column.lower()
+            assert "_ft" not in column
 
     async def test_named_override_alias(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """Explicit ``name`` on a measure → projection uses the user's name."""
+        """Explicit ``alias`` on a metric → projection uses the user's name."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="sum(revenue)", name="rev")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.revenue)", alias="rev")],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.status", "orders.rev"]
+        assert outer_cols == ["orders.status", "rev"]
         # The canonical-form alias must NOT appear in outer projection.
         assert "orders.revenue_sum" not in outer_cols
 
     async def test_star_count_named_measure(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """``{"formula": "*:count", "name": "rows"}`` projects as ``orders.rows``."""
+        """``{"metric": "count(*)", "alias": "rows"}`` projects as ``orders.rows``."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="count(*)", name="rows")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="rows")],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.status", "orders.rows"]
+        assert outer_cols == ["orders.status", "rows"]
 
     async def test_rank_inside_arithmetic_reuses_named_arg(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """A formula like ``rank(sum(revenue), direction='desc') + 1`` whose inner argument is
-        already a declared named measure must reuse that alias and not
+        """An expression like ``rank(sum(revenue), direction='desc') + 1`` whose inner argument is
+        already a declared named metric must reuse that alias and not
         re-materialize the inner aggregate."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="sum(revenue)", name="total"),
-                ModelMeasure(formula="rank(sum(revenue), direction='desc') + 1", name="rank_plus_one"),
+            metrics=[
+                QueryMetric(metric="sum(orders.revenue)", alias="total"),
+                QueryMetric(metric="rank(sum(orders.revenue), direction='desc') + 1", alias="rank_plus_one"),
             ],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.created_at", "orders.total", "orders.rank_plus_one"]
+        assert outer_cols == ["orders.created_at", "total", "rank_plus_one"]
         assert "_inner_" not in sql, (
-            f"No _inner_* duplicate expected when arg is a declared measure.\n"
+            f"No _inner_* duplicate expected when arg is a declared metric.\n"
             f"SQL:\n{sql}"
         )
 
     async def test_cross_model_dotted_dimension_projection(
         self, orders_customers_engine,
     ) -> None:
-        """A dim referenced via a join path (``customers.revenue``) projects
+        """A dim referenced via a relationship path (``customers.revenue``) projects
         under the full dotted path, and no extra join-scaffolding columns
         leak into the outer SELECT."""
         engine, orders = orders_customers_engine
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="customers.revenue")],
-            measures=[ModelMeasure(formula="count(*)", name="n")],
+            population="orders",
+            dimensions=[QueryDimension(field="customers.revenue")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
         )
         resp = await engine.execute(query, dry_run=True)
         sql = resp.sql or ""
         outer_cols = _outer_select_columns(sql)
-        # The dim alias for the joined column is "orders.customers.revenue".
-        assert "orders.customers.revenue" in outer_cols
-        assert "orders.n" in outer_cols
+        # The dim alias for the joined field is "orders.customers.revenue".
+        assert "customers.revenue" in outer_cols
+        assert "n" in outer_cols
         # Nothing else.
-        assert set(outer_cols) == {"orders.customers.revenue", "orders.n"}, (
+        assert set(outer_cols) == {"customers.revenue", "n"}, (
             f"Outer SELECT must contain only the declared columns.\n"
             f"got: {outer_cols}\nSQL:\n{sql}"
         )
@@ -705,7 +706,7 @@ class TestEdgeCases:
 # Group G — Multi-stage source_queries regression guard.
 class TestMultiStageSourceQueries:
     async def test_inner_stage_keeps_full_projection(
-        self, tmp_path, orders_model: SlayerModel,
+        self, tmp_path, orders_dataset: SlayerDataset,
     ) -> None:
         """A two-stage ``source_queries`` runtime list: the inner stage may
         project hoisted intermediates (its SELECT is not trimmed because the
@@ -713,23 +714,23 @@ class TestMultiStageSourceQueries:
         the trim rule."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_model(orders_model)
+        await storage.save_dataset(orders_dataset)
         engine = SlayerQueryEngine(storage=storage)
         inner = SlayerQuery(
             name="inner_stage",
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(sum(revenue), direction='desc')", name="rev_rank")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="rank(sum(orders.revenue), direction='desc')", alias="rev_rank")],
         )
         outer = SlayerQuery(
-            source_model="inner_stage",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="max(rev_rank)", name="top_rank")],
+            population="inner_stage",
+            dimensions=[QueryDimension(field="inner_stage.status")],
+            metrics=[QueryMetric(metric="max(inner_stage.rev_rank)", alias="top_rank")],
         )
         resp = await engine.execute(query=[inner, outer], dry_run=True)
         sql_str = resp.sql or ""
-        # Outer-stage projection: trimmed to its declared dims + measures.
-        assert resp.columns == ["inner_stage.status", "inner_stage.top_rank"], (
+        # Outer-stage projection: trimmed to its declared dims + metrics.
+        assert resp.columns == ["inner_stage.status", "top_rank"], (
             f"Outer stage of source_queries must obey the trim rule.\n"
             f"got: {resp.columns}\nSQL:\n{sql_str}"
         )
@@ -749,17 +750,17 @@ _TIER1_DIALECTS = ["postgres", "mysql", "sqlite", "clickhouse", "duckdb"]
 class TestMultiDialectProjectionTrim:
     @pytest.mark.parametrize("dialect", _TIER1_DIALECTS)
     async def test_repro2_column_count_matches_declaration(
-        self, dialect: str, funds_model: SlayerModel,
+        self, dialect: str, funds_dataset: SlayerDataset,
     ) -> None:
         """Across every tier-1 dialect, the outer SELECT column count equals
-        ``len(dimensions) + len(measures)`` for repro (2)."""
+        ``len(dimensions) + len(metrics)`` for repro (2)."""
         query = SlayerQuery(
-            source_model="funds",
-            dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="rank(sum(expensenet), direction='desc')", name="expense_rank")],
+            population="funds",
+            dimensions=[QueryDimension(field="funds.geozone")],
+            metrics=[QueryMetric(metric="rank(sum(funds.expensenet), direction='desc')", alias="expense_rank")],
             limit=3,
         )
-        sql = await _generate(query, funds_model, dialect=dialect)
+        sql = await _generate(query, funds_dataset, dialect=dialect)
         outer_cols = _outer_select_columns(sql, dialect=dialect)
         assert len(outer_cols) == 2, (
             f"{dialect}: outer SELECT must project 2 columns, got "
@@ -774,65 +775,65 @@ class TestMultiDialectProjectionTrim:
 # behaviour is covered end-to-end via ``engine.execute`` / query-backed wrap.
 class TestStagedProjectionTrim:
     async def test_query_backed_wrap_keeps_full_projection(
-        self, tmp_path, funds_model: SlayerModel,
+        self, tmp_path, funds_dataset: SlayerDataset,
     ) -> None:
-        """When a query is wrapped as a query-backed virtual model (the typed
-        ``_expand_query_backed_model`` path via ``create_model_from_query``),
+        """When a query is wrapped as a query-backed virtual dataset (the typed
+        ``_expand_query_backed_dataset`` path via ``create_dataset_from_query``),
         the inner SQL must keep every hoisted alias — otherwise the
-        virtual-model column list references columns that have been
+        virtual-dataset field list references columns that have been
         trimmed out of the subquery."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_model(funds_model)
+        await storage.save_dataset(funds_dataset)
         engine = SlayerQueryEngine(storage=storage)
-        # Save the repro-(2) query as a query-backed model. Internally this
+        # Save the repro-(2) query as a query-backed dataset. Internally this
         # routes through the typed query-backed expansion.
         query = SlayerQuery(
-            source_model="funds",
-            dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="rank(sum(expensenet), direction='desc')", name="expense_rank")],
+            population="funds",
+            dimensions=[QueryDimension(field="funds.geozone")],
+            metrics=[QueryMetric(metric="rank(sum(funds.expensenet), direction='desc')", alias="expense_rank")],
         )
-        model = await engine.create_model_from_query(query=query, name="ranked_funds", save=True)
-        # The model's `columns` (derived from the wrapped query's projection)
+        model = await engine.create_dataset_from_query(query=query, name="ranked_funds", save=True)
+        # The dataset's `fields` (derived from the wrapped query's projection)
         # must include the hoisted ``expensenet_sum`` intermediate, or its
         # rendered SQL must project that alias.
-        col_names = {c.name for c in (model.columns or [])}
+        col_names = {c.name for c in (model.fields or [])}
         sql = (await engine.execute("ranked_funds", dry_run=True)).sql or ""
         assert "funds.expensenet_sum" in col_names or "expensenet_sum" in col_names or "expensenet_sum" in sql, (
             f"query-backed wrap must keep the hoisted ``expensenet_sum`` "
             f"alias accessible to downstream stages.\n"
-            f"columns: {col_names}\nSQL:\n{sql}"
+            f"fields: {col_names}\nSQL:\n{sql}"
         )
-        # And the wrapper's column for ``expense_rank`` must of course be
+        # And the wrapper's field for ``expense_rank`` must of course be
         # present too.
-        assert "funds.expense_rank" in col_names or "expense_rank" in col_names
+        assert "expense_rank" in col_names or "expense_rank" in col_names
 
     async def test_runtime_list_final_stage_trimmed_inner_not(
-        self, tmp_path, orders_model: SlayerModel,
+        self, tmp_path, orders_dataset: SlayerDataset,
     ) -> None:
         """When a runtime list of queries is passed to ``engine.execute``,
         the FINAL entry is rendered in outer mode (trim applied); inner
         entries are rendered in wrapped mode (full projection preserved)."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_model(orders_model)
+        await storage.save_dataset(orders_dataset)
         engine = SlayerQueryEngine(storage=storage)
         inner = SlayerQuery(
             name="ranked",
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="rank(sum(revenue), direction='desc')", name="r")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="rank(sum(orders.revenue), direction='desc')", alias="r")],
         )
         outer = SlayerQuery(
-            source_model="ranked",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="max(r)", name="top_r")],
+            population="ranked",
+            dimensions=[QueryDimension(field="ranked.status")],
+            metrics=[QueryMetric(metric="max(ranked.r)", alias="top_r")],
         )
         resp = await engine.execute(query=[inner, outer], dry_run=True)
         sql_str = resp.sql or ""
-        assert resp.columns == ["ranked.status", "ranked.top_r"]
+        assert resp.columns == ["ranked.status", "top_r"]
         # The inner stage exposes the hoisted intermediate (revenue_sum +
-        # the rank measure ``r``).
+        # the rank metric ``r``).
         assert "revenue_sum" in sql_str or '"orders.revenue_sum"' in sql_str
         assert '"orders.r"' in sql_str or "ranked.r" in sql_str
 
@@ -840,7 +841,7 @@ class TestStagedProjectionTrim:
 # Group J — Provenance and public-projection helper.
 class TestProvenance:
     """The typed-pipeline notion of "user-declared" is membership in the
-    trimmed OUTER projection: a declared dim/measure/transform/expression
+    trimmed OUTER projection: a declared dim/metric/transform/expression
     surfaces in the outermost SELECT, while auto-extracted hidden entries
     (order-by aggregates, filter-transform inner args) are trimmed out. The
     legacy ``user_declared`` flag / ``the legacy public-projection helper`` helper /
@@ -849,59 +850,59 @@ class TestProvenance:
     """
 
     async def test_declared_measure_in_outer_projection_hidden_trimmed(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """A declared measure surfaces in the outer SELECT; order-by /
+        """A declared metric surfaces in the outer SELECT; order-by /
         filter-extracted hidden aggregates do NOT."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="sum(revenue)", name="total")],
-            order=[OrderItem.model_validate({"column": "sum(quantity)", "direction": "desc"})],
-            filters=["change(sum(revenue)) > 0"],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.revenue)", alias="total")],
+            order=[OrderItem.model_validate({"field": "sum(orders.quantity)", "direction": "desc"})],
+            filter=["change(sum(orders.revenue)) > 0"],
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert "orders.total" in outer_cols
+        assert "total" in outer_cols
         # Auto-extracted hidden aggregates are trimmed from the outer SELECT.
         assert "orders.quantity_sum" not in outer_cols, (
             f"order-by hidden aggregate must be trimmed:\n{sql}"
         )
 
     async def test_declared_expression_in_outer_projection(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """A declared scalar formula (``sum(revenue) / count(*)``) surfaces in
+        """A declared scalar expression (``sum(revenue) / count(*)``) surfaces in
         the outer SELECT under its user alias."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="sum(revenue) / count(*)", name="aov")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.revenue) / count(orders.*)", alias="aov")],
         )
-        sql = await _generate(query, orders_model)
-        assert "orders.aov" in _outer_select_columns(sql)
+        sql = await _generate(query, orders_dataset)
+        assert "aov" in _outer_select_columns(sql)
 
     async def test_declared_transform_in_outer_projection_inner_trimmed(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """A declared window transform (``cumsum(sum(revenue))``) surfaces in
         the outer SELECT; the auto-extracted inner ``sum(revenue)`` hoist does
         not."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="cumsum(sum(revenue))", name="cum")],
+            metrics=[QueryMetric(metric="cumsum(sum(orders.revenue))", alias="cum")],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert "orders.cum" in outer_cols
+        assert "cum" in outer_cols
         assert "orders.revenue_sum" not in outer_cols, (
             f"inner cumsum arg must be trimmed from the outer SELECT:\n{sql}"
         )
@@ -909,47 +910,47 @@ class TestProvenance:
     async def test_declared_cross_model_measure_in_outer_projection(
         self, orders_customers_engine,
     ) -> None:
-        """A declared cross-model measure (``sum(customers.revenue)``) surfaces
+        """A declared cross-dataset metric (``sum(customers.revenue)``) surfaces
         in the outer SELECT under its caller-facing key."""
         engine, _orders = orders_customers_engine
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
         )
         resp = await engine.execute(query, dry_run=True)
         outer_cols = _outer_select_columns(resp.sql or "")
         assert any("cust_rev" in c for c in outer_cols), (
-            f"declared cross-model measure must surface in the outer SELECT.\n"
+            f"declared cross-dataset metric must surface in the outer SELECT.\n"
             f"got: {outer_cols}\nSQL:\n{resp.sql}"
         )
 
     async def test_declared_projection_order_and_hidden_exclusion(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """The outer SELECT projects exactly the declared dims +
-        time_dimensions + measures in declaration order, excluding the
+        time_dimensions + metrics in declaration order, excluding the
         auto-extracted order-by aggregate."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status"), ColumnRef(name="region")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.region")],
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="sum(revenue)", name="total"),
-                ModelMeasure(formula="count(*)", name="n"),
+            metrics=[
+                QueryMetric(metric="sum(orders.revenue)", alias="total"),
+                QueryMetric(metric="count(orders.*)", alias="n"),
             ],
-            order=[OrderItem.model_validate({"column": "sum(quantity)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(orders.quantity)", "direction": "desc"})],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         assert _outer_select_columns(sql) == [
             "orders.status",
             "orders.region",
             "orders.created_at",
-            "orders.total",
-            "orders.n",
+            "total",
+            "n",
         ], f"unexpected projection order:\n{sql}"
         # Hidden order/filter aggregates materialise as inner
         # base-CTE columns (python.engine.arc42.md P4). The hidden ``quantity_sum``
@@ -960,21 +961,21 @@ class TestProvenance:
         ), f"quantity_sum leaked into outer projection:\n{sql}"
 
     async def test_provenance_merge_when_order_by_matches_declared(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """When the user declares ``{"formula":"revenue:sum","name":"total"}``
+        """When the user declares ``{"metric":"sum(revenue)","alias":"total"}``
         AND orders by ``sum(revenue)``, the entries merge: the declared alias
         (``orders.total``) is reused, no phantom ``orders.revenue_sum``."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="sum(revenue)", name="total")],
-            order=[OrderItem(column="sum(revenue)", direction="desc")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.revenue)", alias="total")],
+            order=[OrderItem(field="sum(orders.revenue)", direction="desc")],
             limit=5,
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.status", "orders.total"]
+        assert outer_cols == ["orders.status", "total"]
         # No duplicate phantom 'orders.revenue_sum' alias anywhere in the SQL —
         # the order-by ref merged into the declared 'total' aggregate (a single
         # SUM(amount), not two).
@@ -983,47 +984,47 @@ class TestProvenance:
             f"alias — no phantom 'orders.revenue_sum'.\nSQL:\n{sql}"
         )
         assert sql.upper().count("SUM(") == 1, (
-            f"merged order-by + declared measure must emit one SUM aggregate:\n{sql}"
+            f"merged order-by + declared metric must emit one SUM aggregate:\n{sql}"
         )
 
 
 # Group K — Dry-run / explain / expected_columns alignment.
 class TestDryRunAlignment:
     async def test_dry_run_columns_match_outer_projection(
-        self, funds_model: SlayerModel, tmp_path,
+        self, funds_dataset: SlayerDataset, tmp_path,
     ) -> None:
         """``engine.execute(query, dry_run=True)`` returns ``response.columns``
         that matches the outer SELECT projection — never includes hoisted
         intermediates."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_model(funds_model)
+        await storage.save_dataset(funds_dataset)
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
-            source_model="funds",
-            dimensions=[ColumnRef(name="geozone")],
-            measures=[ModelMeasure(formula="avg(expensenet) + avg(benchmarkexp)", name="combined_avg")],
+            population="funds",
+            dimensions=[QueryDimension(field="funds.geozone")],
+            metrics=[QueryMetric(metric="avg(funds.expensenet) + avg(funds.benchmarkexp)", alias="combined_avg")],
             limit=3,
         )
         resp = await engine.execute(query=query, dry_run=True)
-        assert resp.columns == ["funds.geozone", "funds.combined_avg"]
+        assert resp.columns == ["funds.geozone", "combined_avg"]
         # And the actual SQL's outer projection should match too.
         outer = _outer_select_columns(resp.sql or "")
         assert outer == resp.columns
 
     async def test_empty_result_columns_match_outer_projection(
-        self, funds_model: SlayerModel, tmp_path,
+        self, funds_dataset: SlayerDataset, tmp_path,
     ) -> None:
         """When the query returns zero rows (or is a dry-run), the columns
         field must reflect the public alias list — no hidden aliases."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_model(funds_model)
+        await storage.save_dataset(funds_dataset)
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
-            source_model="funds",
-            dimensions=[ColumnRef(name="geozone")],
-            order=[OrderItem.model_validate({"column": "sum(expensenet)", "direction": "desc"})],
+            population="funds",
+            dimensions=[QueryDimension(field="funds.geozone")],
+            order=[OrderItem.model_validate({"field": "sum(funds.expensenet)", "direction": "desc"})],
         )
         resp = await engine.execute(query=query, dry_run=True)
         assert resp.columns == ["funds.geozone"], (
@@ -1035,7 +1036,7 @@ class TestDryRunAlignment:
 # Group L — Wrapper layering: filter + order + trim interaction.
 class TestWrapperLayering:
     async def test_post_filter_plus_order_plus_trim(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Filter referencing a hidden field + ORDER BY + LIMIT must all
         apply correctly with the outer trim in effect. The spec's layering:
@@ -1046,21 +1047,21 @@ class TestWrapperLayering:
         lives one layer in.
         """
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="sum(revenue)", name="total")],
-            filters=["change(sum(revenue)) > 0"],
-            order=[OrderItem(column="sum(revenue)", direction="desc")],
+            metrics=[QueryMetric(metric="sum(orders.revenue)", alias="total")],
+            filter=["change(sum(orders.revenue)) > 0"],
+            order=[OrderItem(field="sum(orders.revenue)", direction="desc")],
             limit=5,
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         # Outer projection trimmed.
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.created_at", "orders.total"], (
-            f"Outer SELECT must project only declared dim + measure.\n"
+        assert outer_cols == ["orders.created_at", "total"], (
+            f"Outer SELECT must project only declared dim + metric.\n"
             f"got: {outer_cols}\nSQL:\n{sql}"
         )
         # AST: outermost is a Select with trim projection + order + limit.
@@ -1089,21 +1090,21 @@ class TestWrapperLayering:
         )
 
 
-# Group M — Cross-model / isolated ORDER BY hoisted, not projected.
+# Group M — Cross-dataset / isolated ORDER BY hoisted, not projected.
 class TestCrossModelOrderBy:
     async def test_order_by_cross_model_agg_hoisted_not_projected(
         self, orders_customers_engine,
     ) -> None:
-        """ORDER BY a cross-model aggregate (``sum(customers.revenue)``) with
-        no matching declared measure: the aggregate is hoisted as a hidden
+        """ORDER BY a cross-dataset aggregate (``sum(customers.revenue)``) with
+        no matching declared metric: the aggregate is hoisted as a hidden
         internal CTE column, the outer ORDER BY references it via the
         hidden alias by name (NOT inline as a SUM(...) expression), and
         the outer SELECT does NOT project it."""
         engine, _orders = orders_customers_engine
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            order=[OrderItem.model_validate({"column": "sum(customers.revenue)", "direction": "desc"})],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem.model_validate({"field": "sum(customers.revenue)", "direction": "desc"})],
             limit=3,
         )
         resp = await engine.execute(query, dry_run=True)
@@ -1113,8 +1114,8 @@ class TestCrossModelOrderBy:
             f"Outer SELECT must project only [orders.status].\n"
             f"got: {outer_cols}\nSQL:\n{sql}"
         )
-        # The hidden cross-model alias must appear in the SQL (as a CTE
-        # column or as an alias in an inner SELECT). Cross-model measure
+        # The hidden cross-dataset alias must appear in the SQL (as a CTE
+        # column or as an alias in an inner SELECT). Cross-dataset metric
         # aliases follow the ``<source>.<target>__<col>_<agg>`` pattern;
         # accept either path-aliased or dotted-prefixed forms.
         all_aliases = _all_aliases_in_sql(sql)
@@ -1123,14 +1124,14 @@ class TestCrossModelOrderBy:
             if "revenue_sum" in a or "sum(revenue)" in a
         ]
         assert hidden_candidates, (
-            f"Hidden cross-model aggregate alias must appear in the SQL.\n"
+            f"Hidden cross-dataset aggregate alias must appear in the SQL.\n"
             f"aliases: {all_aliases}\nSQL:\n{sql}"
         )
         # Outermost ORDER BY references one of those hidden aliases by name,
         # not as an inline expression.
         order_refs = _outer_order_by_references(sql)
         assert any(r in hidden_candidates for r in order_refs), (
-            f"Outermost ORDER BY must reference the hidden cross-model "
+            f"Outermost ORDER BY must reference the hidden cross-dataset "
             f"alias by name (not inline).\n"
             f"refs: {order_refs}\nhidden candidates: {hidden_candidates}\n"
             f"SQL:\n{sql}"
@@ -1147,54 +1148,54 @@ class TestCrossModelOrderBy:
 # Group N — Window reuse (structural equality only; name-reuse → DEV-1447).
 class TestWindowChainReuse:
     async def test_structural_reuse_inline_subagg_collapses(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """``m1={"formula":"revenue:sum","name":"total"}`` plus
-        ``m2={"formula":"rank(revenue:sum, direction='desc')","name":"r"}`` → ``r``'s OVER
+        """``m1={"metric":"sum(revenue)","alias":"total"}`` plus
+        ``m2={"metric":"rank(sum(revenue), direction='desc')","alias":"r"}`` → ``r``'s OVER
         references ``total``'s alias (orders.total), no inner duplicate."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="sum(revenue)", name="total"),
-                ModelMeasure(formula="rank(sum(revenue), direction='desc')", name="r"),
+            metrics=[
+                QueryMetric(metric="sum(orders.revenue)", alias="total"),
+                QueryMetric(metric="rank(sum(orders.revenue), direction='desc')", alias="r"),
             ],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.created_at", "orders.total", "orders.r"]
+        assert outer_cols == ["orders.created_at", "total", "r"]
         # No `_inner_*` hoist of the inner sum.
         assert "_inner_" not in sql
         # OVER (...) DESC must reference the orders.total alias (since the
-        # rank arg structurally equals the declared 'total' measure).
+        # rank arg structurally equals the declared 'total' metric).
         # Look for an OVER clause that mentions "orders.total" near it.
         over_match = re.search(r"OVER\s*\([^)]*\)", sql)
         assert over_match is not None
-        assert '"orders.total"' in over_match.group(0), (
+        assert '"total"' in over_match.group(0), (
             f"Rank OVER (...) must reference declared 'orders.total' alias, "
             f"got: {over_match.group(0)}\nSQL:\n{sql}"
         )
 
     async def test_nested_window_formula_stages_without_duplicate(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """``rank(rank(sum(revenue), direction='desc'), direction='desc')`` named ``r2`` stages naturally as
         step1+step2 CTEs; the outer SELECT projects ``[created_at, r2]``
         only; no ``_inner_*`` duplicate hoist."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="rank(rank(sum(revenue), direction='desc'), direction='desc')", name="r2")],
+            metrics=[QueryMetric(metric="rank(rank(sum(orders.revenue), direction='desc'), direction='desc')", alias="r2")],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.created_at", "orders.r2"]
+        assert outer_cols == ["orders.created_at", "r2"]
         # Two RANK() OVER (...) windows must appear, stacked across CTE layers.
         rank_count = sql.upper().count("RANK()")
         assert rank_count >= 2, (
@@ -1206,12 +1207,12 @@ class TestWindowChainReuse:
 # Test 17 (revised), 38, 39, 40, 41 — call-site / contract pins.
 class TestCallSitesAndContractPins:
     async def test_get_result_column_types_renders_through_planned_stages(
-        self, orders_model: SlayerModel, tmp_path, monkeypatch,
+        self, orders_dataset: SlayerDataset, tmp_path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``get_result_column_types`` builds its type probe once, through ``build_planned_statement``."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_model(orders_model)
+        await storage.save_dataset(orders_dataset)
         engine = SlayerQueryEngine(storage=storage)
 
         planned_calls: List[Tuple[bool, str]] = []
@@ -1226,7 +1227,7 @@ class TestCallSitesAndContractPins:
             query_engine_module, "build_planned_statement", _wrapper,
         )
 
-        await engine.get_result_column_types(model_name="orders")
+        await engine.get_result_column_types(dataset_name="orders")
 
         assert len(planned_calls) == 1, (
             f"get_result_column_types must build the probe through "
@@ -1238,23 +1239,23 @@ class TestCallSitesAndContractPins:
         assert "SELECT" in sql.upper(), sql
 
     async def test_outer_wrapper_owns_order_limit_offset(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Per the layering rule, the SAME outermost SELECT carries trim +
         ORDER BY + LIMIT + OFFSET. The rendered SQL has exactly one outermost
         ORDER BY / LIMIT / OFFSET clause."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="sum(revenue)", name="total")],
-            order=[OrderItem.model_validate({"column": "sum(quantity)", "direction": "desc"})],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.revenue)", alias="total")],
+            order=[OrderItem.model_validate({"field": "sum(orders.quantity)", "direction": "desc"})],
             limit=10,
             offset=20,
         )
-        sql = await _generate(query, orders_model)
-        # Outer SELECT projects only declared dim + measure.
+        sql = await _generate(query, orders_dataset)
+        # Outer SELECT projects only declared dim + metric.
         outer_cols = _outer_select_columns(sql)
-        assert outer_cols == ["orders.status", "orders.total"], (
+        assert outer_cols == ["orders.status", "total"], (
             f"Outer projection wrong: {outer_cols}\nSQL:\n{sql}"
         )
         # The outermost statement is a Select whose args include order,
@@ -1269,25 +1270,25 @@ class TestCallSitesAndContractPins:
 # Validation: dim + time_dim alias clash rejection (Codex round-3 finding 2).
 class TestDimAndTimeDimClash:
     async def test_dim_and_time_dim_resolving_to_same_alias_rejected(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """A query that lists the same column as both a regular dimension
+        """A query that lists the same field as both a regular dimension
         and a time dimension produces ambiguous aliases — reject at
         enrichment time with a concrete ``ValueError``. Catching the
         narrow exception type prevents the test from silently masking
         unrelated failures (e.g. KeyError, AssertionError) as a "rejection".
         """
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="created_at")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.created_at")],
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         with pytest.raises(ValueError) as exc:
-            await _generate(query, orders_model)
+            await _generate(query, orders_dataset)
         msg = str(exc.value).lower()
         # Surface message must clearly call out the clashing name OR a
         # duplicate/ambiguity error term — not a generic message.
@@ -1305,42 +1306,42 @@ class TestDimAndTimeDimClash:
 # supports it, emitting both columns backed by a single aggregate.
 class TestDuplicateUserDeclaredCanonical:
     async def test_two_qfields_same_canonical_different_names_multi_alias(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
-        """Two measures with the same canonical aggregation but different
-        ``name`` overrides intern to one slot and project under BOTH names,
+        """Two metrics with the same canonical aggregation but different
+        ``alias`` overrides intern to one slot and project under BOTH names,
         backed by a single ``SUM(amount)``."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="sum(revenue)", name="revenue1"),
-                ModelMeasure(formula="sum(revenue)", name="revenue2"),
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[
+                QueryMetric(metric="sum(orders.revenue)", alias="revenue1"),
+                QueryMetric(metric="sum(orders.revenue)", alias="revenue2"),
             ],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        assert "orders.revenue1" in outer_cols
-        assert "orders.revenue2" in outer_cols
+        assert "revenue1" in outer_cols
+        assert "revenue2" in outer_cols
 
     async def test_two_qfields_same_canonical_unnamed_and_named_multi_alias(
-        self, orders_model: SlayerModel,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Same shape but the first qfield is unnamed (surfaces as the
         canonical alias ``revenue_sum``) and the second has a name. Both
         project, backed by one aggregate."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="sum(revenue)"),
-                ModelMeasure(formula="sum(revenue)", name="other"),
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[
+                QueryMetric(metric="sum(orders.revenue)"),
+                QueryMetric(metric="sum(orders.revenue)", alias="other"),
             ],
         )
-        sql = await _generate(query, orders_model)
+        sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
         assert "orders.revenue_sum" in outer_cols
-        assert "orders.other" in outer_cols
+        assert "other" in outer_cols
 
 
 # Codex review on PR #134: outer ORDER BY references after wrap path.
@@ -1358,13 +1359,13 @@ class TestOuterOrderByQualifierStripping:
         reference uses the bare alias (which ``_outer`` exposes).
         """
         engine, _ = orders_customers_engine
-        # Cross-model measure forces the combined-CTE path; an unbound
+        # Cross-dataset metric forces the combined-CTE path; an unbound
         # ORDER BY aggregate adds a hidden hoist that forces the wrap.
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="sum(customers.revenue)", name="cust_rev")],
-            order=[OrderItem.model_validate({"column": "sum(revenue)", "direction": "desc"})],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
+            order=[OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})],
             limit=5,
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -1374,8 +1375,8 @@ class TestOuterOrderByQualifierStripping:
         assert isinstance(parsed, exp.Select)
         order = parsed.args.get("order")
         assert order is not None, f"no ORDER BY in outer SQL.\n{sql}"
-        for col in order.find_all(exp.Column):
-            assert col.args.get("table") is None, (
+        for column in order.find_all(exp.Column):
+            assert column.args.get("table") is None, (
                 f"Outermost ORDER BY must not carry inner-CTE qualifiers, "
-                f"got col {col.sql()!r}.\nSQL:\n{sql}"
+                f"got col {column.sql()!r}.\nSQL:\n{sql}"
             )

@@ -1,7 +1,6 @@
 """Pin the ValueError inheritance contract for binding-time errors.
 
-DEV-1484 Stage C fix-up: the typed-pipeline migration (DEV-1452 Stage A/B)
-introduced dedicated ``SlayerError`` subclasses for binding-time failures
+The typed-pipeline migration introduced dedicated ``SlayerError`` subclasses for binding-time failures
 that the legacy enrichment pipeline raised as bare ``ValueError``. Callers —
 notably the REST ``/query`` endpoint, which maps ``ValueError -> HTTP 400`` —
 rely on these being ``ValueError`` to surface user-correctable failures as
@@ -16,37 +15,37 @@ import pytest
 from slayer.core.errors import (
     AggregationNotAllowedError,
     AmbiguousReferenceError,
-    CanonicalAliasShadowsColumnError,
-    CircularJoinPathError,
-    ColumnCycleError,
-    DerivedColumnCircularError,
-    DuplicateMeasureNameError,
+    CanonicalAliasShadowsFieldError,
+    CircularRelationshipPathError,
+    DatasetFieldCycleError,
+    DerivedFieldCircularError,
+    DuplicateMetricNameError,
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
-    MeasureCycleError,
-    MeasureNameCollidesWithColumnError,
-    MeasureRecursionLimitError,
+    MetricCycleError,
+    MetricNameCollidesWithFieldError,
+    MetricRecursionLimitError,
     SlayerError,
     UnknownFunctionError,
     UnknownReferenceError,
 )
 
 # Every binding-/resolution-time error a user can trigger by submitting a
-# malformed query or formula. All must be ``ValueError`` so the REST 400
+# malformed query or expression. All must be ``ValueError`` so the REST 400
 # mapping and ``except ValueError`` callers keep catching them.
 _VALUE_ERROR_BINDING_ERRORS = [
     AggregationNotAllowedError,
     AmbiguousReferenceError,
-    CanonicalAliasShadowsColumnError,
-    CircularJoinPathError,
-    ColumnCycleError,
-    DerivedColumnCircularError,
-    DuplicateMeasureNameError,
+    CanonicalAliasShadowsFieldError,
+    CircularRelationshipPathError,
+    DatasetFieldCycleError,
+    DerivedFieldCircularError,
+    DuplicateMetricNameError,
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
-    MeasureCycleError,
-    MeasureNameCollidesWithColumnError,
-    MeasureRecursionLimitError,
+    MetricCycleError,
+    MetricNameCollidesWithFieldError,
+    MetricRecursionLimitError,
     UnknownFunctionError,
     UnknownReferenceError,
 ]

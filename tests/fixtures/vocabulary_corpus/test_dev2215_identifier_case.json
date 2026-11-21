@@ -1,0 +1,206 @@
+{
+ "source": "tests/test_dev2215_identifier_case.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "Share",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "Share",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "Monthly",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "Monthly",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "monthly",
+    "source_model": "Monthly",
+    "measures": [
+     {
+      "formula": "sum(n)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "name": "monthly",
+    "population": "Monthly",
+    "metrics": [
+     {
+      "metric": "sum(n)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "monthly",
+    "measures": [
+     {
+      "formula": "sum(t)",
+      "name": "u"
+     }
+    ]
+   },
+   "new": {
+    "population": "monthly",
+    "metrics": [
+     {
+      "metric": "sum(t)",
+      "alias": "u"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "Total"
+     },
+     {
+      "formula": "count(*)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "Total"
+     },
+     {
+      "metric": "count(*)",
+      "alias": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "saved",
+    "data_source": "test",
+    "source_queries": [
+     {
+      "source_model": "orders",
+      "measures": [
+       {
+        "formula": "sum(amount)",
+        "name": "Total"
+       },
+       {
+        "formula": "count(*)",
+        "name": "total"
+       }
+      ]
+     }
+    ]
+   },
+   "new": {
+    "name": "saved",
+    "data_source": "test",
+    "source_queries": [
+     {
+      "population": "orders",
+      "metrics": [
+       {
+        "metric": "sum(amount)",
+        "alias": "Total"
+       },
+       {
+        "metric": "count(*)",
+        "alias": "total"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "Total",
+    "formula": "count(*)"
+   },
+   "new": {
+    "name": "Total",
+    "expression": "count(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 92,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 106,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 108,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 114,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 173,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 364,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 387,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 389,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 393,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 394,
+   "reason": "not fully literal"
+  }
+ ]
+}

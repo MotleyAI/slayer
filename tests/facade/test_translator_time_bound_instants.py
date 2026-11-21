@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
@@ -22,21 +22,21 @@ def dialect(request):
     return request.param
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="delivered_at", type=DataType.DATE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="delivered_at", datatype=DataType.DATE),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 
 
 def _translate(sql: str, dialect=None) -> SlayerQuery:
-    result = translate(sql=sql, catalog=build_catalog(models_by_datasource={"test": [_orders()]}), dialect=dialect)
+    result = translate(sql=sql, catalog=build_catalog(datasets_by_datasource={"test": [_orders()]}), dialect=dialect)
     assert isinstance(result, QueryResult), result
     return result.query
 
@@ -58,55 +58,55 @@ class TestLiftedBetween:
 
 class TestVerbatimComparators:
     @pytest.mark.parametrize(("where", "expected"), [
-        ("ordered_at < '2025-01-01 10:30:00'", ["ordered_at < '2025-01-01 10:30:00'"]),
-        ("ordered_at < TIMESTAMP '2025-01-01'", ["ordered_at < '2025-01-01 00:00:00'"]),
+        ("ordered_at < '2025-01-01 10:30:00'", ["orders.ordered_at < '2025-01-01 10:30:00'"]),
+        ("ordered_at < TIMESTAMP '2025-01-01'", ["orders.ordered_at < '2025-01-01 00:00:00'"]),
     ])
     def test_instants_and_typed_literals(self, dialect, where, expected) -> None:
         q = _translate(SELECT + "WHERE " + where, dialect)
         assert _range(q) is None
-        assert q.filters == expected
+        assert q.filter == expected
 
     def test_reversed_typed_literal(self, dialect) -> None:
         q = _translate(SELECT + "WHERE DATE '2024-01-01' <= ordered_at", dialect)
         assert _range(q) is None
-        assert q.filters in (
-            ["'2024-01-01 00:00:00' <= ordered_at"], ["ordered_at >= '2024-01-01 00:00:00'"],
+        assert q.filter in (
+            ["'2024-01-01 00:00:00' <= orders.ordered_at"], ["orders.ordered_at >= '2024-01-01 00:00:00'"],
         )
 
     @pytest.mark.parametrize(("where", "expected"), [
         ("ordered_at <= '2024-12-31' AND ordered_at != '2024-06-01'",
-         ["ordered_at <= '2024-12-31 00:00:00'", "ordered_at != '2024-06-01 00:00:00'"]),
-        ("ordered_at = '2024-06-01'", ["ordered_at = '2024-06-01 00:00:00'"]),
-        ("delivered_at > '2024-12-31'", ["delivered_at > '2024-12-31 00:00:00'"]),
+         ["orders.ordered_at <= '2024-12-31 00:00:00'", "orders.ordered_at != '2024-06-01 00:00:00'"]),
+        ("ordered_at = '2024-06-01'", ["orders.ordered_at = '2024-06-01 00:00:00'"]),
+        ("delivered_at > '2024-12-31'", ["orders.delivered_at > '2024-12-31 00:00:00'"]),
     ])
     def test_unprojected_temporal_column(self, dialect, where, expected) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE " + where, dialect)
         assert not q.time_dimensions
-        assert q.filters == expected
+        assert q.filter == expected
 
     @pytest.mark.parametrize(("where", "expected"), [
         ("ordered_at BETWEEN DATE '2024-01-01' AND DATE '2024-12-31'",
-         ["(ordered_at >= '2024-01-01 00:00:00' AND ordered_at <= '2024-12-31 00:00:00')"]),
+         ["(orders.ordered_at >= '2024-01-01 00:00:00' AND orders.ordered_at <= '2024-12-31 00:00:00')"]),
         ("ordered_at NOT BETWEEN '2024-01-01' AND '2024-12-31'",
-         ["NOT (ordered_at >= '2024-01-01 00:00:00' AND ordered_at <= '2024-12-31 00:00:00')"]),
-        ("revenue BETWEEN 1 AND 5", ["(revenue >= 1 AND revenue <= 5)"]),
+         ["NOT (orders.ordered_at >= '2024-01-01 00:00:00' AND orders.ordered_at <= '2024-12-31 00:00:00')"]),
+        ("revenue BETWEEN 1 AND 5", ["(orders.revenue >= 1 AND orders.revenue <= 5)"]),
     ])
     def test_unlifted_between_expands(self, dialect, where, expected) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE " + where, dialect)
         assert not q.time_dimensions
-        assert q.filters == expected
+        assert q.filter == expected
 
     def test_nested_bound(self, dialect) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE ordered_at <= '2024-12-31' OR revenue > 5", dialect)
-        assert q.filters == ["ordered_at <= '2024-12-31 00:00:00' OR revenue > 5"]
+        assert q.filter == ["orders.ordered_at <= '2024-12-31 00:00:00' OR orders.revenue > 5"]
 
     def test_text_column_untouched(self, dialect) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE status = '2024-12-31'", dialect)
-        assert q.filters == ["status = '2024-12-31'"]
+        assert q.filter == ["orders.status = '2024-12-31'"]
 
     def test_non_time_filter_untouched(self, dialect) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE revenue >= 10", dialect)
-        assert q.filters == ["revenue >= 10"]
+        assert q.filter == ["orders.revenue >= 10"]
 
 
 def _seed(db_path: str) -> None:
@@ -126,14 +126,14 @@ async def _revenue(tmp_path, where: str, *, column: str | None = "ordered_at") -
     _seed(db_path)
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="duckdb", database=db_path))
-    await storage.save_model(_orders())
+    await storage.save_dataset(_orders())
     engine = SlayerQueryEngine(storage=storage)
     grain = f"date_trunc('month', {column}), " if column else ""
     try:
         resp = await engine.execute(_translate(f"SELECT {grain}revenue_sum FROM orders WHERE {where}", "postgres"))
     finally:
         engine.close()
-    return sum(r["orders.revenue_sum"] for r in resp.data)
+    return sum(r["revenue_sum"] for r in resp.data)
 
 
 class TestExecutedMidnightSemantics:

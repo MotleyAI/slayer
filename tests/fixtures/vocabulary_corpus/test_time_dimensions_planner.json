@@ -1,0 +1,253 @@
+{
+ "source": "tests/test_time_dimensions_planner.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 245,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 257,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 276,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 297,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 430,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 468,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 471,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 491,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 495,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 515,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 519,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 532,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 536,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 552,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 556,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 571,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 574,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 591,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 605,
+   "reason": "not fully literal"
+  }
+ ]
+}

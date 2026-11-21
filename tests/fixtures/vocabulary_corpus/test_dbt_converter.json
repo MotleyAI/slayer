@@ -1,0 +1,69 @@
+{
+ "source": "tests/test_dbt_converter.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "premium_filtered",
+    "formula": "count(*)"
+   },
+   "new": {
+    "name": "premium_filtered",
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "amt"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "amt"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 371,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 372,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 747,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 752,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 753,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 891,
+   "reason": "not fully literal"
+  }
+ ]
+}

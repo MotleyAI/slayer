@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_dev1958_cte_dependencies.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  }
+ ]
+}

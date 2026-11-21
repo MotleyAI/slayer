@@ -27,9 +27,10 @@ import json
 from sqlglot import exp
 
 from slayer.embeddings.models import Embedding
+from slayer.storage.ossie_vocabulary_migration import ENTITY_KINDS
 from slayer.storage.sqlite_conn import transaction
 
-_COLUMNS = ("canonical_id", "embedding_model_name", "entity_kind", "content_hash", "embedding", "created_at")
+_FIELDS = ("canonical_id", "embedding_model_name", "entity_kind", "content_hash", "embedding", "created_at")
 
 
 class SidecarEmbeddingStore:
@@ -59,6 +60,10 @@ class SidecarEmbeddingStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_embeddings_model "
                 "ON embeddings(embedding_model_name)"
+            )
+            conn.executemany(  # pre-2.0 row kinds; the sidecar carries no version
+                "UPDATE embeddings SET entity_kind = ? WHERE entity_kind = ?",
+                [(new, old) for old, new in ENTITY_KINDS.items()],
             )
 
     # ------------------------------------------------------------------
@@ -137,7 +142,7 @@ class SidecarEmbeddingStore:
             for start in range(0, len(canonical_ids), self._GET_MANY_CHUNK_SIZE):
                 chunk = canonical_ids[start : start + self._GET_MANY_CHUNK_SIZE]
                 select = (
-                    exp.select(*_COLUMNS).from_("embeddings")
+                    exp.select(*_FIELDS).from_("embeddings")
                     .where(exp.column("embedding_model_name").eq(exp.Placeholder()))
                     .where(exp.column("canonical_id").isin(*(exp.Placeholder() for _ in chunk)))
                 )

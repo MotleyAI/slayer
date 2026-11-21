@@ -1,4 +1,4 @@
-"""Seed, models and equivalence helpers for the clear-intent query heals (datasource ``test``).
+"""Seed, datasets and equivalence helpers for the clear-intent query heals (datasource ``test``).
 
 orders (id, cust, region, status, amount, created_at, shipped_at):
   1  1  US    paid      10  2024-01-01 Mon  2024-01-03
@@ -17,8 +17,8 @@ import contextlib
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from typing import Any, Optional
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Aggregation, Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
@@ -78,82 +78,82 @@ FISCAL_YEAR = {"name": "fiscal_year", "base": "year", "origin": "2000-04-01"}
 DS_FIELDS = {"granularities": [FISCAL_YEAR]}
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test", default_time_dimension="signup_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="credit", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="credit", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
         ],
     )
 
 
-def orders_model(
-    *, measures: Sequence[ModelMeasure] = (), aggregations: Sequence[Aggregation] = (),
-) -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(
+    *, metrics: Sequence[DatasetMetric] = (), aggregations: Sequence[Aggregation] = (),
+) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
         ],
-        measures=list(measures),
+        metrics=list(metrics),
         aggregations=list(aggregations),
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(
-                target_model="order_items", join_pairs=[["id", "order_id"]],
-                cardinality=JoinCardinality.ONE_TO_MANY,
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(
+                to="order_items", from_columns=["id"], to_columns=["order_id"],
+                cardinality=RelationshipCardinality.ONE_TO_MANY,
             ),
         ],
     )
 
 
-def order_items_model() -> SlayerModel:
-    return SlayerModel(
+def order_items_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="order_items", sql_table="order_items", data_source="test", default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="product_id", type=DataType.INT),
-            Column(name="price", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="product_id", datatype=DataType.INTEGER),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
-        joins=[ModelJoin(target_model="products", join_pairs=[["product_id", "id"]])],
+        relationships=[DatasetRelationship(to="products", from_columns=["product_id"], to_columns=["id"])],
     )
 
 
-def products_model() -> SlayerModel:
-    return SlayerModel(
+def products_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="products", sql_table="products", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="category", type=DataType.TEXT),
-            Column(name="list_price", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="category", datatype=DataType.STRING),
+            DatasetField(name="list_price", datatype=DataType.FLOAT),
         ],
     )
 
 
-def heal_models(*, orders: Optional[SlayerModel] = None) -> list[SlayerModel]:
-    return [orders or orders_model(), customers_model(), order_items_model(), products_model()]
+def heal_datasets(*, orders: Optional[SlayerDataset] = None) -> list[SlayerDataset]:
+    return [orders or orders_dataset(), customers_dataset(), order_items_dataset(), products_dataset()]
 
 
 @contextlib.asynccontextmanager
 async def heal_engine(
-    backend: str, *, models: Optional[Iterable[SlayerModel]] = None,
+    backend: str, *, datasets: Optional[Iterable[SlayerDataset]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the heal seed, with the ``fiscal_year`` custom granularity declared."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, TABLES),
-        models=list(models) if models is not None else heal_models(), datasource_fields=DS_FIELDS,
+        datasets=list(datasets) if datasets is not None else heal_datasets(), datasource_fields=DS_FIELDS,
     ) as (engine, _):
         yield engine
 
@@ -165,13 +165,16 @@ def table(resp: SlayerResponse, *, ordered: bool) -> list[tuple]:
 
 
 async def assert_equivalent(
-    engine: SlayerQueryEngine, healed: Any, canonical: Any, *, ordered: bool = False, **execute_kw: Any,
+    engine: SlayerQueryEngine, healed: Any, canonical: Any, *, ordered: bool = False, deprecated: bool = False,
+    **execute_kw: Any,
 ) -> SlayerResponse:
-    """``healed`` returns the same columns, rows, SQL and warnings as ``canonical``."""
+    """``healed`` returns the same columns, rows, SQL and warnings as ``canonical`` (plus deprecations when
+    ``deprecated``: a 1.x form)."""
     expected = await engine.execute(canonical, **execute_kw)
     actual = await engine.execute(healed, **execute_kw)
     assert actual.columns == expected.columns
     assert table(actual, ordered=ordered) == table(expected, ordered=ordered)
     assert actual.sql == expected.sql
-    assert [w.human_message() for w in actual.warnings] == [w.human_message() for w in expected.warnings]
+    kept = [w for w in actual.warnings if not (deprecated and w.kind == "deprecated_input")]
+    assert [w.human_message() for w in kept] == [w.human_message() for w in expected.warnings]
     return actual

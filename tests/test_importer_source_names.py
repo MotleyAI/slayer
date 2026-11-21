@@ -1,4 +1,4 @@
-"""Importers type columns from sources named with the source dialect's identifier rules (spec:
+"""Importers type fields from sources named with the source dialect's identifier rules (spec:
 importers/meaning-preservation › Column types come from the database first)."""
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import NotReadOnlyQueryError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
@@ -29,7 +29,7 @@ from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import OSIDocument
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev2171_fixtures import collect_over_engine, column, typing_notes, write_yaml
+from tests._dev2171_fixtures import collect_over_engine, field_of, typing_notes, write_yaml
 from tests._engine_helpers import disposable_engine, owned_query_engine
 from tests._osi_helpers import ds, f, flat, rel
 
@@ -176,41 +176,41 @@ def _schemas(live: Live) -> None:
 
 # ── importers ─────────────────────────────────────────────────────────────
 
-def _cube(live: Live, *cubes: dict[str, Any]) -> tuple[dict[str, SlayerModel], list[str]]:
+def _cube(live: Live, *cubes: dict[str, Any]) -> tuple[dict[str, SlayerDataset], list[str]]:
     project = CubeProject.model_validate({"cubes": list(cubes)})
     converter = CubeToSlayerConverter(project=project, data_source=DS)
     collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
     result = converter.convert()
-    return {m.name: m for m in result.models}, [i.message for i in result.report.issues]
+    return {m.name: m for m in result.datasets}, [i.message for i in result.report.issues]
 
 
 def _dbt(live: Live, semantic_models: list[dict[str, Any]],
-         regular_models: Iterable[dict[str, Any]] = ()) -> tuple[dict[str, SlayerModel], list[str]]:
-    project = DbtProject.model_validate({"semantic_models": semantic_models, "regular_models": list(regular_models)})
+         regular_datasets: Iterable[dict[str, Any]] = ()) -> tuple[dict[str, SlayerDataset], list[str]]:
+    project = DbtProject.model_validate({"semantic_models": semantic_models, "regular_models": list(regular_datasets)})
     converter = DbtToSlayerConverter(project=project, data_source=DS, target_dialect=live.engine.dialect.name)
     collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
     result = converter.convert()
-    return {m.name: m for m in result.models}, _messages(result)
+    return {m.name: m for m in result.datasets}, _messages(result)
 
 
-def _osi(live: Live, document: dict[str, Any]) -> tuple[dict[str, SlayerModel], list[str]]:
+def _osi(live: Live, document: dict[str, Any]) -> tuple[dict[str, SlayerDataset], list[str]]:
     converter = OsiToSlayerConverter(documents=[OSIDocument.model_validate(document)], data_source=DS)
     collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
     result = converter.convert()
-    return {m.name: m for m in result.models}, _messages(result)
+    return {m.name: m for m in result.datasets}, _messages(result)
 
 
 def _messages(result: ConversionResult) -> list[str]:
     return [e.message for e in (*result.warnings, *result.unconverted_metrics)]
 
 
-def _typed(model: SlayerModel, name: str) -> DataType:
-    return column(model, name).type
+def _typed(dataset: SlayerDataset, name: str) -> DataType:
+    return field_of(dataset, name).datatype
 
 
 def _probed(live: Live) -> DataType:
     """An integer probe's type: ``INT`` on every backend (the typed probe certifies integers)."""
-    return DataType.INT
+    return DataType.INTEGER
 
 
 def _items_cube(sql_table: str) -> dict[str, Any]:
@@ -229,24 +229,24 @@ def _qty_cube(sql_table: str) -> dict[str, Any]:
 
 def test_mixed_case_schema_qualified_table(live: Live) -> None:
     models, messages = _cube(live, _items_cube(live.mixed))
-    assert _typed(models["items"], "qty") is DataType.INT
-    assert _typed(models["items"], "placed_at") is DataType.TIMESTAMP
+    assert _typed(models["items"], "qty") is DataType.INTEGER
+    assert _typed(models["items"], "placed_at") is DataType.DATETIME
     assert typing_notes(messages) == []
 
 
-async def _rows(live: Live, tmp_path: Path, models: Iterable[SlayerModel],
+async def _rows(live: Live, tmp_path: Path, datasets: Iterable[SlayerDataset],
                 payload: dict[str, Any]) -> list[dict[str, Any]]:
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     live.engine.dispose()  # SLayer opens a DuckDB file read-only, which a held read-write connection refuses
     async with owned_query_engine(storage=storage, datasources=[live.datasource]) as engine:
-        for model in models:
-            await storage.save_model(model)
+        for model in datasets:
+            await storage.save_dataset(model)
         return (await engine.execute(SlayerQuery.model_validate(payload))).data
 
 
-async def _grouped(live: Live, tmp_path: Path, models: dict[str, SlayerModel], model: str, dimension: str) -> list[Any]:
-    rows = await _rows(live, tmp_path, models.values(), {"source_model": model, "dimensions": [dimension]})
-    return [r[f"{model}.{dimension}"] for r in rows]
+async def _grouped(live: Live, tmp_path: Path, datasets: dict[str, SlayerDataset], dataset: str, dimension: str) -> list[Any]:
+    rows = await _rows(live, tmp_path, datasets.values(), {"population": dataset, "dimensions": [dimension]})
+    return [r[f"{dataset}.{dimension}"] for r in rows]
 
 
 async def test_unquoted_mixed_case_table_types_the_table_queries_read(live: Live, tmp_path: Path) -> None:
@@ -254,7 +254,7 @@ async def test_unquoted_mixed_case_table_types_the_table_queries_read(live: Live
     _schemas(live)
     models, messages = _cube(live, _qty_cube(UNQUOTED_MIXED))
     folds = live.engine.dialect.name == "postgresql"
-    assert _typed(models["items"], "qty") is (DataType.TEXT if folds else DataType.INT)
+    assert _typed(models["items"], "qty") is (DataType.STRING if folds else DataType.INTEGER)
     assert typing_notes(messages) == []
     assert await _grouped(live, tmp_path, models, "items", "qty") == (["t"] if folds else [4])
 
@@ -262,14 +262,14 @@ async def test_unquoted_mixed_case_table_types_the_table_queries_read(live: Live
 def test_reserved_word_table_cube(live: Live) -> None:
     models, messages = _cube(live, {"name": "orders", "sql_table": RESERVED,
                                     "dimensions": [{"name": "amount", "sql": "{CUBE}.amount", "type": "number"}]})
-    assert _typed(models["orders"], "amount") is DataType.INT
+    assert _typed(models["orders"], "amount") is DataType.INTEGER
     assert typing_notes(messages) == []
 
 
 def test_reserved_word_table_dbt(live: Live) -> None:
     models, messages = _dbt(live, [{"name": "orders", "model": RESERVED,
                                     "dimensions": [{"name": "amount", "type": "categorical"}]}])
-    assert _typed(models["orders"], "amount") is DataType.INT
+    assert _typed(models["orders"], "amount") is DataType.INTEGER
     assert typing_notes(messages) == []
 
 
@@ -277,21 +277,21 @@ def test_catalog_qualified_table(live: Live) -> None:
     if live.catalog is None:
         pytest.skip("SQLite reaches no catalog")
     models, messages = _cube(live, _qty_cube(f"{live.catalog}.sales.orders"))
-    assert _typed(models["items"], "qty") is DataType.INT
+    assert _typed(models["items"], "qty") is DataType.INTEGER
     assert typing_notes(messages) == []
 
 
 def test_unreachable_catalog_takes_the_reason_path(live: Live) -> None:
     models, messages = _dbt(live, [{"name": "m", "model": "elsewhere.sales.orders",
                                     "dimensions": [{"name": "qty", "type": "categorical"}]}])
-    assert _typed(models["m"], "qty") is not DataType.INT
+    assert _typed(models["m"], "qty") is not DataType.INTEGER
     assert len(typing_notes(messages)) == 1
 
 
 def test_quoted_name_containing_a_dot(live: Live) -> None:
     _schemas(live)
     models, messages = _cube(live, _qty_cube(DOTTED))
-    assert _typed(models["items"], "qty") is DataType.INT
+    assert _typed(models["items"], "qty") is DataType.INTEGER
     assert typing_notes(messages) == []
 
 
@@ -299,12 +299,12 @@ def test_quoted_dotted_schema_is_not_a_three_part_name(duck: Live) -> None:
     """``sales.v2.orders`` (catalog ``sales``) holds a text ``qty``; ``"sales.v2".orders`` an integer one."""
     dotted, _ = _cube(duck, _qty_cube(DOTTED))
     three_part, _ = _cube(duck, _qty_cube("sales.v2.orders"))
-    assert _typed(dotted["items"], "qty") is DataType.INT
-    assert _typed(three_part["items"], "qty") is DataType.TEXT
+    assert _typed(dotted["items"], "qty") is DataType.INTEGER
+    assert _typed(three_part["items"], "qty") is DataType.STRING
 
 
-def _doubled(model: str, *, dimension: str = "doubled", expr: str = "qty * 2") -> dict[str, Any]:
-    return {"name": "m", "model": model, "dimensions": [{"name": dimension, "type": "categorical", "expr": expr}]}
+def _doubled(dataset: str, *, dimension: str = "doubled", expr: str = "qty * 2") -> dict[str, Any]:
+    return {"name": "m", "model": dataset, "dimensions": [{"name": dimension, "type": "categorical", "expr": expr}]}
 
 
 def test_expression_probe_over_a_mixed_case_table(live: Live) -> None:
@@ -324,7 +324,7 @@ def test_expression_probe_over_a_reserved_word_table(live: Live) -> None:
 ])
 def test_expression_probe_over_sql_selecting_from_a_quoted_table(live: Live, source_sql: str) -> None:
     regular = {"name": "src", "raw_code": source_sql.format(mixed=live.mixed)}
-    models, messages = _dbt(live, [_doubled("src")], regular_models=[regular])
+    models, messages = _dbt(live, [_doubled("src")], regular_datasets=[regular])
     assert _typed(models["m"], "doubled") is _probed(live)
     assert typing_notes(messages) == []
 
@@ -337,18 +337,18 @@ def test_cube_expression_probe_over_a_reserved_word_table(live: Live) -> None:
 
 def test_osi_expression_probe_over_a_reserved_word_table(live: Live) -> None:
     models, _ = _osi(live, flat([ds("orders", source=RESERVED, fields=[f("id"), f("doubled", "amount * 2", datatype="String")])]))
-    assert _typed(models["orders"], "doubled") is _probed(live)
+    assert _typed(models["orders"], "doubled") is DataType.STRING
 
 
 def test_osi_expression_probe_over_a_mixed_case_table(live: Live) -> None:
     models, _ = _osi(live, flat([ds("items", source=live.mixed, fields=[f("qty"), f("doubled", "qty * 2", datatype="String")])]))
-    assert _typed(models["items"], "doubled") is _probed(live)
+    assert _typed(models["items"], "doubled") is DataType.STRING
 
 
 def test_osi_sql_source_selecting_from_a_reserved_word_table(live: Live) -> None:
     models, _ = _osi(live, flat([ds("orders", source='SELECT id, amount FROM "order"',
                                     fields=[f("id"), f("amount"), f("doubled", "amount * 2", datatype="String")])]))
-    assert _typed(models["orders"], "doubled") is _probed(live)
+    assert _typed(models["orders"], "doubled") is DataType.STRING
 
 
 @pytest.mark.parametrize("source_sql", [
@@ -360,8 +360,8 @@ def test_source_sql_the_importer_cannot_read(live: Live, source_sql: str) -> Non
     regular = {"name": "src", "raw_code": source_sql}
     models, messages = _dbt(live, [{"name": "m", "model": "src", "dimensions": [
         {"name": "id", "type": "categorical"}],
-        "measures": [{"name": "total", "agg": "sum", "expr": "id"}]}], regular_models=[regular])
-    assert _typed(models["m"], "id_col") is DataType.DOUBLE
+        "measures": [{"name": "total", "agg": "sum", "expr": "id"}]}], regular_datasets=[regular])
+    assert _typed(models["m"], "id_col") is DataType.FLOAT
     assert len(typing_notes(messages)) == 1
     assert live.ran("_slayer_src") == []
 
@@ -423,7 +423,7 @@ class _Collected:
 
     def column(self, physical: str) -> tuple[DataType, DataType | None] | None:
         found = self._read(None)
-        return found.column(physical) if isinstance(found, LiveSource) else None
+        return found.field(physical) if isinstance(found, LiveSource) else None
 
 
 def _source(live: Live, *, sql_table: str | None = None, sql: str | None = None) -> _Collected:
@@ -456,12 +456,12 @@ def test_unreadable_probe_expression_is_none_without_a_round_trip(live: Live) ->
 def test_statement_keyword_function_still_probes(live: Live) -> None:
     """``REPLACE(...)`` reads as a statement on SQLite unless parsed in expression context."""
     source = _source(live, sql_table=RESERVED)
-    assert source.probe("REPLACE(CAST(amount AS VARCHAR), '1', '2')") == (DataType.TEXT, None)
+    assert source.probe("REPLACE(CAST(amount AS VARCHAR), '1', '2')") == (DataType.STRING, None)
 
 
 def test_sql_source_is_described_by_one_statement(live: Live) -> None:
     source = _source(live, sql=f"SELECT qty, placed_at FROM {live.mixed}")
-    assert source.column("qty") in ((DataType.INT, None), (DataType.DOUBLE, None))
+    assert source.column("qty") in ((DataType.INTEGER, None), (DataType.FLOAT, None))
     selects = [s for s in live.statements if s.lstrip().upper().startswith("SELECT") and s != _PING]
     (describe,) = source.probes
     assert selects == _probe_statements(live, describe, columns=["qty", "placed_at"])
@@ -478,26 +478,26 @@ def test_unreadable_or_modifying_sql_source_is_refused_before_execution(live: Li
 
 # ── Postgres folds unquoted identifiers (spec: importers/meaning-preservation, importers/dbt-import) ──
 
-def _importer_models(live: Live, importer: str, table: str) -> tuple[dict[str, SlayerModel], str]:
-    """``(models, model name)`` of an import whose one model reads ``qty`` from ``table``."""
+def _importer_datasets(live: Live, importer: str, table: str) -> tuple[dict[str, SlayerDataset], str]:
+    """``(datasets, dataset name)`` of an import whose one dataset reads ``qty`` from ``table``."""
     if importer == "cube":
         return _cube(live, _qty_cube(table))[0], "items"
     if importer == "dbt":
         regular = {"name": "src", "raw_code": f"SELECT qty FROM {table}"}
         return _dbt(live, [{"name": "m", "model": "src", "dimensions": [{"name": "qty", "type": "categorical"}]}],
-                    regular_models=[regular])[0], "m"
+                    regular_datasets=[regular])[0], "m"
     return _osi(live, flat([ds("items", source=table, fields=[f("qty")])]))[0], "items"
 
 
 @pytest.mark.parametrize("importer", ["cube", "dbt", "osi"])
 @pytest.mark.parametrize(("table", "typed", "value"), [
-    (UNQUOTED_MIXED, DataType.TEXT, "t"),
-    ('"Sales"."OrderItems"', DataType.INT, 4),
+    (UNQUOTED_MIXED, DataType.STRING, "t"),
+    ('"Sales"."OrderItems"', DataType.INTEGER, 4),
 ])
 async def test_postgres_reads_a_source_table_with_its_folding(pg: Live, tmp_path: Path, importer: str, table: str,
                                                               typed: DataType, value: Any) -> None:
-    models, name = _importer_models(pg, importer, table)
-    sql_source_integer = importer == "dbt" and typed is DataType.INT
+    models, name = _importer_datasets(pg, importer, table)
+    sql_source_integer = importer == "dbt" and typed is DataType.INTEGER
     assert _typed(models[name], "qty") is (_probed(pg) if sql_source_integer else typed)
     assert await _grouped(pg, tmp_path, models, name, "qty") == [value]
 
@@ -507,18 +507,18 @@ async def test_mixed_case_column_reads_the_folded_physical_column(pg: Live, tmp_
         {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True},
         {"name": "amount", "sql": "{CUBE}.OrderAmount", "type": "number"}],
         "measures": [{"name": "total", "type": "sum", "sql": "{CUBE}.OrderAmount"}]})
-    assert _typed(models["payments"], "amount") is DataType.INT
+    assert _typed(models["payments"], "amount") is DataType.INTEGER
     assert await _grouped(pg, tmp_path, models, "payments", "amount") == [7]
     (row,) = await _rows(pg, tmp_path / "measure", models.values(), {
-        "source_model": "payments", "measures": [{"formula": "total", "name": "v"}]})
-    assert row["payments.v"] == 7
+        "population": "payments", "metrics": [{"metric": "payments.total", "alias": "v"}]})
+    assert row["v"] == 7
 
 
 async def test_names_local_to_a_source_query(pg: Live, tmp_path: Path) -> None:
     models, _ = _cube(pg, {"name": "recent", "dimensions": [{"name": "total", "sql": "{CUBE}.total", "type": "number"}],
                            "sql": "WITH Recent AS (SELECT Qty AS Total FROM Sales.OrderItems) "
                                   "SELECT Total FROM Recent ORDER BY Total"})
-    assert _typed(models["recent"], "total") is DataType.TEXT
+    assert _typed(models["recent"], "total") is DataType.STRING
     assert await _grouped(pg, tmp_path, models, "recent", "total") == ["t"]
 
 
@@ -533,7 +533,7 @@ async def test_osi_reference_to_another_datasets_field(pg: Live, tmp_path: Path)
 
 
 def _dbt_files(live: Live, tmp_path: Path, *, quoting: dict[str, Any] | None, include_hidden: bool = False,
-               ) -> dict[str, SlayerModel]:
+               ) -> dict[str, SlayerDataset]:
     root = tmp_path / "dbt"
     write_yaml(root / "dbt_project.yml", {"name": "shop", "version": "1.0", "config-version": 2,
                                           **({"quoting": quoting} if quoting is not None else {})})
@@ -542,15 +542,15 @@ def _dbt_files(live: Live, tmp_path: Path, *, quoting: dict[str, Any] | None, in
                                            "dimensions": [{"name": "qty", "type": "categorical"}]}]}
     write_yaml(root / "models" / "schema.yml", schema)
     converter = DbtToSlayerConverter(project=parse_dbt_project(str(root)), data_source=DS,
-                                     include_hidden_models=include_hidden, target_dialect="postgres")
+                                     include_hidden_datasets=include_hidden, target_dialect="postgres")
     collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
     result = converter.convert()
-    return {m.name: m for m in result.models}
+    return {m.name: m for m in result.datasets}
 
 
 @pytest.mark.parametrize(("quoting", "typed", "value"), [
-    (None, DataType.INT, 4),
-    ({"identifier": False}, DataType.TEXT, "t"),
+    (None, DataType.INTEGER, 4),
+    ({"identifier": False}, DataType.STRING, "t"),
 ])
 async def test_dbt_relation_follows_the_quoting_policy(pg: Live, tmp_path: Path, quoting: dict[str, Any] | None,
                                                        typed: DataType, value: Any) -> None:
@@ -559,7 +559,7 @@ async def test_dbt_relation_follows_the_quoting_policy(pg: Live, tmp_path: Path,
     assert await _grouped(pg, tmp_path, models, "items", "qty") == [value]
 
 
-@pytest.mark.parametrize(("quoting", "typed"), [(None, DataType.INT), ({"identifier": False}, DataType.TEXT)])
+@pytest.mark.parametrize(("quoting", "typed"), [(None, DataType.INTEGER), ({"identifier": False}, DataType.STRING)])
 def test_dbt_hidden_model_lookup_follows_the_quoting_policy(pg: Live, tmp_path: Path, quoting: dict[str, Any] | None,
                                                            typed: DataType) -> None:
     models = _dbt_files(pg, tmp_path, quoting=quoting, include_hidden=True)

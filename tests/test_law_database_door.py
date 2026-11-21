@@ -15,7 +15,7 @@ from typing import Any
 import duckdb
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -161,62 +161,62 @@ def _lists_datasource(tmp_path: Path) -> DatasourceConfig:
 
 
 async def _gateway_engine(tmp_path: Path, *, datasource: DatasourceConfig,
-                          models: list[SlayerModel]) -> tuple[SlayerQueryEngine, GatewayFactory]:
+                          datasets: list[SlayerDataset]) -> tuple[SlayerQueryEngine, GatewayFactory]:
     factory = GatewayFactory()
-    storage = await shop_storage(str(tmp_path / "store"), datasource=datasource, models=models)
+    storage = await shop_storage(str(tmp_path / "store"), datasource=datasource, datasets=datasets)
     return SlayerQueryEngine(storage=storage, client_factory=factory), factory
 
 
 class TestListPathsUseTheEngineClient:
     async def test_re_type_on_re_ingest(self, tmp_path: Path) -> None:
         ds = _lists_datasource(tmp_path)
-        stale = SlayerModel(name="contractors", sql_table="contractors", data_source=LIST_DS, columns=[
-            Column(name="id", type=DataType.INT), Column(name="skills", type=DataType.TEXT, description="Skills")])
-        engine, _factory = await _gateway_engine(tmp_path, datasource=ds, models=[stale])
+        stale = SlayerDataset(name="contractors", sql_table="contractors", data_source=LIST_DS, fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER), DatasetField(name="skills", datatype=DataType.STRING, description="Skills")])
+        engine, _factory = await _gateway_engine(tmp_path, datasource=ds, datasets=[stale])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
                 result = await ingest_datasource_idempotent(datasource=ds, storage=engine.storage,
                                                             client=engine.client_for(ds))
-            model = await engine.storage.get_model("contractors", data_source=LIST_DS)
+            model = await engine.storage.get_dataset("contractors", data_source=LIST_DS)
         finally:
             await engine.aclose()
             engine.close()
         assert guard.attempts == []
         assert result.errors == []
         assert model is not None
-        skills = model.get_column("skills")
+        skills = model.get_field("skills")
         assert skills is not None
-        assert (skills.type, skills.element_type, skills.description) == (DataType.ARRAY, DataType.TEXT, "Skills")
+        assert (skills.datatype, skills.element_type, skills.description) == (DataType.ARRAY, DataType.STRING, "Skills")
 
     async def test_list_profiling(self, tmp_path: Path) -> None:
         ds = _lists_datasource(tmp_path)
-        model = SlayerModel(name="contractors", sql_table="contractors", data_source=LIST_DS, columns=[
-            Column(name="id", type=DataType.INT),
-            Column(name="skills", type=DataType.ARRAY, element_type=DataType.TEXT)])
-        engine, factory = await _gateway_engine(tmp_path, datasource=ds, models=[model])
+        model = SlayerDataset(name="contractors", sql_table="contractors", data_source=LIST_DS, fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER),
+            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING)])
+        engine, factory = await _gateway_engine(tmp_path, datasource=ds, datasets=[model])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
-                skills = model.get_column("skills")
+                skills = model.get_field("skills")
                 assert skills is not None
-                outcome = await ensure_samples_fresh(model=model, columns=[skills],
+                outcome = await ensure_samples_fresh(dataset=model, fields=[skills],
                                                      engine=engine, storage=engine.storage, force=True)
         finally:
             await engine.aclose()
             engine.close()
         assert guard.attempts == []
         assert outcome.errors == []
-        assert outcome.columns[0].sampled_values == ["go", "sql"]
+        assert outcome.fields[0].sampled_values == ["go", "sql"]
         assert any("skills" in sql for sql in factory.all_statements())
 
     async def test_sql_mode_cursor_typing(self, tmp_path: Path) -> None:
         ds = _lists_datasource(tmp_path)
-        model = SlayerModel(name="picked", sql="SELECT id, skills FROM contractors", data_source=LIST_DS, columns=[
-            Column(name="id", type=DataType.INT),
-            Column(name="skills", type=DataType.ARRAY, element_type=DataType.TEXT)])
-        engine, factory = await _gateway_engine(tmp_path, datasource=ds, models=[model])
+        model = SlayerDataset(name="picked", sql="SELECT id, skills FROM contractors", data_source=LIST_DS, fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER),
+            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING)])
+        engine, factory = await _gateway_engine(tmp_path, datasource=ds, datasets=[model])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
-                entries = await engine.validate_models(LIST_DS)
+                entries = await engine.validate_datasets(LIST_DS)
         finally:
             await engine.aclose()
             engine.close()
@@ -259,8 +259,8 @@ class SnowflakeListClient:
         return ObjectListing(tables=["contractors"])
 
     async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
-        return [ReflectedColumn(name="id", type=DataType.INT),
-                ReflectedColumn(name="scores", type=DataType.ARRAY, element_type=DataType.UNKNOWN, db_type="ARRAY")]
+        return [ReflectedColumn(name="id", type=DataType.INTEGER),
+                ReflectedColumn(name="scores", type=DataType.ARRAY, element_type=DataType.OPAQUE, db_type="ARRAY")]
 
     async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
         return TableKeys()
@@ -294,13 +294,13 @@ async def test_snowflake_element_inference_uses_the_engine_client(tmp_path: Path
     try:
         with no_direct_access() as guard:
             await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
-        model = await storage.get_model("contractors", data_source="sf")
+        model = await storage.get_dataset("contractors", data_source="sf")
     finally:
         await engine.aclose()
         engine.close()
     assert guard.attempts == []
     assert any("TYPEOF" in sql.upper() for c in clients for sql in c.executed)
     assert model is not None
-    scores = model.get_column("scores")
+    scores = model.get_field("scores")
     assert scores is not None
-    assert (scores.type, scores.element_type) == (DataType.ARRAY, DataType.INT)
+    assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.INTEGER)

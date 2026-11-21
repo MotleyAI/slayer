@@ -1,0 +1,30 @@
+{
+ "source": "tests/_usage_reporting_helpers.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 299,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 303,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 304,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 306,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 322,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 324,
+   "reason": "not fully literal"
+  }
+ ]
+}

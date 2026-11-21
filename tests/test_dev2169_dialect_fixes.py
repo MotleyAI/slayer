@@ -12,7 +12,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ScalarArgumentError
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.dialects._clickhouse_cells import array_reader
 from slayer.sql.dialects.postgres import describe_pg_cursor_column
@@ -27,7 +27,7 @@ from tests._dev2120_fixtures import (
     lib_query,
     patch_profile,
 )
-from tests._dev2137_fixtures import by, measure, query
+from tests._dev2137_fixtures import by, metric, query
 from tests._engine_helpers import seeded_exec_engine
 
 
@@ -38,9 +38,9 @@ _TYPED_EMPTY = (r"CAST\(\s*(ARRAY\s*)?\[\]\s+AS\b", r"ARRAY<\w+>\s*\[\]")
 
 
 @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
-@pytest.mark.parametrize("formula", ["collect(rate)", "collect(city)", "collect(skills.value)"])
+@pytest.mark.parametrize("formula", ["collect(contractors.rate)", "collect(contractors.city)", "collect(contractors.skills.value)"])
 async def test_collect_fallback_is_untyped(dialect: str, formula: str) -> None:
-    sql = await emit_contractors(query(dimensions=["team"], measures=[measure(formula, "c")]), dialect=dialect)
+    sql = await emit_contractors(query(dimensions=["contractors.team"], metrics=[metric(formula, "c")]), dialect=dialect)
     typed = [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)]
     assert not typed, sql
 
@@ -56,32 +56,32 @@ def _seed_amounts(db_path: str) -> None:
                     f"(3, 'a', 1.5, 1.5, '{UUID_B}'), (4, 'b', NULL, NULL, NULL)")
 
 
-def _amounts_model() -> SlayerModel:
+def _amounts_dataset() -> SlayerDataset:
     """``n`` / ``big`` are exact numerics read as DOUBLE; ``u`` a UUID read as TEXT, as ingestion types them."""
-    return SlayerModel(name="amounts", sql_table="amounts", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True), Column(name="team", type=DataType.TEXT),
-        Column(name="n", type=DataType.DOUBLE), Column(name="big", type=DataType.DOUBLE),
-        Column(name="u", type=DataType.TEXT),
+    return SlayerDataset(name="amounts", sql_table="amounts", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="team", datatype=DataType.STRING),
+        DatasetField(name="n", datatype=DataType.FLOAT), DatasetField(name="big", datatype=DataType.FLOAT),
+        DatasetField(name="u", datatype=DataType.STRING),
     ])
 
 
 async def test_collect_over_exact_numerics_on_duckdb() -> None:
-    async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, models=[_amounts_model()]) as (engine, _db):
+    async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, datasets=[_amounts_dataset()]) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "amounts", "dimensions": ["team"],
-            "measures": [measure("collect(n)", "cn"), measure("collect(big)", "cbig")],
+            "population": "amounts", "dimensions": ["amounts.team"],
+            "metrics": [metric("collect(amounts.n)", "cn"), metric("collect(amounts.big)", "cbig")],
         }))
     for name in ("cn", "cbig"):
-        got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", name, model="amounts").items()}
+        got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", name, dataset="amounts").items()}
         assert got == {"a": [1.5, 2.25], "b": []}, resp.sql
 
 
 async def test_collect_over_uuid_on_duckdb() -> None:
-    async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, models=[_amounts_model()]) as (engine, _db):
+    async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, datasets=[_amounts_dataset()]) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "amounts", "dimensions": ["team"], "measures": [measure("collect(u)", "cu")],
+            "population": "amounts", "dimensions": ["amounts.team"], "metrics": [metric("collect(amounts.u)", "cu")],
         }))
-    got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "cu", model="amounts").items()}
+    got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "cu", dataset="amounts").items()}
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql
 
 
@@ -89,16 +89,16 @@ async def test_collect_over_uuid_on_duckdb() -> None:
 # Postgres: contains_any / contains_all compare canonical array types
 # --------------------------------------------------------------------------- #
 async def _postgres(expr: str) -> str:
-    sql = await emit_contractors(query(dimensions=["id"], filters=[expr]), dialect="postgres")
+    sql = await emit_contractors(query(dimensions=["contractors.id"], filter=[expr]), dialect="postgres")
     return " ".join(sql.upper().split())
 
 
 @pytest.mark.parametrize(("expr", "array_type", "casts"), [
-    ("contains_any(skills, ['go'])", "TEXT[]", 2),
-    ("contains_all(skills, ['go', 'sql'])", "TEXT[]", 2),
-    ("contains_any(skills, required)", "TEXT[]", 2),
-    ("contains_all(scores, [1, 2])", "BIGINT[]", 2),
-    ("contains_any(scores, [1, 9])", "BIGINT[]", 2),
+    ("contains_any(contractors.skills, ['go'])", "TEXT[]", 2),
+    ("contains_all(contractors.skills, ['go', 'sql'])", "TEXT[]", 2),
+    ("contains_any(contractors.skills, contractors.required)", "TEXT[]", 2),
+    ("contains_all(contractors.scores, [1, 2])", "BIGINT[]", 2),
+    ("contains_any(contractors.scores, [1, 9])", "BIGINT[]", 2),
 ])
 async def test_postgres_list_operands_share_one_array_type(expr: str, array_type: str, casts: int) -> None:
     sql = await _postgres(expr)
@@ -165,42 +165,42 @@ def test_clickhouse_cell_escapes(cell: str, expected: list[str]) -> None:
 # --------------------------------------------------------------------------- #
 # SQL Server: long JSON scalars fail loud on 2022+; split_part has no 4,000-character limit
 # --------------------------------------------------------------------------- #
-async def _tsql(monkeypatch, expr: str, version: Optional[tuple[int, ...]]) -> str:
+async def _tsql(monkeypatch: pytest.MonkeyPatch, expr: str, version: Optional[tuple[int, ...]]) -> str:
     patch_profile(monkeypatch, version=version)
     return " ".join((await emit_lib(lib_query(expr), dialect="tsql")).split())
 
 
 @pytest.mark.parametrize("version", [(16, 0, 0), (17, 0, 0), None])
-@pytest.mark.parametrize("expr", ["json_value(payload, '$.a.b')", "payload ->> 'ok'",
-                                  "json_value(payload, '$.qty' RETURNING INT)"])
-async def test_tsql_json_value_rereads_strict(monkeypatch, expr: str, version: Any) -> None:
+@pytest.mark.parametrize("expr", ["json_value(lib.payload, '$.a.b')", "lib.payload ->> 'ok'",
+                                  "json_value(lib.payload, '$.qty' RETURNING INT)"])
+async def test_tsql_json_value_rereads_strict(monkeypatch: pytest.MonkeyPatch, expr: str, version: Any) -> None:
     sql = await _tsql(monkeypatch, expr, version)
     assert "'strict $[0]." in sql, sql
     assert "JSON_PATH_EXISTS(" in sql.upper(), sql
 
 
-async def test_tsql_json_value_before_2022_stays_lax(monkeypatch) -> None:
-    sql = await _tsql(monkeypatch, "json_value(payload, '$.a.b')", (15, 0, 0))
+async def test_tsql_json_value_before_2022_stays_lax(monkeypatch: pytest.MonkeyPatch) -> None:
+    sql = await _tsql(monkeypatch, "json_value(lib.payload, '$.a.b')", (15, 0, 0))
     assert "strict" not in sql, sql
     assert "VALUE)" not in sql.upper(), sql
 
 
 @pytest.mark.parametrize("version", [(16, 0, 0), None])
-async def test_tsql_json_value_takes_a_scalar_document(monkeypatch, version: Any) -> None:
-    sql = await _tsql(monkeypatch, "json_value(payload, '$')", version)
+async def test_tsql_json_value_takes_a_scalar_document(monkeypatch: pytest.MonkeyPatch, version: Any) -> None:
+    sql = await _tsql(monkeypatch, "json_value(lib.payload, '$')", version)
     assert re.search(r"ISJSON\(\s*lib\.payload\s*,\s*VALUE\s*\)", sql, re.I), sql
 
 
 @pytest.mark.parametrize("version", [(16, 0, 0), None])
-async def test_tsql_json_value_reads_the_document_wrapped(monkeypatch, version: Any) -> None:
+async def test_tsql_json_value_reads_the_document_wrapped(monkeypatch: pytest.MonkeyPatch, version: Any) -> None:
     # JSON_VALUE / JSON_QUERY refuse a scalar document even where ISJSON(…, VALUE) accepts it.
-    sql = await _tsql(monkeypatch, "json_value(payload, '$')", version)
+    sql = await _tsql(monkeypatch, "json_value(lib.payload, '$')", version)
     assert "JSON_VALUE(CONCAT('[', CAST(lib.payload AS NVARCHAR(MAX)), ']'), '$[0]')" in sql, sql
     assert "JSON_VALUE(lib.payload" not in sql, sql
 
 
-@pytest.mark.parametrize("expr", ["split_part(s, '/', 2)", "split_part(s, '/', -1)", "split_part(s, tag, 3)"])
-async def test_tsql_split_part_reads_no_json(monkeypatch, expr: str) -> None:
+@pytest.mark.parametrize("expr", ["split_part(lib.s, '/', 2)", "split_part(lib.s, '/', -1)", "split_part(lib.s, lib.tag, 3)"])
+async def test_tsql_split_part_reads_no_json(monkeypatch: pytest.MonkeyPatch, expr: str) -> None:
     sql = await _tsql(monkeypatch, expr, None)
     assert "JSON_VALUE" not in sql.upper(), sql
     assert "CHARINDEX(" in sql.upper(), sql
@@ -217,7 +217,7 @@ async def sqlite_engine():
 
 @pytest.mark.parametrize(("expr", "function", "arguments"), [
     ("ln(0)", "ln", ["0"]), ("ln(-1)", "ln", ["-1"]), ("log10(0)", "log10", ["0"]), ("log2(-2)", "log2", ["-2"]),
-    ("log(0)", "log", ["0"]), ("log(1, x)", "log", ["1"]), ("log(-2, x)", "log", ["-2"]), ("log(2, 0)", "log", ["0"]),
+    ("log(0)", "log", ["0"]), ("log(1, lib.x)", "log", ["1"]), ("log(-2, lib.x)", "log", ["-2"]), ("log(2, 0)", "log", ["0"]),
     ("sqrt(-1)", "sqrt", ["-1"]), ("pow(-8, 0.5)", "pow", ["-8", "0.5"]), ("power(-8, 0.5)", "power", ["-8", "0.5"]),
     ("pow(0, -1)", "pow", ["0", "-1"]),
 ])
@@ -230,14 +230,14 @@ async def test_literal_out_of_domain_rejected(sqlite_engine, expr: str, function
     assert any(a in msg for a in arguments), msg
 
 
-@pytest.mark.parametrize("expr", ["ln(1)", "log(2, 8)", "log(10, x)", "sqrt(0)", "pow(-8, 3)", "pow(0, 0)",
-                                  "pow(4, 0.5)", "log2(x)"])
+@pytest.mark.parametrize("expr", ["ln(1)", "log(2, 8)", "log(10, lib.x)", "sqrt(0)", "pow(-8, 3)", "pow(0, 0)",
+                                  "pow(4, 0.5)", "log2(lib.x)"])
 async def test_literal_in_domain_accepted(sqlite_engine, expr: str) -> None:
     await sqlite_engine.execute(lib_query(expr))
 
 
 @pytest.mark.parametrize("dialect", TIER1)
-@pytest.mark.parametrize("expr", ["ln(0)", "sqrt(-1)", "log(1, x)", "pow(-8, 0.5)"])
+@pytest.mark.parametrize("expr", ["ln(0)", "sqrt(-1)", "log(1, lib.x)", "pow(-8, 0.5)"])
 async def test_literal_rejected_before_emission(dialect: str, expr: str) -> None:
     query = lib_query(expr)
     with pytest.raises(ScalarArgumentError):

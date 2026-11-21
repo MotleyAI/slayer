@@ -167,7 +167,7 @@ A model SHALL NOT store the rendered SQL of its backing query. On load, a stored
 
 ### Requirement: Stored Mode-B text is upgraded to the SQL string and identifier rules
 
-On load, every Mode-B surface of a stored model, saved query or memory written before this change — `ModelMeasure.formula`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL be rewritten so that it means under the current grammar what it meant when stored: a double-quoted string literal becomes the equivalent single-quoted literal, a string literal using backslash escapes is re-encoded with its decoded value, a `|` concatenation becomes `||`, two minus signs written with nothing between them are separated by a space, so a double negation never becomes a comment, and a Python `#` comment becomes a `--` comment. The rewrite SHALL be token-exact: text inside string literals is never otherwise touched, and stored text that cannot be tokenised is left unchanged. Stored text that the grammar of the time it claims to be from could not have held SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
+On load, every Mode-B surface of a stored model, saved query or memory written before this change — `DatasetMetric.expression`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL be rewritten so that it means under the current grammar what it meant when stored: a double-quoted string literal becomes the equivalent single-quoted literal, a string literal using backslash escapes is re-encoded with its decoded value, a `|` concatenation becomes `||`, two minus signs written with nothing between them are separated by a space, so a double negation never becomes a comment, and a Python `#` comment becomes a `--` comment. The rewrite SHALL be token-exact: text inside string literals is never otherwise touched, and stored text that cannot be tokenised is left unchanged. Stored text that the grammar of the time it claims to be from could not have held SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
 
 #### Scenario: Double-quoted strings in a stored query
 
@@ -191,7 +191,7 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 
 #### Scenario: Mode-A text untouched
 
-- **WHEN** a stored model has `Column.sql` `"Order Total" * 2` and a model filter `status = "x"`
+- **WHEN** a stored model has `DatasetField.sql` `"Order Total" * 2` and a model filter `status = "x"`
 - **THEN** both load byte-for-byte unchanged
 
 #### Scenario: Client queries are not rewritten
@@ -216,7 +216,7 @@ On load, every time dimension of a stored model's `source_queries`, a saved quer
 #### Scenario: Stored object form becomes text
 
 - **WHEN** a stored query-backed model's source query holds the time dimension `{"dimension": {"name": "created_at", "model": "customers"}, "granularity": "month"}`
-- **THEN** it loads with `dimension` = `customers.created_at`, dumps it as that string, and returns the same rows as before
+- **THEN** it loads with `field` = `customers.created_at`, dumps it as that string, and returns the same rows as before
 
 #### Scenario: Memory-bundled query
 
@@ -300,14 +300,14 @@ On load, a stored model, saved query or memory written before this change whose 
 - **WHEN** a stored measure is `count(DISTINCT customer_id)`
 - **THEN** it loads unchanged
 
-### Requirement: A store written by this release reads on the previous release
+### Requirement: A store written by this release omits unset fields
 
-Every persisted model, saved query, datasource and memory, in every storage backend, SHALL omit a field whose value is unset (`None`), so a document written with the fields added by this release left unset holds only fields the previous release (v1.4.1) declares. A backend's own document layout (a YAML memory's file name and body) SHALL be unchanged.
+Every persisted model, saved query, datasource and memory, in every storage backend, SHALL omit a field whose value is unset (`None`). A backend's own document layout (a YAML memory's file name and body) SHALL be unchanged. A store written by this release is not readable by SLayer 1.x: its documents use the Ossie vocabulary.
 
 #### Scenario: Memory with an ordered query
 
-- **WHEN** a memory whose query orders by a column without `nulls` is saved to YAML and to SQLite
-- **THEN** neither stored form contains a `nulls` key, and each stored document validates against the v1.4.1 field sets
+- **WHEN** a memory whose query orders by a field without `nulls` is saved to YAML and to SQLite
+- **THEN** neither stored form contains a `nulls` key
 
 #### Scenario: No unset field in any kind
 
@@ -316,7 +316,7 @@ Every persisted model, saved query, datasource and memory, in every storage back
 
 ### Requirement: Stored colon spellings are upgraded to the functional spelling
 
-On load, every Mode-B surface of a stored model, saved query or memory written before this change — `ModelMeasure.formula`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL have every colon span rewritten to its twin: `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written and colon spans inside the arguments rewritten too. Everything outside a colon span SHALL stay byte-identical, and a colon inside a string literal, a quoted identifier or a `::` cast SHALL be untouched. A stored order item whose expression is rewritten SHALL load exactly as the same order key written fresh in the functional spelling. The document SHALL return the rows and result keys it returned before; a persisted computed-dimension name SHALL be kept and keep its meaning. A datasource granularity rename SHALL apply before the rewrite. Stored text that cannot otherwise be parsed SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
+On load, every Mode-B surface of a stored model, saved query or memory written before this change — `DatasetMetric.expression`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL have every colon span rewritten to its twin: `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written and colon spans inside the arguments rewritten too. Everything outside a colon span SHALL stay byte-identical, and a colon inside a string literal, a quoted identifier or a `::` cast SHALL be untouched. A stored order item whose expression is rewritten SHALL load exactly as the same order key written fresh in the functional spelling. The document SHALL return the rows and result keys it returned before; a persisted computed-dimension name SHALL be kept and keep its meaning. A datasource granularity rename SHALL apply before the rewrite. Stored text that cannot otherwise be parsed SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
 
 #### Scenario: Aggregations, stars and parameters
 
@@ -364,7 +364,7 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 - **THEN** it is not rewritten and fails with the colon-spelling error
 
 ### Requirement: Stored bucket calls are upgraded to date_trunc
-On load, a stored model, saved query or memory written before this change SHALL have every Mode-B call `<g>(x)` whose callee names a built-in granularity, or a custom granularity of the datasource it belongs to, rewritten to `date_trunc('<g>', x)` — in query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, in saved-measure formulas, and in every nested saved query, model extension and query-backed model — with the rest of the text byte-identical. Mode-A text (`Column.sql`, `sql_table`, model `filters`, custom-aggregation formulas and parameter defaults), structured time dimensions, transform units and `Column.granularity` SHALL be untouched. A call whose callee is a custom aggregation of the owning model and not a granularity SHALL be untouched. Every upgraded query SHALL return the rows and result keys it returned before. The custom-granularity rewrite SHALL use the datasource's settled granularity names (after any library-collision rename) and SHALL complete on the next load when a load is interrupted.
+On load, a stored model, saved query or memory written before this change SHALL have every Mode-B call `<g>(x)` whose callee names a built-in granularity, or a custom granularity of the datasource it belongs to, rewritten to `date_trunc('<g>', x)` — in query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, in saved-measure formulas, and in every nested saved query, model extension and query-backed model — with the rest of the text byte-identical. Mode-A text (`DatasetField.sql`, `sql_table`, model `filters`, custom-aggregation formulas and parameter defaults), structured time dimensions, transform units and `DatasetField.granularity` SHALL be untouched. A call whose callee is a custom aggregation of the owning model and not a granularity SHALL be untouched. Every upgraded query SHALL return the rows and result keys it returned before. The custom-granularity rewrite SHALL use the datasource's settled granularity names (after any library-collision rename) and SHALL complete on the next load when a load is interrupted.
 
 #### Scenario: Saved query bucketing by month
 - **WHEN** a stored model's saved query has the dimension `month(created_at)`, the filter `year(created_at) >= '2024'` and the order key `month(created_at)`
@@ -406,7 +406,7 @@ On load, a stored model written before this change whose custom aggregation is n
 
 ### Requirement: Stored root extensions move to query extensions
 
-On load, every stored query written before this change whose `source_model` is an extension object SHALL become a query with `source_model` naming the extension's base model and that extension as its one `extensions` entry. This SHALL apply recursively through stored `source_queries`, saved queries and memories' queries, including a query nested in a document whose own version is current.
+On load, every stored query written before this change whose `source_model` is an extension object SHALL become a query with `population` naming the extension's base model and that extension as its one `extensions` entry. This SHALL apply recursively through stored `source_queries`, saved queries and memories' queries, including a query nested in a document whose own version is current.
 - The upgrade SHALL emit no deprecation warning and SHALL lose no measure or join; the extension's columns SHALL then be inlined as "Stored extension columns are inlined" specifies.
 - Repeated loads SHALL change nothing further.
 - The upgraded query SHALL return the rows it returned before.
@@ -414,7 +414,7 @@ On load, every stored query written before this change whose `source_model` is a
 
 #### Scenario: A stored query-backed model's stage
 - **WHEN** a stored query-backed model has a stage with `source_model` = `{"source_name": "orders", "joins": [...]}`
-- **THEN** it loads with `source_model` `orders` and one extension of `orders` carrying those joins, without a deprecation warning, and returns the rows recorded before the upgrade
+- **THEN** it loads with `population` `orders` and one extension of `orders` carrying those joins, without a deprecation warning, and returns the rows recorded before the upgrade
 
 #### Scenario: A memory's query in a current-version memory
 - **WHEN** a memory at the current memory version holds a query marked with a version before this change whose `source_model` is an extension object
@@ -569,3 +569,74 @@ On load, a stored model, saved query or memory written before this change — ju
 
 - **WHEN** a stored query written before legacy time literals were repaired, rooted at `time_spine`, compares `timestamp` with a legacy date literal for `2024-01-31` using `<=`
 - **THEN** after load the literal is repaired and the comparison reads `timestamp < '2024-02-01'`
+
+### Requirement: Stored field sql converts to its expression
+
+A stored dataset written before this version SHALL load with each field's `sql` converted to its `expression` by the rules of `models/field-expressions` › A field's sql converts to its expression, with no deprecation warning, and every query SHALL return the values it returned before. The conversion SHALL run in two phases: a context-free version step that turns a bare or double-quoted identifier into its shorthand (into its path when it reads a sibling field) and leaves any other `sql` in place, then a load step with the store's datasource and its datasets that writes each sibling reference as its path and tags the text with the datasource's own dialect. A dataset whose store holds no config for its datasource SHALL load with that `sql` unconverted (`models/field-expressions` › A field's sql waits for its dialect) and SHALL be converted on a later load that has it. A converted dataset SHALL be written back as every other upgraded document is; one left with unconverted `sql` SHALL NOT be written back.
+
+#### Scenario: A stored dataset of every shape loads
+- **WHEN** a store holding a DuckDB datasource config and a dataset `orders` written with fields `amount` (`sql: amount`), `label` (`sql: '"Label"'`), `doubled` (`sql: "amount * 2"`) and `ratio` (`sql: "doubled / qty"`) is opened
+- **THEN** the fields load as `expression: amount`, `expression: '"Label"'`, `{dialects: [{dialect: DUCKDB, expression: "amount * 2"}]}` and `{dialects: [{dialect: DUCKDB, expression: "orders.doubled / qty"}]}`, no `FutureWarning` is emitted, the document is written back at the current version, and every field returns its former values
+
+#### Scenario: A stored dataset without its datasource config
+- **WHEN** the same dataset is opened from a store that holds no datasource config
+- **THEN** `amount` and `label` load converted, `doubled` and `ratio` keep their `sql`, the document is not written back, and opening it again after the datasource config is added converts and writes it back
+
+#### Scenario: Direct validation of a stored document
+- **WHEN** a stored dataset document of the previous version is validated directly, with no store
+- **THEN** its bare-identifier fields carry the shorthand and its other fields keep `sql`
+
+### Requirement: Stored filters keep their sibling references
+
+In a stored dataset written before this version, each bare name in a field's `filter` or a dataset's `filters` that today reads a sibling field SHALL be rewritten on load to that field's path from the dataset (`<dataset>.<field>`), so every query returns the values it returned before. The rewrite SHALL run in the context-free version step. Documents of this version or later SHALL never be rewritten this way.
+
+#### Scenario: A filter reading a renamed field
+- **WHEN** a stored `orders` written before this version declares fields `status` (`sql: state`) and `paid_amount` (`sql: amount`, `filter: "status = 'paid'"`) and the dataset filter `status <> 'x'`
+- **THEN** it loads with `filter: "orders.status = 'paid'"` and the dataset filter `orders.status <> 'x'`, and `paid_amount` returns NULL and 20 for ids 1 and 2
+
+### Requirement: Stored source-qualified paths keep their meaning
+
+In a stored dataset written before this version, a field's `expression`, a field's `filter`, a dataset's `filters` or a metric's `expression` that reads `source.<name>` through a relationship or a dataset named `source` SHALL be rewritten on load to the same path spelled by the target dataset's name, when that spelling resolves to the same hop. When it does not, the document SHALL fail to load through the stored-document boundary, untouched on disk, with a warning naming the dataset and the definition. Documents of this version or later SHALL never be rewritten this way.
+
+#### Scenario: A relationship named source
+- **WHEN** a stored `orders` written before this version relates to `leads` through relationship `source` and declares metric `sum(source.amount)`
+- **THEN** it loads with metric `sum(leads.amount)`, which returns the sum of `leads.amount` as before
+
+#### Scenario: No unique spelling
+- **WHEN** a stored `orders` written before this version relates to `leads` through relationships `source` and `referrer`, and a field reads `source.name`
+- **THEN** `orders` fails to load with a warning naming `orders` and that field, and the other datasets load
+
+#### Scenario: A current document is not rewritten
+- **WHEN** a dataset saved at this version relates to `leads` through relationship `source` and its metric is `sum(source.amount)`
+- **THEN** the metric sums the dataset's own source column `amount`
+
+### Requirement: Stored queries are upgraded to qualified references
+A stored query written before this change — a saved query, a query-backed model's `source_queries` stage, or a memory's query, nested or not, with or without a version of its own — SHALL load in the qualified syntax of `queries/references`, with no deprecation warning, by a conversion that reads the stored datasets:
+- each reference SHALL be rewritten to the qualified spelling that has the meaning it had before this change, reading the stage's own population;
+- a reference the new routing would send along a different path SHALL be rewritten to the explicit route from the population that keeps its old path;
+- a reference whose anchor was reached by a route longer than its written path SHALL be rewritten to its explicit route from the population, so its column name is kept;
+- a rewritten path SHALL be kept only if it resolves back to the same oriented sequence of relationships;
+- an unaliased entry whose references share no anchor SHALL get an alias equal to its column name before this change, so every later stage, query-backed model consumer and `DatasetField.sql` reading that column keeps working;
+- `count(*)` SHALL become `count(<population>.*)`.
+
+A stored query that cannot be converted this way (a dataset it reads is missing, or an old path has no unique explicit spelling) SHALL fail to load through the existing unloadable-document boundary, untouched on disk, with a warning naming the document and the reference. Saved queries and query-backed models SHALL be written back as other migrated documents are; memories SHALL convert on each load.
+
+#### Scenario: A saved query loads qualified with its results
+- **WHEN** a store holds a saved query with `population: orders`, the dimension `status`, the metric `sum(amount)` and the filter `customers.region = 'EAST'`
+- **THEN** it loads as `orders.status`, `sum(orders.amount)` and `customers.region = 'EAST'`, with no `FutureWarning`, and returns the rows it returned before
+
+#### Scenario: A stored cycle reference keeps its path
+- **WHEN** a stored query with `population: x` over the cycle `x → y → z → x` measures `sum(z.amount)`
+- **THEN** it loads as `sum(x.z.amount)` and returns the value it returned before
+
+#### Scenario: A stored stage chain keeps its column names
+- **WHEN** a stored query-backed model's first stage measures `sum(amount) / count(customers.*)` unaliased and its second stage reads that column by its old name
+- **THEN** the first stage's entry gets that name as its alias and the model returns the rows it returned before
+
+#### Scenario: An unspellable old path makes the document unloadable
+- **WHEN** a stored query's reference reads a dataset that its population reaches only across two unnamed parallel relationships, so its old path has no explicit spelling
+- **THEN** the document fails to load, stays untouched on disk, and the warning names the document and the reference
+
+#### Scenario: A memory's query converts on every load
+- **WHEN** a stored memory holds a query with `population: orders` measuring `count(*)`
+- **THEN** each load reads it as `count(orders.*)`, with no `FutureWarning`, and the stored memory is not rewritten

@@ -1,0 +1,79 @@
+version: 28
+name: products
+sql_table: products
+source_kind: table
+query_variables: {}
+data_source: jaffle_shop
+fields:
+- name: sku
+  expression: sku
+  datatype: String
+  primary_key: true
+  unique: false
+  description: Product identifier.
+  label: SKU
+  hidden: false
+- name: name
+  expression: name
+  datatype: String
+  primary_key: false
+  unique: false
+  description: Product name.
+  label: Product
+  hidden: false
+- name: type
+  expression: type
+  datatype: String
+  primary_key: false
+  unique: false
+  description: Product category (jaffle or beverage).
+  label: Category
+  hidden: false
+- name: price
+  expression: price
+  datatype: Decimal
+  db_type: DECIMAL(12,2)
+  primary_key: false
+  unique: false
+  description: List price, in dollars.
+  label: Price
+  hidden: false
+  format:
+    type: currency
+    precision: 2
+    symbol: $
+- name: description
+  expression: description
+  datatype: String
+  primary_key: false
+  unique: false
+  description: Product description.
+  label: Description
+  hidden: false
+- name: ingredients
+  expression: ingredients
+  datatype: Array
+  element_type: String
+  db_type: VARCHAR[]
+  primary_key: false
+  unique: false
+  description: The supplies the product is made from, a list sorted by name.
+  label: Ingredients
+  hidden: false
+metrics:
+- expression: count_distinct(sku)
+  name: product_count
+  label: Products
+  description: Number of distinct products.
+  datatype: Integer
+- expression: avg(price)
+  name: avg_price
+  label: Average Price
+  description: Average list price, in dollars.
+  datatype: Float
+aggregations: []
+relationships: []
+filters: []
+description: "Menu items sold at the Jaffle Shop \u2014 jaffles and beverages."
+hidden: false
+access_tags: []

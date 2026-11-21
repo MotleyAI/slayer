@@ -1,0 +1,40 @@
+{
+ "source": "tests/test_order_row_expression_wrap.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "id",
+     "amount"
+    ],
+    "order": [
+     {
+      "column": "amount - fee",
+      "direction": "desc"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "id",
+     "amount"
+    ],
+    "order": [
+     {
+      "field": "amount - fee",
+      "direction": "desc"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  }
+ ]
+}

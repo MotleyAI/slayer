@@ -1,0 +1,42 @@
+{
+ "source": "tests/integration/test_stored_upgrade_postgres.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_range",
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_range",
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,149 @@
+{
+ "source": "tests/test_dev1737_date_functions_exec.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(date_part('MONTH', created_at))",
+    "name": "a"
+   },
+   "new": {
+    "expression": "max(date_part('MONTH', created_at))",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(date_part('month', created_at))",
+    "name": "b"
+   },
+   "new": {
+    "expression": "max(date_part('month', created_at))",
+    "name": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "date_diff('day', min(created_at), max(created_at))",
+    "name": "span"
+   },
+   "new": {
+    "expression": "date_diff('day', min(created_at), max(created_at))",
+    "name": "span"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))",
+    "name": "age"
+   },
+   "new": {
+    "expression": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))",
+    "name": "age"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "min(date_part('year', coalesce(shipped_at, '2024-01-01')))",
+    "name": "y"
+   },
+   "new": {
+    "expression": "min(date_part('year', coalesce(shipped_at, '2024-01-01')))",
+    "name": "y"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(shipped_at - interval(2, 'day'))",
+    "name": "m"
+   },
+   "new": {
+    "expression": "max(shipped_at - interval(2, 'day'))",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(date_add(shipped_at, -2, 'day'))",
+    "name": "m"
+   },
+   "new": {
+    "expression": "max(date_add(shipped_at, -2, 'day'))",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(date_diff('day', created_at, shipped_at))",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(date_diff('day', created_at, shipped_at))",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": []
+}

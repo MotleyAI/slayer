@@ -18,7 +18,7 @@ re-key any join. Self-referencing and cross-schema FKs remain excluded.
 
 #### Scenario: A 3-cycle keeps every edge
 - **WHEN** `employees → depts → offices → employees` FKs exist
-- **THEN** all three joins are ingested and `employees.depts.offices.<column>` resolves
+- **THEN** all three joins are ingested and `employees.depts.offices.<field>` resolves
 
 #### Scenario: Latest-child pointer keeps the main FK
 - **WHEN** `orders.customer_id → customers.id` and `customers.last_order_id → orders.id` exist and a
@@ -46,7 +46,7 @@ something else.
 
 #### Scenario: A failed key read is reported on every ingest surface
 - **WHEN** reading the primary key of `customers` raises during an ingest run through MCP
-  `create_datasource`, MCP `ingest_datasource_models`, the CLI and the REST API
+  `create_datasource`, MCP `ingest_datasource`, the CLI and the REST API
 - **THEN** each result names `customers` with its schema, the primary-key read and the error, the table
   is ingested without a primary key, and the CLI exit status and HTTP status are those of the same
   ingest without the failure
@@ -94,12 +94,12 @@ a parallel set with no FK-backed member SHALL NOT be touched.
 
 #### Scenario: 2-cycle edges are named
 - **WHEN** the `transactions` ↔ `coupon_usages` 2-cycle is ingested
-- **THEN** the edges are named `coupon_usage` and `transaction`, and `transactions.coupon_usage.<column>`
+- **THEN** the edges are named `coupon_usage` and `transaction`, and `transactions.coupon_usage.<field>`
   resolves to the coupon usage each transaction references
 
 #### Scenario: A singleton edge stays unnamed
 - **WHEN** `orders.customer_id → customers.id` is the only edge between `orders` and `customers`
-- **THEN** that join has no name and `orders.customers.<column>` keeps its spelling
+- **THEN** that join has no name and `orders.customers.<field>` keeps its spelling
 
 #### Scenario: A hand-authored member of a FK parallel set is named
 - **WHEN** `orders` stores an unnamed hand-authored join to `addresses` on `legacy_addr = id` and
@@ -115,7 +115,7 @@ a parallel set with no FK-backed member SHALL NOT be touched.
 A generated edge name SHALL be the first valid, non-colliding candidate of: the FK stem (the
 declaring-side key column name with a trailing `_id` or `_fk` removed, case-insensitively; a
 composite key's stems joined by `_`; the column name itself when the stem is empty); then
-`<declaring_model>_<stem>`; then that name suffixed `_2`, `_3`, and so on. A candidate collides when it
+`<declaring_dataset>_<stem>`; then that name suffixed `_2`, `_3`, and so on. A candidate collides when it
 equals any model name in the datasource or any edge name incident to either endpoint model, including
 names generated earlier in the same ingest. A candidate equal to a column name is not a collision.
 The outcome SHALL NOT depend on table discovery or scan order.
@@ -196,7 +196,7 @@ member, SHALL NOT count as a key.
 - **THEN** `items`, `orders`, `supplies` and `tweets` carry their FK joins (items → orders,
   items → products, orders → customers, orders → stores, supplies → products, tweets → customers),
   every model's primary key is set (`supplies` composite `id, sku`), and the README query
-  `{"source_model": "orders", "measures": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}`
+  `{"population": "orders", "metrics": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}`
   returns rows
 
 #### Scenario: DuckDB UNIQUE constraints mark columns unique

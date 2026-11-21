@@ -7,14 +7,14 @@ Features available in at least one API but missing in at least one other.
 | Query from file | — | Y | — | CLI supports `@file.json` syntax |
 | Show SQL on normal (non-dry-run) queries | — | — | Y | MCP `query` and `inspect` have `show_sql` param; REST/CLI only on dry_run/explain |
 | Output format: table (ASCII) | — | Y | — | |
-| Output format: markdown | — | — | Y | `query`, `models_summary`, `inspect` all default to markdown |
-| Output format: json | — | — | Y | `query`, `models_summary`, `inspect` support `format="json"` |
+| Output format: markdown | — | — | Y | `query`, `datasets_summary`, `inspect` all default to markdown |
+| Output format: json | — | — | Y | `query`, `datasets_summary`, `inspect` support `format="json"` |
 | Output format: csv | — | — | Y | `query` supports `format="csv"` |
-| List models in a datasource | Y | Y | Y | MCP uses `models_summary(datasource_name=...)` |
-| Create model from query | — | — | Y | Saves a query's generated SQL as a reusable model |
-| Update/replace model (full) | Y | — | — | `PUT /models/{name}` |
-| Edit model (partial) | — | — | Y | Add/remove fields, update metadata |
-| Sample data from model | — | — | Y | `inspect` (`entity_type="model"`) with `num_rows` |
+| List datasets in a datasource | Y | Y | Y | MCP uses `datasets_summary(datasource_name=...)` |
+| Create dataset from query | — | — | Y | Saves a query's generated SQL as a reusable dataset |
+| Update/replace dataset (full) | Y | — | — | `PUT /datasets/{name}` |
+| Edit dataset (partial) | — | — | Y | Add/remove fields, update metadata |
+| Sample data from dataset | — | — | Y | `inspect` (`entity_type="dataset"`) with `num_rows` |
 | Create datasource | Y | Y | Y | |
 | Edit datasource | — | — | Y | Update description only |
 | Delete datasource | Y | Y | Y | |

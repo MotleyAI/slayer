@@ -14,11 +14,11 @@ Each notebook shows, from scratch, how to define a view over a remote file in Du
 
 - a **dimension computed from an aggregate** — group each month *warm* or
   *cool* by its average high temperature, a
-  `CASE WHEN avg(temp_max, partition_by=date) …` band used as a grouping
+  `CASE WHEN avg(weather.temp_max, partition_by=weather.date) …` band used as a grouping
   dimension; and
-- a **ranking transform in a measure** — `rank(sum(precipitation), direction='desc')` to order the
+- a **ranking transform in a metric** — `rank(sum(weather.precipitation), direction='desc')` to order the
   months by rainfall, one of SLayer's query-time
-  [transforms](../../concepts/formulas.md).
+  [transforms](../../concepts/expressions.md).
 
 Both of these are defined at query time, showing how SLayer frees you from having to pre-configure every little thing you want to query.
 
@@ -30,7 +30,7 @@ You be the judge which one an agent is more likely to generate correctly, time a
 - **[Notebook — CLI](duckdb_cli_nb.ipynb)** — the same demo driven entirely from the command line: one simple command each to
     - install the DuckDB CLI,
     - expose the remote CSV as a view,
-    - connect SLayer, automatically ingesting the schema into a model
+    - connect SLayer, automatically ingesting the schema into a dataset
     - query it with `slayer query`.
 - **[Notebook — Python](duckdb_python_nb.ipynb)** — everything in-process through the SLayer Python client, with live schema auto-ingestion.
 

@@ -1,0 +1,74 @@
+{
+ "source": "tests/test_model_access_narrowed.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hr",
+    "measures": [
+     {
+      "formula": "sum(salary)",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "hr",
+    "metrics": [
+     {
+      "metric": "sum(salary)",
+      "alias": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hr",
+    "measures": [
+     {
+      "formula": "sum(salary)",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "hr",
+    "metrics": [
+     {
+      "metric": "sum(salary)",
+      "alias": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "pc",
+    "measures": [
+     {
+      "formula": "sum(v)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "pc",
+    "metrics": [
+     {
+      "metric": "sum(v)",
+      "alias": "total"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  }
+ ]
+}

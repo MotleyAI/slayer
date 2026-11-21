@@ -1,0 +1,42 @@
+{
+ "source": "tests/test_granularity_name_migration.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "other_events",
+    "measures": [
+     "initials"
+    ]
+   },
+   "new": {
+    "population": "other_events",
+    "metrics": [
+     "initials"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "bucketed",
+    "dimensions": [
+     "created_at"
+    ],
+    "measures": [
+     "sum(s)"
+    ]
+   },
+   "new": {
+    "population": "bucketed",
+    "dimensions": [
+     "created_at"
+    ],
+    "metrics": [
+     "sum(s)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

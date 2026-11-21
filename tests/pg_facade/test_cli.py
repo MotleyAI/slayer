@@ -29,17 +29,17 @@ def test_resolve_host(host_arg, demo, token, expected) -> None:
     assert _resolve_host(host_arg=host_arg, demo=demo, token=token) == expected
 
 
-def test_resolve_token_flag_wins(monkeypatch) -> None:
+def test_resolve_token_flag_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_PG_TOKEN", "from_env")
     assert _resolve_token("from_flag") == "from_flag"
 
 
-def test_resolve_token_falls_back_to_env(monkeypatch) -> None:
+def test_resolve_token_falls_back_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_PG_TOKEN", "from_env")
     assert _resolve_token(None) == "from_env"
 
 
-def test_resolve_token_none_when_unset(monkeypatch) -> None:
+def test_resolve_token_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SLAYER_PG_TOKEN", raising=False)
     assert _resolve_token(None) is None
 
@@ -56,7 +56,7 @@ def test_cli_module_imports_without_extra() -> None:
     assert hasattr(mod, "run_pg_serve")
 
 
-def test_pg_serve_closes_its_engine_when_serving_ends(tmp_path, monkeypatch) -> None:
+def test_pg_serve_closes_its_engine_when_serving_ends(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     closed: list[bool] = []
 
     class _Recording(SlayerQueryEngine):

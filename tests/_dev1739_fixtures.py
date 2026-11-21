@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1739 — ``partition_by=`` on aggregations (aggregate at
+"""Shared fixtures for ``partition_by=`` on aggregations (aggregate at
 a coarser grain than the query).
 
 Underscore-prefixed so pytest skips collection here (like
@@ -7,14 +7,14 @@ Underscore-prefixed so pytest skips collection here (like
 DuckDB, ``make_exec_engine`` yielding an engine per backend, plus ``gen`` for
 SQL-shape assertions.
 
-Model shape
------------
+Dataset shape
+-------------
 ``orders`` (host) carries the LOCAL partition dimensions ``region`` / ``city`` /
 ``channel`` directly, so ``sum(revenue, partition_by=region)`` is a purely-local
-coarser aggregate. ``ok_amount`` / ``nomatch`` are filtered columns (CASE-WHEN at
+coarser aggregate. ``ok_amount`` / ``nomatch`` are filtered fields (CASE-WHEN at
 aggregation time) for the filtered-share and zero-surviving-input cases.
-``orders → customers → regions`` gives the cross-model + rerooted shapes:
-``customers.spend`` is a target-grain measure, ``customers.tier`` and
+``orders → customers → regions`` gives the cross-dataset + rerooted shapes:
+``customers.spend`` is a target-grain metric, ``customers.tier`` and
 ``customers.regions.name`` are target-side dimensions.
 
 Dataset (hand-computed; every executed expectation is derived here)
@@ -47,8 +47,8 @@ customers (id, tier, spend, signup_at, region_id) → regions (id, name):
    c3 gold    50  2024-03-15  r2(RegS)
 customers.spend:sum by tier:  gold=150  silver=200   grand total=350
 customers.spend:sum by regions.name:  RegN=300 (c1+c2)  RegS=50 (c3)  grand=350
-customers.spend first/last by signup within regions.name (DEV-1868 ranked
-cross-model shapes): RegN first=100 last=200, RegS first=last=50.
+customers.spend first/last by signup within regions.name (ranked
+cross-dataset shapes): RegN first=100 last=200, RegS first=last=50.
 """
 
 from __future__ import annotations
@@ -59,11 +59,11 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
-    Column,
-    ModelJoin,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, DatasetMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -72,77 +72,77 @@ from tests._engine_helpers import _engine_generate, _extract_cte_body
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers → regions.
+# Datasets — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         default_time_dimension="signup_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="city", type=DataType.TEXT),
-            Column(name="channel", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            # Filtered columns (CASE-WHEN at aggregation time).
-            Column(name="ok_amount", type=DataType.DOUBLE, sql="amount",
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            # Filtered fields (CASE-WHEN at aggregation time).
+            DatasetField(name="ok_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="status = 'ok'"),
-            Column(name="nomatch", type=DataType.DOUBLE, sql="amount",
+            DatasetField(name="nomatch", datatype=DataType.FLOAT, expression="amount",
                    filter="amount > 100000"),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
 
-def dev1739_models() -> List[SlayerModel]:
+def dev1739_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model(), regions_model()]
+    return [orders_dataset(), customers_dataset(), regions_dataset()]
 
 
 # --------------------------------------------------------------------------- #
 # SQL-shape generation (dry-run) — for golden + scope-closed assertions.
 # --------------------------------------------------------------------------- #
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb", validate: bool = False) -> str:
-    models = dev1739_models()
+    models = dev1739_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=validate,
     )
 
 
-def month_td(column: str = "ordered_at") -> List[TimeDimension]:
+def month_td(field: str = "orders.ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=column,
+        field=field,
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -220,7 +220,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1739_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1739_datasets()) as (engine, _db):
         yield engine
 
 
@@ -244,8 +244,8 @@ def approx_sum(resp, key) -> float:
 
 
 __all__ = [
-    "orders_model", "customers_model", "regions_model", "dev1739_models",
+    "orders_dataset", "customers_dataset", "regions_dataset", "dev1739_datasets",
     "gen", "month_td", "cm_cte_bodies",
     "make_exec_engine", "month_key", "rows_by", "approx_sum",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension", "TimeGranularity",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension", "TimeGranularity",
 ]

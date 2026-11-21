@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from collections.abc import Iterator
@@ -15,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -23,8 +24,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 def client() -> Iterator[TestClient]:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
-        import asyncio
-
         loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(
@@ -35,14 +34,14 @@ def client() -> Iterator[TestClient]:
                 )
             )
             loop.run_until_complete(
-                storage.save_model(
-                    SlayerModel(
+                storage.save_dataset(
+                    SlayerDataset(
                         name="orders",
                         sql_table="orders",
                         data_source="mydb",
-                        columns=[
-                            Column(name="id", sql="id", primary_key=True),
-                            Column(name="amount", sql="amount"),
+                        fields=[
+                            DatasetField(name="id", expression="id", primary_key=True),
+                            DatasetField(name="amount", expression="amount"),
                         ],
                     )
                 )

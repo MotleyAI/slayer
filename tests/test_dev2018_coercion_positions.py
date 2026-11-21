@@ -10,7 +10,7 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     ScalarCallKey,
     TimeTruncKey,
@@ -21,14 +21,14 @@ from slayer.core.keys import (
 )
 from slayer.core.time_points import date_bound
 
-_TYPES = {"d": DataType.DATE, "ts": DataType.TIMESTAMP, "s": DataType.TEXT}
-D = ColumnKey(leaf="d")
-TS = ColumnKey(leaf="ts")
-S = ColumnKey(leaf="s")
+_TYPES = {"d": DataType.DATE, "ts": DataType.DATETIME, "s": DataType.STRING}
+D = FieldKey(leaf="d")
+TS = FieldKey(leaf="ts")
+S = FieldKey(leaf="s")
 
 
-def _column_type(key: ValueKey) -> Optional[DataType]:
-    assert isinstance(key, ColumnKey)
+def _field_type(key: ValueKey) -> Optional[DataType]:
+    assert isinstance(key, FieldKey)
     return _TYPES[key.leaf]
 
 
@@ -57,17 +57,17 @@ class TestPositions:
         (_call("nullif", D, TS), set()),
     ], ids=repr)
     def test_date_promotion_positions(self, key: ValueKey, expected: set[int]) -> None:
-        assert date_promotion_positions(key, column_type=_column_type) == frozenset(expected)
+        assert date_promotion_positions(key, field_type=_field_type) == frozenset(expected)
 
     @pytest.mark.parametrize(("key", "expected"), [
-        (_cmp("==", D, TS), (DataType.DATE, DataType.TIMESTAMP)),
-        (_cmp("!=", TS, TS), (DataType.TIMESTAMP, DataType.TIMESTAMP)),
+        (_cmp("==", D, TS), (DataType.DATE, DataType.DATETIME)),
+        (_cmp("!=", TS, TS), (DataType.DATETIME, DataType.DATETIME)),
         (_cmp("+", D, TS), None),
         (_cmp("==", D, LiteralKey(value=date(2025, 1, 1))), None),
         (_cmp("==", D, S), None),
     ], ids=repr)
     def test_temporal_pair(self, key: ValueKey, expected) -> None:
-        assert temporal_pair(key, column_type=_column_type) == expected
+        assert temporal_pair(key, field_type=_field_type) == expected
 
     @pytest.mark.parametrize(("key", "expected"), [
         (_call("nullif", D, TS), 0),
@@ -76,7 +76,7 @@ class TestPositions:
         (_call("coalesce", D, TS), None),
     ], ids=repr)
     def test_mixed_nullif(self, key: ValueKey, expected: Optional[int]) -> None:
-        assert mixed_nullif(key, column_type=_column_type) == expected
+        assert mixed_nullif(key, field_type=_field_type) == expected
 
 
 class TestDateBound:

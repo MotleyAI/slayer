@@ -6,6 +6,7 @@ from slayer.core import errors
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import SlayerQuery
 from tests import _dev1883_fixtures as fx
+from slayer.engine.query_engine import SlayerQueryEngine
 
 GRANULARITIES = [g.value for g in TimeGranularity]
 BUCKET_FORM = "date_trunc('<unit>', expr)"
@@ -19,7 +20,7 @@ WRONG_SHAPES = [
     "date_trunc('month')",
     "date_trunc('month', a, b)",
     "date_trunc('month', *)",
-    "date_trunc(status, created_at)",
+    "date_trunc(orders.status, orders.created_at)",
     "date_trunc('month', created_at, granularity=2)",
 ]
 
@@ -31,9 +32,9 @@ async def exec_engine(tmp_path):
 
 def _q(dimensions: list) -> SlayerQuery:
     return fx.q(
-        source_model="orders",
+        population="orders",
         dimensions=dimensions,
-        measures=[{"formula": "count(*)"}],
+        metrics=[{"metric": "count(orders.*)"}],
     )
 
 
@@ -50,14 +51,14 @@ class TestWrongShapeGranularityCalls:
 
 class TestNonTemporalArgument:
     async def test_fails_at_binding_as_a_time_dimension(self, exec_engine) -> None:
-        query = _q(["date_trunc('month', upper(status))"])  # accepted at construction
-        with pytest.raises(errors.TimeDimensionColumnError, match="TEXT"):
+        query = _q(["date_trunc('month', upper(orders.status))"])  # accepted at construction
+        with pytest.raises(errors.TimeDimensionFieldError, match="String"):
             await exec_engine.execute(query, dry_run=True)
 
 
 class TestUnknownSingleColumnCall:
     async def test_typo_names_granularities_and_partition_by_hedge(self, exec_engine) -> None:
-        query = _q(["mnth(created_at)"])  # accepted at construction; the callee resolves at binding
+        query = _q(["mnth(orders.created_at)"])  # accepted at construction; the callee resolves at binding
         with pytest.raises(errors.QueryTypeError) as ei:
             await exec_engine.execute(query, dry_run=True)
         msg = str(ei.value)
@@ -81,20 +82,20 @@ class TestUnknownSingleColumnCall:
 
 
 class TestNonRegression:
-    async def test_scalar_computed_dimension_unaffected(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q(["upper(status)"]))
+    async def test_scalar_computed_dimension_unaffected(self, exec_engine: SlayerQueryEngine) -> None:
+        resp = await exec_engine.execute(_q(["upper(orders.status)"]))
         assert resp.columns == ["orders.upper_status", "orders._count"]
         assert {r["orders.upper_status"] for r in resp.data} == {"OPEN", "PAID"}
 
-    async def test_partition_by_aggregate_dimension_unaffected(self, exec_engine) -> None:
+    async def test_partition_by_aggregate_dimension_unaffected(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(
-            _q(["status", "sum(amount, partition_by=status) > 20"])
+            _q(["orders.status", "sum(orders.amount, partition_by=orders.status) > 20"])
         )
         assert "orders._count" in resp.columns
         assert len(resp.data) == 2
 
     async def test_bare_builtin_aggregate_keeps_binding_error(self, exec_engine) -> None:
-        query = _q(["sum(amount)"])
+        query = _q(["sum(orders.amount)"])
         with pytest.raises(ValueError, match="partition_by"):
             await exec_engine.execute(query)
 
@@ -106,10 +107,10 @@ class TestNonRegression:
         self, exec_engine, bound, expected,
     ) -> None:
         query = fx.q(
-            source_model="orders",
-            dimensions=["status"],
-            measures=[{"formula": "count(*)"}],
-            filters=[f"date_trunc('month', created_at) >= '{bound}'"],
+            population="orders",
+            dimensions=["orders.status"],
+            metrics=[{"metric": "count(orders.*)"}],
+            filter=[f"date_trunc('month', orders.created_at) >= '{bound}'"],
         )
         resp = await exec_engine.execute(query)
         assert {r["orders.status"]: r["orders._count"] for r in resp.data} == expected
@@ -117,9 +118,9 @@ class TestNonRegression:
     async def test_granularity_in_measure_is_treated_like_any_row_level_scalar(
         self, exec_engine,
     ) -> None:
-        """Position parity: a bare ``date_trunc`` measure gets the same treatment as another row-level temporal scalar."""
+        """Position parity: a bare ``date_trunc`` metric gets the same treatment as another row-level temporal scalar."""
         async def outcome(formula: str):
-            query = fx.q(source_model="orders", dimensions=["status"], measures=[{"formula": formula, "name": "v"}])
+            query = fx.q(population="orders", dimensions=["orders.status"], metrics=[{"metric": formula, "alias": "v"}])
             try:
                 resp = await exec_engine.execute(query)
             except Exception as exc:  # noqa: BLE001 — the raised class is the compared outcome

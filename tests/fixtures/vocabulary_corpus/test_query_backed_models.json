@@ -1,0 +1,1848 @@
+{
+ "source": "tests/test_query_backed_models.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "filters": [
+     "region = '{r}'"
+    ],
+    "variables": {
+     "r": "US"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "filter": [
+     "region = '{r}'"
+    ],
+    "variables": {
+     "r": "US"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "filters": [
+     "region = '{r}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "filter": [
+     "region = '{r}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "filters": [
+     "region = '{r}'"
+    ],
+    "variables": {
+     "r": "US"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "filter": [
+     "region = '{r}'"
+    ],
+    "variables": {
+     "r": "US"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region = '{r}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region = '{r}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region = '{r}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region = '{r}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region = '{r}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region = '{r}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region = '{r}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region = '{r}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "amount > {threshold}"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "amount > {threshold}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_by_region",
+    "dimensions": [
+     "region",
+     {
+      "expression": "iif(amount_sum > 1000, 1, 0)",
+      "name": "is_high_rev"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "max(amount_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "rev_by_region",
+    "dimensions": [
+     "region",
+     {
+      "field": "iif(amount_sum > 1000, 1, 0)",
+      "alias": "is_high_rev"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "max(amount_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "staged",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "name": "staged",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "staged",
+    "dimensions": [
+     "region",
+     {
+      "expression": "amount_sum * 2",
+      "name": "doubled"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "max(amount_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "staged",
+    "dimensions": [
+     "region",
+     {
+      "field": "amount_sum * 2",
+      "alias": "doubled"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "max(amount_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_by_region",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "max(amount_sum)"
+     }
+    ],
+    "variables": {
+     "unused": "X"
+    }
+   },
+   "new": {
+    "population": "rev_by_region",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "metric": "max(amount_sum)"
+     }
+    ],
+    "variables": {
+     "unused": "X"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t_b",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "t_b",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "amount > {threshold}"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "amount > {threshold}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region = '{r}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region = '{r}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ],
+    "filters": [
+     "region = '{r}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ],
+    "filter": [
+     "region = '{r}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_filtered",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "max(amount_sum)"
+     }
+    ],
+    "variables": {
+     "r": "OUTER_VAL"
+    }
+   },
+   "new": {
+    "population": "rev_filtered",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "metric": "max(amount_sum)"
+     }
+    ],
+    "variables": {
+     "r": "OUTER_VAL"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t_a",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "t_a",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t_b",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "t_b",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ],
+    "filters": [
+     "amount > {threshold}"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ],
+    "filter": [
+     "amount > {threshold}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "region",
+     "rev_filtered.amount_sum"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "variables": {
+     "threshold": 999
+    }
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "region",
+     "rev_filtered.amount_sum"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "variables": {
+     "threshold": 999
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "region",
+     "rev_by_region.amount_sum"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "region",
+     "rev_by_region.amount_sum"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "kpis",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   },
+   "new": {
+    "name": "kpis",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "tagged",
+    "source_model": "customers",
+    "extensions": [
+     {
+      "source_name": "customers",
+      "joins": [
+       {
+        "target_model": "kpis",
+        "join_pairs": [
+         [
+          "id",
+          "customer_id"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(kpis.amount_sum)"
+     }
+    ]
+   },
+   "new": {
+    "name": "tagged",
+    "population": "customers",
+    "extensions": [
+     {
+      "dataset": "customers",
+      "relationships": [
+       {
+        "to": "kpis",
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "customer_id"
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(kpis.amount_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "tagged",
+    "dimensions": [
+     "name"
+    ]
+   },
+   "new": {
+    "population": "tagged",
+    "dimensions": [
+     "name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "kpis",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   },
+   "new": {
+    "name": "kpis",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "counts",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   },
+   "new": {
+    "name": "counts",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "extensions": [
+     {
+      "source_name": "customers",
+      "joins": [
+       {
+        "target_model": "kpis",
+        "join_pairs": [
+         [
+          "id",
+          "customer_id"
+         ]
+        ]
+       },
+       {
+        "target_model": "counts",
+        "join_pairs": [
+         [
+          "id",
+          "customer_id"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(kpis.amount_sum)"
+     },
+     {
+      "formula": "sum(counts._count)"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "extensions": [
+     {
+      "dataset": "customers",
+      "relationships": [
+       {
+        "to": "kpis",
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "customer_id"
+        ]
+       },
+       {
+        "to": "counts",
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "customer_id"
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(kpis.amount_sum)"
+     },
+     {
+      "metric": "sum(counts._count)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "customers",
+    "extensions": [
+     {
+      "source_name": "customers",
+      "joins": [
+       {
+        "target_model": "b",
+        "join_pairs": [
+         [
+          "id",
+          "customer_id"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(b._count)"
+     }
+    ]
+   },
+   "new": {
+    "name": "a",
+    "population": "customers",
+    "extensions": [
+     {
+      "dataset": "customers",
+      "relationships": [
+       {
+        "to": "b",
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "customer_id"
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(b._count)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "b",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   },
+   "new": {
+    "name": "b",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "dimensions": [
+     "name"
+    ]
+   },
+   "new": {
+    "population": "a",
+    "dimensions": [
+     "name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "customers",
+    "extensions": [
+     {
+      "source_name": "customers",
+      "joins": [
+       {
+        "target_model": "b",
+        "join_pairs": [
+         [
+          "id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ]
+   },
+   "new": {
+    "name": "a",
+    "population": "customers",
+    "extensions": [
+     {
+      "dataset": "customers",
+      "relationships": [
+       {
+        "to": "b",
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "id"
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "b",
+    "source_model": "customers",
+    "extensions": [
+     {
+      "source_name": "customers",
+      "joins": [
+       {
+        "target_model": "a",
+        "join_pairs": [
+         [
+          "id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ]
+   },
+   "new": {
+    "name": "b",
+    "population": "customers",
+    "extensions": [
+     {
+      "dataset": "customers",
+      "relationships": [
+       {
+        "to": "a",
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "id"
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "dimensions": [
+     "name"
+    ]
+   },
+   "new": {
+    "population": "a",
+    "dimensions": [
+     "name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "utility",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "max(amount)"
+     }
+    ]
+   },
+   "new": {
+    "name": "utility",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "max(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "kpis",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   },
+   "new": {
+    "name": "kpis",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "kpis",
+    "dimensions": [
+     "customer_id"
+    ]
+   },
+   "new": {
+    "population": "kpis",
+    "dimensions": [
+     "customer_id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "util",
+    "source_model": "primary",
+    "dimensions": [
+     "customer_id"
+    ]
+   },
+   "new": {
+    "name": "util",
+    "population": "primary",
+    "dimensions": [
+     "customer_id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "primary",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   },
+   "new": {
+    "name": "primary",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "customer_id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "customers",
+    "extensions": [
+     {
+      "source_name": "customers",
+      "joins": [
+       {
+        "target_model": "a",
+        "join_pairs": [
+         [
+          "id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ]
+   },
+   "new": {
+    "name": "a",
+    "population": "customers",
+    "extensions": [
+     {
+      "dataset": "customers",
+      "relationships": [
+       {
+        "to": "a",
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "id"
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "dimensions": [
+     "name"
+    ]
+   },
+   "new": {
+    "population": "a",
+    "dimensions": [
+     "name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "raw",
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "raw",
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "raw",
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "raw",
+    "metrics": [
+     {
+      "metric": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "amount_sum"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "amount_sum"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 323,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 327,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 523,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 526,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 574,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 576,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 687,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 689,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 691,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 693,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 740,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 748,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 984,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 989,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 990,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 991,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 992,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 995,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1000,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1001,
+   "reason": "not fully literal"
+  }
+ ]
+}

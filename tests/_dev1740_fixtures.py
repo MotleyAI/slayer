@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1740 — SQL conditionals + expression dimensions
+"""Shared fixtures for SQL conditionals + expression dimensions
 (including one over an aggregate).
 
 Underscore-prefixed so pytest skips collection here. Mirrors
@@ -6,15 +6,15 @@ Underscore-prefixed so pytest skips collection here. Mirrors
 DuckDB, ``make_exec_engine`` yielding an engine per backend, ``gen`` for
 SQL-shape assertions.
 
-Model shape
------------
+Dataset shape
+-------------
 ``orders`` (host) carries the LOCAL dimensions ``region`` / ``city`` /
 ``channel`` plus ``amount`` / ``status`` / ``ordered_at``. The banding case
 groups by ``region`` and a computed ``band`` derived from each city's total
 (``sum(amount, partition_by=city)`` crossing 5000) — the aggregate lives at a
 FINER grain (city) than the query (region), which is why Part B2 needs
-DEV-1739's ``partition_by=`` and a post-aggregate regroup.
-``orders → customers → regions`` gives the cross-model / extension-join shapes.
+``partition_by=`` and a post-aggregate regroup.
+``orders → customers → regions`` gives the cross-dataset / extension-relationship shapes.
 
 Dataset (hand-computed; every executed expectation is derived here)
 -------------------------------------------------------------------
@@ -59,68 +59,68 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
-    Column,
-    ModelJoin,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, ComputedDimension, ModelMeasure, SlayerQuery, TimeDimension
+from slayer.core.query import DatasetMetric, FieldRef, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
 
 from tests._engine_helpers import _engine_generate
-# The customer/region models and the generic result helpers are byte-identical
-# to DEV-1739's; import them rather than restate them (DRY / Sonar duplication).
+# The customer/region datasets and the generic result helpers are byte-identical
+# to ``_dev1739_fixtures``'s; import them rather than restate them (DRY / Sonar duplication).
 from tests._dev1739_fixtures import (
     approx_sum,
     cm_cte_bodies,
-    customers_model,
+    customers_dataset,
     month_key,
     month_td,
-    regions_model,
+    regions_dataset,
     rows_by,
 )
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers → regions.
+# Datasets — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="city", type=DataType.TEXT),
-            Column(name="channel", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            # Filtered column (CASE-WHEN at aggregation time) — for a filtered
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            # Filtered field (CASE-WHEN at aggregation time) — for a filtered
             # aggregate reconciliation under the computed dimension.
-            Column(name="ok_amount", type=DataType.DOUBLE, sql="amount",
+            DatasetField(name="ok_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="status = 'ok'"),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
 
-def dev1740_models() -> List[SlayerModel]:
+def dev1740_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model(), regions_model()]
+    return [orders_dataset(), customers_dataset(), regions_dataset()]
 
 
 # --------------------------------------------------------------------------- #
 # SQL-shape generation (dry-run) — for golden + scope-closed + no-second-pass.
 # --------------------------------------------------------------------------- #
 async def gen(query, *, dialect: str = "duckdb", validate: bool = False) -> str:
-    models = dev1740_models()
+    models = dev1740_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=validate,
     )
 
@@ -209,7 +209,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1740_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1740_datasets()) as (engine, _db):
         yield engine
 
 
@@ -221,15 +221,15 @@ def two_stage_banding() -> list:
     """The ``[stage1, stage2]`` list from the issue: per-city totals, then a
     row-level CASE band over that total, regrouped by (region, band)."""
     stage1 = SlayerQuery(
-        name="per_city", source_model="orders",
-        dimensions=["city", "region"],
-        measures=[ModelMeasure(formula="sum(amount)", name="city_total")],
+        name="per_city", population="orders",
+        dimensions=["orders.city", "orders.region"],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="city_total")],
     )
     stage2 = SlayerQuery(
-        source_model="per_city",
-        dimensions=[ColumnRef(name="region"),
-                    ComputedDimension(expression="CASE WHEN city_total > 5000 THEN 1 ELSE 0 END", name="band")],
-        measures=[ModelMeasure(formula="sum(city_total)", name="band_total")],
+        population="per_city",
+        dimensions=[QueryDimension(field="per_city.region"),
+                    QueryDimension(field="CASE WHEN per_city.city_total > 5000 THEN 1 ELSE 0 END", alias="band")],
+        metrics=[QueryMetric(metric="sum(per_city.city_total)", alias="band_total")],
     )
     return [stage1, stage2]
 
@@ -244,11 +244,11 @@ def band_value_tuples(resp, *, region_key: str, band_key: str, total_key: str) -
 
 
 __all__ = [
-    "orders_model", "customers_model", "regions_model", "dev1740_models",
+    "orders_dataset", "customers_dataset", "regions_dataset", "dev1740_datasets",
     "gen", "month_td", "month_key", "cm_cte_bodies",
     "make_exec_engine", "two_stage_banding", "band_value_tuples",
     "rows_by", "approx_sum",
     "CITY_TOTAL", "BAND_SUM", "BAND_COUNT", "BAND_AVG", "BAND_OK_SUM",
     "BAND_DISTINCT_CUST", "REGION_SUM", "REGION_COUNT", "GRAND_TOTAL",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension", "TimeGranularity",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension", "TimeGranularity",
 ]

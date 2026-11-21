@@ -1,0 +1,42 @@
+{
+ "source": "tests/test_query_backed_identifier_length.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  }
+ ]
+}

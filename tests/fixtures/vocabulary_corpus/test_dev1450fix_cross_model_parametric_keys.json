@@ -1,0 +1,116 @@
+{
+ "source": "tests/test_dev1450fix_cross_model_parametric_keys.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "percentile(customers.revenue, p=0.5)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "percentile(customers.revenue, p=0.5)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "percentile(customers.revenue, p=0.5)"
+     },
+     {
+      "formula": "percentile(customers.revenue, p=0.95)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "percentile(customers.revenue, p=0.5)"
+     },
+     {
+      "metric": "percentile(customers.revenue, p=0.95)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -3,7 +3,7 @@
 Run after `docker compose up -d`:
     python examples/trino/verify.py
 
-The memory connector has no FK constraints, so no rollup joins are generated.
+The memory connector has no FK constraints, so no rollup relationships are generated.
 """
 
 import os
@@ -11,17 +11,17 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from verify_common import (  # ALLOW(import-not-top): sys.path bootstrap for the shared examples/verify_common.py
-    COUNT_MEASURE,
     ORDERS,
     ORDERS_COUNT,
     QUERY_PATH,
     TOTAL_ORDERS,
     api,
     check,
-    check_column_types,
+    check_field_types,
     check_corr_covar,
     check_rollup,
     check_stddev_var,
+    count_metric,
     run_common_checks,
     summary,
 )
@@ -30,7 +30,7 @@ from verify_common import (  # ALLOW(import-not-top): sys.path bootstrap for the
 def check_cardinality_invariant():
     print("\nCardinality invariant (sum-of-grouped == total):")
     rows = api("POST", QUERY_PATH, {
-        "source_model": "orders", "measures": [COUNT_MEASURE], "dimensions": ["status"],
+        "population": "orders", "metrics": [count_metric("orders")], "dimensions": ["orders.status"],
     })["data"]
     summed = sum(r[ORDERS_COUNT] for r in rows)
     check(f"sum(orders by status) == total ({summed} == {TOTAL_ORDERS})", summed == TOTAL_ORDERS)
@@ -40,8 +40,8 @@ def check_approx_median_percentile():
     """``approx_percentile`` returns a seeded value, not an interpolated one."""
     print("\nMedian / percentile (approximate):")
     row = api("POST", QUERY_PATH, {
-        "source_model": "orders",
-        "measures": ["median(quantity)", "percentile(quantity, p=0.25)", "percentile(quantity, p=0.75)"],
+        "population": "orders",
+        "metrics": ["median(orders.quantity)", "percentile(orders.quantity, p=0.25)", "percentile(orders.quantity, p=0.75)"],
     })["data"][0]
     seeded = {o[3] for o in ORDERS}
     median = row["orders.quantity_median"]
@@ -52,29 +52,29 @@ def check_approx_median_percentile():
 
 
 if __name__ == "__main__":
-    models = run_common_checks()
-    check("4 models (no rollup)", len(models) == 4)
+    datasets = run_common_checks()
+    check("4 datasets (no rollup)", len(datasets) == 4)
     check_rollup(expect_rollup=False)
-    check_column_types(
-        model_name="orders",
+    check_field_types(
+        dataset_name="orders",
         expected_types={
-            "id": "INT",
-            "customer_id": "INT",
-            "product_id": "INT",
-            "quantity": "INT",
-            "status": "TEXT",
-            "created_at": "TIMESTAMP",
+            "id": "Integer",
+            "customer_id": "Integer",
+            "product_id": "Integer",
+            "quantity": "Integer",
+            "status": "String",
+            "created_at": "DateTime",
         },
     )
-    check_column_types(
-        model_name="customers",
-        expected_types={"id": "INT", "name": "TEXT", "email": "TEXT", "region_id": "INT"},
+    check_field_types(
+        dataset_name="customers",
+        expected_types={"id": "Integer", "name": "String", "email": "String", "region_id": "Integer"},
     )
-    check_column_types(
-        model_name="products",
-        expected_types={"id": "INT", "name": "TEXT", "category": "TEXT", "price": "DOUBLE"},
+    check_field_types(
+        dataset_name="products",
+        expected_types={"id": "Integer", "name": "String", "category": "String", "price": "Decimal"},
     )
-    check_column_types(model_name="regions", expected_types={"id": "INT", "name": "TEXT"})
+    check_field_types(dataset_name="regions", expected_types={"id": "Integer", "name": "String"})
     check_cardinality_invariant()
     check_approx_median_percentile()
     check_stddev_var()

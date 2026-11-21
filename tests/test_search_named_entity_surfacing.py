@@ -1,4 +1,4 @@
-"""DEV-1513: ``search(entities=[...])`` surfaces named entities themselves.
+"""``search(entities=[...])`` surfaces named entities themselves.
 
 When the user names a canonical ref via ``entities=`` (or via
 ``query=``), channel 1's BM25 over entity-tag overlap is extended via
@@ -12,8 +12,8 @@ implicit self-references:
   ``example_queries``).
 
 Filters: refs not rooted at ``datasource`` and refs on hidden
-models/columns drop with warnings. ``max_entities=0`` continues to
-suppress all entity output. Per-bucket invariance (DEV-1414) preserved.
+datasets/fields drop with warnings. ``max_entities=0`` continues to
+suppress all entity output. Per-bucket invariance preserved.
 """
 
 from __future__ import annotations
@@ -26,12 +26,12 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.search.service import (
     LookupFound,
     LookupHidden,
@@ -43,80 +43,80 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 # ---------------------------------------------------------------------------
-# Fixture: corpus with two datasources, hidden entities, measures, aggs
+# Fixture: corpus with two datasources, hidden entities, metrics, aggs
 # ---------------------------------------------------------------------------
 
 
-def _make_corpus_models() -> list[SlayerModel]:
+def _make_corpus_datasets() -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="warehouse",
             description="Checkout orders.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(
                     name="amount",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     description="Net amount in cents.",
                 ),
-                Column(
+                DatasetField(
                     name="status",
-                    type=DataType.TEXT,
+                    datatype=DataType.STRING,
                     description="paid|refunded.",
                 ),
-                Column(
+                DatasetField(
                     name="internal_token",
-                    type=DataType.TEXT,
+                    datatype=DataType.STRING,
                     description="Internal payment token.",
                     hidden=True,
                 ),
             ],
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="aov",
-                    formula="sum(amount) / count(*)",
+                    expression="sum(amount) / count(*)",
                     description="Average order value.",
                 ),
             ],
             aggregations=[
                 Aggregation(
                     name="paid_only_sum",
-                    formula="SUM(CASE WHEN status='paid' THEN {col} END)",
+                    expression="SUM(CASE WHEN status='paid' THEN {col} END)",
                     description="Sum gated by paid status.",
                 ),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="customers",
             sql_table="public.customers",
             data_source="warehouse",
             description="Customer master.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="email", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="email", datatype=DataType.STRING),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="internal_audit",
             sql_table="public.audit",
             data_source="warehouse",
             description="Internal audit log.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="event", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="event", datatype=DataType.STRING),
             ],
             hidden=True,
         ),
-        SlayerModel(
+        SlayerDataset(
             name="products",
             sql_table="public.products",
             data_source="other_db",
             description="Product catalog (other ds).",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         ),
     ]
@@ -125,8 +125,8 @@ def _make_corpus_models() -> list[SlayerModel]:
 @pytest.fixture
 async def storage() -> AsyncIterator[YAMLStorage]:
     """Seeded YAMLStorage with two datasources (``warehouse`` and
-    ``other_db``), several models including a hidden model and a hidden
-    column, plus a third datasource ``empty_ds`` that owns no models."""
+    ``other_db``), several datasets including a hidden dataset and a hidden
+    field, plus a third datasource ``empty_ds`` that owns no datasets."""
     with tempfile.TemporaryDirectory() as tmp:
         s = YAMLStorage(base_dir=tmp)
         await s.save_datasource(
@@ -138,8 +138,8 @@ async def storage() -> AsyncIterator[YAMLStorage]:
         await s.save_datasource(
             DatasourceConfig(name="empty_ds", type="sqlite", database=":memory:"),
         )
-        for m in _make_corpus_models():
-            await s.save_model(m)
+        for m in _make_corpus_datasets():
+            await s.save_dataset(m)
         yield s
 
 
@@ -156,7 +156,7 @@ async def service(storage: YAMLStorage) -> SearchService:
 async def test_named_column_surfaces_in_entities_bucket(
     service: SearchService,
 ) -> None:
-    # DEV-1549: opt out of compact-by-default to exercise the verbose
+    # Opt out of compact-by-default to exercise the verbose
     # render text contract this test was written for.
     resp = await service.search(
         entities=["warehouse.orders.amount"],
@@ -169,7 +169,7 @@ async def test_named_column_surfaces_in_entities_bucket(
     assert len(entity_hits) == 1
     hit = entity_hits[0]
     assert hit.id == "warehouse.orders.amount"
-    assert hit.kind == "column"
+    assert hit.kind == "field"
     assert "amount" in hit.text
 
 
@@ -185,7 +185,7 @@ async def test_named_model_surfaces_in_entities_bucket(
     assert len(entity_hits) == 1
     hit = entity_hits[0]
     assert hit.id == "warehouse.orders"
-    assert hit.kind == "model"
+    assert hit.kind == "dataset"
     assert "orders" in hit.text
 
 
@@ -217,7 +217,7 @@ async def test_named_measure_surfaces_in_entities_bucket(
     assert len(entity_hits) == 1
     hit = entity_hits[0]
     assert hit.id == "warehouse.orders.aov"
-    assert hit.kind == "measure"
+    assert hit.kind == "metric"
     assert "aov" in hit.text
 
 
@@ -254,7 +254,7 @@ async def test_named_and_fuzzy_combine_in_entities_bucket(
     ids = [h.id for h in resp.results if h.kind != "memory"]
     # Named ref always present.
     assert "warehouse.orders.amount" in ids
-    # Fuzzy match for "customer email" surfaces customers / its email column.
+    # Fuzzy match for "customer email" surfaces customers / its email field.
     assert any(i in ids for i in (
         "warehouse.customers", "warehouse.customers.email",
     ))
@@ -269,12 +269,12 @@ async def test_unknown_named_ref_is_warning_not_entity_hit(
     service: SearchService,
 ) -> None:
     resp = await service.search(
-        entities=["warehouse.orders.no_such_column"],
+        entities=["warehouse.orders.no_such_field"],
         max_results=20,
     )
     entity_hits = [h for h in resp.results if h.kind != "memory"]
     assert entity_hits == []
-    assert any("no_such_column" in w for w in resp.warnings)
+    assert any("no_such_field" in w for w in resp.warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +300,7 @@ async def test_off_datasource_named_ref_drops_with_warning(
 
 
 # ---------------------------------------------------------------------------
-# Test 9: hidden model drops with warning
+# Test 9: hidden dataset drops with warning
 # ---------------------------------------------------------------------------
 
 
@@ -321,7 +321,7 @@ async def test_hidden_model_named_ref_drops_with_warning(
 
 
 # ---------------------------------------------------------------------------
-# Test 10: hidden column drops with warning
+# Test 10: hidden field drops with warning
 # ---------------------------------------------------------------------------
 
 
@@ -373,8 +373,8 @@ async def test_memory_id_in_entities_surfaces_query_bearing_in_example_queries(
         learning="example: revenue rollup pattern",
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         ),
     )
     resp = await service.search(
@@ -419,7 +419,7 @@ async def test_memory_id_off_datasource_drops_with_warning(
 async def test_named_entity_surfaces_when_max_results_large(
     service: SearchService,
 ) -> None:
-    """Under DEV-1532's flat results API, a user-supplied canonical
+    """Under the flat results API, a user-supplied canonical
     entity (with no matching memory) surfaces as an entity hit as soon
     as ``max_results`` has room. Replaces the legacy
     ``max_entities=0`` suppression test — that knob no longer exists."""
@@ -440,8 +440,8 @@ async def test_query_arg_entities_also_surface_in_entities_bucket(
     service: SearchService,
 ) -> None:
     q = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(amount)")],
+        population="orders",
+        metrics=[QueryMetric(metric="sum(orders.amount)")],
     )
     resp = await service.search(
         query=q,
@@ -570,14 +570,14 @@ async def test_mixed_memory_id_and_entity_refs_split_across_buckets(
 
 
 # ---------------------------------------------------------------------------
-# Test 23: pure-named datasource text includes visible models, excludes hidden
+# Test 23: pure-named datasource text includes visible datasets, excludes hidden
 # ---------------------------------------------------------------------------
 
 
 async def test_pure_named_datasource_text_includes_visible_excludes_hidden(
     service: SearchService,
 ) -> None:
-    """A bare-datasource named hit's text references visible models and
+    """A bare-datasource named hit's text references visible datasets and
     omits hidden ones (parity with the corpus build's
     ``render_datasource_text`` visibility filter)."""
     resp = await service.search(
@@ -611,7 +611,7 @@ async def test_named_hit_with_question_active_reuses_corpus_path(
             "direct-render fallback called when corpus already covers the canonical"
         )
     monkeypatch.setattr(
-        "slayer.search.service.collect_model_entity_pairs",
+        "slayer.search.service.collect_dataset_entity_pairs",
         fail_if_called,
     )
     resp = await service.search(
@@ -624,7 +624,7 @@ async def test_named_hit_with_question_active_reuses_corpus_path(
     hit = next(
         h for h in entity_hits if h.id == "warehouse.orders.amount"
     )
-    assert hit.kind == "column"
+    assert hit.kind == "field"
     assert "amount" in hit.text
 
 
@@ -682,16 +682,16 @@ async def test_hidden_column_drops_entity_but_memories_still_surface(
 
 
 async def _make_amount_stale(storage: YAMLStorage) -> None:
-    """Re-save ``warehouse.orders`` without the ``amount`` column so any
+    """Re-save ``warehouse.orders`` without the ``amount`` field so any
     memory tagged or query referencing ``amount`` becomes stale."""
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="warehouse",
         description="Checkout orders.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     ))
 
@@ -703,8 +703,8 @@ async def test_stale_query_warning_for_named_memory_id_default_cap(
         learning="legacy revenue lookup",
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         ),
     )
     # Make `amount` stale — the attached query no longer resolves.
@@ -733,8 +733,8 @@ async def test_stale_query_warning_for_named_memory_id_under_tight_cap(
         learning="legacy revenue lookup",
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         ),
     )
     await _make_amount_stale(storage)
@@ -754,10 +754,10 @@ async def test_stale_query_warning_for_named_memory_id_under_tight_cap(
 
 
 # ---------------------------------------------------------------------------
-# Missing-after-resolution: a canonical resolves but the model/datasource
+# Missing-after-resolution: a canonical resolves but the dataset/datasource
 # is gone by the time _lookup_named_entity runs. Returns Missing (not
 # Hidden) and the caller emits a missing-style warning, distinct from
-# the hidden-on-model warning.
+# the hidden-on-dataset warning.
 # ---------------------------------------------------------------------------
 
 
@@ -765,7 +765,7 @@ async def test_lookup_returns_missing_when_model_deleted_after_resolution(
     storage: YAMLStorage,
 ) -> None:
     """``_lookup_named_entity`` returns ``Missing`` (not ``Hidden``) when
-    the canonical resolved successfully but the model was deleted in the
+    the canonical resolved successfully but the dataset was deleted in the
     window between resolution and lookup."""
     canonical = "warehouse.orders.amount"
     # Sanity: it exists pre-delete.
@@ -774,9 +774,9 @@ async def test_lookup_returns_missing_when_model_deleted_after_resolution(
     )
     assert isinstance(result, LookupFound)
 
-    # Delete the parent model. Resolution is not re-run; we simulate the
+    # Delete the parent dataset. Resolution is not re-run; we simulate the
     # race by deleting between resolve and lookup at the function level.
-    await storage.delete_model("orders", data_source="warehouse")
+    await storage.delete_dataset("orders", data_source="warehouse")
     result = await _lookup_named_entity(
         canonical=canonical, storage=storage, corpus=None,
     )
@@ -819,7 +819,7 @@ async def test_memory_self_ref_preserved_when_all_stored_tags_are_stale(
         learning="archived note about the deleted_col column",
         entities=["warehouse.orders.amount"],
     )
-    # Make the only tag stale by re-saving the model without the column.
+    # Make the only tag stale by re-saving the dataset without the field.
     await _make_amount_stale(storage)
     resp = await service.search(
         entities=[f"memory:{seed.id}"],

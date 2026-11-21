@@ -6,7 +6,7 @@
 import re
 
 from slayer.storage.migrations import register_migration
-from slayer.storage.rank_direction_migration import rewrite_model_texts, rewrite_query_texts, stamp_memory_query
+from slayer.storage.rank_direction_migration import rewrite_dataset_texts, rewrite_query_texts, stamp_memory_query
 
 _QUOTED = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
 _BARE_DISTINCT = re.compile(r"(?<=\w\()(\s*)(distinct)(?=\s*[,)])", re.IGNORECASE)
@@ -21,14 +21,14 @@ def quote_bare_distinct(text: str) -> str:
     return text
 
 
-def rewrite_model_distinct(data: dict) -> dict:
-    return rewrite_model_texts(data, quote_bare_distinct)
+def rewrite_dataset_distinct(data: dict) -> dict:
+    return rewrite_dataset_texts(data, quote_bare_distinct)
 
 
 def rewrite_query_distinct(data: dict) -> dict:
     return rewrite_query_texts(data, quote_bare_distinct)
 
 
-register_migration(entity="SlayerModel", source_version=17, stored_only=True)(rewrite_model_distinct)
+register_migration(entity="SlayerModel", source_version=17, stored_only=True)(rewrite_dataset_distinct)
 register_migration(entity="SlayerQuery", source_version=8, stored_only=True)(rewrite_query_distinct)
 register_migration(entity="Memory", source_version=6, stored_only=True)(stamp_memory_query)

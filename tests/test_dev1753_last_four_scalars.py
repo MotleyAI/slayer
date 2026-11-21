@@ -30,12 +30,11 @@ from slayer.core.keys import (
     check_scalar_arity,
 )
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.render.value_expr import render_arithmetic, render_scalar_call
@@ -263,15 +262,15 @@ async def _engine(base_dir: str, *, dialect: str = "sqlite") -> SlayerQueryEngin
     await storage.save_datasource(
         DatasourceConfig(name="prod", type=dialect, database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders", sql_table="orders", data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="disc", type=DataType.DOUBLE),
-                Column(name="qty", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="disc", datatype=DataType.FLOAT),
+                DatasetField(name="qty", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -286,18 +285,18 @@ async def engine(tmp_path) -> SlayerQueryEngine:
 class TestEndToEndBinding:
     async def test_each_scalar_binds_and_appears_in_sql(self, engine) -> None:
         cases = [
-            ("greatest(amount, disc) > 15", "MAX("),
-            ("least(amount, disc) < 15", "MIN("),
-            ("trunc(amount) >= 20", "TRUNC("),
-            ("mod(id, 2) == 0", "%"),
+            ("greatest(orders.amount, orders.disc) > 15", "MAX("),
+            ("least(orders.amount, orders.disc) < 15", "MIN("),
+            ("trunc(orders.amount) >= 20", "TRUNC("),
+            ("mod(orders.id, 2) == 0", "%"),
         ]
         for predicate, needle in cases:
             resp = await engine.execute(
                 SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="count(*)", name="n")],
-                    filters=[predicate],
+                    population="orders",
+                    dimensions=[QueryDimension(field="orders.status")],
+                    metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                    filter=[predicate],
                 ),
                 dry_run=True,
             )
@@ -308,28 +307,28 @@ class TestEndToEndBinding:
         (20+4)%3 = 0; id=1: (10+2)%3 = 0; id=3: (30+1)%3 = 1; id=4 amount NULL."""
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="count(*)", name="n")],
-                filters=["mod(amount + qty, 3) == 0"],
+                population="orders",
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["mod(orders.amount + orders.qty, 3) == 0"],
             )
         )
-        assert resp.data[0]["orders.n"] == 2
+        assert resp.data[0]["n"] == 2
 
     @pytest.mark.parametrize(
         "predicate,func",
         [
-            ("trunc(amount, 2) > 1", "trunc"),
-            ("mod(amount) > 1", "mod"),
-            ("greatest(amount) > 1", "greatest"),
+            ("trunc(orders.amount, 2) > 1", "trunc"),
+            ("mod(orders.amount) > 1", "mod"),
+            ("greatest(orders.amount) > 1", "greatest"),
         ],
     )
     async def test_arity_errors_surface_at_bind_time(
         self, engine, predicate, func,
     ) -> None:
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="count(*)", name="n")],
-            filters=[predicate],
+            population="orders",
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+            filter=[predicate],
         )
         with pytest.raises(ValueError, match=func):
             await engine.execute(query, dry_run=True)
@@ -340,20 +339,20 @@ class TestGreatestLeastNullSemanticsSqlite:
     when every argument is NULL. Grouped by ``id`` so each aggregate is over one row,
     isolating the scalar's NULL behavior."""
 
-    async def _values(self, engine, formula):
+    async def _values(self, engine, expression):
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="id")],
-                measures=[ModelMeasure(formula=formula, name="g")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.id")],
+                metrics=[QueryMetric(metric=expression, alias="g")],
             )
         )
-        return {int(r["orders.id"]): r["orders.g"] for r in resp.data}
+        return {int(r["orders.id"]): r["g"] for r in resp.data}
 
     async def test_greatest_ignores_null(self, engine) -> None:
-        got = await self._values(engine, "greatest(max(amount), max(disc))")
+        got = await self._values(engine, "greatest(max(orders.amount), max(orders.disc))")
         assert got == {1: 10.0, 2: 20.0, 3: 30.0, 4: None}
 
     async def test_least_ignores_null(self, engine) -> None:
-        got = await self._values(engine, "least(max(amount), max(disc))")
+        got = await self._values(engine, "least(max(orders.amount), max(orders.disc))")
         assert got == {1: 10.0, 2: 5.0, 3: 30.0, 4: None}

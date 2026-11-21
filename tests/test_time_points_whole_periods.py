@@ -13,8 +13,8 @@ from tests._time_points_fixtures import (
 )
 
 D = datetime
-PLAIN = {"formula": "sum(amount)", "name": "s"}
-WINDOW = {"formula": "sum(amount, window='90d')", "name": "w"}
+PLAIN = {"metric": "sum(ev.amount)", "alias": "s"}
+WINDOW = {"metric": "sum(ev.amount, window='90d')", "alias": "w"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -41,7 +41,7 @@ class TestSnappingAtMonth:
         (None, D(1900, 1, 1), D(2026, 9, 1)),
     ], ids=["mid-month", "month-aligned", "this-year", "no-range"])
     async def test_returned_months_are_whole(self, engine, date_range, start, end) -> None:
-        got = await monthly(engine, measures=[PLAIN], date_range=date_range, whole_periods_only=True)
+        got = await monthly(engine, metrics=[PLAIN], date_range=date_range, whole_periods_only=True)
         assert set(got) == _months_with_data(start, end)
         for key, row in got.items():
             year, month = map(int, key.split("-"))
@@ -49,30 +49,30 @@ class TestSnappingAtMonth:
 
     async def test_snapped_filter_bound_keeps_residual_condition(self, engine) -> None:
         got = await monthly(
-            engine, measures=[PLAIN], filters=["ts >= '2025-01-15' and amount >= 7"], whole_periods_only=True,
+            engine, metrics=[PLAIN], filters=["ev.ts >= '2025-01-15' and ev.amount >= 7"], whole_periods_only=True,
         )
         assert min(got) == "2025-01"
         assert got["2025-01"]["s"] == pytest.approx(24.0)  # ids 7, 8, 9
         residual = await monthly(
-            engine, measures=[PLAIN], filters=["ts >= '2025-01-15' and amount >= 8"], whole_periods_only=True,
+            engine, metrics=[PLAIN], filters=["ev.ts >= '2025-01-15' and ev.amount >= 8"], whole_periods_only=True,
         )
         assert residual["2025-01"]["s"] == pytest.approx(17.0)  # ids 8, 9
 
     @pytest.mark.parametrize("filt", [
-        "ts >= '2025-01-15' or amount < 0",
-        "not (ts < '2025-01-15')",
-        "shipped_at >= '2025-01-15'",
+        "ev.ts >= '2025-01-15' or ev.amount < 0",
+        "not (ev.ts < '2025-01-15')",
+        "ev.shipped_at >= '2025-01-15'",
     ], ids=["under-or", "under-not", "other-column"])
     async def test_non_frame_bounds_are_untouched(self, engine, filt) -> None:
-        got = await monthly(engine, measures=[PLAIN], filters=[filt], whole_periods_only=True)
+        got = await monthly(engine, metrics=[PLAIN], filters=[filt], whole_periods_only=True)
         assert got["2025-01"]["s"] == pytest.approx(17.0)  # ids 8, 9; snapping would add id 7
 
     async def test_lower_bound_in_the_future_is_empty(self, engine) -> None:
-        assert await monthly(engine, measures=[PLAIN], date_range=["next month", None], whole_periods_only=True) == {}
-        assert await monthly(engine, measures=[PLAIN], filters=["ts >= '2027-01-01'"], whole_periods_only=True) == {}
+        assert await monthly(engine, metrics=[PLAIN], date_range=["next month", None], whole_periods_only=True) == {}
+        assert await monthly(engine, metrics=[PLAIN], filters=["ev.ts >= '2027-01-01'"], whole_periods_only=True) == {}
 
     async def test_with_trailing_window(self, engine) -> None:
-        got = await monthly(engine, measures=[WINDOW, PLAIN], date_range="last 3 months", whole_periods_only=True)
+        got = await monthly(engine, metrics=[WINDOW, PLAIN], date_range="last 3 months", whole_periods_only=True)
         assert set(got) == {"2026-06", "2026-07", "2026-08"}
         assert got["2026-06"]["w"] > got["2026-06"]["s"]
 
@@ -81,8 +81,8 @@ class TestSubDay:
     async def test_current_hour_excluded(self) -> None:
         async with tp_engine("duckdb", clock=PinnedClock(D(2026, 9, 29, 12, 30))) as engine:
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "ev", "measures": [PLAIN],
-                "time_dimensions": [{"dimension": "ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
+                "population": "ev", "metrics": [PLAIN],
+                "time_dimensions": [{"field": "ev.ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
                 "whole_periods_only": True,
             }))
         buckets = {bucket_text(r["ev.ts"]) for r in resp.data}
@@ -91,8 +91,8 @@ class TestSubDay:
     async def test_current_hour_excluded_sqlite(self) -> None:
         async with tp_engine("sqlite", clock=PinnedClock(D(2026, 9, 29, 12, 30))) as engine:
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "ev", "measures": [PLAIN],
-                "time_dimensions": [{"dimension": "ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
+                "population": "ev", "metrics": [PLAIN],
+                "time_dimensions": [{"field": "ev.ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
                 "whole_periods_only": True,
             }))
         assert "2026-09-29 12:00:00" not in {bucket_text(r["ev.ts"]) for r in resp.data}
@@ -101,9 +101,9 @@ class TestSubDay:
 
 def _two_grain_query(order: list[str]) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "ev", "measures": [PLAIN],
-        "time_dimensions": [{"dimension": "ts", "granularity": g} for g in order],
-        "filters": ["ts >= '2025-01-15'"], "whole_periods_only": True,
+        "population": "ev", "metrics": [PLAIN],
+        "time_dimensions": [{"field": "ev.ts", "granularity": g} for g in order],
+        "filter": ["ev.ts >= '2025-01-15'"], "whole_periods_only": True,
     })
 
 
@@ -131,7 +131,7 @@ class TestTwoGranularities:
 
 class TestStageTimeDimension:
     async def test_stage_column_snaps(self, engine) -> None:
-        got = await monthly(engine, measures=[{"formula": "sum(rev)", "name": "r"}], model="daily",
+        got = await monthly(engine, metrics=[{"metric": "sum(daily.rev)", "alias": "r"}], dataset="daily",
                             date_range=["2025-01-15", None], whole_periods_only=True)
         assert min(got) == "2025-01"
         assert max(got) == "2026-08"
@@ -140,11 +140,11 @@ class TestStageTimeDimension:
 
 class TestDateOperand:
     async def test_date_column_snaps(self, engine) -> None:
-        got = await monthly(engine, measures=[PLAIN], column="d", date_range=["2025-01-15", None], whole_periods_only=True)
+        got = await monthly(engine, metrics=[PLAIN], field="d", date_range=["2025-01-15", None], whole_periods_only=True)
         assert min(got) == "2025-01"
         assert max(got) == "2026-08"
         assert got["2025-01"]["s"] == pytest.approx(_month_sum(2025, 1))
 
     async def test_future_date_lower_bound_is_empty(self, engine) -> None:
-        got = await monthly(engine, measures=[PLAIN], column="d", date_range=["2027-01-01", None], whole_periods_only=True)
+        got = await monthly(engine, metrics=[PLAIN], field="d", date_range=["2027-01-01", None], whole_periods_only=True)
         assert got == {}

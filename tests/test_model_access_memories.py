@@ -12,7 +12,7 @@ from slayer.embeddings import client as embedding_client
 from slayer.inspect.service import InspectService
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     DATASOURCE_MEMORY,
     DS,
@@ -49,7 +49,7 @@ def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFiltered
 
 
 TWIN_DS = "acme2"
-HR_QUERY = SlayerQuery.model_validate({"source_model": "hr", "measures": [{"formula": "sum(salary)"}]})
+HR_QUERY = SlayerQuery.model_validate({"population": "hr", "metrics": [{"metric": "sum(hr.salary)"}]})
 
 
 async def _twin_hr(store: AccessStore) -> None:
@@ -57,9 +57,9 @@ async def _twin_hr(store: AccessStore) -> None:
     ds = await store.storage.get_datasource(DS)
     assert ds is not None
     await store.storage.save_datasource(ds.model_copy(update={"name": TWIN_DS}))
-    hr = await store.storage.get_model("hr", data_source=DS)
+    hr = await store.storage.get_dataset("hr", data_source=DS)
     assert hr is not None
-    await store.storage.save_model(hr.model_copy(update={"data_source": TWIN_DS}), _validate=False)
+    await store.storage.save_dataset(hr.model_copy(update={"data_source": TWIN_DS}), _validate=False)
 
 
 class TestMemoryVisibility:
@@ -90,7 +90,7 @@ class TestMemoryVisibility:
         assert await view(store, bypass=True).list_memories() == await store.storage.list_memories()
 
     async def test_memory_reading_only_an_unloadable_model_is_hidden(self, store: AccessStore) -> None:
-        query = SlayerQuery.model_validate({"source_model": UNLOADABLE, "measures": [{"formula": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": UNLOADABLE, "metrics": [{"metric": "count(*)"}]})
         await store.storage.save_memory(id="broken-note", learning="Broken counts", entities=[], query=query)
         assert "broken-note" not in {m.id for m in await view(store, "fin").list_memories()}
         assert "broken-note" in {m.id for m in await view(store, bypass=True).list_memories()}
@@ -158,28 +158,28 @@ class TestMemoryStripping:
 
 class TestEmbeddings:
     @pytest.fixture
-    def model_name(self) -> str:
+    def dataset_name(self) -> str:
         return embedding_client.current_model()
 
-    async def test_listing_omits_hidden_rows(self, store: AccessStore, model_name: str) -> None:
-        rows = await view(store, "fin").list_embeddings(embedding_model_name=model_name)
+    async def test_listing_omits_hidden_rows(self, store: AccessStore, dataset_name: str) -> None:
+        rows = await view(store, "fin").list_embeddings(embedding_model_name=dataset_name)
         assert {r.canonical_id for r in rows} == set(EMBEDDED) - HIDDEN_EMBEDDINGS_FOR_FIN
 
     @pytest.mark.parametrize("canonical_id", sorted(HIDDEN_EMBEDDINGS_FOR_FIN))
-    async def test_hidden_row_is_absent(self, store: AccessStore, model_name: str, canonical_id: str) -> None:
+    async def test_hidden_row_is_absent(self, store: AccessStore, dataset_name: str, canonical_id: str) -> None:
         fin = view(store, "fin")
-        assert await fin.get_embedding(canonical_id=canonical_id, embedding_model_name=model_name) is None
+        assert await fin.get_embedding(canonical_id=canonical_id, embedding_model_name=dataset_name) is None
 
-    async def test_visible_row_is_present(self, store: AccessStore, model_name: str) -> None:
-        row = await view(store, "fin").get_embedding(canonical_id=f"{DS}.fin.amount", embedding_model_name=model_name)
+    async def test_visible_row_is_present(self, store: AccessStore, dataset_name: str) -> None:
+        row = await view(store, "fin").get_embedding(canonical_id=f"{DS}.fin.amount", embedding_model_name=dataset_name)
         assert row is not None
 
-    async def test_batch_read_omits_hidden_rows(self, store: AccessStore, model_name: str) -> None:
+    async def test_batch_read_omits_hidden_rows(self, store: AccessStore, dataset_name: str) -> None:
         rows = await view(store, "fin").get_embeddings_for_canonical_ids(
-            canonical_ids=sorted(EMBEDDED), embedding_model_name=model_name,
+            canonical_ids=sorted(EMBEDDED), embedding_model_name=dataset_name,
         )
         assert set(rows) == set(EMBEDDED) - HIDDEN_EMBEDDINGS_FOR_FIN
 
-    async def test_bypass_reads_every_row(self, store: AccessStore, model_name: str) -> None:
-        rows = await view(store, bypass=True).list_embeddings(embedding_model_name=model_name)
+    async def test_bypass_reads_every_row(self, store: AccessStore, dataset_name: str) -> None:
+        rows = await view(store, bypass=True).list_embeddings(embedding_model_name=dataset_name)
         assert {r.canonical_id for r in rows} == set(EMBEDDED)

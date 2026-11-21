@@ -1,4 +1,4 @@
-"""Save-time aggregation-formula parse check at every engine create/edit door."""
+"""Save-time aggregation-expression parse check at every engine create/edit door."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from slayer.cli import main as cli_main
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationArgumentError, SlayerError
 from slayer.core.models import (
-    Aggregation, AggregationParam, Column, DatasourceConfig, ModelMeasure, SlayerModel,
+    Aggregation, AggregationParam, DatasetField, DatasourceConfig, SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.database.client import SlayerSQLClient, TypeProbe
@@ -28,6 +28,7 @@ from slayer.sql.sql_template import SqlTemplateError
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 _DS = "ds"
 _BROKEN = "SUM({value}"
@@ -41,18 +42,18 @@ def _seed(db_path: str) -> None:
         )
 
 
-def _model(formula: str, *, name: str = "orders", data_source: str = _DS,
-           agg: str = "custom_agg", sql: str | None = None) -> SlayerModel:
-    return SlayerModel(
+def _dataset(expression: str, *, name: str = "orders", data_source: str = _DS,
+           agg: str = "custom_agg", sql: str | None = None) -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         sql_table=None if sql else "orders",
         sql=sql,
         data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
-        aggregations=[Aggregation(name=agg, formula=formula)],
+        aggregations=[Aggregation(name=agg, expression=expression)],
     )
 
 
@@ -70,39 +71,39 @@ async def seeded(tmp_path: Path) -> AsyncIterator[tuple[SlayerQueryEngine, YAMLS
 
 
 class TestEngineCheck:
-    async def test_unparseable_formula_rejected_naming_model_and_aggregation(self, seeded) -> None:
+    async def test_unparseable_formula_rejected_naming_model_and_aggregation(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        model = _model(_BROKEN)
+        model = _dataset(_BROKEN)
         with pytest.raises(SlayerError) as ei:
-            await engine.save_model(model)
+            await engine.save_dataset(model)
         assert "orders" in str(ei.value)
         assert "custom_agg" in str(ei.value)
-        assert await store.get_model("orders", data_source=_DS) is None
+        assert await store.get_dataset("orders", data_source=_DS) is None
 
-    async def test_qualifier_position_placeholder_rejected(self, seeded) -> None:
+    async def test_qualifier_position_placeholder_rejected(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        model = _model("SUM({t}.amount)")
+        model = _dataset("SUM({t}.amount)")
         with pytest.raises(SlayerError, match="custom_agg"):
-            await engine.save_model(model)
-        assert await store.get_model("orders", data_source=_DS) is None
+            await engine.save_dataset(model)
+        assert await store.get_dataset("orders", data_source=_DS) is None
 
-    async def test_query_time_only_placeholder_accepted(self, seeded) -> None:
+    async def test_query_time_only_placeholder_accepted(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        await engine.save_model(_model("SUM({value} * {scale})"))
-        assert await store.get_model("orders", data_source=_DS) is not None
+        await engine.save_dataset(_dataset("SUM({value} * {scale})"))
+        assert await store.get_dataset("orders", data_source=_DS) is not None
 
-    async def test_formula_without_value_accepted(self, seeded) -> None:
+    async def test_formula_without_value_accepted(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        await engine.save_model(_model("COUNT(*)"))
-        assert await store.get_model("orders", data_source=_DS) is not None
+        await engine.save_dataset(_dataset("COUNT(*)"))
+        assert await store.get_dataset("orders", data_source=_DS) is not None
 
-    async def test_unresolvable_datasource_uses_generic_dialect(self, seeded) -> None:
+    async def test_unresolvable_datasource_uses_generic_dialect(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        model = _model(_BROKEN, data_source="nowhere")
+        model = _dataset(_BROKEN, data_source="nowhere")
         with pytest.raises(SlayerError, match="custom_agg"):
-            await engine.save_model(model)
-        await engine.save_model(_model("SUM({value})", data_source="nowhere"))
-        assert await store.get_model("orders", data_source="nowhere") is not None
+            await engine.save_dataset(model)
+        await engine.save_dataset(_dataset("SUM({value})", data_source="nowhere"))
+        assert await store.get_dataset("orders", data_source="nowhere") is not None
 
     async def test_datasource_dialect_is_used(self, tmp_path: Path) -> None:
         store = YAMLStorage(base_dir=str(tmp_path / "store"))
@@ -111,15 +112,15 @@ class TestEngineCheck:
         )
         engine = SlayerQueryEngine(storage=store)
         try:
-            await engine.save_model(_model(
+            await engine.save_dataset(_dataset(
                 "SUM({value}) + STRUCT_EXTRACT({'a': 1}, 'a')", data_source="duck",
             ))
         finally:
             engine.close()
-        assert await store.get_model("orders", data_source="duck") is not None
+        assert await store.get_dataset("orders", data_source="duck") is not None
 
     async def test_check_runs_before_storage_or_trial_execute(
-        self, seeded, monkeypatch: pytest.MonkeyPatch,
+        self, seeded: tuple[SlayerQueryEngine, YAMLStorage], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         engine, store = seeded
         executed: list[TypeProbe] = []
@@ -129,22 +130,22 @@ class TestEngineCheck:
             executed.append(probe)
             return {}
 
-        original_save = YAMLStorage.save_model
+        original_save = YAMLStorage.save_dataset
 
         async def _spy_save(self, model, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
             saved.append(model.name)
             return await original_save(self, model, *args, **kwargs)
 
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy_exec)
-        monkeypatch.setattr(YAMLStorage, "save_model", _spy_save)
-        model = _model(_BROKEN, sql="SELECT id, amount FROM orders")
+        monkeypatch.setattr(YAMLStorage, "save_dataset", _spy_save)
+        model = _dataset(_BROKEN, sql="SELECT id, amount FROM orders")
         with pytest.raises(SlayerError):
-            await engine.save_model(model)
+            await engine.save_dataset(model)
         assert executed == []
         assert saved == []
 
     async def test_check_runs_before_backing_query_expansion(
-        self, seeded, monkeypatch: pytest.MonkeyPatch,
+        self, seeded: tuple[SlayerQueryEngine, YAMLStorage], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         engine, _store = seeded
         expanded: list[str] = []
@@ -154,17 +155,17 @@ class TestEngineCheck:
             return model
 
         monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])],
-            aggregations=[Aggregation(name="custom_agg", formula=_BROKEN)],
+            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])],
+            aggregations=[Aggregation(name="custom_agg", expression=_BROKEN)],
         )
         with pytest.raises(SqlTemplateError, match="custom_agg"):
-            await engine.save_model(model)
+            await engine.save_dataset(model)
         assert expanded == []
 
     async def test_query_backed_check_uses_the_expanded_datasource_dialect(
-        self, seeded, monkeypatch: pytest.MonkeyPatch,
+        self, seeded: tuple[SlayerQueryEngine, YAMLStorage], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         engine, store = seeded
         await store.save_datasource(DatasourceConfig(name="my", type="mysql", host="h", database="d"))
@@ -174,20 +175,20 @@ class TestEngineCheck:
 
         monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _expand_to_mysql)
         # `#` is a comment in MySQL, so `{mask}` is never read there (it is on SQLite).
-        model = SlayerModel(
+        model = SlayerDataset(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])],
+            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])],
             aggregations=[Aggregation.model_validate({
-                "name": "masked", "formula": "SUM({value}) # {mask}",
+                "name": "masked", "expression": "SUM({value}) # {mask}",
                 "params": [{"name": "mask", "sql": "1"}],
             })],
         )
         with pytest.raises(AggregationArgumentError, match="'mask' is never referenced"):
-            await engine.save_model(model)
+            await engine.save_dataset(model)
 
 
-def _with(agg: Aggregation, *, data_source: str = _DS) -> SlayerModel:
-    return _model("SUM({value})", data_source=data_source).model_copy(update={"aggregations": [agg]})
+def _with(agg: Aggregation, *, data_source: str = _DS) -> SlayerDataset:
+    return _dataset("SUM({value})", data_source=data_source).model_copy(update={"aggregations": [agg]})
 
 
 def _p(*names: str) -> list[AggregationParam]:
@@ -196,53 +197,53 @@ def _p(*names: str) -> list[AggregationParam]:
 
 class TestUnreferencedParams:
     @pytest.mark.parametrize(("agg", "param"), [
-        (Aggregation(name="custom_agg", formula="SUM({value}) * {k}", params=_p("k", "unused")), "unused"),
-        (Aggregation(name="weighted_avg", formula="SUM({value}) * {k}", params=_p("weight", "k")), "weight"),
+        (Aggregation(name="custom_agg", expression="SUM({value}) * {k}", params=_p("k", "unused")), "unused"),
+        (Aggregation(name="weighted_avg", expression="SUM({value}) * {k}", params=_p("weight", "k")), "weight"),
         (Aggregation(name="sum", params=_p("scale")), "scale"),
         (Aggregation(name="percentile", params=_p("p", "q")), "q"),
     ])
-    async def test_unreferenced_param_blocks_the_save(self, seeded, agg: Aggregation, param: str) -> None:
+    async def test_unreferenced_param_blocks_the_save(self, seeded: tuple[SlayerQueryEngine, YAMLStorage], agg: Aggregation, param: str) -> None:
         engine, store = seeded
         model = _with(agg)
         with pytest.raises(
             AggregationArgumentError,
-            match=rf"Model 'orders', aggregation '{agg.name}': parameter '{param}' is never referenced",
+            match=rf"Dataset 'orders', aggregation '{agg.name}': parameter '{param}' is never referenced",
         ):
-            await engine.save_model(model)
-        assert await store.get_model("orders", data_source=_DS) is None
+            await engine.save_dataset(model)
+        assert await store.get_dataset("orders", data_source=_DS) is None
 
     @pytest.mark.parametrize("agg", [
-        Aggregation(name="custom_agg", formula="SUM({value}) * {k}", params=_p("k")),
-        Aggregation(name="sum", formula="SUM({value}) * {scale}", params=_p("scale")),
+        Aggregation(name="custom_agg", expression="SUM({value}) * {k}", params=_p("k")),
+        Aggregation(name="sum", expression="SUM({value}) * {scale}", params=_p("scale")),
         Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.5")]),
         Aggregation(name="weighted_avg", params=_p("weight")),
     ])
-    async def test_referenced_params_save(self, seeded, agg: Aggregation) -> None:
+    async def test_referenced_params_save(self, seeded: tuple[SlayerQueryEngine, YAMLStorage], agg: Aggregation) -> None:
         engine, store = seeded
-        await engine.save_model(_with(agg))
-        assert await store.get_model("orders", data_source=_DS) is not None
+        await engine.save_dataset(_with(agg))
+        assert await store.get_dataset("orders", data_source=_DS) is not None
 
     async def test_reference_is_judged_in_the_datasource_dialect(self, tmp_path: Path) -> None:
         store = YAMLStorage(base_dir=str(tmp_path / "store"))
         await store.save_datasource(DatasourceConfig(name="my", type="mysql"))
         await store.save_datasource(DatasourceConfig(name="pg", type="postgres"))
         engine = SlayerQueryEngine(storage=store)
-        masked = Aggregation(name="masked", formula="SUM({value}) # {mask}", params=_p("mask"))
+        masked = Aggregation(name="masked", expression="SUM({value}) # {mask}", params=_p("mask"))
         on_mysql = _with(masked, data_source="my")
         try:
-            await engine.save_model(_with(masked, data_source="pg"))
+            await engine.save_dataset(_with(masked, data_source="pg"))
             with pytest.raises(AggregationArgumentError, match="parameter 'mask'"):
-                await engine.save_model(on_mysql)
+                await engine.save_dataset(on_mysql)
         finally:
             engine.close()
-        assert await store.get_model("orders", data_source="my") is None
+        assert await store.get_dataset("orders", data_source="my") is None
 
     @pytest.mark.parametrize("name", ["first", "last"])
-    async def test_ranked_formula_override_blocks_the_save(self, seeded, name: str) -> None:
+    async def test_ranked_formula_override_blocks_the_save(self, seeded: tuple[SlayerQueryEngine, YAMLStorage], name: str) -> None:
         engine, _store = seeded
-        model = _with(Aggregation(name=name, formula="MAX({value})"))
-        with pytest.raises(AggregationArgumentError, match=rf"aggregation '{name}': a ranked aggregation cannot take a formula"):
-            await engine.save_model(model)
+        model = _with(Aggregation(name=name, expression="MAX({value})"))
+        with pytest.raises(AggregationArgumentError, match=rf"aggregation '{name}': a ranked aggregation cannot take an expression"):
+            await engine.save_dataset(model)
 
 
 @pytest.fixture
@@ -252,43 +253,44 @@ def rest(seeded) -> tuple[TestClient, YAMLStorage]:
 
 
 class TestRest:
-    async def test_create_rejected(self, rest) -> None:
+    async def test_create_rejected(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
-        resp = client.post("/models", json=_model(_BROKEN).model_dump(mode="json"))
+        resp = client.post("/datasets", json=_dataset(_BROKEN).model_dump(mode="json"))
         assert resp.status_code == 400
         assert "orders" in resp.json()["detail"]
         assert "custom_agg" in resp.json()["detail"]
-        assert await store.get_model("orders", data_source=_DS) is None
+        assert await store.get_dataset("orders", data_source=_DS) is None
 
-    async def test_update_rejected_leaves_original(self, rest) -> None:
+    async def test_update_rejected_leaves_original(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
-        ok = client.post("/models", json=_model("SUM({value})").model_dump(mode="json"))
+        ok = client.post("/datasets", json=_dataset("SUM({value})").model_dump(mode="json"))
         assert ok.status_code == 200
-        resp = client.put("/models/orders", json=_model(_BROKEN).model_dump(mode="json"))
+        resp = client.put("/datasets/orders", json=_dataset(_BROKEN).model_dump(mode="json"))
         assert resp.status_code == 400
-        kept = await store.get_model("orders", data_source=_DS)
-        assert kept.aggregations[0].formula == "SUM({value})"
+        kept = await store.get_dataset("orders", data_source=_DS)
+        assert kept is not None
+        assert kept.aggregations[0].expression == "SUM({value})"
 
 
-    async def test_unreferenced_param_rejected(self, rest) -> None:
+    async def test_unreferenced_param_rejected(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
-        agg = Aggregation(name="custom_agg", formula="SUM({value})", params=_p("unused"))
-        resp = client.post("/models", json=_with(agg).model_dump(mode="json"))
+        agg = Aggregation(name="custom_agg", expression="SUM({value})", params=_p("unused"))
+        resp = client.post("/datasets", json=_with(agg).model_dump(mode="json"))
         assert resp.status_code == 400
         assert "parameter 'unused'" in resp.json()["detail"]
-        assert await store.get_model("orders", data_source=_DS) is None
+        assert await store.get_dataset("orders", data_source=_DS) is None
 
     async def test_non_parameter_query_argument_is_a_comparison_and_400(self, rest) -> None:
         client, _store = rest
-        assert client.post("/models", json=_model("SUM({value})").model_dump(mode="json")).status_code == 200
+        assert client.post("/datasets", json=_dataset("SUM({value})").model_dump(mode="json")).status_code == 200
 
         def detail(formula: str) -> str:
-            resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": formula, "name": "m"}]})
+            resp = client.post("/query", json={"population": "orders", "metrics": [{"metric": formula, "alias": "m"}]})
             assert resp.status_code == 400, resp.text
             return resp.json()["detail"]
 
-        twin = detail("custom_agg(amount, (bogus=1))")
-        message = detail("custom_agg(amount, bogus=1)")
+        twin = detail("custom_agg(orders.amount, (orders.bogus=1))")
+        message = detail("custom_agg(orders.amount, bogus=1)")
         assert "got 'bogus'" not in message
         assert "==" not in message
         assert ("bogus" in message) == ("bogus" in twin)
@@ -296,14 +298,14 @@ class TestRest:
 
 class TestCli:
     def test_create_rejected(
-        self, seeded, tmp_path: Path, capsys: pytest.CaptureFixture,
+        self, seeded: tuple[SlayerQueryEngine, YAMLStorage], tmp_path: Path, capsys: pytest.CaptureFixture,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _engine, store = seeded
         path = tmp_path / "m.yaml"
-        path.write_text(yaml.safe_dump(_model(_BROKEN).model_dump(mode="json", exclude_none=True)))
+        path.write_text(yaml.safe_dump(_dataset(_BROKEN).model_dump(mode="json", exclude_none=True)))
         monkeypatch.setattr(
-            sys, "argv", ["slayer", "models", "--storage", store.base_dir, "create", str(path)],
+            sys, "argv", ["slayer", "datasets", "--storage", store.base_dir, "create", str(path)],
         )
         with pytest.raises(SystemExit) as ei:
             cli_main()
@@ -311,7 +313,7 @@ class TestCli:
         err = capsys.readouterr().err
         assert "orders" in err
         assert "custom_agg" in err
-        assert run_sync(store.get_model("orders", data_source=_DS)) is None
+        assert run_sync(store.get_dataset("orders", data_source=_DS)) is None
 
 
 @pytest.fixture
@@ -325,57 +327,59 @@ async def _call(*, server: Any, name: str, arguments: dict[str, Any]) -> str:
     return blocks[0].text
 
 
-_COLUMNS = [
-    {"name": "id", "sql": "id", "type": "number", "primary_key": True},
-    {"name": "amount", "sql": "amount", "type": "number"},
+_FIELDS = [
+    {"name": "id", "expression": "id", "datatype": "number", "primary_key": True},
+    {"name": "amount", "expression": "amount", "datatype": "number"},
 ]
 
 
 class TestMcp:
-    async def test_create_model_rejects_broken_formula(self, mcp) -> None:
+    async def test_create_model_rejects_broken_formula(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, _engine, store = mcp
-        out = await _call(server=server, name="create_model", arguments={
-            "name": "orders", "sql_table": "orders", "data_source": _DS, "columns": _COLUMNS,
-            "aggregations": [{"name": "custom_agg", "formula": _BROKEN}],
+        out = await _call(server=server, name="create_dataset", arguments={
+            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _FIELDS,
+            "aggregations": [{"name": "custom_agg", "expression": _BROKEN}],
         })
         assert "Error" in out
         assert "orders" in out
         assert "custom_agg" in out
-        assert await store.get_model("orders", data_source=_DS) is None
+        assert await store.get_dataset("orders", data_source=_DS) is None
 
-    async def test_create_model_with_aggregation_is_queryable(self, mcp) -> None:
+    async def test_create_model_with_aggregation_is_queryable(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
-        out = await _call(server=server, name="create_model", arguments={
-            "name": "orders", "sql_table": "orders", "data_source": _DS, "columns": _COLUMNS,
-            "aggregations": [{"name": "sum_sq", "formula": "SUM({value} * {value})"}],
+        out = await _call(server=server, name="create_dataset", arguments={
+            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _FIELDS,
+            "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
         assert "created" in out, out
-        saved = await store.get_model("orders", data_source=_DS)
+        saved = await store.get_dataset("orders", data_source=_DS)
+        assert saved is not None
         assert [a.name for a in saved.aggregations] == ["sum_sq"]
         resp = await engine.execute(SlayerQuery(
-            source_model="orders", measures=[ModelMeasure(formula="sum_sq(amount)", name="m")],
+            population="orders", metrics=[QueryMetric(metric="sum_sq(orders.amount)", alias="m")],
         ))
-        assert resp.data[0]["orders.m"] == pytest.approx(13.0)
+        assert resp.data[0]["m"] == pytest.approx(13.0)
 
     async def test_create_model_aggregations_with_query_rejected(self, mcp) -> None:
         server, _engine, _store = mcp
-        out = await _call(server=server, name="create_model", arguments={
-            "name": "qb", "query": {"source_model": "orders", "measures": ["count(*)"]},
-            "aggregations": [{"name": "sum_sq", "formula": "SUM({value} * {value})"}],
+        out = await _call(server=server, name="create_dataset", arguments={
+            "name": "qb", "query": {"population": "orders", "metrics": ["count(orders.*)"]},
+            "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
         assert "Error" in out
         assert "aggregations" in out
 
-    async def test_edit_model_broken_formula_leaves_original(self, mcp) -> None:
+    async def test_edit_model_broken_formula_leaves_original(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
-        await engine.save_model(_model("SUM({value})"))
-        out = await _call(server=server, name="edit_model", arguments={
-            "model_name": "orders", "data_source": _DS,
-            "aggregations": [{"name": "custom_agg", "formula": _BROKEN}],
+        await engine.save_dataset(_dataset("SUM({value})"))
+        out = await _call(server=server, name="edit_dataset", arguments={
+            "dataset_name": "orders", "data_source": _DS,
+            "aggregations": [{"name": "custom_agg", "expression": _BROKEN}],
         })
         assert "Error" in out or "error" in out
-        kept = await store.get_model("orders", data_source=_DS)
-        assert kept.aggregations[0].formula == "SUM({value})"
+        kept = await store.get_dataset("orders", data_source=_DS)
+        assert kept is not None
+        assert kept.aggregations[0].expression == "SUM({value})"
 
 
 def _v11(aggregations: list[dict]) -> dict:
@@ -392,9 +396,9 @@ class TestBlankAggregationFieldsMigration:
             "name": "weighted_avg", "formula": "  ",
             "params": [{"name": "weight", "sql": ""}, {"name": "w2", "sql": "amount"}],
         }])
-        model = SlayerModel.model_validate(raw)
+        model = SlayerDataset.model_validate(raw)
         (agg,) = model.aggregations
-        assert agg.formula is None
+        assert agg.expression is None
         assert [p.name for p in agg.params] == ["w2"]
         assert model.version == CURRENT_VERSIONS["SlayerModel"]
         assert raw["aggregations"][0]["formula"] == "  "
@@ -403,7 +407,7 @@ class TestBlankAggregationFieldsMigration:
     def test_blank_custom_formula_still_fails_to_load(self) -> None:
         raw = _v11([{"name": "custom_agg", "formula": ""}])
         with pytest.raises(ValidationError, match="'custom_agg' is not a built-in"):
-            SlayerModel.model_validate(raw)
+            SlayerDataset.model_validate(raw)
 
 
 def test_v11_param_named_value_is_dropped_on_load() -> None:
@@ -411,24 +415,24 @@ def test_v11_param_named_value_is_dropped_on_load() -> None:
         "name": "custom_agg", "formula": "SUM({value}) * {k}",
         "params": [{"name": "value", "sql": "0"}, {"name": "k", "sql": "2"}],
     }])
-    (agg,) = SlayerModel.model_validate(raw).aggregations
+    (agg,) = SlayerDataset.model_validate(raw).aggregations
     assert [p.name for p in agg.params] == ["k"]
 
 
-async def test_direct_storage_save_checks_aggregations(seeded) -> None:
+async def test_direct_storage_save_checks_aggregations(seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
     # CLI importers (dbt, Cube, OSI) persist through storage.save_model directly.
     _engine, store = seeded
-    model = _model("SUM({value}) * {k}").model_copy(update={"aggregations": [Aggregation.model_validate({
-        "name": "custom_agg", "formula": "SUM({value}) * {k}",
+    model = _dataset("SUM({value}) * {k}").model_copy(update={"aggregations": [Aggregation.model_validate({
+        "name": "custom_agg", "expression": "SUM({value}) * {k}",
         "params": [{"name": "k", "sql": "2"}, {"name": "unused", "sql": "1"}],
     })]})
     with pytest.raises(AggregationArgumentError, match="'unused' is never referenced"):
-        await store.save_model(model)
-    assert await store.get_model("orders", data_source=_DS) is None
+        await store.save_dataset(model)
+    assert await store.get_dataset("orders", data_source=_DS) is None
 
 
 async def test_ranked_formula_rejected_before_backing_query_expansion(
-    seeded, monkeypatch: pytest.MonkeyPatch,
+    seeded: tuple[SlayerQueryEngine, YAMLStorage], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine, _store = seeded
     expanded: list[str] = []
@@ -438,11 +442,11 @@ async def test_ranked_formula_rejected_before_backing_query_expansion(
         return model
 
     monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="obs", data_source=_DS,
-        source_queries=[SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="sum(amount)")])],
-        aggregations=[Aggregation(name="last", formula="MAX({value})")],
+        source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])],
+        aggregations=[Aggregation(name="last", expression="MAX({value})")],
     )
-    with pytest.raises(AggregationArgumentError, match="ranked aggregation cannot take a formula"):
-        await engine.save_model(model)
+    with pytest.raises(AggregationArgumentError, match="ranked aggregation cannot take an expression"):
+        await engine.save_dataset(model)
     assert expanded == []

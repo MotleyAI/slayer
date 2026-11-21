@@ -14,7 +14,7 @@ from pathlib import Path
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import SlayerQuery, TimeDimension
 
-from tests._dev1832_fixtures import dev1832_models
+from tests._dev1832_fixtures import dev1832_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -22,7 +22,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1832_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(dimension="ordered_at",
+_MONTH_TD = [TimeDimension(field="monthly.ordered_at",
                            granularity=TimeGranularity.MONTH)]
 
 
@@ -31,70 +31,70 @@ def _cases() -> dict:
         # lifted/* — a v1 boundary today (records a raise); SQL after the change.
         "lifted/host_homed_arith": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "sum(amount - customers.discount)",
-                                 "name": "m"}]}},
+            "kw": {"dimensions": ["orders.status"],
+                   "metrics": [{"metric": "sum(orders.amount - customers.discount)",
+                                 "alias": "m"}]}},
         "lifted/target_homed": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["customers.tier"], "measures": [
-                {"formula": "sum(customers.spend - customers.regions.pop)",
-                 "name": "m"}]}},
+            "kw": {"dimensions": ["customers.tier"], "metrics": [
+                {"metric": "sum(customers.spend - customers.regions.pop)",
+                 "alias": "m"}]}},
         "lifted/two_branch": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"], "measures": [
-                {"formula": "sum(customers.spend - stores.rent)", "name": "m"}]}},
+            "kw": {"dimensions": ["orders.status"], "metrics": [
+                {"metric": "sum(customers.spend - stores.rent)", "alias": "m"}]}},
         "lifted/cross_model_partition": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"], "measures": [
-                {"formula": "sum(amount - customers.discount, partition_by=status)",
-                 "name": "m"}]}},
+            "kw": {"dimensions": ["orders.status"], "metrics": [
+                {"metric": "sum(orders.amount - customers.discount, partition_by=orders.status)",
+                 "alias": "m"}]}},
         "lifted/filtered_operand": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"],
-                   "measures": [{"formula": "sum(q_amount - 1)", "name": "m"}]}},
+            "kw": {"dimensions": ["sales.region"],
+                   "metrics": [{"metric": "sum(sales.q_amount - 1)", "alias": "m"}]}},
         "lifted/filtered_leaf_joined": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"], "measures": [
-                {"formula": "sum(amount - customers.north_spend)", "name": "m"}]}},
+            "kw": {"dimensions": ["orders.status"], "metrics": [
+                {"metric": "sum(orders.amount - customers.north_spend)", "alias": "m"}]}},
         "lifted/transform_constituent": {
             "source": "monthly", "mode": None,
-            "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)",
-                "name": "m"}]}},
+            "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"metric":
+                "sum(cumsum(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])) - 1)",
+                "alias": "m"}]}},
         "lifted/mixed_transform": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [{"formula":
-                "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))",
-                "name": "m"}]}},
+            "kw": {"dimensions": ["sales.region"], "metrics": [{"metric":
+                "sum(sales.quantity * rank(avg(sales.unit_price, partition_by=sales.product), direction='desc'))",
+                "alias": "m"}]}},
         # DEV-1928 — re-aggregation constituents in a mixed source; windowed inner.
         "lifted/mixed_reagg": {
             "source": "monthly", "mode": None,
-            "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(amount * min(sum(amount, partition_by=[region, ordered_at]), "
-                "partition_by=region))", "name": "m"}]}},
+            "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"metric":
+                "sum(monthly.amount * min(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at]), "
+                "partition_by=monthly.region))", "alias": "m"}]}},
         "lifted/mixed_collapse": {
             "source": "monthly", "mode": None,
-            "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(amount * last(sum(amount, partition_by=[region, ordered_at])))",
-                "name": "m"}]}},
+            "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"metric":
+                "sum(monthly.amount * last(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])))",
+                "alias": "m"}]}},
         "lifted/windowed_inner": {
             "source": "monthly", "mode": None,
-            "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
-                "sum(rank(sum(amount, window='90d', partition_by=region), direction='desc'))",
-                "name": "m"}]}},
+            "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"metric":
+                "sum(rank(sum(monthly.amount, window='90d', partition_by=monthly.region), direction='desc'))",
+                "alias": "m"}]}},
         # positive/* — already supported; byte-identical SQL through the change.
         "positive/same_model_arith": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "sum(amount - cost)", "name": "m"}]}},
+            "kw": {"dimensions": ["orders.status"],
+                   "metrics": [{"metric": "sum(orders.amount - orders.cost)", "alias": "m"}]}},
         "positive/reaggregation": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [{"formula":
-                "avg(sum(amount, partition_by=[city, region]))", "name": "m"}]}},
+            "kw": {"dimensions": ["sales.region"], "metrics": [{"metric":
+                "avg(sum(sales.amount, partition_by=[sales.city, sales.region]))", "alias": "m"}]}},
         "positive/mixed_row_attached": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [{"formula":
-                "sum(quantity * avg(unit_price, partition_by=product))", "name": "m"}]}},
+            "kw": {"dimensions": ["sales.region"], "metrics": [{"metric":
+                "sum(sales.quantity * avg(sales.unit_price, partition_by=sales.product))", "alias": "m"}]}},
     }
 
 
@@ -102,16 +102,16 @@ LIFTED = {k for k in _cases() if k.startswith("lifted/")}
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1832_models()
+    models = dev1832_datasets()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
-        query = SlayerQuery(source_model=case["source"], **kw)
+        query = SlayerQuery(population=case["source"], **kw)
         root = next(m for m in models if m.name == case["source"])
         return await _engine_generate(
-            query=query, model=root,
-            extra_models=[m for m in models if m.name != case["source"]],
+            query=query, dataset=root,
+            extra_datasets=[m for m in models if m.name != case["source"]],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

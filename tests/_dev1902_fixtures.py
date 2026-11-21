@@ -1,4 +1,4 @@
-"""Renamed-key join graph: ``orders → customers → regions``, every key column's
+"""Renamed-key relationship graph: ``orders → customers → regions``, every key field's
 logical ``name`` differing from its physical ``sql`` spelling.
 
 Physical tables::
@@ -15,7 +15,7 @@ from typing import AsyncIterator, List
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -48,60 +48,60 @@ ASSOC_CREDIT_BY_STATUS = {"ok": 600.0, "new": 400.0}
 CREDIT_WITH_NEW_ORDER = 400.0
 
 
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", sql="region_pk", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", expression="region_pk", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
 
-def customers_model(*, rename_pk: bool = True, pk_sql: str = "customer_pk") -> SlayerModel:
+def customers_dataset(*, rename_pk: bool = True, pk_sql: str = "customer_pk") -> SlayerDataset:
     """``rename_pk=False`` spells the PK by its physical name (``customer_pk``)."""
-    pk = (Column(name="id", sql=pk_sql, type=DataType.INT, primary_key=True)
+    pk = (DatasetField(name="id", expression=pk_sql, datatype=DataType.INTEGER, primary_key=True)
           if rename_pk else
-          Column(name="customer_pk", type=DataType.INT, primary_key=True))
-    return SlayerModel(
+          DatasetField(name="customer_pk", datatype=DataType.INTEGER, primary_key=True))
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
+        fields=[
             pk,
-            Column(name="name", type=DataType.TEXT),
-            Column(name="region_id", sql="region_fk", type=DataType.INT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="credit", type=DataType.DOUBLE),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", expression="region_fk", datatype=DataType.INTEGER),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="credit", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def orders_model(*, rename_fk: bool = True, target_key: str = "id") -> SlayerModel:
+def orders_dataset(*, rename_fk: bool = True, target_key: str = "id") -> SlayerDataset:
     """``rename_fk=False`` spells the FK by its physical name (``cust_fk``)."""
-    fk = (Column(name="customer_id", sql="cust_fk", type=DataType.INT)
-          if rename_fk else Column(name="cust_fk", type=DataType.INT))
-    return SlayerModel(
+    fk = (DatasetField(name="customer_id", expression="cust_fk", datatype=DataType.INTEGER)
+          if rename_fk else DatasetField(name="cust_fk", datatype=DataType.INTEGER))
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", sql="order_pk", type=DataType.INT, primary_key=True),
+        fields=[
+            DatasetField(name="id", expression="order_pk", datatype=DataType.INTEGER, primary_key=True),
             fk,
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(target_model="customers",
-                         join_pairs=[[fk.name, target_key]])],
+        relationships=[DatasetRelationship(to="customers",
+                         from_columns=[fk.name], to_columns=[target_key])],
     )
 
 
 def renamed_graph(
     *, rename_fk: bool = True, rename_pk: bool = True, pk_sql: str = "customer_pk",
-) -> List[SlayerModel]:
+) -> List[SlayerDataset]:
     """``orders`` first (the default query root)."""
     return [
-        orders_model(rename_fk=rename_fk,
+        orders_dataset(rename_fk=rename_fk,
                      target_key="id" if rename_pk else "customer_pk"),
-        customers_model(rename_pk=rename_pk, pk_sql=pk_sql),
-        regions_model(),
+        customers_dataset(rename_pk=rename_pk, pk_sql=pk_sql),
+        regions_dataset(),
     ]
 
 
@@ -138,22 +138,22 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: List[SlayerModel],
+    request, *, datasets: List[SlayerDataset],
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=models) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=datasets) as (engine, _db):
         yield engine
 
 
-def cells(resp, *, dim_suffix: str, measure: str) -> dict:
-    """``{dimension value: float(measure)}``; both columns found by suffix."""
+def cells(resp, *, dim_suffix: str, metric: str) -> dict:
+    """``{dimension value: float(metric)}``; both columns found by suffix."""
     row = resp.data[0]
     dim = next(k for k in row if k.endswith(dim_suffix))
-    val = next(k for k in row if k == measure or k.endswith(f".{measure}"))
+    val = next(k for k in row if k == metric or k.endswith(f".{metric}"))
     return {r[dim]: float(r[val]) for r in resp.data}
 
 

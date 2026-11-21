@@ -1,0 +1,264 @@
+{
+ "source": "tests/test_dev1745_warning_contract.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "shippers",
+    "join_pairs": [
+     [
+      "shipper_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "shippers",
+    "from_columns": [
+     "shipper_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "warehouses",
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "status",
+      "name": "status"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "m0"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "status",
+      "alias": "status"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "m0"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "b",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "name": "a",
+    "population": "b",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "a",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "status",
+      "name": "status"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)"
+     }
+    ],
+    "filters": [
+     "no_such_column == 'X'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "status",
+      "alias": "status"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(customers.revenue)"
+     }
+    ],
+    "filter": [
+     "no_such_column == 'X'"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 276,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 298,
+   "reason": "not fully literal"
+  }
+ ]
+}

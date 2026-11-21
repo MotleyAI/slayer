@@ -7,12 +7,12 @@ Storage-layer behavior is pinned in ``test_storage_namespacing.py`` and
 Surfaces covered:
 
 * MCP tools — ``set_datasource_priority`` / ``get_datasource_priority``;
-  ``edit_model`` / ``delete_model`` / ``create_model`` accept a ``data_source``
+  ``edit_dataset`` / ``delete_dataset`` / ``create_dataset`` accept a ``data_source``
   argument (``inspect`` a qualified reference); ambiguity errors mention both
   fixes (priority list + explicit arg).
-* HTTP API — ``GET /models/{name}?data_source=`` / ``DELETE`` / ``409`` on
+* HTTP API — ``GET /datasets/{name}?data_source=`` / ``DELETE`` / ``409`` on
   ambiguity; ``GET /datasources/priority`` / ``PUT /datasources/priority``.
-* Python client — ``client.get_model(name, data_source=...)`` and
+* Python client — ``client.get_dataset(name, data_source=...)`` and
   ``client.set_datasource_priority(...)``.
 
 The CLI surface is light glue around storage; covered indirectly by the
@@ -29,10 +29,12 @@ from fastapi.testclient import TestClient
 from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine import query_engine as qe_mod
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.core.query import SlayerQuery
+from slayer.storage.base import StorageBackend
 
 
 # ---------------------------------------------------------------------------
@@ -58,12 +60,12 @@ def http_client(storage):
     return TestClient(create_app(storage=storage))
 
 
-def _model(name: str, data_source: str) -> SlayerModel:
-    return SlayerModel(
+def _dataset(name: str, data_source: str) -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         sql_table=name,
         data_source=data_source,
-        columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)],
     )
 
 
@@ -115,45 +117,45 @@ class TestMCPDatasourcePriority:
 
 
 # ---------------------------------------------------------------------------
-# MCP — edit_model / delete_model accept data_source; inspect a qualified reference
+# MCP — edit_dataset / delete_dataset accept data_source; inspect a qualified reference
 # ---------------------------------------------------------------------------
 
 
 class TestMCPModelToolsDataSourceArg:
-    async def test_edit_model_with_data_source_targets_only_that_one(self, mcp_server, storage) -> None:
+    async def test_edit_model_with_data_source_targets_only_that_one(self, mcp_server, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         await _call_mcp(
             mcp_server,
-            name="edit_model",
+            name="edit_dataset",
             arguments={
-                "model_name": "users",
+                "dataset_name": "users",
                 "data_source": "db_a",
                 "description": "edited a",
             },
         )
 
-        users_a = await storage.get_model("users", data_source="db_a")
-        users_b = await storage.get_model("users", data_source="db_b")
+        users_a = await storage.get_dataset("users", data_source="db_a")
+        users_b = await storage.get_dataset("users", data_source="db_b")
         assert users_a is not None
         assert users_a.description == "edited a"
-        # db_b's model is untouched.
+        # db_b's dataset is untouched.
         assert users_b is not None
         assert users_b.description != "edited a"
 
-    async def test_edit_model_ambiguous_without_data_source_returns_error(self, mcp_server, storage) -> None:
+    async def test_edit_model_ambiguous_without_data_source_returns_error(self, mcp_server, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         result = await _call_mcp(
             mcp_server,
-            name="edit_model",
-            arguments={"model_name": "users", "description": "edited"},
+            name="edit_dataset",
+            arguments={"dataset_name": "users", "description": "edited"},
         )
         # Error surfaces both remediations + lists the candidates.
         assert "data_source" in result
@@ -161,42 +163,42 @@ class TestMCPModelToolsDataSourceArg:
         assert "db_a" in result
         assert "db_b" in result
 
-    async def test_inspect_model_with_data_source_filters(self, mcp_server, storage) -> None:
+    async def test_inspect_model_with_data_source_filters(self, mcp_server, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         result = await _call_mcp(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "db_a.users", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "db_a.users", "compact": False},
         )
         # Output identifies the datasource so the agent can verify it picked
         # the right one.
         assert "db_a" in result
 
     async def test_inspect_model_helper_chain_scoped_to_data_source(
-        self, mcp_server, storage, monkeypatch
+        self, mcp_server, storage: StorageBackend, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The helpers backing the model ``inspect`` (``_get_row_count``, sample
-        profiling, the sample-data query) all run ``engine.execute`` against the model.
+        """The helpers backing the dataset ``inspect`` (``_get_row_count``, sample
+        profiling, the sample-data query) all run ``engine.execute`` against the dataset.
         After v4 each of those calls must forward
-        ``data_source=model.data_source`` so the engine's bare-name resolution
+        ``data_source=dataset.data_source`` so the engine's bare-name resolution
         doesn't pick the sibling in another datasource. See PR #92 thread #7.
         """
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        # Capture every engine.execute call made by the model inspect helpers.
+        # Capture every engine.execute call made by the dataset inspect helpers.
         captured: list[dict[str, Any]] = []
         original_execute = qe_mod.SlayerQueryEngine.execute
 
-        async def _capturing_execute(self, query, **kwargs):  # type: ignore[no-untyped-def]
+        async def _capturing_execute(self, query: SlayerQuery, **kwargs):  # type: ignore[no-untyped-def]
             captured.append({
-                "source_model": getattr(query, "source_model", None) if not isinstance(query, str) else query,
+                "population": getattr(query, "population", None) if not isinstance(query, str) else query,
                 "data_source_kwarg": kwargs.get("data_source"),
             })
             # Don't actually run — return an empty response shape so the
@@ -209,88 +211,88 @@ class TestMCPModelToolsDataSourceArg:
         await _call_mcp(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "db_a.users", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "db_a.users", "compact": False},
         )
 
         # Helpers should have called engine.execute at least once on the
-        # ``users`` model, and *every* such call must carry data_source="db_a".
-        users_calls = [c for c in captured if c["source_model"] == "users"]
+        # ``users`` dataset, and *every* such call must carry data_source="db_a".
+        users_calls = [c for c in captured if c["population"] == "users"]
         assert users_calls, (
-            "expected model inspect helpers to run at least one ``users`` "
+            "expected dataset inspect helpers to run at least one ``users`` "
             f"query; got: {captured!r}"
         )
         bad = [c for c in users_calls if c["data_source_kwarg"] != "db_a"]
         assert not bad, (
-            "model inspect helper(s) called engine.execute on 'users' "
+            "dataset inspect helper(s) called engine.execute on 'users' "
             f"without data_source='db_a': {bad!r}"
         )
 
-    async def test_delete_model_with_data_source(self, mcp_server, storage) -> None:
+    async def test_delete_model_with_data_source(self, mcp_server, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         await _call_mcp(
             mcp_server,
-            name="delete_model",
+            name="delete_dataset",
             arguments={"name": "users", "data_source": "db_a"},
         )
-        assert await storage.get_model("users", data_source="db_a") is None
-        assert await storage.get_model("users", data_source="db_b") is not None
+        assert await storage.get_dataset("users", data_source="db_a") is None
+        assert await storage.get_dataset("users", data_source="db_b") is not None
 
 
 # ---------------------------------------------------------------------------
-# HTTP API — model endpoints + datasource priority
+# HTTP API — dataset endpoints + datasource priority
 # ---------------------------------------------------------------------------
 
 
 class TestAPINamespacedModels:
-    async def test_get_model_with_data_source_query_param(self, http_client, storage) -> None:
+    async def test_get_model_with_data_source_query_param(self, http_client, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        resp = http_client.get("/models/users", params={"data_source": "db_a"})
+        resp = http_client.get("/datasets/users", params={"data_source": "db_a"})
         assert resp.status_code == 200
         body = resp.json()
         assert body["name"] == "users"
         assert body["data_source"] == "db_a"
 
-    async def test_get_model_ambiguous_returns_409(self, http_client, storage) -> None:
+    async def test_get_model_ambiguous_returns_409(self, http_client, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        resp = http_client.get("/models/users")
+        resp = http_client.get("/datasets/users")
         assert resp.status_code == 409
         detail = resp.json()["detail"]
         # Body cites both candidates.
         assert "db_a" in detail
         assert "db_b" in detail
 
-    async def test_delete_model_with_data_source_query_param(self, http_client, storage) -> None:
+    async def test_delete_model_with_data_source_query_param(self, http_client, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        resp = http_client.delete("/models/users", params={"data_source": "db_a"})
+        resp = http_client.delete("/datasets/users", params={"data_source": "db_a"})
         assert resp.status_code == 200
         # Only db_a's copy is gone.
-        assert await storage.get_model("users", data_source="db_a") is None
-        assert await storage.get_model("users", data_source="db_b") is not None
+        assert await storage.get_dataset("users", data_source="db_a") is None
+        assert await storage.get_dataset("users", data_source="db_b") is not None
 
-    async def test_list_models_filterable_by_datasource(self, http_client, storage) -> None:
+    async def test_list_models_filterable_by_datasource(self, http_client, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("orders", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("orders", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        resp = http_client.get("/models", params={"data_source": "db_a"})
+        resp = http_client.get("/datasets", params={"data_source": "db_a"})
         assert resp.status_code == 200
         names = sorted(m["name"] for m in resp.json())
         assert names == ["orders", "time_spine", "users"]
@@ -345,14 +347,14 @@ class TestAPIDatasourcePriority:
 
 
 class TestClientNamespacing:
-    async def test_get_model_with_data_source(self, storage) -> None:
+    async def test_get_model_with_data_source(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_model(_model("users", data_source="db_a"))
-        await storage.save_model(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         client = SlayerClient(storage=storage)
-        m = await client.get_model("users", data_source="db_a")
+        m = await client.get_dataset("users", data_source="db_a")
         assert m is not None
         assert m.data_source == "db_a"
 

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, GRANULARITY_NAMES, normalize_aggregation_name
 from slayer.core.models import DatasourceConfig
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.core.syntax import AggCall, ArrayLit, Cast, ScalarCall, TransformCall, parse_expr, walk_parsed
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.usage_reporting.payload import FUNCTIONS
@@ -79,23 +79,23 @@ def _stage_flags(stage: SlayerQuery) -> set[str]:
     present = {
         "inline_source": bool(stage.extensions),
         "time_dimensions": bool(stage.time_dimensions),
-        "filters": bool(stage.filters),
-        "computed_dimensions": any(isinstance(d, ComputedDimension) for d in stage.dimensions or []),
+        "filters": bool(stage.filter),
+        "computed_dimensions": any(d.is_computed for d in stage.dimensions or []),
         "to_many_handling": stage.to_many_handling is not None,
     }
     return {flag for flag, on in present.items() if on}
 
 
 def _expressions(stage: SlayerQuery) -> Iterator[str]:
-    """Every Mode B text of a stage: measures, dimensions, time dimensions, filters, order and extension measures."""
-    yield from (m.formula for m in stage.measures or [] if m.formula)
-    yield from (d.expression for d in stage.dimensions or [] if isinstance(d, ComputedDimension))
-    yield from (td.dimension for td in stage.time_dimensions or [] if isinstance(td.dimension, str))
-    yield from stage.filters or []
-    yield from (o.raw_formula for o in stage.order or [] if o.raw_formula)
-    for measure in (m for e in stage.extensions or [] for m in e.measures or []):
-        if measure.formula:
-            yield measure.formula
+    """Every Mode B text of a stage: metrics, dimensions, time dimensions, filters, order and extension metrics."""
+    yield from (m.metric for m in stage.metrics or [] if m.metric)
+    yield from (d.field for d in stage.dimensions or [] if d.is_computed)
+    yield from (td.field for td in stage.time_dimensions or [] if isinstance(td.field, str))
+    yield from stage.filter_conditions
+    yield from (o.raw_expression for o in stage.order or [] if o.raw_expression)
+    for metric in (m for e in stage.extensions or [] for m in e.metrics or []):
+        if metric.text:
+            yield metric.text
 
 
 def query_features(query: Any) -> QueryFeatures:

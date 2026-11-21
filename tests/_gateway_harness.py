@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import slayer.database.client as client_module
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
@@ -66,59 +66,59 @@ def backend_of(datasource: DatasourceConfig) -> DatasourceConfig:
     return datasource.model_copy(update={"name": f"{datasource.name}{BACKEND_SUFFIX}"})
 
 
-def orders_model(*, data_source: str = DS_NAME) -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, data_source: str = DS_NAME) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="org", sql="org", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="org", expression="org", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
-def customers_model(*, data_source: str = DS_NAME) -> SlayerModel:
-    return SlayerModel(
+def customers_dataset(*, data_source: str = DS_NAME) -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="org", sql="org", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="org", expression="org", datatype=DataType.STRING),
         ],
     )
 
 
-def paid_sql_model(*, data_source: str = DS_NAME) -> SlayerModel:
-    return SlayerModel(
+def paid_sql_dataset(*, data_source: str = DS_NAME) -> SlayerDataset:
+    return SlayerDataset(
         name="paid", sql="SELECT id, amount FROM orders WHERE status = 'paid'", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
 
-COUNT_ORDERS_MEM = {"source_model": "t", "measures": [{"formula": "count(*)", "name": "n"}]}
+COUNT_ORDERS_MEM = {"population": "t", "metrics": [{"metric": "count(t.*)", "alias": "n"}]}
 
 
-def mem_count_model() -> SlayerModel:
-    """Model ``t`` over table ``t`` of the in-memory datasource ``mem``."""
-    return SlayerModel(
+def mem_count_dataset() -> SlayerDataset:
+    """Dataset ``t`` over table ``t`` of the in-memory datasource ``mem``."""
+    return SlayerDataset(
         name="t", sql_table="t", data_source="mem",
-        columns=[Column(name="v", sql="v", type=DataType.INT)],
+        fields=[DatasetField(name="v", expression="v", datatype=DataType.INTEGER)],
     )
 
 
 async def shop_storage(
-    base: str, *, datasource: DatasourceConfig, models: Sequence[SlayerModel] = (),
+    base: str, *, datasource: DatasourceConfig, datasets: Sequence[SlayerDataset] = (),
 ) -> YAMLStorage:
     storage = YAMLStorage(base_dir=base)
     await storage.save_datasource(datasource)
-    for model in models:
-        await storage.save_model(model, _validate=False)
+    for model in datasets:
+        await storage.save_dataset(model, _validate=False)
     return storage
 
 

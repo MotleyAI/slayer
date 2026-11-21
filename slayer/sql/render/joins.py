@@ -1,7 +1,7 @@
 """The one grain join-back builder (P-I).
 
 Every place a scope's rows are joined back to another scope on the query grain
-builds its ``ON`` predicate here: the cross-model (``_cm_``) join-back, the
+builds its ``ON`` predicate here: the cross-dataset (``_cm_``) join-back, the
 windowed (``_wm_``) join-back and its inner ``_src`` join, and the time-shift
 ``sjoin_`` pair.
 
@@ -28,7 +28,7 @@ identifier and stays one identifier.
 
 The core builder takes **expression** operands so a caller can compare anything
 it has already resolved — a cast, a date-truncated bucket, a materialised
-alias. :func:`grain_alias_column` covers the common case, where both sides are
+alias. :func:`grain_alias_field` covers the common case, where both sides are
 columns projected under the same public alias in two different scopes.
 """
 
@@ -47,10 +47,10 @@ from slayer.core.keys import TEMPORAL_TYPES
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from slayer.sql.dialects.base import SqlDialect
 
-__all__ = ["AttachedValue", "JoinPair", "grain_alias_column", "build_grain_joinback_condition", "temporal_sides"]
+__all__ = ["AttachedValue", "GrainPair", "grain_alias_field", "build_grain_joinback_condition", "temporal_sides"]
 
 
-def grain_alias_column(*, alias: str, table: str) -> exp.Column:
+def grain_alias_field(*, alias: str, table: str) -> exp.Column:
     """A reference to ``table``'s output column named ``alias``.
 
     ``alias`` is a projected column NAME, not a path: it is quoted as a single
@@ -70,27 +70,27 @@ class AttachedValue(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     cte_name: str
-    column_name: str
+    field_name: str
     #: The rendered empty value (``None``: NULL).
     empty: Optional[Expression] = None
 
-    def column(self) -> exp.Column:
-        return grain_alias_column(alias=self.column_name, table=self.cte_name)
+    def field(self) -> exp.Column:
+        return grain_alias_field(alias=self.field_name, table=self.cte_name)
 
     def value(self) -> Expression:
         """The value every consumer reads (never the bare column)."""
         if self.empty is None:
-            return self.column()
-        return exp.Coalesce(this=self.column(), expressions=[self.empty.copy()])
+            return self.field()
+        return exp.Coalesce(this=self.field(), expressions=[self.empty.copy()])
 
 
 #: One grain member's join-back operands: ``(left, left type, right, right type)``; a type is ``None`` when unknown.
-JoinPair = Tuple[Expression, Optional[DataType], Expression, Optional[DataType]]
+GrainPair = Tuple[Expression, Optional[DataType], Expression, Optional[DataType]]
 
 
 def build_grain_joinback_condition(
     *,
-    pairs: Sequence[JoinPair],
+    pairs: Sequence[GrainPair],
     dialect: "SqlDialect",
 ) -> Optional[Expression]:
     """Null-safe ``ON`` predicate equating each ``(left, right)`` grain member.
@@ -119,7 +119,7 @@ def build_grain_joinback_condition(
     return combined
 
 
-def temporal_sides(pair: JoinPair, *, dialect: "SqlDialect") -> Tuple[Expression, Expression]:
+def temporal_sides(pair: GrainPair, *, dialect: "SqlDialect") -> Tuple[Expression, Expression]:
     """Two compared values as the dialect compares them: a DATE beside a TIMESTAMP as its midnight; a temporal
     side beside one of unknown type fails closed."""
     left, left_type, right, right_type = pair

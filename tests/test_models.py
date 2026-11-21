@@ -3,29 +3,31 @@
 import datetime
 
 import pytest
+import sqlglot
+from sqlglot import exp
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import (
-    _FUNCSTYLE_PENDING,
-    ColumnRef,
-    ModelExtension,
+    FieldRef,
     OrderItem,
+    QueryMetric,
     SlayerQuery,
     TimeDimension,
 )
 from slayer.sql.dialects import SqliteDialect
 from slayer.sql.mode_a_variables import bind_mode_a
 from slayer.storage.migrations import CURRENT_VERSIONS
+from tests._deprecated_input_helpers import deprecations, payload_of, recorded
 from tests._engine_helpers import _engine_generate
 
 _SQLITE = SqliteDialect()
@@ -33,65 +35,65 @@ _SQLITE = SqliteDialect()
 
 class TestColumnRef:
     def test_from_string_with_model(self) -> None:
-        ref = ColumnRef.from_string("orders.status")
-        assert ref.model == "orders"
+        ref = FieldRef.from_string("orders.status")
+        assert ref.dataset == "orders"
         assert ref.name == "status"
         assert ref.full_name == "orders.status"
 
     def test_from_string_without_model(self) -> None:
-        ref = ColumnRef.from_string("status")
-        assert ref.model is None
+        ref = FieldRef.from_string("status")
+        assert ref.dataset is None
         assert ref.name == "status"
         assert ref.full_name == "status"
 
     def test_dotted_name_parsed_into_model(self) -> None:
-        """Dotted name like 'customers.name' is auto-parsed: model='customers', name='name'."""
-        ref = ColumnRef(name="customers.name")
-        assert ref.model == "customers"
+        """Dotted name like 'customers.name' is auto-parsed: dataset='customers', name='name'."""
+        ref = FieldRef(name="customers.name")
+        assert ref.dataset == "customers"
         assert ref.name == "name"
         assert ref.full_name == "customers.name"
 
     def test_multihop_dotted_name_parsed(self) -> None:
         """Multi-hop 'customers.regions.name' splits on last dot."""
-        ref = ColumnRef(name="customers.regions.name")
-        assert ref.model == "customers.regions"
+        ref = FieldRef(name="customers.regions.name")
+        assert ref.dataset == "customers.regions"
         assert ref.name == "name"
         assert ref.full_name == "customers.regions.name"
 
     def test_simple_name_no_model(self) -> None:
-        """Simple name without dots leaves model as None."""
-        ref = ColumnRef(name="status")
-        assert ref.model is None
+        """Simple name without dots leaves dataset as None."""
+        ref = FieldRef(name="status")
+        assert ref.dataset is None
         assert ref.name == "status"
 
     def test_explicit_model_not_overwritten(self) -> None:
-        """If model is explicitly provided, dotted parsing is skipped."""
-        ref = ColumnRef(model="customers", name="name")
-        assert ref.model == "customers"
+        """If dataset is explicitly provided, dotted parsing is skipped."""
+        ref = FieldRef(dataset="customers", name="name")
+        assert ref.dataset == "customers"
         assert ref.name == "name"
 
     def test_from_string_multihop(self) -> None:
         """from_string splits on last dot for multi-hop paths."""
-        ref = ColumnRef.from_string("customers.regions.name")
-        assert ref.model == "customers.regions"
+        ref = FieldRef.from_string("customers.regions.name")
+        assert ref.dataset == "customers.regions"
         assert ref.name == "name"
         assert ref.full_name == "customers.regions.name"
 
     def test_invalid_name_part_rejected(self) -> None:
         """Name parts must match identifier pattern."""
         with pytest.raises(ValueError):
-            ColumnRef(name="123invalid")
+            FieldRef(name="123invalid")
 
 
 class TestOrderItem:
-    """OrderItem column coercion and raw_formula capture."""
+    """OrderItem field coercion and raw_expression capture."""
 
     def test_funcstyle_builtin_agg_preserved(self) -> None:
         """The functional spelling is preserved verbatim — a
         placeholder defers resolution to binding (like custom aggs)."""
-        item = OrderItem(column="sum(revenue)", direction="desc")
-        assert item.column.name == _FUNCSTYLE_PENDING
-        assert item.raw_formula == "sum(revenue)"
+        item = OrderItem(field="sum(revenue)", direction="desc")
+        assert item.ref is None
+        assert item.raw_expression == "sum(revenue)"
 
     def test_funcstyle_custom_agg_accepted(self) -> None:
         """Function-style custom aggregations must validate without rejecting on parens.
@@ -101,26 +103,26 @@ class TestOrderItem:
         rejected. raw_formula is preserved so enrichment can resolve the agg via
         extra_agg_names.
         """
-        item = OrderItem(column="rolling_avg(revenue)", direction="desc")
-        assert item.raw_formula == "rolling_avg(revenue)"
+        item = OrderItem(field="rolling_avg(revenue)", direction="desc")
+        assert item.raw_expression == "rolling_avg(revenue)"
 
     def test_funcstyle_custom_agg_with_args_accepted(self) -> None:
-        """Function-style custom agg with args is captured as raw_formula."""
-        item = OrderItem(column="rolling_avg(revenue, window=7)", direction="asc")
-        assert item.raw_formula == "rolling_avg(revenue, window=7)"
+        """Function-style custom agg with args is captured as raw_expression."""
+        item = OrderItem(field="rolling_avg(revenue, window=7)", direction="asc")
+        assert item.raw_expression == "rolling_avg(revenue, window=7)"
 
     def test_plain_column_no_raw_formula(self) -> None:
-        """A plain column reference has no raw_formula."""
-        item = OrderItem(column="status", direction="asc")
-        assert item.column.name == "status"
-        assert item.raw_formula is None
+        """A plain field reference has no raw_expression."""
+        item = OrderItem(field="status", direction="asc")
+        assert item.field == "status"
+        assert item.raw_expression is None
 
 
 class TestOrderShorthandHealing:
     """Heal LLM-shorthand ``order`` items and harden direction validation.
 
     Shorthand ``{col: "desc"}`` (single- or multi-key) heals to canonical
-    ``{"column": col, "direction": "desc"}``; direction is normalized
+    ``{"field": col, "direction": "desc"}``; direction is normalized
     (case-insensitive, ``asc``/``desc``/``ascending``/``descending``, whitespace
     trimmed) and anything else is rejected; ``OrderItem`` forbids extra keys.
     """
@@ -128,172 +130,188 @@ class TestOrderShorthandHealing:
     # --- single-key shorthand ---
 
     def test_shorthand_desc(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"avg_processing_time_days": "desc"}])
+        q = SlayerQuery(population="orders", order=[{"avg_processing_time_days": "desc"}])
+        assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].column.name == "avg_processing_time_days"
+        assert q.order[0].field == "avg_processing_time_days"
         assert q.order[0].direction == "desc"
 
     def test_shorthand_asc(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"status": "asc"}])
-        assert q.order[0].column.name == "status"
+        q = SlayerQuery(population="orders", order=[{"status": "asc"}])
+        assert q.order is not None
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "asc"
 
     def test_shorthand_equals_canonical(self) -> None:
-        shorthand = SlayerQuery(source_model="orders", order=[{"status": "desc"}])
-        canonical = SlayerQuery(
-            source_model="orders", order=[{"column": "status", "direction": "desc"}]
-        )
+        shorthand = SlayerQuery(population="orders", order=[{"status": "desc"}])
+        canonical = SlayerQuery.model_validate({
+            "population": "orders", "order": [{"field": "status", "direction": "desc"}]
+        })
         assert shorthand.order == canonical.order
 
     # --- direction vocabulary: case-insensitive, synonyms, whitespace ---
 
     def test_shorthand_uppercase_normalized(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"status": "DESC"}])
+        q = SlayerQuery(population="orders", order=[{"status": "DESC"}])
         assert q.order[0].direction == "desc"
 
     def test_shorthand_descending_synonym(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"status": "DESCENDING"}])
+        q = SlayerQuery(population="orders", order=[{"status": "DESCENDING"}])
         assert q.order[0].direction == "desc"
 
     def test_shorthand_ascending_synonym_mixed_case(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"status": "Ascending"}])
+        q = SlayerQuery(population="orders", order=[{"status": "Ascending"}])
         assert q.order[0].direction == "asc"
 
     def test_shorthand_whitespace_trimmed(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"status": " Asc "}])
+        q = SlayerQuery(population="orders", order=[{"status": " Asc "}])
         assert q.order[0].direction == "asc"
 
-    # --- formula key composes with existing normalization ---
+    # --- expression key composes with existing normalization ---
 
     def test_shorthand_formula_key(self) -> None:
-        q = SlayerQuery.model_validate({"source_model": "orders", "order": [{"sum(revenue)": "desc"}]})
-        assert q.order[0].column.name == "_funcstyle_pending"
-        assert q.order[0].raw_formula == "sum(revenue)"
+        q = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(revenue)": "desc"}]})
+        assert q.order is not None
+        assert q.order[0].ref is None
+        assert q.order[0].raw_expression == "sum(revenue)"
         assert q.order[0].direction == "desc"
 
     def test_shorthand_formula_key_equals_canonical(self) -> None:
-        shorthand = SlayerQuery.model_validate({"source_model": "orders", "order": [{"sum(revenue)": "desc"}]})
+        shorthand = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(orders.revenue)": "desc"}]})
         canonical = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "order": [{"column": "sum(revenue)", "direction": "desc"}],
+            "population": "orders",
+            "order": [{"field": "sum(orders.revenue)", "direction": "desc"}],
         })
         assert shorthand.order == canonical.order
 
     # --- multi-key expansion (one dict -> N OrderItems, insertion order) ---
 
     def test_multikey_expands_in_order(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"a": "desc", "b": "asc"}])
-        assert [(o.column.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+        q = SlayerQuery(population="orders", order=[{"a": "desc", "b": "asc"}])
+        assert [(o.field, o.direction) for o in q.order or []] == [("a", "desc"), ("b", "asc")]
 
     def test_multikey_synonyms_and_case(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"a": "ASCENDING", "b": "Desc"}])
-        assert [(o.column.name, o.direction) for o in q.order] == [("a", "asc"), ("b", "desc")]
+        q = SlayerQuery(population="orders", order=[{"a": "ASCENDING", "b": "Desc"}])
+        assert [(o.field, o.direction) for o in q.order or []] == [("a", "asc"), ("b", "desc")]
 
     def test_multikey_partial_non_direction_raises(self) -> None:
         # Not every value is a direction -> not shorthand -> canonical validation rejects.
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model="orders", order=[{"a": "desc", "b": "downward"}])
+            SlayerQuery(population="orders", order=[{"a": "desc", "b": "downward"}])
 
     # --- bare single item passed without the enclosing list gets wrapped ---
 
     def test_bare_dict_shorthand_wrapped(self) -> None:
-        q = SlayerQuery(source_model="orders", order={"status": "desc"})
+        q = SlayerQuery(population="orders", order={"status": "desc"})
+        assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].column.name == "status"
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "desc"
 
     def test_bare_canonical_dict_wrapped(self) -> None:
-        q = SlayerQuery(source_model="orders", order={"column": "status", "direction": "asc"})
+        q = SlayerQuery(population="orders", order={"field": "status", "direction": "asc"})  # pyright: ignore[reportArgumentType] — a bare dict on purpose: the coercion under test
+        assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].column.name == "status"
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "asc"
 
     def test_bare_multikey_dict_wrapped(self) -> None:
-        q = SlayerQuery(source_model="orders", order={"a": "desc", "b": "asc"})
-        assert [(o.column.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+        q = SlayerQuery(population="orders", order={"a": "desc", "b": "asc"})
+        assert [(o.field, o.direction) for o in q.order or []] == [("a", "desc"), ("b", "asc")]
 
     def test_bare_orderitem_wrapped(self) -> None:
-        item = OrderItem(column="status", direction="desc")
-        q = SlayerQuery(source_model="orders", order=item)
+        item = OrderItem(field="status", direction="desc")
+        q = SlayerQuery(population="orders", order=item)
+        assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].column.name == "status"
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "desc"
 
     # --- canonical preserved; latent uppercase-direction bug fixed ---
 
     def test_canonical_unchanged(self) -> None:
-        q = SlayerQuery(source_model="orders", order=[{"column": "status", "direction": "desc"}])
-        assert q.order[0].column.name == "status"
+        q = SlayerQuery.model_validate({"population": "orders", "order": [{"field": "status", "direction": "desc"}]})
+        assert q.order is not None
+        assert q.order[0].field == "status"
         assert q.order[0].direction == "desc"
 
     def test_canonical_uppercase_direction_normalized(self) -> None:
         # Pre-existing latent bug: SQL generator compares ``direction == "asc"`` strictly,
         # so a stored "ASCENDING"/"ASC" used to silently emit DESC. Now normalized.
-        q = SlayerQuery(
-            source_model="orders", order=[{"column": "status", "direction": "ASCENDING"}]
-        )
+        q = SlayerQuery.model_validate({
+            "population": "orders", "order": [{"field": "orders.status", "direction": "ASCENDING"}]
+        })
         assert q.order[0].direction == "asc"
 
+    def test_the_pre_2_0_reserved_key_stays_canonical(self) -> None:
+        with recorded():
+            q = SlayerQuery.model_validate({"population": "orders", "order": [{"column": "desc"}]})
+        assert q.order is not None
+        assert q.order[0].field == "desc"
+        assert q.order[0].direction == "asc"
+        assert [(p.old, p.new) for p in q.deprecated_inputs] == [("column", "field")]
+
     def test_canonical_column_named_like_direction_word(self) -> None:
-        # Single reserved 'column' key whose value happens to be a direction word
-        # stays canonical (order by a column literally named "desc").
-        q = SlayerQuery(source_model="orders", order=[{"column": "desc"}])
-        assert q.order[0].column.name == "desc"
+        # Single reserved 'field' key whose value happens to be a direction word
+        # stays canonical (order by a field literally named "desc").
+        q = SlayerQuery.model_validate({"population": "orders", "order": [{"field": "desc"}]})
+        assert q.order is not None
+        assert q.order[0].field == "desc"
         assert q.order[0].direction == "asc"
 
     # --- rejections: malformed / ambiguous never silently mangled ---
 
     def test_invalid_direction_value_shorthand_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model="orders", order=[{"col": "downward"}])
+            SlayerQuery(population="orders", order=[{"col": "downward"}])
 
     def test_invalid_direction_value_canonical_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model="orders", order=[{"column": "status", "direction": "sideways"}])
+            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "direction": "sideways"}]})
 
     def test_mixed_canonical_and_stray_direction_key_raises(self) -> None:
         # extra='forbid' rejects the stray 'b' rather than silently dropping it.
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model="orders", order=[{"column": "status", "b": "asc"}])
+            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "b": "asc"}]})
 
     def test_mixed_canonical_and_stray_nondirection_key_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model="orders", order=[{"column": "status", "b": "downward"}])
+            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "b": "downward"}]})
 
     def test_direction_only_key_raises(self) -> None:
-        # {"direction": "desc"} is a malformed canonical item (no column), not shorthand.
+        # {"direction": "desc"} is a malformed canonical item (no field), not shorthand.
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model="orders", order=[{"direction": "desc"}])
+            SlayerQuery(population="orders", order=[{"direction": "desc"}])
 
     def test_empty_dict_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model="orders", order=[{}])
+            SlayerQuery(population="orders", order=[{}])
 
     def test_nested_list_item_raises(self) -> None:
         # No list-of-lists support.
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model="orders", order=[["a", "desc"]])
+            SlayerQuery(population="orders", order=[["a", "desc"]])
 
     def test_non_wrappable_scalar_string_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
-            SlayerQuery(source_model="orders", order="status")
+            SlayerQuery(population="orders", order="orders.status")
 
     def test_non_wrappable_int_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
-            SlayerQuery(source_model="orders", order=42)
+            SlayerQuery(population="orders", order=42)
 
     # --- mixed list: shorthand + canonical + multi-key together ---
 
     def test_mixed_shorthand_canonical_multikey_list(self) -> None:
         q = SlayerQuery(
-            source_model="orders",
+            population="orders",
             order=[
                 {"a": "desc"},
-                {"column": "b", "direction": "asc"},
+                {"field": "b", "direction": "asc"},
                 {"c": "asc", "d": "desc"},
             ],
         )
-        assert [(o.column.name, o.direction) for o in q.order] == [
+        assert [(o.field, o.direction) for o in q.order or []] == [
             ("a", "desc"),
             ("b", "asc"),
             ("c", "asc"),
@@ -303,97 +321,99 @@ class TestOrderShorthandHealing:
     # --- None / tuple / non-string keys / passthrough ---
 
     def test_order_none_stays_none(self) -> None:
-        q = SlayerQuery(source_model="orders", order=None)
+        q = SlayerQuery(population="orders", order=None)
         assert q.order is None
 
     def test_tuple_input_accepted(self) -> None:
-        q = SlayerQuery(
-            source_model="orders",
-            order=({"a": "desc"}, {"column": "b", "direction": "asc"}),
-        )
-        assert [(o.column.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+        q = SlayerQuery.model_validate({
+            "population": "orders",
+            "order": ({"a": "desc"}, {"field": "b", "direction": "asc"}),
+        })
+        assert [(o.field, o.direction) for o in q.order or []] == [("a", "desc"), ("b", "asc")]
 
     def test_non_string_key_not_healed_raises(self) -> None:
         # A non-string key means the dict is not treated as shorthand; it falls
-        # through to OrderItem validation, which rejects it (no column).
+        # through to OrderItem validation, which rejects it (no field).
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model="orders", order=[{1: "desc"}])
+            SlayerQuery(population="orders", order=[{1: "desc"}])
 
     def test_multikey_formula_keys_preserve_raw_formula(self) -> None:
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "order": [{"sum(revenue)": "desc", "max(amount)": "asc"}],
         })
+        assert q.order is not None
         assert len(q.order) == 2
-        assert q.order[0].column.name == "_funcstyle_pending"
-        assert q.order[0].raw_formula == "sum(revenue)"
+        assert q.order[0].ref is None
+        assert q.order[0].raw_expression == "sum(revenue)"
         assert q.order[0].direction == "desc"
-        assert q.order[1].column.name == "_funcstyle_pending"
-        assert q.order[1].raw_formula == "max(amount)"
+        assert q.order[1].ref is None
+        assert q.order[1].raw_expression == "max(amount)"
         assert q.order[1].direction == "asc"
 
     def test_list_orderitem_passthrough(self) -> None:
-        item = OrderItem.model_validate({"column": "sum(revenue)", "direction": "desc"})
-        q = SlayerQuery(source_model="orders", order=[item])
+        item = OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})
+        q = SlayerQuery(population="orders", order=[item])
+        assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].column.name == "_funcstyle_pending"
+        assert q.order[0].ref is None
         assert q.order[0].direction == "desc"
 
     # --- OrderItem-level direction validation + extra=forbid ---
 
     def test_orderitem_direction_synonym_normalized(self) -> None:
-        assert OrderItem(column="status", direction="DESCENDING").direction == "desc"
+        assert OrderItem(field="orders.status", direction="DESCENDING").direction == "desc"
 
     def test_orderitem_direction_default_asc(self) -> None:
-        assert OrderItem(column="status").direction == "asc"
+        assert OrderItem(field="orders.status").direction == "asc"
 
     def test_orderitem_invalid_direction_raises(self) -> None:
         with pytest.raises(ValidationError):
-            OrderItem(column="status", direction="sideways")
+            OrderItem(field="orders.status", direction="sideways")
 
     def test_orderitem_extra_key_forbidden(self) -> None:
         with pytest.raises(ValidationError):
-            OrderItem(column="status", direction="asc", bogus="x")
+            OrderItem(field="orders.status", direction="asc", bogus="x")
 
 
 class TestSlayerModel:
     def test_get_dimension(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="test",
             sql_table="t",
             data_source="test",
-            columns=[Column(name="x", type=DataType.TEXT)],
+            fields=[DatasetField(name="x", datatype=DataType.STRING)],
         )
-        assert model.get_column("x") is not None
-        assert model.get_column("y") is None
+        assert model.get_field("x") is not None
+        assert model.get_field("y") is None
 
     def test_get_measure(self) -> None:
-        """``get_measure`` returns a ModelMeasure formula by name."""
-        model = SlayerModel(
+        """``get_metric`` returns a DatasetMetric by name."""
+        model = SlayerDataset(
             name="test",
             sql_table="t",
             data_source="test",
-            measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)")],
+            metrics=[DatasetMetric(name="aov", expression="sum(revenue) / count(*)")],
         )
-        assert model.get_measure("aov") is not None
-        assert model.get_measure("missing") is None
+        assert model.get_metric("aov") is not None
+        assert model.get_metric("missing") is None
 
     def test_model_measure_may_be_named_after_transform(self) -> None:
         """A transform name acts as a transform only in call position."""
-        assert ModelMeasure(name="cumsum", formula="sum(revenue)").name == "cumsum"
+        assert DatasetMetric(name="cumsum", expression="sum(revenue)").name == "cumsum"
 
     def test_model_measure_formula_with_raw_over_raises(self) -> None:
-        """A ``ModelMeasure`` formula containing raw `OVER (...)` SQL
-        cannot be parsed by SLayer's formula grammar (Python AST) and would
+        """A ``DatasetMetric`` expression containing raw `OVER (...)` SQL
+        cannot be parsed by SLayer's expression grammar (Python AST) and would
         produce invalid SQL on every dialect if used as a filter. Reject at
         construction time with an actionable error pointing at SLayer's
         ``rank()`` / ``first()`` / ``last()`` / ``lag()`` / ``lead()`` transforms
-        or a ``Column.sql``-with-window pattern.
+        or a ``DatasetField.sql``-with-window pattern.
         """
         with pytest.raises(ValueError) as excinfo:
-            ModelMeasure(
+            DatasetMetric(
                 name="top_3",
-                formula="row_number() over (order by mass desc) <= 3",
+                expression="row_number() over (order by mass desc) <= 3",
             )
         msg = str(excinfo.value)
         assert "window function" in msg.lower(), msg
@@ -403,24 +423,24 @@ class TestSlayerModel:
         ), msg
 
     def test_filter_bare_column_allowed(self) -> None:
-        """Bare column names in model filters are valid."""
-        model = SlayerModel(
+        """Bare field names in dataset filters are valid."""
+        model = SlayerDataset(
             name="test", sql_table="t", data_source="test",
             filters=["status == 'active'", "amount > 100"],
         )
         assert model.filters == ["status == 'active'", "amount > 100"]
 
     def test_filter_single_dot_allowed(self) -> None:
-        """Single-dot (table.column) references in model filters are valid SQL."""
-        model = SlayerModel(
+        """Single-dot (table.column) references in dataset filters are valid SQL."""
+        model = SlayerDataset(
             name="test", sql_table="t", data_source="test",
             filters=["customers.region == 'US'"],
         )
         assert model.filters == ["customers.region == 'US'"]
 
     def test_filter_double_underscore_allowed(self) -> None:
-        """Double-underscore alias references in model filters are valid."""
-        model = SlayerModel(
+        """Double-underscore alias references in dataset filters are valid."""
+        model = SlayerDataset(
             name="test", sql_table="t", data_source="test",
             filters=["customers__regions.name == 'US'"],
         )
@@ -428,7 +448,7 @@ class TestSlayerModel:
 
     def test_filter_string_literal_dots_not_converted(self) -> None:
         """Dots inside string literals are not converted."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="test", sql_table="t", data_source="test",
             filters=["name == 'foo.bar.baz'"],
         )
@@ -436,74 +456,74 @@ class TestSlayerModel:
 
     def test_dimension_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in dimension sql are left as-is."""
-        dim = Column(name="cust_name", sql="customers.name", type=DataType.DOUBLE)
-        assert dim.sql == "customers.name"
+        dim = DatasetField(name="cust_name", expression="customers.name", datatype=DataType.FLOAT)
+        assert dim.expression == "customers.name"
 
     def test_measure_sql_single_dot_unchanged(self) -> None:
-        """Single-dot references in measure sql are left as-is."""
-        meas = Column(name="total", sql="orders.amount", type=DataType.DOUBLE)
-        assert meas.sql == "orders.amount"
+        """Single-dot references in field sql are left as-is."""
+        meas = DatasetField(name="total", expression="orders.amount", datatype=DataType.FLOAT)
+        assert meas.expression == "orders.amount"
 
     def test_model_name_allows_double_underscore(self) -> None:
-        # `__` is legal in model names (the dotted-canonical flip
-        # made join-path ambiguity structurally impossible).
-        model = SlayerModel(name="my__model", sql_table="t", data_source="test")
-        assert model.name == "my__model"
+        # `__` is legal in dataset names (the dotted-canonical flip
+        # made relationship-path ambiguity structurally impossible).
+        model = SlayerDataset(name="my__dataset", sql_table="t", data_source="test")
+        assert model.name == "my__dataset"
 
     def test_model_name_rejects_reserved_slayer_prefix(self) -> None:
         with pytest.raises(ValueError, match="__slayer_"):
-            SlayerModel(name="__slayer_x", sql_table="t", data_source="test")
+            SlayerDataset(name="__slayer_x", sql_table="t", data_source="test")
 
     def test_dimension_name_allows_double_underscore(self) -> None:
-        """__ is allowed in dimension names — used for flattened join paths in virtual models."""
-        dim = Column(name="stores__name")
+        """__ is allowed in dimension names — used for flattened relationship paths in virtual datasets."""
+        dim = DatasetField(name="stores__name")
         assert dim.name == "stores__name"
 
     def test_measure_name_allows_double_underscore(self) -> None:
-        """__ is allowed in measure names — used for flattened join paths in virtual models."""
-        meas = Column(name="stores__tax_rate_sum", sql="tax_rate", type=DataType.DOUBLE)
+        """__ is allowed in metric names — used for flattened relationship paths in virtual datasets."""
+        meas = DatasetField(name="stores__tax_rate_sum", expression="tax_rate", datatype=DataType.FLOAT)
         assert meas.name == "stores__tax_rate_sum"
 
     def test_query_name_allows_double_underscore(self) -> None:
         # `__` is legal in query names.
-        q = SlayerQuery(name="my__query", source_model="orders")
+        q = SlayerQuery(name="my__query", population="orders")
         assert q.name == "my__query"
 
     def test_query_name_rejects_reserved_slayer_prefix(self) -> None:
         with pytest.raises(ValueError, match="__slayer_"):
-            SlayerQuery(name="__slayer_x", source_model="orders")
+            SlayerQuery(name="__slayer_x", population="orders")
 
     def test_model_name_single_underscore_allowed(self) -> None:
-        model = SlayerModel(name="my_model", sql_table="t", data_source="test")
-        assert model.name == "my_model"
+        model = SlayerDataset(name="my_dataset", sql_table="t", data_source="test")
+        assert model.name == "my_dataset"
 
     def test_dimension_name_single_underscore_allowed(self) -> None:
-        dim = Column(name="customer_name")
+        dim = DatasetField(name="customer_name")
         assert dim.name == "customer_name"
 
     def test_dimension_name_rejects_dot(self) -> None:
         """Dots are path syntax, not allowed in dimension names."""
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            Column(name="customers.name")
+            DatasetField(name="customers.name")
 
     def test_measure_name_rejects_dot(self) -> None:
-        """Dots are path syntax, not allowed in measure names."""
+        """Dots are path syntax, not allowed in metric names."""
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            Column(name="customers.name_sum", sql="name", type=DataType.DOUBLE)
+            DatasetField(name="customers.name_sum", expression="name", datatype=DataType.FLOAT)
 
     def test_dimension_name_without_dot_allowed(self) -> None:
-        dim = Column(name="region_name")
+        dim = DatasetField(name="region_name")
         assert dim.name == "region_name"
 
     def test_measure_name_without_dot_allowed(self) -> None:
-        meas = Column(name="order_total_sum", sql="total", type=DataType.DOUBLE)
+        meas = DatasetField(name="order_total_sum", expression="total", datatype=DataType.FLOAT)
         assert meas.name == "order_total_sum"
 
     def test_model_data_source_rejects_dot(self) -> None:
         """Dots in data_source would let a sibling datasource
         ``prod.legacy`` collide with cascade-delete of ``prod``."""
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders", sql_table="t", data_source="prod.legacy",
             )
 
@@ -514,8 +534,8 @@ class TestSlayerModel:
             DatasourceConfig(name="prod.legacy", type="postgres")
 
     def test_datasource_name_allows_double_underscore(self) -> None:
-        """``__`` is reserved as a SQL join-path alias separator on
-        model/query names, but datasource names never appear in SQL
+        """``__`` is reserved as a SQL relationship-path alias separator on
+        dataset/query names, but datasource names never appear in SQL
         alias positions, so they accept ``__`` freely."""
         ds = DatasourceConfig(name="prod__staging", type="postgres")
         assert ds.name == "prod__staging"
@@ -537,109 +557,98 @@ class TestSlayerModel:
             DatasourceConfig(name="memory:42", type="sqlite")
 
     def test_model_data_source_rejects_colon(self) -> None:
-        """A model's ``data_source`` shares the same canonical-id
+        """A dataset's ``data_source`` shares the same canonical-id
         namespace constraints as ``DatasourceConfig.name``."""
         with pytest.raises(ValueError, match="must not contain ':'"):
-            SlayerModel(name="orders", sql_table="t", data_source="memory:42")
+            SlayerDataset(name="orders", sql_table="t", data_source="memory:42")
 
     def test_model_name_rejects_colon(self) -> None:
         """Colon is reserved as the DSL aggregation separator
-        (``revenue:sum``) — model names sharing the shape would collide
-        with formula parsing."""
+        (``revenue:sum``) — dataset names sharing the shape would collide
+        with expression parsing."""
         with pytest.raises(ValueError, match="must not contain ':'"):
-            SlayerModel(name="rev:sum", sql_table="t", data_source="ds")
+            SlayerDataset(name="rev:sum", sql_table="t", data_source="ds")
 
     def test_query_name_rejects_colon(self) -> None:
-        """SlayerQuery names share the same naming space as SlayerModel
-        names (a query can be persisted as a query-backed model), so the
+        """SlayerQuery names share the same naming space as SlayerDataset
+        names (a query can be persisted as a query-backed dataset), so the
         same rejection rules apply."""
         with pytest.raises(ValueError, match="must not contain ':'"):
-            SlayerQuery(name="rev:sum", source_model="orders")
+            SlayerQuery(name="rev:sum", population="orders")
 
     def test_query_name_rejects_dot(self) -> None:
         """Dotted SlayerQuery names would collide with the dotted-path
         reference syntax used in queries."""
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            SlayerQuery(name="prod.summary", source_model="orders")
+            SlayerQuery(name="prod.summary", population="orders")
 
     def test_column_name_rejects_colon(self) -> None:
-        """Column names containing ``:`` would collide with the
+        """Field names containing ``:`` would collide with the
         aggregation colon syntax (``revenue:sum``)."""
         with pytest.raises(ValueError, match="must not contain ':'"):
-            Column(name="rev:sum")
+            DatasetField(name="rev:sum")
 
 
 class TestWithinListDuplicateNames:
-    """Duplicate names within ``columns`` or within ``measures`` are rejected.
+    """Duplicate names within ``fields`` or within ``metrics`` are rejected.
 
     Codex's Major 4: today only cross-list overlap is validated, so two
-    columns named ``revenue`` (or two measures named ``aov``) silently pass
-    and ``get_column`` / ``get_measure`` return the first match.
+    fields named ``revenue`` (or two metrics named ``aov``) silently pass
+    and ``get_field`` / ``get_metric`` return the first match.
     """
 
     def test_duplicate_column_names_rejected(self) -> None:
         columns = [
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
-            Column(name="revenue", sql="net_amount", type=DataType.DOUBLE),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="net_amount", datatype=DataType.FLOAT),
         ]
-        with pytest.raises(ValueError, match="duplicate.*column|column.*duplicate"):
-            SlayerModel(
+        with pytest.raises(ValueError, match="duplicate.*field|field.*duplicate"):
+            SlayerDataset(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=columns,
+                fields=columns,
             )
 
     def test_duplicate_measure_names_rejected(self) -> None:
-        columns = [Column(name="amount", sql="amount", type=DataType.DOUBLE)]
+        columns = [DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)]
         measures = [
-            ModelMeasure(name="aov", formula="sum(amount) / count(*)"),
-            ModelMeasure(name="aov", formula="avg(amount)"),
+            DatasetMetric(name="aov", expression="sum(amount) / count(*)"),
+            DatasetMetric(name="aov", expression="avg(amount)"),
         ]
-        with pytest.raises(ValueError, match="duplicate.*measure|measure.*duplicate"):
-            SlayerModel(
+        with pytest.raises(ValueError, match="duplicate.*metric|metric.*duplicate"):
+            SlayerDataset(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=columns,
-                measures=measures,
+                fields=columns,
+                metrics=measures,
             )
 
     def test_unnamed_model_measure_rejected(self) -> None:
-        """Every ``ModelMeasure`` stored on a ``SlayerModel`` must have a name.
-
-        Unnamed entries are unreachable via ``get_measure()`` and bare-name
-        expansion, so persisting them is meaningless. (Inline measures on
-        ``SlayerQuery.measures`` may still be unnamed — only model-level
-        measures are required to be named.)
-        """
-        columns = [Column(name="amount", sql="amount", type=DataType.DOUBLE)]
-        measures = [ModelMeasure(formula="sum(amount)")]
+        """A dataset metric must have a name."""
+        raw = {"name": "orders", "sql_table": "t", "data_source": "test",
+               "fields": [{"name": "amount", "expression": "amount", "datatype": "Float"}],
+               "metrics": [{"expression": "sum(amount)"}]}
         with pytest.raises(ValueError, match="must have a name"):
-            SlayerModel(
-                name="orders",
-                sql_table="t",
-                data_source="test",
-                columns=columns,
-                measures=measures,
-            )
+            SlayerDataset.model_validate(raw)
 
     def test_unique_names_accepted(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="test",
-            columns=[
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
-            measures=[
-                ModelMeasure(name="aov", formula="sum(amount) / count(*)"),
-                ModelMeasure(name="rev", formula="sum(amount)"),
+            metrics=[
+                DatasetMetric(name="aov", expression="sum(amount) / count(*)"),
+                DatasetMetric(name="rev", expression="sum(amount)"),
             ],
         )
-        assert len(model.columns) == 2
-        assert len(model.measures) == 2
+        assert len(model.fields) == 2
+        assert len(model.metrics) == 2
 
 
 class TestSourceModeExclusivity:
@@ -648,39 +657,39 @@ class TestSourceModeExclusivity:
     """
 
     def test_accepts_sql_table_only(self) -> None:
-        m = SlayerModel(name="orders", sql_table="orders_t", data_source="ds")
+        m = SlayerDataset(name="orders", sql_table="orders_t", data_source="ds")
         assert m.sql_table == "orders_t"
         assert m.sql is None
         assert m.source_queries is None
 
     def test_accepts_sql_only(self) -> None:
-        m = SlayerModel(name="orders", sql="SELECT 1 AS x", data_source="ds")
+        m = SlayerDataset(name="orders", sql="SELECT 1 AS x", data_source="ds")
         assert m.sql == "SELECT 1 AS x"
         assert m.sql_table is None
 
     def test_accepts_source_queries_only(self) -> None:
-        m = SlayerModel(
+        m = SlayerDataset(
             name="saved",
             data_source="ds",
-            source_queries=[SlayerQuery(source_model="orders")],
+            source_queries=[SlayerQuery(population="orders")],
         )
         assert m.source_queries is not None
         assert len(m.source_queries) == 1
 
     def test_rejects_no_source(self) -> None:
         with pytest.raises(ValueError, match="exactly one source.*none specified"):
-            SlayerModel(name="orders", data_source="ds")
+            SlayerDataset(name="orders", data_source="ds")
 
     def test_rejects_sql_table_plus_sql(self) -> None:
         with pytest.raises(ValueError, match="exactly one source"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders", sql_table="t", sql="SELECT 1", data_source="ds"
             )
 
     def test_rejects_sql_table_plus_source_queries(self) -> None:
-        source_queries = [SlayerQuery(source_model="orders")]
+        source_queries = [SlayerQuery(population="orders")]
         with pytest.raises(ValueError, match="exactly one source"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql_table="t",
                 source_queries=source_queries,
@@ -688,9 +697,9 @@ class TestSourceModeExclusivity:
             )
 
     def test_rejects_sql_plus_source_queries(self) -> None:
-        source_queries = [SlayerQuery(source_model="orders")]
+        source_queries = [SlayerQuery(population="orders")]
         with pytest.raises(ValueError, match="exactly one source"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql="SELECT 1",
                 source_queries=source_queries,
@@ -698,9 +707,9 @@ class TestSourceModeExclusivity:
             )
 
     def test_rejects_all_three(self) -> None:
-        source_queries = [SlayerQuery(source_model="orders")]
+        source_queries = [SlayerQuery(population="orders")]
         with pytest.raises(ValueError, match="exactly one source"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql_table="t",
                 sql="SELECT 1",
@@ -710,38 +719,38 @@ class TestSourceModeExclusivity:
 
     def test_rejects_empty_source_queries_list(self) -> None:
         with pytest.raises(ValueError, match="cannot be an empty list"):
-            SlayerModel(name="orders", source_queries=[], data_source="ds")
+            SlayerDataset(name="orders", source_queries=[], data_source="ds")
 
 
 class TestSelfJoinRejected:
-    """A join targeting the model itself is unaddressable (joins resolve by
-    target-model name) and must fail loudly at construction."""
+    """A relationship targeting the dataset itself is unaddressable (relationships resolve by
+    target-dataset name) and must fail loudly at construction."""
 
     def test_self_join_raises_informative_error(self) -> None:
         columns = [
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="manager_id", type=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="manager_id", datatype=DataType.INTEGER),
         ]
-        joins = [ModelJoin(target_model="staff",
-                           join_pairs=[["manager_id", "id"]])]
-        with pytest.raises(ValueError, match="[Ss]elf-join") as ei:
-            SlayerModel(
+        joins = [DatasetRelationship(to="staff",
+                           from_columns=["manager_id"], to_columns=["id"])]
+        with pytest.raises(ValueError, match="[Ss]elf-relationship") as ei:
+            SlayerDataset(
                 name="staff", data_source="ds", sql_table="staff",
-                columns=columns, joins=joins,
+                fields=columns, relationships=joins,
             )
         message = str(ei.value)
         assert "staff" in message
         # The remedy is named, not just the ban.
-        assert "separate model" in message
+        assert "separate dataset" in message
 
     def test_distinct_target_still_accepted(self) -> None:
-        m = SlayerModel(
+        m = SlayerDataset(
             name="staff", data_source="ds", sql_table="staff",
-            columns=[Column(name="team_id", type=DataType.INT)],
-            joins=[ModelJoin(target_model="teams",
-                             join_pairs=[["team_id", "id"]])],
+            fields=[DatasetField(name="team_id", datatype=DataType.INTEGER)],
+            relationships=[DatasetRelationship(to="teams",
+                             from_columns=["team_id"], to_columns=["id"])],
         )
-        assert m.joins[0].target_model == "teams"
+        assert m.relationships[0].to == "teams"
 
 
 class TestSourceQueryStages:
@@ -749,32 +758,32 @@ class TestSourceQueryStages:
 
     def test_single_unnamed_stage_accepted(self) -> None:
         """Single (final) stage may be unnamed."""
-        m = SlayerModel(
+        m = SlayerDataset(
             name="saved",
             data_source="ds",
-            source_queries=[SlayerQuery(source_model="orders")],
+            source_queries=[SlayerQuery(population="orders")],
         )
         assert m.source_queries is not None
 
     def test_unnamed_non_final_stage_rejected(self) -> None:
         source_queries = [
-            SlayerQuery(source_model="orders"),
-            SlayerQuery(source_model="orders"),
+            SlayerQuery(population="orders"),
+            SlayerQuery(population="orders"),
         ]
         with pytest.raises(ValueError, match="non-final stage at index 0.*must have a 'name'"):
-            SlayerModel(
+            SlayerDataset(
                 name="saved",
                 data_source="ds",
                 source_queries=source_queries,
             )
 
     def test_named_non_final_stage_with_unnamed_final_accepted(self) -> None:
-        m = SlayerModel(
+        m = SlayerDataset(
             name="saved",
             data_source="ds",
             source_queries=[
-                SlayerQuery(name="stage1", source_model="orders"),
-                SlayerQuery(source_model="stage1"),
+                SlayerQuery(name="stage1", population="orders"),
+                SlayerQuery(population="stage1"),
             ],
         )
         assert m.source_queries is not None
@@ -782,11 +791,11 @@ class TestSourceQueryStages:
 
     def test_duplicate_stage_names_rejected(self) -> None:
         source_queries = [
-            SlayerQuery(name="dup", source_model="orders"),
-            SlayerQuery(name="dup", source_model="orders"),
+            SlayerQuery(name="dup", population="orders"),
+            SlayerQuery(name="dup", population="orders"),
         ]
         with pytest.raises(ValueError, match="duplicate stage name"):
-            SlayerModel(
+            SlayerDataset(
                 name="saved",
                 data_source="ds",
                 source_queries=source_queries,
@@ -795,21 +804,21 @@ class TestSourceQueryStages:
     def test_dicts_parsed_to_slayer_query(self) -> None:
         """source_queries entries given as dicts are parsed into SlayerQuery
         instances by the before-validator."""
-        m = SlayerModel(
-            name="saved",
-            data_source="ds",
-            source_queries=[
-                {"source_model": "orders", "measures": [{"formula": "count(*)"}]}
+        m = SlayerDataset.model_validate({
+            "name": "saved",
+            "data_source": "ds",
+            "source_queries": [
+                {"population": "orders", "metrics": [{"metric": "count(*)"}]}
             ],
-        )
+        })
         assert m.source_queries is not None
         assert isinstance(m.source_queries[0], SlayerQuery)
-        assert m.source_queries[0].measures is not None
-        assert m.source_queries[0].measures[0].formula == "count(*)"
+        assert m.source_queries[0].metrics is not None
+        assert m.source_queries[0].metrics[0].metric == "count(*)"
 
     def test_invalid_entry_type_rejected(self) -> None:
         with pytest.raises((ValueError, TypeError)):
-            SlayerModel(
+            SlayerDataset(
                 name="saved",
                 data_source="ds",
                 source_queries=[123],  # type: ignore[list-item]
@@ -823,7 +832,7 @@ class TestSourceQueryStages:
         """
 
         with pytest.raises(ValidationError):
-            SlayerModel(
+            SlayerDataset(
                 name="saved",
                 data_source="ds",
                 source_queries=[123],  # type: ignore[list-item]
@@ -832,7 +841,7 @@ class TestSourceQueryStages:
     def test_non_list_input_raises_pydantic_validation_error(self) -> None:
 
         with pytest.raises(ValidationError):
-            SlayerModel.model_validate({
+            SlayerDataset.model_validate({
                 "name": "saved",
                 "data_source": "ds",
                 "source_queries": "not a list",
@@ -843,214 +852,214 @@ class TestQueryVariablesAndCacheFields:
     """``query_variables`` defaults and shape."""
 
     def test_query_variables_default_is_empty_dict(self) -> None:
-        m = SlayerModel(name="orders", sql_table="t", data_source="ds")
+        m = SlayerDataset(name="orders", sql_table="t", data_source="ds")
         assert m.query_variables == {}
 
     def test_query_variables_persists_user_value(self) -> None:
-        m = SlayerModel(
+        m = SlayerDataset(
             name="saved",
             data_source="ds",
-            source_queries=[SlayerQuery(source_model="orders")],
+            source_queries=[SlayerQuery(population="orders")],
             query_variables={"threshold": 1500, "region": "US"},
         )
         assert m.query_variables == {"threshold": 1500, "region": "US"}
 
 
 class TestAllowedAggregationsBuildTimeValidation:
-    """Build-time validation of ``Column.allowed_aggregations``.
+    """Build-time validation of ``DatasetField.allowed_aggregations``.
 
     The intersection contract: a whitelist entry must satisfy
     (1) the PK rule (only ``count`` / ``count_distinct`` for PKs),
     (2) type-default eligibility (``DEFAULT_AGGREGATIONS_BY_TYPE[col.type]``).
-    Custom aggregations defined on the model bypass type-default eligibility
-    (their formula determines applicability), but PK restrictions still apply
+    Custom aggregations defined on the dataset bypass type-default eligibility
+    (their expression determines applicability), but PK restrictions still apply
     and the name must be a known custom aggregation.
     """
 
     def test_pk_column_with_disallowed_aggregation_in_whitelist_rejected(self) -> None:
         columns = [
-            Column(
+            DatasetField(
                 name="id",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 primary_key=True,
                 allowed_aggregations=["sum"],
             ),
         ]
         with pytest.raises(ValueError, match="primary[- ]key|count"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=columns,
+                fields=columns,
             )
 
     def test_pk_column_with_count_only_whitelist_accepted(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="test",
-            columns=[
-                Column(
+            fields=[
+                DatasetField(
                     name="id",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     primary_key=True,
                     allowed_aggregations=["count", "count_distinct"],
                 ),
             ],
         )
-        assert model.columns[0].allowed_aggregations == ["count", "count_distinct"]
+        assert model.fields[0].allowed_aggregations == ["count", "count_distinct"]
 
     def test_string_column_with_sum_in_whitelist_rejected(self) -> None:
         columns = [
-            Column(
+            DatasetField(
                 name="status",
-                type=DataType.TEXT,
+                datatype=DataType.STRING,
                 allowed_aggregations=["sum"],
             ),
         ]
         with pytest.raises(ValueError, match="not applicable|string"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=columns,
+                fields=columns,
             )
 
     def test_string_column_with_min_max_in_whitelist_accepted(self) -> None:
         """String ``min``/``max`` are intentionally type-eligible."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="test",
-            columns=[
-                Column(
+            fields=[
+                DatasetField(
                     name="status",
-                    type=DataType.TEXT,
+                    datatype=DataType.STRING,
                     allowed_aggregations=["min", "max", "count"],
                 ),
             ],
         )
-        assert "min" in (model.columns[0].allowed_aggregations or [])
-        assert "max" in (model.columns[0].allowed_aggregations or [])
+        assert "min" in (model.fields[0].allowed_aggregations or [])
+        assert "max" in (model.fields[0].allowed_aggregations or [])
 
     def test_date_column_with_min_max_accepted(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="test",
-            columns=[
-                Column(
+            fields=[
+                DatasetField(
                     name="ordered_on",
-                    type=DataType.DATE,
+                    datatype=DataType.DATE,
                     allowed_aggregations=["min", "max"],
                 ),
             ],
         )
-        assert model.columns[0].allowed_aggregations == ["min", "max"]
+        assert model.fields[0].allowed_aggregations == ["min", "max"]
 
     def test_timestamp_column_with_min_max_accepted(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="test",
-            columns=[
-                Column(
+            fields=[
+                DatasetField(
                     name="ordered_at",
-                    type=DataType.TIMESTAMP,
+                    datatype=DataType.DATETIME,
                     allowed_aggregations=["min", "max"],
                 ),
             ],
         )
-        assert model.columns[0].allowed_aggregations == ["min", "max"]
+        assert model.fields[0].allowed_aggregations == ["min", "max"]
 
     def test_custom_aggregation_in_whitelist_bypasses_type_check(self) -> None:
         """A custom-aggregation entry is exempt from type-default eligibility.
-        Its applicability depends on the custom formula, not the type-default map.
+        Its applicability depends on the custom expression, not the type-default map.
         """
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="test",
             aggregations=[
                 Aggregation(
                     name="custom_concat",
-                    formula="STRING_AGG({value}, ',')",
+                    expression="STRING_AGG({value}, ',')",
                 ),
             ],
-            columns=[
-                Column(
+            fields=[
+                DatasetField(
                     name="status",
-                    type=DataType.TEXT,
+                    datatype=DataType.STRING,
                     allowed_aggregations=["custom_concat"],
                 ),
             ],
         )
-        assert model.columns[0].allowed_aggregations == ["custom_concat"]
+        assert model.fields[0].allowed_aggregations == ["custom_concat"]
 
     def test_unknown_aggregation_in_whitelist_still_rejected(self) -> None:
         """Existing behavior — keep it."""
         columns = [
-            Column(
+            DatasetField(
                 name="revenue",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 allowed_aggregations=["bogus_agg"],
             ),
         ]
         with pytest.raises(ValueError, match="not a built-in aggregation"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=columns,
+                fields=columns,
             )
 
     def test_builtin_override_still_type_gated(self) -> None:
-        """Overriding a built-in name (e.g., ``sum``) with a custom formula must
+        """Overriding a built-in name (e.g., ``sum``) with a custom expression must
         still respect type-default eligibility — built-ins keep their type
-        semantics regardless of the override formula. Only truly novel custom
+        semantics regardless of the override expression. Only truly novel custom
         names bypass the type-default gate.
         """
         aggregations = [
-            Aggregation(name="sum", formula="STRING_AGG({value}, ',')"),
+            Aggregation(name="sum", expression="STRING_AGG({value}, ',')"),
         ]
         columns = [
-            Column(
+            DatasetField(
                 name="status",
-                type=DataType.TEXT,
+                datatype=DataType.STRING,
                 allowed_aggregations=["sum"],
             ),
         ]
         with pytest.raises(ValueError, match="not applicable|string"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql_table="t",
                 data_source="test",
                 aggregations=aggregations,
-                columns=columns,
+                fields=columns,
             )
 
     def test_pk_column_with_custom_agg_rejected(self) -> None:
-        """Even custom aggregations cannot be whitelisted on a PK column —
+        """Even custom aggregations cannot be whitelisted on a PK field —
         the PK rule (count/count_distinct only) is absolute.
         """
         aggregations = [
-            Aggregation(name="custom_sum", formula="SUM({value})"),
+            Aggregation(name="custom_sum", expression="SUM({value})"),
         ]
         columns = [
-            Column(
+            DatasetField(
                 name="id",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 primary_key=True,
                 allowed_aggregations=["custom_sum"],
             ),
         ]
         with pytest.raises(ValueError, match="primary[- ]key|count"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders",
                 sql_table="t",
                 data_source="test",
                 aggregations=aggregations,
-                columns=columns,
+                fields=columns,
             )
 
 
@@ -1417,88 +1426,85 @@ class TestStringCoercion:
     """Plain strings are accepted in fields and dimensions lists."""
 
     def test_fields_plain_strings(self) -> None:
-        query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)", "sum(revenue)"]})
-        assert len(query.measures) == 2
-        assert query.measures[0] == ModelMeasure(formula="count(*)")
-        assert query.measures[1] == ModelMeasure(formula="sum(revenue)")
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)", "sum(orders.revenue)"]})
+        assert len(query.metrics) == 2
+        assert query.metrics[0] == QueryMetric(metric="count(orders.*)")
+        assert query.metrics[1] == QueryMetric(metric="sum(orders.revenue)")
 
     def test_dimensions_plain_strings(self) -> None:
-        query = SlayerQuery(source_model="orders", dimensions=["status", "customers.name"])
+        query = SlayerQuery(population="orders", dimensions=["status", "customers.name"])
+        assert query.dimensions is not None
         assert len(query.dimensions) == 2
-        assert query.dimensions[0].name == "status"
-        assert query.dimensions[0].model is None
-        assert query.dimensions[1].name == "name"
-        assert query.dimensions[1].model == "customers"
+        assert [d.field for d in query.dimensions or []] == ["status", "customers.name"]
+        assert all(d.ref is not None for d in query.dimensions or [])
 
     def test_fields_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": ["count(*)", {"formula": "sum(revenue) / count(*)", "name": "aov"}],
+            "population": "orders",
+            "metrics": ["count(orders.*)", {"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov"}],
         })
-        assert len(query.measures) == 2
-        assert query.measures[0] == ModelMeasure(formula="count(*)")
-        assert query.measures[1] == ModelMeasure(formula="sum(revenue) / count(*)", name="aov")
+        assert len(query.metrics) == 2
+        assert query.metrics[0] == QueryMetric(metric="count(orders.*)")
+        assert query.metrics[1] == QueryMetric(metric="sum(orders.revenue) / count(orders.*)", alias="aov")
 
     def test_dimensions_mixed_strings_and_dicts(self) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=["status", {"name": "customers.name", "label": "Customer"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "dimensions": ["status", {"field": "customers.name", "label": "Customer"}],
+        })
+        assert query.dimensions is not None
         assert len(query.dimensions) == 2
-        assert query.dimensions[0].name == "status"
-        assert query.dimensions[1].name == "name"
-        assert query.dimensions[1].model == "customers"
+        assert query.dimensions[1].ref is not None
+        assert [d.field for d in query.dimensions or []] == ["status", "customers.name"]
         assert query.dimensions[1].label == "Customer"
 
     def test_dict_syntax_still_works(self) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "count(*)"}],
-            "dimensions": [{"name": "status"}],
+            "population": "orders",
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
         })
-        assert query.measures[0] == ModelMeasure(formula="count(*)")
-        assert query.dimensions[0].name == "status"
+        assert query.metrics[0] == QueryMetric(metric="count(*)")
+        assert query.dimensions[0].field == "status"
 
     def test_none_fields_and_dimensions(self) -> None:
-        query = SlayerQuery(source_model="orders")
-        assert query.measures is None
+        query = SlayerQuery(population="orders")
+        assert query.metrics is None
         assert query.dimensions is None
 
     def test_order_column_string(self) -> None:
-        item = OrderItem(column="revenue_sum", direction="desc")
-        assert item.column.name == "revenue_sum"
-        assert item.column.model is None
+        ref = OrderItem(field="revenue_sum", direction="desc").ref
+        assert ref is not None
+        assert (ref.dataset, ref.name) == (None, "revenue_sum")
 
     def test_order_column_dotted_string(self) -> None:
-        item = OrderItem(column="customers._count", direction="asc")
-        assert item.column.name == "_count"
-        assert item.column.model == "customers"
-
-    def test_order_column_dict_still_works(self) -> None:
-        item = OrderItem(column={"name": "revenue_sum"}, direction="desc")
-        assert item.column.name == "revenue_sum"
+        ref = OrderItem(field="customers._count", direction="asc").ref
+        assert ref is not None
+        assert (ref.dataset, ref.name) == ("customers", "_count")
 
     def test_time_dimension_string(self) -> None:
-        td = TimeDimension(dimension="created_at", granularity="month")
-        assert td.dimension == "created_at"
+        td = TimeDimension(field="created_at", granularity="month")
+        assert td.field == "created_at"
 
     def test_time_dimension_dotted_string(self) -> None:
-        td = TimeDimension(dimension="customers.ordered_at", granularity="month")
-        assert td.dimension == "customers.ordered_at"
+        td = TimeDimension(field="customers.ordered_at", granularity="month")
+        assert td.field == "customers.ordered_at"
 
     def test_time_dimension_dict_still_works(self) -> None:
         td = TimeDimension.model_validate({"dimension": {"name": "created_at"}, "granularity": "month"})
-        assert td.dimension == "created_at"
+        assert td.field == "created_at"
 
     def test_query_with_simplified_order_and_time_dimensions(self) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": ["count(*)"],
-            "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-            "order": [{"column": "_count", "direction": "desc"}],
+            "population": "orders",
+            "metrics": ["count(*)"],
+            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+            "order": [{"field": "_count", "direction": "desc"}],
         })
-        assert query.time_dimensions[0].dimension == "created_at"
-        assert query.order[0].column.name == "_count"
+        assert query.time_dimensions is not None
+        assert query.time_dimensions[0].field == "created_at"
+        assert query.order is not None
+        assert query.order[0].field == "_count"
         assert query.order[0].direction == "desc"
 
 
@@ -1517,52 +1523,60 @@ class TestCoerceFieldsAndDimensions:
 
     def test_fields_scalar_string_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
-            SlayerQuery(source_model="orders", fields="count")
+            SlayerQuery(population="orders", fields="count")
 
     def test_dimensions_scalar_string_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
-            SlayerQuery(source_model="orders", dimensions="status")
+            SlayerQuery(population="orders", dimensions="orders.status")
 
     def test_fields_list_of_strings_coerced(self) -> None:
-        q = SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)", "sum(revenue)"]})
-        assert q.measures[0].formula == "count(*)"
-        assert q.measures[1].formula == "sum(revenue)"
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)", "sum(revenue)"]})
+        assert q.metrics is not None
+        assert q.metrics[0].metric == "count(*)"
+        assert q.metrics[1].metric == "sum(revenue)"
 
     def test_fields_list_of_dicts_accepted(self) -> None:
-        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)", "name": "cnt"}]})
-        assert q.measures[0].formula == "count(*)"
-        assert q.measures[0].name == "cnt"
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)", "alias": "cnt"}]})
+        assert q.metrics is not None
+        assert q.metrics[0].metric == "count(*)"
+        assert q.metrics[0].alias == "cnt"
 
     def test_dimensions_list_of_strings_coerced(self) -> None:
-        q = SlayerQuery(source_model="orders", dimensions=["status", "region"])
-        assert q.dimensions[0].name == "status"
-        assert q.dimensions[1].name == "region"
+        q = SlayerQuery(population="orders", dimensions=["status", "region"])
+        assert [d.field for d in q.dimensions or []] == ["status", "region"]
+
+    def test_the_v1_fields_key_is_reported_as_written(self) -> None:
+        with recorded() as caught:
+            q = SlayerQuery.model_validate({"population": "orders", "fields": ["count(*)"]})
+        assert q.metrics is not None
+        assert [(p.old, p.new) for p in map(payload_of, deprecations(caught))] == [("fields", "metrics")]
+        assert [(p.old, p.new) for p in q.deprecated_inputs] == [("fields", "metrics")]
 
     def test_fields_none_accepted(self) -> None:
-        q = SlayerQuery(source_model="orders", fields=None)
-        assert q.measures is None
+        q = SlayerQuery(population="orders", fields=None)
+        assert q.metrics is None
 
     def test_dimensions_none_accepted(self) -> None:
-        q = SlayerQuery(source_model="orders", dimensions=None)
+        q = SlayerQuery(population="orders", dimensions=None)
         assert q.dimensions is None
 
 
 class TestAggregationValidation:
-    """Aggregation must require formula for non-built-in names."""
+    """Aggregation must require expression for non-built-in names."""
 
     def test_builtin_without_formula_succeeds(self) -> None:
         agg = Aggregation(name="sum")
         assert agg.name == "sum"
-        assert agg.formula is None
+        assert agg.expression is None
 
     def test_builtin_with_formula_succeeds(self) -> None:
-        agg = Aggregation(name="sum", formula="SUM({value})")
-        assert agg.formula == "SUM({value})"
+        agg = Aggregation(name="sum", expression="SUM({value})")
+        assert agg.expression == "SUM({value})"
 
     def test_custom_with_formula_succeeds(self) -> None:
-        agg = Aggregation(name="my_agg", formula="CUSTOM({value})")
+        agg = Aggregation(name="my_agg", expression="CUSTOM({value})")
         assert agg.name == "my_agg"
-        assert agg.formula == "CUSTOM({value})"
+        assert agg.expression == "CUSTOM({value})"
 
     def test_custom_without_formula_raises(self) -> None:
         with pytest.raises(ValueError, match="not a built-in aggregation"):
@@ -1570,69 +1584,69 @@ class TestAggregationValidation:
 
     def test_name_with_dot_rejected(self) -> None:
         """``Aggregation.name`` must enforce the same identifier
-        rules as ``Column.name`` and ``ModelMeasure.name``. Otherwise the
-        ``column_x_custom_aggs`` catalog expansion produces a same-model
-        metric like ``amount_my.agg`` whose dotted name the cross-model
+        rules as ``DatasetField.name`` and ``DatasetMetric.name``. Otherwise the
+        ``column_x_custom_aggs`` catalog expansion produces a same-dataset
+        metric like ``amount_my.agg`` whose dotted name the cross-dataset
         flatten filter (catalog.local_metrics / local_dimensions) would
         misclassify."""
         with pytest.raises(ValueError, match="Invalid name"):
-            Aggregation(name="my.agg", formula="CUSTOM({value})")
+            Aggregation(name="my.agg", expression="CUSTOM({value})")
 
     def test_name_with_hyphen_rejected(self) -> None:
         with pytest.raises(ValueError, match="Invalid name"):
-            Aggregation(name="my-agg", formula="CUSTOM({value})")
+            Aggregation(name="my-agg", expression="CUSTOM({value})")
 
     def test_name_starting_with_digit_rejected(self) -> None:
         with pytest.raises(ValueError, match="Invalid name"):
-            Aggregation(name="9agg", formula="CUSTOM({value})")
+            Aggregation(name="9agg", expression="CUSTOM({value})")
 
 
 class TestDimensionLabel:
     def test_label_optional(self) -> None:
-        d = Column(name="status", sql="status", type=DataType.DOUBLE)
+        d = DatasetField(name="status", expression="status", datatype=DataType.FLOAT)
         assert d.label is None
 
     def test_label_set(self) -> None:
-        d = Column(name="status", sql="status", label="Order Status", type=DataType.DOUBLE)
+        d = DatasetField(name="status", expression="status", label="Order Status", datatype=DataType.FLOAT)
         assert d.label == "Order Status"
 
     def test_label_in_model_dump(self) -> None:
-        d = Column(name="status", label="Order Status")
+        d = DatasetField(name="status", label="Order Status")
         data = d.model_dump(exclude_none=True)
         assert data["label"] == "Order Status"
 
     def test_label_excluded_when_none(self) -> None:
-        d = Column(name="status")
+        d = DatasetField(name="status")
         data = d.model_dump(exclude_none=True)
         assert "label" not in data
 
 
 class TestMeasureLabel:
     def test_label_optional(self) -> None:
-        m = Column(name="revenue", sql="amount", type=DataType.DOUBLE)
+        m = DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)
         assert m.label is None
 
     def test_label_set(self) -> None:
-        m = Column(name="revenue", sql="amount", label="Total Revenue", type=DataType.DOUBLE)
+        m = DatasetField(name="revenue", expression="amount", label="Total Revenue", datatype=DataType.FLOAT)
         assert m.label == "Total Revenue"
 
 
 class TestMeasureFilter:
     def test_filter_optional(self) -> None:
-        m = Column(name="revenue", sql="amount", type=DataType.DOUBLE)
+        m = DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)
         assert m.filter is None
 
     def test_filter_set(self) -> None:
-        m = Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
+        m = DatasetField(name="active_revenue", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         assert m.filter == "status = 'active'"
 
     def test_filter_in_model_dump(self) -> None:
-        m = Column(name="x", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
+        m = DatasetField(name="x", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         data = m.model_dump(exclude_none=True)
         assert data["filter"] == "status = 'active'"
 
     def test_filter_excluded_when_none(self) -> None:
-        m = Column(name="x", sql="amount", type=DataType.DOUBLE)
+        m = DatasetField(name="x", expression="amount", datatype=DataType.FLOAT)
         data = m.model_dump(exclude_none=True)
         assert "filter" not in data
 
@@ -1689,89 +1703,99 @@ class TestSubstituteVariables:
     def test_variable_in_slayer_query(self) -> None:
         """Variables field is accepted on SlayerQuery."""
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": ["count(*)"],
-            "filters": ["status = '{val}'"],
+            "population": "orders",
+            "metrics": ["count(orders.*)"],
+            "filter": ["status = '{val}'"],
             "variables": {"val": "completed"},
         })
         assert q.variables == {"val": "completed"}
 
 
-def _prefix_models() -> list[SlayerModel]:
+def _prefix_datasets() -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="created_at", type=DataType.TIMESTAMP),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
-                Column(name="score", type=DataType.DOUBLE),
-                Column(name="region_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
+                DatasetField(name="score", datatype=DataType.FLOAT),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
         ),
     ]
 
 
 async def _prefix_sql(query: dict) -> str:
-    model, *extra = _prefix_models()
-    return await _engine_generate(query=SlayerQuery.model_validate(query), model=model, extra_models=extra)
+    model, *extra = _prefix_datasets()
+    return await _engine_generate(query=SlayerQuery.model_validate(query), dataset=model, extra_datasets=extra)
 
 
-_MONTH = {"dimension": "created_at", "granularity": "month"}
+def _unaliased(sql: str) -> str:
+    """``sql`` with each outer result alias replaced by its position."""
+    tree = sqlglot.parse_one(sql)
+    assert isinstance(tree, exp.Query)
+    for i, name in enumerate(tree.named_selects):
+        sql = sql.replace(f'"{name}"', f'"_c{i}"')
+    return sql
 
+
+_MONTH = {"field": "created_at", "granularity": "month"}
+
+_ANCHORED_KEYS = {"joined-dimension", "joined-formula", "multihop-dimension"}
 # (root-qualified, bare) spellings of one query.
 _ROOT_QUALIFIED = {
-    "dimension": ({"dimensions": ["orders.status"]}, {"dimensions": ["status"]}),
+    "dimension": ({"dimensions": ["status"]}, {"dimensions": ["orders.status"]}),
     "joined-dimension": ({"dimensions": ["orders.customers.name"]}, {"dimensions": ["customers.name"]}),
     "multihop-dimension": ({"dimensions": ["orders.customers.regions.name"]}, {"dimensions": ["customers.regions.name"]}),
     "dimension-label": ({"dimensions": [{"name": "orders.status", "label": "Status"}]},
                         {"dimensions": [{"name": "status", "label": "Status"}]}),
     "time-dimension": (
-        {"time_dimensions": [{"dimension": "orders.created_at", "granularity": "month",
+        {"time_dimensions": [{"field": "orders.created_at", "granularity": "month",
                               "date_range": ["2024-01-01", "2024-12-31"], "label": "Month"}]},
-        {"time_dimensions": [{"dimension": "created_at", "granularity": "month",
+        {"time_dimensions": [{"field": "created_at", "granularity": "month",
                               "date_range": ["2024-01-01", "2024-12-31"], "label": "Month"}]},
     ),
-    "formula": ({"measures": ["sum(orders.revenue)"]}, {"measures": ["sum(revenue)"]}),
-    "star-count": ({"measures": ["count(orders.*)"]}, {"measures": ["count(*)"]}),
-    "arithmetic": ({"measures": ["sum(orders.revenue) / count(orders.*)"]}, {"measures": ["sum(revenue) / count(*)"]}),
-    "transform": ({"time_dimensions": [_MONTH], "measures": ["cumsum(sum(orders.revenue))"]},
-                  {"time_dimensions": [_MONTH], "measures": ["cumsum(sum(revenue))"]}),
-    "joined-formula": ({"measures": ["avg(orders.customers.score)"]}, {"measures": ["avg(customers.score)"]}),
-    "named-formula": ({"measures": [{"formula": "sum(orders.revenue)", "name": "rev", "label": "Revenue"}]},
-                      {"measures": [{"formula": "sum(revenue)", "name": "rev", "label": "Revenue"}]}),
-    "filter": ({"measures": ["count(*)"], "filters": ["orders.status = 'active'"]},
-               {"measures": ["count(*)"], "filters": ["status = 'active'"]}),
-    "joined-filter": ({"measures": ["count(*)"], "filters": ["orders.customers.name = 'foo'"]},
-                      {"measures": ["count(*)"], "filters": ["customers.name = 'foo'"]}),
+    "formula": ({"metrics": ["sum(revenue)"]}, {"metrics": ["sum(revenue)"]}),
+    "star-count": ({"metrics": ["count(*)"]}, {"metrics": ["count(orders.*)"]}),
+    "arithmetic": ({"metrics": ["sum(revenue) / count(*)"]}, {"metrics": ["sum(orders.revenue) / count(orders.*)"]}),
+    "transform": ({"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(orders.revenue))"]},
+                  {"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(revenue))"]}),
+    "joined-formula": ({"metrics": ["avg(orders.customers.score)"]}, {"metrics": ["avg(customers.score)"]}),
+    "named-formula": ({"metrics": [{"metric": "sum(orders.revenue)", "alias": "rev", "label": "Revenue"}]},
+                      {"metrics": [{"metric": "sum(revenue)", "alias": "rev", "label": "Revenue"}]}),
+    "filter": ({"metrics": ["count(*)"], "filter": ["orders.status = 'active'"]},
+               {"metrics": ["count(*)"], "filter": ["status = 'active'"]}),
+    "joined-filter": ({"metrics": ["count(*)"], "filter": ["orders.customers.name = 'foo'"]},
+                      {"metrics": ["count(*)"], "filter": ["customers.name = 'foo'"]}),
     "transform-filter": (
-        {"time_dimensions": [_MONTH], "measures": ["count(*)"], "filters": ["change(sum(orders.revenue)) > 0"]},
-        {"time_dimensions": [_MONTH], "measures": ["count(*)"], "filters": ["change(sum(revenue)) > 0"]},
+        {"time_dimensions": [_MONTH], "metrics": ["count(*)"], "filter": ["change(sum(orders.revenue)) > 0"]},
+        {"time_dimensions": [_MONTH], "metrics": ["count(*)"], "filter": ["change(sum(revenue)) > 0"]},
     ),
-    "order-column": ({"dimensions": ["status"], "measures": ["count(*)"], "order": [{"column": "orders.status", "direction": "desc"}]},
-                     {"dimensions": ["status"], "measures": ["count(*)"], "order": [{"column": "status", "direction": "desc"}]}),
-    "order-aggregate": ({"measures": ["count(*)"], "order": [{"column": "sum(orders.revenue)", "direction": "desc"}]},
-                    {"measures": ["count(*)"], "order": [{"column": "sum(revenue)", "direction": "desc"}]}),
-    "order-multihop-aggregate": ({"measures": ["count(*)"], "order": [{"column": "sum(orders.customers.score)"}]},
-                             {"measures": ["count(*)"], "order": [{"column": "sum(customers.score)"}]}),
+    "order-column": ({"dimensions": ["status"], "metrics": ["count(*)"], "order": [{"field": "orders.status", "direction": "desc"}]},
+                     {"dimensions": ["status"], "metrics": ["count(*)"], "order": [{"field": "status", "direction": "desc"}]}),
+    "order-aggregate": ({"metrics": ["count(*)"], "order": [{"field": "sum(orders.revenue)", "direction": "desc"}]},
+                    {"metrics": ["count(*)"], "order": [{"field": "sum(revenue)", "direction": "desc"}]}),
+    "order-multihop-aggregate": ({"metrics": ["count(*)"], "order": [{"field": "sum(orders.customers.score)"}]},
+                             {"metrics": ["count(*)"], "order": [{"field": "sum(customers.score)"}]}),
     "main-time-dimension": (
-        {"time_dimensions": [_MONTH], "measures": ["change(sum(revenue))"], "main_time_dimension": "orders.created_at"},
-        {"time_dimensions": [_MONTH], "measures": ["change(sum(revenue))"], "main_time_dimension": "created_at"},
+        {"time_dimensions": [_MONTH], "metrics": ["change(sum(revenue))"], "main_time_dimension": "orders.created_at"},
+        {"time_dimensions": [_MONTH], "metrics": ["change(sum(revenue))"], "main_time_dimension": "created_at"},
     ),
 }
 
@@ -1782,116 +1806,111 @@ class TestRootQualifier:
     @pytest.mark.parametrize("case", sorted(_ROOT_QUALIFIED))
     async def test_root_qualified_equals_bare(self, case: str) -> None:
         qualified, bare = _ROOT_QUALIFIED[case]
-        assert await _prefix_sql({"source_model": "orders", **qualified}) == await _prefix_sql(
-            {"source_model": "orders", **bare})
-
-    @pytest.mark.parametrize("source", [
-        {"source_model": "orders", "extensions": [{"source_name": "orders"}]},
-        {"source_model": "orders", "extensions": [ModelExtension(source_name="orders")]},
-    ], ids=["extension-dict", "extension-object"])
-    async def test_every_root_spec_takes_its_name(self, source: dict) -> None:
-        assert await _prefix_sql({**source, "dimensions": ["orders.status"]}) == await _prefix_sql(
-            {**source, "dimensions": ["status"]})
+        got = await _prefix_sql({"population": "orders", **qualified})
+        expected = await _prefix_sql({"population": "orders", **bare})
+        if case in _ANCHORED_KEYS:  # different anchors are different result keys
+            got, expected = _unaliased(got), _unaliased(expected)
+        assert got == expected
 
     @pytest.mark.parametrize("query", [
-        {"measures": ["count(customers.orders.id)"]},
-        {"measures": ["count(*)"], "filters": ["customers.orders.status = 'paid'"]},
+        {"metrics": ["count(customers.orders.id)"]},
+        {"metrics": ["count(orders.*)"], "filter": ["customers.orders.status = 'paid'"]},
     ], ids=["formula", "filter"])
     async def test_an_inner_hop_named_like_the_root_is_still_refused(self, query: dict) -> None:
         with pytest.raises(Exception, match="customers"):
-            await _prefix_sql({"source_model": "orders", **query})
+            await _prefix_sql({"population": "orders", **query})
 
     @pytest.mark.parametrize("query", [
-        {"measures": ["count(*)"], "filters": ["reorders.status = 'active'"]},
-        {"measures": ["sum(reorders.revenue)"]},
+        {"metrics": ["count(orders.*)"], "filter": ["orders.reorders.status = 'active'"]},
+        {"metrics": ["sum(orders.reorders.revenue)"]},
     ], ids=["filter", "formula"])
     async def test_a_longer_model_name_is_no_root_qualifier(self, query: dict) -> None:
         with pytest.raises(Exception, match="reorders"):
-            await _prefix_sql({"source_model": "orders", **query})
+            await _prefix_sql({"population": "orders", **query})
 
 
 class TestColumnTypeLenientValidator:
     """A Pydantic ``before``-validator absorbs legacy lowercase type
-    spellings on ``Column.type`` so old MCP/REST input keeps working after
+    spellings on ``DatasetField.datatype`` so old MCP/REST input keeps working after
     the sqlglot-aligned enum rename. No deprecation warning."""
 
     def test_legacy_string_maps_to_text(self) -> None:
-        col = Column(name="x", type="string")
-        assert col.type == DataType.TEXT
+        col = DatasetField(name="x", datatype="string")
+        assert col.datatype == DataType.STRING
 
     def test_legacy_number_maps_to_double(self) -> None:
-        col = Column(name="x", type="number")
-        assert col.type == DataType.DOUBLE
+        col = DatasetField(name="x", datatype="number")
+        assert col.datatype == DataType.FLOAT
 
     def test_legacy_integer_maps_to_int(self) -> None:
-        col = Column(name="x", type="integer")
-        assert col.type == DataType.INT
+        col = DatasetField(name="x", datatype="integer")
+        assert col.datatype == DataType.INTEGER
 
     def test_legacy_time_maps_to_timestamp(self) -> None:
-        col = Column(name="x", type="time")
-        assert col.type == DataType.TIMESTAMP
+        col = DatasetField(name="x", datatype="time")
+        assert col.datatype == DataType.DATETIME
 
     def test_legacy_date_maps_to_date(self) -> None:
-        col = Column(name="x", type="date")
-        assert col.type == DataType.DATE
+        col = DatasetField(name="x", datatype="date")
+        assert col.datatype == DataType.DATE
 
     def test_legacy_boolean_maps_to_boolean(self) -> None:
-        col = Column(name="x", type="boolean")
-        assert col.type == DataType.BOOLEAN
+        col = DatasetField(name="x", datatype="boolean")
+        assert col.datatype == DataType.BOOLEAN
 
     def test_pseudo_type_count_drops_to_default(self) -> None:
         # Aggregation pseudo-types are gone; the lenient validator drops them
         # and the field falls through to its default.
-        col = Column(name="x", type="count")
-        assert col.type == DataType.TEXT  # current default
+        col = DatasetField(name="x", datatype="count")
+        assert col.datatype == DataType.STRING  # current default
 
     @pytest.mark.parametrize("legacy", ["sum", "avg", "min", "max", "last", "count_distinct"])
     def test_other_pseudo_types_drop_to_default(self, legacy: str) -> None:
-        col = Column(name="x", type=legacy)
-        assert col.type == DataType.TEXT
+        col = DatasetField(name="x", datatype=legacy)
+        assert col.datatype == DataType.STRING
 
     def test_uppercase_passes_through(self) -> None:
         # Already-canonical strings round-trip unchanged (validator no-op).
-        col = Column(name="x", type="DOUBLE")
-        assert col.type == DataType.DOUBLE
+        col = DatasetField(name="x", datatype="Float")
+        assert col.datatype == DataType.FLOAT
 
     def test_enum_value_passes_through(self) -> None:
-        col = Column(name="x", type=DataType.INT)
-        assert col.type == DataType.INT
+        col = DatasetField(name="x", datatype=DataType.INTEGER)
+        assert col.datatype == DataType.INTEGER
 
     def test_legacy_lowercase_unknown_maps_to_unknown(self) -> None:
-        col = Column(name="x", type="unknown")
-        assert col.type == DataType.UNKNOWN
-        assert col.type.is_opaque is True
+        col = DatasetField(name="x", datatype="unknown")
+        assert col.datatype == DataType.OPAQUE
+        assert col.datatype.is_opaque is True
 
 
 class TestOpaqueColumn:
-    """Opaque (``UNKNOWN``) columns are stored + displayed but never operated
+    """Opaque (``UNKNOWN``) fields are stored + displayed but never operated
     on — the raw DB type rides along on ``db_type``."""
 
     def test_db_type_defaults_to_none(self) -> None:
-        assert Column(name="x", type=DataType.TEXT).db_type is None
+        assert DatasetField(name="x", datatype=DataType.STRING).db_type is None
 
     def test_db_type_round_trips(self) -> None:
-        col = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
+        col = DatasetField(name="loc", datatype=DataType.OPAQUE, db_type="point")
         assert col.db_type == "point"
-        assert Column.model_validate(col.model_dump()).db_type == "point"
+        assert DatasetField.model_validate(col.model_dump()).db_type == "point"
 
     def test_allowed_aggregations_rejected_on_opaque_column(self) -> None:
         # Built outside the raises block so only the SlayerModel construction
         # can produce the expected failure.
-        opaque_col = Column(
+        opaque_col = DatasetField(
             name="loc",
-            type=DataType.UNKNOWN,
+            datatype=DataType.OPAQUE,
             db_type="point",
             allowed_aggregations=["count"],
         )
         with pytest.raises(ValidationError) as exc_info:
-            SlayerModel(
+            SlayerDataset(
                 name="places",
                 sql_table="places",
                 data_source="ds",
-                columns=[opaque_col],
+                fields=[opaque_col],
             )
         msg = str(exc_info.value)
         assert "loc" in msg
@@ -1899,105 +1918,106 @@ class TestOpaqueColumn:
         assert "not supported" in msg
 
     def test_opaque_column_without_allowed_aggregations_is_valid(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="places",
             sql_table="places",
             data_source="ds",
-            columns=[Column(name="loc", type=DataType.UNKNOWN, db_type="point")],
+            fields=[DatasetField(name="loc", datatype=DataType.OPAQUE, db_type="point")],
         )
-        assert model.columns[0].type is DataType.UNKNOWN
+        assert model.fields[0].datatype is DataType.OPAQUE
 
 
 class TestModelMeasureType:
-    """ModelMeasure has an optional ``type`` declaring the formula's
+    """DatasetMetric has an optional ``datatype`` declaring the expression's
     result type. None (default) → no cast. Set value → outer CAST on the
     aggregation expression. Surfaces transparently on
-    ``SlayerQuery.measures[i]`` since query measures use the same shape."""
+    ``SlayerQuery.metrics[i]`` since query metrics use the same shape."""
 
     def test_default_is_none(self) -> None:
-        m = ModelMeasure(formula="count(*)")
-        assert m.type is None
+        m = DatasetMetric(name="m", expression="count(*)")
+        assert m.datatype is None
 
     def test_explicit_double(self) -> None:
-        m = ModelMeasure(formula="count(*) / count(orders)", type=DataType.DOUBLE)
-        assert m.type == DataType.DOUBLE
+        m = DatasetMetric(name="m", expression="count(*) / count(orders)", datatype=DataType.FLOAT)
+        assert m.datatype == DataType.FLOAT
 
     def test_explicit_int(self) -> None:
-        m = ModelMeasure(formula="count(*)", type=DataType.INT)
-        assert m.type == DataType.INT
+        m = DatasetMetric(name="m", expression="count(*)", datatype=DataType.INTEGER)
+        assert m.datatype == DataType.INTEGER
 
     def test_legacy_string_value_absorbed(self) -> None:
-        # Lenient validator on ModelMeasure.type mirrors Column.type.
-        m = ModelMeasure.model_validate({"formula": "count(*)", "type": "number"})
-        assert m.type == DataType.DOUBLE
+        # Lenient validator on DatasetMetric.datatype mirrors DatasetField.datatype.
+        m = DatasetMetric.model_validate({"name": "m", "expression": "count(*)", "datatype": "number"})
+        assert m.datatype == DataType.FLOAT
 
     def test_pseudo_type_drops_to_none(self) -> None:
-        m = ModelMeasure.model_validate({"formula": "count(*)", "type": "count"})
-        assert m.type is None  # default
+        m = DatasetMetric.model_validate({"name": "m", "expression": "count(*)", "datatype": "count"})
+        assert m.datatype is None  # default
 
     def test_query_inline_measure_accepts_type(self) -> None:
-        # SlayerQuery.measures[i] is a ModelMeasure — same shape, same field.
+        # SlayerQuery.metrics[i] is a ModelMeasure — same shape, same field.
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "count(*) / count(orders)", "name": "ratio", "type": "DOUBLE"}],
+            "population": "orders",
+            "metrics": [{"metric": "count(*) / count(orders)", "alias": "ratio", "datatype": "Float"}],
         })
-        assert q.measures[0].type == DataType.DOUBLE
+        assert q.metrics is not None
+        assert q.metrics[0].datatype == DataType.FLOAT
 
 
 class TestColumnSampledValuesAndDistinctCount:
-    """``Column`` has a structured sibling ``sampled_values`` for
+    """``DatasetField`` has a structured sibling ``sampled_values`` for
     the text ``sampled`` string, and a ``distinct_count`` integer for the
-    column's total cardinality at profile time. Both default to ``None``."""
+    field's total cardinality at profile time. Both default to ``None``."""
 
     def test_sampled_values_defaults_to_none(self) -> None:
-        col = Column(name="status", type=DataType.TEXT)
+        col = DatasetField(name="status", datatype=DataType.STRING)
         assert col.sampled_values is None
 
     def test_distinct_count_defaults_to_none(self) -> None:
-        col = Column(name="status", type=DataType.TEXT)
+        col = DatasetField(name="status", datatype=DataType.STRING)
         assert col.distinct_count is None
 
     def test_sampled_values_accepts_empty_list(self) -> None:
-        # All-NULL profiled categorical column.
-        col = Column(name="status", type=DataType.TEXT, sampled_values=[])
+        # All-NULL profiled categorical field.
+        col = DatasetField(name="status", datatype=DataType.STRING, sampled_values=[])
         assert col.sampled_values == []
 
     def test_sampled_values_accepts_populated_list(self) -> None:
-        col = Column(
+        col = DatasetField(
             name="status",
-            type=DataType.TEXT,
+            datatype=DataType.STRING,
             sampled_values=["paid", "refunded"],
         )
         assert col.sampled_values == ["paid", "refunded"]
 
     def test_sampled_values_round_trip_through_dict(self) -> None:
-        col = Column(
+        col = DatasetField(
             name="status",
-            type=DataType.TEXT,
+            datatype=DataType.STRING,
             sampled_values=["a", "b", "c"],
         )
         dumped = col.model_dump()
-        rebuilt = Column.model_validate(dumped)
+        rebuilt = DatasetField.model_validate(dumped)
         assert rebuilt.sampled_values == ["a", "b", "c"]
 
     def test_distinct_count_round_trip_through_dict(self) -> None:
-        col = Column(
+        col = DatasetField(
             name="status",
-            type=DataType.TEXT,
+            datatype=DataType.STRING,
             distinct_count=42,
         )
         dumped = col.model_dump()
-        rebuilt = Column.model_validate(dumped)
+        rebuilt = DatasetField.model_validate(dumped)
         assert rebuilt.distinct_count == 42
 
     def test_distinct_count_accepts_zero(self) -> None:
-        col = Column(name="status", type=DataType.TEXT, distinct_count=0)
+        col = DatasetField(name="status", datatype=DataType.STRING, distinct_count=0)
         assert col.distinct_count == 0
 
     def test_sampled_text_string_preserved_alongside_structured_fields(self) -> None:
-        col = Column(
+        col = DatasetField(
             name="status",
-            type=DataType.TEXT,
+            datatype=DataType.STRING,
             sampled="paid, refunded",
             sampled_values=["paid", "refunded"],
             distinct_count=2,
@@ -2015,5 +2035,5 @@ class TestSlayerModelVersionBump:
 
     def test_slayer_model_version_matches_current(self) -> None:
 
-        m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
+        m = SlayerDataset(name="orders", sql_table="orders", data_source="ds")
         assert m.version == CURRENT_VERSIONS["SlayerModel"]

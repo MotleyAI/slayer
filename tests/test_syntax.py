@@ -26,15 +26,15 @@ from slayer.core.errors import IllegalWindowInFilterError, UnknownFunctionError
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     LiteralKey,
     ScalarCallKey,
     TransformKey,
     ValueKey,
 )
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.scope import ModelScope
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import (
     AggCall,
     Arith,
@@ -58,49 +58,49 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 # ---------------------------------------------------------------------------
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="prod",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="price", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.DOUBLE),
-            Column(name="col1", type=DataType.DOUBLE),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="channel", type=DataType.TEXT),
-            Column(name="cohort", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="col1", datatype=DataType.FLOAT),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="cohort", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         data_source="prod",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect="postgres", source_model=_orders(), referenced_models=[_customers()])
+    return ResolvedSourceBundle(dialect="postgres", population=_orders(), referenced_datasets=[_customers()])
 
 
 def _bound(text: str) -> ValueKey:
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=_orders()), bundle=_bundle()).value_key
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=_orders()), bundle=_bundle()).value_key
 
 
 def _bound_filter(text: str) -> ValueKey:
-    return bind_filter(parse_expr(text), scope=ModelScope(source_model=_orders()), bundle=_bundle()).value_key
+    return bind_filter(parse_expr(text), scope=DatasetScope(population=_orders()), bundle=_bundle()).value_key
 
 
 def _assert_arguments(call: AggCall | TransformCall, *needles: str, count: int) -> None:
@@ -209,7 +209,7 @@ class TestAggregations:
         _assert_arguments(result, "'weight'", "'quantity'", count=1)
         bound = _bound("weighted_avg(price, weight=quantity)")
         assert isinstance(bound, AggregateKey)
-        assert bound.kwargs == (("weight", ColumnKey(path=(), leaf="quantity")),)
+        assert bound.kwargs == (("weight", FieldKey(path=(), leaf="quantity")),)
 
     def test_aggregation_with_numeric_kwarg(self):
         result = parse_expr("percentile(revenue, p=0.5)")
@@ -279,7 +279,7 @@ class TestTransforms:
             source=AggCall(source=Ref(name="revenue"), agg="sum"), agg="last",
         )
 
-    # -- DEV-1484 backfills from the deleted TestFormulaParser --------------
+    # -- Backfills from the deleted TestFormulaParser -----------------------
     # The legacy free-function parser asserted these shapes on its own AST
     # node types (TransformField.args / .kwargs). The typed parser is the
     # only parser now, so the same guarantees are pinned here.
@@ -327,14 +327,14 @@ class TestTransforms:
         assert result.input.op == "/"
 
     def test_rank_partition_by_dotted_path(self):
-        # partition_by may name a joined column via a dotted path.
+        # partition_by may name a joined field via a dotted path.
         text = "rank(sum(revenue), partition_by=customers.region, direction='desc')"
         result = parse_expr(text)
         assert isinstance(result, TransformCall)
         _assert_arguments(result, "'partition_by'", "'customers'", "'region'", "'direction'", "'desc'", count=2)
         bound = _bound(text)
         assert isinstance(bound, TransformKey)
-        assert bound.partition_keys == Grain.of([ColumnKey(path=("customers",), leaf="region")])
+        assert bound.partition_keys == Grain.of([FieldKey(path=("customers",), leaf="region")])
         assert bound.kwargs == (("direction", "desc"),)
 
     def test_triple_nested_transforms(self):
@@ -367,7 +367,7 @@ class TestScalarFunctions:
         """SQL function names are case-insensitive, and users write
         ``COALESCE(x, 0)`` as readily as the lower-case form. The legacy
         parser lowercased before its allowlist lookup; matching exactly
-        rejected every SQL-cased formula (DEV-1703 Phase 2 regression fix).
+        rejected every SQL-cased expression (regression fix).
         """
         for spelling in ("COALESCE", "Coalesce", "coalesce"):
             result = parse_expr(f"{spelling}(revenue, 0)")
@@ -413,7 +413,7 @@ class TestScalarFunctions:
         assert result.args == (Ref(name="name"), Literal(value="%x%"))
 
     def test_scalar_over_arithmetic_of_aggregates(self):
-        # DEV-1484 backfill from the deleted
+        # Backfill from the deleted
         # TestUnifiedScalarPassthrough::test_cto_repro_coalesce_nullif_arithmetic
         # — the motivating Cube-translation shape
         # ``COALESCE(((SUM(a)/NULLIF(SUM(b),0)) - 1), -999999)``. Scalars must
@@ -448,7 +448,7 @@ class TestOperators:
         assert result.right == Literal(value=Decimal(1))
 
     def test_divide_two_aggregates(self):
-        # revenue:sum / *:count → the AOV formula.
+        # revenue:sum / *:count → the AOV expression.
         result = parse_expr("sum(revenue) / count(*)")
         assert isinstance(result, Arith)
         assert result.op == "/"
@@ -580,7 +580,7 @@ class TestRejection:
             parse_expr("sum(revenue) +")
 
     def test_transform_with_no_arguments_raises(self):
-        # DEV-1484 backfill from the deleted
+        # Backfill from the deleted
         # TestFormulaParser::test_no_args_raises — a transform needs the value
         # to transform.
         with pytest.raises(ValueError, match="at least one positional"):
@@ -592,7 +592,7 @@ class TestRejection:
             parse_expr("sum(revenue) + magic_fn(cumsum(other))")
 
     def test_double_underscore_in_ref_now_parses(self):
-        # DEV-1743: the parser no longer rejects `__` in identifiers —
+        # The parser no longer rejects `__` in identifiers —
         # binding legality is the binder's concern, not the parser's.
         assert parse_expr("customers__regions.name") is not None
 
@@ -664,7 +664,7 @@ class TestCombinations:
         assert result.left.op == "change"
 
     def test_consecutive_periods_predicate_then_compared(self):
-        # DEV-1484 backfill from the deleted TestFormulaParser tests
+        # Backfill from the deleted TestFormulaParser tests
         # test_consecutive_periods_predicate / _comparison:
         # ``consecutive_periods(sum(revenue) > 0) >= 3`` — a predicate INSIDE
         # the transform and a comparison OUTSIDE it in one expression.
@@ -718,7 +718,7 @@ class TestFilterOperatorNormalization:
         assert result.right == Literal(value="foo")
 
     def test_sql_like_operator_normalised(self):
-        # DEV-1704: a SQL ``LIKE`` operator (e.g. from the pg-facade WHERE
+        # A SQL ``LIKE`` operator (e.g. from the pg-facade WHERE
         # translation) normalises to the ``like(col, pattern)`` scalar the DSL
         # already emits as SQL LIKE.
         result = parse_expr("name LIKE 'do%'")
@@ -735,7 +735,7 @@ class TestFilterOperatorNormalization:
         assert result.operand.args == (Ref(name="name"), Literal(value="x%"))
 
     def test_sql_like_dotted_and_comma_pattern(self):
-        # Dotted LHS (joined column) + a pattern that contains a comma (the
+        # Dotted LHS (joined field) + a pattern that contains a comma (the
         # categorical-comma metabase repro) must both round-trip.
         result = parse_expr("customers.name LIKE '%,%'")
         assert isinstance(result, ScalarCall)
@@ -746,7 +746,7 @@ class TestFilterOperatorNormalization:
 
     def test_like_word_inside_string_literal_not_rewritten(self):
         # The ``like`` inside a string literal is NOT a LIKE operator: the value
-        # stays a literal, the LHS a column reference.
+        # stays a literal, the LHS a field reference.
         result = parse_expr("name == 'a like b'")
         assert isinstance(result, Cmp)
         assert result.op == "=="
@@ -780,11 +780,11 @@ class TestFilterOperatorNormalization:
         assert isinstance(bound, ArithmeticKey)
         rank = bound.operands[0]
         assert isinstance(rank, TransformKey)
-        assert rank.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
+        assert rank.partition_keys == Grain.of([FieldKey(path=(), leaf="region")])
         assert rank.kwargs == (("direction", "desc"),)
 
     def test_rank_partition_by_list_kwarg_preserved_in_filter(self):
-        # List-form partition_by survives and binds to both columns.
+        # List-form partition_by survives and binds to both fields.
         text = "rank(sum(revenue), partition_by=[region, channel], direction='desc') <= 1"
         result = parse_expr(text)
         assert isinstance(result, Cmp)
@@ -798,7 +798,7 @@ class TestFilterOperatorNormalization:
         rank = bound.operands[0]
         assert isinstance(rank, TransformKey)
         assert rank.partition_keys == Grain.of(
-            [ColumnKey(path=(), leaf="region"), ColumnKey(path=(), leaf="channel")],
+            [FieldKey(path=(), leaf="region"), FieldKey(path=(), leaf="channel")],
         )
         assert rank.kwargs == (("direction", "desc"),)
 
@@ -806,7 +806,7 @@ class TestFilterOperatorNormalization:
     # Backfilled from the legacy ``TestExtractFilterTransforms`` (which tested
     # ``enrichment.extract_filter_transforms``, deleted with the legacy stack).
     # Legacy extracted the inline transform to a hidden field by rebuilding its
-    # formula TEXT, so the risk was losing an argument in that round-trip. The
+    # expression TEXT, so the risk was losing an argument in that round-trip. The
     # typed parser keeps structure all the way through, so the equivalent
     # guarantee is that every arg/kwarg survives parsing as a typed node.
 
@@ -841,7 +841,7 @@ class TestFilterOperatorNormalization:
         assert isinstance(change, TransformKey)
         assert change.kwargs == ()
         assert isinstance(change.input, AggregateKey)
-        assert change.input.kwargs == (("weight", ColumnKey(path=(), leaf="quantity")),)
+        assert change.input.kwargs == (("weight", FieldKey(path=(), leaf="quantity")),)
 
     def test_filter_transform_preserves_mixed_agg_args_and_kwargs(self):
         # change(price:weighted_avg(col1, weight=quantity)) > 0 — positional
@@ -871,10 +871,10 @@ class TestFilterOperatorNormalization:
         ntile = bound.operands[0]
         assert isinstance(ntile, TransformKey)
         assert ntile.kwargs == (("n", Decimal(4)),)
-        assert ntile.partition_keys == Grain.of([ColumnKey(path=(), leaf="cohort")])
+        assert ntile.partition_keys == Grain.of([FieldKey(path=(), leaf="cohort")])
 
     def test_grouping_paren_equality_still_rewritten(self):
-        # DEV-1492 regression guard: a `=` inside a *grouping* paren (not a
+        # Regression guard: a `=` inside a *grouping* paren (not a
         # call) must still be rewritten to `==`. The kwarg-preservation rule
         # keys off CALL-paren classification, not bare paren depth.
         result = parse_expr("(status = 'x' or amount = 5)")
@@ -916,11 +916,11 @@ class TestFilterOperatorNormalization:
         assert isinstance(ntile, TransformKey)
         assert ntile.kwargs == (("n", Decimal(4)),)
         assert bound_right == ArithmeticKey(
-            op="==", operands=(ColumnKey(path=(), leaf="status"), LiteralKey(value="paid")),
+            op="==", operands=(FieldKey(path=(), leaf="status"), LiteralKey(value="paid")),
         )
 
     def test_equality_inside_string_literal_untouched(self):
-        # DEV-1492 literal-awareness: the `=` inside the string literal
+        # Literal-awareness: the `=` inside the string literal
         # `'a=b'` must not be touched by the scanner; only the outer SQL
         # equality is rewritten.
         result = parse_expr("status = 'a=b'")
@@ -930,7 +930,7 @@ class TestFilterOperatorNormalization:
         assert result.right == Literal(value="a=b")
 
     def test_comparison_inside_scalar_call_preserved(self):
-        # DEV-1492: the SCALAR_FUNCTIONS narrowing keeps the historical
+        # The SCALAR_FUNCTIONS narrowing keeps the historical
         # behavior of `coalesce(status = 'paid', False)` — the `=` inside
         # a scalar call is a SQL comparison, not a kwarg (scalars reject
         # kwargs per architecture). Without the narrowing, the kwarg-
@@ -981,7 +981,7 @@ class TestFilterOperatorNormalization:
         assert ntile.kwargs == (("n", Decimal(4)),)
 
     def test_not_paren_is_grouping_not_call(self):
-        # DEV-1492 (Codex review): the lowercased keyword `not` is not an
+        # Codex review: the lowercased keyword `not` is not an
         # identifier, so the `(` after it must classify as GROUPING (not
         # CALL). The `=` inside is therefore a SQL comparison and gets
         # rewritten to `==`. Python's `not(x)` is UnaryOp(Not, x), not a
@@ -1007,10 +1007,10 @@ class TestFilterOperatorNormalization:
         assert isinstance(bound, ArithmeticKey)
         rank = bound.operands[0]
         assert isinstance(rank, TransformKey)
-        assert rank.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
+        assert rank.partition_keys == Grain.of([FieldKey(path=(), leaf="region")])
         assert rank.kwargs == (("direction", "desc"),)
         assert rank.input == ScalarCallKey(name="coalesce", args=(
-            ArithmeticKey(op="==", operands=(ColumnKey(path=(), leaf="status"), LiteralKey(value="paid"))),
+            ArithmeticKey(op="==", operands=(FieldKey(path=(), leaf="status"), LiteralKey(value="paid"))),
             LiteralKey(value=Decimal(0)),
         ))
         inner = result.left.input
@@ -1080,12 +1080,12 @@ class TestFilterOperatorNormalization:
         assert isinstance(streak, TransformKey)
         assert streak.kwargs == ()
         assert streak.input == ArithmeticKey(
-            op="==", operands=(ColumnKey(path=(), leaf="status"), LiteralKey(value="paid")),
+            op="==", operands=(FieldKey(path=(), leaf="status"), LiteralKey(value="paid")),
         )
         assert bound.operands[1] == LiteralKey(value=Decimal(2))
 
     def test_comparison_inside_ifnull_scalar_call_preserved(self):
-        # DEV-1492 (Codex review): the SCALAR_FUNCTIONS narrowing must
+        # Codex review: the SCALAR_FUNCTIONS narrowing must
         # apply to every scalar in the allowlist, not just `coalesce`.
         # `ifnull` (also a null-handling scalar) gets the same treatment.
         result = parse_expr("ifnull(status = 'paid', False)")

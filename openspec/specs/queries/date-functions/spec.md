@@ -21,8 +21,8 @@ and `second(x)` SHALL be extraction (› Date-part aliases mean their date_part)
 be written `date_trunc(unit, x)` (› date_trunc is the granularity call).
 
 #### Scenario: Extraction as an expression dimension
-- **WHEN** a query `{"source_model": "orders", "dimensions": [{"expression": "date_part('day_of_week', created_at)", "name": "dow"}], "measures": [{"formula": "count(*)"}]}` executes
-- **THEN** the result has one row per weekday with key `orders.dow` holding an integer 1–7
+- **WHEN** a query `{"population": "orders", "dimensions": [{"field": "date_part('day_of_week', created_at)", "alias": "dow"}], "metrics": [{"metric": "count(*)"}]}` executes
+- **THEN** the result has one row per weekday with key `dow` holding an integer 1–7
 
 #### Scenario: Date functions in a filter
 - **WHEN** a query on `orders` has filter `"date_diff('day', created_at, shipped_at) > 3"`

@@ -1,0 +1,282 @@
+{
+ "source": "tests/test_dev2120_bigquery_timestamps.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "lib",
+    "dimensions": [
+     "id",
+     "ts"
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "lib",
+    "dimensions": [
+     "id",
+     "ts"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "ts < now()"
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "ts < now()"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "lib",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "ts",
+      "granularity": "month",
+      "date_range": [
+       "2024-01-01",
+       "2024-03-31"
+      ]
+     }
+    ]
+   },
+   "new": {
+    "population": "lib",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "ts",
+      "granularity": "month",
+      "date_range": [
+       "2024-01-01",
+       "2024-03-31"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "lib",
+    "measures": [
+     {
+      "formula": "max(ts_shifted)",
+      "name": "agg_v"
+     }
+    ]
+   },
+   "new": {
+    "population": "lib",
+    "metrics": [
+     {
+      "metric": "max(ts_shifted)",
+      "alias": "agg_v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "lib",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "ts_shifted",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "lib",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "ts_shifted",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "b",
+    "join_pairs": [
+     [
+      "at",
+      "bt"
+     ]
+    ]
+   },
+   "new": {
+    "to": "b",
+    "from_columns": [
+     "at"
+    ],
+    "to_columns": [
+     "bt"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "dimensions": [
+     "b.label"
+    ]
+   },
+   "new": {
+    "population": "a",
+    "dimensions": [
+     "b.label"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "b",
+    "join_pairs": [
+     [
+      "at",
+      "bt"
+     ]
+    ]
+   },
+   "new": {
+    "to": "b",
+    "from_columns": [
+     "at"
+    ],
+    "to_columns": [
+     "bt"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "dimensions": [
+     "b.label"
+    ]
+   },
+   "new": {
+    "population": "a",
+    "dimensions": [
+     "b.label"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 172,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 173,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 175,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 176,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 177,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 184,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  }
+ ]
+}

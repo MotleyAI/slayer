@@ -1,0 +1,66 @@
+{
+ "source": "tests/test_dev2119_time_dimension_forms.py",
+ "pairs": [
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "created_at",
+    "granularity": "month"
+   },
+   "new": {
+    "field": "created_at",
+    "granularity": "month"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 18,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 40,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 49,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 51,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 54,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 91,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 132,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 146,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 160,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 178,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 179,
+   "reason": "unclassifiable"
+  }
+ ]
+}

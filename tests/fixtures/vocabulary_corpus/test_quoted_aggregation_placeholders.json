@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_quoted_aggregation_placeholders.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  }
+ ]
+}

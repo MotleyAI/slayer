@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema import ingestion
 from slayer.storage.yaml_storage import YAMLStorage
@@ -18,7 +18,7 @@ from tests._dev2215_fixtures import (
     EXTRACTIONS,
     ROW3_PARTS,
     check_events,
-    dev2215_models,
+    dev2215_datasets,
     ids,
     m,
     postgres_statements,
@@ -58,78 +58,78 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, Dat
     storage = YAMLStorage(base_dir=str(tmp_path))
     ds = _datasource(postgresql)
     async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-        for model in dev2215_models(data_source="pg"):
-            await storage.save_model(model, _validate=False)
+        for model in dev2215_datasets(data_source="pg"):
+            await storage.save_dataset(model, _validate=False)
         yield engine, ds
 
 
 @pytest.mark.parametrize("part", EXTRACTIONS)
-async def test_extraction_equals_its_date_part_twin(pg, part: str) -> None:
+async def test_extraction_equals_its_date_part_twin(pg: tuple[SlayerQueryEngine, DatasourceConfig], part: str) -> None:
     engine, _ = pg
-    alias = await engine.execute(q(dimensions=["id", {"expression": f"{part}(created_at)", "name": "x"}]))
-    twin = await engine.execute(q(dimensions=["id", {"expression": f"date_part('{part}', created_at)", "name": "x"}]))
+    alias = await engine.execute(q(dimensions=["orders.id", {"field": f"{part}(orders.created_at)", "alias": "x"}]))
+    twin = await engine.execute(q(dimensions=["orders.id", {"field": f"date_part('{part}', orders.created_at)", "alias": "x"}]))
     assert alias.columns == twin.columns
     assert alias.sql == twin.sql
     assert sorted_rows(alias) == sorted_rows(twin)
-    assert int(next(r["orders.x"] for r in alias.data if int(r["orders.id"]) == 3)) == ROW3_PARTS[part]
+    assert int(next(r["x"] for r in alias.data if int(r["orders.id"]) == 3)) == ROW3_PARTS[part]
 
 
-async def test_week_is_the_iso_week_number(pg) -> None:
+async def test_week_is_the_iso_week_number(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     engine, _ = pg
-    assert ids(await engine.execute(q(dimensions=["id"], filters=["week(created_at) = 1"]))) == {3}
+    assert ids(await engine.execute(q(dimensions=["orders.id"], filter=["week(orders.created_at) = 1"]))) == {3}
 
 
-async def test_first_last_never_pick_a_null_key(pg) -> None:
+async def test_first_last_never_pick_a_null_key(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     engine, _ = pg
     await check_events(engine)
 
 
-async def test_first_last_partitioned_cross_model(pg) -> None:
+async def test_first_last_partitioned_cross_model(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     engine, _ = pg
-    resp = await engine.execute(q(dimensions=["customers.region", "customers.name"], measures=[
+    resp = await engine.execute(q(dimensions=["customers.region", "customers.name"], metrics=[
         m("last(customers.status, customers.updated_at, partition_by=customers.region)", "l"),
         m("first(customers.status, customers.updated_at, partition_by=customers.region)", "f")]))
-    got = {r["orders.customers.name"]: (r["orders.f"], r["orders.l"]) for r in resp.data}
+    got = {r["customers.name"]: (r["f"], r["l"]) for r in resp.data}
     assert got == {"A": ("gold", "gold"), "B": ("gold", "gold"), "C": ("bronze", "bronze"), "D": ("bronze", "bronze")}
 
 
 # --------------------------------------------------------------------------- #
 # Ingestion keeps case-only-distinct columns apart
 # --------------------------------------------------------------------------- #
-async def _ingest(engine: SlayerQueryEngine, ds: DatasourceConfig, table: str) -> tuple[SlayerModel, str]:
-    """The ingested model and the report's structured warnings (everything but the models) as text."""
+async def _ingest(engine: SlayerQueryEngine, ds: DatasourceConfig, table: str) -> tuple[SlayerDataset, str]:
+    """The ingested dataset and the report's structured warnings (everything but the datasets) as text."""
     report = await ingestion.ingest_datasource_report_async(ds, client=engine.client_for(ds), include_tables=[table])
-    (model,) = [mdl for mdl in report.models if mdl.name == table]
-    return model, json.dumps(report.model_dump(mode="json", exclude={"models"}), default=str)
+    (model,) = [mdl for mdl in report.datasets if mdl.name == table]
+    return model, json.dumps(report.model_dump(mode="json", exclude={"datasets"}), default=str)
 
 
-def _columns(model: SlayerModel) -> list[tuple[str, str | None]]:
-    return [(c.name, c.sql) for c in model.columns]
+def _fields(dataset: SlayerDataset) -> list[tuple[str, str | None]]:
+    return [(c.name, c.definition_sql) for c in dataset.fields]
 
 
-async def test_two_case_variants(pg) -> None:
+async def test_two_case_variants(pg: tuple[SlayerQueryEngine, Any]) -> None:
     engine, ds = pg
     model, notes = await _ingest(engine, ds, "casey")
-    named = dict(_columns(model))
+    named = dict(_fields(model))
     assert set(named) == {"Foo", "foo_2"}
     assert named["foo_2"] is not None
     assert "foo" in named["foo_2"]
     assert "foo_2" in notes
     assert "foo" in notes
-    await engine.storage.save_model(model)
-    resp = await engine.execute(q(source_model="casey", dimensions=["Foo", "foo_2"]))
+    await engine.storage.save_dataset(model)
+    resp = await engine.execute(q(population="casey", dimensions=["casey.Foo", "casey.foo_2"]))
     assert sorted((r["casey.Foo"], r["casey.foo_2"]) for r in resp.data) == [(1, 10), (2, 20)]
 
 
-async def test_suffix_already_taken_and_reingestion(pg) -> None:
+async def test_suffix_already_taken_and_reingestion(pg: tuple[SlayerQueryEngine, Any]) -> None:
     engine, ds = pg
     first, _ = await _ingest(engine, ds, "casey3")
     again, _ = await _ingest(engine, ds, "casey3")
-    named = dict(_columns(first))
+    named = dict(_fields(first))
     assert set(named) == {"Foo", "foo_3", "foo_2"}
     assert named["foo_3"] is not None
     assert named["foo_3"] != named["foo_2"]
-    assert _columns(first) == _columns(again)
-    await engine.storage.save_model(first)
-    resp = await engine.execute(q(source_model="casey3", dimensions=["Foo", "foo_3", "foo_2"]))
+    assert _fields(first) == _fields(again)
+    await engine.storage.save_dataset(first)
+    resp = await engine.execute(q(population="casey3", dimensions=["casey3.Foo", "casey3.foo_3", "casey3.foo_2"]))
     assert [(r["casey3.Foo"], r["casey3.foo_3"], r["casey3.foo_2"]) for r in resp.data] == [(1, 10, 100)]

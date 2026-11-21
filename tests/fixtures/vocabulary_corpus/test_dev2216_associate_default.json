@@ -1,0 +1,187 @@
+{
+ "source": "tests/test_dev2216_associate_default.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(customers.*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(customers.*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.signup_at)",
+    "name": "ls"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.signup_at)",
+    "name": "ls"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='90d')",
+    "name": "win"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='90d')",
+    "name": "win"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.signup_at) + sum(customers.spend, window='90d')",
+    "name": "mix"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.signup_at) + sum(customers.spend, window='90d')",
+    "name": "mix"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "k"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "k"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=status)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=status)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.signup_at, partition_by=status)",
+    "name": "lp"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.signup_at, partition_by=status)",
+    "name": "lp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.vip_spend)",
+    "name": "vip"
+   },
+   "new": {
+    "expression": "sum(customers.vip_spend)",
+    "name": "vip"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop, partition_by=bad_pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(pop, partition_by=bad_pop)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(sum(customers.spend))",
+    "name": "ss"
+   },
+   "new": {
+    "expression": "sum(sum(customers.spend))",
+    "name": "ss"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(sum(customers.spend))",
+    "name": "ss"
+   },
+   "new": {
+    "expression": "sum(sum(customers.spend))",
+    "name": "ss"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(last(customers.spend, customers.signup_at))",
+    "name": "sl"
+   },
+   "new": {
+    "expression": "sum(last(customers.spend, customers.signup_at))",
+    "name": "sl"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(last(customers.spend, customers.signup_at))",
+    "name": "sl"
+   },
+   "new": {
+    "expression": "sum(last(customers.spend, customers.signup_at))",
+    "name": "sl"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  }
+ ]
+}

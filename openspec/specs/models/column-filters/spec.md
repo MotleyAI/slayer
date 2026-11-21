@@ -1,35 +1,39 @@
 # models/column-filters Specification
 
 ## Purpose
-Defines `Column.filter` as sugar for a conditional derived definition, so a filtered
+Defines `DatasetField.filter` as sugar for a conditional derived definition, so a filtered
 column behaves as one column expression in every position, with one dependency rule.
 
 ## Requirements
 
 ### Requirement: Column.filter is a conditional derived definition
-A column carrying `filter` SHALL behave, in every position, exactly as a derived
-column whose definition is `CASE WHEN (<filter>) THEN (<value>) END`, where `<value>`
-is the column's `sql` when set, else its physical column: as an aggregation source
-(single-column or as a leaf of an expression), as an aggregation parameter, as a
+A field carrying `filter` SHALL behave, in every position, exactly as a derived
+field whose definition is `CASE WHEN (<filter>) THEN (<value>) END`, where `<value>`
+is the form of the field's `expression` that runs on the datasource when set, else its
+own-name source column: as an aggregation source
+(single-field or as a leaf of an expression), as an aggregation parameter, as a
 dimension, in a row filter, as an order key, as a `partition_by=` key, as a
-computed-dimension leaf, and when referenced from another derived definition. The
-filter's references SHALL be dependencies of the column exactly as its value's
-references are — for join classification, dependency closure, cycle detection and
-save-time path validation — while the wrapped value's reference to the column's own
-physical column SHALL NOT form a dependency cycle. Variables SHALL bind into `filter` and `sql`
-alike, as literals (`queries/variables` › Mode-A surfaces bind variables as literals). No other behaviour SHALL attach to `filter`: an
-aggregation's parameters are masked only by their own columns' filters, never by the
-source column's, and no position reads the unmasked value.
+computed-dimension leaf, and when referenced from another derived definition. Inside
+`filter`, a bare name SHALL read a source column and a dotted path from the dataset a
+field (`models/field-expressions` › Inside a row definition a bare name is a source
+column and a path is a field). The filter's field references SHALL be dependencies of
+the field exactly as its value's references are — for join classification, dependency
+closure, cycle detection and save-time path validation — so a filter reading its own
+field by path forms a cycle while a bare name equal to the field's name reads the
+source column and does not. Variable substitution SHALL apply to `filter` and to the
+`expression` alike. No other behaviour SHALL attach to `filter`: an aggregation's
+parameters are masked only by their own fields' filters, never by the source field's,
+and no position reads the unmasked value.
 
 #### Scenario: Single-column aggregate SQL unchanged
-- **WHEN** `q_amount` is `amount` with filter `product = 'Q'` and a query selects `sum(q_amount)`
+- **WHEN** `q_amount` is `expression: amount` with filter `product = 'Q'` and a query selects `sum(q_amount)`
 - **THEN** the generated SQL is `SUM(CASE WHEN product = 'Q' THEN amount END)` as
   before and executed values are unchanged
 
 #### Scenario: Parameters are not masked by the source's filter
 - **WHEN** a query selects `weighted_avg(q_amount, weight=quantity)`
 - **THEN** the value is masked and the weight is not: the result equals the same
-  aggregation over the hand-written derived column `CASE WHEN product = 'Q' THEN amount END`
+  aggregation over the hand-written derived field `CASE WHEN product = 'Q' THEN amount END`
   (`weighted_avg` skips a NULL value's weight, per `aggregations/boolean-inputs`), by
   hand-computed executed values on SQLite and DuckDB; a custom aggregation that reads every
   weight (`SUM({value} * {weight}) / SUM({weight})`) divides by every row's `quantity`
@@ -67,30 +71,30 @@ source column's, and no position reads the unmasked value.
   existing input-safety error
 
 #### Scenario: Derived column over a filtered column expands the wrapped value
-- **WHEN** a column `q_double` is defined with `sql: "q_amount * 2"`
+- **WHEN** a field `q_double` is defined with `expression: "orders.q_amount * 2"`
 - **THEN** it expands to `(CASE WHEN product = 'Q' THEN amount END) * 2` in every
   position, by executed values
 
 #### Scenario: Filtered columns pass cycle validation
-- **WHEN** a model is saved with a filtered physical column (`amount` with a filter)
-  and a filtered derived column (`sql: "amount"`, filter on `product`)
-- **THEN** the save succeeds — the wrapped value's self-reference is not a cycle —
-  while a filter that names another derived column creates a dependency edge, and a
-  filter that names its own column is rejected as a cycle
+- **WHEN** a dataset is saved with a filtered physical field (`amount` with a filter)
+  and a filtered derived field (`expression: amount`, filter on `product`)
+- **THEN** the save succeeds — the wrapped value's read of the source column is not a
+  cycle — while a filter that names another derived field by path creates a dependency
+  edge, a filter that names its own field by path (`orders.loop > 0` on field `loop`) is
+  rejected as a cycle, and a bare own name in the filter reads the source column
 
 #### Scenario: Variables substitute into both fields
-- **WHEN** `sql` and `filter` each contain a `{variable}` and the query supplies it
-- **THEN** both bind it as a literal before the definition is composed, by generated SQL, and a
-  value that is not a literal fails with the literal-values error
+- **WHEN** a field's dialect entry and its `filter` each contain a `{variable}` and the query supplies it
+- **THEN** both are substituted before the definition is composed, by generated SQL
 
 #### Scenario: Broken filter path fails at save time
-- **WHEN** a column's filter names a dotted path that does not walk from its model
+- **WHEN** a field's filter names a dotted path that does not walk from its dataset
 - **THEN** the save fails with the existing path-validation error naming the path,
-  exactly as for a broken path in `sql`
+  exactly as for a broken path in the field's `expression`
 
 #### Scenario: Ranked aggregation over a filtered column picks the masked value
 - **WHEN** a query selects `last(q_amount)`
 - **THEN** the ranking is by the ranking key over every row (the filter never
   restricts it) and the picked value is `CASE WHEN product = 'Q' THEN amount END`
   at the newest row — NULL when that newest row does not match; a row restriction
-  belongs in a query filter, not in the column
+  belongs in a query filter, not in the field

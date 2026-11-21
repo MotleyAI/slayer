@@ -1,7 +1,7 @@
 """Resolve dbt Jinja refs/sources in regular-model SQL bodies.
 
 Used by :class:`slayer.dbt.converter.DbtToSlayerConverter` to inline
-regular-model SQL into :attr:`slayer.core.models.SlayerModel.sql` when a
+regular-model SQL into :attr:`slayer.core.models.SlayerDataset.sql` when a
 ``semantic_model`` refers to a regular dbt model (a query) rather than a
 physical source table. The resolver reads raw SQL from the project's
 ``.sql`` files (collected by :mod:`slayer.dbt.parser`) and produces SQL that
@@ -87,19 +87,19 @@ def strip_config(sql: str) -> str:
     return _CONFIG_RE.sub("", sql)
 
 
-def referenced_models(sql: str, regular_models_sql: dict[str, str], _seen: frozenset[str] = frozenset()) -> set[str]:
+def referenced_models(sql: str, regular_datasets_sql: dict[str, str], _seen: frozenset[str] = frozenset()) -> set[str]:
     """The regular models ``sql`` inlines, transitively."""
     found: set[str] = set()
     for match in _REF_RE.finditer(sql):
         name = match.group(2) or match.group(1)
-        if name in regular_models_sql and name not in _seen:
-            found |= {name, *referenced_models(regular_models_sql[name], regular_models_sql, _seen | {name})}
+        if name in regular_datasets_sql and name not in _seen:
+            found |= {name, *referenced_models(regular_datasets_sql[name], regular_datasets_sql, _seen | {name})}
     return found
 
 
 def resolve_refs(
     sql: str,
-    regular_models_sql: dict[str, str],
+    regular_datasets_sql: dict[str, str],
     *,
     relation: Callable[[str], str] = _bare_relation,
     source_relation: Callable[[str, str], str] = _source_relation,
@@ -157,10 +157,10 @@ def resolve_refs(
                 f"(visited chain: {sorted(_visited)}); leaving bare name to break cycle"
             )
             return model_name
-        if model_name in regular_models_sql:
+        if model_name in regular_datasets_sql:
             inner_sql, inner_warnings = resolve_refs(
-                regular_models_sql[model_name],
-                regular_models_sql,
+                regular_datasets_sql[model_name],
+                regular_datasets_sql,
                 relation=relation,
                 source_relation=source_relation,
                 max_depth=max_depth - 1,

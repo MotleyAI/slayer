@@ -27,11 +27,11 @@ Exports one datasource's SLayer models as an Ossie (OSI) semantic-model document
 
 ### Requirement: Model subset
 
-With `--models`, only the named models SHALL be exported. A relationship, metric, or SLayer-only entity that needs a model outside the subset SHALL be reported with a workaround naming the model to add.
+With `--datasets`, only the named models SHALL be exported. A relationship, metric, or SLayer-only entity that needs a model outside the subset SHALL be reported with a workaround naming the model to add.
 
 #### Scenario: Join to an excluded model
-- **WHEN** `orders` joins `customers` and the export runs with `--models orders`
-- **THEN** the document holds dataset `orders` and no relationship to `customers`, and the report names the join and suggests adding `customers` to `--models`
+- **WHEN** `orders` joins `customers` and the export runs with `--datasets orders`
+- **THEN** the document holds dataset `orders` and no relationship to `customers`, and the report names the join and suggests adding `customers` to `--datasets`
 
 ### Requirement: Dataset sources
 
@@ -51,19 +51,19 @@ A table-backed model SHALL export with its physical table as `source`. A sql-mod
 
 ### Requirement: Fields
 
-Every column whose definition reads only its own model SHALL export as a field named by the column's name. Its expression SHALL read the model source's physical columns, with references to other columns of the same model expanded to their definitions. A column with a `filter` SHALL export with the expression `CASE WHEN <filter> THEN <value> END`, so that it is masked in every position. A column's `label`, `description` and imported Ossie `ai_context` SHALL export as the field's `label`, `description` and `ai_context`; text that the importer appended to a description from `ai_context` SHALL NOT be exported a second time.
+Every field whose definition reads only its own dataset SHALL export as a field named by the field's name. Its expression SHALL read the dataset source's physical columns, with each path to another field of the same dataset replaced by that field's definition, on the syntax of the form it appears in. A field with a `filter` SHALL export with the expression `CASE WHEN <filter> THEN <value> END`, so that it is masked in every position, and every filter SHALL be applied exactly once however many definitions are replaced into one another. A field's `label`, `description` and imported Ossie `ai_context` SHALL export as the field's `label`, `description` and `ai_context`; text that the importer appended to a description from `ai_context` SHALL NOT be exported a second time.
 
 #### Scenario: Renamed column
-- **WHEN** column `total_amount` has `sql: o_totalprice`
-- **THEN** field `total_amount` has the expression `o_totalprice`
+- **WHEN** field `total_amount` has `expression: o_totalprice`
+- **THEN** exported field `total_amount` has the expression `o_totalprice`
 
 #### Scenario: Derived column over another derived column
-- **WHEN** `net` is `gross - discount` and `gross` is `price * quantity`
+- **WHEN** `net` is `orders.gross - discount` and `gross` is `price * quantity`
 - **THEN** field `net`'s expression reads only `price`, `quantity` and `discount`
 
 #### Scenario: Filtered column
-- **WHEN** column `completed_amount` has `sql: amount` and `filter: status = 'completed'`, over rows (completed, 10), (open, 5), (completed, 7)
-- **THEN** field `completed_amount` evaluates to 10, NULL and 7 on those rows
+- **WHEN** field `completed_amount` has `expression: amount` and `filter: status = 'completed'`, over rows (completed, 10), (open, 5), (completed, 7)
+- **THEN** exported field `completed_amount` evaluates to 10, NULL and 7 on those rows
 
 #### Scenario: Imported description is stable
 - **WHEN** a document with a field carrying `description` and `ai_context` instructions is imported and then exported
@@ -140,18 +140,6 @@ A measure SHALL export as an Ossie metric when every aggregate in it reads exact
 #### Scenario: Boolean sum
 - **WHEN** a measure is `sum(is_paid)` over a BOOLEAN column
 - **THEN** the metric counts the true values on every supported database
-
-### Requirement: Field and source expressions use a portable form only when exact
-
-A field expression SHALL be written as portable `sql` only when reading its portable rendering back and rendering it in the datasource's dialect reproduces the datasource-dialect rendering exactly. Otherwise the expression SHALL be written with no `sql` and one `dialects` entry holding the datasource-dialect text verbatim, under the Ossie token for the datasource's type. Every supported datasource type SHALL map to exactly one Ossie dialect token, which the importer reads as that datasource's own dialect.
-
-#### Scenario: Portable expression
-- **WHEN** a DuckDB column is `price * quantity`
-- **THEN** its field has `sql: price * quantity` and no `dialects`
-
-#### Scenario: Dialect-only expression
-- **WHEN** a Postgres column uses a Postgres-only function whose portable rendering does not read back identically
-- **THEN** its field has no `sql` and one `dialects` entry `POSTGRES` holding the column's SQL verbatim
 
 ### Requirement: SLayer-only content travels in a SLAYER extension
 
@@ -239,3 +227,23 @@ A comparison of a temporal value with an instant — a date-time literal or a da
 
 - **WHEN** measures are `count(*) FILTER (WHERE ts in '2024-04-10')`, `count(*) FILTER (WHERE ts = '2025-Q1')` and `count(*) FILTER (WHERE ts >= 'last month')`, exported without extensions
 - **THEN** none is exported as a metric, and each is reported as SLayer-only
+
+### Requirement: Each expression form exports as itself
+
+A field's portable `sql` SHALL export as the field's `sql`, and each `dialects` entry SHALL export as a `dialects` entry with its text; an entry tagged with the datasource's own dialect, or a field's `sql` not yet converted, SHALL export under the Ossie token for the datasource's type. Every supported datasource type SHALL map to exactly one Ossie dialect token, which the importer reads as that datasource's own dialect. Datasource-dialect text SHALL never be exported as portable `sql`. When a field's definition has another field's definition replaced into it, the result SHALL be portable `sql` only when every replaced part is portable, and otherwise the entry for the datasource's dialect.
+
+#### Scenario: Portable expression
+- **WHEN** a DuckDB field is `expression: "price * quantity"`
+- **THEN** its exported field has `sql: price * quantity` and no `dialects`
+
+#### Scenario: Dialect-only expression
+- **WHEN** a Postgres field is `{dialects: [{dialect: POSTGRES, expression: "amount / qty"}]}`
+- **THEN** its exported field has no `sql` and one `dialects` entry `POSTGRES` holding `amount / qty`
+
+#### Scenario: A portable field over a dialect field
+- **WHEN** a Postgres field `ratio` is `expression: "orders.part * 2"` and `part` is `{dialects: [{dialect: POSTGRES, expression: "amount / qty"}]}`
+- **THEN** exported `ratio` has no `sql` and one `POSTGRES` entry reading `(amount / qty) * 2`
+
+#### Scenario: Export and re-import keep values
+- **WHEN** a dataset with a derived, a filtered, a quoted and a dialect-only field is exported and imported again into the same DuckDB datasource
+- **THEN** every field returns the same values as before

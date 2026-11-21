@@ -24,7 +24,7 @@ from tests._usage_reporting_helpers import (
 )
 
 _NOTICE_URL = "docs.motley.ai/slayer/reference/usage-reporting"
-_QUERY = {"source_model": "orders", "measures": ["sum(amount)"]}
+_QUERY = {"population": "orders", "metrics": ["sum(orders.amount)"]}
 
 _LIBRARY_SCRIPT = """
 import asyncio
@@ -86,9 +86,9 @@ def test_cli_query_records(store: str, usage_reporting_env) -> None:
 
 def test_python_m_slayer_records(store: str, usage_reporting_env) -> None:
     quiet_config()
-    result = run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
+    result = run_slayer(["datasets", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     assert result.returncode == 0, result.stderr
-    assert usage(show(), "cli:models.list")["ok"] == 1
+    assert usage(show(), "cli:datasets.list")["ok"] == 1
 
 
 def test_console_script_records(store: str, usage_reporting_env) -> None:
@@ -97,8 +97,8 @@ def test_console_script_records(store: str, usage_reporting_env) -> None:
         pytest.skip("no slayer console script next to the interpreter")
     quiet_config()
     result = subprocess.run(
-        [str(script), "models", "--storage", store, "list"],
+        [str(script), "datasets", "--storage", store, "list"],
         env=usage_reporting_env.subprocess_env(), capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
-    assert usage(show(), "cli:models.list")["ok"] == 1
+    assert usage(show(), "cli:datasets.list")["ok"] == 1

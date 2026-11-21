@@ -20,6 +20,7 @@ from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_keys import CURRENT_KEYS, dataset_in
 from slayer.storage.sqlite_conn import transaction
 from tests._granularity_rename_fixtures import write_raw_store
 
@@ -87,7 +88,7 @@ def datasource_doc(*, db_path: str, dialect: str, granularities: Sequence[dict] 
     return doc
 
 
-_ORDER_COLUMNS = [
+_ORDER_FIELDS = [
     {"name": "order_id", "type": "INT", "primary_key": True},
     {"name": "customer_id", "type": "INT"},
     {"name": "status", "type": "TEXT"},
@@ -101,18 +102,19 @@ _ORDER_COLUMNS = [
 ]
 
 
-def orders_doc(*, version: int | None = STORED_VERSIONS["SlayerModel"], measures: Sequence[dict] = (),
+def orders_doc(*, version: int | None = STORED_VERSIONS["SlayerModel"], metrics: Sequence[dict] = (),
                **extra: Any) -> dict:
     """``version=None`` is a fresh (unversioned) payload."""
     doc: dict[str, Any] = {
-        "name": "orders", "sql_table": "orders", "data_source": DS, "columns": _ORDER_COLUMNS,
+        "name": "orders", "sql_table": "orders", "data_source": DS, "columns": _ORDER_FIELDS,
         "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
         **extra,
     }
-    if version is not None:
-        doc["version"] = version
-    if measures:
-        doc["measures"] = list(measures)
+    if metrics:
+        doc["measures"] = list(metrics)
+    if version is None:
+        return dataset_in(doc, CURRENT_KEYS)
+    doc["version"] = version
     return doc
 
 
@@ -178,7 +180,7 @@ async def make_store(tmp_path: Any) -> AsyncIterator[StoreFactory]:
         ds = datasource_doc(db_path=db_path, dialect=dialect, granularities=granularities)
         datasources.append(DatasourceConfig.model_validate(ds))
         docs = list(models) if models is not None else [orders_doc(), customers_doc(), regions_doc()]
-        return await write_raw_store(backend=backend, base=base, datasources=[ds], models=docs, memories=memories)
+        return await write_raw_store(backend=backend, base=base, datasources=[ds], datasets=docs, memories=memories)
 
     try:
         yield _make

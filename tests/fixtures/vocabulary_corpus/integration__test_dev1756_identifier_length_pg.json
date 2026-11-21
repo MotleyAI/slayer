@@ -1,0 +1,170 @@
+{
+ "source": "tests/integration/test_dev1756_identifier_length_pg.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "SandboxConsumer",
+    "join_pairs": [
+     [
+      "consumer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "SandboxConsumer",
+    "from_columns": [
+     "consumer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "SandboxCustomer",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "SandboxCustomer",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "SandboxSubscription",
+    "join_pairs": [
+     [
+      "subscription_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "SandboxSubscription",
+    "from_columns": [
+     "subscription_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 117,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 120,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 179,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 192,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 218,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 229,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 242,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 257,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 263,
+   "reason": "not fully literal"
+  }
+ ]
+}

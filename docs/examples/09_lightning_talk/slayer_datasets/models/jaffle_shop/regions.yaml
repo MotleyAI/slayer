@@ -1,0 +1,29 @@
+version: 28
+name: regions
+sql_table: regions
+source_kind: table
+query_variables: {}
+data_source: jaffle_shop
+fields:
+- name: id
+  expression: id
+  datatype: String
+  primary_key: true
+  unique: false
+  label: Region ID
+  hidden: false
+- name: name
+  expression: name
+  datatype: String
+  primary_key: false
+  unique: false
+  description: Region name.
+  label: Region
+  hidden: false
+metrics: []
+aggregations: []
+relationships: []
+filters: []
+description: "Sales regions grouping the stores \u2014 one row per region."
+hidden: false
+access_tags: []

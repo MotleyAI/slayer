@@ -17,7 +17,7 @@ import sqlglot
 from slayer.core.query import SlayerQuery
 from slayer.sql.scope_check import assert_dependency_ordered_ctes, assert_scope_closed
 
-from tests._dev1832_fixtures import dev1832_models
+from tests._dev1832_fixtures import dev1832_datasets
 from tests._engine_helpers import _engine_generate, _extract_cte_body
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -25,68 +25,77 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1958_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_TD = {"dimension": "ordered_at", "granularity": "month"}
-_TD_DR = {**_TD, "date_range": ["2024-02-01", "2024-03-31"]}
-_SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
-_REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"
+def _td(pop: str) -> dict:
+    return {"field": f"{pop}.ordered_at", "granularity": "month"}
+
+
+def _td_dr(pop: str) -> dict:
+    return {**_td(pop), "date_range": ["2024-02-01", "2024-03-31"]}
+
+
+def _share(pop: str) -> str:
+    return f"sum({pop}.amount) / sum({pop}.amount, partition_by=[{pop}.ordered_at])"
+
+
+_REGION_SHARE = "sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.region])"
 _EVENT = "customers.regions.region_events.value"
 
 
-def _monthly(formula: str, *, dr: bool = False, dims=("region",), **kw) -> dict:
-    return {"source_model": "monthly", "dimensions": list(dims),
-            "time_dimensions": [_TD_DR if dr else _TD],
-            "measures": [{"formula": formula, "name": "t"}], **kw}
+def _monthly(expression: str, *, dr: bool = False, dims=("monthly.region",), **kw) -> dict:
+    return {"population": "monthly", "dimensions": list(dims),
+            "time_dimensions": [_td_dr("monthly") if dr else _td("monthly")],
+            "metrics": [{"metric": expression, "alias": "t"}], **kw}
 
 
-def _orders(formula: str, *, dims, **kw) -> dict:
-    return {"source_model": "orders", "dimensions": list(dims), "time_dimensions": [_TD],
-            "measures": [{"formula": formula, "name": "t"}], **kw}
+def _orders(expression: str, *, dims, **kw) -> dict:
+    return {"population": "orders", "dimensions": list(dims), "time_dimensions": [_td("orders")],
+            "metrics": [{"metric": expression, "alias": "t"}], **kw}
 
 
 def _cases() -> dict:
     return {
-        "leaf/share": _monthly(f"time_shift({_SHARE}, -1)"),
-        "leaf/change": _monthly(f"change({_SHARE})"),
-        "leaf/change_pct": _monthly(f"change_pct({_SHARE})"),
+        "leaf/share": _monthly(f"time_shift({_share('monthly')}, -1)"),
+        "leaf/change": _monthly(f"change({_share('monthly')})"),
+        "leaf/change_pct": _monthly(f"change_pct({_share('monthly')})"),
         "leaf/trivial_composite": _monthly(
-            "time_shift(sum(amount, partition_by=[ordered_at]) / 2, -1)"),
+            "time_shift(sum(monthly.amount, partition_by=[monthly.ordered_at]) / 2, -1)"),
         "leaf/non_time_partition": _monthly(f"time_shift({_REGION_SHARE}, -1)"),
         "leaf/reaggregation": _monthly(
-            "avg(time_shift(sum(amount, partition_by=[region, ordered_at]) "
-            "/ sum(amount, partition_by=[ordered_at]), -1))", dims=()),
-        "leaf/ranked_composite": _monthly("time_shift(last(amount) / 2, -1)"),
-        "leaf/windowed_composite": _monthly("time_shift(sum(amount, window='90d') / 2, -1)"),
+            "avg(time_shift(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at]) "
+            "/ sum(monthly.amount, partition_by=[monthly.ordered_at]), -1))", dims=()),
+        "leaf/ranked_composite": _monthly("time_shift(last(monthly.amount) / 2, -1)"),
+        "leaf/windowed_composite": _monthly("time_shift(sum(monthly.amount, window='90d') / 2, -1)"),
         "leaf/carried_degenerate": _monthly(
-            "time_shift(sum(amount) / max(sum(amount, partition_by=[region]), "
-            "partition_by=region), -1)"),
+            "time_shift(sum(monthly.amount) / max(sum(monthly.amount, partition_by=[monthly.region]), "
+            "partition_by=monthly.region), -1)"),
         "frame/bare_partitioned": _monthly(
-            "time_shift(sum(amount, partition_by=[ordered_at]), -1)", dr=True),
-        "frame/bare_ranked": _monthly("time_shift(last(amount), -1)", dr=True),
-        "frame/bare_windowed": _monthly("time_shift(sum(amount, window='90d'), -1)", dr=True),
+            "time_shift(sum(monthly.amount, partition_by=[monthly.ordered_at]), -1)", dr=True),
+        "frame/bare_ranked": _monthly("time_shift(last(monthly.amount), -1)", dr=True),
+        "frame/bare_windowed": _monthly("time_shift(sum(monthly.amount, window='90d'), -1)", dr=True),
         "frame/non_time_partition": _monthly(f"time_shift({_REGION_SHARE}, -1)", dr=True),
         "frame/mixed_conjunction": _monthly(
-            "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
-            filters=["ordered_at >= '2024-02-01' and region = 'North'"]),
-        "join/two_offsets": {**_monthly(""), "measures": [
-            {"formula": f"time_shift({_SHARE}, -1)", "name": "t1"},
-            {"formula": f"time_shift({_SHARE}, -2)", "name": "t2"}]},
-        "join/unaligned_day": _monthly("time_shift(sum(amount), -1, 'day')"),
+            "time_shift(sum(monthly.amount) + sum(monthly.amount, partition_by=[monthly.ordered_at]), -1)",
+            filter=["monthly.ordered_at >= '2024-02-01' and monthly.region = 'North'"]),
+        "join/two_offsets": {**_monthly(""), "metrics": [
+            {"metric": f"time_shift({_share('monthly')}, -1)", "alias": "t1"},
+            {"metric": f"time_shift({_share('monthly')}, -2)", "alias": "t2"}]},
+        "join/unaligned_day": _monthly("time_shift(sum(monthly.amount), -1, 'day')"),
         "population/association_filter": _orders(
-            f"time_shift({_SHARE}, -1)", dims=["status"], filters=[f"{_EVENT} > 40"]),
+            f"time_shift({_share('orders')}, -1)", dims=["orders.status"], filter=[f"{_EVENT} > 40"]),
         "population/associate_dimension": _orders(
-            "time_shift(sum(amount), -1)", dims=[_EVENT], to_many_handling="associate"),
+            "time_shift(sum(orders.amount), -1)", dims=[_EVENT], to_many_handling="associate"),
         "population/tier_partition": _orders(
-            "time_shift(sum(amount) / sum(amount, partition_by=[customers.tier]), -1)",
+            "time_shift(sum(orders.amount) / sum(orders.amount, partition_by=[customers.tier]), -1)",
             dims=["customers.tier"]),
         "population/fanning_partition": _orders(
-            f"time_shift(sum(amount) / sum(amount, partition_by=[{_EVENT}]), -1)",
-            dims=["status"]),
+            f"time_shift(sum(orders.amount) / sum(orders.amount, partition_by=[{_EVENT}]), -1)",
+            dims=["orders.status"]),
         "stage/share": [
-            {"name": "s1", "source_model": "monthly", "dimensions": ["region"],
-             "time_dimensions": [_TD], "measures": [{"formula": "sum(amount)", "name": "rev"}]},
-            {"source_model": "s1", "dimensions": ["region"], "time_dimensions": [_TD_DR],
-             "measures": [{"formula": "time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
-                           "name": "t"}]}],
+            {"name": "s1", "population": "monthly", "dimensions": ["monthly.region"],
+             "time_dimensions": [_td("monthly")], "metrics": [{"metric": "sum(monthly.amount)", "alias": "rev"}]},
+            {"population": "s1", "dimensions": ["s1.region"], "time_dimensions": [_td_dr("s1")],
+             "metrics": [{"metric": "time_shift(sum(s1.rev) / sum(s1.rev, partition_by=[s1.ordered_at]), -1)",
+                           "alias": "t"}]}],
     }
 
 
@@ -103,13 +112,13 @@ def _query(case) -> SlayerQuery | list[SlayerQuery | dict]:
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1832_models()
-    root_name = case[0]["source_model"] if isinstance(case, list) else case["source_model"]
-    root = next(m for m in models if m.name == root_name)
+    datasets = dev1832_datasets()
+    root_name = case[0]["population"] if isinstance(case, list) else case["population"]
+    root = next(d for d in datasets if d.name == root_name)
     try:
         return await _engine_generate(
-            query=_query(case), model=root,
-            extra_models=[m for m in models if m is not root],
+            query=_query(case), dataset=root,
+            extra_datasets=[d for d in datasets if d is not root],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

@@ -1,6 +1,6 @@
 """Golden SQL baseline for change/change_pct (any transform) over a
-cross-model inner combined into a composite, across the standard five-dialect
-matrix (harness: tests/_golden_harness.py), on the ``_dev1750_fixtures`` models.
+cross-dataset inner combined into a composite, across the standard five-dialect
+matrix (harness: tests/_golden_harness.py), on the ``_dev1750_fixtures`` datasets.
 
 The ``fc/*`` cases are the failing composite class: they are recorded as raises
 today and become SQL after the change (each such flip is an ALLOWED_DELTAS entry
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1750_fixtures import dev1750_models
+from tests._dev1750_fixtures import dev1750_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -30,12 +30,12 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"dimension": "ordered_at", "granularity": "month"}]
+_MONTH = [{"field": "orders.ordered_at", "granularity": "month"}]
 CM = "sum(customers.spend)"
 
 
 def _orders(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     kw.setdefault("time_dimensions", _MONTH)
     return SlayerQuery(**kw)
 
@@ -43,91 +43,91 @@ def _orders(**kw) -> SlayerQuery:
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
-        # Failing composite class — measure position (recorded as raises today).
+        # Failing composite class — metric position (recorded as raises today).
         "fc/change_plus_sum": _orders(
             to_many_handling="broadcast",
-            measures=[{"formula": f"change({CM}) + sum(amount)", "name": "c"}]),
+            metrics=[{"metric": f"change({CM}) + sum(orders.amount)", "alias": "c"}]),
         "fc/change_plus_count": _orders(
             to_many_handling="broadcast",
-            measures=[{"formula": f"change({CM}) + count(*)", "name": "c"}]),
+            metrics=[{"metric": f"change({CM}) + count(orders.*)", "alias": "c"}]),
         "fc/change_plus_max": _orders(
             to_many_handling="broadcast",
-            measures=[{"formula": f"change({CM}) + max(amount)", "name": "c"}]),
+            metrics=[{"metric": f"change({CM}) + max(orders.amount)", "alias": "c"}]),
         "fc/time_shift_plus_sum": _orders(
             to_many_handling="broadcast",
-            measures=[{"formula": f"time_shift({CM}, -1) + sum(amount)", "name": "c"}]),
+            metrics=[{"metric": f"time_shift({CM}, -1) + sum(orders.amount)", "alias": "c"}]),
         "fc/cumsum_plus_sum": _orders(
             to_many_handling="broadcast",
-            measures=[{"formula": f"cumsum({CM}) + sum(amount)", "name": "c"}]),
+            metrics=[{"metric": f"cumsum({CM}) + sum(orders.amount)", "alias": "c"}]),
         "fc/change_wscaled_plus_sum": _orders(
-            measures=[{"formula": "change(wscaled_sum(amount)) + sum(amount)", "name": "c"}]),
+            metrics=[{"metric": "change(wscaled_sum(orders.amount)) + sum(orders.amount)", "alias": "c"}]),
         "fc/iif_over_change": _orders(
             to_many_handling="broadcast",
-            measures=[{"formula": f"iif(change({CM}) > 0, {CM}, sum(amount))", "name": "c"}]),
+            metrics=[{"metric": f"iif(change({CM}) > 0, {CM}, sum(orders.amount))", "alias": "c"}]),
         "fc/change_plus_sum_by_status": _orders(
             to_many_handling="broadcast",
-            dimensions=["status"],
-            measures=[{"formula": f"change({CM}) + sum(amount)", "name": "c"}]),
+            dimensions=["orders.status"],
+            metrics=[{"metric": f"change({CM}) + sum(orders.amount)", "alias": "c"}]),
         # The issue's named single-transform shapes (already render).
         "named/change_wscaled": _orders(
-            measures=[{"formula": "change(wscaled_sum(amount))", "name": "d"}]),
+            metrics=[{"metric": "change(wscaled_sum(orders.amount))", "alias": "d"}]),
         "named/change_pct_wscaled": _orders(
-            measures=[{"formula": "change_pct(wscaled_sum(amount))", "name": "d"}]),
+            metrics=[{"metric": "change_pct(wscaled_sum(orders.amount))", "alias": "d"}]),
         "named/change_cm": _orders(
             to_many_handling="broadcast",
-            measures=[{"formula": f"change({CM})", "name": "d"}]),
+            metrics=[{"metric": f"change({CM})", "alias": "d"}]),
         "named/change_pct_cm": _orders(
             to_many_handling="broadcast",
-            measures=[{"formula": f"change_pct({CM})", "name": "d"}]),
+            metrics=[{"metric": f"change_pct({CM})", "alias": "d"}]),
         # Composite in filter / order positions (post-wrapper path; placement).
         "pos/filter_composite": _orders(
             to_many_handling="broadcast",
-            dimensions=["status"],
-            filters=[f"change({CM}) + sum(amount) > 0"],
-            measures=[{"formula": "sum(amount)", "name": "a"}]),
+            dimensions=["orders.status"],
+            filter=[f"change({CM}) + sum(orders.amount) > 0"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "a"}]),
         "pos/order_composite": _orders(
             to_many_handling="broadcast",
-            dimensions=["status"],
-            measures=[{"formula": "sum(amount)", "name": "a"}],
-            order=[{"column": f"change({CM}) + sum(amount)", "direction": "desc"}]),
-        # Filter placement by mask typing: row mask (base WHERE) vs measure mask
+            dimensions=["orders.status"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
+            order=[{"field": f"change({CM}) + sum(orders.amount)", "direction": "desc"}]),
+        # Filter placement by mask typing: row mask (base WHERE) vs metric mask
         # (HAVING) — the already-legal placements the stage rule must preserve.
         "pos/row_mask": _orders(
-            dimensions=["status"], filters=["status = 'ok'"],
-            measures=[{"formula": "sum(amount)", "name": "a"}]),
+            dimensions=["orders.status"], filter=["orders.status = 'ok'"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "a"}]),
         "pos/measure_mask": _orders(
-            dimensions=["status"], filters=["sum(amount) > 10"],
-            measures=[{"formula": "sum(amount)", "name": "a"}]),
-        # Windowed-value filter (a ranked cross-model value) — D5 places it at the
+            dimensions=["orders.status"], filter=["sum(orders.amount) > 10"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "a"}]),
+        # Windowed-value filter (a ranked cross-dataset value) — D5 places it at the
         # combined outer WHERE; the "with transform" variant is pos/filter_composite.
         "pos/windowed_value_filter": _orders(
             to_many_handling="broadcast",
-            dimensions=["status"],
-            filters=["last(customers.spend, customers.signup_at) > 50"],
-            measures=[{"formula": "sum(amount)", "name": "a"}]),
+            dimensions=["orders.status"],
+            filter=["last(customers.spend, customers.signup_at) > 50"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "a"}]),
         # Transform over a composite over a transform (D10 alternation class).
         "alt/last_over_change": _orders(
-            measures=[{"formula": "last(change(sum(amount)))", "name": "t"}]),
+            metrics=[{"metric": "last(change(sum(orders.amount)))", "alias": "t"}]),
         "alt/last_over_change_filtered": _orders(
-            dimensions=["status"],
-            measures=[{"formula": "change(sum(amount))", "name": "ch"}],
-            filters=["last(change(sum(amount))) < 0"]),
+            dimensions=["orders.status"],
+            metrics=[{"metric": "change(sum(orders.amount))", "alias": "ch"}],
+            filter=["last(change(sum(orders.amount))) < 0"]),
         "alt/last_over_change_cumsum": _orders(
-            measures=[{"formula": "last(change(cumsum(sum(amount))))", "name": "t"}]),
+            metrics=[{"metric": "last(change(cumsum(sum(orders.amount))))", "alias": "t"}]),
         # Derived composites at two different levels — pins the one fused
         # trailing composite step (D8/D10) byte-for-byte.
         "alt/two_level_composites": _orders(
-            measures=[{"formula": "change(sum(amount))", "name": "ch1"},
-                      {"formula": "change(cumsum(sum(amount)))", "name": "ch2"}]),
+            metrics=[{"metric": "change(sum(orders.amount))", "alias": "ch1"},
+                      {"metric": "change(cumsum(sum(orders.amount)))", "alias": "ch2"}]),
     }
 
 
 async def _generate_one(query: SlayerQuery, dialect: str):
     """Emitted SQL, or a structured record of the raised error."""
-    models = dev1750_models()
+    models = dev1750_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

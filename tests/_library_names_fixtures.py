@@ -1,4 +1,4 @@
-"""Raw stores whose models define aggregations named after library functions, written as the previous release did.
+"""Raw stores whose datasets define aggregations named after library functions, written as the previous release did.
 
 Physical tables::
 
@@ -54,18 +54,18 @@ def seed(db_path: str, *, dialect: str) -> None:
         cur.executemany("INSERT INTO customers VALUES (?,?)", CUSTOMER_ROWS)
 
 
-def agg(name: str, formula: str = "SUM({value})", **params: str) -> dict:
-    out: dict[str, Any] = {"name": name, "formula": formula}
+def agg(name: str, expression: str = "SUM({value})", **params: str) -> dict:
+    out: dict[str, Any] = {"name": name, "formula": expression}
     if params:
         out["params"] = [{"name": k, "sql": v} for k, v in params.items()]
     return out
 
 
 def t_doc(
-    *, name: str = "t", aggregations: Sequence[dict] = (), measures: Sequence[dict] = (),
+    *, name: str = "t", aggregations: Sequence[dict] = (), metrics: Sequence[dict] = (),
     version: int = PREVIOUS_MODEL_VERSION,
 ) -> dict:
-    """Stored model over ``t`` joining ``customers``."""
+    """Stored dataset over ``t`` with a relationship to ``customers``."""
     doc: dict[str, Any] = {
         "version": version, "name": name, "sql_table": "t", "data_source": DS,
         "columns": [
@@ -78,8 +78,8 @@ def t_doc(
     }
     if aggregations:
         doc["aggregations"] = list(aggregations)
-    if measures:
-        doc["measures"] = list(measures)
+    if metrics:
+        doc["measures"] = list(metrics)
     return doc
 
 
@@ -91,7 +91,7 @@ def customers_doc(*, version: int = PREVIOUS_MODEL_VERSION) -> dict:
 
 
 def saved_query_doc(*, name: str, stage: dict, version: int = PREVIOUS_MODEL_VERSION) -> dict:
-    """A query-backed model (run by name) with one stored stage."""
+    """A query-backed dataset (run by name) with one stored stage."""
     return {"version": version, "name": name, "data_source": DS,
             "source_queries": [{"version": PREVIOUS_QUERY_VERSION, **stage}]}
 
@@ -103,15 +103,15 @@ def memory_doc(*, memory_id: str, query: dict) -> dict:
 
 @contextlib.asynccontextmanager
 async def stored_engine(
-    *, models: Sequence[dict], memories: Sequence[dict] = (), dialect: str = "sqlite",
+    *, datasets: Sequence[dict], memories: Sequence[dict] = (), dialect: str = "sqlite",
 ) -> AsyncGenerator[SlayerQueryEngine]:
-    """An engine over a raw YAML store of ``models`` (plus ``customers``) and ``memories``."""
+    """An engine over a raw YAML store of ``datasets`` (plus ``customers``) and ``memories``."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, f"live.{'duckdb' if dialect == 'duckdb' else 'db'}")
         seed(db_path, dialect=dialect)
         ds = DatasourceConfig(name=DS, type=dialect, database=db_path)
         storage = await raw_store(backend="yaml", base=os.path.join(tmp, "store"), datasource=ds,
-                                  models=[*models, customers_doc()], memories=memories)
+                                  models=[*datasets, customers_doc()], memories=memories)
         engine = SlayerQueryEngine(storage=storage)
         try:
             yield engine
@@ -120,8 +120,8 @@ async def stored_engine(
             engine_factory.invalidate_engine(ds)
 
 
-def measure(formula: str, name: str = "v") -> dict:
-    return {"formula": formula, "name": name}
+def metric(expression: str, name: str = "v") -> dict:
+    return {"metric": expression, "alias": name}
 
 
 def value(resp: SlayerResponse, *, name: str = "v") -> Any:

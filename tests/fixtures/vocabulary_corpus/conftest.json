@@ -1,0 +1,34 @@
+{
+ "source": "tests/conftest.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 249,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 255,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 257,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 258,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 292,
+   "reason": "not fully literal"
+  }
+ ]
+}

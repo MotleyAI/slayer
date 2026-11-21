@@ -236,7 +236,7 @@ def test_log10_zero_is_null(sqlite_conn):
 
 
 # --- log2 ------------------------------------------------------------------
-# Registered alongside log10 so a `log2(x)` formula renders verbatim on SQLite.
+# Registered alongside log10 so a `log2(x)` expression renders verbatim on SQLite.
 
 
 def test_log2_known_value(sqlite_conn):

@@ -1,13 +1,15 @@
-"""Converter integration for FILTER_PARAMS (slayer/cube/converter.py, DEV-1730).
+"""Converter integration for FILTER_PARAMS (slayer/cube/converter.py).
 
 Requiredness (block vs bare) is resolved here against ``meta.required`` +
 ``honor_required_meta``; sentinels from the front-end are replaced with the
-emitted SLayer Mode-A text; variables are stashed in ``model.meta`` and reported.
+emitted SLayer Mode-A text; variables are stashed in ``dataset.meta`` and reported.
 """
 
 
+from slayer.core.query import extract_dataset_variables
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.js_parser import parse_cube_js
+from slayer.cube.models import CubeProject
 from slayer.cube.report import CubeIssueCategory
 
 DS = "test_ds"
@@ -53,11 +55,10 @@ def _convert(source: str, *, honor_required_meta: bool = True):
         parse_issues=result.issues, honor_required_meta=honor_required_meta,
     )
     out = conv.convert()
-    return {m.name: m for m in out.models}, out.report
+    return {m.name: m for m in out.datasets}, out.report
 
 
 def _as_project(js_result):
-    from slayer.cube.models import CubeProject
     return CubeProject(cubes=js_result.cubes, views=js_result.views)
 
 
@@ -82,7 +83,7 @@ def test_ignore_required_meta_makes_scalar_arrow_a_block():
     models, _ = _convert(_rr_source(), honor_required_meta=False)
     sql = models["RrDrivers"].sql
     # Now the scalar-position arrow is optional -> Cube's (1=1)::TIMESTAMP shape
-    # after collapse. Here we assert the block survives to the model.
+    # after collapse. Here we assert the block survives to the dataset.
     assert "{? '{fulfillment_date_from}' ?}::TIMESTAMP AS ty_start_date" in sql
 
 
@@ -102,7 +103,7 @@ def test_report_has_one_variable_entry_per_logical_variable():
     assert reported == {"fulfillment_date", "brand", "market"}
     assert all(i.severity == "info" for i in var_issues)
     # Dedup is by variable NAME, so both fulfillment_date bounds are reported —
-    # the report must agree with meta.cube_variables (DEV-1730 review).
+    # the report must agree with meta.cube_variables.
     all_msgs = " ".join(i.message for i in var_issues)
     assert "fulfillment_date_from" in all_msgs
     assert "fulfillment_date_to" in all_msgs
@@ -134,9 +135,8 @@ def test_meta_declares_list_valued_only_for_the_in_list_form():
 
 
 def test_model_variables_discoverable_required_and_optional():
-    from slayer.core.query import extract_model_variables
     models, _ = _convert(_rr_source())
-    v = extract_model_variables(models["RrDrivers"])
+    v = extract_dataset_variables(models["RrDrivers"])
     # the range arrow references both from and to -> both required.
     assert set(v.required) == {"fulfillment_date_from", "fulfillment_date_to"}
     assert set(v.optional) == {"brand", "market"}
@@ -194,7 +194,7 @@ def test_dropped_cube_emits_no_variable_entries():
 
 
 def test_generated_model_sql_parses_after_probe_render():
-    # The converter must validate the sentinel-resolved SQL; a model that
+    # The converter must validate the sentinel-resolved SQL; a dataset that
     # survives conversion has parseable SQL once blocks collapse + vars fill.
     models, _ = _convert(_rr_source())
     assert "RrDrivers" in models  # survived offline validation

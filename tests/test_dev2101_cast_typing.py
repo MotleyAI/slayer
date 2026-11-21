@@ -2,36 +2,45 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.models import SlayerDataset
 from slayer.core.keys import CastKey, ValueKey, walk_value_keys
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import dimension_key_metadata, measure_key_type
+from slayer.engine.key_metadata import SlotTyping
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from tests._dev2101_fixtures import customers_model, orders_model
+from tests._dev2101_fixtures import customers_dataset, orders_dataset
 
-ORDERS = orders_model()
-BUNDLE = ResolvedSourceBundle(dialect="postgres", source_model=ORDERS, referenced_models=[customers_model()])
+ORDERS = orders_dataset()
+BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[customers_dataset()])
+
+
+def _key_type(*, dataset: SlayerDataset, key: ValueKey, bundle: Optional[ResolvedSourceBundle] = None) -> Optional[DataType]:
+    """The one derivation's type of ``key`` over ``dataset``."""
+    bundle = bundle or ResolvedSourceBundle(dialect="postgres", population=dataset)
+    return SlotTyping(scope=DatasetScope(population=dataset), bundle=bundle).value_type(key)
 
 TYPE_CASES = [
-    ("INT", DataType.INT), ("INTEGER", DataType.INT), ("BIGINT", DataType.INT), ("SMALLINT", DataType.INT),
-    ("TINYINT", DataType.INT),
-    ("FLOAT", DataType.DOUBLE), ("DOUBLE", DataType.DOUBLE), ("DOUBLE PRECISION", DataType.DOUBLE),
-    ("REAL", DataType.DOUBLE), ("DECIMAL(10,2)", DataType.DOUBLE), ("NUMERIC", DataType.DOUBLE),
-    ("TEXT", DataType.TEXT), ("VARCHAR(3)", DataType.TEXT), ("CHAR(2)", DataType.TEXT),
+    ("INT", DataType.INTEGER), ("INTEGER", DataType.INTEGER), ("BIGINT", DataType.INTEGER), ("SMALLINT", DataType.INTEGER),
+    ("TINYINT", DataType.INTEGER),
+    ("FLOAT", DataType.FLOAT), ("DOUBLE", DataType.FLOAT), ("DOUBLE PRECISION", DataType.FLOAT),
+    ("REAL", DataType.FLOAT), ("DECIMAL(10,2)", DataType.FLOAT), ("NUMERIC", DataType.FLOAT),
+    ("TEXT", DataType.STRING), ("VARCHAR(3)", DataType.STRING), ("CHAR(2)", DataType.STRING),
     ("BOOLEAN", DataType.BOOLEAN),
     ("DATE", DataType.DATE),
-    ("TIMESTAMP", DataType.TIMESTAMP), ("DATETIME", DataType.TIMESTAMP),
-    ("JSON", DataType.UNKNOWN), ("UUID", DataType.UNKNOWN), ("BYTEA", DataType.UNKNOWN),
+    ("TIMESTAMP", DataType.DATETIME), ("DATETIME", DataType.DATETIME),
+    ("JSON", DataType.OPAQUE), ("UUID", DataType.OPAQUE), ("BYTEA", DataType.OPAQUE),
 ]
 
 
 def _bind(text: str) -> ValueKey:
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=ORDERS), bundle=BUNDLE,
-                     allow_measures=True).value_key
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=ORDERS), bundle=BUNDLE,
+                     allow_metrics=True).value_key
 
 
 class TestCastKey:
@@ -56,21 +65,21 @@ class TestCastKey:
 class TestInferredType:
     @pytest.mark.parametrize(("target", "expected"), TYPE_CASES, ids=[t for t, _ in TYPE_CASES])
     def test_dimension_type(self, target: str, expected: DataType) -> None:
-        dim_type, _fmt, _desc = dimension_key_metadata(model=ORDERS, key=_bind(f"CAST(code AS {target})"),
+        dim_type = _key_type(dataset=ORDERS, key=_bind(f"CAST(code AS {target})"),
                                                        bundle=BUNDLE)
         assert dim_type == expected
 
-    @pytest.mark.parametrize(("target", "expected"), [c for c in TYPE_CASES if c[1] is not DataType.UNKNOWN],
-                             ids=[t for t, e in TYPE_CASES if e is not DataType.UNKNOWN])
+    @pytest.mark.parametrize(("target", "expected"), [c for c in TYPE_CASES if c[1] is not DataType.OPAQUE],
+                             ids=[t for t, e in TYPE_CASES if e is not DataType.OPAQUE])
     def test_measure_type(self, target: str, expected: DataType) -> None:
-        assert measure_key_type(model=ORDERS, key=_bind(f"max(CAST(code AS {target}))")) == expected
+        assert _key_type(dataset=ORDERS, key=_bind(f"max(CAST(code AS {target}))")) == expected
 
     def test_try_cast_types_like_cast(self) -> None:
-        dim_type, _fmt, _desc = dimension_key_metadata(model=ORDERS, key=_bind("TRY_CAST(code AS DATE)"),
+        dim_type = _key_type(dataset=ORDERS, key=_bind("TRY_CAST(code AS DATE)"),
                                                        bundle=BUNDLE)
         assert dim_type == DataType.DATE
 
     def test_cast_to_date_feeds_a_date_function(self) -> None:
         key = _bind("date_diff('day', CAST(created_txt AS DATE), DATE '2025-01-01')")
-        dim_type, _fmt, _desc = dimension_key_metadata(model=ORDERS, key=key, bundle=BUNDLE)
-        assert dim_type == DataType.INT
+        dim_type = _key_type(dataset=ORDERS, key=key, bundle=BUNDLE)
+        assert dim_type == DataType.INTEGER

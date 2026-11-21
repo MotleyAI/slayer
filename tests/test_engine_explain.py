@@ -14,7 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ExplainUnsupportedError, SchemaDriftError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import client as client_module
 from slayer.database import engine_factory
@@ -29,16 +29,16 @@ postgresql_proc = factories.postgresql_proc(port=None)
 
 _ORDERS_DDL = "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount DOUBLE PRECISION)"
 _ORDERS_ROWS = "INSERT INTO orders VALUES (1, 10.0), (2, 20.0)"
-_QUERY = {"source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "total"}]}
+_QUERY = {"population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}]}
 _PLAN = [{"StmtText": "plan", "NodeId": 1}]
 
 
-def _orders_model(data_source: str) -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset(data_source: str) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -46,7 +46,7 @@ def _orders_model(data_source: str) -> SlayerModel:
 async def _storage(base: str, datasource: DatasourceConfig) -> YAMLStorage:
     storage = YAMLStorage(base_dir=base)
     await storage.save_datasource(datasource)
-    await storage.save_model(_orders_model(datasource.name), _validate=False)
+    await storage.save_dataset(_orders_dataset(datasource.name), _validate=False)
     return storage
 
 
@@ -227,6 +227,6 @@ class TestTheEngineCallsExplain:
                 cur.execute("DROP TABLE orders")
             with pytest.raises(SchemaDriftError) as excinfo:
                 await engine.execute(_QUERY, explain=True)
-        assert "orders" in excinfo.value.models
+        assert "orders" in excinfo.value.datasets
         assert isinstance(excinfo.value.__cause__, SQLAlchemyError)
         assert len(recorders[0].explained) == 1

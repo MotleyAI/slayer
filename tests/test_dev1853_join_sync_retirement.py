@@ -1,6 +1,6 @@
-"""DEV-1853 — ``join_sync`` mirroring and the scoped inversion helper are gone.
+"""``join_sync`` mirroring and the scoped inversion helper are gone.
 
-Reverse traversal is computed, never materialized: saving an INNER join
+Reverse traversal is computed, never materialized: saving an INNER relationship
 creates no mirror, the storage wrapper and dbt mirroring are deleted, and no
 parallel traversal logic survives outside the shared walker.
 """
@@ -14,9 +14,9 @@ import tempfile
 import slayer.search.graph as search_graph
 import slayer.storage.base as storage_base
 from slayer.core.enums import JoinType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.dbt.converter import DbtToSlayerConverter
-from slayer.engine.cardinality import join_safety
+from slayer.engine.cardinality import relationship_safety
 from slayer.storage.base import resolve_storage
 
 
@@ -33,7 +33,7 @@ def test_dbt_converter_no_longer_mirrors() -> None:
 
 
 def test_scoped_inversion_helper_is_subsumed() -> None:
-    assert not hasattr(join_safety, "resolve_correlation_hop")
+    assert not hasattr(relationship_safety, "resolve_correlation_hop")
 
 
 def test_search_graph_has_no_join_sync_dependency() -> None:
@@ -46,16 +46,16 @@ async def test_saving_an_inner_join_creates_no_mirror() -> None:
         storage = resolve_storage(d)
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="customers", data_source="ds", sql_table="customers",
-            columns=[Column(name="id", primary_key=True)]))
-        await storage.save_model(SlayerModel(
+            fields=[DatasetField(name="id", primary_key=True)]))
+        await storage.save_dataset(SlayerDataset(
             name="orders", data_source="ds", sql_table="orders",
-            columns=[Column(name="id", primary_key=True),
-                     Column(name="customer_id")],
-            joins=[ModelJoin(target_model="customers",
-                             join_pairs=[["customer_id", "id"]],
+            fields=[DatasetField(name="id", primary_key=True),
+                     DatasetField(name="customer_id")],
+            relationships=[DatasetRelationship(to="customers",
+                             from_columns=["customer_id"], to_columns=["id"],
                              join_type=JoinType.INNER)]))
-        customers = await storage.get_model("customers", data_source="ds")
+        customers = await storage.get_dataset("customers", data_source="ds")
         assert customers is not None
-        assert customers.joins == []
+        assert customers.relationships == []

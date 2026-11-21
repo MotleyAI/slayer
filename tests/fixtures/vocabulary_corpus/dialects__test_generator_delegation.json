@@ -1,0 +1,182 @@
+{
+ "source": "tests/dialects/test_generator_delegation.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(is_gold)"
+   },
+   "new": {
+    "metric": "sum(is_gold)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_prev_year"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_prev_year"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 117,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 486,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 492,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 493,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 494,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 495,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 496,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 672,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 686,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 689,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 703,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 705,
+   "reason": "not fully literal"
+  }
+ ]
+}

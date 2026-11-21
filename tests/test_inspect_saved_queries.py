@@ -1,4 +1,4 @@
-"""Saved queries are discoverable from the models they read (spec: queries/saved-query-refinement)."""
+"""Saved queries are discoverable from the datasets they read (spec: queries/saved-query-refinement)."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from typing import Any, Dict
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.inspect.model_render import _resolve_inspect_sections, _truncate_description
+from slayer.inspect.dataset_render import _resolve_inspect_sections, _truncate_description
 from slayer.inspect.service import InspectService
 from slayer.mcp.server import create_mcp_server
 from slayer.search.service import SearchService
@@ -29,51 +29,54 @@ ON_ORDERS = {
     "ext_revenue": EXTRA_DESCRIPTIONS["ext_revenue"],
     "rollup": EXTRA_DESCRIPTIONS["rollup"],
 }
-REVENUE = {"formula": "sum(amount)", "name": "revenue"}
 
 
-def _plain_model(name: str) -> SlayerModel:
-    return SlayerModel(name=name, data_source="test", sql_table="orders", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="region", type=DataType.TEXT),
-        Column(name="amount", type=DataType.DOUBLE),
+def _revenue(pop: str) -> dict:
+    return {"metric": f"sum({pop}.amount)", "alias": "revenue"}
+
+
+def _plain_dataset(name: str) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="region", datatype=DataType.STRING),
+        DatasetField(name="amount", datatype=DataType.FLOAT),
     ])
 
 
 @pytest.fixture
 async def storage(tmp_path) -> YAMLStorage:
     store = await build_refine_storage(str(tmp_path))
-    await store.save_model(_plain_model("targets"))
-    await store.save_model(_plain_model("untouched"))
+    await store.save_dataset(_plain_dataset("targets"))
+    await store.save_dataset(_plain_dataset("untouched"))
     engine = SlayerQueryEngine(storage=store)
     try:
         for name, query in (
             ("ext_revenue", {
-                "source_model": "orders",
-                "extensions": [{"source_name": "orders",
-                                "measures": [{"formula": "sum(amount * 2)", "name": "dbl"}]}],
-                "measures": [{"formula": "dbl", "name": "d"}],
+                "population": "orders",
+                "extensions": [{"dataset": "orders",
+                                "metrics": [{"expression": "sum(amount * 2)", "name": "dbl"}]}],
+                "metrics": [{"metric": "orders.dbl", "alias": "d"}],
             }),
             ("rollup", [
-                {"name": "rollup", "source_model": "orders", "dimensions": ["region"], "measures": [REVENUE]},
-                {"source_model": "rollup", "measures": [{"formula": "sum(revenue)", "name": "total"}]},
+                {"name": "rollup", "population": "orders", "dimensions": ["orders.region"], "metrics": [_revenue("orders")]},
+                {"population": "rollup", "metrics": [{"metric": "sum(rollup.revenue)", "alias": "total"}]},
             ]),
-            ("target_totals", {"source_model": "targets", "dimensions": ["region"], "measures": [REVENUE]}),
-            ("monthly_rollup", {"source_model": "monthly_revenue",
-                                "measures": [{"formula": "sum(revenue)", "name": "total"}]}),
+            ("target_totals", {"population": "targets", "dimensions": ["targets.region"], "metrics": [_revenue("targets")]}),
+            ("monthly_rollup", {"population": "monthly_revenue",
+                                "metrics": [{"metric": "sum(monthly_revenue.revenue)", "alias": "total"}]}),
         ):
-            await engine.create_model_from_query(query=query, name=name, description=EXTRA_DESCRIPTIONS[name])
-        await engine.save_model(SlayerModel(
+            await engine.create_dataset_from_query(query=query, name=name, description=EXTRA_DESCRIPTIONS[name])
+        await engine.save_dataset(SlayerDataset(
             name="hidden_q", data_source="test", hidden=True, description="Hidden saved query",
-            source_queries=[SlayerQuery.model_validate({"source_model": "orders", "measures": [REVENUE]})],
+            source_queries=[SlayerQuery.model_validate({"population": "orders", "metrics": [_revenue("orders")]})],
         ))
     finally:
         await engine.aclose()
     return store
 
 
-async def _inspect(storage: YAMLStorage, model: str, **kwargs: Any) -> str:
-    return await InspectService(storage=storage).inspect(reference=f"test.{model}", entity_type="model", **kwargs)
+async def _inspect(storage: YAMLStorage, dataset: str, **kwargs: Any) -> str:
+    return await InspectService(storage=storage).inspect(reference=f"test.{dataset}", entity_type="dataset", **kwargs)
 
 
 def _listed(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -128,12 +131,12 @@ class TestModelViews:
     async def test_inspect_model_tool(self, storage: YAMLStorage) -> None:
         server = create_mcp_server(storage=storage)
         payload = await call_tool_json(
-            server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "format": "json", "sections": ["columns"]},
+            server, name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "format": "json", "sections": ["fields"]},
         )
         assert "saved_queries" not in payload
         payload = await call_tool_json(
             server, name="inspect",
-            arguments={"entity_type": "model", "reference": "orders", "compact": False, "format": "json", "sections": ["saved_queries"]},
+            arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "format": "json", "sections": ["saved_queries"]},
         )
         assert _listed(payload) == ON_ORDERS
 
@@ -145,9 +148,9 @@ class TestSectionSelection:
         assert _resolve_inspect_sections(["saved_queries", "fish"]) == (["saved_queries"], ["fish"])
 
     async def test_excluded(self, storage: YAMLStorage) -> None:
-        text = await _inspect(storage, "orders", compact=False, sections=["columns"])
+        text = await _inspect(storage, "orders", compact=False, sections=["fields"])
         assert "## Saved queries" not in text
-        payload = json.loads(await _inspect(storage, "orders", compact=False, sections=["columns"], format="json"))
+        payload = json.loads(await _inspect(storage, "orders", compact=False, sections=["fields"], format="json"))
         assert "saved_queries" not in payload
 
     async def test_included_alone(self, storage: YAMLStorage) -> None:
@@ -175,7 +178,7 @@ class TestSkeletonListings:
         payload = json.loads(await InspectService(storage=storage).inspect(
             reference="test", entity_type="datasource", compact=False, format="json",
         ))
-        models = {m["name"]: m for m in payload["models"]}
+        models = {m["name"]: m for m in payload["datasets"]}
         assert _listed(models["orders"]) == ON_ORDERS
         assert "saved_queries" not in models["untouched"]
         assert "hidden_q" not in models
@@ -185,7 +188,7 @@ class TestSkeletonListings:
             reference=None, entity_type="datasource", compact=False, format="json",
         ))
         (entry,) = payload["datasources"]
-        models = {m["name"]: m for m in entry["models"]}
+        models = {m["name"]: m for m in entry["datasets"]}
         assert _listed(models["orders"]) == ON_ORDERS
 
 

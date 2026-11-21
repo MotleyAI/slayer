@@ -11,7 +11,7 @@ from typing import Any, Optional
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -97,46 +97,46 @@ PX = TableSpec(
 TABLES = [BK, MX, SP, PX]
 
 
-def _cols(*spec: tuple[str, DataType]) -> list[Column]:
-    return [Column(name=n, type=t, primary_key=(n == "id")) for n, t in spec]
+def _fields(*spec: tuple[str, DataType]) -> list[DatasetField]:
+    return [DatasetField(name=n, datatype=t, primary_key=(n == "id")) for n, t in spec]
 
 
-def bk_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def bk_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="bk", sql_table="bk", data_source=data_source, default_time_dimension="ts",
-        columns=_cols(("id", DataType.INT), ("d", DataType.DATE), ("ts", DataType.TIMESTAMP),
-                      ("amount", DataType.DOUBLE)),
+        fields=_fields(("id", DataType.INTEGER), ("d", DataType.DATE), ("ts", DataType.DATETIME),
+                      ("amount", DataType.FLOAT)),
     )
 
 
-def mx_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def mx_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="mx", sql_table="mx", data_source=data_source, default_time_dimension="ts",
-        columns=_cols(("id", DataType.INT), ("d", DataType.DATE), ("ts", DataType.TIMESTAMP),
-                      ("shipped_at", DataType.TIMESTAMP)),
+        fields=_fields(("id", DataType.INTEGER), ("d", DataType.DATE), ("ts", DataType.DATETIME),
+                      ("shipped_at", DataType.DATETIME)),
     )
 
 
-def sp_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def sp_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="sp", sql_table="sp", data_source=data_source, default_time_dimension="ts",
-        columns=_cols(("id", DataType.INT), ("d", DataType.DATE), ("ts", DataType.TIMESTAMP),
-                      ("ts2", DataType.TIMESTAMP)),
+        fields=_fields(("id", DataType.INTEGER), ("d", DataType.DATE), ("ts", DataType.DATETIME),
+                      ("ts2", DataType.DATETIME)),
     )
 
 
-def px_model(*, data_source: str = "test", axis: str = "d", name: str = "px") -> SlayerModel:
-    return SlayerModel(
+def px_dataset(*, data_source: str = "test", axis: str = "d", name: str = "px") -> SlayerDataset:
+    return SlayerDataset(
         name=name, sql_table="px", data_source=data_source, default_time_dimension=axis,
-        columns=_cols(("id", DataType.INT), ("d", DataType.DATE), ("ts", DataType.TIMESTAMP),
-                      ("amount", DataType.DOUBLE)),
+        fields=_fields(("id", DataType.INTEGER), ("d", DataType.DATE), ("ts", DataType.DATETIME),
+                      ("amount", DataType.FLOAT)),
     )
 
 
-def all_models(*, data_source: str = "test") -> list[SlayerModel]:
+def all_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     return [
-        bk_model(data_source=data_source), mx_model(data_source=data_source), sp_model(data_source=data_source),
-        px_model(data_source=data_source), px_model(data_source=data_source, axis="ts", name="px_ts"),
+        bk_dataset(data_source=data_source), mx_dataset(data_source=data_source), sp_dataset(data_source=data_source),
+        px_dataset(data_source=data_source), px_dataset(data_source=data_source, axis="ts", name="px_ts"),
     ]
 
 
@@ -192,13 +192,13 @@ async def lt_engine(
         with pg_database(info, statements=[*server_statements("postgres", tables=tables), _pg_zone_statement()],
                          name="test") as ds:
             ds = with_granularities(ds)
-            async with pg_query_engine(ds, base_dir=base_dir, models=all_models(), validate=False,
+            async with pg_query_engine(ds, base_dir=base_dir, datasets=all_datasets(), validate=False,
                                        clock=clock) as engine:
                 yield engine
         return
     tables = TABLES if backend == "sqlite" else [BK, MX, PX]
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, tables), models=all_models(),
+        dialect=backend, seed=lambda p: seed_backend(backend, p, tables), datasets=all_datasets(),
         clock=clock, datasource_fields=DS_GRANULARITIES,
     ) as (engine, _db):
         yield engine
@@ -220,7 +220,7 @@ def midnight(value: date) -> datetime:
 
 def bucket_type(source: DataType, unit: str) -> DataType:
     """The logical type of ``date_trunc(unit, <source>)``."""
-    return DataType.DATE if source is DataType.DATE and unit not in SUB_DAY else DataType.TIMESTAMP
+    return DataType.DATE if source is DataType.DATE and unit not in SUB_DAY else DataType.DATETIME
 
 
 def _months_back(v: datetime, *, origin_month: int, multiple: int) -> datetime:
@@ -250,7 +250,7 @@ def oracle_bucket(value: date | datetime | None, unit: str) -> date | datetime |
         "year": lambda: day.replace(month=1, day=1),
         "fiscal_year": lambda: _months_back(day, origin_month=4, multiple=12),
     }[unit]()
-    source = DataType.DATE if is_date else DataType.TIMESTAMP
+    source = DataType.DATE if is_date else DataType.DATETIME
     return out.date() if bucket_type(source, unit) is DataType.DATE else out
 
 
@@ -315,7 +315,7 @@ def check_bucket_values(
 
 async def ids(engine: SlayerQueryEngine, *filters: str, model: str = "mx", data_source: Optional[str] = None) -> set[int]:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": model, "dimensions": ["id"], "filters": list(filters),
+        "population": model, "dimensions": [f"{model}.id"], "filter": list(filters),
     }), data_source=data_source)
     return {int(r[f"{model}.id"]) for r in resp.data}
 
@@ -324,9 +324,9 @@ async def by_id(engine: SlayerQueryEngine, expression: str, *, model: str = "mx"
                 data_source: Optional[str] = None) -> dict[int, Any]:
     """``{id: value}`` of an expression dimension."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": model, "dimensions": ["id", {"expression": expression, "name": "v"}],
+        "population": model, "dimensions": [f"{model}.id", {"field": expression, "alias": "v"}],
     }), data_source=data_source)
-    return {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+    return {int(r[f"{model}.id"]): r["v"] for r in resp.data}
 
 
 async def bucket_rows(engine: SlayerQueryEngine, *, column: str, unit: str, position: str, model: str = "bk",
@@ -334,16 +334,16 @@ async def bucket_rows(engine: SlayerQueryEngine, *, column: str, unit: str, posi
     """``(id, bucket)`` rows for ``date_trunc(unit, column)`` as a time dimension or an expression dimension."""
     if position == "time_dimension":
         payload: dict[str, Any] = {
-            "source_model": model, "dimensions": ["id"],
-            "time_dimensions": [{"dimension": column, "granularity": unit}],
+            "population": model, "dimensions": [f"{model}.id"],
+            "time_dimensions": [{"field": f"{model}.{column}", "granularity": unit}],
         }
         key = f"{model}.{column}"
     else:
         payload = {
-            "source_model": model,
-            "dimensions": ["id", {"expression": f"date_trunc('{unit}', {column})", "name": "b"}],
+            "population": model,
+            "dimensions": [f"{model}.id", {"field": f"date_trunc('{unit}', {model}.{column})", "alias": "b"}],
         }
-        key = f"{model}.b"
+        key = "b"
     resp = await engine.execute(SlayerQuery.model_validate(payload), data_source=data_source)
     return [(int(r[f"{model}.id"]), r[key]) for r in resp.data]
 
@@ -371,26 +371,26 @@ def known(*values: Any) -> bool:
 
 
 MIXED_FILTER_CASES: list[tuple[str, Any]] = [
-    ("d = ts", lambda d, ts, s: known(d, ts) and d == ts),
-    ("d < ts", lambda d, ts, s: known(d, ts) and d < ts),
-    ("d > ts", lambda d, ts, s: known(d, ts) and d > ts),
-    ("ts >= d", lambda d, ts, s: known(d, ts) and ts >= d),
-    ("d != ts", lambda d, ts, s: known(d, ts) and d != ts),
-    ("date_trunc('day', ts) = ts", lambda d, ts, s: known(ts) and ts.time() == time()),
-    ("date_trunc('day', ts) = d", lambda d, ts, s: known(d, ts) and ts.date() == d.date()),
-    ("d = date_trunc('hour', ts)", lambda d, ts, s: known(d, ts) and d == ts.replace(minute=0, second=0)),
-    ("date_trunc('hour', d) = ts", lambda d, ts, s: known(d, ts) and d == ts),
-    ("date_trunc('month', d) <= date_trunc('day', ts)",
+    ("mx.d = mx.ts", lambda d, ts, s: known(d, ts) and d == ts),
+    ("mx.d < mx.ts", lambda d, ts, s: known(d, ts) and d < ts),
+    ("mx.d > mx.ts", lambda d, ts, s: known(d, ts) and d > ts),
+    ("mx.ts >= mx.d", lambda d, ts, s: known(d, ts) and ts >= d),
+    ("mx.d != mx.ts", lambda d, ts, s: known(d, ts) and d != ts),
+    ("date_trunc('day', mx.ts) = mx.ts", lambda d, ts, s: known(ts) and ts.time() == time()),
+    ("date_trunc('day', mx.ts) = mx.d", lambda d, ts, s: known(d, ts) and ts.date() == d.date()),
+    ("mx.d = date_trunc('hour', mx.ts)", lambda d, ts, s: known(d, ts) and d == ts.replace(minute=0, second=0)),
+    ("date_trunc('hour', mx.d) = mx.ts", lambda d, ts, s: known(d, ts) and d == ts),
+    ("date_trunc('month', mx.d) <= date_trunc('day', mx.ts)",
      lambda d, ts, s: known(d, ts) and d.replace(day=1) <= ts.replace(hour=0, minute=0, second=0)),
-    ("d is not distinct from ts", lambda d, ts, s: (d is None and ts is None) or (known(d, ts) and d == ts)),
-    ("d is distinct from ts", lambda d, ts, s: not ((d is None and ts is None) or (known(d, ts) and d == ts))),
-    ("coalesce(shipped_at, d) = ts", lambda d, ts, s: known(s or d, ts) and (s or d) == ts),
-    ("ifnull(shipped_at, d) = ts", lambda d, ts, s: known(s or d, ts) and (s or d) == ts),
-    ("iif(shipped_at is null, d, shipped_at) = ts", lambda d, ts, s: known(s or d, ts) and (s or d) == ts),
-    ("CASE WHEN shipped_at IS NULL THEN d ELSE shipped_at END = ts",
+    ("mx.d is not distinct from mx.ts", lambda d, ts, s: (d is None and ts is None) or (known(d, ts) and d == ts)),
+    ("mx.d is distinct from mx.ts", lambda d, ts, s: not ((d is None and ts is None) or (known(d, ts) and d == ts))),
+    ("coalesce(mx.shipped_at, mx.d) = mx.ts", lambda d, ts, s: known(s or d, ts) and (s or d) == ts),
+    ("ifnull(mx.shipped_at, mx.d) = mx.ts", lambda d, ts, s: known(s or d, ts) and (s or d) == ts),
+    ("iif(mx.shipped_at is null, mx.d, mx.shipped_at) = mx.ts", lambda d, ts, s: known(s or d, ts) and (s or d) == ts),
+    ("CASE WHEN mx.shipped_at IS NULL THEN mx.d ELSE mx.shipped_at END = mx.ts",
      lambda d, ts, s: known(s or d, ts) and (s or d) == ts),
-    ("greatest(d, ts) = ts and d is not null and ts is not null", lambda d, ts, s: known(d, ts) and max(d, ts) == ts),
-    ("least(d, ts) = d and d is not null and ts is not null", lambda d, ts, s: known(d, ts) and min(d, ts) == d),
+    ("greatest(mx.d, mx.ts) = mx.ts and mx.d is not null and mx.ts is not null", lambda d, ts, s: known(d, ts) and max(d, ts) == ts),
+    ("least(mx.d, mx.ts) = mx.d and mx.d is not null and mx.ts is not null", lambda d, ts, s: known(d, ts) and min(d, ts) == d),
 ]
 
 
@@ -398,14 +398,14 @@ MIXED_FILTER_CASES: list[tuple[str, Any]] = [
 # Server checks (the integration type matrices)
 # ---------------------------------------------------------------------------
 
-def server_models(*, data_source: str) -> list[SlayerModel]:
-    return [bk_model(data_source=data_source), mx_model(data_source=data_source)]
+def server_datasets(*, data_source: str) -> list[SlayerDataset]:
+    return [bk_dataset(data_source=data_source), mx_dataset(data_source=data_source)]
 
 
 async def check_bucket_matrix(engine: SlayerQueryEngine, *, backend: str, data_source: str) -> None:
     """Every unit over DATE and TIMESTAMP, as a time dimension and an expression: values and physical types."""
     problems: list[str] = []
-    for column, source in (("d", DataType.DATE), ("ts", DataType.TIMESTAMP)):
+    for column, source in (("d", DataType.DATE), ("ts", DataType.DATETIME)):
         for position in ("time_dimension", "dimension"):
             for unit in ALL_UNITS:
                 rows = await bucket_rows(engine, column=column, unit=unit, position=position, data_source=data_source)
@@ -421,7 +421,7 @@ async def check_mixed(engine: SlayerQueryEngine, *, backend: str, data_source: s
         if await ids(engine, filt, data_source=data_source) != mx_where(pred)
     ]
     assert not wrong, wrong
-    nullif = await by_id(engine, "nullif(d, ts)", data_source=data_source)
+    nullif = await by_id(engine, "nullif(mx.d, mx.ts)", data_source=data_source)
     assert {i: as_temporal(v) for i, v in nullif.items()} == {
         1: None, 2: date(2025, 3, 1), 3: date(2025, 3, 1), 4: date(2025, 3, 2), 5: None, 6: date(2025, 3, 3), 7: None,
     }
@@ -437,12 +437,12 @@ def _first_known(*values: Any) -> Any:
 BOTH_KNOWN = frozenset(i for i, (d, ts, _s) in MX_ROWS.items() if d is not None and ts is not None)
 # expression → (oracle over (d as midnight, ts, shipped_at), ids checked); every value is a TIMESTAMP.
 CONDITIONAL_VALUE_CASES: list[tuple[str, Any, frozenset[int]]] = [
-    ("coalesce(shipped_at, d)", lambda d, ts, s: _first_known(s, d), MX_IDS),
-    ("ifnull(shipped_at, d)", lambda d, ts, s: _first_known(s, d), MX_IDS),
-    ("iif(shipped_at is null, d, shipped_at)", lambda d, ts, s: _first_known(s, d), MX_IDS),
-    ("CASE WHEN shipped_at IS NULL THEN d ELSE shipped_at END", lambda d, ts, s: _first_known(s, d), MX_IDS),
-    ("greatest(d, ts)", lambda d, ts, s: max(d, ts), BOTH_KNOWN),
-    ("least(d, ts)", lambda d, ts, s: min(d, ts), BOTH_KNOWN),
+    ("coalesce(mx.shipped_at, mx.d)", lambda d, ts, s: _first_known(s, d), MX_IDS),
+    ("ifnull(mx.shipped_at, mx.d)", lambda d, ts, s: _first_known(s, d), MX_IDS),
+    ("iif(mx.shipped_at is null, mx.d, mx.shipped_at)", lambda d, ts, s: _first_known(s, d), MX_IDS),
+    ("CASE WHEN mx.shipped_at IS NULL THEN mx.d ELSE mx.shipped_at END", lambda d, ts, s: _first_known(s, d), MX_IDS),
+    ("greatest(mx.d, mx.ts)", lambda d, ts, s: max(d, ts), BOTH_KNOWN),
+    ("least(mx.d, mx.ts)", lambda d, ts, s: min(d, ts), BOTH_KNOWN),
 ]
 
 
@@ -457,7 +457,7 @@ async def conditional_value_problems(engine: SlayerQueryEngine, *, backend: str,
             want = oracle(None if d is None else midnight(d), ts, s)
             if not same_instant(got[i], want):
                 problems.append(f"{expression} id={i}: {got[i]!r} != {want!r}")
-            why = physical_type_error(got[i], DataType.TIMESTAMP, backend=backend)
+            why = physical_type_error(got[i], DataType.DATETIME, backend=backend)
             if why is not None:
                 problems.append(f"{expression} id={i}: {why}")
     return problems

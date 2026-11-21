@@ -71,7 +71,7 @@ def datasource_doc(*, db_path: str, granularities: Sequence[str] = (), name: str
 
 
 def events_doc(*, name: str = "events", data_source: str = DS, column_granularity: str | None = None,
-               measures: Sequence[dict] = ()) -> dict:
+               metrics: Sequence[dict] = ()) -> dict:
     created_at: dict[str, Any] = {"name": "created_at", "type": "TIMESTAMP"}
     if column_granularity is not None:
         created_at["granularity"] = column_granularity
@@ -80,13 +80,13 @@ def events_doc(*, name: str = "events", data_source: str = DS, column_granularit
         "columns": [{"name": "id", "type": "INT", "primary_key": True}, created_at,
                     {"name": "status", "type": "TEXT"}, {"name": "amount", "type": "DOUBLE"}],
     }
-    if measures:
-        doc["measures"] = list(measures)
+    if metrics:
+        doc["measures"] = list(metrics)
     return doc
 
 
-def stage_doc(*, source_model: Any = "events", **fields: Any) -> dict:
-    return {"version": STORED_VERSIONS["SlayerQuery"], "source_model": source_model, **fields}
+def stage_doc(*, source_dataset: Any = "events", **fields: Any) -> dict:
+    return {"version": STORED_VERSIONS["SlayerQuery"], "source_model": source_dataset, **fields}
 
 
 def bucket_stage(granularity: str) -> dict:
@@ -105,7 +105,7 @@ def memory_doc(*, memory_id: str, query: dict) -> dict:
 
 
 async def write_raw_store(
-    *, backend: str, base: str, datasources: Sequence[dict], models: Sequence[dict] = (),
+    *, backend: str, base: str, datasources: Sequence[dict], datasets: Sequence[dict] = (),
     memories: Sequence[dict] = (),
 ) -> StorageBackend:
     """A YAML or SQLite store whose documents are written verbatim (never validated)."""
@@ -114,7 +114,7 @@ async def write_raw_store(
         storage: StorageBackend = YAMLStorage(base_dir=base)
         for doc in datasources:
             _write_text(path=os.path.join(base, "datasources", f"{doc['name']}.yaml"), text=yaml.safe_dump(doc))
-        for doc in models:
+        for doc in datasets:
             _write_text(path=os.path.join(base, "models", doc["data_source"], f"{doc['name']}.yaml"),
                         text=yaml.safe_dump(doc, sort_keys=False))
         for mem in memories:
@@ -127,7 +127,7 @@ async def write_raw_store(
     with transaction(db_path) as conn:
         for doc in datasources:
             conn.execute("INSERT INTO datasources (name, data) VALUES (?, ?)", (doc["name"], json.dumps(doc)))
-        for doc in models:
+        for doc in datasets:
             conn.execute("INSERT INTO models (data_source, name, data) VALUES (?, ?, ?)",
                          (doc["data_source"], doc["name"], json.dumps(doc)))
         for mem in memories:
@@ -143,7 +143,7 @@ def reopen(*, backend: str, base: str) -> StorageBackend:
 
 
 def raw_documents(*, backend: str, base: str) -> dict[str, str]:
-    """Every persisted datasource, model and memory exactly as stored, keyed ``<kind>/<name>``."""
+    """Every persisted datasource, dataset and memory exactly as stored, keyed ``<kind>/<name>``."""
     out: dict[str, str] = {}
     if backend == "yaml":
         for kind, ext in (("datasources", ".yaml"), ("models", ".yaml"), ("memories", ".md")):
@@ -166,20 +166,20 @@ def raw_documents(*, backend: str, base: str) -> dict[str, str]:
 
 
 async def granularity_store(*, backend: str, base: str, name: str) -> StorageBackend:
-    """A v1.4.1 store: datasource ``DS`` defining ``name`` (``granularity_definition``), the ``events`` model,
-    and the query-backed model ``bucketed`` whose stage buckets ``created_at`` by ``name``."""
+    """A v1.4.1 store: datasource ``DS`` defining ``name`` (``granularity_definition``), the ``events`` dataset,
+    and the query-backed dataset ``bucketed`` whose stage buckets ``created_at`` by ``name``."""
     db_path = live_db(base)
     return await write_raw_store(
         backend=backend, base=base,
         datasources=[datasource_doc(db_path=db_path, granularities=[name])],
-        models=[events_doc(), query_backed_doc(name="bucketed", stage=bucket_stage(name))],
+        datasets=[events_doc(), query_backed_doc(name="bucketed", stage=bucket_stage(name))],
     )
 
 
-async def bucket_totals(storage: StorageBackend, *, model: str = "bucketed") -> dict[str, float]:
-    """``sum(s)`` per ``created_at`` bucket of the query-backed ``model`` (compare with ``EXPECTED_BUCKETS``)."""
-    resp = await run(storage, {"source_model": model, "dimensions": ["created_at"], "measures": ["sum(s)"]})
-    return {str(r[f"{model}.created_at"])[:10]: float(r[f"{model}.s_sum"]) for r in resp.data}
+async def bucket_totals(storage: StorageBackend, *, dataset: str = "bucketed") -> dict[str, float]:
+    """``sum(s)`` per ``created_at`` bucket of the query-backed ``dataset`` (compare with ``EXPECTED_BUCKETS``)."""
+    resp = await run(storage, {"population": dataset, "dimensions": [f"{dataset}.created_at"], "metrics": [f"sum({dataset}.s)"]})
+    return {str(r[f"{dataset}.created_at"])[:10]: float(r[f"{dataset}.s_sum"]) for r in resp.data}
 
 
 def _write_text(*, path: str, text: str) -> None:

@@ -1,21 +1,15 @@
 """Typed scope and stage-schema for the new pipeline.
 
-Two scope kinds, never confused (P5):
+``DatasetScope`` is the one binding scope: dotted refs walk the relationship graph
+rooted at ``population``; a stage is read through the dataset its ``StageSchema`` defines.
 
-- ``ModelScope``: joins exist; dotted refs walk the join graph rooted at
-  ``source_model``. ``__`` in a Mode-B ref is an error unless it exact-
-  matches a column literally named that way (legacy persisted query-backed
-  columns).
-- ``StageSchema``: flat namespace; dots are not join syntax;
-  ``__``-bearing identifiers are flat names.
-
-``StageColumn`` is the typed projection element (P6): explicit ``name``
+``StageField`` is the typed projection element (P6): explicit ``name``
 (downstream bind name), ``sql_alias`` (emitted SQL identifier),
-``public_alias`` (result-key piece), plus the per-column metadata that
+``public_alias`` (result-key piece), plus the per-field metadata that
 downstream stages need.
 
-``ModelScope.source_model`` is ``Optional`` from day one so a future anchor-less
-mode is a type-additive change. The binder asserts ``source_model is not None``
+``DatasetScope.population`` is ``Optional`` from day one so a future anchor-less
+mode is a type-additive change. The binder asserts ``population is not None``
 at use sites — the type-level optionality is the extension point.
 """
 
@@ -23,21 +17,51 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Dict, Generator, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, RelationshipOrigin, SlayerDataset
 from slayer.core.names import match_name
+from slayer.core.relationship_walker import OrientedRelationship
 
 _T = TypeVar("_T")
 
 
-class StageColumn(BaseModel):
+class PassThrough(BaseModel):
+    """What an untransformed row-level stage output reads: ``field`` at the end of ``path`` (its hops, from the stage's population)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: Tuple[OrientedRelationship, ...] = ()
+    field: str
+
+
+class InheritedEdge(BaseModel):
+    """An edge a stage inherits on pass-through keys, oriented from the stage; ``to`` is the target's identity."""
+
+    model_config = ConfigDict(frozen=True)
+
+    to: str
+    from_columns: Tuple[str, ...]
+    to_columns: Tuple[str, ...]
+    name: Optional[str] = None
+    join_type: JoinType = JoinType.LEFT
+    cardinality: Optional[RelationshipCardinality] = None
+    origin: RelationshipOrigin
+
+    def as_relationship(self) -> DatasetRelationship:
+        return DatasetRelationship(
+            to=self.to, from_columns=list(self.from_columns), to_columns=list(self.to_columns), name=self.name,
+            join_type=self.join_type, cardinality=self.cardinality,
+        ).as_inherited(self.origin)
+
+
+class StageField(BaseModel):
     """Typed projection element for one stage (P6).
 
     ``name`` is the downstream bind name — flat (e.g.
@@ -46,12 +70,12 @@ class StageColumn(BaseModel):
     to ``name``, but the typed split lets the planner reserve hidden
     or alias-bearing forms without coupling them). ``public_alias`` is
     the result-key piece returned to the user — set only for non-hidden
-    columns.
+    fields.
 
     ``format`` is the typed ``NumberFormat``
-    inherited from the source ``ModelMeasure`` / ``Column`` or computed
+    inherited from the source ``DatasetMetric`` / ``DatasetField`` or computed
     by ``_infer_aggregated_format``. ``description`` propagates the source
-    column's documentation through the typed plan.
+    field's documentation through the typed plan.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -59,9 +83,9 @@ class StageColumn(BaseModel):
     name: str
     sql_alias: str
     public_alias: Optional[str] = None
-    type: Optional[DataType] = None
+    datatype: DataType
     element_type: Optional[DataType] = None
-    # Set only for a column an upstream stage bucketed (a ``TimeTruncKey`` slot);
+    # Set only for a field an upstream stage bucketed (a ``TimeTruncKey`` slot);
     # ``None`` means "not truncated", so any granularity re-binds.
     granularity: CustomGranularity | GranularitySpec | None = None
     label: Optional[str] = None
@@ -73,38 +97,35 @@ class StageColumn(BaseModel):
     provenance: Optional[str] = None
     #: ``name`` under each non-canonical spelling of its path (stale-spelling slack).
     respellings: Tuple[str, ...] = ()
+    #: Set only for an untransformed public row-level output.
+    pass_through: Optional[PassThrough] = None
 
 
 class StageDisplay(BaseModel):
     """A stage's user-facing spelling: its name in its own query list, plus the
-    stored query-backed model it was spliced from (``None`` for a user stage)."""
+    stored query-backed dataset it was spliced from (``None`` for a user stage)."""
 
     model_config = ConfigDict(frozen=True)
 
     name: str
-    model: Optional[str] = None
+    dataset: Optional[str] = None
 
     @property
     def label(self) -> str:
-        if self.model is None:
+        if self.dataset is None:
             return f"stage {self.name!r}"
-        if self.name == self.model:
-            return f"model {self.model!r}"
-        return f"stage {self.name!r} of model {self.model!r}"
+        if self.name == self.dataset:
+            return f"dataset {self.dataset!r}"
+        return f"stage {self.name!r} of dataset {self.dataset!r}"
 
 
 class StageSchema(BaseModel):
-    """The typed projection of one query stage (P6).
-
-    Downstream stages bind against this as a flat namespace (P5). They
-    never re-walk the upstream join graph through a StageSchema — the
-    only legal refs are entries in ``columns`` and a list column's
-    elements (``L.value`` / ``L.*``).
+    """The typed projection of one query stage (P6); later stages bind against the dataset it defines.
 
     ``relation_name`` is the stage's internal identity: its CTE name.
     ``display`` is its user-facing spelling (``None`` → ``relation_name``).
     ``sql`` is the emitted text of the stage's SELECT — populated by the
-    planner; left ``None`` until rendering. ``grain`` names the columns the
+    planner; left ``None`` until rendering. ``grain`` names the fields the
     stage is unique on (its dimension positions); ``None`` for a raw-rows stage.
     """
 
@@ -113,10 +134,17 @@ class StageSchema(BaseModel):
     relation_name: str
     display: Optional[StageDisplay] = None
     sql: Optional[str] = None
-    columns: List[StageColumn]
+    fields: List[StageField]
     grain: Optional[List[str]] = None
-    # A spliced query-backed model's final stage keeps its source's default time dimension.
+    # A spliced query-backed dataset's final stage keeps its source's default time dimension.
     default_time_dimension: Optional[str] = None
+    inherited_edges: Tuple[InheritedEdge, ...] = ()
+    # The stage's rows restrict its population: a filter, or a restricted population.
+    restricted: bool = False
+    # Why inherited edges could not be derived (inspect only); ``None`` when they were.
+    inherited_edges_error: Optional[str] = None
+    #: Two public fields flattening to one name ``(flat name, first key, second key)``: refused once the stage is read.
+    flatten_collision: Optional[Tuple[str, str, str]] = None
 
     @property
     def display_name(self) -> str:
@@ -127,89 +155,97 @@ class StageSchema(BaseModel):
         return (self.display or StageDisplay(name=self.relation_name)).label
 
     @model_validator(mode="after")
-    def _grain_names_columns(self) -> "StageSchema":
-        names = {c.name for c in self.columns}
+    def _grain_names_fields(self) -> "StageSchema":
+        names = {c.name for c in self.fields}
         missing = [g for g in self.grain or [] if g not in names]
         if missing:
             raise ValueError(
-                f"Stage {self.display_name!r} grain names unknown columns {missing}."
+                f"Stage {self.display_name!r} grain names unknown fields {missing}."
             )
         return self
 
-    def __getitem__(self, name: str) -> StageColumn:
-        for c in self.columns:
+    def __getitem__(self, name: str) -> StageField:
+        for c in self.fields:
             if c.name == name:
                 return c
         raise KeyError(
-            f"No column named {name!r} in stage {self.display_name!r}."
+            f"No field named {name!r} in stage {self.display_name!r}."
         )
 
-    def get(self, name: str, *, quoted: bool = False) -> Optional[StageColumn]:
-        found = match_name(name=name, declared=[c.name for c in self.columns], quoted=quoted)
-        return None if found is None else next(c for c in self.columns if c.name == found)
+    def get(self, name: str, *, quoted: bool = False) -> Optional[StageField]:
+        found = match_name(name=name, declared=[c.name for c in self.fields], quoted=quoted)
+        return None if found is None else next(c for c in self.fields if c.name == found)
 
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and self.get(name) is not None
 
-    def resolve_flat_name(self, name: str, *, quoted: bool = False) -> Optional[StageColumn]:
+    def resolve_flat_name(self, name: str, *, quoted: bool = False) -> Optional[StageField]:
         """Stage-boundary lookup: the name ``match_name`` reaches, else a unique stale respelling (recorded)."""
         return resolve_flat_name(name=name, entries=self._flat_entries(), quoted=quoted)
 
-    def peek_flat_name(self, name: str, *, quoted: bool = False) -> Optional[StageColumn]:
+    def peek_flat_name(self, name: str, *, quoted: bool = False) -> Optional[StageField]:
         """``resolve_flat_name`` that records nothing."""
         return peek_flat_name(name=name, entries=self._flat_entries(), quoted=quoted)
 
-    def _flat_entries(self) -> List[Tuple[str, Tuple[str, ...], StageColumn]]:
-        return [(c.name, c.respellings, c) for c in self.columns]
+    def _flat_entries(self) -> List[Tuple[str, Tuple[str, ...], StageField]]:
+        return [(c.name, c.respellings, c) for c in self.fields]
 
 
-class ModelScope(BaseModel):
-    """Scope for binding Mode-B refs against a model with joins (P5).
+class DatasetScope(BaseModel):
+    """Scope for binding Mode-B refs against a dataset with relationships (P5).
 
-    Dotted refs walk the join graph rooted at ``source_model``;
+    Dotted refs walk the relationship graph rooted at ``population``;
     ``__``-bearing refs are flat-only and reject unless they exact-match
-    a column literally named that way on the model.
+    a field literally named that way on the dataset.
 
-    I2: ``source_model`` is ``Optional`` from day one. The binder
-    asserts ``source_model is not None`` at use sites so behavior is
-    unchanged. A future anchor-less mode uses ``source_model=None`` and
+    I2: ``population`` is ``Optional`` from day one. The binder
+    asserts ``population is not None`` at use sites so behavior is
+    unchanged. A future anchor-less mode uses ``population=None`` and
     a different binder branch (DatasourceScope-style binding). Keeping
     the type optional avoids a breaking change later.
     """
 
-    source_model: Optional[SlayerModel] = None
+    population: Optional[SlayerDataset] = None
+    #: A query's own scope: each reference is anchored at its first segment (``queries/references``); otherwise
+    #: references read from ``population`` (a stored definition's dataset-local mode).
+    anchored: bool = False
 
 
-def root_spelling(scope) -> Optional[str]:
-    """The name a reference writes for the scope's root: a model's spelling, a stage's display name."""
-    if isinstance(scope, ModelScope) and scope.source_model is not None:
-        return scope.source_model.spelling
-    if isinstance(scope, StageSchema):
-        return scope.display_name
-    return None
+def root_spelling(scope: DatasetScope) -> Optional[str]:
+    """The name a reference writes for the scope's root: its dataset's spelling."""
+    return scope.population.spelling if scope.population is not None else None
 
 
-def host_model_name(scope) -> str:
+def anchored_scope(scope: DatasetScope) -> DatasetScope:
+    """``scope`` as a query's own scope, its references anchored at their first segment."""
+    return scope if scope.anchored else scope.model_copy(update={"anchored": True})
+
+
+def is_anchored(scope: DatasetScope) -> bool:
+    return scope.anchored
+
+
+def host_dataset_name(scope: DatasetScope) -> str:
     """The host relation's display name for alias-collision reporting."""
     return root_spelling(scope) or "(stage)"
 
 
-def resolve_generated_column(
-    *, model: SlayerModel, name: str, location: Optional[str] = None, quoted: bool = False,
-) -> Optional[Column]:
-    """``resolve_flat_name`` over ``model``'s columns; only generated query-backed
-    columns carry respellings, so authored columns stay exact. A stale name
-    matching several columns fails closed (never read as a physical column)."""
+def resolve_generated_field(
+    *, dataset: SlayerDataset, name: str, location: Optional[str] = None, quoted: bool = False,
+) -> Optional[DatasetField]:
+    """``resolve_flat_name`` over ``dataset``'s fields; only generated query-backed
+    fields carry respellings, so authored fields stay exact. A stale name
+    matching several fields fails closed (never read as a physical column)."""
     col = resolve_flat_name(
-        name=name, entries=[(c.name, c.respellings, c) for c in model.columns],
+        name=name, entries=[(c.name, c.respellings, c) for c in dataset.fields],
         location=location, quoted=quoted,
     )
     if col is None:
-        matches = [c.name for c in model.columns if name in c.respellings]
+        matches = [c.name for c in dataset.fields if name in c.respellings]
         if len(matches) > 1:
             raise UnknownReferenceError(
                 name=name, scope_kind="SlayerModel",
-                scope_summary=f"model {model.name!r}: stale spelling of {matches}",
+                scope_summary=f"dataset {dataset.name!r}: stale spelling of {matches}",
             )
     return col
 
@@ -240,9 +276,9 @@ def peek_flat_name(
     return None if hit is None else hit[1]
 
 
-def peek_model_column(*, model: SlayerModel, name: str, quoted: bool = False) -> Optional[Column]:
-    """``peek_flat_name`` over ``model``'s columns."""
-    return peek_flat_name(name=name, entries=[(c.name, c.respellings, c) for c in model.columns], quoted=quoted)
+def peek_dataset_field(*, dataset: SlayerDataset, name: str, quoted: bool = False) -> Optional[DatasetField]:
+    """``peek_flat_name`` over ``dataset``'s fields."""
+    return peek_flat_name(name=name, entries=[(c.name, c.respellings, c) for c in dataset.fields], quoted=quoted)
 
 
 def _flat_hit(
@@ -258,7 +294,7 @@ def _flat_hit(
 
 
 class StaleSpelling(BaseModel):
-    """One stale flat name bound to its canonical column at ``location``."""
+    """One stale flat name bound to its canonical field at ``location``."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -277,7 +313,7 @@ _stale_position: ContextVar[Optional[str]] = ContextVar(
 
 
 @contextmanager
-def collect_stale_spellings() -> Iterator[List[StaleSpelling]]:
+def collect_stale_spellings() -> Generator[List[StaleSpelling], None, None]:
     """Collect stale spellings recorded in the block, deduplicated, into the yielded list."""
     sink: Dict[StaleSpelling, None] = {}
     out: List[StaleSpelling] = []
@@ -290,7 +326,7 @@ def collect_stale_spellings() -> Iterator[List[StaleSpelling]]:
 
 
 @contextmanager
-def stale_spelling_stage(stage: Optional[str]) -> Iterator[None]:
+def stale_spelling_stage(stage: Optional[str]) -> Generator[None, None, None]:
     token = _stale_stage.set(stage)
     try:
         yield
@@ -299,7 +335,7 @@ def stale_spelling_stage(stage: Optional[str]) -> Iterator[None]:
 
 
 @contextmanager
-def stale_spelling_position(position: Optional[str]) -> Iterator[None]:
+def stale_spelling_position(position: Optional[str]) -> Generator[None, None, None]:
     """Referencing position for records in the block; ``None`` suppresses recording."""
     token = _stale_position.set(position)
     try:

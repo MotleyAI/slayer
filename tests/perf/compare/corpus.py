@@ -18,18 +18,18 @@ MODELS = [
         "data_source": DS,
         "default_time_dimension": "created_at",
         "columns": [
-            {"name": "id", "sql": "id", "type": "INT", "primary_key": True},
-            {"name": "customer_id", "sql": "customer_id", "type": "INT"},
-            {"name": "shop_id", "sql": "shop_id", "type": "INT"},
-            {"name": "category", "sql": "category", "type": "TEXT"},
-            {"name": "created_at", "sql": "created_at", "type": "TIMESTAMP"},
-            {"name": "completed_at", "sql": "completed_at", "type": "TIMESTAMP"},
-            {"name": "cancelled_at", "sql": "cancelled_at", "type": "TIMESTAMP"},
-            {"name": "total_cost", "sql": "cost", "type": "DOUBLE"},
-            {"name": "latest_cost", "sql": "cost", "type": "DOUBLE"},
+            {"name": "id", "expression": "id", "type": "INT", "primary_key": True},
+            {"name": "customer_id", "expression": "customer_id", "type": "INT"},
+            {"name": "shop_id", "expression": "shop_id", "type": "INT"},
+            {"name": "category", "expression": "category", "type": "TEXT"},
+            {"name": "created_at", "expression": "created_at", "type": "TIMESTAMP"},
+            {"name": "completed_at", "expression": "completed_at", "type": "TIMESTAMP"},
+            {"name": "cancelled_at", "expression": "cancelled_at", "type": "TIMESTAMP"},
+            {"name": "total_cost", "expression": "cost", "type": "DOUBLE"},
+            {"name": "latest_cost", "expression": "cost", "type": "DOUBLE"},
             # measure whose Column.filter crosses the customers join → forces
             # host-rooted filtered-local isolation (DEV-1503/1709 _cm_ CTE)
-            {"name": "whale_cost", "sql": "cost", "type": "DOUBLE",
+            {"name": "whale_cost", "expression": "cost", "type": "DOUBLE",
              "filter": "customers.segment = 'whale'"},
         ],
         "measures": [
@@ -46,10 +46,10 @@ MODELS = [
         "sql_table": "customers",
         "data_source": DS,
         "columns": [
-            {"name": "id", "sql": "id", "type": "INT", "primary_key": True},
-            {"name": "name", "sql": "name", "type": "TEXT"},
-            {"name": "segment", "sql": "segment", "type": "TEXT"},
-            {"name": "primary_shop_id", "sql": "primary_shop_id", "type": "INT"},
+            {"name": "id", "expression": "id", "type": "INT", "primary_key": True},
+            {"name": "name", "expression": "name", "type": "TEXT"},
+            {"name": "segment", "expression": "segment", "type": "TEXT"},
+            {"name": "primary_shop_id", "expression": "primary_shop_id", "type": "INT"},
         ],
     },
     {
@@ -57,11 +57,11 @@ MODELS = [
         "sql_table": "shops",
         "data_source": DS,
         "columns": [
-            {"name": "id", "sql": "id", "type": "INT", "primary_key": True},
-            {"name": "name", "sql": "name", "type": "TEXT"},
-            {"name": "region_id", "sql": "region_id", "type": "INT"},
-            {"name": "avg_cost", "sql": "avg_cost", "type": "DOUBLE"},
-            {"name": "size", "sql": "size", "type": "INT"},
+            {"name": "id", "expression": "id", "type": "INT", "primary_key": True},
+            {"name": "name", "expression": "name", "type": "TEXT"},
+            {"name": "region_id", "expression": "region_id", "type": "INT"},
+            {"name": "avg_cost", "expression": "avg_cost", "type": "DOUBLE"},
+            {"name": "size", "expression": "size", "type": "INT"},
         ],
         "joins": [
             {"target_model": "regions", "join_pairs": [["region_id", "id"]]},
@@ -72,8 +72,8 @@ MODELS = [
         "sql_table": "regions",
         "data_source": DS,
         "columns": [
-            {"name": "id", "sql": "id", "type": "INT", "primary_key": True},
-            {"name": "name", "sql": "name", "type": "TEXT"},
+            {"name": "id", "expression": "id", "type": "INT", "primary_key": True},
+            {"name": "name", "expression": "name", "type": "TEXT"},
         ],
     },
 ]

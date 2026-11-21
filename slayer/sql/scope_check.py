@@ -237,9 +237,9 @@ def _projects(inner: Scope, name: str) -> bool:
     expr = inner.expression
     if inner.scope_type == ScopeType.UDTF:
         # A table function (``UNNEST``, ``LATERAL (…)``): its alias's column list, else its subquery's outputs.
-        alias = expr.args.get("alias")
-        if isinstance(alias, exp.TableAlias) and alias.columns and alias.this is not None:
-            return folded in {c.name.casefold() for c in alias.columns}
+        named = _udtf_alias_names(expr)
+        if named is not None:
+            return folded in named
         if not (isinstance(expr, exp.Lateral) and isinstance(expr.this, exp.Subquery)):
             return True  # unverifiable without the function's signature
         expr = expr.this.this
@@ -249,6 +249,17 @@ def _projects(inner: Scope, name: str) -> bool:
     while isinstance(expr, exp.SetOperation):
         expr = expr.this  # left leg carries the public output names
     return _selects_project(getattr(expr, "selects", None) or [], folded)
+
+
+def _udtf_alias_names(expr: exp.Expr) -> Optional[set[str]]:
+    """A table function's alias column names, folded; ``None`` without a column list."""
+    alias = expr.args.get("alias")
+    if not (isinstance(alias, exp.TableAlias) and alias.columns and alias.this is not None):
+        return None
+    # ``WITH ORDINALITY AS u(value, pos)``: the offset is the alias's last column.
+    offset = expr.args.get("offset") if isinstance(expr, exp.Unnest) else None
+    named = [*alias.columns, *([offset] if isinstance(offset, exp.Identifier) else [])]
+    return {c.name.casefold() for c in named}
 
 
 def _selects_project(selects: list, folded: str) -> bool:
@@ -263,7 +274,7 @@ def _selects_project(selects: list, folded: str) -> bool:
     return folded in explicit
 
 
-def _star_of(projection: exp.Expression) -> Optional[exp.Star]:
+def _star_of(projection: exp.Expr) -> Optional[exp.Star]:
     if isinstance(projection, exp.Star):
         return projection
     if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
@@ -271,7 +282,7 @@ def _star_of(projection: exp.Expression) -> Optional[exp.Star]:
     return None
 
 
-def _identifier_name(node: exp.Expression) -> str:
+def _identifier_name(node: exp.Expr) -> str:
     return node.name if isinstance(node, (exp.Column, exp.Identifier)) else node.sql()
 
 

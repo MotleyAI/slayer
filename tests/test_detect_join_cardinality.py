@@ -1,4 +1,4 @@
-"""Opt-in data-profiling cardinality detection via ``engine.detect_join_cardinality``."""
+"""Opt-in data-profiling cardinality detection via ``engine.detect_relationship_cardinality``."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from unittest.mock import patch
 import pytest
 from sqlglot import exp
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import ForcedFilterError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.engine.cardinality.inference import CardinalityVerdict, JoinCardinalityReport
+from slayer.engine.cardinality.inference import CardinalityVerdict, RelationshipCardinalityReport
 from slayer.engine.query_engine import SlayerQueryEngine, _physical_keys
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
@@ -69,72 +69,72 @@ def _seed_db(db_path: str) -> None:
         )
 
 
-def _col(name: str, *, pk: bool = False, dtype: DataType = DataType.INT) -> Column:
-    return Column(name=name, sql=name, type=dtype, primary_key=pk)
+def _col(name: str, *, pk: bool = False, dtype: DataType = DataType.INTEGER) -> DatasetField:
+    return DatasetField(name=name, expression=name, datatype=dtype, primary_key=pk)
 
 
-def _models() -> list[SlayerModel]:
+def _datasets() -> list[SlayerDataset]:
     def m(name, table, cols, joins=None):
-        return SlayerModel(
-            name=name, sql_table=table, data_source="ds", columns=cols, joins=joins or []
+        return SlayerDataset(
+            name=name, sql_table=table, data_source="ds", fields=cols, relationships=joins or []
         )
 
     return [
-        m("customers", "customers", [_col("id", pk=True), _col("region", dtype=DataType.TEXT)]),
+        m("customers", "customers", [_col("id", pk=True), _col("region", dtype=DataType.STRING)]),
         m(
             "orders",
             "orders",
             [_col("id", pk=True), _col("customer_id")],
-            [ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ),
         m(
             "user_profiles",
             "user_profiles",
-            [_col("customer_id", pk=True), _col("bio", dtype=DataType.TEXT)],
-            [ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            [_col("customer_id", pk=True), _col("bio", dtype=DataType.STRING)],
+            [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ),
         m("cart_lines", "cart_lines", [_col("id", pk=True), _col("cart_id")]),
         m(
             "carts",
             "carts",
             [_col("id", pk=True)],
-            [ModelJoin(target_model="cart_lines", join_pairs=[["id", "cart_id"]])],
+            [DatasetRelationship(to="cart_lines", from_columns=["id"], to_columns=["cart_id"])],
         ),
-        m("right_m", "right_tbl", [_col("k"), _col("label", dtype=DataType.TEXT)]),
+        m("right_m", "right_tbl", [_col("k"), _col("label", dtype=DataType.STRING)]),
         m(
             "left_m",
             "left_tbl",
             [_col("k")],
-            [ModelJoin(target_model="right_m", join_pairs=[["k", "k"]])],
+            [DatasetRelationship(to="right_m", from_columns=["k"], to_columns=["k"])],
         ),
         m("empty_tgt", "empty_tgt", [_col("k", pk=True)]),
         m(
             "empty_src",
             "empty_src",
             [_col("k")],
-            [ModelJoin(target_model="empty_tgt", join_pairs=[["k", "k"]])],
+            [DatasetRelationship(to="empty_tgt", from_columns=["k"], to_columns=["k"])],
         ),
         m(
             "populated_src",
             "populated_src",
             [_col("k")],
-            [ModelJoin(target_model="empty_tgt", join_pairs=[["k", "k"]])],
+            [DatasetRelationship(to="empty_tgt", from_columns=["k"], to_columns=["k"])],
         ),
         m(
             "all_null_src",
             "all_null_src",
             [_col("k")],
-            [ModelJoin(target_model="customers", join_pairs=[["k", "id"]])],
+            [DatasetRelationship(to="customers", from_columns=["k"], to_columns=["id"])],
         ),
-        m("ck_parent", "ck_parent", [_col("a"), _col("b", dtype=DataType.TEXT)]),
+        m("ck_parent", "ck_parent", [_col("a"), _col("b", dtype=DataType.STRING)]),
         m(
             "ck_child",
             "ck_child",
-            [_col("a"), _col("b", dtype=DataType.TEXT)],
+            [_col("a"), _col("b", dtype=DataType.STRING)],
             [
-                ModelJoin(
-                    target_model="ck_parent",
-                    join_pairs=[["a", "a"], ["b", "b"]],
+                DatasetRelationship(
+                    to="ck_parent",
+                    from_columns=["a", "b"], to_columns=["a", "b"],
                 )
             ],
         ),
@@ -147,14 +147,14 @@ async def _build_engine(workspace: Path) -> tuple[SlayerQueryEngine, YAMLStorage
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     ds = DatasourceConfig(name="ds", type="sqlite", database=db)
     await storage.save_datasource(ds)
-    for model in _models():
-        await storage.save_model(model)
+    for model in _datasets():
+        await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage), storage, ds
 
 
-def _find(report: JoinCardinalityReport, model: str, target: str):
+def _find(report: RelationshipCardinalityReport, dataset: str, target: str):
     return next(
-        f for f in report.findings if f.model == model and f.target_model == target
+        f for f in report.findings if f.dataset == dataset and f.to == target
     )
 
 
@@ -166,50 +166,50 @@ def _find(report: JoinCardinalityReport, model: str, target: str):
 class TestClassification:
     async def test_many_to_one(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "orders", "customers")
-        assert f.detected is JoinCardinality.MANY_TO_ONE
+        assert f.detected is RelationshipCardinality.MANY_TO_ONE
         assert f.source_side.observed_unique is False
         assert f.target_side.observed_unique is True
 
     async def test_one_to_one(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "user_profiles", "customers")
-        assert f.detected is JoinCardinality.ONE_TO_ONE
+        assert f.detected is RelationshipCardinality.ONE_TO_ONE
 
     async def test_one_to_many(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "carts", "cart_lines")
-        assert f.detected is JoinCardinality.ONE_TO_MANY
+        assert f.detected is RelationshipCardinality.ONE_TO_MANY
 
     async def test_many_to_many(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "left_m", "right_m")
-        assert f.detected is JoinCardinality.MANY_TO_MANY
+        assert f.detected is RelationshipCardinality.MANY_TO_MANY
 
     async def test_null_keys_excluded_from_population(self, workspace: Path) -> None:
         # orders.customer_id has a NULL row; non-null population is 3 rows,
         # 2 distinct -> not unique -> many_to_one still holds.
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "orders", "customers")
         assert f.source_side.row_count == 3
         assert f.source_side.distinct_count == 2
 
     async def test_composite_key_many_to_one(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "ck_child", "ck_parent")
-        assert f.detected is JoinCardinality.MANY_TO_ONE
+        assert f.detected is RelationshipCardinality.MANY_TO_ONE
 
     async def test_composite_key_null_row_excluded(self, workspace: Path) -> None:
         # ck_child has 4 rows but one has a NULL in the (a,b) key -> the
         # non-null population is 3 tuples, 2 distinct.
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "ck_child", "ck_parent")
         assert f.source_side.row_count == 3
         assert f.source_side.distinct_count == 2
@@ -223,20 +223,20 @@ class TestClassification:
 class TestVerdicts:
     async def test_fills_none_when_stored_absent(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "orders", "customers")
         assert f.stored is None
         assert f.verdict is CardinalityVerdict.FILLS_NONE
 
     async def test_confirms_matching_stored(self, workspace: Path) -> None:
         engine, storage, _ = await _build_engine(workspace)
-        orders = await storage.get_model("orders", data_source="ds")
-        orders.joins[0] = orders.joins[0].model_copy(
-            update={"cardinality": JoinCardinality.MANY_TO_ONE}
+        orders = await storage.get_dataset("orders", data_source="ds")
+        orders.relationships[0] = orders.relationships[0].model_copy(
+            update={"cardinality": RelationshipCardinality.MANY_TO_ONE}
         )
-        await storage.save_model(orders)
+        await storage.save_dataset(orders)
 
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "orders", "customers")
         assert f.verdict is CardinalityVerdict.CONFIRMS
 
@@ -244,15 +244,15 @@ class TestVerdicts:
         engine, storage, _ = await _build_engine(workspace)
         # Store a wrong one_to_one: it claims the source side is unique, but
         # orders.customer_id has duplicates -> data disproves it.
-        orders = await storage.get_model("orders", data_source="ds")
-        orders.joins[0] = orders.joins[0].model_copy(
-            update={"cardinality": JoinCardinality.ONE_TO_ONE}
+        orders = await storage.get_dataset("orders", data_source="ds")
+        orders.relationships[0] = orders.relationships[0].model_copy(
+            update={"cardinality": RelationshipCardinality.ONE_TO_ONE}
         )
-        await storage.save_model(orders)
+        await storage.save_dataset(orders)
 
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "orders", "customers")
-        assert f.detected is JoinCardinality.MANY_TO_ONE
+        assert f.detected is RelationshipCardinality.MANY_TO_ONE
         assert f.verdict is CardinalityVerdict.CONTRADICTS_HARD
 
     async def test_refines_when_change_is_not_a_hard_disproof(
@@ -263,45 +263,45 @@ class TestVerdicts:
         # shows the target IS unique, but "no duplicates observed" does NOT
         # disprove a non-uniqueness claim -> a soft REFINES, not a hard
         # contradiction.
-        orders = await storage.get_model("orders", data_source="ds")
-        orders.joins[0] = orders.joins[0].model_copy(
-            update={"cardinality": JoinCardinality.MANY_TO_MANY}
+        orders = await storage.get_dataset("orders", data_source="ds")
+        orders.relationships[0] = orders.relationships[0].model_copy(
+            update={"cardinality": RelationshipCardinality.MANY_TO_MANY}
         )
-        await storage.save_model(orders)
+        await storage.save_dataset(orders)
 
-        report = await engine.detect_join_cardinality(data_source="ds", model="orders")
+        report = await engine.detect_relationship_cardinality(data_source="ds", dataset="orders")
         f = _find(report, "orders", "customers")
-        assert f.detected is JoinCardinality.MANY_TO_ONE
+        assert f.detected is RelationshipCardinality.MANY_TO_ONE
         assert f.verdict is CardinalityVerdict.REFINES
 
     def test_expression_join_key_rejected_at_construction(self) -> None:
-        # An expression-backed join key is not a base column: the model never builds.
+        # An expression-backed relationship key is not a base field: the dataset never builds.
         columns = [
             _col("id", pk=True),
-            Column(name="ck", sql="customer_id + 0", type=DataType.INT),
+            DatasetField(name="ck", expression="customer_id + 0", datatype=DataType.INTEGER),
         ]
-        joins = [ModelJoin(target_model="customers", join_pairs=[["ck", "id"]])]
+        joins = [DatasetRelationship(to="customers", from_columns=["ck"], to_columns=["id"])]
         with pytest.raises(ValueError, match=r"orders_expr.*customers.*'ck'"):
-            SlayerModel(
+            SlayerDataset(
                 name="orders_expr", sql_table="orders", data_source="ds",
-                columns=columns, joins=joins,
+                fields=columns, relationships=joins,
             )
 
     async def test_skipped_unsupported_for_sql_mode_model(
         self, workspace: Path
     ) -> None:
         engine, storage, _ = await _build_engine(workspace)
-        # A sql-mode source model with a join is out of scope for v1 profiling.
-        raw = SlayerModel(
+        # A sql-mode source dataset with a relationship is out of scope for v1 profiling.
+        raw = SlayerDataset(
             name="raw_orders",
             sql="SELECT id, customer_id FROM orders",
             data_source="ds",
-            columns=[_col("id", pk=True), _col("customer_id")],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            fields=[_col("id", pk=True), _col("customer_id")],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
-        await storage.save_model(raw)
+        await storage.save_dataset(raw)
 
-        report = await engine.detect_join_cardinality(data_source="ds", model="raw_orders")
+        report = await engine.detect_relationship_cardinality(data_source="ds", dataset="raw_orders")
         f = _find(report, "raw_orders", "customers")
         assert f.verdict is CardinalityVerdict.SKIPPED_UNSUPPORTED
         assert f.detected is None
@@ -317,35 +317,35 @@ class TestUniqueContradictions:
     async def test_reports_declared_unique_with_dups(self, workspace: Path) -> None:
         engine, storage, _ = await _build_engine(workspace)
         # Declare orders.customer_id unique (wrong — it has duplicates).
-        orders = await storage.get_model("orders", data_source="ds")
-        cc = next(c for c in orders.columns if c.name == "customer_id")
-        idx = orders.columns.index(cc)
-        orders.columns[idx] = cc.model_copy(update={"unique": True})
-        await storage.save_model(orders)
+        orders = await storage.get_dataset("orders", data_source="ds")
+        cc = next(c for c in orders.fields if c.name == "customer_id")
+        idx = orders.fields.index(cc)
+        orders.fields[idx] = cc.model_copy(update={"unique": True})
+        await storage.save_dataset(orders)
 
-        report = await engine.detect_join_cardinality(data_source="ds", model="orders")
+        report = await engine.detect_relationship_cardinality(data_source="ds", dataset="orders")
         f = _find(report, "orders", "customers")
         assert any("customer_id" in c for c in f.unique_contradictions)
 
         # The declared flag is NOT mutated by detection.
-        reloaded = await storage.get_model("orders", data_source="ds")
-        assert next(c for c in reloaded.columns if c.name == "customer_id").unique is True
+        reloaded = await storage.get_dataset("orders", data_source="ds")
+        assert next(c for c in reloaded.fields if c.name == "customer_id").unique is True
 
     async def test_sole_pk_column_with_dups_is_reported(self, workspace: Path) -> None:
-        """A column that IS the whole primary key does claim solo uniqueness."""
+        """A field that IS the whole primary key does claim solo uniqueness."""
         engine, storage, _ = await _build_engine(workspace)
-        # cart_lines.cart_id has dups; declare it the sole PK of a probe model.
-        probe = SlayerModel(
+        # cart_lines.cart_id has dups; declare it the sole PK of a probe dataset.
+        probe = SlayerDataset(
             name="solo_pk_lines",
             sql_table="cart_lines",
             data_source="ds",
-            columns=[_col("cart_id", pk=True), _col("id")],
-            joins=[ModelJoin(target_model="carts", join_pairs=[["cart_id", "id"]])],
+            fields=[_col("cart_id", pk=True), _col("id")],
+            relationships=[DatasetRelationship(to="carts", from_columns=["cart_id"], to_columns=["id"])],
         )
-        await storage.save_model(probe)
+        await storage.save_dataset(probe)
 
-        report = await engine.detect_join_cardinality(
-            data_source="ds", model="solo_pk_lines"
+        report = await engine.detect_relationship_cardinality(
+            data_source="ds", dataset="solo_pk_lines"
         )
         f = _find(report, "solo_pk_lines", "carts")
         assert any("cart_id" in c for c in f.unique_contradictions)
@@ -360,17 +360,17 @@ class TestUniqueContradictions:
         """
         engine, storage, _ = await _build_engine(workspace)
         # ck_child.a has duplicates; both a and b are stamped PK (composite).
-        probe = SlayerModel(
+        probe = SlayerDataset(
             name="ck_child_solo",
             sql_table="ck_child",
             data_source="ds",
-            columns=[_col("a", pk=True), _col("b", pk=True, dtype=DataType.TEXT)],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["a", "id"]])],
+            fields=[_col("a", pk=True), _col("b", pk=True, dtype=DataType.STRING)],
+            relationships=[DatasetRelationship(to="customers", from_columns=["a"], to_columns=["id"])],
         )
-        await storage.save_model(probe)
+        await storage.save_dataset(probe)
 
-        report = await engine.detect_join_cardinality(
-            data_source="ds", model="ck_child_solo"
+        report = await engine.detect_relationship_cardinality(
+            data_source="ds", dataset="ck_child_solo"
         )
         f = _find(report, "ck_child_solo", "customers")
         # 'a' has dups, but it is only half of the composite key — no claim broken.
@@ -385,26 +385,26 @@ class TestUniqueContradictions:
 class TestPersistence:
     async def test_persist_false_does_not_write(self, workspace: Path) -> None:
         engine, storage, _ = await _build_engine(workspace)
-        await engine.detect_join_cardinality(data_source="ds", persist=False)
-        orders = await storage.get_model("orders", data_source="ds")
-        assert orders.joins[0].cardinality is None
+        await engine.detect_relationship_cardinality(data_source="ds", persist=False)
+        orders = await storage.get_dataset("orders", data_source="ds")
+        assert orders.relationships[0].cardinality is None
 
     async def test_persist_true_writes_detected_per_join(
         self, workspace: Path
     ) -> None:
         engine, storage, _ = await _build_engine(workspace)
-        await engine.detect_join_cardinality(data_source="ds", persist=True)
+        await engine.detect_relationship_cardinality(data_source="ds", persist=True)
 
-        orders = await storage.get_model("orders", data_source="ds")
-        assert orders.joins[0].cardinality is JoinCardinality.MANY_TO_ONE
-        # Correct per-(model, join) identity — a different join gets its own value.
-        profiles = await storage.get_model("user_profiles", data_source="ds")
-        assert profiles.joins[0].cardinality is JoinCardinality.ONE_TO_ONE
+        orders = await storage.get_dataset("orders", data_source="ds")
+        assert orders.relationships[0].cardinality is RelationshipCardinality.MANY_TO_ONE
+        # Correct per-(dataset, relationship) identity — a different relationship gets its own value.
+        profiles = await storage.get_dataset("user_profiles", data_source="ds")
+        assert profiles.relationships[0].cardinality is RelationshipCardinality.ONE_TO_ONE
 
     async def test_model_filter_scopes_scan(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds", model="orders")
-        assert {f.model for f in report.findings} == {"orders"}
+        report = await engine.detect_relationship_cardinality(data_source="ds", dataset="orders")
+        assert {f.dataset for f in report.findings} == {"orders"}
 
 
 # ---------------------------------------------------------------------------
@@ -443,8 +443,8 @@ class TestSessionPolicyAppliedToProfiling:
         with patch(
             "slayer.engine.query_engine.SlayerSQLClient", _RecordingClient
         ):
-            report = await scoped.detect_join_cardinality(
-                data_source="ds", model="orders"
+            report = await scoped.detect_relationship_cardinality(
+                data_source="ds", dataset="orders"
             )
 
         # Two scans per side, two sides.
@@ -473,16 +473,16 @@ class TestSessionPolicyAppliedToProfiling:
         )
         scoped = SlayerQueryEngine(storage=storage, policy=policy)
         with pytest.raises(ForcedFilterError):
-            await scoped.detect_join_cardinality(data_source="ds", model="orders")
+            await scoped.detect_relationship_cardinality(data_source="ds", dataset="orders")
 
     async def test_no_policy_leaves_sql_untouched(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(
-            data_source="ds", model="orders"
+        report = await engine.detect_relationship_cardinality(
+            data_source="ds", dataset="orders"
         )
         # Unscoped engine still profiles normally (zero-overhead no-op path).
         f = _find(report, "orders", "customers")
-        assert f.detected is JoinCardinality.MANY_TO_ONE
+        assert f.detected is RelationshipCardinality.MANY_TO_ONE
 
 
 def _side_stats_sql(**kwargs) -> tuple[str, str]:
@@ -496,10 +496,10 @@ class TestSideStatsSqlShape:
     """The profiling SQL is built via sqlglot, not string concatenation."""
 
     def test_keys_read_as_slayer_reads_them_on_snowflake(self) -> None:
-        model = SlayerModel(name="orders", data_source="ds", sql_table="orders", columns=[
-            Column(name="customer_id", type=DataType.INT), Column(name="exact", sql='"exact_key"', type=DataType.INT)])
+        model = SlayerDataset(name="orders", data_source="ds", sql_table="orders", fields=[
+            DatasetField(name="customer_id", datatype=DataType.INTEGER), DatasetField(name="exact", expression='"exact_key"', datatype=DataType.INTEGER)])
         rows_sql, _ = _side_stats_sql(
-            table="orders", key_cols=_physical_keys(model=model, keys=["customer_id", "exact"]),
+            table="orders", key_cols=_physical_keys(dataset=model, keys=["customer_id", "exact"]),
             sqlglot_name="snowflake",
         )
         assert "FROM orders" in rows_sql
@@ -555,7 +555,7 @@ class TestEmptyPopulationIsNoEvidence:
 
     async def test_empty_tables_detect_nothing(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "empty_src", "empty_tgt")
         assert f.detected is None
         assert f.verdict is CardinalityVerdict.NO_EVIDENCE
@@ -570,7 +570,7 @@ class TestEmptyPopulationIsNoEvidence:
         # The table HAS rows, but every key is NULL, so the profiled
         # population is empty just the same.
         engine, _, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        report = await engine.detect_relationship_cardinality(data_source="ds")
         f = _find(report, "all_null_src", "customers")
         assert f.detected is None
         assert f.verdict is CardinalityVerdict.NO_EVIDENCE
@@ -588,7 +588,7 @@ class TestEmptyPopulationIsNoEvidence:
         target scan that read nothing.
         """
         engine, storage, _ = await _build_engine(workspace)
-        report = await engine.detect_join_cardinality(
+        report = await engine.detect_relationship_cardinality(
             data_source="ds", persist=True
         )
         f = _find(report, "populated_src", "empty_tgt")
@@ -598,15 +598,15 @@ class TestEmptyPopulationIsNoEvidence:
         assert f.source_side.row_count == 3
         assert f.target_side.row_count == 0
         # persist=True must not have written an arity.
-        reloaded = await storage.get_model("populated_src", data_source="ds")
-        j = next(j for j in reloaded.joins if j.target_model == "empty_tgt")
+        reloaded = await storage.get_dataset("populated_src", data_source="ds")
+        j = next(j for j in reloaded.relationships if j.to == "empty_tgt")
         assert j.cardinality is None
 
     async def test_empty_side_is_never_persisted(self, workspace: Path) -> None:
         engine, storage, _ = await _build_engine(workspace)
-        await engine.detect_join_cardinality(data_source="ds", persist=True)
-        reloaded = await storage.get_model("empty_src", data_source="ds")
-        j = next(j for j in reloaded.joins if j.target_model == "empty_tgt")
+        await engine.detect_relationship_cardinality(data_source="ds", persist=True)
+        reloaded = await storage.get_dataset("empty_src", data_source="ds")
+        j = next(j for j in reloaded.relationships if j.to == "empty_tgt")
         assert j.cardinality is None, "an empty scan must not write an arity"
 
 
@@ -619,15 +619,15 @@ class TestEmptyPopulationIsNoEvidence:
         shape that can never be profiled.
         """
         engine, storage, _ = await _build_engine(workspace)
-        raw = SlayerModel(
+        raw = SlayerDataset(
             name="raw_empty",
             sql="SELECT k FROM empty_src",
             data_source="ds",
-            columns=[_col("k")],
-            joins=[ModelJoin(target_model="empty_tgt", join_pairs=[["k", "k"]])],
+            fields=[_col("k")],
+            relationships=[DatasetRelationship(to="empty_tgt", from_columns=["k"], to_columns=["k"])],
         )
-        await storage.save_model(raw)
-        report = await engine.detect_join_cardinality(data_source="ds")
+        await storage.save_dataset(raw)
+        report = await engine.detect_relationship_cardinality(data_source="ds")
 
         empty = _find(report, "empty_src", "empty_tgt")
         unsupported = _find(report, "raw_empty", "empty_tgt")
@@ -640,7 +640,7 @@ class TestEmptyPopulationIsNoEvidence:
 
 
 class TestScanFailureIsContained:
-    """One unreadable join must not abort the whole report."""
+    """One unreadable relationship must not abort the whole report."""
 
     async def test_failed_scan_becomes_a_finding(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
@@ -655,16 +655,16 @@ class TestScanFailureIsContained:
             )
 
         with patch.object(SlayerQueryEngine, "_side_stats", _flaky):
-            report = await engine.detect_join_cardinality(data_source="ds")
+            report = await engine.detect_relationship_cardinality(data_source="ds")
 
         failed = _find(report, "carts", "cart_lines")
         assert failed.verdict is CardinalityVerdict.SCAN_FAILED
         assert failed.detected is None
         assert "table is on fire" in (failed.note or "")
 
-        # Every other join still reports.
+        # Every other relationship still reports.
         healthy = _find(report, "orders", "customers")
-        assert healthy.detected is JoinCardinality.MANY_TO_ONE
+        assert healthy.detected is RelationshipCardinality.MANY_TO_ONE
 
     async def test_failed_scan_persists_nothing(self, workspace: Path) -> None:
         engine, storage, _ = await _build_engine(workspace)
@@ -673,7 +673,7 @@ class TestScanFailureIsContained:
             raise RuntimeError("nope")
 
         with patch.object(SlayerQueryEngine, "_side_stats", _boom):
-            await engine.detect_join_cardinality(data_source="ds", persist=True)
+            await engine.detect_relationship_cardinality(data_source="ds", persist=True)
 
-        reloaded = await storage.get_model("carts", data_source="ds")
-        assert all(j.cardinality is None for j in reloaded.joins)
+        reloaded = await storage.get_dataset("carts", data_source="ds")
+        assert all(j.cardinality is None for j in reloaded.relationships)

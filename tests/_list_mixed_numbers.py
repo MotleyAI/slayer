@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -21,7 +21,7 @@ _TYPES: dict[str, tuple[str, str, str]] = {
 }
 _SUFFIX = {"clickhouse": " ENGINE = MergeTree ORDER BY tuple()"}
 #: Each filter keeps id 1 only.
-MIXED_FILTERS = ("contains(scores, 2.0)", "contains_any(scores, prices)", "contains_any(prices, scores)")
+MIXED_FILTERS = ("contains(mixed.scores, 2.0)", "contains_any(mixed.scores, mixed.prices)", "contains_any(mixed.prices, mixed.scores)")
 
 
 def _list(values: tuple[float, ...], *, dialect: str, sql_type: str, double: bool) -> str:
@@ -51,13 +51,13 @@ def mixed_numbers_statements(*, dialect: str, prefix: str = "") -> list[str]:
             insert]
 
 
-def mixed_numbers_model(*, data_source: str, explicit_sql: bool = False) -> SlayerModel:
-    columns = [Column(name="id", type=DataType.INT, primary_key=True),
-               Column(name="scores", type=DataType.ARRAY, element_type=DataType.INT),
-               Column(name="prices", type=DataType.ARRAY, element_type=DataType.DOUBLE)]
+def mixed_numbers_dataset(*, data_source: str, explicit_sql: bool = False) -> SlayerDataset:
+    columns = [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+               DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INTEGER),
+               DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.FLOAT)]
     if explicit_sql:
-        columns = [c.model_copy(update={"sql": c.name}) for c in columns]
-    return SlayerModel(name="mixed", sql_table="mixed", data_source=data_source, columns=columns)
+        columns = [c.model_copy(update={"expression": c.name}) for c in columns]
+    return SlayerDataset(name="mixed", sql_table="mixed", data_source=data_source, fields=columns)
 
 
 async def check_mixed_numbers(engine: SlayerQueryEngine) -> None:
@@ -65,7 +65,7 @@ async def check_mixed_numbers(engine: SlayerQueryEngine) -> None:
     failures: list[str] = []
     for flt in MIXED_FILTERS:
         resp = await engine.execute(SlayerQuery.model_validate(
-            {"source_model": "mixed", "dimensions": ["id"], "filters": [flt]}))
+            {"population": "mixed", "dimensions": ["mixed.id"], "filter": [flt]}))
         kept = {int(r["mixed.id"]) for r in resp.data}
         if kept != {1}:
             failures.append(f"{flt}: kept {sorted(kept)}\nSQL:\n{resp.sql}")

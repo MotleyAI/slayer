@@ -31,7 +31,7 @@ manifest.
 Never regenerate to make the suite green. The whole point is that a change you
 did not intend cannot pass silently.
 
-Some baseline entries record currently-BROKEN SQL (a derived-of-derived column
+Some baseline entries record currently-BROKEN SQL (a derived-of-derived field
 emitted as a dangling reference; a `_cm_` CTE missing a fragment's join). Those
 are expected to change — that is the fix landing, and the diff documents it.
 
@@ -50,12 +50,13 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 
@@ -82,61 +83,61 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 
 # --------------------------------------------------------------------------- #
-# Model graph — every Mode-A surface is represented at least once.
+# Dataset graph — every Mode-A surface is represented at least once.
 # --------------------------------------------------------------------------- #
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="population", type=DataType.DOUBLE),
-            Column(name="weight", type=DataType.DOUBLE),
-            # Column.sql — derived on a two-hop target
-            Column(name="pop_x2", sql="population * 2", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="population", datatype=DataType.FLOAT),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
+            # DatasetField.sql — derived on a two-hop target
+            DatasetField(name="pop_x2", expression="population * 2", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="tier", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         aggregations=[
             Aggregation(
-                name="wscaled_sum", formula="SUM({value} * {w})",
+                name="wscaled_sum", expression="SUM({value} * {w})",
                 params=[AggregationParam(name="w", sql="regions.weight")],
             ),
         ],
     )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         # SlayerModel.filters — a Mode-A always-applied WHERE
         filters=["amount >= 0"],
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             # 'status' also exists on regions — same-name collision
-            Column(name="status", type=DataType.TEXT),
-            # a column named like a statement keyword
-            Column(name="select", type=DataType.TEXT),
-            Column(name="doubled", sql="amount * 2", type=DataType.DOUBLE),
-            # Column.filter — Mode-A predicate crossing a join
-            Column(name="eu_amount", sql="amount",
-                   filter="customers.tier = 'eu'", type=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.STRING),
+            # a field named like a statement keyword
+            DatasetField(name="select", datatype=DataType.STRING),
+            DatasetField(name="doubled", expression="amount * 2", datatype=DataType.FLOAT),
+            # DatasetField.filter — Mode-A predicate crossing a relationship
+            DatasetField(name="eu_amount", expression="amount",
+                   filter="customers.tier = 'eu'", datatype=DataType.FLOAT),
             # raw ref that inlines to a constant (dual-scan contract)
-            Column(name="flag_const", sql="1", type=DataType.INT),
+            DatasetField(name="flag_const", expression="1", datatype=DataType.INTEGER),
             # Quoted dotted identifier. Mode-A is raw SQL for the TARGET
             # dialect, and this spelling is Postgres-flavoured: BigQuery quotes
             # identifiers with backticks and reads "..." as a STRING, so there
@@ -145,23 +146,23 @@ def _orders() -> SlayerModel:
             # baseline entry records exactly that, which is what the dialect
             # does with this input rather than a defect to fix here. Mode-A
             # portability across quoting styles is a separate concern.
-            Column(name="quoted_cross", sql='"customers"."spend"',
-                   type=DataType.DOUBLE),
+            DatasetField(name="quoted_cross", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression='"customers"."spend"') for d in ("BIGQUERY", "DUCKDB", "POSTGRES", "SQLITE", "TSQL")]),
+                   datatype=DataType.FLOAT),
             # derived-of-derived, two hops (currently BROKEN — see module doc)
-            Column(name="deep_pop", sql="customers.regions.pop_x2",
-                   type=DataType.DOUBLE),
-            Column(name="multi_model",
-                   sql="customers.spend + customers.regions.population",
-                   type=DataType.DOUBLE),
+            DatasetField(name="deep_pop", expression="customers.regions.pop_x2",
+                   datatype=DataType.FLOAT),
+            DatasetField(name="multi_dataset",
+                   expression="customers.spend + customers.regions.population",
+                   datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
     )
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -169,78 +170,78 @@ def _q(**kw) -> SlayerQuery:
 # The matrix. Keys are stable ids — renaming one is a golden change.
 # --------------------------------------------------------------------------- #
 def _cases() -> dict:
-    dim_status = [{"formula": "status", "name": "status"}]
+    dim_status = ["orders.status"]
     return {
         # --- host scope, plain Mode-A surfaces ---
         "host/model_filter": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "host/column_sql_derived": _q(
-            dimensions=[{"formula": "doubled", "name": "doubled"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=["orders.doubled"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "host/column_filter_crossing": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(eu_amount)", "name": "m"}],
+            metrics=[{"metric": "sum(orders.eu_amount)", "alias": "m"}],
         ),
         "host/const_expanding_ref": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(amount)", "name": "m"}],
-            filters=["flag_const == 1"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
+            filter=["orders.flag_const == 1"],
         ),
         "host/quoted_dotted_identifier": _q(
-            dimensions=[{"formula": "quoted_cross", "name": "quoted_cross"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=["orders.quoted_cross"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "host/statement_keyword_column": _q(
-            dimensions=[{"formula": "select", "name": "select"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=["orders.select"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "host/same_named_column_and_model": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(amount)", "name": "m"}],
-            filters=["status == 'x'"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
+            filter=["orders.status == 'x'"],
         ),
         # --- derived expansion ---
         "expand/derived_of_derived": _q(
-            dimensions=[{"formula": "deep_pop", "name": "deep_pop"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=["orders.deep_pop"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
         "expand/multi_model_derived": _q(
-            dimensions=[{"formula": "multi_model", "name": "multi_model"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=["orders.multi_dataset"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
-        # --- cross-model _cm_ scope ---
+        # --- cross-dataset _cm_ scope ---
         "cm/joined_measure": _q(
             to_many_handling="broadcast",
             dimensions=dim_status,
-            measures=[{"formula": "sum(customers.spend)"}],
+            metrics=[{"metric": "sum(customers.spend)"}],
         ),
         "cm/fragment_default_crossing": _q(
             to_many_handling="broadcast",
             dimensions=dim_status,
-            measures=[{"formula": "wscaled_sum(customers.spend)"}],
+            metrics=[{"metric": "wscaled_sum(customers.spend)"}],
         ),
         "cm/outer_where_wrapper": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(eu_amount)", "name": "eu"}],
-            filters=["sum(eu_amount) > 100"],
+            metrics=[{"metric": "sum(orders.eu_amount)", "alias": "eu"}],
+            filter=["sum(orders.eu_amount) > 100"],
         ),
         # --- windowed _src scope ---
         "windowed/src_scope": _q(
             time_dimensions=[{
-                "dimension": "created_at", "granularity": "month",
+                "field": "orders.created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            measures=[{"formula": "sum(eu_amount)", "name": "m"}],
+            metrics=[{"metric": "sum(orders.eu_amount)", "alias": "m"}],
         ),
         "windowed/date_range_filter": _q(
             time_dimensions=[{
-                "dimension": "created_at", "granularity": "month",
+                "field": "orders.created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "m"}],
         ),
     }
 
@@ -254,8 +255,8 @@ async def _generate_one(query: SlayerQuery, dialect: str):
     """
     try:
         return await _engine_generate(
-            query=query, model=_orders(), dialect=dialect, validate=False,
-            extra_models=[_customers(), _regions()],
+            query=query, dataset=_orders(), dialect=dialect, validate=False,
+            extra_datasets=[_customers(), _regions()],
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract
         return record_raise(exc)

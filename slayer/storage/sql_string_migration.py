@@ -13,7 +13,7 @@ import tokenize
 from collections.abc import Callable
 
 from slayer.storage.migrations import document_label, register_migration
-from slayer.storage.rank_direction_migration import rewrite_model_texts_at, rewrite_query_texts_at, stamp_memory_query
+from slayer.storage.rank_direction_migration import rewrite_dataset_texts_at, rewrite_query_texts_at, stamp_memory_query
 
 logger = logging.getLogger(__name__)
 
@@ -129,14 +129,14 @@ def _gated(document: str | None) -> Callable[[str, str], str]:
     return rewrite
 
 
-def rewrite_model_strings(data: dict) -> dict:
-    return rewrite_model_texts_at(data, _gated(document_label(data)))
+def rewrite_dataset_strings(data: dict) -> dict:
+    return rewrite_dataset_texts_at(data, _gated(document_label(data)))
 
 
 def rewrite_query_strings(data: dict) -> dict:
     return rewrite_query_texts_at(data, _gated(document_label(data)))
 
 
-register_migration(entity="SlayerModel", source_version=15, stored_only=True)(rewrite_model_strings)
+register_migration(entity="SlayerModel", source_version=15, stored_only=True)(rewrite_dataset_strings)
 register_migration(entity="SlayerQuery", source_version=6, stored_only=True)(rewrite_query_strings)
 register_migration(entity="Memory", source_version=4, stored_only=True)(stamp_memory_query)

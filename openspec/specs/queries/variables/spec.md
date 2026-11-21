@@ -16,7 +16,7 @@ Governs `{var}` placeholder substitution across query and model surfaces: which 
 
 #### Scenario: Computed dimension in string and object form
 
-- **WHEN** a query has dimension `"amount * {k}"`, or dimension `{"expression": "amount * {k}"}`, with `variables={"k": 10}`
+- **WHEN** a query has dimension `"amount * {k}"`, or dimension `{"field": "amount * {k}"}`, with `variables={"k": 10}`
 - **THEN** both construct and group by `amount * 10`
 
 #### Scenario: Order expression in colon and call form
@@ -41,7 +41,7 @@ Governs `{var}` placeholder substitution across query and model surfaces: which 
 
 ### Requirement: Saved measure formulas substitute on the models whose SQL surfaces substitute
 
-A saved `ModelMeasure.formula` SHALL bind `{var}` placeholders as literal values, by the same rules as query formula surfaces, on exactly the models whose Mode-A surfaces substitute (the query's direct source model and each stage's own source model), using that model's effective variables. Its placeholders SHALL be reported by model variable inspection as required unless the model defaults them. A saved measure reached through a join or a cross-model reference SHALL NOT substitute, and a placeholder in it SHALL raise the unresolved-placeholder error.
+A saved `DatasetMetric.expression` SHALL bind `{var}` placeholders as literal values, by the same rules as query formula surfaces, on exactly the models whose Mode-A surfaces substitute (the query's direct source model and each stage's own source model), using that model's effective variables. Its placeholders SHALL be reported by model variable inspection as required unless the model defaults them. A saved measure reached through a join or a cross-model reference SHALL NOT substitute, and a placeholder in it SHALL raise the unresolved-placeholder error.
 
 #### Scenario: Saved measure on the source model
 
@@ -201,7 +201,7 @@ double-quoted identifier are not.
 
 ### Requirement: Mode-A surfaces bind variables as literals
 
-A `{var}` placeholder in a model's Mode-A text — `Column.sql`, `Column.filter`, model `sql` and model `filters` — SHALL be bound as a literal node of the parsed SQL, never spliced as text, by the rules Mode-B surfaces follow:
+A `{var}` placeholder in a model's Mode-A text — `DatasetField.sql`, `DatasetField.filter`, model `sql` and model `filters` — SHALL be bound as a literal node of the parsed SQL, never spliced as text, by the rules Mode-B surfaces follow:
 - inside a string literal, wholly or partly, it contributes its value's text to that literal;
 - in a bare literal position it takes a number or a boolean, a numeric string reading as its number;
 - forming the whole parenthesised list of `IN` it takes a list value.

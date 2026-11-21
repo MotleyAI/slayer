@@ -1,8 +1,8 @@
 """Shared identifier-length fitting + the write-side substitution.
 
 Postgres SILENTLY truncates identifiers past 63 bytes (a NOTICE, never an
-error), so SLayer's ``<root>.<join.path>.<column>`` aliases can collapse two
-siblings onto one output name on a deep join.
+error), so SLayer's ``<root>.<relationship.path>.<field>`` aliases can collapse
+two siblings onto one output name on a deep relationship path.
 
 :func:`fit_identifier` shortens an over-limit name to ``<head>_<hash8>_<tail>``.
 It is a PURE function of ``name`` (the digest covers the full original), so the
@@ -80,8 +80,8 @@ def fit_identifier(
     """Shorten ``name`` to at most ``limit`` **bytes** as ``<head>_<hash>_<tail>``.
 
     Identity when ``limit`` is ``None`` or the name already fits, so common-case
-    SQL is byte-identical. Both ends are kept: head names the root model, tail
-    the column, and the repro's colliding aliases differ only in their tail.
+    SQL is byte-identical. Both ends are kept: head names the root dataset, tail
+    the field, and the repro's colliding aliases differ only in their tail.
 
     ``expand`` sizes the budget against a post-fit transform (BigQuery/T-SQL
     ``encode_alias`` adds 2 bytes per dot); the return value itself is NOT

@@ -2,7 +2,7 @@
 
 Some CTEs must read rows from OUTSIDE the query's visible time frame:
 
-* a duration-windowed measure's ``_src`` subquery (``sum(revenue, window='90d')``)
+* a duration-windowed metric's ``_src`` subquery (``sum(revenue, window='90d')``)
   — the trailing window reaches back before the earliest visible bucket, or that
   bucket under-counts;
 * a ``time_shift`` shifted CTE — the shifted value for the earliest visible
@@ -12,7 +12,7 @@ This module identifies that *semantic class*, so every spelling of one intent
 (``date_range``, a time-point comparison, ``date_trunc`` against a point) agrees:
 
     A ROW-phase filter conjunct that is a relational bound, with a temporal
-    literal, on the raw column of one of the query's time dimensions is a FRAME
+    literal, on the raw field of one of the query's time dimensions is a FRAME
     bound, not a population filter. Frame bounds constrain the visible buckets
     only. Everything else is a population filter and is applied unchanged.
 
@@ -56,13 +56,13 @@ def is_temporal_literal(key: object) -> bool:
     return isinstance(key, LiteralKey) and isinstance(key.value, (str, date))
 
 
-def is_frame_bound(*, key: object, time_columns: AbstractSet[ValueKey]) -> bool:
-    """Is ``key`` a single frame bound on one of ``time_columns``?
+def is_frame_bound(*, key: object, time_fields: AbstractSet[ValueKey]) -> bool:
+    """Is ``key`` a single frame bound on one of ``time_fields``?
 
-    ``time_columns`` holds the RAW column keys (``ColumnKey`` / ``ColumnSqlKey``)
+    ``time_fields`` holds the RAW field keys (``FieldKey`` / ``FieldSqlKey``)
     of the query's non-hidden time dimensions. Matching is by ValueKey identity,
-    so a derived (``Column.sql``) temporal column is covered without any special
-    casing, and a same-named column on a joined model cannot collide.
+    so a derived (``DatasetField.sql``) temporal field is covered without any special
+    casing, and a same-named field on a joined dataset cannot collide.
 
     Both operand orders count — ``'2024-06-01' <= created_at`` says the same
     thing as ``created_at >= '2024-06-01'``.
@@ -72,15 +72,15 @@ def is_frame_bound(*, key: object, time_columns: AbstractSet[ValueKey]) -> bool:
     if len(key.operands) != 2:
         return False
     lhs, rhs = key.operands
-    if lhs in time_columns:
+    if lhs in time_fields:
         return is_temporal_literal(rhs)
-    if rhs in time_columns:
+    if rhs in time_fields:
         return is_temporal_literal(lhs)
     return False
 
 
 def strip_frame_bounds(
-    *, key: ValueKey, time_columns: AbstractSet[ValueKey],
+    *, key: ValueKey, time_fields: AbstractSet[ValueKey],
 ) -> Optional[ValueKey]:
     """Return ``key`` with its top-level frame bounds removed.
 
@@ -98,9 +98,9 @@ def strip_frame_bounds(
     disjunction or a negation, and keeping the predicate whole preserves the
     unstripped result, which is the safe direction to err in.
     """
-    if not time_columns:
+    if not time_fields:
         return key
-    if is_frame_bound(key=key, time_columns=time_columns):
+    if is_frame_bound(key=key, time_fields=time_fields):
         return None
     if not (isinstance(key, ArithmeticKey) and key.op == _AND):
         return key
@@ -108,7 +108,7 @@ def strip_frame_bounds(
     kept: list[ValueKey] = []
     changed = False
     for operand in key.operands:
-        residual = strip_frame_bounds(key=operand, time_columns=time_columns)
+        residual = strip_frame_bounds(key=operand, time_fields=time_fields)
         if residual is None:
             changed = True
             continue

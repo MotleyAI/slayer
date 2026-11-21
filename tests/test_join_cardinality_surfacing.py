@@ -1,4 +1,4 @@
-"""Cardinality/unique surfacing in inspect, search graph, edit_model — not in embeddings."""
+"""Cardinality/unique surfacing in inspect, search graph, edit_dataset — not in embeddings."""
 
 from __future__ import annotations
 
@@ -7,41 +7,41 @@ import tempfile
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.inspect.model_render import render_model_inspection
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.inspect.dataset_render import render_dataset_inspection
 from slayer.mcp.server import create_mcp_server
 from slayer.search import graph as search_graph
-from slayer.search.render import render_column_text, render_model_text
+from slayer.search.render import render_field_text, render_dataset_text
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _orders_model(*, cardinality: JoinCardinality | None, email_unique: bool) -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset(*, cardinality: RelationshipCardinality | None, email_unique: bool) -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="email", sql="email", type=DataType.TEXT, unique=email_unique),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="email", expression="email", datatype=DataType.STRING, unique=email_unique),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
         ],
-        joins=[
-            ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+        relationships=[
+            DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
                 cardinality=cardinality,
             )
         ],
     )
 
 
-def _customers_model() -> SlayerModel:
-    return SlayerModel(
+def _customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="ds",
-        columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
 
@@ -57,14 +57,14 @@ class TestModelRender:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            model = _orders_model(
-                cardinality=JoinCardinality.MANY_TO_ONE, email_unique=True
+            model = _orders_dataset(
+                cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=True
             )
-            out = await render_model_inspection(
-                model=model, storage=storage, engine=None, format="json"
+            out = await render_dataset_inspection(
+                dataset=model, storage=storage, engine=None, format="json"
             )
             payload = json.loads(out)
-            join = payload["joins"][0]
+            join = payload["relationships"][0]
             assert join["cardinality"] == "many_to_one"
 
     async def test_json_columns_carry_unique(self) -> None:
@@ -73,14 +73,14 @@ class TestModelRender:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            model = _orders_model(
-                cardinality=JoinCardinality.MANY_TO_ONE, email_unique=True
+            model = _orders_dataset(
+                cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=True
             )
-            out = await render_model_inspection(
-                model=model, storage=storage, engine=None, format="json"
+            out = await render_dataset_inspection(
+                dataset=model, storage=storage, engine=None, format="json"
             )
             payload = json.loads(out)
-            email = next(c for c in payload["columns"] if c["name"] == "email")
+            email = next(c for c in payload["fields"] if c["name"] == "email")
             assert email["unique"] is True
 
     async def test_markdown_shows_cardinality(self) -> None:
@@ -89,11 +89,11 @@ class TestModelRender:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            model = _orders_model(
-                cardinality=JoinCardinality.MANY_TO_ONE, email_unique=True
+            model = _orders_dataset(
+                cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=True
             )
-            md = await render_model_inspection(
-                model=model, storage=storage, engine=None, format="markdown"
+            md = await render_dataset_inspection(
+                dataset=model, storage=storage, engine=None, format="markdown"
             )
             assert "many_to_one" in md
 
@@ -103,18 +103,18 @@ class TestModelRender:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            model = _orders_model(
-                cardinality=JoinCardinality.MANY_TO_ONE, email_unique=True
+            model = _orders_dataset(
+                cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=True
             )
-            md = await render_model_inspection(
-                model=model, storage=storage, engine=None, format="markdown"
+            md = await render_dataset_inspection(
+                dataset=model, storage=storage, engine=None, format="markdown"
             )
-            # The columns table gains a `unique` column.
+            # The fields table gains a `unique` column.
             assert "unique" in md.lower()
 
 
 # ---------------------------------------------------------------------------
-# search-graph JOINS edge property
+# search-graph RELATIONSHIPS edge property
 # ---------------------------------------------------------------------------
 
 
@@ -128,13 +128,13 @@ class TestSearchGraphEdge:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            await storage.save_model(_customers_model())
-            await storage.save_model(
-                _orders_model(cardinality=JoinCardinality.MANY_TO_ONE, email_unique=False)
+            await storage.save_dataset(_customers_dataset())
+            await storage.save_dataset(
+                _orders_dataset(cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=False)
             )
             search_graph.clear_cache()
             ids = await search_graph.get_filtered_ids(
-                "MATCH (m:Model {id: 'ds.orders'})-[r:JOINS]->(t:Model) "
+                "MATCH (m:Dataset {id: 'ds.orders'})-[r:RELATIONSHIPS]->(t:Dataset) "
                 "WHERE r.cardinality = 'many_to_one' RETURN t.id AS id",
                 storage,
             )
@@ -153,31 +153,31 @@ class TestEditModelRoundTrip:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            await storage.save_model(
-                _orders_model(cardinality=None, email_unique=False)
+            await storage.save_dataset(
+                _orders_dataset(cardinality=None, email_unique=False)
             )
             server = create_mcp_server(storage=storage)
 
             await server.call_tool(
-                name="edit_model",
+                name="edit_dataset",
                 arguments={
-                    "model_name": "orders",
+                    "dataset_name": "orders",
                     "data_source": "ds",
-                    "columns": [{"name": "email", "unique": True}],
-                    "joins": [
+                    "fields": [{"name": "email", "unique": True}],
+                    "relationships": [
                         {
-                            "target_model": "customers",
-                            "join_pairs": [["customer_id", "id"]],
+                            "to": "customers",
+                            "from_columns": ["customer_id"], "to_columns": ["id"],
                             "cardinality": "many_to_one",
                         }
                     ],
                 },
             )
 
-            reloaded = await storage.get_model("orders", data_source="ds")
-            join = next(j for j in reloaded.joins if j.target_model == "customers")
-            assert join.cardinality is JoinCardinality.MANY_TO_ONE
-            email = next(c for c in reloaded.columns if c.name == "email")
+            reloaded = await storage.get_dataset("orders", data_source="ds")
+            join = next(j for j in reloaded.relationships if j.to == "customers")
+            assert join.cardinality is RelationshipCardinality.MANY_TO_ONE
+            email = next(c for c in reloaded.fields if c.name == "email")
             assert email.unique is True
 
 
@@ -188,16 +188,16 @@ class TestEditModelRoundTrip:
 
 class TestNoEmbeddingChurn:
     def test_cardinality_not_in_model_embedding_text(self) -> None:
-        plain = _orders_model(cardinality=None, email_unique=False)
-        carded = _orders_model(
-            cardinality=JoinCardinality.MANY_TO_ONE, email_unique=False
+        plain = _orders_dataset(cardinality=None, email_unique=False)
+        carded = _orders_dataset(
+            cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=False
         )
-        assert render_model_text(model=carded) == render_model_text(model=plain)
+        assert render_dataset_text(dataset=carded) == render_dataset_text(dataset=plain)
 
     def test_unique_not_in_column_embedding_text(self) -> None:
-        model = _orders_model(cardinality=None, email_unique=False)
-        plain_col = Column(name="email", sql="email", type=DataType.TEXT, unique=False)
-        uniq_col = Column(name="email", sql="email", type=DataType.TEXT, unique=True)
-        assert render_column_text(model=model, column=uniq_col) == render_column_text(
-            model=model, column=plain_col
+        dataset = _orders_dataset(cardinality=None, email_unique=False)
+        plain_col = DatasetField(name="email", expression="email", datatype=DataType.STRING, unique=False)
+        uniq_col = DatasetField(name="email", expression="email", datatype=DataType.STRING, unique=True)
+        assert render_field_text(dataset=dataset, field=uniq_col) == render_field_text(
+            dataset=dataset, field=plain_col
         )

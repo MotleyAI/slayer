@@ -11,7 +11,7 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TypeKind
 from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
@@ -37,6 +37,7 @@ from slayer.sql.dialects.base import (
     is_null,
     lit,
     operand_copy,
+    ordinal_elements,
     pad_fill,
 )
 from slayer.sql.dialects.patterns import POSTGRES, RegexFlavour
@@ -90,7 +91,7 @@ def describe_pg_cursor_column(description_row: Sequence[Any]) -> ResultColumnTyp
         return None
     name = _PG_TYPE_NAMES.get(code)
     if name is None:
-        return ResultColumnType(type=DataType.TEXT)
+        return ResultColumnType(type=DataType.STRING)
     precision, scale = description_row[4], description_row[5]
     if code == _NUMERIC_OID and precision is not None and scale is not None:
         name = f"numeric({precision},{scale})"
@@ -102,10 +103,11 @@ _PG_INPUT_IS_VALID_SINCE = (16, 0, 0)
 #: The array type both lists of ``contains_any`` / ``contains_all`` are read as, by element type.
 #: The element-set subquery's one relation: a fixed name, so every copy of the expression reads alike.
 _SET_RELATION = "__slayer_s"
-_CANONICAL_ARRAYS = {
-    DataType.TEXT: "TEXT[]", DataType.INT: "BIGINT[]", DataType.DOUBLE: "DOUBLE PRECISION[]",
-    DataType.BOOLEAN: "BOOLEAN[]", DataType.DATE: "DATE[]", DataType.TIMESTAMP: "TIMESTAMP[]",
+_CANONICAL_ARRAYS_BY_KIND = {
+    TypeKind.TEXT: "TEXT[]", TypeKind.INT: "BIGINT[]", TypeKind.DOUBLE: "DOUBLE PRECISION[]",
+    TypeKind.BOOLEAN: "BOOLEAN[]", TypeKind.DATE: "DATE[]", TypeKind.TIMESTAMP: "TIMESTAMP[]",
 }
+_CANONICAL_ARRAYS = {t: _CANONICAL_ARRAYS_BY_KIND[t.kind] for t in DataType if t.kind in _CANONICAL_ARRAYS_BY_KIND}
 
 
 def _server_version(number: int) -> tuple[int, int, int]:
@@ -334,6 +336,15 @@ class PostgresDialect(SqlDialect):
 
     def list_length(self, values: Expression) -> Expression:
         return anon("CARDINALITY", values)
+
+    def positioned_elements(self, values: Expression) -> exp.Select:
+        """The non-NULL elements ``WITH ORDINALITY``, compacted in list order by ``IS NOT NULL`` (``ARRAY_REMOVE``
+        needs an equality operator ``json`` lacks)."""
+        rows = ordinal_elements(values)
+        value, position = (s.copy() for s in rows.selects)
+        assert isinstance(value, Expression)
+        kept = rows.select(value, append=False).where(is_not_null(value.copy())).order_by(position)
+        return ordinal_elements(exp.Array(expressions=[kept]))
 
     def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
         """``ARRAY(SELECT DISTINCT e FROM UNNEST(x) e … ORDER BY e)``, ``x`` read as its element's canonical array

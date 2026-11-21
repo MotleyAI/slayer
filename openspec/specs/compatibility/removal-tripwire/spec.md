@@ -31,7 +31,7 @@ Importing a module path that SLayer 2.0 moved SHALL raise an `ImportError` whose
 
 ### Requirement: One marker for code scheduled for removal
 
-Every piece of compatibility code scheduled for removal in a future major version SHALL be marked through one shared mechanism that records the removal version as a literal, and that mechanism SHALL be the only way such code is marked and the only emitter of `FutureWarning` in the package. A marked form that still works SHALL emit exactly one `FutureWarning` per use (a deprecated Mode-B spelling: per spelling per query or save), attributed to the line that used it (for an input form, the first line outside SLayer that supplied it), and the CLI SHALL print it as one `Deprecated: …` line on stderr; a marked module path that moved SHALL raise an `ImportError` instead; a marked informational notice SHALL emit no `FutureWarning` — it is carried only as its structured response warning. The covered workarounds SHALL be every module path moved in 2.0 by the database-access, live-schema, row-supply and cardinality carve-outs, the Mode-B grammar's `slayer.engine.syntax` and `slayer.core.formula`, and the OSI importer's `slayer.osi.expression`; the `strict` query input form and the extension object in `source_model`; the deprecated Mode-B spellings `==`, `is None` / `is not None`, bare `None`, a `[…]` list after `IN` and the method-call aggregation form (`queries/expression-grammar` › Legacy spellings keep their meaning); and the date-only comparison notice (`queries/time-points` › A date-only comparison that changed meaning is announced); each removed in 3.0. Stored-data upgrade paths, the colon aggregation spelling, the Flight pyarrow adapter modules and the pg facade's `token=` argument SHALL NOT be marked.
+Every piece of compatibility code scheduled for removal in a future major version SHALL be marked through one shared mechanism that records the removal version as a literal, and that mechanism SHALL be the only way such code is marked and the only emitter of `FutureWarning` in the package. A marked form that still works SHALL emit exactly one `FutureWarning` per use (a deprecated Mode-B spelling: per spelling per query or save), attributed to the line that used it (for an input form, the first line outside SLayer that supplied it), and the CLI SHALL print it as one `Deprecated: …` line on stderr; a marked module path that moved SHALL raise an `ImportError` instead; a marked informational notice SHALL emit no `FutureWarning` — it is carried only as its structured response warning. The covered workarounds SHALL be every module path moved in 2.0 by the database-access, live-schema, row-supply and cardinality carve-outs, the Mode-B grammar's `slayer.engine.syntax` and `slayer.core.formula`, and the OSI importer's `slayer.osi.expression`; the `strict` query input form, the extension object in `population` and a field's `sql` input form (`models/field-expressions` › A field's sql converts to its expression); the deprecated Mode-B spellings `==`, `is None` / `is not None`, bare `None`, a `[…]` list after `IN` and the method-call aggregation form (`queries/expression-grammar` › Legacy spellings keep their meaning); the root-relative reference spellings converted in a query that names its population (a bare field or dataset metric, `count(*)`, and a path whose first segment is not a dataset, `queries/references` › Pre-2.0 root-relative spellings convert when a population is named); the date-only comparison notice (`queries/time-points` › A date-only comparison that changed meaning is announced); and the changed-reference notice (`queries/references` › A reference whose meaning changed announces it); each removed in 3.0. Stored-data upgrade paths, the colon aggregation spelling, the Flight pyarrow adapter modules and the pg facade's `token=` argument SHALL NOT be marked.
 
 #### Scenario: Every covered workaround is marked
 - **WHEN** the marked sites in the package are enumerated
@@ -54,8 +54,12 @@ Every piece of compatibility code scheduled for removal in a future major versio
 - **THEN** it emits exactly one `FutureWarning` naming `=` and "SLayer 3.0"
 
 #### Scenario: A marked notice emits no FutureWarning
-- **WHEN** a query triggers the date-only comparison notice
-- **THEN** no `FutureWarning` is recorded, the response carries the notice, and the tripwire enumerates the notice's site with removal version 3.0
+- **WHEN** a query triggers the date-only comparison notice, and another triggers the changed-reference notice
+- **THEN** no `FutureWarning` is recorded, each response carries its notice, and the tripwire enumerates both notices' sites with removal version 3.0
+
+#### Scenario: A root-relative spelling used twice in one query
+- **WHEN** a query with population `orders` measures `count(*)` and filters `count(*) > 1`
+- **THEN** it emits exactly one `FutureWarning` naming `count(*)`, `count(orders.*)` and "SLayer 3.0"
 
 ### Requirement: The tripwire stops the release of a removal's major version
 
@@ -86,7 +90,7 @@ A deprecated input form SHALL be converted to its replacement only through the s
 - **THEN** the response carries exactly two `deprecated_input` warnings
 
 #### Scenario: Two deprecated forms in one query are each reported
-- **WHEN** a query carrying both `strict: true` and an extension object in `source_model` is run in process and through REST
+- **WHEN** a query carrying both `strict: true` and an extension object in `population` is run in process and through REST
 - **THEN** exactly one `FutureWarning` is emitted per form, and each response carries exactly two `deprecated_input` warnings, one naming `strict` and one naming the extension object
 
 #### Scenario: An explicit null strict is reported over REST

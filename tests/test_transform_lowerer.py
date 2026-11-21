@@ -21,7 +21,7 @@ from decimal import Decimal
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Phase,
     ScalarCallKey,
     TransformKey,
@@ -32,7 +32,7 @@ from slayer.core.keys import desugar_change, desugar_change_pct
 
 def _amount_sum() -> AggregateKey:
     return AggregateKey(
-        source=ColumnKey(path=(), leaf="amount"), agg="sum",
+        source=FieldKey(path=(), leaf="amount"), agg="sum",
     )
 
 
@@ -56,7 +56,7 @@ class TestDesugarChange:
     def test_partition_by_threaded(self):
         # desugar_change threads partition_keys through to the underlying
         # time_shift (mechanism pinned via direct construction).
-        region = ColumnKey(path=(), leaf="region")
+        region = FieldKey(path=(), leaf="region")
         change_key = TransformKey(
             op="change",
             input=_amount_sum(),

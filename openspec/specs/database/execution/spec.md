@@ -352,7 +352,7 @@ A query engine SHALL be the only party that closes the clients it built; code th
 - **THEN** both clients were closed each time, and the query succeeds on a usable client
 
 #### Scenario: A multi-step CLI command uses one event loop
-- **WHEN** `slayer validate-models --cardinality` runs on a Postgres datasource reached through an asynchronous driver
+- **WHEN** `slayer validate-datasets --cardinality` runs on a Postgres datasource reached through an asynchronous driver
 - **THEN** drift validation and join profiling both complete, and no join is reported as failed to scan
 
 #### Scenario: Synchronous calls repeat safely

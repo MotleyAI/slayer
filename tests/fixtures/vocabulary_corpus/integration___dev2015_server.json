@@ -1,0 +1,10 @@
+{
+ "source": "tests/integration/_dev2015_server.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  }
+ ]
+}

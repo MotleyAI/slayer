@@ -8,11 +8,11 @@ object is serialized and advertised, independent of any one query surface.
 
 ### Requirement: column is an accepted alias of dimension
 
-A time dimension SHALL accept its dimension under either the key `dimension` or the key
+A time dimension SHALL accept its dimension under either the key `field` or the key
 `column`, with identical coercion: a string holding a Mode-B row-level expression (a bare
 or dotted column reference being the one-leaf case), or the legacy column-reference object
-`{"name": …, "model": …}`, which SHALL be read as the dotted text `model.name`. Serialization
-SHALL always emit `dimension` as a string, and the JSON schema SHALL advertise `dimension` as
+`{"name": …, "dataset": …}`, which SHALL be read as the dotted text `dataset.name`. Serialization
+SHALL always emit `field` as a string, and the JSON schema SHALL advertise `field` as
 a string property.
 
 #### Scenario: column key validates and dumps as dimension
@@ -20,41 +20,41 @@ a string property.
 - **WHEN** a query is constructed with
   `time_dimensions` = `[{"column": "created_at", "granularity": "month"}]`
 - **THEN** the time dimension's dimension is `created_at`, and dumping the query emits
-  `{"dimension": "created_at", "granularity": "month"}` with no `column` key
+  `{"field": "created_at", "granularity": "month"}` with no `column` key
 
 #### Scenario: dimension key still validates
 
 - **WHEN** a query is constructed with
-  `time_dimensions` = `[{"dimension": "created_at", "granularity": "month"}]`
+  `time_dimensions` = `[{"field": "created_at", "granularity": "month"}]`
 - **THEN** it validates exactly as before, and constructing the object with the
-  `dimension` keyword still works
+  `field` keyword still works
 
 #### Scenario: Legacy object form is read as text
 
 - **WHEN** a query is constructed with
-  `time_dimensions` = `[{"dimension": {"name": "created_at", "model": "customers"}, "granularity": "month"}]`
-- **THEN** it equals the query with `"dimension": "customers.created_at"`, and dumps
-  `dimension` as the string `customers.created_at`
+  `time_dimensions` = `[{"field": {"name": "created_at", "dataset": "customers"}, "granularity": "month"}]`
+- **THEN** it equals the query with `"field": "customers.created_at"`, and dumps
+  `field` as the string `customers.created_at`
 
 #### Scenario: Schema advertises dimension
 
 - **WHEN** the query's JSON schema is generated
-- **THEN** the time-dimension object's property is `dimension`, typed as a string, and no
+- **THEN** the time-dimension object's property is `field`, typed as a string, and no
   `column` property is listed
 
 ### Requirement: Functional granularity form in dimensions
 
-A string entry in `SlayerQuery.dimensions` that is a single call `date_trunc('<unit>', expr)` — where `<unit>` is a string literal case-insensitively matching a built-in granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`) or a custom granularity defined on the query's datasource (`queries/custom-granularities`), and `expr` is a row-level expression (a bare or dotted column reference being the one-leaf case) — SHALL be exactly equivalent to an explicit `TimeDimension(dimension=expr, granularity=<unit>)`: rewritten entries leave `dimensions` and append to `time_dimensions` in order of appearance, after any explicit entries, and every downstream observable (generated SQL, result rows, result keys, projection order, grain, transform axes, `whole_periods_only`, `main_time_dimension` matching, canonical serialization) SHALL be identical to the explicitly written form. A built-in unit SHALL be rewritten at query construction; a unit that is not built-in SHALL be resolved at binding against the datasource's granularities and, when it names one, SHALL behave identically to the explicit form. A `dimensions` entry that is a date-part call (`year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second`, any case) SHALL NOT be rewritten: it is an ordinary expression dimension holding the integer extraction (`queries/date-functions`), with no warning.
+A string entry in `SlayerQuery.dimensions` that is a single call `date_trunc('<unit>', expr)` — where `<unit>` is a string literal case-insensitively matching a built-in granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`) or a custom granularity defined on the query's datasource (`queries/custom-granularities`), and `expr` is a row-level expression (a bare or dotted column reference being the one-leaf case) — SHALL be exactly equivalent to an explicit `TimeDimension(field=expr, granularity=<unit>)`: rewritten entries leave `dimensions` and append to `time_dimensions` in order of appearance, after any explicit entries, and every downstream observable (generated SQL, result rows, result keys, projection order, grain, transform axes, `whole_periods_only`, `main_time_dimension` matching, canonical serialization) SHALL be identical to the explicitly written form. A built-in unit SHALL be rewritten at query construction; a unit that is not built-in SHALL be resolved at binding against the datasource's granularities and, when it names one, SHALL behave identically to the explicit form. A `dimensions` entry that is a date-part call (`year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second`, any case) SHALL NOT be rewritten: it is an ordinary expression dimension holding the integer extraction (`queries/date-functions`), with no warning.
 
 #### Scenario: month(created_at) groups by month
 
 - WHEN a query has `dimensions=["date_trunc('month', created_at)"]` and a count measure
-- THEN it produces the same SQL and results as the query with `time_dimensions=[{"dimension": "created_at", "granularity": "month"}]`, with result key `<model>.created_at`
+- THEN it produces the same SQL and results as the query with `time_dimensions=[{"field": "created_at", "granularity": "month"}]`, with result key `<dataset>.created_at`
 
 #### Scenario: Functional form over an expression
 
 - WHEN a query has `dimensions=["date_trunc('month', coalesce(shipped_at, created_at))"]` and a count measure
-- THEN it produces the same SQL and results as the query with `time_dimensions=[{"dimension": "coalesce(shipped_at, created_at)", "granularity": "month"}]`
+- THEN it produces the same SQL and results as the query with `time_dimensions=[{"field": "coalesce(shipped_at, created_at)", "granularity": "month"}]`
 
 #### Scenario: every granularity value works
 
@@ -64,7 +64,7 @@ A string entry in `SlayerQuery.dimensions` that is a single call `date_trunc('<u
 #### Scenario: datasource granularity callee
 
 - WHEN a query against a datasource defining `fiscal_year` has `dimensions=["date_trunc('fiscal_year', created_at)"]` and a count measure
-- THEN it produces the same SQL and results as the query with `time_dimensions=[{"dimension": "created_at", "granularity": "fiscal_year"}]`
+- THEN it produces the same SQL and results as the query with `time_dimensions=[{"field": "created_at", "granularity": "fiscal_year"}]`
 
 #### Scenario: case-insensitive callee and dotted join path
 
@@ -98,12 +98,12 @@ A string entry in `SlayerQuery.time_dimensions` SHALL be a `date_trunc('<unit>',
 #### Scenario: functional string entry coerces
 
 - WHEN a query has `time_dimensions=["date_trunc('month', created_at)"]`
-- THEN it is equivalent to `time_dimensions=[{"dimension": "created_at", "granularity": "month"}]`
+- THEN it is equivalent to `time_dimensions=[{"field": "created_at", "granularity": "month"}]`
 
 #### Scenario: functional string entry over an expression coerces
 
 - WHEN a query has `time_dimensions=["date_trunc('month', CAST(created_txt AS DATE))"]`
-- THEN it is equivalent to `time_dimensions=[{"dimension": "CAST(created_txt AS DATE)", "granularity": "month"}]`
+- THEN it is equivalent to `time_dimensions=[{"field": "CAST(created_txt AS DATE)", "granularity": "month"}]`
 
 #### Scenario: bare column string rejected with remedy
 
@@ -166,22 +166,22 @@ A `date_trunc` dimension entry whose shape is not exactly a string-literal unit 
 
 ### Requirement: Result keys disambiguate same-column time dimensions
 
-When two or more projected unnamed time dimensions share the same bound source — a column or an expression — at different granularities, each of their result keys SHALL be the usual key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). An unnamed time dimension whose source no other projected time dimension shares SHALL keep its granularity-free key, and a named one SHALL never carry the suffix (› Time dimension names). Exact-duplicate time dimensions (the same dimension, granularity, date range, name and label) SHALL be deduplicated at construction; time dimensions sharing dimension and granularity but differing in date range, name or label SHALL be rejected at construction. At construction two dimensions are the same when their parsed expressions are equal once a leading root qualifier is dropped (`created_at` ≡ `orders.created_at` from root `orders`), never on their text, so text inside a string literal or quoted identifier is compared exactly and never read as a qualifier. Time dimensions whose dimensions are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range, name or label, SHALL be rejected at binding — backstopping the construction-time check for spellings that only prove equivalent once resolved. Such spellings that share their name (an unnamed one's derived from its template) and agree in date range and label SHALL be deduplicated at binding into one projected time dimension, as exact duplicates are at construction.
+When two or more projected unnamed time dimensions share the same bound source — a column or an expression — at different granularities, each of their result keys SHALL be the usual key with the granularity appended (`orders.created_at.month`, `orders.created_at.year`). An unnamed time dimension whose source no other projected time dimension shares SHALL keep its granularity-free key, and a named one SHALL never carry the suffix (› Time dimension names). Exact-duplicate time dimensions (the same dimension, granularity, date range, name and label) SHALL be deduplicated at construction; time dimensions sharing dimension and granularity but differing in date range, name or label SHALL be rejected at construction. At construction two dimensions are the same when their parsed expressions are equal once read in the qualified syntax (`created_at` converts to `orders.created_at` in a query naming population `orders`, `queries/references`), never on their text, so text inside a string literal or quoted identifier is compared exactly and never read as a qualifier. Time dimensions whose dimensions are spelled differently but resolve to the same bucket (the same bound time-truncation identity), disagreeing in date range, name or label, SHALL be rejected at binding — backstopping the construction-time check for spellings that only prove equivalent once resolved. Such spellings that share their name (an unnamed one's derived from its template) and agree in date range and label SHALL be deduplicated at binding into one projected time dimension, as exact duplicates are at construction.
 
 #### Scenario: two granularities of one column
 
 - WHEN a query projects `date_trunc('month', created_at)` and `date_trunc('year', created_at)`
-- THEN the result has two columns keyed `<model>.created_at.month` and `<model>.created_at.year` with correctly bucketed values
+- THEN the result has two columns keyed `<dataset>.created_at.month` and `<dataset>.created_at.year` with correctly bucketed values
 
 #### Scenario: two granularities of one expression
 
 - WHEN a query projects `date_trunc('month', coalesce(shipped_at, created_at))` and `date_trunc('year', coalesce(shipped_at, created_at))`
-- THEN the result has two columns keyed `<model>.coalesce_shipped_at_created_at.month` and `<model>.coalesce_shipped_at_created_at.year`
+- THEN the result has two columns keyed `<dataset>.coalesce_shipped_at_created_at.month` and `<dataset>.coalesce_shipped_at_created_at.year`
 
 #### Scenario: single time dimension keeps its key
 
 - WHEN a query projects a single time dimension on `created_at`
-- THEN its result key stays `<model>.created_at` with no granularity suffix
+- THEN its result key stays `<dataset>.created_at` with no granularity suffix
 
 #### Scenario: exact duplicates dedupe
 
@@ -277,7 +277,7 @@ A `TimeDimension` in a downstream stage of a multi-stage query SHALL bind agains
 
 ### Requirement: Re-bucketing a stage column is typed
 
-Planning SHALL fail with a typed error (a `ValueError` subclass naming the time dimension), raised by the checker before any SQL is generated, when a stage time dimension's column is not DATE / TIMESTAMP, when the column has no recorded type, or when the requested granularity does not equal the upstream bucket's granularity and the upstream granularity does not nest into it. Nesting is: `second → minute → hour → day`, `day → week`, `day → week_sunday`, `day → month → quarter → year`, closed under transitivity; every other pair (finer, or non-nesting such as `week` against `month` in either direction, or `week` against `week_sunday`) is rejected. The re-bucketing error MUST name both granularities and the remedy (request the same or a nesting-coarser granularity, or bucket the raw column instead), and MUST be the same message whether the bucketed column belongs to a stage or to a model — it does not refer to an upstream stage. An unknown stage column SHALL raise the existing unknown-reference error listing the stage's columns, and a dotted name against a stage SHALL keep the existing illegal-scope error.
+Planning SHALL fail with a typed error (a `ValueError` subclass naming the time dimension), raised by the checker before any SQL is generated, when a stage time dimension's column is not DATE / TIMESTAMP, or when the requested granularity does not equal the upstream bucket's granularity and the upstream granularity does not nest into it. Every stage column carries a type (per `queries/multi-stage` › Every stage column carries a type). Nesting is: `second → minute → hour → day`, `day → week`, `day → week_sunday`, `day → month → quarter → year`, closed under transitivity; every other pair (finer, or non-nesting such as `week` against `month` in either direction, or `week` against `week_sunday`) is rejected. The re-bucketing error MUST name both granularities and the remedy (request the same or a nesting-coarser granularity, or bucket the raw column instead), and MUST be the same message whether the bucketed column belongs to a stage or to a model — it does not refer to an upstream stage. An unknown stage column SHALL raise the existing unknown-reference error listing the stage's columns, and a dotted name against a stage SHALL keep the existing illegal-scope error.
 
 #### Scenario: Finer granularity rejected
 
@@ -296,8 +296,8 @@ Planning SHALL fail with a typed error (a `ValueError` subclass naming the time 
 
 #### Scenario: Untyped stage column fails closed
 
-- **WHEN** the outer stage declares a time dimension on an inner-stage column whose type is not recorded
-- **THEN** planning fails with the temporal-column typed error rather than binding
+- **WHEN** the outer stage declares a time dimension on an inner-stage column that projects only `null` (a stage column always carries a type; this one is INT)
+- **THEN** planning fails with the temporal-column typed error naming the observed type INT
 
 #### Scenario: Unknown and dotted names keep their binder errors
 
@@ -387,10 +387,10 @@ An order entry `date_trunc('<unit>', expr)` SHALL sort by the bucketed value of 
 
 ### Requirement: Time dimensions accept row-level expressions
 
-A time dimension's `dimension` SHALL be a row-level Mode-B expression — a bare or dotted column reference being the one-leaf case — bucketed at the requested granularity exactly as a column is. The expression SHALL be homed per `queries/semantics` › Home dataset (Axiom 2.2): its leaves MAY be host-model columns, columns reached over provably to-one hops, or columns of the current stage's schema; an expression whose leaves no candidate home determines SHALL fail with the existing input-safety error naming the leaf and the hop. The expression SHALL type DATE or TIMESTAMP; any other type, or a type that cannot be determined, SHALL fail before any SQL is generated with the existing temporal-column typed error naming the time dimension and the observed type, and, for an undetermined type, the remedy of wrapping the expression in `CAST(… AS TIMESTAMP)` or `CAST(… AS DATE)`. An aggregate, transform or attached value anywhere in the expression SHALL be rejected with a typed error stating that a time dimension is row-level. The population inference of `queries/population` SHALL read an expression time dimension's leaves as it reads a column's.
+A time dimension's `field` SHALL be a row-level Mode-B expression — a bare or dotted column reference being the one-leaf case — bucketed at the requested granularity exactly as a column is. The expression SHALL be homed per `queries/semantics` › Home dataset (Axiom 2.2): its leaves MAY be host-model columns, columns reached over provably to-one hops, or columns of the current stage's schema; an expression whose leaves no candidate home determines SHALL fail with the existing input-safety error naming the leaf and the hop. The expression SHALL type DATE or TIMESTAMP; any other type, or a type that cannot be determined, SHALL fail before any SQL is generated with the existing temporal-column typed error naming the time dimension and the observed type, and, for an undetermined type, the remedy of wrapping the expression in `CAST(… AS TIMESTAMP)` or `CAST(… AS DATE)`. An aggregate, transform or attached value anywhere in the expression SHALL be rejected with a typed error stating that a time dimension is row-level. The population inference of `queries/population` SHALL read an expression time dimension's leaves as it reads a column's.
 
 #### Scenario: Coalesced timestamp groups by month
-- **WHEN** a query on `orders` has `time_dimensions` = `[{"dimension": "coalesce(shipped_at, created_at)", "granularity": "month"}]` and a count measure
+- **WHEN** a query on `orders` has `time_dimensions` = `[{"field": "coalesce(shipped_at, created_at)", "granularity": "month"}]` and a count measure
 - **THEN** each row is one month of the per-row coalesced timestamp with the count of orders in it, by hand-computed executed values on SQLite and DuckDB
 
 #### Scenario: Cast text to a date
@@ -447,7 +447,7 @@ Every rule stated for a time dimension's column SHALL apply to an expression tim
 
 ### Requirement: Time dimension names
 
-A time dimension SHALL accept an optional `name`. An unnamed column time dimension SHALL keep its existing result key. An unnamed expression time dimension SHALL be named by the same sanitising rule as an unnamed computed dimension, and its result key SHALL be that name prefixed by the query's model, extended with the granularity exactly when another projected time dimension shares its bound source. A named time dimension's result key SHALL be its name prefixed by the query's model, never extended with the granularity. Names SHALL be unique across a query's dimensions and time dimensions; a collision SHALL fail at construction naming it. A time dimension MAY be referred to by its name from `main_time_dimension` and from `partition_by=`, exactly as a computed dimension is by its name.
+A time dimension SHALL accept an optional `name`. An unnamed column time dimension SHALL keep its existing result key. An unnamed expression time dimension SHALL be named by the same sanitising rule as an unnamed computed dimension, and its result key SHALL be that name prefixed by its references' common anchor (`queries/references`), extended with the granularity exactly when another projected time dimension shares its bound source. A named time dimension's result key SHALL be its bare name, never extended with the granularity. Names SHALL be unique across a query's dimensions and time dimensions; a collision SHALL fail at construction naming it. A time dimension MAY be referred to by its name from `main_time_dimension` and from `partition_by=`, exactly as a computed dimension is by its name.
 
 #### Scenario: Unnamed expression time dimension's key
 - **WHEN** a query on `orders` buckets `coalesce(shipped_at, created_at)` at `month`
@@ -455,11 +455,11 @@ A time dimension SHALL accept an optional `name`. An unnamed column time dimensi
 
 #### Scenario: Named time dimension
 - **WHEN** the same time dimension carries `"name": "effective_at"`
-- **THEN** its result key is `orders.effective_at`, and `main_time_dimension` `"effective_at"` selects it as the axis of a `cumsum` measure in a query that also buckets `created_at`
+- **THEN** its result key is `effective_at`, and `main_time_dimension` `"effective_at"` selects it as the axis of a `cumsum` measure in a query that also buckets `created_at`
 
 #### Scenario: Named column time dimension
 - **WHEN** a time dimension on `created_at` at `month` carries `"name": "m"`
-- **THEN** its result key is `orders.m` and its values equal the unnamed form's
+- **THEN** its result key is `m` and its values equal the unnamed form's
 
 #### Scenario: Partition by a time dimension's name
 - **WHEN** a query buckets `coalesce(shipped_at, created_at)` at `month` named `effective_at`, groups by `region`, and selects `sum(amount, partition_by=effective_at)`

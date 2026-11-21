@@ -1,28 +1,28 @@
 """The one regroup discovery walk: every producer root of a prebound query with
-its phase (from the consumer position) and routing (from the key itself)."""
+its phase (from the consumer position) and routing (from its resolved home)."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
+from slayer.core.models import SlayerDataset
 from slayer.core.keys import (
     AggregateKey,
     ConsumerNode,
     TransformKey,
     ValueKey,
     attached_inputs,
-    is_cross_model_agg,
     is_kernel_requiring,
     is_reaggregation_key,
     is_row_attach_root,
     restricts_own_rows,
-    source_anchor_path,
     walk_consumer_positions,
+    window_kwarg_of,
 )
-from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.scope import DatasetScope
 from slayer.engine.compile.shift import _series_mode
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
@@ -33,7 +33,7 @@ from slayer.engine.elaborate_env import (
     is_grained_aggregate,
     position_classes,
 )
-from slayer.engine.cardinality.join_safety import (
+from slayer.engine.cardinality.relationship_safety import (
     crossing_local_root_predicate,
     grain_member_attributable,
     reads_population_spine,
@@ -42,6 +42,7 @@ from slayer.ir.elaborated import ConjunctTyping
 from slayer.ir.planned import MaskTyping
 from slayer.ir.prebound import PreboundQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.terms import AggregateHomes
 
 RootPhase = Literal["row", "combined"]
 Routing = Literal[
@@ -58,32 +59,34 @@ class RootDisposition(BaseModel):
     root: ValueKey
     phase: RootPhase
     routing: Routing
-    #: Public measures this root answers for (a row-attach root's inputs: the
-    #: measures containing that root).
+    #: Public metrics this root answers for (a row-attach root's inputs: the
+    #: metrics containing that root).
     consumer_public_names: Tuple[str, ...] = ()
     declared_type: Optional[DataType] = None
     #: ``time_shift`` candidates only: shifts its materialised series.
     series: Optional[bool] = None
 
 
-def _is_bare_own_rows_local(k: ValueKey) -> bool:
+def _is_bare_own_rows_local(k: ValueKey, *, homes: AggregateHomes) -> bool:
     """A bare local aggregate needing its own rows: windowed, ranked, or row-restricted by FILTER."""
     return (
         (is_kernel_requiring(k) or restricts_own_rows(k)) and k.partition_keys is None
-        and not source_anchor_path(k.source)
+        and not homes.target_rooted(k)
     )
 
 
-def _input_routing(a: ValueKey) -> Routing:
+def _input_routing(a: ValueKey, *, homes: AggregateHomes) -> Routing:
     if is_reaggregation_key(a):
         return "reaggregation_constituent"
-    return "target_rooted" if is_cross_model_agg(a) else "local_producer"
+    return "target_rooted" if homes.target_rooted(a) else "local_producer"
 
 
-def row_attach_inputs(root: ValueKey, *, names: Tuple[str, ...]) -> List[RootDisposition]:
+def row_attach_inputs(
+    root: ValueKey, *, names: Tuple[str, ...], homes: AggregateHomes,
+) -> List[RootDisposition]:
     """The row-phase dispositions of an inline row-attach root's attached inputs."""
     return [
-        RootDisposition(root=a, phase="row", routing=_input_routing(a),
+        RootDisposition(root=a, phase="row", routing=_input_routing(a, homes=homes),
                         consumer_public_names=names)
         for a in attached_inputs(root)
     ]
@@ -93,17 +96,19 @@ class _Walker:
     """Classifies each walked node by consumer position; ``out`` in first-seen order."""
 
     def __init__(
-        self, *, prebound: PreboundQuery, scope: Union[ModelScope, StageSchema],
-        bundle: ResolvedSourceBundle,
+        self, *, prebound: PreboundQuery, scope: DatasetScope,
+        bundle: ResolvedSourceBundle, homes: AggregateHomes,
     ) -> None:
         self.out: List[RootDisposition] = []
+        self.homes = homes
         n_grain = prebound.n_dims + prebound.n_time_dimensions
-        self.classes = position_classes(prebound.declared_measures, n_grain=n_grain)
+        self.classes = position_classes(prebound.declared_metrics, n_grain=n_grain)
         self.row_attach_names: Dict[ValueKey, List[str]] = {}
-        self.crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)
-        self.host = scope.source_model if isinstance(scope, ModelScope) else None
+        self.crossing = crossing_local_root_predicate(scope=scope, bundle=bundle, homes=homes)
+        self.host = scope.population
         self.bundle = bundle
-        self.grain = [dm.bound.value_key for dm in prebound.declared_measures[:n_grain]]
+        self.grain = [dm.bound.value_key for dm in prebound.declared_metrics[:n_grain]]
+        self.active_td = prebound.main_time_key
 
     def emit(self, root: ValueKey, phase: RootPhase, routing: Routing, *,
              names: Tuple[str, ...] = (), declared_type: Optional[DataType] = None,
@@ -115,22 +120,27 @@ class _Walker:
             self.out.append(d)
 
     def local_broadcasts(self, k: ValueKey) -> bool:
-        """A plain local aggregate grouped by a dimension unattributable from the host."""
+        """A local aggregate (plain, ranked or windowed) grouped by a dimension unattributable from the host, or a
+        partitioned windowed one whose window axis is: both go through the mode gate."""
         host = self.host
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
-            or is_cross_model_agg(k) or k.locus == "host" or k.partition_keys is not None
-            or self.crossing(k) or is_kernel_requiring(k)
+            or self.homes.target_rooted(k) or k.locus == "host" or self.crossing(k)
         ):
             return False
+        if k.partition_keys is not None:
+            # Requested grain never broadcasts; only a fanning window axis needs association.
+            return window_kwarg_of(k) is not None and self.active_td is not None \
+                and not self._attributable(self.active_td, host=host)
         # The population's spine is counted over each home's own axis, never the product.
         return any(
-            reads_population_spine(g, host=host) or not grain_member_attributable(
-                key=g, target_path=(), root_model=host,
-                models_by_name=self.bundle.models_by_name, bundle=self.bundle,
-                host_model=host, host_name=host.name,
-            )
-            for g in self.grain
+            reads_population_spine(g, host=host) or not self._attributable(g, host=host) for g in self.grain
+        )
+
+    def _attributable(self, key: ValueKey, *, host: SlayerDataset) -> bool:
+        return grain_member_attributable(
+            key=key, target_path=(), root_dataset=host, datasets_by_name=self.bundle.datasets_by_name,
+            bundle=self.bundle, host_dataset=host, host_name=host.name,
         )
 
     def emit_named(self, k: ValueKey, phase: RootPhase, routing: Routing, *, top: bool,
@@ -146,7 +156,7 @@ class _Walker:
                                 declared=declared)
                 continue
             if is_dimension_transform_root(k) or is_grained_aggregate(k):
-                self.emit(k, "row", _input_routing(k))
+                self.emit(k, "row", _input_routing(k, homes=self.homes))
             self.row_attach(k, attach_pk=False)
 
     def row_attach(self, k: ValueKey, *, attach_pk: bool, names: Sequence[str] = ()) -> None:
@@ -158,7 +168,7 @@ class _Walker:
         self, vk: ValueKey, *, position: ConsumerPosition, name: Optional[str] = None,
         declared: Optional[DataType] = None, containing: Sequence[str] = (),
     ) -> None:
-        """Route every node of a measure / order / filter root; a row-scope reference
+        """Route every node of a metric / order / filter root; a row-scope reference
         to a dimension's own value routes nowhere."""
         opaque = self.classes.opaque(position)
         for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys_for(position),
@@ -183,16 +193,17 @@ class _Walker:
         k = n.key
         if isinstance(k, TransformKey) and k.op == "time_shift":
             self.emit(k, "combined", "shifted", series=_series_mode(k.input, to_original={}))
-        kind = combined_kind(k)
-        if kind is not None and self.classes.combined_admits(n, position=position, root=root):
+        kind = combined_kind(k, homes=self.homes)
+        associates = self.local_broadcasts(k)
+        if kind is not None and not associates and self.classes.combined_admits(n, position=position, root=root):
             if kind == "local":
                 self.emit(k, "combined", "local_producer", names=names)
             else:
                 self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
-        if _is_bare_own_rows_local(k) or self.crossing(k):
-            self.emit(k, "combined", "local_producer", names=names)
-        elif self.local_broadcasts(k):
+        if associates:
             self.emit(k, "combined", "target_rooted", names=names)
+        elif _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
+            self.emit(k, "combined", "local_producer", names=names)
 
     def inline_row_attach_roots(self) -> None:
         """Emit each row-attach root no producer disposition routes, with its inputs."""
@@ -202,30 +213,30 @@ class _Walker:
                 continue
             ns = tuple(names)
             self.emit(root, "combined", "inline", names=ns)
-            for d in row_attach_inputs(root, names=ns):
+            for d in row_attach_inputs(root, names=ns, homes=self.homes):
                 self.emit(d.root, d.phase, d.routing, names=d.consumer_public_names)
 
 
 def discover_roots(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    scope: DatasetScope, bundle: ResolvedSourceBundle, homes: AggregateHomes,
 ) -> List[RootDisposition]:
-    """Every producer root of ``prebound``, one disposition per consumer occurrence."""
-    w = _Walker(prebound=prebound, scope=scope, bundle=bundle)
-    measure_typed = frozenset(
-        i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.MEASURE
+    """Every producer root of ``prebound``, one disposition per consumer occurrence, routed by its home."""
+    w = _Walker(prebound=prebound, scope=scope, bundle=bundle, homes=homes)
+    metric_typed = frozenset(
+        i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.METRIC
     )
     for r in consumer_roots(
-        declared_measures=prebound.declared_measures, order_specs=prebound.order_specs,
-        bound_filters=prebound.bound_filters, measure_typed=measure_typed,
+        declared_metrics=prebound.declared_metrics, order_specs=prebound.order_specs,
+        bound_filters=prebound.bound_filters, metric_typed=metric_typed,
     ):
-        dm = r.measure
-        declared = dm.type if dm is not None and dm.type_is_explicit else None
+        dm = r.metric
+        declared = dm.datatype if dm is not None and dm.type_is_explicit else None
         name = dm.public_name if dm is not None else None
         if r.position == "dimension":
             w.dimension(r.key, name=name, declared=declared)
         else:
             w.consumer(r.key, position=r.position, name=name, declared=declared,
-                       containing=(name,) if r.position == "measure" and name else ())
+                       containing=(name,) if r.position == "metric" and name else ())
     w.inline_row_attach_roots()
     return w.out

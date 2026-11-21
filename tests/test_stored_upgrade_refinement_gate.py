@@ -18,7 +18,7 @@ from slayer.storage import base as storage_base
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction
 from tests._gateway_harness import RecordingClient
-from tests._stored_upgrade_fixtures import BACKENDS, DS, column_of, raw_doc, raw_store
+from tests._stored_upgrade_fixtures import BACKENDS, DS, field_of, raw_doc, raw_store
 
 
 def _items(*, version: int, amount_type: str = "DOUBLE", sql_table: str = "items", columns: list[dict] | None = None) -> dict:
@@ -46,7 +46,7 @@ def _recording_factory(clients: list[RecordingClient]) -> Any:
 
 
 @pytest.fixture
-def no_live_access(monkeypatch) -> list[str]:
+def no_live_access(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record (and refuse) every live refinement or engine creation."""
     calls: list[str] = []
 
@@ -66,9 +66,9 @@ def no_live_access(monkeypatch) -> list[str]:
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_v10_model_loads_without_datasource_entry(tmp_path, backend):
     storage = await raw_store(backend=backend, base=str(tmp_path), datasource=None, models=[_items(version=10)])
-    model = await storage.get_model("items", data_source=DS)
+    model = await storage.get_dataset("items", data_source=DS)
     assert model is not None
-    assert column_of(model, "amount").type is DataType.DOUBLE
+    assert field_of(model, "amount").datatype is DataType.FLOAT
     assert (await raw_doc(storage, "items"))["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
@@ -77,9 +77,9 @@ async def test_v10_model_loads_with_unreachable_datasource(tmp_path, backend, no
     ds = DatasourceConfig(name=DS, type="postgres", host="127.0.0.1", port=1,
                           database="shop", username="u", password="p")
     storage = await raw_store(backend=backend, base=str(tmp_path), datasource=ds, models=[_items(version=10)])
-    model = await storage.get_model("items", data_source=DS)
+    model = await storage.get_dataset("items", data_source=DS)
     assert model is not None
-    assert column_of(model, "amount").type is DataType.DOUBLE
+    assert field_of(model, "amount").datatype is DataType.FLOAT
     assert no_live_access == []
 
 
@@ -87,10 +87,10 @@ async def test_v10_model_loads_with_unreachable_datasource(tmp_path, backend, no
 async def test_pre_v8_model_still_requires_its_datasource(tmp_path, backend):
     storage = await raw_store(backend=backend, base=str(tmp_path), datasource=None, models=[_items(version=5)])
     with pytest.raises(ValueError, match="unavailable for type refinement"):
-        await storage.get_model("items", data_source=DS)
+        await storage.get_dataset("items", data_source=DS)
     engine = SlayerQueryEngine(storage=storage)
     with pytest.raises(ValueError, match="unavailable for type refinement"):
-        await engine.storage.get_model("items", data_source=DS)
+        await engine.storage.get_dataset("items", data_source=DS)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -102,12 +102,12 @@ async def test_v7_model_is_still_refined(tmp_path, backend):
                               models=[_items(version=7)])
     engine = SlayerQueryEngine(storage=storage)
     try:
-        model = await engine.storage.get_model("items", data_source=DS)
+        model = await engine.storage.get_dataset("items", data_source=DS)
     finally:
         engine.close()
         engine_factory.invalidate_engine(ds)
     assert model is not None
-    assert column_of(model, "amount").type is DataType.INT
+    assert field_of(model, "amount").datatype is DataType.INTEGER
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -118,7 +118,7 @@ async def test_refinement_without_a_query_engine_is_refused(tmp_path, backend):
     storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=ds,
                               models=[_items(version=5)])
     with pytest.raises(ValueError, match="through a query engine"):
-        await storage.get_model("items", data_source=DS)
+        await storage.get_dataset("items", data_source=DS)
 
 
 async def test_refinement_reads_only_the_models_table(tmp_path: Path) -> None:
@@ -136,12 +136,12 @@ async def test_refinement_reads_only_the_models_table(tmp_path: Path) -> None:
     clients: list[RecordingClient] = []
     engine = SlayerQueryEngine(storage=storage, client_factory=_recording_factory(clients))
     try:
-        model = await engine.storage.get_model("items", data_source=DS)
+        model = await engine.storage.get_dataset("items", data_source=DS)
     finally:
         engine.close()
         engine_factory.invalidate_engine(ds)
     assert model is not None
-    assert column_of(model, "amount").type is DataType.INT
+    assert field_of(model, "amount").datatype is DataType.INTEGER
     reads = [c for c in clients[0].calls if c.op == "reflect_columns"]
     assert [(c.args[0] if c.args else c.kwargs["location"]).name for c in reads] == ["items"]
     assert "list_objects" not in clients[0].ops()
@@ -199,7 +199,7 @@ async def test_sqlite_refinement_keeps_its_sampling_rules(tmp_path: Path) -> Non
     engine = SlayerQueryEngine(storage=storage, client_factory=_recording_factory(clients))
     try:
         loaded = {
-            name: await engine.storage.get_model(name, data_source=DS)
+            name: await engine.storage.get_dataset(name, data_source=DS)
             for name in ("samples", "big", "events", "odd")
         }
     finally:
@@ -208,14 +208,14 @@ async def test_sqlite_refinement_keeps_its_sampling_rules(tmp_path: Path) -> Non
     assert all(m is not None for m in loaded.values())
     models = {name: m for name, m in loaded.items() if m is not None}
     samples_model = models["samples"]
-    types = {c.name: c.type for c in samples_model.columns}
+    types = {c.name: c.datatype for c in samples_model.fields}
     assert types == {
-        "id": DataType.INT, "ints": DataType.INT, "reals": DataType.DOUBLE, "mixed_real": DataType.DOUBLE,
-        "blobs": DataType.TEXT, "coercible": DataType.DOUBLE, "noncoercible": DataType.TEXT,
-        "nonfinite": DataType.TEXT,
+        "id": DataType.INTEGER, "ints": DataType.INTEGER, "reals": DataType.FLOAT, "mixed_real": DataType.FLOAT,
+        "blobs": DataType.STRING, "coercible": DataType.FLOAT, "noncoercible": DataType.STRING,
+        "nonfinite": DataType.STRING,
     }
-    assert column_of(models["big"], "v").type is DataType.DOUBLE
-    assert column_of(models["events"], "group").type is DataType.INT
-    assert column_of(models["odd"], "v").type is DataType.INT
+    assert field_of(models["big"], "v").datatype is DataType.FLOAT
+    assert field_of(models["events"], "group").datatype is DataType.INTEGER
+    assert field_of(models["odd"], "v").datatype is DataType.INTEGER
     assert clients
     assert clients[0].statements()

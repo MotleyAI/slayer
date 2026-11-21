@@ -25,7 +25,7 @@ BUILDERS: tuple[tuple[str, str], ...] = (
     ("slayer.sql.generator", "SQLGenerator._generate_from_planned_impl"),
     ("slayer.sql.generator", "_build_planned_stages_ast"),
     ("slayer.sql.stage_wrapper", "build_flat_rename_wrapper"),
-    ("slayer.engine.query_engine", "SlayerQueryEngine._expand_query_backed_model"),
+    ("slayer.engine.query_engine", "SlayerQueryEngine._expand_query_backed_dataset"),
 )
 
 #: The single finishing step (render → fit → validate), exempt inside any builder.
@@ -35,8 +35,8 @@ FINISHERS: tuple[tuple[str, str], ...] = (
 
 #: Value-layer renders of user fragments (which may hold subqueries); DEV-1972 makes them AST and removes this.
 VALUE_LAYER_EXEMPT: tuple[tuple[str, str], ...] = (
-    ("slayer.sql.column_expansion", "expand_derived_refs_sync"),
-    ("slayer.sql.generator", "SQLGenerator._expand_derived_column_sql"),
+    ("slayer.sql.field_expansion", "expand_derived_refs_sync"),
+    ("slayer.sql.generator", "SQLGenerator._expand_derived_field_sql"),
 )
 
 GUARD_MARK = "__statement_render_law__"

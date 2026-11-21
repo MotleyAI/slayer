@@ -1,0 +1,72 @@
+{
+ "source": "tests/test_dev1892_fold_equivalence.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(customers.*)",
+    "name": "nc"
+   },
+   "new": {
+    "expression": "count(customers.*)",
+    "name": "nc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.north_spend)",
+    "name": "ns"
+   },
+   "new": {
+    "expression": "sum(customers.north_spend)",
+    "name": "ns"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(customers.regions.pop, weight=customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(customers.regions.pop, weight=customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum2(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum2(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum3(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum3(customers.spend)",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,26 @@
+{
+ "source": "tests/_dev2177_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 40,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 121,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,4 +1,4 @@
-"""DEV-1747 §5.10 — the single order-term resolver.
+"""§5.10 — the single order-term resolver.
 
 Four renderers currently build ORDER BY terms independently
 (``_apply_order_limit_from_planned``, ``_resolve_combined_order_term``,
@@ -10,7 +10,7 @@ dispatch on ``entry.scope``, zero precedence.
 
 Two behaviour changes fall out of the consolidation and are pinned here:
 
-* **D4** — the combined path currently returns ``None`` when a cross-model
+* **D4** — the combined path currently returns ``None`` when a cross-dataset
   order slot has no alias, which SILENTLY drops the sort term and returns
   unsorted rows. ``_planned_order_by_sql`` already raises in the same
   situation. The resolver raises everywhere.
@@ -19,8 +19,6 @@ Two behaviour changes fall out of the consolidation and are pinned here:
   therefore MISSING on the combined and transform-chain paths. It moves into
   the dialect strategy (``SqlDialect.build_ordered``), so every path gets it
   (P-H).
-
-Refs: DEV-1747 (D3, D4, D5), DEV-1742 §5.10 / P-G / P-H, DEV-1571 Bug 2.
 """
 from __future__ import annotations
 
@@ -28,11 +26,11 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, OrderItem, QueryDimension, SlayerQuery, TimeDimension
 from tests._dev1747_fixtures import (
     cte_map,
     dev1747_bundle,
-    dev1747_models,
+    dev1747_datasets,
     order_by_text,
     order_terms,
     outermost_select,
@@ -52,10 +50,10 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.tsql import TsqlDialect
 import pydantic
 
-_MEASURE = [{"formula": "sum(amount)", "name": "rev"}]
+_METRIC = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 _MONTH = TimeDimension(
-    dimension="created_at", granularity=TimeGranularity.MONTH,
+    field="orders.created_at", granularity=TimeGranularity.MONTH,
 )
 
 #: One query per render path that builds its own ORDER BY term. D4's claim is
@@ -63,37 +61,37 @@ _MONTH = TimeDimension(
 #: chain does, and the rest return unsorted rows.
 _D4_SHAPES = {
     "host_base": SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=_MEASURE,
-        order=[OrderItem(column=ColumnRef(name="rev"), direction="desc")],
+        population="orders",
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=_METRIC,
+        order=[OrderItem(field="rev", direction="desc")],
     ),
     "cross_model": SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[
-            {"formula": "sum(amount)", "name": "rev"},
-            {"formula": "sum(customers.spend)", "name": "cs"},
+        population="orders",
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=[
+            {"metric": "sum(orders.amount)", "alias": "rev"},
+            {"metric": "sum(customers.spend)", "alias": "cs"},
         ],
-        order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
+        order=[OrderItem(field="cs", direction="desc")],
     ),
     "outer_composite": SlayerQuery.model_validate({
-        "source_model": "orders",
-        "dimensions": [ColumnRef(name="status")],
-        "measures": [{"formula": "sum(customers.spend) + sum(amount)", "name": "mix"}],
-        "order": [OrderItem(column=ColumnRef(name="mix"), direction="desc")],
+        "population": "orders",
+        "dimensions": [QueryDimension(field="orders.status")],
+        "metrics": [{"metric": "sum(customers.spend) + sum(orders.amount)", "alias": "mix"}],
+        "order": [OrderItem(field="mix", direction="desc")],
     }),
     "windowed": SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "time_dimensions": [_MONTH],
-        "measures": [{"formula": "sum(amount, window='90d')", "name": "w"}],
-        "order": [OrderItem(column=ColumnRef(name="w"), direction="desc")],
+        "metrics": [{"metric": "sum(orders.amount, window='90d')", "alias": "w"}],
+        "order": [OrderItem(field="w", direction="desc")],
     }),
     "transform_chain": SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "time_dimensions": [_MONTH],
-        "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}],
-        "order": [OrderItem(column=ColumnRef(name="cs"), direction="asc")],
+        "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
+        "order": [OrderItem(field="cs", direction="asc")],
     }),
 }
 
@@ -110,9 +108,9 @@ def _order_columns(sql: str, *, dialect: str = "postgres"):
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
-    models = dev1747_models()
+    models = dev1747_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:], dialect=dialect,
+        query=query, dataset=models[0], extra_datasets=models[1:], dialect=dialect,
     )
 
 
@@ -140,7 +138,7 @@ def _assert_order_reference_resolves(sql: str, *, dialect: str = "postgres") -> 
     an input column of the FROM — which Postgres allows and other engines do
     not, and which silently picks a different column the moment two scopes
     project the same name. That is the shape ``_resolve_combined_order_term``
-    emits for a cross-model measure today (``ORDER BY
+    emits for a cross-dataset metric today (``ORDER BY
     "orders.customers.spend_sum"`` while the SELECT projects it ``AS
     "orders.cs"``), and the drift §5.10's single resolver removes.
     """
@@ -169,17 +167,17 @@ def _assert_order_reference_resolves(sql: str, *, dialect: str = "postgres") -> 
 class TestOrderTargetMatrix:
     async def test_duplicate_display_aliases_order_on_one_column(self) -> None:
         """One structural slot carrying TWO public aliases (C13): the same
-        formula declared under two names interns once and projects twice. The
+        expression declared under two names interns once and projects twice. The
         sort must name a column the SELECT actually projects — the resolver
         takes the FIRST alias, since both hold the same value."""
         sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(amount)", "name": "rev_again"},
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[
+                {"metric": "sum(orders.amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev_again"},
             ],
-            order=[OrderItem(column=ColumnRef(name="rev_again"), direction="desc")],
+            order=[OrderItem(field="rev_again", direction="desc")],
         ))
         terms = order_by_text(sql)
         assert terms
@@ -196,11 +194,11 @@ class TestOrderTargetMatrix:
         """A joined dimension projects under its DOTTED result key, so the
         ORDER BY must match that, not the flat ``__`` declared name."""
         sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="name", model="customers.regions")],
-            measures=_MEASURE,
+            population="orders",
+            dimensions=[QueryDimension(field="customers.regions.name")],
+            metrics=_METRIC,
             order=[OrderItem(
-                column=ColumnRef(name="name", model="customers.regions"),
+                field="customers.regions.name",
                 direction="asc",
             )],
         ))
@@ -214,14 +212,14 @@ class TestOrderTargetMatrix:
         public projection. Asserting only the first would pass if the slot were
         quietly projected, which changes the result shape."""
         sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=_MEASURE,
-            order=[OrderItem(column=ColumnRef(name="id"), direction="desc")],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
+            order=[OrderItem(field="orders.id", direction="desc")],
         ))
         assert order_terms(sql), f"hidden sort key produced no ORDER BY:\n{sql}"
         projected = {s.alias_or_name for s in _outer_projection(sql)}
-        assert projected == {"orders.status", "orders.rev"}, (
+        assert projected == {"orders.status", "rev"}, (
             f"the hidden order slot leaked into the projection: {projected}"
         )
 
@@ -235,13 +233,13 @@ class TestOrderTargetMatrix:
         (``_1``) must still emit a quoted identifier, not a bare token."""
 
         with pytest.raises(pydantic.ValidationError):
-            ColumnRef(name="1")
+            FieldRef(name="1")
 
         sql = await _sql(SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": [ColumnRef(name="status")],
-            "measures": [{"formula": "sum(amount)", "name": "_1"}],
-            "order": [OrderItem(column=ColumnRef(name="_1"), direction="asc")],
+            "population": "orders",
+            "dimensions": [QueryDimension(field="orders.status")],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "_1"}],
+            "order": [OrderItem(field="_1", direction="asc")],
         }))
         for term in order_terms(sql):
             stripped = term.strip()
@@ -250,45 +248,45 @@ class TestOrderTargetMatrix:
             )
 
     async def test_transformed_measure_orders_at_the_chain_outer_wrap(self) -> None:
-        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="created_at",
+        sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(column=ColumnRef(name="cs"), direction="desc")]}))
-        _assert_orders_by(sql, "orders.cs")
+            )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="desc")]}))
+        _assert_orders_by(sql, "cs")
 
     async def test_cross_model_aggregate_orders_on_its_cte_column(self) -> None:
         sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[
+                {"metric": "sum(orders.amount)", "alias": "rev"},
+                {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
-            order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
+            order=[OrderItem(field="cs", direction="desc")],
         ))
         _assert_order_reference_resolves(sql)
 
     async def test_rerooted_aggregate_orders_correctly(self) -> None:
-        """A cross-model aggregate whose CTE is RE-ROOTED at the target still
+        """A cross-dataset aggregate whose CTE is RE-ROOTED at the target still
         exposes one column to order on — the reroot must not change the
         order-term resolution."""
         sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="name", model="customers.regions")],
-            measures=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
+            population="orders",
+            dimensions=[QueryDimension(field="customers.regions.name")],
+            metrics=[
+                {"metric": "sum(orders.amount)", "alias": "rev"},
+                {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
-            order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
+            order=[OrderItem(field="cs", direction="desc")],
         ))
         _assert_order_reference_resolves(sql)
 
     async def test_windowed_measure_orders_on_its_cte_column(self) -> None:
-        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="created_at",
+        sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "sum(amount, window='90d')", "name": "w"}], "order": [OrderItem(column=ColumnRef(name="w"), direction="desc")]}))
-        _assert_orders_by(sql, "orders.w")
+            )], "metrics": [{"metric": "sum(orders.amount, window='90d')", "alias": "w"}], "order": [OrderItem(field="w", direction="desc")]}))
+        _assert_orders_by(sql, "w")
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +296,7 @@ class TestUnresolvableRaises:
     def test_resolver_raises_when_the_scope_lookup_misses(self) -> None:
         entry = ScopedOrder(
             slot_id="missing", direction="asc",
-            scope=OrderScope.CROSS_MODEL_CTE,
+            scope=OrderScope.CROSS_DATASET_CTE,
         )
         env = OrderEnv(dialect=SqlDialect())
         with pytest.raises(OrderSlotNotMaterialisedError) as exc:
@@ -383,17 +381,17 @@ class TestNullOrdering:
         assert ordered.args.get("nulls_first") is (direction == "asc")
 
     async def test_tsql_combined_path_has_no_case_when_emulation(self) -> None:
-        """The gap D5 closes: the combined (cross-model) path builds its own
+        """The gap D5 closes: the combined (cross-dataset) path builds its own
         ``exp.Ordered`` today and skips the pin entirely."""
         sql = await _sql(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    {"formula": "sum(amount)", "name": "rev"},
-                    {"formula": "sum(customers.spend)", "name": "cs"},
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[
+                    {"metric": "sum(orders.amount)", "alias": "rev"},
+                    {"metric": "sum(customers.spend)", "alias": "cs"},
                 ],
-                order=[OrderItem(column=ColumnRef(name="cs"), direction="desc")],
+                order=[OrderItem(field="cs", direction="desc")],
             ),
             dialect="tsql",
         )
@@ -405,10 +403,10 @@ class TestNullOrdering:
 
     async def test_tsql_transform_chain_has_no_case_when_emulation(self) -> None:
         sql = await _sql(
-            SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                    dimension="created_at",
+            SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
-                )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(column=ColumnRef(name="cs"), direction="asc")]}),
+                )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="asc")]}),
             dialect="tsql",
         )
         assert "CASE" not in order_by_text(sql, dialect="tsql").upper()
@@ -418,7 +416,7 @@ class TestNullOrdering:
 # Group 4 — one resolver, not four
 # ---------------------------------------------------------------------------
 class TestSingleResolver:
-    """The four legacy order resolvers were deleted in PR 6 (DEV-1749); the
+    """The four legacy order resolvers were deleted in PR 6; the
     single live resolver (``resolve_order_term`` / ``_apply_planned_order_limit``)
     is exercised across every render shape by ``TestOrderTargetMatrix`` and the
     same-sort-term-across-paths check below."""
@@ -428,7 +426,7 @@ class TestSingleResolver:
         self, dialect: str,
     ) -> None:
         """P-G: ordering by ``rev`` means the same thing whether the query is
-        single-model (base path) or cross-model (combined path).
+        single-dataset (base path) or cross-dataset (combined path).
 
         "Both emit an ORDER BY" is not that claim — two paths can both emit a
         term and order by different things. What is pinned is that the two
@@ -439,19 +437,19 @@ class TestSingleResolver:
         rendered = {}
         for label, query in (
             ("base", SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=_MEASURE,
-                order=[OrderItem(column=ColumnRef(name="rev"), direction="desc")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=_METRIC,
+                order=[OrderItem(field="rev", direction="desc")],
             )),
             ("combined", SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    {"formula": "sum(amount)", "name": "rev"},
-                    {"formula": "sum(customers.spend)", "name": "cs"},
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[
+                    {"metric": "sum(orders.amount)", "alias": "rev"},
+                    {"metric": "sum(customers.spend)", "alias": "cs"},
                 ],
-                order=[OrderItem(column=ColumnRef(name="rev"), direction="desc")],
+                order=[OrderItem(field="rev", direction="desc")],
             )),
         ):
             sql = await _sql(query, dialect=dialect)
@@ -468,7 +466,7 @@ class TestSingleResolver:
 
 
 class TestOrderEnvRequiresDialect:
-    """``OrderEnv.dialect`` is required (DEV-1784 item 19), so no render site
+    """``OrderEnv.dialect`` is required, so no render site
     can fall back to a silent default dialect's null ordering."""
 
     def test_env_without_a_dialect_is_rejected(self) -> None:

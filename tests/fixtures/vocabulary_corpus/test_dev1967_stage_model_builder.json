@@ -1,0 +1,75 @@
+{
+ "source": "tests/test_dev1967_stage_model_builder.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "s1",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "s1",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "s1",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "s1",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "s1",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ],
+     [
+      "tier",
+      "tier"
+     ]
+    ]
+   },
+   "new": {
+    "to": "s1",
+    "from_columns": [
+     "customer_id",
+     "tier"
+    ],
+    "to_columns": [
+     "id",
+     "tier"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

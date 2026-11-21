@@ -23,12 +23,12 @@ against the live service in CI when they are.
 | **Snowflake** | `tests/integration/test_integration_snowflake.py` (skips without `~/.snowflake/connections.toml`; profile name overridable via `$SLAYER_SNOWFLAKE_CONNECTION`) | `examples/snowflake/` (no Docker) |
 | **BigQuery** | `tests/integration/test_integration_bigquery.py` (live ingestion against a temp dataset in the billing project; skips without `GCP_PROJECT_ID` + ADC) plus `examples/bigquery/verify.py` driven by CI against `bigquery-public-data.thelook_ecommerce` (gated on `GCP_PROJECT_ID` / `GCP_SA_KEY_B64` repo secrets) | `examples/bigquery/` (no Docker — managed service) |
 
-A filter whose predicate can hold on a null-extended related row (`tier = 'gold'
+A filter whose predicate can hold on a null-extended related row (`customers.tier = 'gold'
 or orders.status = 'ok'`) renders its semi-join from a one-row derived table
 carrying the outer keys — supported on Postgres, SQLite, DuckDB and MySQL 8.0.14+;
 ClickHouse, BigQuery and older MySQL reject it with the engine's own error.
 
-On a Postgres datasource whose URL names `asyncpg`, a column-type probe gets no exact-numeric scale from the driver, so a `NUMERIC` result column is typed DOUBLE (named `numeric`), even at scale 0.
+On a Postgres datasource whose URL names `asyncpg`, a column-type probe gets no exact-numeric scale from the driver, so a `NUMERIC` result column is typed `Float` (named `numeric`), even at scale 0.
 
 BigQuery CI coverage has two layers, both in the `bigquery-example` job of
 `.github/workflows/ci.yml`: the example's `verify.py` exercises query
@@ -40,8 +40,8 @@ project, asserting comment import and idempotent re-ingest semantics, then
 deleting it. The service account therefore needs dataset create/delete rights
 in the billing project (e.g. `roles/bigquery.user`), not just `jobUser`.
 
-[List columns](concepts/queries.md#list-columns), the list functions and `collect` run on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino and Presto, and fail at plan time on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle.
-On ClickHouse, an element filter on a list reached through a join, like any filter across a to-many hop, needs server 25.4 or later, while a list column of the query's own model filters on every version. A filter across a to-many hop in a query that also reads a list's elements needs 25.8 or later. A model filter that reads a joined model across a hop not proven to-one also needs 25.4 or later.
+[List fields](concepts/queries.md#list-fields), the list functions and `collect` run on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino and Presto, and fail at plan time on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle.
+On ClickHouse, an element filter on a list reached through a relationship, like any filter across a to-many hop, needs server 25.4 or later, while a list field of the query's own dataset filters on every version. A filter across a to-many hop in a query that also reads a list's elements needs 25.8 or later. A dataset filter that reads a joined dataset across a hop not proven to-one also needs 25.4 or later.
 
 ## Tier 2 — code-covered
 
@@ -74,7 +74,7 @@ rejects the read-only setting fails the connection with its own error.
 
 ## Portable library support
 
-Each database runs a [portable library function](concepts/references.md) only where SLayer translates it for that database; anywhere else the query fails at plan time naming the function and the database (express the computation in `Column.sql` instead). `TRY_CAST` also covers comparing or computing text with numbers, which reads through it, and the regex and JSON operators (`~`, `->>`, …) share their function's row.
+Each database runs a [portable library function](concepts/references.md) only where SLayer translates it for that database; anywhere else the query fails at plan time naming the function and the database (express the computation in a field's entry for that database's dialect instead). `TRY_CAST` also covers comparing or computing text with numbers, which reads through it, and the regex and JSON operators (`~`, `->>`, …) share their function's row.
 
 | Function | Postgres | DuckDB | SQLite | MySQL | MariaDB | ClickHouse | SQL Server | Trino | Presto | Snowflake | BigQuery | Redshift | Databricks | Spark | Oracle |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -120,7 +120,7 @@ Each database runs a [portable library function](concepts/references.md) only wh
 ## Identifier length limits
 
 Some databases cap identifier length (Postgres is the tightest at 63 bytes, and
-truncates over-limit names *silently*). SLayer's join-path aliases like
+truncates over-limit names *silently*). SLayer's relationship-path aliases like
 `orders.customers.regions.name` can exceed that on a deep chain, so any
 over-limit alias is trimmed at emission to `<head>_<hash>_<tail>`. The same
 trimming applies to internal query-generated identifiers (e.g. CTE column
@@ -229,14 +229,14 @@ MySQL has no native `PERCENTILE_CONT`, no `MEDIAN`, no `CORR`, no
 Workarounds (`GROUP_CONCAT` + `SUBSTRING_INDEX`, or windowed CTE rewrites)
 have material downsides — silent truncation past `group_concat_max_len`,
 or major restructuring of the generated query that interacts poorly with
-multi-measure `GROUP BY`. SLayer raises `NotImplementedError` at SQL
+multi-metric `GROUP BY`. SLayer raises `NotImplementedError` at SQL
 generation time so the failure is loud and the message is actionable.
 
 If you need percentiles on MySQL, the recommended options are:
 
 - Switch to MariaDB, which has `MEDIAN()`.
 - Pull the raw values and compute the percentile in your application.
-- Define a custom `Aggregation` on the model with whatever `GROUP_CONCAT`-
+- Define a custom `Aggregation` on the dataset with whatever `GROUP_CONCAT`-
   based or windowed expression suits your data shape and group sizes.
 
 **String-literal escaping** (`{variable}` substitution and generated SQL
@@ -275,8 +275,8 @@ Other T-SQL specifics surfaced by the dialect:
   `@@DATEFIRST`-independent so the bucketing is deterministic.
 - `DATEADD(unit, n, col)` for time-shift arithmetic — T-SQL has no
   `INTERVAL` literal.
-- Bracketed `[ident]` quoting — `<model>.<column>` SLayer aliases get
-  mangled to `<model>___<column>` at emit and decoded back on result-row
+- Bracketed `[ident]` quoting — `<dataset>.<field>` SLayer aliases get
+  mangled to `<dataset>___<field>` at emit and decoded back on result-row
   keys (mirror of the BigQuery `___` mangling).
 - Native `LOG10`, no native `LOG2` (`log2(x)` falls through to the
   canonical 2-arg `LOG(2, x)` form).
@@ -289,7 +289,7 @@ Other T-SQL specifics surfaced by the dialect:
 
 ### ClickHouse caveats
 
-`JSON` and `Object` columns are read natively by `json_value` through their ingested `db_type` (from `system.columns`), so models ingested before that need a re-ingest.
+`JSON` and `Object` columns are read natively by `json_value` through their ingested `db_type` (from `system.columns`), so datasets ingested before that need a re-ingest.
 
 ### Snowflake caveats
 
@@ -311,9 +311,9 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
   exactly.
 - **Declarative FK constraints are surfaced.** Unlike ClickHouse / BigQuery,
   Snowflake exposes its (non-enforced) FK metadata via the Inspector. Auto-
-  ingestion discovers joins like Postgres / MySQL / SQLite.
+  ingestion discovers relationships like Postgres / MySQL / SQLite.
 - **Untyped `ARRAY` columns.** Ingestion infers their element type from a sample of each column's `TYPEOF`s, one query per untyped `ARRAY` column, and `json_value` reads a `VARIANT`, `OBJECT` or `ARRAY` column natively.
-- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a `Column.sql` fall
+- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a field's dialect entry fall
   through to the canonical 2-arg `LOG(10, x)` / `LOG(2, x)` form; the rest of
   the math / statistical functions are native.
 
@@ -325,17 +325,17 @@ Set `database: <catalog>/<schema>` (e.g. `memory/default`) on the datasource.
 - **Approximate `median` / `percentile`.** Both emit `APPROX_PERCENTILE(x, p)`,
   so results are approximate; define a custom `Aggregation` if you need an exact value.
 - **No FK introspection.** Trino connectors expose no foreign keys, so
-  auto-ingestion discovers no joins; hand-declare `ModelJoin`s. Table and column
+  auto-ingestion discovers no relationships; hand-declare `DatasetRelationship`s. Table and column
   comments are imported.
 - **Statement timeout.** SLayer sends the timeout as the `query_max_run_time`
   session property with the query itself and restores your own value afterwards.
-- **`timestamp with time zone`** ingests as `TIMESTAMP`, and truncation follows the
+- **`timestamp with time zone`** ingests as `DateTimeTz`, and truncation follows the
   client session's time zone.
 - **HTTPS.** SLayer connects over HTTPS whenever the URL carries credentials
   (a password, `access_token`, `cert` + `key`, or `externalAuthentication`);
   `?http_scheme=http` or `?http_scheme=https` overrides. The HTTPS path is
   unit-tested only — the live suite runs without TLS.
-- **Cross-catalog joins.** Models on one Trino datasource may join tables from
+- **Cross-catalog joins.** Datasets on one Trino datasource may join tables from
   different catalogs by catalog-qualifying `sql_table` (e.g. `postgresql.public.customers`).
 
 ### BigQuery caveats
@@ -349,20 +349,20 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
 `motley-slayer[bigquery]` extra.
 
 - **No FK introspection.** BigQuery exposes no foreign-key metadata via
-  `INFORMATION_SCHEMA`, so auto-ingestion cannot discover joins. Hand-declare
-  `ModelJoin`s on the model.
+  `INFORMATION_SCHEMA`, so auto-ingestion cannot discover relationships. Hand-declare
+  `DatasetRelationship`s on the dataset.
 - **Descriptions ARE imported.** Auto-ingestion maps BigQuery column
-  descriptions → `Column.description`, table descriptions →
-  `SlayerModel.description`, and the dataset description → the datasource's
+  descriptions → `DatasetField.description`, table descriptions →
+  `SlayerDataset.description`, and the dataset description → the datasource's
   `description` (fill-if-empty; see
   [Ingestion — Comments and descriptions](concepts/ingestion.md#comments-and-descriptions)).
 - **Dotted alias mangling.** BigQuery rejects column names containing `.`
   (output schema names must match `[A-Za-z_][A-Za-z0-9_]*`), so SLayer
-  rewrites `<model>.<column>` aliases (`orders._count`,
-  `orders.products.category`) to `<model>___<column>` at emit time and
+  rewrites `<dataset>.<field>` aliases (`orders._count`,
+  `orders.products.category`) to `<dataset>___<field>` at emit time and
   reverses the mapping on result rows. The triple-underscore separator is
-  distinct from `__` (used by the query-backed virtual-model wrap for cross-model leaf
-  flattening), so the two encodings never collide. In `Column.sql`,
+  distinct from `__` (used by the query-backed virtual-dataset wrap for cross-dataset leaf
+  flattening), so the two encodings never collide. In a field's dialect entry,
   fully-qualified table paths must be backticked per-segment
   (`` `project`.`dataset`.`table` ``) — a single backticked dotted path of
   word-only segments (`` `my_dataset.my_table` ``) would false-positive
@@ -372,7 +372,7 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` to BigQuery's analytic
   form). Use a custom `Aggregation` with `APPROX_QUANTILES(x, 100)[OFFSET(N)]`
   when you need it.
-- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older models), reads as its UTC wall clock everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
+- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older datasets), reads as its UTC wall clock everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
 - **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0, `IS NULL` is false and `count(list)` counts it where other databases see `NULL`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`, so `engine.execute(..., explain=True)` raises
   `ExplainUnsupportedError` (a `ValueError`); use `dry_run=True` to see the SQL.

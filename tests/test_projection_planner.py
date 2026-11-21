@@ -1,6 +1,6 @@
-"""Stage 7a.6 (DEV-1450) — ProjectionPlanner tests.
+"""ProjectionPlanner tests.
 
-The ProjectionPlanner allocates slots for declared measures + creates
+The ProjectionPlanner allocates slots for declared metrics + creates
 hidden slots for refs that appear ONLY in order/filter (the "hidden
 slot" semantics from the issue spec). Outputs a ``ProjectionPlan``
 carrying the ValueRegistry, the public-projection ordering, the order
@@ -12,32 +12,34 @@ from __future__ import annotations
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     Phase,
 )
 from decimal import Decimal
 from slayer.engine.compile.projection import ProjectionPlanner
-from slayer.ir.bound import DeclaredMeasure, OrderSpec
+from tests._slot_typing_fixtures import SHOP_TYPING
+from slayer.ir.bound import DeclaredMetric, OrderSpec
 from slayer.ir.bound import BoundExpr, BoundFilter
 
 
 def _amount_sum() -> AggregateKey:
     return AggregateKey(
-        source=ColumnKey(path=(), leaf="amount"), agg="sum",
+        source=FieldKey(path=(), leaf="amount"), agg="sum",
     )
 
 
-def _status() -> ColumnKey:
-    return ColumnKey(path=(), leaf="status")
+def _status() -> FieldKey:
+    return FieldKey(path=(), leaf="status")
 
 
 class TestDeclaredMeasures:
     def test_declared_measure_becomes_public_slot(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
                     declared_name="amount_sum",
                     public_name="amount_sum",
@@ -57,13 +59,14 @@ class TestDeclaredMeasures:
     def test_two_measures_with_same_key_share_slot(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
                     declared_name="rev1",
                     public_name="rev1",
                 ),
-                DeclaredMeasure(
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
                     declared_name="rev2",
                     public_name="rev2",
@@ -80,12 +83,13 @@ class TestDeclaredMeasures:
 
 class TestHiddenSlots:
     def test_filter_only_ref_becomes_hidden(self):
-        # ORDER BY amount:sum DESC LIMIT 10 with no declared measure for
+        # ORDER BY amount:sum DESC LIMIT 10 with no declared metric for
         # amount:sum. The slot is materialised hidden.
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -113,8 +117,9 @@ class TestHiddenSlots:
     def test_order_only_ref_becomes_hidden(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -136,8 +141,9 @@ class TestHiddenSlots:
     def test_declared_then_used_in_filter_stays_public(self):
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_amount_sum()),
                     declared_name="rev",
                     public_name="rev",
@@ -172,8 +178,9 @@ class TestPlanFilters:
             referenced_keys=(_status(),),
         )
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -197,8 +204,9 @@ class TestPlanFilters:
             referenced_keys=(agg, LiteralKey(value=Decimal(100))),
         )
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -215,7 +223,7 @@ class TestPlanFilters:
     def test_order_arithmetic_slots_root_and_aggregate(self):
         """``ORDER BY amount:sum + 1`` with no declared ``sum(amount)``.
 
-        DEV-1733 INVERTED the second half of this contract. The planner still
+        The second half of this contract is INVERTED. The planner still
         interns the inner aggregate as a hidden slot, and still never slots the
         literal — but the ArithmeticKey ROOT is now slotted too.
 
@@ -234,8 +242,9 @@ class TestPlanFilters:
             op="+", operands=(agg, LiteralKey(value=Decimal(1))),
         )
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -250,16 +259,16 @@ class TestPlanFilters:
         # Slots: status (public) + amount:sum (hidden) + the root (hidden).
         assert plan.registry.find_by_key(agg) is not None
         root_sid = plan.registry.find_by_key(order_expr)
-        assert root_sid is not None, "DEV-1733: the composite order root is slotted"
+        assert root_sid is not None, "the composite order root is slotted"
         assert plan.registry.get(root_sid).hidden is True
         # LiteralKey still NOT slotted.
         assert plan.registry.find_by_key(LiteralKey(value=Decimal(1))) is None
 
 
 class TestDev1501CanonicalNameWithAggArgs:
-    """DEV-1501 — hidden parametric AggregateKey slots must get distinct
+    """Hidden parametric AggregateKey slots must get distinct
     ``declared_name`` values so the SQL generator can materialise them as
-    base-CTE columns without alias collision. Mirrors the cross-model
+    base-CTE columns without alias collision. Mirrors the cross-dataset
     parametric P10 exception (``canonical_agg_name`` from
     ``slayer.core.refs``).
     """
@@ -270,19 +279,20 @@ class TestDev1501CanonicalNameWithAggArgs:
         values — today both collide to ``revenue_last``.
         """
         k_cr = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"),
+            source=FieldKey(path=(), leaf="revenue"),
             agg="last",
-            args=(ColumnKey(path=(), leaf="created_at"),),
+            args=(FieldKey(path=(), leaf="created_at"),),
         )
         k_up = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"),
+            source=FieldKey(path=(), leaf="revenue"),
             agg="last",
-            args=(ColumnKey(path=(), leaf="updated_at"),),
+            args=(FieldKey(path=(), leaf="updated_at"),),
         )
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -304,7 +314,7 @@ class TestDev1501CanonicalNameWithAggArgs:
             f"Hidden parametric last() slots collided on declared_name: "
             f"both {slot_cr.declared_name!r}"
         )
-        # Exact canonical form — mirrors the cross-model parametric naming
+        # Exact canonical form — mirrors the cross-dataset parametric naming
         # convention (``revenue_percentile_p_0_5``).
         assert slot_cr.declared_name == "revenue_last_created_at", (
             f"Unexpected canonical name: {slot_cr.declared_name!r}"
@@ -316,22 +326,23 @@ class TestDev1501CanonicalNameWithAggArgs:
     def test_two_percentiles_with_different_kwargs_distinct_names(self):
         """``percentile(revenue, p=0.5)`` vs ``percentile(revenue, p=0.95)``
         as hidden order/filter slots must produce distinct ``declared_name``
-        values mirroring the cross-model parametric exception.
+        values mirroring the cross-dataset parametric exception.
         """
         k_p50 = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"),
+            source=FieldKey(path=(), leaf="revenue"),
             agg="percentile",
             kwargs=(("p", Decimal("0.5")),),
         )
         k_p95 = AggregateKey(
-            source=ColumnKey(path=(), leaf="revenue"),
+            source=FieldKey(path=(), leaf="revenue"),
             agg="percentile",
             kwargs=(("p", Decimal("0.95")),),
         )
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",
@@ -368,8 +379,9 @@ class TestDev1501CanonicalNameWithAggArgs:
         agg = _amount_sum()  # AggregateKey(amount, sum, args=(), kwargs=())
         planner = ProjectionPlanner()
         plan = planner.plan(
-            measures=[
-                DeclaredMeasure(
+            typing=SHOP_TYPING,
+            metrics=[
+                DeclaredMetric(
                     bound=BoundExpr(value_key=_status()),
                     declared_name="status",
                     public_name="status",

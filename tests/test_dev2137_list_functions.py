@@ -12,16 +12,16 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.keys import VALUE_KEY_TYPES, InKey, LiteralKey, ScalarCallKey, _FrozenKey
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import key_display
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev2101_fixtures import emit
-from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors
-from tests._dev2137_fixtures import as_list, list_engine, measure, num, query
+from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_dataset, emit_contractors
+from tests._dev2137_fixtures import as_list, list_engine, metric, num, query
 from tests._engine_helpers import seeded_exec_engine
 
 
@@ -32,17 +32,17 @@ async def engine():
 
 
 async def _values(engine, expr: str, **body: Any) -> dict[str, Any]:
-    resp = await engine.execute(query(dimensions=["name", {"expression": expr, "name": "v"}], **body))
-    return {r["contractors.name"]: r["contractors.v"] for r in resp.data}
+    resp = await engine.execute(query(dimensions=["contractors.name", {"field": expr, "alias": "v"}], **body))
+    return {r["contractors.name"]: r["v"] for r in resp.data}
 
 
 async def _count(engine, filter_: str, **body: Any) -> float | None:
-    resp = await engine.execute(query(measures=[measure("count(*)", "n")], filters=[filter_], **body))
-    return num(resp.data[0]["contractors.n"])
+    resp = await engine.execute(query(metrics=[metric("count(contractors.*)", "n")], filter=[filter_], **body))
+    return num(resp.data[0]["n"])
 
 
 async def _names(engine, filter_: str, **body: Any) -> set[str]:
-    resp = await engine.execute(query(dimensions=["name"], filters=[filter_], **body))
+    resp = await engine.execute(query(dimensions=["contractors.name"], filter=[filter_], **body))
     return {r["contractors.name"] for r in resp.data}
 
 
@@ -52,72 +52,72 @@ def _truth(value: Any) -> Any:
 
 class TestContains:
     async def test_membership(self, engine) -> None:
-        got = {k: _truth(v) for k, v in (await _values(engine, "contains(skills, 'go')")).items()}
+        got = {k: _truth(v) for k, v in (await _values(engine, "contains(contractors.skills, 'go')")).items()}
         assert got == {"Ann": True, "Bob": False, "Cid": False, "Dee": None, "Eve": True}
 
     async def test_filtering_by_membership(self, engine) -> None:
-        assert await _count(engine, "contains(skills, 'go')") == 2
+        assert await _count(engine, "contains(contractors.skills, 'go')") == 2
 
     async def test_absence(self, engine) -> None:
-        assert await _names(engine, "NOT contains(skills, 'go')") == {"Bob", "Cid"}
+        assert await _names(engine, "NOT contains(contractors.skills, 'go')") == {"Bob", "Cid"}
 
     async def test_the_string_meaning_is_unchanged(self, engine) -> None:
-        assert await _names(engine, "contains(team, 'A')") == {"Ann", "Bob"}
+        assert await _names(engine, "contains(contractors.team, 'A')") == {"Ann", "Bob"}
 
 
 class TestContainsAnyAll:
     async def test_all_of_several_values(self, engine) -> None:
-        assert await _count(engine, "contains_all(skills, ['go', 'sql'])") == 1
+        assert await _count(engine, "contains_all(contractors.skills, ['go', 'sql'])") == 1
 
     async def test_any_of_several_values(self, engine) -> None:
-        assert await _count(engine, "contains_any(skills, ['go', 'sql'])") == 3
+        assert await _count(engine, "contains_any(contractors.skills, ['go', 'sql'])") == 3
 
     async def test_another_list_column(self, engine) -> None:
-        assert "Ann" in await _names(engine, "contains_any(skills, required)")
+        assert "Ann" in await _names(engine, "contains_any(contractors.skills, contractors.required)")
 
     async def test_an_empty_selection(self, engine) -> None:
         empty = {"variables": {"wanted": []}}
-        assert await _names(engine, "contains_all(skills, {wanted})", **empty) == {"Ann", "Bob", "Cid", "Eve"}
-        assert await _names(engine, "contains_any(skills, {wanted})", **empty) == set()
+        assert await _names(engine, "contains_all(contractors.skills, {wanted})", **empty) == {"Ann", "Bob", "Cid", "Eve"}
+        assert await _names(engine, "contains_any(contractors.skills, {wanted})", **empty) == set()
 
     async def test_null_list_is_null(self, engine) -> None:
-        got = await _values(engine, "contains_any(skills, ['go'])")
+        got = await _values(engine, "contains_any(contractors.skills, ['go'])")
         assert got["Dee"] is None
 
 
 class TestLength:
     async def test_element_counts(self, engine) -> None:
-        got = {k: num(v) for k, v in (await _values(engine, "length(skills)")).items()}
+        got = {k: num(v) for k, v in (await _values(engine, "length(contractors.skills)")).items()}
         assert got == {"Ann": 2, "Bob": 1, "Cid": 0, "Dee": None, "Eve": 1}
 
     async def test_character_count_unchanged(self, engine) -> None:
-        got = {k: num(v) for k, v in (await _values(engine, "length(name)")).items()}
+        got = {k: num(v) for k, v in (await _values(engine, "length(contractors.name)")).items()}
         assert got == {"Ann": 3, "Bob": 3, "Cid": 3, "Dee": 3, "Eve": 3}
 
 
 class TestPositions:
     async def test_in_a_measure_formula(self, engine) -> None:
-        resp = await engine.execute(query(measures=[measure("sum(length(skills))", "n")]))
-        assert num(resp.data[0]["contractors.n"]) == 4
+        resp = await engine.execute(query(metrics=[metric("sum(length(contractors.skills))", "n")]))
+        assert num(resp.data[0]["n"]) == 4
 
     async def test_in_a_measure_filter(self, engine) -> None:
-        resp = await engine.execute(query(measures=[measure("count(*)", "n")], dimensions=["team"],
-                                          filters=["contains(skills, 'go')"]))
-        assert {r["contractors.team"]: num(r["contractors.n"]) for r in resp.data} == {"A": 1, "B": 1}
+        resp = await engine.execute(query(metrics=[metric("count(contractors.*)", "n")], dimensions=["contractors.team"],
+                                          filter=["contains(contractors.skills, 'go')"]))
+        assert {r["contractors.team"]: num(r["n"]) for r in resp.data} == {"A": 1, "B": 1}
 
     async def test_in_a_case_expression(self, engine) -> None:
-        got = await _values(engine, "CASE WHEN contains(skills, 'sql') THEN 'yes' ELSE 'no' END")
+        got = await _values(engine, "CASE WHEN contains(contractors.skills, 'sql') THEN 'yes' ELSE 'no' END")
         assert got == {"Ann": "yes", "Bob": "yes", "Cid": "no", "Dee": "no", "Eve": "no"}
 
 
 class TestArrayLiterals:
     async def test_null_element_in_a_literal(self, engine) -> None:
         with pytest.raises(SlayerError, match="NULL"):
-            await _count(engine, "contains_any(skills, ['go', NULL])")
+            await _count(engine, "contains_any(contractors.skills, ['go', NULL])")
 
     async def test_mixed_literal_types(self, engine) -> None:
         with pytest.raises(SlayerError) as info:
-            await _count(engine, "contains_any(skills, ['go', 1])")
+            await _count(engine, "contains_any(contractors.skills, ['go', 1])")
         msg = str(info.value)
         assert "'go'" in msg, msg
         assert "1" in msg, msg
@@ -129,35 +129,35 @@ class TestArrayLiterals:
 
     async def test_a_literal_as_an_equality_operand(self, engine) -> None:
         with pytest.raises(SlayerError):
-            await _count(engine, "name = ['Ann']")
+            await _count(engine, "contractors.name = ['Ann']")
 
     async def test_untyped_empty_literal(self, engine) -> None:
         with pytest.raises(SlayerError, match=r"\[\]"):
             await _values(engine, "length([])")
 
     async def test_list_variable_in_contains_any(self, engine) -> None:
-        assert await _names(engine, "contains_any(skills, {wanted})", variables={"wanted": ["rust", "go"]}) == {
+        assert await _names(engine, "contains_any(contractors.skills, {wanted})", variables={"wanted": ["rust", "go"]}) == {
             "Ann", "Eve"}
 
 
 class TestArgumentTypes:
     async def test_a_numeric_list_and_a_text_literal(self, engine) -> None:
-        assert await _names(engine, "contains(scores, '5')") == {"Eve"}
+        assert await _names(engine, "contains(contractors.scores, '5')") == {"Eve"}
 
     async def test_incompatible_types(self, engine) -> None:
         with pytest.raises(SlayerError) as info:
-            await _count(engine, "contains(skills, DATE '2025-01-01')")
+            await _count(engine, "contains(contractors.skills, DATE '2025-01-01')")
         msg = str(info.value)
-        for needle in ("contains", "TEXT", "DATE"):
+        for needle in ("contains", "String", "Date"):
             assert needle in msg, msg
 
     async def test_text_argument_to_a_list_only_function(self, engine) -> None:
         with pytest.raises(SlayerError, match="contains_any"):
-            await _count(engine, "contains_any(team, ['A'])")
+            await _count(engine, "contains_any(contractors.team, ['A'])")
 
     async def test_list_argument_to_a_text_only_function(self, engine) -> None:
         with pytest.raises(SlayerError, match="skills"):
-            await _values(engine, "upper(skills)")
+            await _values(engine, "upper(contractors.skills)")
 
 
 # ``mixed``: 1 → scores [2, 3], prices [2.0]; 2 → scores [4], prices [2.5].
@@ -165,11 +165,11 @@ MIXED_DDL = ("CREATE TABLE mixed (id INTEGER, scores INTEGER[], prices DOUBLE[])
              "INSERT INTO mixed VALUES (1, [2, 3], [2.0]), (2, [4], [2.5])")
 
 
-def mixed_model() -> SlayerModel:
-    return SlayerModel(name="mixed", sql_table="mixed", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="scores", type=DataType.ARRAY, element_type=DataType.INT),
-        Column(name="prices", type=DataType.ARRAY, element_type=DataType.DOUBLE),
+def mixed_dataset() -> SlayerDataset:
+    return SlayerDataset(name="mixed", sql_table="mixed", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INTEGER),
+        DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.FLOAT),
     ])
 
 
@@ -179,43 +179,43 @@ def _seed_mixed(db_path: str) -> None:
             con.execute(stmt)
 
 
-MIXED_FILTERS = ["contains(scores, 2.0)", "contains_any(scores, prices)", "contains_all(prices, [2])",
-                 "contains(prices, 2)"]
+MIXED_FILTERS = ["contains(mixed.scores, 2.0)", "contains_any(mixed.scores, mixed.prices)", "contains_all(mixed.prices, [2])",
+                 "contains(mixed.prices, 2)"]
 
 
 class TestMixedNumerics:
     @pytest.mark.parametrize("filter_", MIXED_FILTERS)
     async def test_executes_on_duckdb(self, filter_: str) -> None:
-        async with seeded_exec_engine(dialect="duckdb", seed=_seed_mixed, models=[mixed_model()]) as (eng, _db):
+        async with seeded_exec_engine(dialect="duckdb", seed=_seed_mixed, datasets=[mixed_dataset()]) as (eng, _db):
             resp = await eng.execute(SlayerQuery.model_validate(
-                {"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}))
+                {"population": "mixed", "dimensions": ["mixed.id"], "filter": [filter_]}))
         assert {int(r["mixed.id"]) for r in resp.data} == {1}, resp.sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     @pytest.mark.parametrize("filter_", MIXED_FILTERS)
     async def test_emits(self, dialect: str, filter_: str) -> None:
-        await emit(SlayerQuery.model_validate({"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}),
-                   dialect=dialect, models=[mixed_model()])
+        await emit(SlayerQuery.model_validate({"population": "mixed", "dimensions": ["mixed.id"], "filter": [filter_]}),
+                   dialect=dialect, datasets=[mixed_dataset()])
 
-    @pytest.mark.parametrize("filter_", ["contains_any(scores, prices)", "contains_any(prices, scores)"])
+    @pytest.mark.parametrize("filter_", ["contains_any(mixed.scores, mixed.prices)", "contains_any(mixed.prices, mixed.scores)"])
     async def test_bigquery_overlap_compares_by_equality(self, filter_: str) -> None:
         # BigQuery has no ``FLOAT64 IN UNNEST(ARRAY<INT64>)`` signature.
         sql = await emit(SlayerQuery.model_validate(
-            {"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}), dialect="bigquery",
-            models=[mixed_model()])
+            {"population": "mixed", "dimensions": ["mixed.id"], "filter": [filter_]}), dialect="bigquery",
+            datasets=[mixed_dataset()])
         assert "IN UNNEST" not in sql.upper(), sql
 
 
 def _bind(text: str):
-    model = contractors_model()
-    bundle = ResolvedSourceBundle(dialect="duckdb", source_model=model, referenced_models=[])
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=model), bundle=bundle,
-                     allow_measures=True).value_key
+    model = contractors_dataset()
+    bundle = ResolvedSourceBundle(dialect="duckdb", population=model, referenced_datasets=[])
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=model), bundle=bundle,
+                     allow_metrics=True).value_key
 
 
 class TestArrayLiteralKey:
     def _literal(self) -> _FrozenKey:
-        key = _bind("contains_any(skills, ['go', 'sql'])")
+        key = _bind("contains_any(contractors.skills, ['go', 'sql'])")
         assert isinstance(key, ScalarCallKey), key
         literal = key.args[1]
         assert isinstance(literal, _FrozenKey), literal
@@ -246,22 +246,22 @@ class TestArrayLiteralKey:
 
 class TestEmission:
     @pytest.mark.parametrize("dialect", [d for d in NATIVE_LIST_DIALECTS if d != "postgres"])
-    @pytest.mark.parametrize("expr", ["contains_any(skills, ['go', 'sql'])", "contains_all(skills, ['go', 'sql'])",
-                                      "contains_any(skills, required)", "contains_all(skills, required)"])
+    @pytest.mark.parametrize("expr", ["contains_any(contractors.skills, ['go', 'sql'])", "contains_all(contractors.skills, ['go', 'sql'])",
+                                      "contains_any(contractors.skills, contractors.required)", "contains_all(contractors.skills, contractors.required)"])
     async def test_no_postgres_only_operators(self, dialect: str, expr: str) -> None:
-        sql = await emit_contractors(query(dimensions=["id", {"expression": expr, "name": "v"}]), dialect=dialect)
+        sql = await emit_contractors(query(dimensions=["contractors.id", {"field": expr, "alias": "v"}]), dialect=dialect)
         assert "&&" not in sql, sql
         assert "@>" not in sql, sql
 
-    @pytest.mark.parametrize("expr", ["contains(skills, 'go')", "contains_any(skills, required)",
-                                      "contains_all(skills, required)", "length(skills)"])
+    @pytest.mark.parametrize("expr", ["contains(contractors.skills, 'go')", "contains_any(contractors.skills, contractors.required)",
+                                      "contains_all(contractors.skills, contractors.required)", "length(contractors.skills)"])
     async def test_no_lambda_arrow_on_duckdb(self, expr: str) -> None:
-        sql = await emit_contractors(query(dimensions=["id", {"expression": expr, "name": "v"}]), dialect="duckdb")
+        sql = await emit_contractors(query(dimensions=["contractors.id", {"field": expr, "alias": "v"}]), dialect="duckdb")
         assert "->" not in sql, sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_date_lists_emit(self, dialect: str) -> None:
-        days = Column(name="days", type=DataType.ARRAY, element_type=DataType.DATE)
-        model = contractors_model().model_copy(update={"columns": [*contractors_model().columns, days]})
-        await emit_contractors(query(dimensions=["id", {"expression": "contains(days, DATE '2025-01-01')",
-                                                        "name": "v"}]), dialect=dialect, models=[model])
+        days = DatasetField(name="days", datatype=DataType.ARRAY, element_type=DataType.DATE)
+        model = contractors_dataset().model_copy(update={"fields": [*contractors_dataset().fields, days]})
+        await emit_contractors(query(dimensions=["contractors.id", {"field": "contains(contractors.days, DATE '2025-01-01')",
+                                                        "alias": "v"}]), dialect=dialect, datasets=[model])

@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dev1946_transform_parameter.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  }
+ ]
+}

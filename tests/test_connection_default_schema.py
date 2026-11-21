@@ -12,12 +12,13 @@ from sqlalchemy.exc import OperationalError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
     DriftSnapshot,
-    EditModelDelete,
+    EditDatasetDelete,
+    ToDeleteEntry,
     validate_datasource,
 )
 from slayer.engine.statement_reads import StatementReads
@@ -41,8 +42,8 @@ _TWO_DATASETS = [_URL_DATASET, "ds_b"]
 
 _Layout = dict[str, dict[str, dict[str, DataType]]]
 
-_ID_NAME = {"id": DataType.INT, "name": DataType.TEXT}
-_WITH_SKILLS = {**_ID_NAME, "skills": DataType.TEXT}
+_ID_NAME = {"id": DataType.INTEGER, "name": DataType.STRING}
+_WITH_SKILLS = {**_ID_NAME, "skills": DataType.STRING}
 
 
 class _Inspector:
@@ -111,12 +112,12 @@ def bq_connection() -> Iterator[MagicMock]:
         yield conn
 
 
-def _model(name: str, *, sql_table: str, columns: dict[str, DataType]) -> SlayerModel:
-    return SlayerModel(
+def _dataset(name: str, *, sql_table: str, fields: dict[str, DataType]) -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         data_source=_DS.name,
         sql_table=sql_table,
-        columns=[Column(name=c, type=t) for c, t in columns.items()],
+        fields=[DatasetField(name=c, datatype=t) for c, t in fields.items()],
     )
 
 
@@ -124,9 +125,9 @@ def _live(connection: Any, layout: _Layout, *, schemas: list[str] | None) -> _La
     return _LayoutClient(connection, layout, schemas=schemas)
 
 
-def _verdicts(entries: list[Any]) -> list[tuple[str, str, list[str]]]:
+def _verdicts(entries: list[ToDeleteEntry]) -> list[tuple[str, str, list[str]]]:
     return sorted(
-        (type(e).__name__, e.model_name, list(e.remove.columns) if isinstance(e, EditModelDelete) else [])
+        (type(e).__name__, e.dataset_name, list(e.remove.fields) if isinstance(e, EditDatasetDelete) else [])
         for e in entries
     )
 
@@ -152,11 +153,11 @@ class TestScope:
         assert (ref.name, ref.is_default) == (_URL_DATASET, True)
 
 
-@pytest.mark.parametrize("snapshot", [False, True], ids=["validate_models", "snapshot"])
+@pytest.mark.parametrize("snapshot", [False, True], ids=["validate_datasets", "snapshot"])
 class TestValidateModels:
-    async def _validate(self, models: list[SlayerModel], *, client: _LayoutClient, snapshot: bool) -> list[Any]:
+    async def _validate(self, datasets: list[SlayerDataset], *, client: _LayoutClient, snapshot: bool) -> list[ToDeleteEntry]:
         return await validate_datasource(
-            datasource=_DS, models=models, client=client,
+            datasource=_DS, datasets=datasets, client=client,
             snapshot=DriftSnapshot(created_at=0.0) if snapshot else None,
         )
 
@@ -165,47 +166,47 @@ class TestValidateModels:
     ) -> None:
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
         models = [
-            _model("contractors", sql_table="contractors", columns=_ID_NAME),
-            _model("gone", sql_table="gone", columns=_ID_NAME),
+            _dataset("contractors", sql_table="contractors", fields=_ID_NAME),
+            _dataset("gone", sql_table="gone", fields=_ID_NAME),
         ]
         entries = await self._validate(
             models, client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
         )
-        assert _verdicts(entries) == [("WholeModelDelete", "gone", [])]
+        assert _verdicts(entries) == [("WholeDatasetDelete", "gone", [])]
 
     async def test_column_drift_on_a_bare_model_is_an_edit(self, bq_connection: MagicMock, snapshot: bool) -> None:
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {}}
         entries = await self._validate(
-            [_model("contractors", sql_table="contractors", columns=_WITH_SKILLS)],
+            [_dataset("contractors", sql_table="contractors", fields=_WITH_SKILLS)],
             client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
         )
-        assert _verdicts(entries) == [("EditModelDelete", "contractors", ["skills"])]
+        assert _verdicts(entries) == [("EditDatasetDelete", "contractors", ["skills"])]
 
     async def test_a_bare_name_never_resolves_to_another_dataset(
         self, bq_connection: MagicMock, snapshot: bool,
     ) -> None:
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"orphans": _ID_NAME}}
         models = [
-            _model("contractors", sql_table="contractors", columns=_ID_NAME),
-            _model("orphans", sql_table="orphans", columns=_ID_NAME),
+            _dataset("contractors", sql_table="contractors", fields=_ID_NAME),
+            _dataset("orphans", sql_table="orphans", fields=_ID_NAME),
         ]
         entries = await self._validate(
             models, client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
         )
-        assert _verdicts(entries) == [("WholeModelDelete", "orphans", [])]
+        assert _verdicts(entries) == [("WholeDatasetDelete", "orphans", [])]
 
     async def test_a_same_named_table_elsewhere_does_not_shadow_the_default(
         self, bq_connection: MagicMock, snapshot: bool,
     ) -> None:
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"contractors": _WITH_SKILLS}}
         models = [
-            _model("contractors", sql_table="contractors", columns=_WITH_SKILLS),
-            _model("b_contractors", sql_table="ds_b.contractors", columns=_WITH_SKILLS),
+            _dataset("contractors", sql_table="contractors", fields=_WITH_SKILLS),
+            _dataset("b_contractors", sql_table="ds_b.contractors", fields=_WITH_SKILLS),
         ]
         entries = await self._validate(
             models, client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
         )
-        assert _verdicts(entries) == [("EditModelDelete", "contractors", ["skills"])]
+        assert _verdicts(entries) == [("EditDatasetDelete", "contractors", ["skills"])]
 
 
 @pytest.fixture
@@ -229,42 +230,42 @@ class TestQueryTimeAttribution:
     async def test_an_unchanged_bare_model_lets_the_original_error_propagate(
         self, bq_connection: MagicMock, query_engine: SlayerQueryEngine, schemas: list[str] | None,
     ) -> None:
-        await query_engine.storage.save_model(_model("contractors", sql_table="contractors", columns=_ID_NAME))
+        await query_engine.storage.save_dataset(_dataset("contractors", sql_table="contractors", fields=_ID_NAME))
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
         query_engine._sql_clients[client_cache_key(_DS)] = _live(bq_connection, layout, schemas=schemas)
         await query_engine._maybe_raise_schema_drift(
             err=_UNRELATED, datasource=_DS, read_set={"contractors"},
-            reads=StatementReads(columns={("contractors", "id"), ("contractors", "name")}),
+            reads=StatementReads(fields={("contractors", "id"), ("contractors", "name")}),
         )
 
     async def test_a_dropped_column_on_a_bare_model_is_attributed(
         self, bq_connection: MagicMock, query_engine: SlayerQueryEngine, schemas: list[str] | None,
     ) -> None:
-        await query_engine.storage.save_model(_model("contractors", sql_table="contractors", columns=_WITH_SKILLS))
+        await query_engine.storage.save_dataset(_dataset("contractors", sql_table="contractors", fields=_WITH_SKILLS))
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
-        reads = StatementReads(columns={("contractors", "skills")})
+        reads = StatementReads(fields={("contractors", "skills")})
         query_engine._sql_clients[client_cache_key(_DS)] = _live(bq_connection, layout, schemas=schemas)
         with pytest.raises(SchemaDriftError) as exc:
             await query_engine._maybe_raise_schema_drift(
                 err=_UNRELATED, datasource=_DS, read_set={"contractors"}, reads=reads,
             )
-        assert _verdicts(exc.value.to_delete) == [("EditModelDelete", "contractors", ["skills"])]
+        assert _verdicts(exc.value.to_delete) == [("EditDatasetDelete", "contractors", ["skills"])]
 
 
 async def test_reingest_with_the_url_dataset_heals_a_bare_model(bq_connection: MagicMock, tmp_path: Path) -> None:
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     await storage.save_datasource(_DS)
-    await storage.save_model(_model("contractors", sql_table="contractors", columns=_ID_NAME))
-    fresh = _model("contractors", sql_table=f"{_URL_DATASET}.contractors", columns=_ID_NAME)
+    await storage.save_dataset(_dataset("contractors", sql_table="contractors", fields=_ID_NAME))
+    fresh = _dataset("contractors", sql_table=f"{_URL_DATASET}.contractors", fields=_ID_NAME)
     layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
     with patch.object(
-        ingestion, "ingest_datasource_report_async", return_value=ingestion.IngestionScanReport(models=[fresh]),
+        ingestion, "ingest_datasource_report_async", return_value=ingestion.IngestionScanReport(datasets=[fresh]),
     ):
         result = await ingestion.ingest_datasource_idempotent(
             datasource=_DS, storage=storage, client=_live(bq_connection, layout, schemas=_TWO_DATASETS),
             schema=_URL_DATASET,
         )
-    stored = await storage.get_model("contractors", data_source=_DS.name)
+    stored = await storage.get_dataset("contractors", data_source=_DS.name)
     assert stored is not None
     assert stored.sql_table == f"{_URL_DATASET}.contractors"
     assert result.skipped == []
@@ -282,11 +283,11 @@ async def test_a_same_dataset_foreign_key_becomes_a_join(bq_connection: MagicMoc
         "customers": TableKeys(primary_key=["id"]),
     }
     with patch.object(ingestion, "reflect_table_keys", side_effect=lambda **kw: keys[kw["table_name"]]):
-        joins = await ingestion._generate_joins(
+        joins = await ingestion._generate_relationships(
             client=_live(bq_connection, {}, schemas=_TWO_DATASETS), source_table="orders", schema=None,
             table_set={"orders", "customers"},
         )
-    assert [j.target_model for j in joins] == ["customers"]
+    assert [j.to for j in joins] == ["customers"]
 
 
 async def test_the_client_reads_the_url_dataset_without_building_an_engine(monkeypatch: pytest.MonkeyPatch) -> None:

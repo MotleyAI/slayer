@@ -1,0 +1,28 @@
+{
+ "source": "tests/test_dev1865_typing_errors.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": []
+}

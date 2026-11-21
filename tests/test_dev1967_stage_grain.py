@@ -7,23 +7,23 @@ from pydantic import ValidationError
 
 from slayer.core.enums import DataType
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import StageColumn, StageSchema
+from slayer.core.scope import StageField, StageSchema
 from slayer.engine.plan import plan_query, plan_stages
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from tests._dev1836_fixtures import dev1836_models
+from tests._dev1836_fixtures import dev1836_datasets
 
-MONTH = [{"dimension": "ordered_at", "granularity": "month"}]
-AMOUNT = {"formula": "sum(amount)", "name": "t"}
-CHANNEL_TOTAL = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
+MONTH = [{"field": "orders.ordered_at", "granularity": "month"}]
+AMOUNT = {"metric": "sum(orders.amount)", "alias": "t"}
+CHANNEL_TOTAL = {"field": "sum(orders.amount, partition_by=orders.channel)", "alias": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1836_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models, dialect="postgres")
+    models = dev1836_datasets()
+    return ResolvedSourceBundle(population=models[0], referenced_datasets=models, dialect="postgres")
 
 
 def _grain(**body):
-    query = SlayerQuery.model_validate({"source_model": "orders", **body})
+    query = SlayerQuery.model_validate({"population": "orders", **body})
     schema = plan_query(query=query, bundle=_bundle()).stage_schema
     assert schema is not None
     return schema.grain
@@ -31,64 +31,64 @@ def _grain(**body):
 
 class TestGrainEmission:
     def test_aggregating_stage_grain_is_dimensions_and_time_dimensions(self) -> None:
-        grain = _grain(dimensions=["status"], time_dimensions=MONTH, measures=[AMOUNT])
+        grain = _grain(dimensions=["orders.status"], time_dimensions=MONTH, metrics=[AMOUNT])
         assert grain == ["status", "ordered_at"]
 
     def test_dimension_only_stage_grain_is_its_dimensions(self) -> None:
-        assert _grain(dimensions=["status", "channel"]) == ["status", "channel"]
+        assert _grain(dimensions=["orders.status", "orders.channel"]) == ["status", "channel"]
 
     def test_raw_rows_stage_has_no_grain(self) -> None:
-        assert _grain(dimensions=["status"], distinct_dimension_values=False) is None
+        assert _grain(dimensions=["orders.status"], distinct_dimension_values=False) is None
 
     def test_measures_only_stage_has_empty_grain(self) -> None:
-        assert _grain(measures=[AMOUNT]) == []
+        assert _grain(metrics=[AMOUNT]) == []
 
     def test_dotted_dimension_member_is_its_flat_name(self) -> None:
-        assert _grain(dimensions=["customers.tier"], measures=[AMOUNT]) == ["customers__tier"]
+        assert _grain(dimensions=["customers.tier"], metrics=[AMOUNT]) == ["customers__tier"]
 
     def test_aggregate_valued_computed_dimension_is_a_member(self) -> None:
         grain = _grain(
-            dimensions=["status", CHANNEL_TOTAL],
-            measures=[{"formula": "count(*)", "name": "n"}],
+            dimensions=["orders.status", CHANNEL_TOTAL],
+            metrics=[{"metric": "count(orders.*)", "alias": "n"}],
         )
         assert grain == ["status", "ct"]
 
     def test_aggregate_valued_computed_dimension_in_dimension_only_stage(self) -> None:
-        assert _grain(dimensions=["status", CHANNEL_TOTAL]) == ["status", "ct"]
+        assert _grain(dimensions=["orders.status", CHANNEL_TOTAL]) == ["status", "ct"]
 
     def test_partitioned_measure_is_not_a_member(self) -> None:
         grain = _grain(
-            dimensions=["status", "channel"],
-            measures=[{"formula": "sum(amount, partition_by=status)", "name": "st"}],
+            dimensions=["orders.status", "orders.channel"],
+            metrics=[{"metric": "sum(orders.amount, partition_by=orders.status)", "alias": "st"}],
         )
         assert grain == ["status", "channel"]
 
     def test_transform_valued_computed_dimension_is_a_member(self) -> None:
         grain = _grain(
-            dimensions=["status", {"expression": "rank(sum(amount, partition_by=channel), direction='desc')", "name": "rk"}],
-            measures=[{"formula": "count(*)", "name": "n"}],
+            dimensions=["orders.status", {"field": "rank(sum(orders.amount, partition_by=orders.channel), direction='desc')", "alias": "rk"}],
+            metrics=[{"metric": "count(orders.*)", "alias": "n"}],
         )
         assert grain == ["status", "rk"]
 
     def test_cumsum_stage_grain_includes_its_time_bucket(self) -> None:
         grain = _grain(
             time_dimensions=MONTH,
-            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
+            metrics=[{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
         )
         assert grain == ["ordered_at"]
 
     def test_slot_shared_by_dimension_and_measure_contributes_only_the_dimension(self) -> None:
-        expr = "sum(amount, partition_by=status)"
+        expr = "sum(orders.amount, partition_by=orders.status)"
         grain = _grain(
-            dimensions=["status", {"expression": expr, "name": "ct"}],
-            measures=[{"formula": expr, "name": "ct2"}],
+            dimensions=["orders.status", {"field": expr, "alias": "ct"}],
+            metrics=[{"metric": expr, "alias": "ct2"}],
         )
         assert grain == ["status", "ct"]
 
     def test_slot_under_two_dimension_aliases_contributes_the_first(self) -> None:
         grain = _grain(
-            dimensions=["status", {"expression": "status", "name": "s2"}],
-            measures=[AMOUNT],
+            dimensions=["orders.status", {"field": "orders.status", "alias": "s2"}],
+            metrics=[AMOUNT],
         )
         assert grain == ["status"]
 
@@ -96,15 +96,15 @@ class TestGrainEmission:
 class TestSiblingStageGrain:
     def test_named_sibling_stage_schema_carries_its_grain(self) -> None:
         sibling = SlayerQuery.model_validate({
-            "name": "c", "source_model": "customers", "dimensions": ["id"],
-            "measures": [{"formula": "max(tier)", "name": "tr"}],
+            "name": "c", "population": "customers", "dimensions": ["customers.id"],
+            "metrics": [{"metric": "max(customers.tier)", "alias": "tr"}],
         })
         root = SlayerQuery.model_validate({
-            "source_model": "c", "dimensions": ["tr"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "population": "c", "dimensions": ["c.tr"],
+            "metrics": [{"metric": "count(c.*)", "alias": "n"}],
         })
-        customers = next(m for m in dev1836_models() if m.name == "customers")
-        bundle = _bundle().model_copy(update={"stage_source_models": {"c": customers}})
+        customers = next(m for m in dev1836_datasets() if m.name == "customers")
+        bundle = _bundle().model_copy(update={"stage_source_datasets": {"c": customers}})
         planned = plan_stages(queries=[sibling, root], bundle=bundle)
         assert planned[0].stage_schema is not None
         assert planned[0].stage_schema.grain == ["id"]
@@ -112,14 +112,14 @@ class TestSiblingStageGrain:
 
 class TestGrainValidator:
     def test_grain_member_must_name_a_column(self) -> None:
-        columns = [StageColumn(name="a", sql_alias="a", type=DataType.TEXT)]
+        columns = [StageField(name="a", sql_alias="a", datatype=DataType.STRING)]
         with pytest.raises(ValidationError):
-            StageSchema(relation_name="s", columns=columns, grain=["b"])
+            StageSchema(relation_name="s", fields=columns, grain=["b"])
 
     def test_grain_members_naming_columns_validate(self) -> None:
         schema = StageSchema(
             relation_name="s",
-            columns=[StageColumn(name="a", sql_alias="a", type=DataType.TEXT)],
+            fields=[StageField(name="a", sql_alias="a", datatype=DataType.STRING)],
             grain=["a"],
         )
         assert schema.grain == ["a"]

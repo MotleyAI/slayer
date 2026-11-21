@@ -15,7 +15,7 @@ import pytest
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import client as client_module
@@ -120,12 +120,12 @@ async def test_sync_bridge_after_async_use(pg_ds: DatasourceConfig, tmp_path: Pa
 async def test_query_engine_execute_sync_inside_a_running_loop(pg_ds: DatasourceConfig, tmp_path: Path) -> None:
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(pg_ds)
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", data_source=pg_ds.name, sql_table="orders",
-        columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
     ), _validate=False)
     engine = SlayerQueryEngine(storage=storage)
-    query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)"]})
+    query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"]})
     try:
         awaited = await engine.execute(query)
         bridged = engine.execute_sync(query)

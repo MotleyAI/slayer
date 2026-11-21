@@ -1,0 +1,325 @@
+{
+ "source": "tests/test_dev1842_query_backed.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "dead",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "dead",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "dead",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "dead",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "live",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "live",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "sh",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "sh",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "amount",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "amount",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 101,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 103,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 107,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 116,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 118,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 120,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 121,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 123,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 125,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 144,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 145,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 147,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 150,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 162,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 164,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 167,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 168,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 170,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 172,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 186,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 188,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 190,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 213,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 224,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 225,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 227,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 231,
+   "reason": "no positional counterpart"
+  }
+ ]
+}

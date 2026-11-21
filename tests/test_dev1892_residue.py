@@ -1,7 +1,7 @@
-"""DEV-1892 task 1.2 — the ill-typed residue: a parameter the home dataset's
+"""The ill-typed residue: a parameter the home dataset's
 grain does not determine fails at plan time with one ref-free typed error naming
 the parameter, the grain, and the remedy; the REST surface maps the residue to
-400. ``TestAttachedParameterOnRowLevelSource`` was re-pointed by DEV-1859 leg C
+400. ``TestAttachedParameterOnRowLevelSource`` was re-pointed by leg C
 (consented 2026-09-15): that shape is now legal.
 
 Spec: queries/semantics — "Parameter not determined by the grain fails closed";
@@ -24,6 +24,8 @@ from slayer.core.errors import SlayerError
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import (
     assoc_q,
     bcast_q,
@@ -35,18 +37,17 @@ from tests._dev1841_fixtures import (
 from tests._dev1847_fixtures import (
     INNER_CR,
     _seed_sqlite,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     sales_q,
 )
 from tests._engine_helpers import build_exec_engine
 from tests._dev1892_fixtures import (
-    ModelMeasure,
     assert_grain_residue,
 )
 
 _ATTACHED_ON_ROW = (
-    "weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))"
+    "weighted_avg(customers.spend, weight=sum(orders.amount, partition_by=customers.regions.name))"
 )
 
 
@@ -61,25 +62,25 @@ class TestOperandGrainResidue:
     time, ref-free, naming the parameter / grain / partition_by remedy."""
 
     async def test_column_reference_parameter(self):
-        query = sales_q(dimensions=["region"], measures=[ModelMeasure(
-            formula=f"wavg({INNER_CR}, weight=id)", name="w")])
+        query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
+            metric=f"wavg({INNER_CR}, weight=sales.id)", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         assert_grain_residue(ei.value, param="weight")
 
     async def test_definition_default_column_parameter(self):
-        query = sales_q(dimensions=["region"], measures=[ModelMeasure(
-            formula=f"wavg({INNER_CR})", name="w")])
+        query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
+            metric=f"wavg({INNER_CR})", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
-        # wavg's weight defaults to the ``amount`` column — undetermined at the
+        # wavg's weight defaults to the ``amount`` field — undetermined at the
         # [city, region] grain.
         assert_grain_residue(ei.value, param="weight")
 
     async def test_aggregate_grained_outside_operand(self):
-        query = sales_q(dimensions=["region"], measures=[ModelMeasure(
-            formula=f"weighted_avg({INNER_CR}, weight=sum(amount, partition_by=product))",
-            name="w")])
+        query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
+            metric=f"weighted_avg({INNER_CR}, weight=sum(sales.amount, partition_by=sales.product))",
+            alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         assert_grain_residue(ei.value, param="weight")
@@ -90,12 +91,12 @@ class TestResidueFiresAtPlanTime:
     old render-time gate — ``plan_query`` (no SQL generation) already raises."""
 
     def test_default_column_parameter_rejected_by_plan_query(self):
-        models = dev1847_models()
+        models = dev1847_datasets()
         bundle = ResolvedSourceBundle(
             dialect="sqlite",
-            source_model=models[0], referenced_models=models[1:])
-        query = sales_q(dimensions=["region"], measures=[ModelMeasure(
-            formula=f"wavg({INNER_CR})", name="w")])
+            population=models[0], referenced_datasets=models[1:])
+        query = sales_q(dimensions=["sales.region"], metrics=[QueryMetric(
+            metric=f"wavg({INNER_CR})", alias="w")])
         with pytest.raises(SlayerError) as ei:
             plan_query(query=query, bundle=bundle)
         assert_grain_residue(ei.value, param="weight")
@@ -111,22 +112,22 @@ class TestAttachedParameterOnRowLevelSource:
 
     async def test_executes_in_associate(self, assoc_engine):
         resp = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
-            measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric=_ATTACHED_ON_ROW, alias="w")]))
         assert {r["orders.status"] for r in resp.data} == {"ok", "new"}
 
     async def test_default_mode_executes_and_broadcasts(self, assoc_engine):
         resp = await assoc_engine.execute(bcast_q(
-            dimensions=["status"],
-            measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")]))
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric=_ATTACHED_ON_ROW, alias="w")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}
-        assert by[("ok",)]["orders.w"] == by[("new",)]["orders.w"] is not None
+        assert by[("ok",)]["w"] == by[("new",)]["w"] is not None
         assert broadcast_warnings(resp)
 
     async def test_error_mode_refuses_the_dimension(self, assoc_engine):
-        q = error_q(dimensions=["status"],
-                    measures=[ModelMeasure(formula=_ATTACHED_ON_ROW, name="w")])
+        q = error_q(dimensions=["orders.status"],
+                    metrics=[QueryMetric(metric=_ATTACHED_ON_ROW, alias="w")])
         with pytest.raises(SlayerError) as ei:
             await assoc_engine.execute(q)
         assert "status" in str(ei.value)
@@ -139,13 +140,13 @@ class TestRestSurfaceResidue:
             db_path = os.path.join(d, "data.sqlite")
             _seed_sqlite(db_path)
             engine = await build_exec_engine(
-                db_path, dialect="sqlite", models=dev1847_models())
+                db_path, dialect="sqlite", datasets=dev1847_datasets())
             yield engine.storage
 
     async def test_residue_maps_to_400(self, sales_storage):
-        """A re-aggregation column-parameter residue is a client error (400)."""
+        """A re-aggregation field-parameter residue is a client error (400)."""
         client = TestClient(create_app(storage=sales_storage))
-        body = {"source_model": "sales", "dimensions": ["region"],
-                "measures": [{"formula": f"wavg({INNER_CR}, weight=id)", "name": "w"}]}
+        body = {"population": "sales", "dimensions": ["sales.region"],
+                "metrics": [{"metric": f"wavg({INNER_CR}, weight=sales.id)", "alias": "w"}]}
         resp = client.post("/query", json=body)
         assert resp.status_code == 400, resp.text

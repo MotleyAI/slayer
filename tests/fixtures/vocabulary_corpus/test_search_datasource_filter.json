@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_search_datasource_filter.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  }
+ ]
+}

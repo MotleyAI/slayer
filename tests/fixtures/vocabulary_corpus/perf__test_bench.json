@@ -1,0 +1,14 @@
+{
+ "source": "tests/perf/test_bench.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  }
+ ]
+}

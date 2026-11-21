@@ -1,0 +1,206 @@
+{
+ "source": "tests/test_dev1866_execution.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "filters": [
+     "orders.status = 'ok'"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ],
+    "filter": [
+     "orders.status = 'ok'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "filters": [
+     "orders.status = 'ok'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ],
+    "filter": [
+     "orders.status = 'ok'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "customers.region"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "customers.region"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "regions.name"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "regions.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

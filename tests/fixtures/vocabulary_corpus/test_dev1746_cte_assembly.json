@@ -1,0 +1,95 @@
+{
+ "source": "tests/test_dev1746_cte_assembly.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(customers_v2.lifetime_value)",
+    "name": "ltv_avg"
+   },
+   "new": {
+    "expression": "avg(customers_v2.lifetime_value)",
+    "name": "ltv_avg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  }
+ ]
+}

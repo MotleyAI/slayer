@@ -8,8 +8,8 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import OrderItem, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.dialects.mysql import MysqlDialect
 
 from tests._dev1965_fixtures import assert_single_top_level_with, cumsum_chain, gen, parse
@@ -122,8 +122,8 @@ def test_mysql_build_covar_2arg_excludes_null_pairs() -> None:
 
 def test_mysql_build_date_trunc_emits_date_trunc() -> None:
     d = MysqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="mysql")
-    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.TIMESTAMP)
+    col = exp.column("created_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME)
     # sqlglot translates DATE_TRUNC for MySQL; we just need to confirm
     # the AST builds via DateTrunc, not a hand-rolled STRFTIME path
     assert isinstance(out, (exp.DateTrunc, exp.Func))
@@ -136,15 +136,15 @@ def test_mysql_build_date_trunc_emits_date_trunc() -> None:
 ])
 def test_mysql_build_date_trunc_sub_day_keeps_time(granularity: TimeGranularity, fmt: str) -> None:
     """Sub-day buckets keep the time of day (sqlglot alone collapses them to ``DATE(t)``)."""
-    out = MysqlDialect().build_date_trunc(col_expr=exp.column("ts"), granularity=granularity, operand=DataType.TIMESTAMP)
+    out = MysqlDialect().build_date_trunc(col_expr=exp.column("ts"), granularity=granularity, operand=DataType.DATETIME)
     assert out.sql(dialect="mysql") == f"CAST(DATE_FORMAT(ts, '{fmt}') AS DATETIME)"
 
 
 def test_mysql_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY shifts MySQL's Monday-week truncation by +1d / -1d."""
     d = MysqlDialect()
-    col = sqlglot.parse_one("ordered_at", dialect="mysql")
-    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.TIMESTAMP)
+    col = exp.column("ordered_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.DATETIME)
     up = out.sql(dialect="mysql").upper()
     assert "DATE_ADD(ORDERED_AT, INTERVAL 1 DAY)" in up
     assert "INTERVAL -1 DAY)" in up
@@ -156,7 +156,7 @@ def test_mysql_build_date_add_quarter_is_native() -> None:
     d = MysqlDialect()
     col = exp.column("created_at")
     out = d.build_date_add(
-        expr=col, count=exp.Literal.number(1), unit=TimeGranularity.QUARTER, operand=DataType.TIMESTAMP,
+        expr=col, count=exp.Literal.number(1), unit=TimeGranularity.QUARTER, operand=DataType.DATETIME,
     )
     assert out.sql(dialect="mysql").upper() == "DATE_ADD(CREATED_AT, INTERVAL 1 QUARTER)"
 
@@ -188,20 +188,20 @@ async def test_mysql_outer_wrap_hoists_the_chain_with() -> None:
 # fast unit-level pins.
 
 
-async def _mysql_generate(query: SlayerQuery, model: SlayerModel) -> str:
+async def _mysql_generate(query: SlayerQuery, dataset: SlayerDataset) -> str:
     """Render ``query`` for MySQL and return the full emitted SQL."""
-    return await _engine_generate(query=query, model=model, dialect="mysql")
+    return await _engine_generate(query=query, dataset=dataset, dialect="mysql")
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="total", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -209,19 +209,19 @@ def _orders_model() -> SlayerModel:
 async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> None:
     """``change_pct(sum(total))`` CTEs must not embed ANSI double-quoted identifiers."""
     q = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-03-01", "2024-03-31"],
         )],
-        measures=[
-            ModelMeasure(formula="sum(total)"),
-            ModelMeasure(formula="change_pct(sum(total))", name="pct"),
+        metrics=[
+            QueryMetric(metric="sum(orders.total)"),
+            QueryMetric(metric="change_pct(sum(orders.total))", alias="pct"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="orders.created_at", direction="asc")],
     )
-    sql = await _mysql_generate(q, _orders_model())
+    sql = await _mysql_generate(q, _orders_dataset())
     # No ANSI-quoted identifiers ANYWHERE — those would be MySQL string
     # literals and either fail SQL parsing or silently corrupt results.
     assert '"orders.' not in sql, (
@@ -232,14 +232,14 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
     # (The typed pipeline names the shifted intermediate
     # ``orders._time_shift_inner``; the legacy stack spelled it
     # ``orders._ts_pct``. Same slot, same assertion.)
-    assert "`orders._time_shift_inner`" in sql, (
+    assert "`_time_shift_inner`" in sql, (
         f"Inner computed expression should reference the time-shift "
         f"intermediate via backticks:\n{sql}"
     )
     # The self-join CTE's ON clause must use backticks on both sides.
     assert (
         "DATE_ADD(base.`orders.created_at`, INTERVAL -1 MONTH) <=> "
-        "shifted__time_shift_inner.`orders.created_at`"
+        "shifted__time_shift_inner.`created_at`"
     ) in sql, (
         f"Self-join ON clause must use backticked identifiers:\n{sql}"
     )
@@ -263,21 +263,21 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
 
 def _monthly_orders_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders",
-        time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-        measures=[ModelMeasure(formula="count(*)")],
-        order=[OrderItem.model_validate({"column": "date_trunc('month', created_at)"})],
+        population="orders",
+        time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
+        metrics=[QueryMetric(metric="count(orders.*)")],
+        order=[OrderItem.model_validate({"field": "date_trunc('month', orders.created_at)"})],
     )
 
 
 async def test_mysql_nulls_last_emulation_orders_by_the_alias() -> None:
     """``ONLY_FULL_GROUP_BY`` fails to match some inlined projections (``DATE_ADD … INTERVAL``)."""
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="created_at", type=DataType.TIMESTAMP)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="created_at", datatype=DataType.DATETIME)],
     )
-    sql = await _engine_generate(query=_monthly_orders_query(), model=model, dialect="mysql")
+    sql = await _engine_generate(query=_monthly_orders_query(), dataset=model, dialect="mysql")
     order_clause = sql[sql.rindex("ORDER BY"):]
     assert "CASE WHEN `orders.created_at` IS NULL THEN 1 ELSE 0 END ASC" in order_clause
     assert "STR_TO_DATE" not in order_clause

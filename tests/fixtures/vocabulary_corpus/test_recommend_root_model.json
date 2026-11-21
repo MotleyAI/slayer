@@ -1,0 +1,148 @@
+{
+ "source": "tests/test_recommend_root_model.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / count(*)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(revenue) / count(*)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "trimmed_mean",
+    "formula": "avg(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)"
+   },
+   "new": {
+    "name": "trimmed_mean",
+    "expression": "avg(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "revenue",
+    "formula": "SUM({expr})"
+   },
+   "new": {
+    "name": "revenue",
+    "expression": "SUM({expr})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 137,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 153,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 378,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 467,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 558,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 577,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 581,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 647,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 653,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 658,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 878,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 882,
+   "reason": "not fully literal"
+  }
+ ]
+}

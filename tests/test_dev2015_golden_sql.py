@@ -7,7 +7,7 @@ from typing import Any
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev2015_fixtures import DS_GRANULARITIES, JAN_MAR, TWO_FACTS, cg_orders_model, m, spine_models, spine_td
+from tests._dev2015_fixtures import DS_GRANULARITIES, JAN_MAR, TWO_FACTS, cg_orders_dataset, m, spine_datasets, spine_td
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 from tests._time_points_fixtures import PinnedClock
@@ -23,28 +23,28 @@ ALLOWED_DELTAS: dict[str, str] = {}
 def _cases() -> dict[str, dict[str, Any]]:
     """Raw query dicts (a custom granularity must not be parsed at collection)."""
     return {
-        "spine/two_facts": {"measures": TWO_FACTS, "time_dimensions": [spine_td()]},
+        "spine/two_facts": {"metrics": TWO_FACTS, "time_dimensions": [spine_td()]},
         "spine/per_group": {
-            "measures": [m("sum(orders.amount)", "o"), m("sum(returns.amount)", "r")],
+            "metrics": [m("sum(orders.amount)", "o"), m("sum(returns.amount)", "r")],
             "dimensions": ["customers.region"], "time_dimensions": [spine_td(date_range=JAN_MAR)],
         },
         "spine/quarter_hour": {
-            "measures": [m("count(orders.id)", "n")],
+            "metrics": [m("count(orders.id)", "n")],
             "time_dimensions": [spine_td(granularity="quarter_hour", date_range=["2025-01-01", "2025-01-01"])],
         },
         "custom/fiscal_year": {
-            "source_model": "orders", "measures": [m("sum(amount)", "s")],
-            "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
+            "population": "orders", "metrics": [m("sum(orders.amount)", "s")],
+            "time_dimensions": [{"field": "orders.order_date", "granularity": "fiscal_year"}],
         },
     }
 
 
 async def _generate_one(query: dict[str, Any], dialect: str):
     """Emitted SQL, or a structured record of the raised error."""
-    models = [cg_orders_model()] if query.get("source_model") == "orders" else spine_models()
+    models = [cg_orders_dataset()] if query.get("source_model") == "orders" else spine_datasets()
     try:
         return await _engine_generate(
-            query=SlayerQuery.model_validate(query), model=models[0], extra_models=models[1:], dialect=dialect, validate=False,
+            query=SlayerQuery.model_validate(query), dataset=models[0], extra_datasets=models[1:], dialect=dialect, validate=False,
             clock=PinnedClock(), datasource_fields=DS_GRANULARITIES,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

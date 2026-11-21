@@ -69,7 +69,7 @@ def reference_failure(*, storage: StorageBackend, reference: str) -> str | None:
 def page_failures(*, page: DocPage, storage: StorageBackend) -> list[str]:
     """Every ``page:line: reason`` failure of the doc-example check on ``page``."""
     failures = [
-        f"{page.path}:{b.line}: {b.kind} mentions source_model outside any extracted query"
+        f"{page.path}:{b.line}: {b.kind} mentions population outside any extracted query"
         for b in page.unextracted_blocks()
     ]
     for q in page.checked_queries():

@@ -1,8 +1,8 @@
-"""DEV-1576 — parse-level coverage for the three SlayerQuery heals.
+"""Parse-level coverage for the three SlayerQuery heals.
 
 1. Aggregation-name alias / casing normalization (``normalize_aggregation_name``;
    healing happens at binding).
-2. ``round()`` / ``abs()`` as top-level formula functions (scalar calls over
+2. ``round()`` / ``abs()`` as top-level expression functions (scalar calls over
    aggregations; arity validated at binding).
 
 The §3 error-message split and end-to-end execution live in
@@ -21,22 +21,22 @@ from slayer.core.enums import (
 from slayer.core.enums import DataType
 from slayer.core.errors import UnknownFunctionError
 from slayer.core.keys import AggregateKey, ValueKey
-from slayer.core.models import Aggregation, Column, SlayerModel
-from slayer.core.scope import ModelScope
+from slayer.core.models import Aggregation, DatasetField, SlayerDataset
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.core.syntax import AggCall, Literal, Ref, ScalarCall, TransformCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
 def _bind(text: str, *, custom: tuple[str, ...] = ()) -> ValueKey:
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="t",
-        columns=[Column(name=n, type=DataType.DOUBLE) for n in ("revenue", "cost", "other", "x")],
-        aggregations=[Aggregation(name=n, formula="COUNT(DISTINCT {value})") for n in custom],
+        fields=[DatasetField(name=n, datatype=DataType.FLOAT) for n in ("revenue", "cost", "other", "x")],
+        aggregations=[Aggregation(name=n, expression="COUNT(DISTINCT {value})") for n in custom],
     )
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=model), bundle=bundle,
-                     allow_measures=True).value_key
+    bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=model), bundle=bundle,
+                     allow_metrics=True).value_key
 
 
 def _nodes(node):
@@ -160,7 +160,7 @@ class TestAggregationAliasHealing:
 
 
 # ---------------------------------------------------------------------------
-# §2 — round() / abs() as top-level formula functions
+# §2 — round() / abs() as top-level expression functions
 # ---------------------------------------------------------------------------
 
 

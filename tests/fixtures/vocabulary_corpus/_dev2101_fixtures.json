@@ -1,0 +1,244 @@
+{
+ "source": "tests/_dev2101_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "rows",
+    "formula": "COUNT(*)"
+   },
+   "new": {
+    "name": "rows",
+    "expression": "COUNT(*)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "per_order",
+    "formula": "SUM({value}) / COUNT(DISTINCT id)"
+   },
+   "new": {
+    "name": "per_order",
+    "expression": "SUM({value}) / COUNT(DISTINCT id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "paid_rows",
+    "formula": "rows(amount) FILTER (WHERE status = 'paid')"
+   },
+   "new": {
+    "name": "paid_rows",
+    "expression": "rows(amount) FILTER (WHERE status = 'paid')"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "rows",
+    "formula": "COUNT(*)"
+   },
+   "new": {
+    "name": "rows",
+    "expression": "COUNT(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "city"
+   },
+   "new": {
+    "field": "city"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "balances",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "last(balance, updated_at) FILTER (WHERE status = 'active')",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "balances",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "metric": "last(balance, updated_at) FILTER (WHERE status = 'active')",
+      "alias": "v"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 296,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 300,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 359,
+   "reason": "not fully literal"
+  }
+ ]
+}

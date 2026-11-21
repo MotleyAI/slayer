@@ -1,0 +1,85 @@
+{
+ "source": "tests/test_dev1958_row_leaf_ban.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(store, -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(store, -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(store in ('A', 'B'), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(store in ('A', 'B'), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "r"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  }
+ ]
+}

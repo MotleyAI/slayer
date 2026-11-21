@@ -1,4 +1,4 @@
-"""DEV-1612: ``inspect`` accepts ``reference: str | list[str]`` — a batched,
+"""``inspect`` accepts ``reference: str | list[str]`` — a batched,
 single-kind point lookup.
 
 These tests pin the *core* contract of
@@ -35,16 +35,16 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    SlayerModel,
+    SlayerDataset,
 )
-from slayer.inspect.model_render import _TRUNCATION_MARKER
+from slayer.inspect.dataset_render import _TRUNCATION_MARKER
 from slayer.inspect.service import InspectService
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Reuse the canonical inspect seed (mydb.orders with amount/customer_id/big
-# columns, an aov measure, a big aggregation, and a customers join) instead of
+# fields, an aov metric, a big aggregation, and a customers relationship) instead of
 # copying it — keeps the two inspect suites from duplicating fixture code.
 from tests.test_inspect import _seed_basic
 
@@ -79,19 +79,19 @@ class TestSingleStrBackCompat:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
         )
         # A bare str result is NEVER batch-framed: no ``## `` header line and
         # no block separator.
         assert not out.startswith("## ")
         assert _BLOCK_SEP not in out
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
     async def test_str_json_is_object_not_array(
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column",
+            reference="mydb.orders.amount", entity_type="field",
             compact=False, format="json",
         )
         payload = json.loads(out)
@@ -102,9 +102,9 @@ class TestSingleStrBackCompat:
         self, svc: InspectService
     ) -> None:
         # Single-str resolution errors keep their legacy plain-string body even
-        # under format="json" (NOT a JSON object). DEV-1612 must not change it.
+        # under format="json" (NOT a JSON object). Batching must not change it.
         out = await svc.inspect(
-            reference="mydb.orders.nope", entity_type="column",
+            reference="mydb.orders.nope", entity_type="field",
             compact=False, format="json",
         )
         with pytest.raises(json.JSONDecodeError):
@@ -121,7 +121,7 @@ class TestMarkdownBatch:
     async def test_list_ordered_blocks(self, svc: InspectService) -> None:
         out = await svc.inspect(
             reference=["mydb.orders.amount", "mydb.orders.big"],
-            entity_type="column", compact=False,
+            entity_type="field", compact=False,
         )
         assert "## mydb.orders.amount" in out
         assert "## mydb.orders.big" in out
@@ -136,21 +136,21 @@ class TestMarkdownBatch:
     async def test_header_echoes_resolved_canonical(
         self, svc: InspectService
     ) -> None:
-        # A join-path ref normalizes to the owning model's canonical id; the
+        # A relationship-path ref normalizes to the owning dataset's canonical id; the
         # header must echo the RESOLVED canonical, not the raw input.
         out = await svc.inspect(
             reference=["orders.customers.region"],
-            entity_type="column", compact=True,
+            entity_type="field", compact=True,
         )
         assert "## mydb.customers.region" in out
         assert "Customer billing region." in out
 
     async def test_one_element_list_is_framed(self, svc: InspectService) -> None:
         framed = await svc.inspect(
-            reference=["mydb.orders.amount"], entity_type="column", compact=True,
+            reference=["mydb.orders.amount"], entity_type="field", compact=True,
         )
         bare = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=True,
+            reference="mydb.orders.amount", entity_type="field", compact=True,
         )
         assert framed.startswith("## mydb.orders.amount")
         assert framed != bare
@@ -160,7 +160,7 @@ class TestMarkdownBatch:
     async def test_one_bad_id_isolated(self, svc: InspectService) -> None:
         out = await svc.inspect(
             reference=["mydb.orders.amount", "mydb.orders.nope"],
-            entity_type="column", compact=False,
+            entity_type="field", compact=False,
         )
         # Good id still renders.
         assert "## mydb.orders.amount" in out
@@ -173,23 +173,23 @@ class TestMarkdownBatch:
     async def test_kind_mismatch_is_per_id_error(
         self, svc: InspectService
     ) -> None:
-        # entity_type=column for both; aov is a measure → per-id mismatch error,
+        # entity_type=field for both; aov is a metric → per-id mismatch error,
         # amount still renders.
         out = await svc.inspect(
             reference=["mydb.orders.amount", "mydb.orders.aov"],
-            entity_type="column", compact=False,
+            entity_type="field", compact=False,
         )
         assert "## mydb.orders.amount" in out
         assert "Order total in USD." in out
         second = out.split(_BLOCK_SEP)[1]
-        assert "measure" in second.lower()
+        assert "metric" in second.lower()
 
     async def test_all_error_list_does_not_raise(
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
             reference=["mydb.orders.nope1", "mydb.orders.nope2"],
-            entity_type="column", compact=False,
+            entity_type="field", compact=False,
         )
         assert "## mydb.orders.nope1" in out
         assert "## mydb.orders.nope2" in out
@@ -198,7 +198,7 @@ class TestMarkdownBatch:
     async def test_duplicates_preserved(self, svc: InspectService) -> None:
         out = await svc.inspect(
             reference=["mydb.orders.amount", "mydb.orders.amount"],
-            entity_type="column", compact=True,
+            entity_type="field", compact=True,
         )
         # No dedup: two blocks, one separator.
         assert out.count(_BLOCK_SEP) == 1
@@ -209,10 +209,10 @@ class TestMarkdownBatch:
     ) -> None:
         refs = ["mydb.orders.amount", "mydb.orders.big"]
         compact = await svc.inspect(
-            reference=refs, entity_type="column", compact=True,
+            reference=refs, entity_type="field", compact=True,
         )
         full = await svc.inspect(
-            reference=refs, entity_type="column", compact=False,
+            reference=refs, entity_type="field", compact=False,
         )
         # Compact leaf is description-only — no structural "Type:" line.
         assert "Type:" not in compact
@@ -231,27 +231,27 @@ class TestJsonBatch:
     async def test_list_is_bare_array_ordered(self, svc: InspectService) -> None:
         out = await svc.inspect(
             reference=["mydb.orders.amount", "mydb.orders.customer_id"],
-            entity_type="column", compact=False, format="json",
+            entity_type="field", compact=False, format="json",
         )
         arr = json.loads(out)
         assert isinstance(arr, list)
         assert len(arr) == 2
         assert arr[0]["canonical_id"] == "mydb.orders.amount"
         assert arr[1]["canonical_id"] == "mydb.orders.customer_id"
-        assert arr[0]["entity_type"] == "column"
+        assert arr[0]["entity_type"] == "field"
 
     async def test_element_matches_single_id_shape(
         self, svc: InspectService
     ) -> None:
         # A batch success element carries the same per-kind fields a single-id
         # JSON call would (modulo array framing / whitespace). Compare keys and
-        # values for a full-render column.
+        # values for a full-render field.
         single = json.loads(await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column",
+            reference="mydb.orders.amount", entity_type="field",
             compact=False, format="json",
         ))
         arr = json.loads(await svc.inspect(
-            reference=["mydb.orders.amount"], entity_type="column",
+            reference=["mydb.orders.amount"], entity_type="field",
             compact=False, format="json",
         ))
         assert arr[0] == single
@@ -266,7 +266,7 @@ class TestJsonBatch:
         # compact=True leaf success element omits the ``text`` key (present iff
         # non-empty), same as the single-id contract.
         arr = json.loads(await svc.inspect(
-            reference=["mydb.orders.amount"], entity_type="column",
+            reference=["mydb.orders.amount"], entity_type="field",
             compact=True, format="json",
         ))
         assert "text" not in arr[0]
@@ -276,7 +276,7 @@ class TestJsonBatch:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference=["mydb.orders.amount"], entity_type="column",
+            reference=["mydb.orders.amount"], entity_type="field",
             compact=False, format="json",
         )
         arr = json.loads(out)
@@ -287,7 +287,7 @@ class TestJsonBatch:
     async def test_one_bad_id_is_error_object(self, svc: InspectService) -> None:
         out = await svc.inspect(
             reference=["mydb.orders.amount", "mydb.orders.nope"],
-            entity_type="column", compact=False, format="json",
+            entity_type="field", compact=False, format="json",
         )
         arr = json.loads(out)
         assert len(arr) == 2
@@ -302,7 +302,7 @@ class TestJsonBatch:
     async def test_all_error_array(self, svc: InspectService) -> None:
         out = await svc.inspect(
             reference=["mydb.orders.nope1", "mydb.orders.nope2"],
-            entity_type="column", compact=False, format="json",
+            entity_type="field", compact=False, format="json",
         )
         arr = json.loads(out)
         assert len(arr) == 2
@@ -319,11 +319,11 @@ class TestJsonBatch:
 
 class TestGlobalArgErrorsOnList:
     async def test_empty_list_raises(self, svc: InspectService) -> None:
-        # DEV-1667: ``[]`` is normalized to ``None`` (the collection sentinel).
+        # ``[]`` is normalized to ``None`` (the collection sentinel).
         # With a non-collection kind it now raises the collection-unsupported
         # error, not the old "reference list must not be empty" message.
         with pytest.raises(ValueError, match="[Cc]ollection view") as exc:
-            await svc.inspect(reference=[], entity_type="column")
+            await svc.inspect(reference=[], entity_type="field")
         assert "must not be empty" not in str(exc.value)
 
     async def test_non_string_list_member_raises(
@@ -333,13 +333,13 @@ class TestGlobalArgErrorsOnList:
         # in a per-kind helper (e.g. _inspect_memory's startswith).
         with pytest.raises(ValueError, match="only strings"):
             await svc.inspect(reference=["mydb.orders.amount", 123],
-                              entity_type="column")
+                              entity_type="field")
 
     async def test_non_string_non_list_reference_raises(
         self, svc: InspectService
     ) -> None:
         with pytest.raises(ValueError, match="string or a list"):
-            await svc.inspect(reference=123, entity_type="column")
+            await svc.inspect(reference=123, entity_type="field")
 
     async def test_bad_entity_type_raises_for_list(
         self, svc: InspectService
@@ -354,7 +354,7 @@ class TestGlobalArgErrorsOnList:
     ) -> None:
         with pytest.raises(ValueError, match="format"):
             await svc.inspect(
-                reference=["mydb.orders.amount"], entity_type="column",
+                reference=["mydb.orders.amount"], entity_type="field",
                 format="yaml",
             )
 
@@ -363,13 +363,13 @@ class TestGlobalArgErrorsOnList:
     ) -> None:
         with pytest.raises(ValueError, match="descriptions_max_chars"):
             await svc.inspect(
-                reference=["mydb.orders.amount"], entity_type="column",
+                reference=["mydb.orders.amount"], entity_type="field",
                 descriptions_max_chars=-1,
             )
 
 
 # ---------------------------------------------------------------------------
-# Other kinds (memory / model) batch homogeneously
+# Other kinds (memory / dataset) batch homogeneously
 # ---------------------------------------------------------------------------
 
 
@@ -414,7 +414,7 @@ class TestOtherKindsBatch:
     async def test_model_batch_markdown(self, svc: InspectService) -> None:
         out = await svc.inspect(
             reference=["mydb.orders", "mydb.customers"],
-            entity_type="model", compact=True,
+            entity_type="dataset", compact=True,
         )
         assert "## mydb.orders" in out
         assert "## mydb.customers" in out
@@ -423,17 +423,17 @@ class TestOtherKindsBatch:
     async def test_datasource_full_batch_separator_robust(
         self, svc: InspectService
     ) -> None:
-        # A datasource compact=False body itself contains ``## `model``` model
+        # A datasource compact=False body itself contains ``## `dataset``` dataset
         # headings. The outer batch must still delimit blocks unambiguously via
         # the ``\n\n---\n\n`` separator, NOT by header level.
         out = await svc.inspect(
             reference=["mydb"], entity_type="datasource", compact=False,
         )
         # Single-element list → one block, zero separators, even though the body
-        # has multiple internal ``## `model``` headings.
+        # has multiple internal ``## `dataset``` headings.
         assert out.count(_BLOCK_SEP) == 0
         assert out.startswith("## mydb")
-        # The internal model headings are present (they are NOT batch blocks).
+        # The internal dataset headings are present (they are NOT batch blocks).
         assert "## `orders`" in out or "## `customers`" in out
 
 
@@ -448,7 +448,7 @@ class TestPerIdFieldsAcrossList:
     ) -> None:
         arr = json.loads(await svc.inspect(
             reference=["mydb.orders.amount", "mydb.orders.big"],
-            entity_type="column", compact=True, format="json",
+            entity_type="field", compact=True, format="json",
             descriptions_max_chars=5,
         ))
         # Each element's description is independently truncated to 5 chars +
@@ -459,7 +459,7 @@ class TestPerIdFieldsAcrossList:
             assert len(prefix) <= 5
 
     async def test_resolver_warnings_scoped_to_element(self) -> None:
-        # A name that is BOTH a datasource and a model emits a resolver warning;
+        # A name that is BOTH a datasource and a dataset emits a resolver warning;
         # in a batch that warning must stay scoped to that element only.
         with tempfile.TemporaryDirectory() as tmp:
             st = YAMLStorage(base_dir=tmp)
@@ -471,11 +471,11 @@ class TestPerIdFieldsAcrossList:
                 name="other", type="sqlite", database=":memory:",
                 description="Other datasource.",
             ))
-            # A model literally named "shared" living in datasource "other" —
-            # makes the bare name "shared" both a datasource and a model.
-            await st.save_model(SlayerModel(
+            # A dataset literally named "shared" living in datasource "other" —
+            # makes the bare name "shared" both a datasource and a dataset.
+            await st.save_dataset(SlayerDataset(
                 name="shared", sql_table="shared", data_source="other",
-                columns=[Column(name="id", sql="id", type=DataType.INT,
+                fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER,
                                 primary_key=True)],
             ))
             await st.set_datasource_priority(["shared", "other"])
@@ -486,9 +486,9 @@ class TestPerIdFieldsAcrossList:
                 compact=True, format="json",
             ))
             assert arr[0]["canonical_id"] == "shared"
-            assert any("both a datasource and a model" in w
+            assert any("both a datasource and a dataset" in w
                        for w in arr[0]["warnings"])
             # The unambiguous datasource carries no such warning.
             assert arr[1]["canonical_id"] == "other"
-            assert not any("both a datasource and a model" in w
+            assert not any("both a datasource and a dataset" in w
                            for w in arr[1]["warnings"])

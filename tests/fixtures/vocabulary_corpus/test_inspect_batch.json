@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_inspect_batch.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 476,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 478,
+   "reason": "not fully literal"
+  }
+ ]
+}

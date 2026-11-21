@@ -1,4 +1,4 @@
-"""DEV-1838 stage 1 — producer interning (design D3) + warning pins (D6).
+"""Stage 1 — producer interning (design D3) + warning pins (D6).
 
 Spec: openspec …/specs/queries/partitioned-aggregates — "Structurally identical
 producers render once" (the cross-scope extension). A producer needed by
@@ -17,14 +17,15 @@ import pytest
 
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1838_fixtures import (
     BAND,
     BAND_WM,
-    ModelMeasure,
     SPEND_BAND,
     cte_aliases,
-    dev1838_models,
+    dev1838_datasets,
     make_exec_engine,
     month_key,
     month_td,
@@ -33,7 +34,7 @@ from tests._dev1838_fixtures import (
 from slayer.ir import planned
 from slayer.engine import plan
 
-M = ModelMeasure(formula="sum(amount)", name="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -51,28 +52,28 @@ def _cm_count(sql: str, dialect: str) -> int:
 
 def _band_wm_query(*windows: str, filters=None):
     measures = [M] + [
-        ModelMeasure(formula=f"sum(amount, window='{w}')", name=f"w{w[:-1]}")
+        QueryMetric(metric=f"sum(orders.amount, window='{w}')", alias=f"w{w[:-1]}")
         for w in windows
     ]
-    kw = {"filters": filters} if filters else {}
-    return q(dimensions=["region", BAND], time_dimensions=month_td(),
-             measures=measures, **kw)
+    kw = {"filter": filters} if filters else {}
+    return q(dimensions=["orders.region", BAND], time_dimensions=month_td(),
+             metrics=measures, **kw)
 
 
 class TestSharedAcrossScopes:
     async def test_nested_and_top_level_share_one_city_producer(
         self, exec_backend,
     ) -> None:
-        """The flagship (DEV-1835 carry-over): band × wm needs the city totals
+        """The flagship: band × wm needs the city totals
         at the top level AND inside the windowed producer's sub-plan — one
         relation, no ``_2`` twin, executed values unchanged."""
         dialect, engine = exec_backend
         query = _band_wm_query("1y")
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], int(r["orders.band"]),
+            (r["orders.region"], int(r["band"]),
              month_key(r["orders.ordered_at"])):
-                (float(r["orders.m"]), float(r["orders.w1"]))
+                (float(r["m"]), float(r["w1"]))
             for r in resp.data
         }
         assert set(got) == set(BAND_WM)
@@ -95,14 +96,14 @@ class TestSharedAcrossScopes:
         query = _band_wm_query("90d", "45d")
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], int(r["orders.band"]),
+            (r["orders.region"], int(r["band"]),
              month_key(r["orders.ordered_at"])): r
             for r in resp.data
         }
         cell = got[("North", 1, "2024-02")]
-        assert float(cell["orders.w90"]) == pytest.approx(60.0)
+        assert float(cell["w90"]) == pytest.approx(60.0)
         # 45d back from Feb's end (~Jan 15) drops the Jan 10 row.
-        assert float(cell["orders.w45"]) == pytest.approx(50.0)
+        assert float(cell["w45"]) == pytest.approx(50.0)
         dry = await engine.execute(query, dry_run=True)
         # One shared city producer + the two windowed producers.
         assert _cm_count(dry.sql, dialect) == 3, cte_aliases(
@@ -118,12 +119,12 @@ class TestSharedAcrossScopes:
         rewrite."""
         dialect, engine = exec_backend
         query = _band_wm_query(
-            "90d", filters=["ordered_at >= '2024-02-01' and status = 'ok'"],
+            "90d", filters=["orders.ordered_at >= '2024-02-01' and orders.status = 'ok'"],
         )
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], int(r["orders.band"]),
-             month_key(r["orders.ordered_at"])): float(r["orders.w90"])
+            (r["orders.region"], int(r["band"]),
+             month_key(r["orders.ordered_at"])): float(r["w90"])
             for r in resp.data
         }
         assert got[("North", 1, "2024-02")] == pytest.approx(30.0)
@@ -135,22 +136,22 @@ class TestSharedAcrossScopes:
     async def test_same_aggregate_in_both_roles_shares_one_producer(
         self, exec_backend,
     ) -> None:
-        """Green pin — the cross-model dual-role shape (per-tier spend banded
+        """Green pin — the cross-dataset dual-role shape (per-tier spend banded
         AND selected, tier in the grain) already shares one producer; interning
         must keep it that way with both roles' values correct."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier", {"expression": SPEND_BAND,
-                                           "name": "sband"}],
-            measures=[M, ModelMeasure(
-                formula="sum(customers.spend, partition_by=customers.tier)",
-                name="rt")],
+            dimensions=["customers.tier", {"field": SPEND_BAND,
+                                           "alias": "sband"}],
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.tier)",
+                alias="rt")],
         )
         resp = await engine.execute(query)
         got = {
-            (r["orders.customers.tier"], r["orders.sband"]):
-                (float(r["orders.m"]),
-                 None if r["orders.rt"] is None else float(r["orders.rt"]))
+            (r["customers.tier"], r["sband"]):
+                (float(r["m"]),
+                 None if r["rt"] is None else float(r["rt"]))
             for r in resp.data
         }
         assert got == {
@@ -177,17 +178,17 @@ class TestProducersThatMustStaySeparate:
     async def test_different_ranking_columns_stay_separate(
         self, exec_backend,
     ) -> None:
-        """Default ``ordered_at`` vs an explicit joined ranking column: two
+        """Default ``ordered_at`` vs an explicit joined ranking field: two
         producers, distinct values (green pin)."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"], measures=[
-            ModelMeasure(formula="last(amount)", name="lb"),
-            ModelMeasure(formula="last(amount, customers.signup_at)", name="ls"),
+        query = q(dimensions=["orders.status"], metrics=[
+            QueryMetric(metric="last(orders.amount)", alias="lb"),
+            QueryMetric(metric="last(orders.amount, customers.signup_at)", alias="ls"),
         ])
         resp = await engine.execute(query)
         by = {r["orders.status"]: r for r in resp.data}
-        assert float(by["ok"]["orders.lb"]) == pytest.approx(7.0)
-        assert float(by["ok"]["orders.ls"]) == pytest.approx(5.0)
+        assert float(by["ok"]["lb"]) == pytest.approx(7.0)
+        assert float(by["ok"]["ls"]) == pytest.approx(5.0)
         dry = await engine.execute(query, dry_run=True)
         assert _cm_count(dry.sql, dialect) == 2, cte_aliases(
             dry.sql, "_cm_", dialect=dialect,
@@ -198,24 +199,24 @@ class TestProducersThatMustStaySeparate:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", BAND], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
-                ModelMeasure(formula="sum(ok_amount, window='90d')", name="wok"),
+            dimensions=["orders.region", BAND], time_dimensions=month_td(),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(orders.ok_amount, window='90d')", alias="wok"),
             ],
         )
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], int(r["orders.band"]),
+            (r["orders.region"], int(r["band"]),
              month_key(r["orders.ordered_at"])): r
             for r in resp.data
         }
         cell = got[("North", 1, "2024-01")]
-        assert float(cell["orders.w"]) == pytest.approx(30.0)
+        assert float(cell["w"]) == pytest.approx(30.0)
         # ok_amount drops the Jan 20 'new' row.
-        assert float(cell["orders.wok"]) == pytest.approx(10.0)
+        assert float(cell["wok"]) == pytest.approx(10.0)
         dry = await engine.execute(query, dry_run=True)
-        # One shared city producer + one windowed producer per source column.
+        # One shared city producer + one windowed producer per source field.
         assert _cm_count(dry.sql, dialect) == 3, cte_aliases(
             dry.sql, "_cm_", dialect=dialect,
         )
@@ -228,21 +229,21 @@ class TestProducersThatMustStaySeparate:
         lives on the identity function itself.)"""
         identity = getattr(planned, "regroup_producer_identity", None)
         assert identity is not None, (
-            "DEV-1838 D3: planned.regroup_producer_identity is not "
+            "D3: planned.regroup_producer_identity is not "
             "implemented yet"
         )
-        models = dev1838_models()
+        models = dev1838_datasets()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=models[0], referenced_models=models[1:],
+            population=models[0], referenced_datasets=models[1:],
         )
         base = plan.plan_query(query=q(
-            dimensions=["region", BAND],
-            measures=[M],
+            dimensions=["orders.region", BAND],
+            metrics=[M],
         ), bundle=bundle)
         filtered = plan.plan_query(query=q(
-            dimensions=["region", BAND],
-            measures=[M], filters=["status = 'ok'"],
+            dimensions=["orders.region", BAND],
+            metrics=[M], filter=["orders.status = 'ok'"],
         ), bundle=bundle)
         (attach_a,) = base.regroup_attach_plans
         (attach_b,) = filtered.regroup_attach_plans
@@ -261,20 +262,20 @@ class TestWarningsUnchangedBySharing:
         self, exec_backend,
     ) -> None:
         """Two producers (the band's inner and ``cm``) each push the mixed-OR
-        filter: one entry per measure; ``cm`` counts the CityA customer only."""
+        filter: one entry per metric; ``cm`` counts the CityA customer only."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, ModelMeasure(formula="sum(customers.spend)", name="cm")],
-            filters=["city = 'CityA' OR customers.tier = '__none__'"],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
+            metrics=[M, QueryMetric(metric="sum(customers.spend)", alias="cm")],
+            filter=["orders.city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
-        assert len({w.measure for w in pushed}) == 2, pushed
+        assert len({w.metric for w in pushed}) == 2, pushed
         assert all("city" in w.filter_text for w in pushed)
         (row,) = resp.data
-        assert row["orders.sband"] == "lo"
-        assert float(row["orders.m"]) == pytest.approx(30.0)
-        assert float(row["orders.cm"]) == pytest.approx(100.0)
+        assert row["sband"] == "lo"
+        assert float(row["m"]) == pytest.approx(30.0)
+        assert float(row["cm"]) == pytest.approx(100.0)
 
     async def test_shared_producer_pushed_filter_reports_once(
         self, exec_backend,
@@ -283,28 +284,28 @@ class TestWarningsUnchangedBySharing:
         the host filter: exactly one entry — never one per consumer."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["customers.tier", {"expression": SPEND_BAND,
-                                           "name": "sband"}],
-            measures=[M, ModelMeasure(
-                formula="sum(customers.spend, partition_by=customers.tier)",
-                name="rt")],
-            filters=["city = 'CityA' OR customers.tier = '__none__'"],
+            dimensions=["customers.tier", {"field": SPEND_BAND,
+                                           "alias": "sband"}],
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.tier)",
+                alias="rt")],
+            filter=["orders.city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
-        assert len(pushed) == 1, [w.measure for w in pushed]
+        assert len(pushed) == 1, [w.metric for w in pushed]
         (row,) = resp.data
-        assert (row["orders.customers.tier"], row["orders.sband"]) == (
+        assert (row["customers.tier"], row["sband"]) == (
             "gold", "lo",
         )
-        assert float(row["orders.m"]) == pytest.approx(30.0)
-        assert float(row["orders.rt"]) == pytest.approx(100.0)
+        assert float(row["m"]) == pytest.approx(30.0)
+        assert float(row["rt"]) == pytest.approx(100.0)
 
     async def test_shared_producer_shape_carries_no_spurious_warning(
         self, exec_backend,
     ) -> None:
         _, engine = exec_backend
         resp = await engine.execute(
-            _band_wm_query("1y", filters=["status = 'ok'"]),
+            _band_wm_query("1y", filters=["orders.status = 'ok'"]),
         )
         assert not resp.warnings, [
             getattr(w, "kind", "?") for w in resp.warnings

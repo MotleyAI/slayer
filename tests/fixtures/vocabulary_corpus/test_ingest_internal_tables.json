@@ -1,0 +1,83 @@
+{
+ "source": "tests/test_ingest_internal_tables.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "_dlt_loads",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "_dlt_loads",
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "_dlt_loads.schema_name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "_dlt_loads.schema_name"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "total"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 451,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 454,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 455,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 616,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 620,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 639,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 643,
+   "reason": "not fully literal"
+  }
+ ]
+}

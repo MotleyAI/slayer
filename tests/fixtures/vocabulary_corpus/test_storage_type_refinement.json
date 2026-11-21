@@ -1,0 +1,527 @@
+{
+ "source": "tests/test_storage_type_refinement.py",
+ "pairs": [
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "id",
+      "sql": "id",
+      "type": "DOUBLE",
+      "primary_key": true
+     },
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "id",
+      "sql": "id",
+      "datatype": "Float",
+      "primary_key": true
+     },
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "name",
+      "sql": "name",
+      "type": "TEXT"
+     },
+     {
+      "name": "amount",
+      "sql": "amount",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "name",
+      "sql": "name",
+      "datatype": "String"
+     },
+     {
+      "name": "amount",
+      "sql": "amount",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "double_id",
+      "sql": "id * 2",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "double_id",
+      "sql": "id * 2",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "rollup",
+    "data_source": "live",
+    "source_queries": [
+     {
+      "source_model": "items",
+      "measures": [
+       {
+        "formula": "sum(qty)"
+       }
+      ]
+     }
+    ],
+    "columns": [
+     {
+      "name": "qty_sum",
+      "sql": "qty_sum",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "rollup",
+    "data_source": "live",
+    "source_queries": [
+     {
+      "population": "items",
+      "metrics": [
+       {
+        "metric": "sum(qty)"
+       }
+      ]
+     }
+    ],
+    "fields": [
+     {
+      "name": "qty_sum",
+      "sql": "qty_sum",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "rollup",
+    "sql": "SELECT * FROM items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "rollup",
+    "sql": "SELECT * FROM items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "INT",
+      "format": {
+       "type": "integer"
+      }
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Integer",
+      "format": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "INT"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Integer"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "INT",
+      "format": {
+       "type": "currency",
+       "symbol": "€",
+       "precision": 3
+      }
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Integer",
+      "format": {
+       "type": "currency",
+       "symbol": "€",
+       "precision": 3
+      }
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "INT",
+      "format": {
+       "type": "integer"
+      }
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Integer",
+      "format": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "type": "INT"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "qty",
+      "sql": "qty",
+      "datatype": "Integer"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "columns": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "items",
+    "sql_table": "items",
+    "data_source": "live",
+    "fields": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "datatype": "Float"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

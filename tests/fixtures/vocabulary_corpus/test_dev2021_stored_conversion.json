@@ -1,0 +1,200 @@
+{
+ "source": "tests/test_dev2021_stored_conversion.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_by_tier",
+    "dimensions": [
+     "customers__tier_label"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "rev_by_tier",
+    "dimensions": [
+     "customers__tier_label"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(rev)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "by_status",
+    "dimensions": [
+     "status_label"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "by_status",
+    "dimensions": [
+     "status_label"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(rev)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(CAST(amount * 2 AS DOUBLE))",
+    "name": "double_amount_sum"
+   },
+   "new": {
+    "expression": "sum(CAST(amount * 2 AS DOUBLE))",
+    "name": "double_amount_sum"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "dbl",
+    "measures": [
+     {
+      "formula": "sum(double_amount_sum)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "dbl",
+    "metrics": [
+     {
+      "metric": "sum(double_amount_sum)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(CAST(customers.id * 10 AS INT))",
+    "name": "customers__cid_sum"
+   },
+   "new": {
+    "expression": "sum(CAST(customers.id * 10 AS INT))",
+    "name": "customers__cid_sum"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "cids",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers__cid_sum)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "cids",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(customers__cid_sum)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "by_buyer",
+    "dimensions": [
+     "buyer__region_label"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "by_buyer",
+    "dimensions": [
+     "buyer__region_label"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(rev)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "by_alias",
+    "dimensions": [
+     "cust__region_label"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "by_alias",
+    "dimensions": [
+     "cust__region_label"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(rev)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "big_total",
+    "formula": "sum(iif(bucket = 'big', amount, 0))"
+   },
+   "new": {
+    "name": "big_total",
+    "expression": "sum(iif(bucket = 'big', amount, 0))"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 475,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -17,10 +17,10 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    SlayerModel,
-    sanitize_model_name,
+    SlayerDataset,
+    sanitize_dataset_name,
 )
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import (
@@ -74,7 +74,7 @@ class TestSanitizerUnchanged:
         ("plain", "plain"),
     ])
     def test_still_collapses_runs(self, raw: str, expected: str) -> None:
-        assert sanitize_model_name(raw) == expected
+        assert sanitize_dataset_name(raw) == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -107,7 +107,7 @@ class TestFreshIngestPreservesDunder:
 
 
 # --------------------------------------------------------------------------- #
-# FAIL-FIRST: a__b and a_b are now DISTINCT models — no collision, no skip.
+# FAIL-FIRST: a__b and a_b are now DISTINCT datasets — no collision, no skip.
 # (The old collision policy dissolves once __ is a legal name.)
 # --------------------------------------------------------------------------- #
 class TestNoSpuriousCollision:
@@ -119,15 +119,15 @@ class TestNoSpuriousCollision:
     def test_both_names_are_distinct_models(self, workspace: Path) -> None:
         ds = _sqlite_ds(workspace, self._SCRIPT)
         report = run_sync(_with_client(ingestion.ingest_datasource_report_async, datasource=ds))
-        names = {m.name for m in report.models}
+        names = {m.name for m in report.datasets}
         assert "a__b" in names
         assert "a_b" in names
-        # Neither is skipped — they no longer collapse onto one model name.
+        # Neither is skipped — they no longer collapse onto one dataset name.
         assert "a__b" not in _skipped_names(report)
 
 
 # --------------------------------------------------------------------------- #
-# FAIL-FIRST: an FK to a __-named table targets the preserved model name.
+# FAIL-FIRST: an FK to a __-named table targets the preserved dataset name.
 # --------------------------------------------------------------------------- #
 class TestJoinTargetsPreservedName:
     def test_fk_targets_the_dunder_model_name(self, workspace: Path) -> None:
@@ -144,8 +144,8 @@ class TestJoinTargetsPreservedName:
         models = {m.name: m for m in run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))}
         assert "reports__patient__drug" in models
         visits = models["visits"]
-        assert [j.target_model for j in visits.joins] == ["reports__patient__drug"]
-        assert visits.joins[0].target_model in models
+        assert [j.to for j in visits.relationships] == ["reports__patient__drug"]
+        assert visits.relationships[0].to in models
 
 
 # --------------------------------------------------------------------------- #
@@ -160,7 +160,7 @@ def _exec(db_path: str, script: str) -> None:
 class TestReingestMatching:
     @pytest.mark.asyncio
     async def test_new_dunder_object_stays_distinct(self, workspace: Path) -> None:
-        """FAIL-FIRST: a genuinely new ``a__b`` object is a distinct model, not
+        """FAIL-FIRST: a genuinely new ``a__b`` object is a distinct dataset, not
         merged into an existing ``a_b`` (they are different live tables)."""
         db_path = str(workspace / "live.db")
         _exec(db_path, "CREATE TABLE a_b (id INTEGER PRIMARY KEY, x TEXT);")
@@ -171,11 +171,11 @@ class TestReingestMatching:
         # A new, genuinely different object appears.
         _exec(db_path, "CREATE TABLE a__b (id INTEGER PRIMARY KEY, y TEXT);")
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
-        a_b = await storage.get_model("a_b", data_source="ds")
-        a__b = await storage.get_model("a__b", data_source="ds")
+        a_b = await storage.get_dataset("a_b", data_source="ds")
+        a__b = await storage.get_dataset("a__b", data_source="ds")
         assert a_b is not None
         assert a__b is not None, (
-            "a new __-named object must become its own model, not collapse "
+            "a new __-named object must become its own dataset, not collapse "
             "onto the sanitized a_b"
         )
 
@@ -186,7 +186,7 @@ class TestReingestMatching:
         """FAIL-FIRST (A2): when BOTH ``a__b`` and ``a_b`` are live objects and a
         stored legacy ``a_b`` points at ``a__b``, the re-ingest rename pre-pass
         must NOT adopt ``a__b`` → ``a_b`` — that would collapse two distinct live
-        tables onto one model. The sanitized-is-a-live-object guard prevents it."""
+        tables onto one dataset. The sanitized-is-a-live-object guard prevents it."""
         db_path = str(workspace / "live.db")
         _exec(
             db_path,
@@ -198,26 +198,26 @@ class TestReingestMatching:
         storage = YAMLStorage(base_dir=str(workspace / "store"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        # Seed the old-world legacy model whose sql_table is the OTHER live object.
-        await storage.save_model(SlayerModel(
+        # Seed the old-world legacy dataset whose sql_table is the OTHER live object.
+        await storage.save_dataset(SlayerDataset(
             name="a_b", data_source="ds", sql_table="a__b",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                     Column(name="x", type=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="x", datatype=DataType.STRING)],
         ))
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
-        a__b = await storage.get_model("a__b", data_source="ds")
-        a_b = await storage.get_model("a_b", data_source="ds")
-        assert a__b is not None, "the live a__b table must keep its own model"
-        assert a_b is not None, "the live a_b table must keep its own model"
-        # Distinct live objects → distinct models; a__b is not collapsed away.
+        a__b = await storage.get_dataset("a__b", data_source="ds")
+        a_b = await storage.get_dataset("a_b", data_source="ds")
+        assert a__b is not None, "the live a__b table must keep its own dataset"
+        assert a_b is not None, "the live a_b table must keep its own dataset"
+        # Distinct live objects → distinct datasets; a__b is not collapsed away.
         assert a__b.sql_table == "a__b"
 
     @pytest.mark.asyncio
     async def test_stored_sanitized_name_wins_no_duplicate(
         self, workspace: Path
     ) -> None:
-        """INVARIANT LOCK: a pre-existing (old-world) stored model ``a_b`` whose
+        """INVARIANT LOCK: a pre-existing (old-world) stored dataset ``a_b`` whose
         ``sql_table`` IS the live ``a__b`` object is not duplicated on re-ingest —
         the stored name wins, no churn."""
         db_path = str(workspace / "live.db")
@@ -225,13 +225,13 @@ class TestReingestMatching:
         storage = YAMLStorage(base_dir=str(workspace / "store"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        # Seed the old-world sanitized model pointing at the real object.
-        await storage.save_model(SlayerModel(
+        # Seed the old-world sanitized dataset pointing at the real object.
+        await storage.save_dataset(SlayerDataset(
             name="a_b", data_source="ds", sql_table="a__b",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                     Column(name="x", type=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="x", datatype=DataType.STRING)],
         ))
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
-        assert await storage.get_model("a_b", data_source="ds") is not None
+        assert await storage.get_dataset("a_b", data_source="ds") is not None
         # No duplicate under the faithful spelling.
-        assert await storage.get_model("a__b", data_source="ds") is None
+        assert await storage.get_dataset("a__b", data_source="ds") is None

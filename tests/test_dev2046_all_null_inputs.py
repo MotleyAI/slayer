@@ -10,8 +10,7 @@ from typing import Callable, Dict, List
 
 import pytest
 
-from slayer.core.models import ModelMeasure
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev2046_fixtures import m, make_exec_engine, month_td, orders_q
 
@@ -20,7 +19,7 @@ EMPTY = {
     "sum": None, "avg": None, "min": None, "max": None, "median": None,
     "count": 0, "count_distinct": 0,
 }
-WEST = ["region == 'west'"]
+WEST = ["orders.region == 'west'"]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -29,7 +28,7 @@ async def engine(request):
         yield e
 
 
-def _measures(source: str, *, suffix: str = "") -> List[ModelMeasure]:
+def _metrics(source: str, *, suffix: str = "") -> List[QueryMetric]:
     """Every aggregation in ``EMPTY`` over ``source`` plus the boolean ``sum`` / ``max``, named by aggregation."""
     measures = [m(f"{agg}({source}{suffix})", agg) for agg in EMPTY]
     return measures + [m(f"sum({source} > 15{suffix})", "bsum"), m(f"max({source} > 15{suffix})", "bmax")]
@@ -38,21 +37,21 @@ def _measures(source: str, *, suffix: str = "") -> List[ModelMeasure]:
 EXPECTED = {**EMPTY, "bsum": None, "bmax": None}
 
 LOCATIONS: Dict[str, Callable[[], object]] = {
-    "local": lambda: orders_q(dimensions=["region"], measures=_measures("amount"), filters=WEST),
+    "local": lambda: orders_q(dimensions=["orders.region"], metrics=_metrics("orders.amount"), filter=WEST),
     "partition": lambda: orders_q(
-        dimensions=["region", "status"], measures=_measures("amount", suffix=", partition_by=region"), filters=WEST,
+        dimensions=["orders.region", "orders.status"], metrics=_metrics("orders.amount", suffix=", partition_by=orders.region"), filter=WEST,
     ),
     "window": lambda: orders_q(
-        time_dimensions=month_td(), measures=_measures("amount", suffix=", window='30d'"), filters=WEST,
+        time_dimensions=month_td(), metrics=_metrics("orders.amount", suffix=", window='30d'"), filter=WEST,
     ),
-    "cross_model": lambda: orders_q(measures=_measures("customers.score")),
+    "cross_model": lambda: orders_q(metrics=_metrics("customers.score")),
     "stage": lambda: [
-        {"name": "s1", "source_model": "orders", "dimensions": ["region", "status"],
-         "measures": [{"formula": "sum(amount)", "name": "x"}]},
-        {"source_model": "s1", "dimensions": ["region"], "measures": _measures("x"), "filters": WEST},
+        {"name": "s1", "population": "orders", "dimensions": ["orders.region", "orders.status"],
+         "metrics": [{"metric": "sum(orders.amount)", "alias": "x"}]},
+        {"population": "s1", "dimensions": ["s1.region"], "metrics": _metrics("s1.x"), "filter": ["s1.region == 'west'"]},
     ],
     "association": lambda: SlayerQuery.model_validate({
-        "source_model": "orders", "dimensions": ["region"], "measures": _measures("customers.score"),
+        "population": "orders", "dimensions": ["orders.region"], "metrics": _metrics("customers.score"),
         "to_many_handling": "associate",
     }),
 }
@@ -62,7 +61,6 @@ LOCATIONS: Dict[str, Callable[[], object]] = {
 async def test_empty_value_in_every_location(engine, location: str) -> None:
     resp = await engine.execute(LOCATIONS[location]())
     assert resp.data
-    model = "s1" if location == "stage" else "orders"
     for row in resp.data:
-        got = {name: row[f"{model}.{name}"] for name in EXPECTED}
+        got = {name: row[name] for name in EXPECTED}
         assert got == EXPECTED, (location, row)

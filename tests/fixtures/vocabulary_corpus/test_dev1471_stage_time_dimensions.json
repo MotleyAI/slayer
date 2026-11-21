@@ -1,0 +1,242 @@
+{
+ "source": "tests/test_dev1471_stage_time_dimensions.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "s2",
+    "source_model": "s1",
+    "dimensions": [
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "name": "s2",
+    "population": "s1",
+    "dimensions": [
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "max(created_at, partition_by=customer_id)"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "metric": "max(created_at, partition_by=customer_id)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "region",
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "region",
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 190,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 203,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 226,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 236,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 251,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 292,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 306,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 311,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 326,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 342,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 364,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 369,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 374,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 389,
+   "reason": "not fully literal"
+  }
+ ]
+}

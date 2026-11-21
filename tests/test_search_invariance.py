@@ -23,12 +23,11 @@ import pytest_asyncio
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.search.retrievers.embeddings import EmbeddingRetriever
 from slayer.search.service import SearchService
@@ -85,9 +84,9 @@ _LEARNING_TOPICS = [
 ]
 
 
-def _make_models() -> list[SlayerModel]:
+def _make_datasets() -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="warehouse",
@@ -95,55 +94,55 @@ def _make_models() -> list[SlayerModel]:
                 "Checkout orders fact table including shipping, refund, "
                 "and tax detail."
             ),
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(
-                    name="customer_id", type=DataType.INT,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(
+                    name="customer_id", datatype=DataType.INTEGER,
                     description="FK to customers.id, NULL for anonymous.",
                 ),
-                Column(
-                    name="amount_paid", type=DataType.DOUBLE,
+                DatasetField(
+                    name="amount_paid", datatype=DataType.FLOAT,
                     description="Net paid in cents.",
                 ),
-                Column(
-                    name="status", type=DataType.TEXT,
+                DatasetField(
+                    name="status", datatype=DataType.STRING,
                     description="paid|refunded|cancelled|abandoned.",
                 ),
-                Column(
-                    name="shipped_at", type=DataType.TIMESTAMP,
+                DatasetField(
+                    name="shipped_at", datatype=DataType.DATETIME,
                     description="When the order shipped from warehouse.",
                 ),
-                Column(
-                    name="discount_code", type=DataType.TEXT,
+                DatasetField(
+                    name="discount_code", datatype=DataType.STRING,
                     description="Optional promotional discount code.",
                 ),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="customers",
             sql_table="public.customers",
             data_source="warehouse",
             description="Customer master data.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(
-                    name="email", type=DataType.TEXT,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(
+                    name="email", datatype=DataType.STRING,
                     description="Customer email; NULL for anonymous.",
                 ),
-                Column(
-                    name="customer_tier", type=DataType.TEXT,
+                DatasetField(
+                    name="customer_tier", datatype=DataType.STRING,
                     description="Tier: gold|silver|standard.",
                 ),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="warehouses",
             sql_table="public.warehouses",
             data_source="warehouse",
             description="Physical warehouses for fulfilment.",
-            columns=[
-                Column(name="code", type=DataType.TEXT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="code", datatype=DataType.STRING, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
             ],
         ),
     ]
@@ -178,8 +177,8 @@ async def _seed_invariance_corpus(storage: StorageBackend) -> None:
     await storage.save_datasource(DatasourceConfig(
         name="warehouse", type="sqlite", database=":memory:",
     ))
-    for model in _make_models():
-        await storage.save_model(model)
+    for model in _make_datasets():
+        await storage.save_dataset(model)
 
     # 20+ learning-only memories tagged by topic.
     for i, topic in enumerate(_LEARNING_TOPICS):
@@ -194,8 +193,8 @@ async def _seed_invariance_corpus(storage: StorageBackend) -> None:
             learning=f"Example query {i}: revenue rollup pattern.",
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="sum(amount_paid)")],
+                population="orders",
+                metrics=[QueryMetric(metric="sum(orders.amount_paid)")],
             ),
         )
 
@@ -403,15 +402,15 @@ async def storage_with_embeddings(
 
         emb_retriever = EmbeddingRetriever(storage=storage)
         persisted_models = []
-        for m in _make_models():
-            persisted = await storage.get_model(
+        for m in _make_datasets():
+            persisted = await storage.get_dataset(
                 m.name, data_source="warehouse",
             )
             assert persisted is not None
             persisted_models.append(persisted)
-            await emb_retriever.refresh_model_subtree(persisted)
+            await emb_retriever.refresh_dataset_subtree(persisted)
         await emb_retriever.refresh_datasource(
-            name="warehouse", models=persisted_models,
+            name="warehouse", datasets=persisted_models,
         )
         for mem in await storage.list_memories(entities=None):
             await emb_retriever.upsert_memory(mem)

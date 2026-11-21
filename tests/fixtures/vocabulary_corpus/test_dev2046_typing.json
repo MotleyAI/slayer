@@ -1,0 +1,46 @@
+{
+ "source": "tests/test_dev2046_typing.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "wsum",
+    "formula": "SUM({value})"
+   },
+   "new": {
+    "name": "wsum",
+    "expression": "SUM({value})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  }
+ ]
+}

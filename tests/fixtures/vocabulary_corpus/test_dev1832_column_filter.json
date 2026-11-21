@@ -1,0 +1,242 @@
+{
+ "source": "tests/test_dev1832_column_filter.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 117,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 182,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 299,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 300,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 322,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 366,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 384,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 402,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 405,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 406,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 407,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 408,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 415,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 418,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 419,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 420,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 421,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 427,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 430,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 431,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 432,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 442,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 445,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 446,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 454,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 457,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 458,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 461,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 471,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 474,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 475,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 476,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 486,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 489,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 490,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 491,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 493,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 500,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 503,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 504,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 505,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 515,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 518,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 519,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 531,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 534,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 535,
+   "reason": "not fully literal"
+  }
+ ]
+}

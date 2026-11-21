@@ -1,13 +1,13 @@
-"""Named join-traversed measure alias — acceptance via ``engine.execute``.
+"""Named relationship-traversed metric alias — acceptance via ``engine.execute``.
 
-A user ``name`` on a join-traversed measure governs the stage's
+A user ``alias`` on a relationship-traversed metric governs the stage's
 emitted column alias, so a downstream stage references it by that name. With
-stage-1 ``{"formula": "customers.revenue:sum", "name": "rev"}``, the stage
-schema exposes a flat column ``rev`` (NOT the canonical
+stage-1 ``{"metric": "sum(customers.revenue)", "alias": "rev"}``, the stage
+schema exposes a flat field ``rev`` (NOT the canonical
 ``customers__revenue_sum``), and a root stage over it resolves ``max(rev)``.
 
 End-to-end through ``engine.execute([stage1, root])``. The planner-level
-schema-column shape is pinned in ``tests/test_generator2_multistage.py``; this
+schema-field shape is pinned in ``tests/test_generator2_multistage.py``; this
 asserts the result through the full multi-stage DAG render+execute, and that
 the canonical (un-renamed) form is no longer a legal downstream reference.
 """
@@ -22,7 +22,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import UnknownReferenceError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -61,55 +61,55 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="revenue", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
     yield SlayerQueryEngine(storage=storage), db_path
 
 
-async def test_dev1448_downstream_resolves_user_name(engine):
-    """The renamed join measure is referenced downstream by its user name."""
+async def test_dev1448_downstream_resolves_user_name(engine: tuple[SlayerQueryEngine, str]) -> None:
+    """The renamed relationship metric is referenced downstream by its user name."""
     eng, _ = engine
     stage1 = SlayerQuery.model_validate({
         "name": "stage1",
-        "source_model": "orders",
-        "dimensions": ["status"],
-        "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+        "population": "orders",
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
         "to_many_handling": "broadcast",
     })
     root = SlayerQuery.model_validate({
-        "source_model": "stage1",
-        "dimensions": ["status"],
-        "measures": [{"formula": "max(rev)"}],
+        "population": "stage1",
+        "dimensions": ["stage1.status"],
+        "metrics": [{"metric": "max(stage1.rev)"}],
     })
     resp = await eng.execute([stage1, root])
     # Result-key contract: downstream stage prefix + canonical alias of the
-    # downstream measure (``max(rev)`` -> ``rev_max``).
+    # downstream metric (``max(rev)`` -> ``rev_max``).
     assert resp.columns == ["stage1.status", "stage1.rev_max"]
     assert {
         tuple(sorted(r.items())) for r in resp.data
@@ -119,7 +119,7 @@ async def test_dev1448_downstream_resolves_user_name(engine):
     }
 
 
-async def test_dev1448_canonical_form_not_a_downstream_name(engine):
+async def test_dev1448_canonical_form_not_a_downstream_name(engine: tuple[SlayerQueryEngine, str]) -> None:
     """Because the user ``name`` GOVERNS the stage alias, the canonical
     ``customers__revenue_sum`` is no longer exposed downstream — referencing
     it raises rather than silently resolving.
@@ -127,14 +127,14 @@ async def test_dev1448_canonical_form_not_a_downstream_name(engine):
     eng, _ = engine
     stage1 = SlayerQuery.model_validate({
         "name": "stage1",
-        "source_model": "orders",
-        "dimensions": ["status"],
-        "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+        "population": "orders",
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
     })
     root = SlayerQuery.model_validate({
-        "source_model": "stage1",
-        "dimensions": ["status"],
-        "measures": [{"formula": "max(customers__revenue_sum)"}],
+        "population": "stage1",
+        "dimensions": ["stage1.status"],
+        "metrics": [{"metric": "max(stage1.customers__revenue_sum)"}],
     })
     with pytest.raises(UnknownReferenceError):
         await eng.execute([stage1, root])

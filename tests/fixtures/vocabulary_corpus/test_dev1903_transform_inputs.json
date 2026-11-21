@@ -1,0 +1,44 @@
+{
+ "source": "tests/test_dev1903_transform_inputs.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(weight)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "cumsum(weight)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(cumsum(weight))",
+    "name": "m"
+   },
+   "new": {
+    "expression": "first(cumsum(weight))",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "r"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  }
+ ]
+}

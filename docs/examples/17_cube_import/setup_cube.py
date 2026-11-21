@@ -2,14 +2,14 @@
 
 Self-contained and **offline**: builds a tiny jaffle-shop-flavored DuckDB
 with deterministic rows, and imports the committed ``cube_project`` (YAML cubes +
-a view + a JS ``FILTER_PARAMS`` cube) into SLayer models. The import runs before
+a view + a JS ``FILTER_PARAMS`` cube) into SLayer datasets. The import runs before
 the datasource exists, so types come from the Cube declarations and the DuckDB is
-only used to *query* the imported models.
+only used to *query* the imported datasets.
 
 Two import paths are exposed: :func:`import_cube_cli` runs the real
 ``slayer import-cube`` command (what the notebook shows), and
 :func:`import_cube_lib` runs the same conversion in-process (used by the test).
-Both wipe the model directory first, so the datasource must be saved *after*
+Both wipe the storage directory first, so the datasource must be saved *after*
 importing.
 
 Gold-answer helper note: SLayer opens the DuckDB file through a read-write engine
@@ -42,7 +42,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 CUBE_PROJECT = _THIS_DIR / "cube_project"
 CACHE_DIR = _THIS_DIR / ".cache"
 DB_PATH = CACHE_DIR / "shop.duckdb"
-MODELS_DIR = CACHE_DIR / "slayer_models"
+DATASETS_DIR = CACHE_DIR / "slayer_datasets"
 REPORT_PATH = CACHE_DIR / "cube_import_report.json"
 
 _PathLike = Union[str, Path]
@@ -102,54 +102,54 @@ def build_shop_duckdb(db_path: _PathLike = DB_PATH) -> Path:
 
 def import_cube_lib(
     cube_project: _PathLike = CUBE_PROJECT,
-    models_dir: _PathLike = MODELS_DIR,
+    datasets_dir: _PathLike = DATASETS_DIR,
 ) -> CubeConversionResult:
-    """Import the cube_project in-process and persist the models.
+    """Import the cube_project in-process and persist the datasets.
 
-    Wipes ``models_dir`` first (so the datasource must be saved afterwards),
+    Wipes ``datasets_dir`` first (so the datasource must be saved afterwards),
     parses the project, runs :class:`CubeToSlayerConverter`, and saves each
-    model. Returns the full :class:`CubeConversionResult` (models + report).
+    dataset. Returns the full :class:`CubeConversionResult` (datasets + report).
     """
-    models_dir = Path(models_dir)
-    if models_dir.exists():
-        shutil.rmtree(models_dir)
+    datasets_dir = Path(datasets_dir)
+    if datasets_dir.exists():
+        shutil.rmtree(datasets_dir)
 
     project, parse_issues = parse_cube_project(str(Path(cube_project).resolve()))
     result = CubeToSlayerConverter(
         project=project, data_source=DATASOURCE_NAME, parse_issues=parse_issues
     ).convert()
 
-    storage = YAMLStorage(base_dir=str(models_dir))
-    for model in result.models:
-        run_sync(storage.save_model(model))
+    storage = YAMLStorage(base_dir=str(datasets_dir))
+    for dataset in result.datasets:
+        run_sync(storage.save_dataset(dataset))
     return result
 
 
 def import_cube_cli(
     cube_project: _PathLike = CUBE_PROJECT,
-    models_dir: _PathLike = MODELS_DIR,
+    datasets_dir: _PathLike = DATASETS_DIR,
     report_path: _PathLike = REPORT_PATH,
     check: bool = True,
 ) -> subprocess.CompletedProcess:
     """Run the real ``slayer import-cube`` CLI as a subprocess.
 
     Uses the current interpreter (``python -m slayer.cli``) and absolute paths so
-    it behaves identically from a notebook or a test. Wipes ``models_dir`` first.
+    it behaves identically from a notebook or a test. Wipes ``datasets_dir`` first.
     With ``check`` (the default) a non-zero exit raises with both streams in the
     message; the test passes ``check=True`` and inspects the returned process.
     """
-    models_dir = Path(models_dir)
+    datasets_dir = Path(datasets_dir)
     report_path = Path(report_path)
-    if models_dir.exists():
-        shutil.rmtree(models_dir)
-    models_dir.mkdir(parents=True, exist_ok=True)
+    if datasets_dir.exists():
+        shutil.rmtree(datasets_dir)
+    datasets_dir.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         sys.executable, "-m", "slayer.cli", "import-cube",
         str(Path(cube_project).resolve()),
         "--datasource", DATASOURCE_NAME,
-        "--storage", str(models_dir.resolve()),
+        "--storage", str(datasets_dir.resolve()),
         "--report", str(report_path.resolve()),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(_THIS_DIR))
@@ -162,15 +162,15 @@ def import_cube_cli(
 
 
 def save_datasource(
-    models_dir: _PathLike = MODELS_DIR, db_path: _PathLike = DB_PATH
+    datasets_dir: _PathLike = DATASETS_DIR, db_path: _PathLike = DB_PATH
 ) -> None:
-    """Register the DuckDB as a SLayer datasource in the model store.
+    """Register the DuckDB as a SLayer datasource in the dataset store.
 
-    Cube import files models under the datasource *name* but never creates the
-    datasource itself, so querying the imported models needs this. Call it AFTER
-    importing (the importers wipe ``models_dir``).
+    Cube import files datasets under the datasource *name* but never creates the
+    datasource itself, so querying the imported datasets needs this. Call it AFTER
+    importing (the importers wipe ``datasets_dir``).
     """
-    storage = YAMLStorage(base_dir=str(Path(models_dir)))
+    storage = YAMLStorage(base_dir=str(Path(datasets_dir)))
     ds = DatasourceConfig(
         name=DATASOURCE_NAME, type="duckdb", database=str(Path(db_path).resolve())
     )

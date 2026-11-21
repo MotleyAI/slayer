@@ -1,0 +1,158 @@
+{
+ "source": "tests/test_dev1835_semantic_pins.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, ordered_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, ordered_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, shipped_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, shipped_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount, shipped_at)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(amount, shipped_at)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount) / sum(amount)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "last(amount) / sum(amount)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(last(amount))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "cumsum(last(amount))",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(last(amount), direction='desc')",
+    "name": "x"
+   },
+   "new": {
+    "expression": "rank(last(amount), direction='desc')",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -57,15 +57,16 @@ principles every layer obeys.
      well-defined only when the home determines every grain member; so in 2.2 the
      constituent stands for its grain members. It contributes no leaf, and its
      interior is never inspected.
-   - **2.4 Aggregation.** An aggregation over a row-level source is homed on the
-     deepest dataset that determines the source's home (2.2) and every column-valued
-     parameter and non-overridden definition default — each a row-level expression
+   - **2.4 Aggregation.** An aggregation over a row-level source is homed on its
+     source anchor (2.6) when the anchor determines the source's home (2.2) and every
+     column-valued parameter and non-overridden definition default, else on the deepest
+     dataset that determines them all — each a row-level expression
      under 2.1, defaults resolved as references from the owning model with
      **cancellation**: a qualifier naming a dataset already on its path reads that
      row (`a.b.a ≡ a`) rather than re-joining, any other unreachable qualifier
-     anchored at the query root. Only definition defaults cancel — a revisiting
-     query path is refused (its root qualifier is no revisit, Principle 1), a revisiting
-     `Column.sql` likewise.
+     read as a query reference (Principle 1). Only definition defaults cancel — a revisiting
+     query path is refused (its anchor is no revisit, Principle 1), a revisiting
+     `DatasetField.sql` likewise.
      It is counted over that
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
      home and never widens it; the aggregation's own `partition_by=` is not an input.
@@ -80,9 +81,9 @@ principles every layer obeys.
      the source leaves' paths — where the source lives: the aggregation's definition
      (a custom aggregation and its parameter defaults) is resolved there, a qualifier
      naming a dataset on the anchor's path cancelling back to it, any other qualifier
-     the anchor cannot reach forward anchored at the query root instead. The home,
+     the anchor cannot reach forward read as a query reference (Principle 1) instead. The home,
      when it exists, is among the inputs' paths and their longest common prefix;
-     candidates are tried deepest-first, ties preferring the anchor.
+     the anchor is tried first, then the other candidates deepest-first.
    - **2.7 Spelling-invariance.** The home depends only on the inputs' paths and
      types: `sum(customers.spend)` and `sum(customers.spend + 0)` share one home.
      A single-column source is the one-leaf case of 2.2 — the model
@@ -91,24 +92,26 @@ principles every layer obeys.
      input, the aggregation is illegal and the query fails with the input-safety error
      naming the leaf and the hop — never a multiplied or silently re-rooted value.
    - **2.9 Home is not population.** The home is per aggregation node (where it is
-     counted); the population (Axiom 12) is per query (which cells exist). A
-     population dimension the home does not determine is broadcast, associated or
-     refused (Axioms 7–8); it never moves the home.
+     counted); the population (Axiom 12) is per query (which cells exist) and never
+     moves a home. A query dimension the home does not determine is broadcast,
+     associated or refused (Axioms 7–8).
    [enforced: test:tests/test_dev1892_parameter_typing.py]
    [enforced: test:tests/test_dev1832_home.py]
    [enforced: test:tests/test_dev1945_ranking_key_safety.py]
    [enforced: test:tests/test_dev1931_default_home.py]
    [enforced: test:tests/test_dev1908_default_cancellation.py]
    [enforced: test:tests/test_dev2013_expression_attribution.py]
+   [enforced: test:tests/test_dev2367_list_elements_across_joins.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
    alone (bidirectional traversal).
    - **3.1 Unrelated datasets.** A dataset no join path reaches from a query's
      population meets it as the product `P × D`, every row with every row,
-     reached only by naming `D` as a query path's first hop, never by route
-     search. Only aggregates and filters (Axiom 14) read across `×`; any other
-     row-level read is a type error, so `×` never multiplies the population.
+     reached only by naming `D` as a reference's anchor (Principle 1), never by route
+     search. Only aggregates, filters (Axiom 14) and a dimension anchor over
+     unconnected dimension groups (12.2) read across `×`; any other row-level read
+     is a type error, so `×` never multiplies a population.
      [enforced: test:tests/test_unrelated_datasets.py]
    - **3.2 List children.** A list column `L` of dataset `D` is a keyless
      one-to-many child `D.L`: one row per non-NULL element, its value
@@ -164,14 +167,11 @@ principles every layer obeys.
    per-query row number)
    [enforced: test:tests/test_dev1841_association_exec.py]
    [enforced: test:tests/test_dev1910_home_rooted_association.py]
-   [enforced: test:tests/test_dev2216_keyless_association.py]; broadcast (the
+   [enforced: test:tests/test_dev2216_keyless_association.py] [enforced: test:tests/test_dev2367_list_elements_across_joins.py]; broadcast (the
    value repeats across the dimension's cells, with a self-announcing warning;
    spec: `queries/semantics` › Loud degradation)
    [enforced: test:tests/test_dev1836_broadcast_strict.py]; and error (refuse)
-   [enforced: test:tests/test_dev1841_error_mode.py]. Every aggregation is
-   **association-eligible** [target: DEV-1914]; an ineligible one broadcasts
-   under the default, warning with the reason, and is refused under an explicit
-   associate [enforced: test:tests/test_dev2216_associate_default.py]; an explicit partition_by
+   [enforced: test:tests/test_dev1841_error_mode.py]. Every aggregation associates — a windowed one per bucket, over the home rows with an associated row in the bucket's frame [enforced: test:tests/test_dev1914_ranked_windowed_association.py]; an explicit partition_by
    naming a dimension unattributable only from a further (cross-model) root is an
    error outside associate mode
    [enforced: test:tests/test_dev1841_association_errors.py], but one whose own
@@ -228,15 +228,35 @@ principles every layer obeys.
     [enforced: test:tests/test_consecutive_periods_calendar.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
-    (raw-row mode is the one documented exception; spec: `queries/semantics` ›
-    Grain guarantee)
+    (raw rows are 12.5; spec: `queries/semantics` › Grain guarantee)
     [enforced: test:tests/test_distinct_dimension_values.py]
-    [enforced: test:tests/test_dev2063_grain_guarantee.py]; it may be named
-    explicitly, may be any dataset, is reported back, and defaults to the
-    smallest dataset determining every queried dimension — inferred from
-    dimensions and row-level filters only, never measures; spine dimensions
-    factor out (Axiom 15).
-    [enforced: test:tests/test_law_population_invariance.py]
+    [enforced: test:tests/test_dev2063_grain_guarantee.py]; it is reported back
+    and resolved by:
+    - **12.1 Anchored.** A named population may be any dataset; measures never
+      change its rows (Law 7).
+      [enforced: test:tests/test_law_population_invariance.py]
+    - **12.2 Dimension anchor.** `A` is the smallest dataset determining every
+      dimension, read from dimensions only, an unproven hop counting by
+      association (Axiom 8); dimension groups no join path connects take the
+      product of their anchors (Axiom 3.1); with no dimensions `A` is the
+      **unit**, one row. Tied minimal candidates, or connected groups no dataset
+      determines, leave `A` undefined.
+    - **12.3 Supply.** An aggregate typed by the query's dimensions whose home
+      determines or associates each (Axioms 7–8) is **full-grain**: its cells
+      (Axiom 6) are query cells. Any other aggregate's cells lie on a coarser
+      grain and extend to the cells of `A` agreeing with them there. A measure
+      supplies the union of its full-grain operands' cells, through combinations
+      and transforms; with none, the union of its operands' extended cells.
+    - **12.4 Inferred.** An omitted population is the **row supply**: the union
+      of every top-level measure's supply — `A`'s cells with no measures, the
+      unit with no dimensions. Field filters restrict each supply before it is
+      taken (Axiom 14) and never choose one; a query needing an undefined `A`
+      fails closed.
+      [enforced: test:tests/test_dev2212_row_supply.py]
+    - **12.5 Raw rows.** Raw-row mode lists one row per row of the population,
+      else of `A` (never 12.4); every dimension must be provably determined — no
+      association, no product.
+      [enforced: test:tests/test_dev2212_raw_rows.py]
 13. **Positions**: every query expression is a field or a measure; dimensions
     and measures return the value, filters mask on it, order sorts by it — the
     expression evaluates identically in every position, compiled by
@@ -250,28 +270,28 @@ principles every layer obeys.
     [enforced: test:tests/test_dev2119_expression_time_dimensions.py]
     [enforced: test:tests/test_dev2119_partition_keys.py]
     [enforced: test:tests/test_dev2119_ranked_expressions.py]
-14. **Filters**: a field-typed filter masks population rows before any
-    aggregation; a measure-typed filter masks result cells after all values
-    are computed, never changing a surviving cell's values; valid-as-both
-    types as field, valid-as-neither is a type error; evaluation is stratified
-    — aggregate-free field filters fix the population every aggregation runs
-    over [enforced: test:tests/test_dev1839_measure_execution.py]; a filter
+14. **Filters**: a field-typed filter masks the rows of the population and of
+    every home before any aggregation, and never chooses a population (12.4); a
+    measure-typed filter masks result cells after all values are computed, never
+    changing a surviving cell's values; valid-as-both types as field,
+    valid-as-neither is a type error; evaluation is stratified — aggregate-free
+    field filters fix the rows every aggregation runs over [enforced: test:tests/test_dev1839_measure_execution.py]; a filter
     reaching a home dataset across a non-determining path restricts by
     association or is loudly excluded — a stated restriction is never silently
     ignored (spec: `queries/semantics` › Filters restrict by association or
     fail loudly). [enforced: test:tests/test_dev1840_execution.py]
     [enforced: test:tests/test_dev1909_population_pushdown.py]
     [enforced: test:tests/test_dev1935_boolean_lowering.py]
-    A query-declared INNER join `J` is the field filter `matched(r.J)` — some row is reached along `r.J`, `r` the route from the population to `J`'s declaring dataset — and never changes how `J` is traversed. [enforced: test:tests/test_dev2102_query_inner_joins.py]
+    A query-declared INNER join `J` is the field filter `matched(r.J)` — some row is reached along `r.J`, `r` the route from each dataset the filter restricts to `J`'s declaring dataset — and never changes how `J` is traversed. [enforced: test:tests/test_dev2102_query_inner_joins.py]
 15. **Time spine**: the spine is the dataset of all instants, keyed by its
     instant. A dataset's axis — its declared default time column, else its
     sole one — joins it to-one; an expression is never an axis, so a spine
     dimension over one is a type error; a dataset reaches the spine by its nearest
     axis on a to-one chain, equal distances failing loudly, and a path may
     begin or end at the spine but never cross it. The spine has no countable
-    rows. A query with spine dimensions has population `spine × P`, P
-    inferred per Axiom 12 from its other dimensions and field filters, and
-    must bound the spine from below.
+    rows. A query with spine dimensions has population `spine × P`, P named,
+    else inferred per Axiom 12 from its other dimensions [target: DEV-2218],
+    and must bound the spine from below.
     [enforced: test:tests/test_dev2015_time_spine.py]
     [enforced: test:tests/test_dev2119_time_spine.py]
 
@@ -286,19 +306,17 @@ enforced test ids as its instances land.
 2. **Broadcast coherence**: coercing then combining equals combining then
    coercing, and coercions compose along chains of grains.
    [enforced: test:tests/test_law_broadcast_coherence.py]
-3. **Compositionality**: a term's denotation depends only on the term, the
-   population, the row-level filters, and the mode — never on sibling terms;
-   sibling-measure independence
+3. **Compositionality**: a term's value in a cell depends only on the term, the
+   cell, the row-level filters, and the mode — never on sibling terms, which in
+   an inferred query may add cells (Law 7); transforms over result rows
+   [target: DEV-2218]; sibling-measure independence
    [enforced: test:tests/test_dev1837_dimension_measure_matrix.py];
    single-measure splits [enforced: test:tests/test_law_split_invariance.py];
    measure-typed filters and order entries. [review]
 4. **Position parity**: the same expression yields the same value as a
    measure, a filter, or an order key — positions differ only in what happens
    to the value. [review]
-5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a
-   groupby on `d` — exact for every association-eligible aggregation under the
-   default and associate; broadcast consciously trades this law away and must
-   warn.
+5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a groupby on `d` — exact for every aggregation under the default and associate; broadcast consciously trades this law away and must warn.
    [enforced: test:tests/test_law_dice_slice.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 6. **Lowering soundness**: every emission trick is a pure optimization —
@@ -307,9 +325,24 @@ enforced test ids as its instances land.
    [enforced: test:tests/test_law_lowering_soundness.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]; compiling a filter
    as a hidden measure. [review]
-7. **Measure closure**: adding a measure never changes the result's rows or
-   any other field's values.
+7. **Measure closure**: before measure-typed filters, order and limit, adding a
+   measure to an anchored query never changes its rows or any other field's
+   values; to an inferred one with a measure (**measure monotonicity**) it never removes a row
+   or changes a value in an existing row, a new row carrying each other
+   measure's value on its own grain there (its empty value where it has no
+   cell); transforms [target: DEV-2218].
    [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
+   [enforced: test:tests/test_law_measure_monotonicity.py]
+8. **Home-row preservation**: in an inferred query every home row of a
+   full-grain aggregate surviving the filters lands in a row — exactly one when
+   the home determines the dimensions and the data respects declared
+   cardinality (Ossie S1).
+   [enforced: test:tests/test_law_home_row_preservation.py]
+9. **Filter non-expansion**: adding a field filter never adds a row or changes a
+   result key (Ossie S6).
+   [enforced: test:tests/test_law_filter_non_expansion.py]
+10. **Unit**: a query with measures and no dimensions returns exactly one row
+    (Ossie §3.6). [enforced: test:tests/test_law_unit.py]
 
 ## 4. Principles
 
@@ -318,30 +351,34 @@ All code, old and new, MUST obey these.
 1. **Dotted-canonical references**: dots denote join paths in queries and model
    SQL; the legacy `__` split-alias input form is a hard error; `__` survives
    only as an internal generated-SQL join alias (`__slayer_` prefix reserved).
-   A resolved path is **canonical**: each hop spelled by its edge name, else its
-   target model — a query stage by its name in its own query list, which precedes
-   a same-named model (`customers.regions ≡ customers.hr` for an edge named `hr`); a leading
-   **root qualifier** — the root's own name, read before any hop — drops out (`r.x ≡ x` from
-   root `r`); keys, join aliases and result names carry only canonical paths.
+   A query reference is **anchored** at its first segment, a dataset — a query
+   stage by its name in its own query list, which precedes a same-named model;
+   the rest is an explicit route. Each dataset reading the reference — the
+   population; an aggregate's home, for its grain and filters — reaches the anchor over declared relationships, an
+   inherited one counting only beside a declared one between the same two
+   datasets: by its only to-one path, else its only route, else the reference is
+   refused as ambiguous. Only when declared relationships give no route are
+   inherited ones added, a single inherited relationship joining the reader to
+   the anchor taken first; with no route at all the anchor is unrelated
+   (Axiom 3.1). A bare name is a metric. A resolved path is
+   **canonical**: each hop spelled by its edge name, else its target model
+   (`customers.regions ≡ customers.hr` for an edge named `hr`); keys carry the
+   anchor and its canonical route, never the population (an alias keys as
+   itself), and join aliases carry the canonical path from the reading dataset.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]
-   [enforced: test:tests/test_dev2187_root_qualifier.py]
-2. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
-   vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
-   canonical function library, extended never forked. [review]
+   [enforced: test:tests/test_dev2277_qualified_references.py]
+   [enforced: test:tests/test_dev2277_routing.py]
+   [enforced: test:tests/test_dev2212_home_routing.py]
+2. **Two expression layers**: Mode A, the datasource's own SQL (a definition's entry for that dialect, `filter`, dataset `filters`), vs Mode B, a SQL-compatible grammar (a definition's portable `sql`, query fields) — one canonical function library, extended never forked. [review]
    - **2.1** Every Mode B construct means the same on every dialect.
      [enforced: test:tests/test_dev2120_library_matrix.py]
    - **2.2** A dialect without its own translation of a Mode B construct
      refuses it with a typed error; a base-class default is never another
      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
    - **2.3** A query carries no Mode A: Mode A is written only in a stored model's definition, and a value a query supplies enters it only as a literal. [enforced: test:tests/test_dev2021_queries_carry_no_mode_a.py]
-3. **Logical names, physical once**: every model-level column reference —
-   query fields, `join_pairs`, unique-key sets — names a column by
-   `Column.name`; the physical spelling (`Column.physical_name`: a base
-   column's bare `sql`, else its name) is applied once, where a reference
-   becomes SQL or meets the live schema, and is never the key two references
-   are matched on.
-   [enforced: test:tests/test_dev1902_join_key_spelling.py]
+3. **Logical names, physical once**: inside a **row definition** — a field's `expression` or `filter`, a dataset's `filters` — a bare name is a source column and a path from the dataset (`d.f`) a field; inside a metric's `expression` a bare name is a field; in both, `source.x` is a source column unless a field is named `source`. Every other reference — query fields, relationship keys, unique-key sets — names a field. A source column's spelling is applied once, where a reference becomes SQL or meets the live schema, and is never the key two references are matched on. [enforced: test:tests/test_dev1902_join_key_spelling.py] [enforced: test:tests/test_dev2175_definition_names.py]
+4. **Ossie superset**: every input valid under the Ossie core specification is valid here and means what Ossie says it means. An extension may give meaning to input that Ossie leaves undefined or declares invalid, and never changes the result of an Ossie-valid input. [target: DEV-2372]
 
 ## 5. Notes
 

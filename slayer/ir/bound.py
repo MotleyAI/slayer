@@ -19,7 +19,7 @@ from slayer.core.keys import (
 class BoundFilter(BaseModel):
     """A bound filter predicate: ``value_key`` (like ``BoundExpr``), ``phase``
     (max phase any referenced slot reaches), and ``referenced_keys`` (every
-    ``ValueKey`` in the tree, for the cross-model planner's filter routing)."""
+    ``ValueKey`` in the tree, for the cross-dataset planner's filter routing)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -48,14 +48,14 @@ class BoundExpr(BaseModel):
 
 class BoundTimeDimension(BaseModel):
     """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the facts the
-    checker judges — a column's ``column_type`` (an expression is typed by the checker)
-    and ``(leaf, granularity)`` per temporal leaf a bucketed stage column or a model
-    ``Column``'s ``granularity`` records."""
+    checker judges — a field's ``field_type`` (an expression is typed by the checker)
+    and ``(leaf, granularity)`` per temporal leaf a bucketed stage field or a dataset
+    ``DatasetField``'s ``granularity`` records."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     bound: BoundExpr
-    column_type: Optional[DataType] = None
+    field_type: Optional[DataType] = None
     bucketed_leaves: Tuple[Tuple[str, Granularity], ...] = ()
     is_expression: bool = False
 
@@ -72,8 +72,8 @@ def row_restriction_from_key(vk: ValueKey) -> BoundFilter:
     return bound_filter_from_key(vk).model_copy(update={"row_restriction": True})
 
 
-class DeclaredMeasure(BaseModel):
-    """One declared measure; ``type`` follows the aggregation (count → INT, avg → DOUBLE, else source type)."""
+class DeclaredMetric(BaseModel):
+    """One declared metric; ``datatype`` follows the aggregation (count → INT, avg → DOUBLE, else source type)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -83,14 +83,14 @@ class DeclaredMeasure(BaseModel):
     label: Optional[str] = None
     canonical_alias: Optional[str] = None
     name_is_explicit: bool = False
-    type: Optional[DataType] = None
+    datatype: Optional[DataType] = None
     element_type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
     # A computed dimension is a ROW-phase composite projected AND grouped; the
-    # flag distinguishes it from a bare-measure expression.
+    # flag distinguishes it from a bare-metric expression.
     is_dimension: bool = False
 
 
@@ -105,11 +105,11 @@ class OrderSpec(BaseModel):
 
 
 class GranularityConflict(BaseModel):
-    """Two ``whole_periods_only`` granularities on one column that do not nest into each other."""
+    """Two ``whole_periods_only`` granularities on one field that do not nest into each other."""
 
     model_config = ConfigDict(frozen=True)
 
-    column: str
+    field: str
     granularities: Tuple[Granularity, Granularity]
 
 

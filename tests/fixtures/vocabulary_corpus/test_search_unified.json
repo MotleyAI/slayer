@@ -1,0 +1,49 @@
+{
+ "source": "tests/test_search_unified.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount_paid)"
+   },
+   "new": {
+    "metric": "sum(amount_paid)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 509,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 513,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 656,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 660,
+   "reason": "not fully literal"
+  }
+ ]
+}

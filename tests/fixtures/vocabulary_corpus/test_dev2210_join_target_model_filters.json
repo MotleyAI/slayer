@@ -1,0 +1,257 @@
+{
+ "source": "tests/test_dev2210_join_target_model_filters.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s",
+    "source_model": "done_orders",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "name": "s",
+    "population": "done_orders",
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "s",
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(done_orders.id)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(done_orders.id)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(carriers.id)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "count(carriers.id)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(returns.*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(returns.*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(shipments.id)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(shipments.id)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='366d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='366d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "p"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "p"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "contractors",
+    "measures": [
+     {
+      "formula": "count(skills.*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "contractors",
+    "metrics": [
+     {
+      "metric": "count(skills.*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "contractors",
+    "dimensions": [
+     "skills.value"
+    ],
+    "measures": [
+     {
+      "formula": "count(skills.*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "contractors",
+    "dimensions": [
+     "skills.value"
+    ],
+    "metrics": [
+     {
+      "metric": "count(skills.*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "returns_of_done",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "returns_of_done",
+    "dimensions": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 138,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 148,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 157,
+   "reason": "unclassifiable"
+  }
+ ]
+}

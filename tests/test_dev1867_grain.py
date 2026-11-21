@@ -17,7 +17,7 @@ from slayer.core.keys import Grain
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     TransformKey,
 )
 from slayer.core.keys import regroup_root_grain, effective_root_grain
@@ -25,11 +25,11 @@ from slayer.engine.compile.stages import (
     _prune_functionally_determined_grain,
 )
 
-REGION = ColumnKey(path=(), leaf="region")
-CITY = ColumnKey(path=(), leaf="city")
-CHANNEL = ColumnKey(path=(), leaf="channel")
-MONTH = ColumnKey(path=(), leaf="month")
-AMOUNT = ColumnKey(path=(), leaf="amount")
+REGION = FieldKey(path=(), leaf="region")
+CITY = FieldKey(path=(), leaf="city")
+CHANNEL = FieldKey(path=(), leaf="channel")
+MONTH = FieldKey(path=(), leaf="month")
+AMOUNT = FieldKey(path=(), leaf="amount")
 
 SUM_BY_REGION = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of({REGION}))
 SUM_BY_CITY = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of({CITY}))

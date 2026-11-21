@@ -1,9 +1,9 @@
-"""Stage 7b.15a (DEV-1450) — ``build_resolved_source_bundle`` tests.
+"""``build_resolved_source_bundle`` tests.
 
 The engine cutover (7b.15d) builds a :class:`ResolvedSourceBundle` once at the
 top of execution and the typed binder/planner read from it purely (P11). This
-builder is the storage-facing front door: it resolves the query's source model
-(every input shape), walks the join graph to collect every referenced model the
+builder is the storage-facing front door: it resolves the query's population
+(every input shape), walks the relationship graph to collect every referenced dataset the
 binder may hop through, threads the named-query sibling map for multi-stage
 DAGs, merges variable layers, and records the datasource hint.
 
@@ -15,178 +15,179 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
+from slayer.core.query import DatasetExtension, SlayerQuery
 from slayer.engine.extensions import apply_query_extensions
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
 
 
 # ---------------------------------------------------------------------------
-# Model fixtures — orders → customers → regions, plus a diamond via warehouses.
+# Dataset fixtures — orders → customers → regions, plus a diamond via warehouses.
 # ---------------------------------------------------------------------------
 
 
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions",
         data_source="prod",
         sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="population", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="population", datatype=DataType.INTEGER),
         ],
     )
 
 
-def _customers(*, query_variables: dict | None = None) -> SlayerModel:
-    return SlayerModel(
+def _customers(*, query_variables: dict | None = None) -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         data_source="prod",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="revenue", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         query_variables=query_variables or {},
     )
 
 
-def _warehouses() -> SlayerModel:
-    return SlayerModel(
+def _warehouses() -> SlayerDataset:
+    return SlayerDataset(
         name="warehouses",
         data_source="prod",
         sql_table="warehouses",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def _orders(*, query_variables: dict | None = None) -> SlayerModel:
-    return SlayerModel(
+def _orders(*, query_variables: dict | None = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="prod",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="warehouse_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="warehouse_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
         ],
         query_variables=query_variables or {},
     )
 
 
-def _audit() -> SlayerModel:
-    return SlayerModel(
+def _audit() -> SlayerDataset:
+    return SlayerDataset(
         name="audit",
         data_source="prod",
         sql_table="audit",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
 
-def _bare() -> SlayerModel:
-    # No joins — a sibling ModelExtension adds the audit join at query time.
-    return SlayerModel(
+def _bare() -> SlayerDataset:
+    # No relationships — a sibling DatasetExtension adds the audit relationship at query time.
+    return SlayerDataset(
         name="bare",
         data_source="prod",
         sql_table="bare",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="audit_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="audit_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 
 
-async def _storage(tmp_path, *models: SlayerModel) -> YAMLStorage:
+async def _storage(tmp_path, *datasets: SlayerDataset) -> YAMLStorage:
     storage = YAMLStorage(base_dir=str(tmp_path))
-    for m in models:
-        await storage.save_model(m)
+    for m in datasets:
+        await storage.save_dataset(m)
     return storage
 
 
 def _names(bundle: ResolvedSourceBundle) -> set[str]:
-    return {m.name for m in bundle.referenced_models}
+    return {m.name for m in bundle.referenced_datasets}
 
 
 # ---------------------------------------------------------------------------
-# Source-model resolution — every input shape.
+# Population resolution — every input shape.
 # ---------------------------------------------------------------------------
 
 
 class TestSourceModelShapes:
     async def test_str_source_resolves_from_storage(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        query = SlayerQuery(source_model="orders")
+        query = SlayerQuery(population="orders")
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert isinstance(bundle, ResolvedSourceBundle)
-        assert bundle.source_model is not None
-        assert bundle.source_model.name == "orders"
+        assert bundle.population is not None
+        assert bundle.population.name == "orders"
         # Convention: the host is also in referenced_models so the binder
         # doesn't special-case it.
-        assert bundle.get_referenced_model("orders") is not None
+        assert bundle.get_referenced_dataset("orders") is not None
 
     async def test_model_extension_overlay(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        ext = ModelExtension(
-            source_name="orders",
-            measures=[ModelMeasure(name="discount", formula="sum(amount)")],
-            joins=[],
+        ext = DatasetExtension(
+            dataset="orders",
+            metrics=[DatasetMetric(name="discount", expression="sum(amount)")],
+            relationships=[],
         )
-        query = SlayerQuery(source_model="orders", extensions=[ext])
+        query = SlayerQuery(population="orders", extensions=[ext])
         built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
-        assert bundle.source_model is not None
-        assert bundle.source_model.name == "orders"
-        assert "discount" in {m.name for m in bundle.source_model.measures}  # overlay applied
-        assert "amount" in {c.name for c in bundle.source_model.columns}  # base columns retained
+        assert bundle.population is not None
+        assert bundle.population.name == "orders"
+        assert "discount" in {m.name for m in bundle.population.metrics}  # overlay applied
+        assert "amount" in {c.name for c in bundle.population.fields}  # base fields retained
 
     async def test_dict_model_extension_source(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "extensions": [{
-                "source_name": "orders",
-                "measures": [{"name": "discount", "formula": "sum(amount)"}],
+                "dataset": "orders",
+                "metrics": [{"name": "discount", "expression": "sum(amount)"}],
             }],
         })
         built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         _, bundle = apply_query_extensions(query=query, scope=None, bundle=built)
-        assert bundle.source_model is not None
-        assert bundle.source_model.name == "orders"
-        assert "discount" in {m.name for m in bundle.source_model.measures}
+        assert bundle.population is not None
+        assert bundle.population.name == "orders"
+        assert "discount" in {m.name for m in bundle.population.metrics}
 
     async def test_missing_model_raises(self, tmp_path):
         storage = await _storage(tmp_path, _regions())
-        query = SlayerQuery(source_model="nope")
+        query = SlayerQuery(population="nope")
         with pytest.raises(ValueError, match="nope"):
             await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
 
 
 # ---------------------------------------------------------------------------
-# referenced_models — transitive join-graph walk.
+# referenced_datasets — transitive relationship-graph walk.
 # ---------------------------------------------------------------------------
 
 
 class TestJoinGraphCollection:
     async def test_multi_hop_collects_all(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        query = SlayerQuery(source_model="orders")
+        query = SlayerQuery(population="orders")
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         # orders → customers → regions, plus orders → warehouses (absent here).
         names = _names(bundle)
@@ -196,21 +197,21 @@ class TestJoinGraphCollection:
         storage = await _storage(
             tmp_path, _regions(), _customers(), _warehouses(), _orders()
         )
-        query = SlayerQuery(source_model="orders")
+        query = SlayerQuery(population="orders")
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
-        names = [m.name for m in bundle.referenced_models]
+        names = [m.name for m in bundle.referenced_datasets]
         # regions is reachable via customers AND warehouses — collected once.
         assert names.count("regions") == 1
         assert {"orders", "customers", "warehouses", "regions"}.issubset(set(names))
 
     async def test_missing_join_target_is_skipped(self, tmp_path):
-        # orders joins customers/warehouses but only orders is stored —
+        # orders relates to customers/warehouses but only orders is stored —
         # the walk is best-effort and must not raise on absent targets.
         storage = await _storage(tmp_path, _orders())
-        query = SlayerQuery(source_model="orders")
+        query = SlayerQuery(population="orders")
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
-        assert bundle.get_referenced_model("orders") is not None
-        assert bundle.get_referenced_model("customers") is None
+        assert bundle.get_referenced_dataset("orders") is not None
+        assert bundle.get_referenced_dataset("customers") is None
 
 
 # ---------------------------------------------------------------------------
@@ -221,22 +222,22 @@ class TestJoinGraphCollection:
 class TestDatasourceHint:
     async def test_hint_recorded(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        query = SlayerQuery(source_model="orders")
+        query = SlayerQuery(population="orders")
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query, storage=storage, data_source="prod"
         )
         assert bundle.datasource_hint == "prod"
-        assert bundle.source_model.name == "orders"
+        assert bundle.population.name == "orders"
 
     async def test_no_hint_is_none(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        query = SlayerQuery(source_model="orders")
+        query = SlayerQuery(population="orders")
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         assert bundle.datasource_hint is None
 
 
 # ---------------------------------------------------------------------------
-# Variable precedence: model defaults < query vars < runtime.
+# Variable precedence: dataset defaults < query vars < runtime.
 # ---------------------------------------------------------------------------
 
 
@@ -248,39 +249,39 @@ class TestVariablePrecedence:
             _customers(),
             _orders(query_variables={"region": "model_default", "limit": 10}),
         )
-        query = SlayerQuery(source_model="orders", variables={"region": "query_val"})
+        query = SlayerQuery(population="orders", variables={"region": "query_val"})
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query, storage=storage, runtime_variables={"limit": 99}
         )
-        # query var overrides model default; runtime overrides everything.
+        # query var overrides dataset default; runtime overrides everything.
         assert bundle.query_variables["region"] == "query_val"
         assert bundle.query_variables["limit"] == 99
 
     async def test_runtime_wins(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
-        query = SlayerQuery(source_model="orders", variables={"k": "stage"})
+        query = SlayerQuery(population="orders", variables={"k": "stage"})
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query, storage=storage, runtime_variables={"k": "runtime"}
         )
         assert bundle.query_variables["k"] == "runtime"
 
     async def test_outer_layer_below_stage(self, tmp_path):
-        # outer_variables sits below the query (stage) layer and above model
-        # defaults: model_defaults < outer < stage < runtime.
+        # outer_variables sits below the query (stage) layer and above dataset
+        # defaults: dataset_defaults < outer < stage < runtime.
         storage = await _storage(
             tmp_path,
             _regions(),
             _customers(),
             _orders(query_variables={"a": "model", "b": "model", "c": "model"}),
         )
-        query = SlayerQuery(source_model="orders", variables={"c": "stage"})
+        query = SlayerQuery(population="orders", variables={"c": "stage"})
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=query,
             storage=storage,
             outer_variables={"b": "outer", "c": "outer"},
         )
-        assert bundle.query_variables["a"] == "model"   # only model has it
-        assert bundle.query_variables["b"] == "outer"   # outer beats model
+        assert bundle.query_variables["a"] == "model"   # only the dataset has it
+        assert bundle.query_variables["b"] == "outer"   # outer beats dataset
         assert bundle.query_variables["c"] == "stage"   # stage beats outer
 
 
@@ -294,11 +295,11 @@ class TestMultiStage:
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
-            "source_model": "orders",
-            "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
-        root = SlayerQuery(source_model="stage1", dimensions=["status"])
+        root = SlayerQuery(population="stage1", dimensions=["stage1.status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
@@ -306,68 +307,68 @@ class TestMultiStage:
         assert bundle.named_queries["stage1"] is stage1
 
     async def test_root_over_sibling_resolves_real_base_model(self, tmp_path):
-        # Root stage's source_model is a sibling name; bundle.source_model
-        # must be the REAL base model the non-sibling stages bind against
-        # (plan_query uses bundle.source_model for every non-sibling stage).
+        # Root stage's population is a sibling name; bundle.population
+        # must be the REAL base dataset the non-sibling stages bind against
+        # (plan_query uses bundle.population for every non-sibling stage).
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
-            "source_model": "orders",
-            "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
-        root = SlayerQuery(source_model="stage1", dimensions=["status"])
+        root = SlayerQuery(population="stage1", dimensions=["stage1.status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
-        assert bundle.source_model is not None
-        assert bundle.source_model.name == "orders"
+        assert bundle.population is not None
+        assert bundle.population.name == "orders"
 
     async def test_sibling_join_targets_collected(self, tmp_path):
-        # A sibling stage over orders joins customers → those targets must
-        # be in referenced_models so the sibling's plan_query can hop them.
+        # A sibling stage over orders relates to customers → those targets must
+        # be in referenced_datasets so the sibling's plan_query can hop them.
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
-            "source_model": "orders",
-            "dimensions": ["status"],
-            "measures": [{"formula": "sum(customers.revenue)"}],
+            "population": "orders",
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         })
-        root = SlayerQuery(source_model="stage1", dimensions=["status"])
+        root = SlayerQuery(population="stage1", dimensions=["stage1.status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1}
         )
-        assert bundle.get_referenced_model("customers") is not None
-        assert bundle.get_referenced_model("regions") is not None
+        assert bundle.get_referenced_dataset("customers") is not None
+        assert bundle.get_referenced_dataset("regions") is not None
 
     async def test_sibling_extension_join_walked(self, tmp_path):
-        # A sibling stage whose source is a ModelExtension that ADDS a join
-        # must have that overlay join walked — `audit` is reachable ONLY via
-        # the sibling's extension join, never from the root's `orders`.
+        # A sibling stage whose source is a DatasetExtension that ADDS a relationship
+        # must have that overlay relationship walked — `audit` is reachable ONLY via
+        # the sibling's extension relationship, never from the root's `orders`.
         storage = await _storage(
             tmp_path, _regions(), _customers(), _orders(), _bare(), _audit()
         )
         sibling = SlayerQuery(
             name="aux",
-            source_model="bare",
-            extensions=[ModelExtension(
-                source_name="bare",
-                joins=[ModelJoin(target_model="audit", join_pairs=[["audit_id", "id"]])],
+            population="bare",
+            extensions=[DatasetExtension(
+                dataset="bare",
+                relationships=[DatasetRelationship(to="audit", from_columns=["audit_id"], to_columns=["id"])],
             )],
-            dimensions=["status"],
+            dimensions=["bare.status"],
         )
-        root = SlayerQuery(source_model="orders", dimensions=["status"])
+        root = SlayerQuery(population="orders", dimensions=["orders.status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"aux": sibling}
         )
-        assert bundle.source_model.name == "orders"
-        assert bundle.get_referenced_model("audit") is not None
+        assert bundle.population.name == "orders"
+        assert bundle.get_referenced_dataset("audit") is not None
 
     async def test_sibling_chain_cycle_raises(self, tmp_path):
         storage = await _storage(tmp_path, _orders())
-        a = SlayerQuery(name="a", source_model="b")
-        b = SlayerQuery(name="b", source_model="a")
-        root = SlayerQuery(source_model="a")
+        a = SlayerQuery(name="a", population="b")
+        b = SlayerQuery(name="b", population="a")
+        root = SlayerQuery(population="a")
         with pytest.raises(ValueError, match="[Cc]ircular"):
             await slayer.engine.bundle_builder.build_resolved_source_bundle(
                 query=root, storage=storage, named_queries={"a": a, "b": b}
@@ -375,51 +376,51 @@ class TestMultiStage:
 
 
 # ---------------------------------------------------------------------------
-# Storage-read economy — bundle assembly must not re-read the same model.
+# Storage-read economy — bundle assembly must not re-read the same dataset.
 # ---------------------------------------------------------------------------
 
 
 class _CountingStorage:
     """Delegates to a real storage, counting get_model calls per key."""
 
-    def __init__(self, inner):
+    def __init__(self, inner: StorageBackend) -> None:
         self._inner = inner
         self.reads: dict[tuple, int] = {}
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
-    async def get_model(self, name, data_source=None):
+    async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         key = (name, data_source)
         self.reads[key] = self.reads.get(key, 0) + 1
-        return await self._inner.get_model(name, data_source=data_source)
+        return await self._inner.get_dataset(name, data_source=data_source)
 
 
 class TestStorageReadEconomy:
     async def test_multi_stage_bundle_reads_each_model_once(self, tmp_path):
-        # DEV-1811 audit: bundle assembly re-read the same model YAML up to
-        # 8x per execute (~4ms per parse) across root / sibling / join-walk
+        # Audit: bundle assembly re-read the same dataset YAML up to
+        # 8x per execute (~4ms per parse) across root / sibling / relationship-walk
         # resolution.
         storage = _CountingStorage(
             await _storage(tmp_path, _orders(), _customers(), _regions(), _warehouses())
         )
         stage_a = SlayerQuery.model_validate({
             "name": "stage_a",
-            "source_model": "orders",
-            "measures": [{"formula": "count(*)"}],
+            "population": "orders",
+            "metrics": [{"metric": "count(orders.*)"}],
         })
         stage_b = SlayerQuery.model_validate({
             "name": "stage_b",
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
-        root = SlayerQuery.model_validate({"source_model": "stage_a", "measures": [{"formula": "count(*)"}]})
+        root = SlayerQuery.model_validate({"population": "stage_a", "metrics": [{"metric": "count(stage_a.*)"}]})
         await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage,
             named_queries={"stage_a": stage_a, "stage_b": stage_b},
         )
         over_read = {k: n for k, n in storage.reads.items() if n > 1}
-        assert not over_read, f"models read more than once: {over_read}"
+        assert not over_read, f"datasets read more than once: {over_read}"
         # the hint-less root read must also satisfy the concrete-ds walk read
         orders_reads = sum(n for (name, _), n in storage.reads.items() if name == "orders")
         assert orders_reads == 1, f"orders read {orders_reads}x across ds keys"

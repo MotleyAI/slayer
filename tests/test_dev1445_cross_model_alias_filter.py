@@ -1,7 +1,7 @@
-"""DEV-1450 stage 7b.15e — DEV-1445 acceptance via ``engine.execute``.
+"""Alias filters on a renamed cross-dataset metric, via ``engine.execute``.
 
-DEV-1445: a renamed cross-model measure
-(``{"formula": "sum(customers.revenue)", "name": "rev"}``) can be filtered by
+A renamed cross-dataset metric
+(``{"metric": "sum(customers.revenue)", "alias": "rev"}``) can be filtered by
 EITHER the user alias (``rev``) OR the dotted aggregation
 (``sum(customers.revenue)``). Both bind to ONE structural slot (P2/P4), so the
 two filter forms produce bit-identical results.
@@ -25,7 +25,7 @@ from typing import AsyncIterator, Tuple
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -63,31 +63,31 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="revenue", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
@@ -105,50 +105,50 @@ def _cte_names(sql: str) -> list:
     return _CTE_DEF_RE.findall(sql)
 
 
-async def test_dev1445_alias_filter_matches_dotted_filter(engine):
+async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQueryEngine, str]):
     """The user alias ``rev`` and the dotted aggregation
     ``sum(customers.revenue)`` bind to one slot — both filter forms produce
     identical results.
 
-    Cross-model revenue grouped by the joined ``customers.region`` is
-    ``NA = 150``, ``EU = 70``. DEV-1836 applies the aggregate-phase cross-model
-    filter uniformly with local aggregate filters: ``>= 80`` restricts rows, so
+    Cross-dataset revenue grouped by the joined ``customers.region`` is
+    ``NA = 150``, ``EU = 70``. The aggregate-phase cross-dataset filter
+    applies uniformly with local aggregate filters: ``>= 80`` restricts rows, so
     the failing ``EU`` group is dropped entirely (not preserved with a NULL).
     """
     eng, _ = engine
 
     alias = await eng.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
-            "filters": ["rev >= 80"],
+            "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
+            "filter": ["rev >= 80"],
         })
     )
     dotted = await eng.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
-            "filters": ["sum(customers.revenue) >= 80"],
+            "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
+            "filter": ["sum(customers.revenue) >= 80"],
         })
     )
 
-    # Result-key contract: renamed cross-model measure surfaces as the
+    # Result-key contract: renamed cross-dataset metric surfaces as the
     # user name under the host prefix.
-    assert alias.columns == ["orders.customers.region", "orders.rev"]
+    assert alias.columns == ["customers.region", "rev"]
     assert dotted.columns == alias.columns
     # Both filter forms reference the SAME slot → identical results.
     assert _rowset(alias.data) == _rowset(dotted.data)
     # The surviving rows: NA keeps 150; the failing EU group is dropped.
     assert _rowset(alias.data) == _rowset(
         [
-            {"orders.customers.region": "NA", "orders.rev": 150.0},
+            {"customers.region": "NA", "rev": 150.0},
         ]
     )
 
 
-async def test_dev1445_filter_actually_applies(engine):
+async def test_dev1445_filter_actually_applies(engine: Tuple[SlayerQueryEngine, str]):
     """Sanity that the HAVING is real: the filtered result differs from the
     unfiltered one (otherwise both-forms-equal would pass vacuously).
     """
@@ -156,53 +156,53 @@ async def test_dev1445_filter_actually_applies(engine):
 
     unfiltered = await eng.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
         })
     )
     filtered = await eng.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
-            "filters": ["rev >= 80"],
+            "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
+            "filter": ["rev >= 80"],
         })
     )
 
     assert _rowset(unfiltered.data) == _rowset(
         [
-            {"orders.customers.region": "NA", "orders.rev": 150.0},
-            {"orders.customers.region": "EU", "orders.rev": 70.0},
+            {"customers.region": "NA", "rev": 150.0},
+            {"customers.region": "EU", "rev": 70.0},
         ]
     )
     assert _rowset(filtered.data) != _rowset(unfiltered.data)
 
 
-async def test_dev1445_both_filter_forms_share_one_cte(engine):
+async def test_dev1445_both_filter_forms_share_one_cte(engine: Tuple[SlayerQueryEngine, str]):
     """Both filter forms in the SAME query intern to ONE slot — the rendered
-    SQL has exactly one cross-model (``_cm_``) CTE with one HAVING predicate.
+    SQL has exactly one cross-dataset (``_cm_``) CTE with one HAVING predicate.
 
     This is the structural counterpart to the result-equality test: a
-    regression that minted a duplicate cross-model slot for the dotted vs.
+    regression that minted a duplicate cross-dataset slot for the dotted vs.
     alias spelling would still return the same rows (both slots compute the
     same value) but would emit two ``_cm_`` CTEs / two filter predicates.
     """
     eng, _ = engine
     query = SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
-        "filters": ["rev >= 80", "sum(customers.revenue) >= 80"],
+        "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
+        "filter": ["rev >= 80", "sum(customers.revenue) >= 80"],
     })
     # Idempotent: giving both filter forms is the same as giving one.
     both = await eng.execute(query)
     assert _rowset(both.data) == _rowset(
         [
-            {"orders.customers.region": "NA", "orders.rev": 150.0},
+            {"customers.region": "NA", "rev": 150.0},
         ]
     )
-    # Structural: one shared cross-model CTE, one outer-WHERE predicate.
+    # Structural: one shared cross-dataset CTE, one outer-WHERE predicate.
     dry = await eng.execute(query, dry_run=True)
     sql = dry.sql
     assert sql is not None

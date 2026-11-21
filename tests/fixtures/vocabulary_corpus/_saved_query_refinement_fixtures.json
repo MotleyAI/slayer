@@ -1,0 +1,71 @@
+{
+ "source": "tests/_saved_query_refinement_fixtures.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "per_customer",
+    "measures": [
+     {
+      "formula": "avg(revenue)",
+      "name": "avg_revenue"
+     }
+    ]
+   },
+   "new": {
+    "population": "per_customer",
+    "metrics": [
+     {
+      "metric": "avg(revenue)",
+      "alias": "avg_revenue"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 31,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  }
+ ]
+}

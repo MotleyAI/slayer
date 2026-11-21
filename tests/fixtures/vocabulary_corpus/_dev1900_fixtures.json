@@ -1,0 +1,127 @@
+{
+ "source": "tests/_dev1900_fixtures.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "csp"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "csp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(sum(amount, partition_by=customers.regions.id), weight=customers.regions.derived_pop)",
+    "name": "ra"
+   },
+   "new": {
+    "expression": "weighted_avg(sum(amount, partition_by=customers.regions.id), weight=customers.regions.derived_pop)",
+    "name": "ra"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(sum(amount, partition_by=customers.regions.id), weight=customers.regions.bad_pop)",
+    "name": "ra"
+   },
+   "new": {
+    "expression": "weighted_avg(sum(amount, partition_by=customers.regions.id), weight=customers.regions.bad_pop)",
+    "name": "ra"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 132,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 150,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  }
+ ]
+}

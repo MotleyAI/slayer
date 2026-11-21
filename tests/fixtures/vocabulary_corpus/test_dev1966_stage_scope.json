@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dev1966_stage_scope.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 76,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 107,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 232,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 246,
+   "reason": "unclassifiable"
+  }
+ ]
+}

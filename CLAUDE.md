@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 SLayer (Semantic Layer) is a lightweight, open-source (MIT) semantic layer for AI agents,
 built by MotleyAI. Instead of writing raw SQL, agents describe what data they want —
-measures, dimensions, filters — and SLayer generates and executes the query.
+metrics, dimensions, filters — and SLayer generates and executes the query.
 
 When writing SLayer query examples or answering questions about syntax, capabilities, or
 feature behaviour, read `docs/` first — `docs/concepts/` (queries, models, formulas,

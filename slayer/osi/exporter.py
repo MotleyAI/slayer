@@ -1,4 +1,4 @@
-"""Export one datasource's SLayer models as a current-spec Ossie document.
+"""Export one datasource's SLayer datasets as a current-spec Ossie document.
 
 Everything Ossie defines with SLayer's meaning goes out as Ossie; SLayer-only
 content travels in one ``SLAYER`` non-portable extension per entity; everything else
@@ -7,26 +7,27 @@ is reported (entity, reason, workaround), never silently dropped.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterator
 from typing import Any, Literal, cast
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
-from sqlglot.errors import ErrorLevel, SqlglotError
+from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.core.errors import SlayerError
-from slayer.core.enums import RANKED_AGGREGATIONS, DataType, JoinCardinality
-from slayer.core.join_walker import aggregation_owner, model_column_type, terminal_model, walk
+from slayer.core.errors import AmbiguousReferenceError, SlayerError
+from slayer.core.names import match_name
+from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
+from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
+from slayer.core.relationship_walker import aggregation_owner, dataset_field_type, terminal_dataset, walk
 from slayer.core.time_points import parse_temporal_value
 from slayer.core.keys import (
     MIRRORED_TIME_POINT_OP,
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     LiteralKey,
     SqlFragmentKey,
     StarKey,
@@ -37,23 +38,25 @@ from slayer.core.keys import (
     walk_value_keys,
 )
 from slayer.core.models import (
+    SOURCE_READER_PREFIX,
     WINDOW_PARAM,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
     aggregation_definition,
-    join_key_error,
-    rendered_formula,
+    relationship_key_error,
+    rendered_expression,
 )
-from slayer.engine.binding import bind_model_formula
+from slayer.engine.binding import bind_dataset_expression
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionReport, ConversionWarning
 from slayer.osi import slayer_extension as ext
 from slayer.osi.dialects import PORTABLE_READER, ossie_token
 from slayer.osi.models import OSSIE_DATATYPES, TEMPORAL_DATATYPES, OSIExpression, explicit_description
-from slayer.sql.column_expansion import expand_column_definition_parts_sync, expand_derived_refs_sync
+from slayer.sql.field_expansion import expand_field_definition_parts_sync, expand_derived_refs_sync
+from slayer.sql.root_scope import root_scope_field_ids
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.aggregates import AggregateSpec, render_aggregate
@@ -61,12 +64,9 @@ from slayer.sql.render.value_expr import AliasFacilities, CompositeFacilities, R
 
 OSSIE_VERSION = "0.3.0.dev0"
 _SELF = "__slayer_self"
-_EXACT_NUMERIC = re.compile(r"^\s*(DECIMAL|NUMERIC|NUMBER|DEC|MONEY|SMALLMONEY|BIGNUMERIC|BIGDECIMAL)\b", re.I)
-_WITH_TZ = re.compile(r"WITH\s+(LOCAL\s+)?TIME\s+ZONE|TIMESTAMPTZ|TIMESTAMP_TZ|TIMESTAMP_LTZ|DATETIMEOFFSET", re.I)
-_WITHOUT_TZ = re.compile(r"WITHOUT\s+TIME\s+ZONE", re.I)
 # Aggregations with no Ossie metric form: ranked picks and list collection.
 _SLAYER_ONLY_AGGREGATIONS = frozenset(RANKED_AGGREGATIONS) | {"collect"}
-_EXCLUDED_COLUMN_FIELDS = {"sampled", "sampled_values", "distinct_count"}
+_EXCLUDED_FIELD_FIELDS = {"sampled", "sampled_values", "distinct_count"}
 
 _RESTORE = "Re-import the document with `slayer import-osi` to restore it; other Ossie tools do not see it."
 _WITH_EXTENSIONS = "Export with SLAYER extensions (drop --no-extensions) to carry it."
@@ -74,7 +74,7 @@ _LOSSY = "Export with SLAYER extensions (drop --no-extensions) for an exact SLay
 
 
 class OsiExportError(Exception):
-    """An export request names an unknown datasource or model, or nothing is exportable."""
+    """An export request names an unknown datasource or dataset, or nothing is exportable."""
 
 
 class OsiExportResult(ConversionReport):
@@ -104,30 +104,30 @@ class _Names:
 
 
 class _Dataset(BaseModel):
-    """One exported model: its graph model (a query-backed one's rendered form), source and fields."""
+    """One exported dataset: its graph dataset (a query-backed one's rendered form), source and fields."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    model: SlayerModel
-    graph: SlayerModel
+    dataset: SlayerDataset
+    graph: SlayerDataset
     source: str
     structure: ext.SourceStructure
-    fields: dict[str, dict[str, Any]] = {}
-    columns: dict[str, Column] = {}
-    slayer_columns: list[Column] = []
-    slayer_measures: list[ModelMeasure] = []
+    osi_fields: dict[str, dict[str, Any]] = {}
+    fields: dict[str, DatasetField] = {}
+    slayer_fields: list[DatasetField] = []
+    slayer_metrics: list[DatasetMetric] = []
     primary_key: list[str] = []
     unique_keys: list[list[str]] = []
     metrics: list[dict[str, Any]] = []
 
 
 class _Metric(BaseModel):
-    """A measure classified as an Ossie metric."""
+    """A metric classified as an Ossie metric."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     home: str
-    measure: ModelMeasure
+    metric: DatasetMetric
     scope: Literal["dataset", "model"]
     dataset: str
     tree: exp.Expr
@@ -140,13 +140,13 @@ _Shape = tuple[str, str, list[str], list[str]]
 
 
 class _Relationship(BaseModel):
-    """One FK-direction relationship and the SLayer joins it stands for."""
+    """One FK-direction relationship and the SLayer relationships it stands for."""
 
     from_dataset: str
     to: str
     from_columns: list[str]
     to_columns: list[str]
-    declarations: list[ext.JoinDeclaration] = []
+    declarations: list[ext.RelationshipDeclaration] = []
     name: str = ""
 
 
@@ -163,24 +163,16 @@ def _strip_self(tree: exp.Expr) -> exp.Expr:
     return tree
 
 
-def _datatype(column: Column) -> str | None:
-    recorded = (column.meta or {}).get("osi_datatype")
-    if isinstance(recorded, str) and OSSIE_DATATYPES.get(recorded) is column.type:
-        return recorded
-    db_type = column.db_type or ""
-    if column.type is DataType.DOUBLE:
-        return "Decimal" if _EXACT_NUMERIC.match(db_type) else "Float"
-    if column.type is DataType.TIMESTAMP:
-        return "DateTimeTz" if _WITH_TZ.search(db_type) and not _WITHOUT_TZ.search(db_type) else "DateTime"
-    return {DataType.TEXT: "String", DataType.INT: "Integer", DataType.BOOLEAN: "Boolean",
-            DataType.DATE: "Date"}.get(column.type)
+def _datatype(field: DatasetField) -> str | None:
+    """The field's datatype as Ossie writes it; a list has none."""
+    return field.datatype.value if field.datatype.value in OSSIE_DATATYPES else None
 
 
-def _time_role(column: Column) -> bool:
-    recorded = (column.meta or {}).get("osi_is_time")
+def _time_role(field: DatasetField) -> bool:
+    recorded = (field.meta or {}).get("osi_is_time")
     if isinstance(recorded, bool):
         return recorded
-    return column.type in (DataType.DATE, DataType.TIMESTAMP)
+    return field.datatype.is_temporal
 
 
 _AGGREGATE_MARK = "slayer_rendered_aggregate"
@@ -230,8 +222,8 @@ def _outermost_aggregates(key: ValueKey) -> Iterator[AggregateKey]:
         yield from _outermost_aggregates(child)
 
 
-def _row_leaves(value: Any) -> Iterator[ColumnKey | ColumnSqlKey | StarKey]:
-    if isinstance(value, (ColumnKey, ColumnSqlKey, StarKey)):
+def _row_leaves(value: Any) -> Iterator[FieldKey | FieldSqlKey | StarKey]:
+    if isinstance(value, (FieldKey, FieldSqlKey, StarKey)):
         yield value
     elif isinstance(value, SqlFragmentKey):
         yield from value.refs
@@ -243,10 +235,11 @@ def _row_leaves(value: Any) -> Iterator[ColumnKey | ColumnSqlKey | StarKey]:
 
 
 class _Exporter:
-    def __init__(self, *, config: DatasourceConfig, models: dict[str, SlayerModel], selected: list[str],
-                 virtual: dict[str, SlayerModel | Exception], extensions: bool) -> None:
+    def __init__(self, *, config: DatasourceConfig, datasets: dict[str, SlayerDataset], selected: list[str],
+                 virtual: dict[str, SlayerDataset | Exception], extensions: bool,
+                 resolved: dict[str, SlayerDataset | Exception] | None = None) -> None:
         self.config = config
-        self.models = models
+        self.datasets = datasets
         self.selected = selected
         self.extensions = extensions
         self.dialect: SqlDialect = dialect_for_ds_type(config.type)
@@ -254,14 +247,15 @@ class _Exporter:
         self.token = ossie_token(config.type)
         self.neutral = SqlDialect()
         self.virtual = virtual
-        self.graph: dict[str, SlayerModel] = dict(models)
+        self.graph: dict[str, SlayerDataset] = {
+            name: r if isinstance(r := (resolved or {}).get(name), SlayerDataset) else d for name, d in datasets.items()}
         for name, rendered in virtual.items():
-            if isinstance(rendered, SlayerModel):
-                stored = models[name]
+            if isinstance(rendered, SlayerDataset):
+                stored = datasets[name]
                 self.graph[name] = rendered.model_copy(update={
-                    "measures": stored.measures, "joins": stored.joins, "aggregations": stored.aggregations,
+                    "metrics": stored.metrics, "relationships": stored.relationships, "aggregations": stored.aggregations,
                 })
-        self.datasets: dict[str, _Dataset] = {}
+        self.osi_datasets: dict[str, _Dataset] = {}
         self.relationships: list[_Relationship] = []
         self.model_metrics: list[dict[str, Any]] = []
         self.entries: list[ConversionWarning] = []
@@ -269,29 +263,29 @@ class _Exporter:
     # ---- report ----
 
     def _report(self, message: str, *, severity: Literal["dropped", "info"], category: str, suggestion: str,
-                model: str | None = None, metric: str | None = None) -> None:
-        self.entries.append(ConversionWarning(model_name=model, metric_name=metric, message=message,
+                dataset: str | None = None, metric: str | None = None) -> None:
+        self.entries.append(ConversionWarning(dataset_name=dataset, metric_name=metric, message=message,
                                               category=category, severity=severity, suggestion=suggestion))
 
-    def _slayer_only(self, message: str, *, model: str, metric: str | None = None) -> None:
+    def _slayer_only(self, message: str, *, dataset: str, metric: str | None = None) -> None:
         if self.extensions:
             self._report(f"{message}; it travels only in the SLAYER extension.", severity="info",
-                         category="extension_only", suggestion=_RESTORE, model=model, metric=metric)
+                         category="extension_only", suggestion=_RESTORE, dataset=dataset, metric=metric)
         else:
             self._report(f"{message}; not exported.", severity="dropped", category="slayer_only",
-                         suggestion=_WITH_EXTENSIONS, model=model, metric=metric)
+                         suggestion=_WITH_EXTENSIONS, dataset=dataset, metric=metric)
 
-    def _lossy(self, message: str, *, model: str, metric: str | None = None) -> None:
+    def _lossy(self, message: str, *, dataset: str, metric: str | None = None) -> None:
         if not self.extensions:
-            self._report(message, severity="info", category="lossy", suggestion=_LOSSY, model=model, metric=metric)
+            self._report(message, severity="info", category="lossy", suggestion=_LOSSY, dataset=dataset, metric=metric)
 
-    def _missing_models(self, needed: set[str]) -> list[str]:
-        return sorted(n for n in needed if n not in self.datasets)
+    def _missing_datasets(self, needed: set[str]) -> list[str]:
+        return sorted(n for n in needed if n not in self.osi_datasets)
 
     def _needs_suggestion(self, missing: list[str]) -> str:
-        outside = [m for m in missing if m in self.models and m not in self.selected]
+        outside = [m for m in missing if m in self.datasets and m not in self.selected]
         if outside:
-            return f"Add {', '.join(repr(m) for m in outside)} to --models."
+            return f"Add {', '.join(repr(m) for m in outside)} to --datasets."
         return f"Make {', '.join(repr(m) for m in missing)} exportable (see its own report entry)."
 
     # ---- top level ----
@@ -299,17 +293,17 @@ class _Exporter:
     def run(self) -> OsiExportResult:
         for name in self.selected:
             self._dataset(name)
-        if not self.datasets:
-            reasons = "; ".join(e.message for e in self.entries) or "it has no models"
+        if not self.osi_datasets:
+            reasons = "; ".join(e.message for e in self.entries) or "it has no datasets"
             raise OsiExportError(f"Nothing to export from datasource {self.config.name!r}: {reasons}")
-        for name in self.datasets:
-            self._columns(name)
-        for name in self.datasets:
+        for name in self.osi_datasets:
+            self._fields(name)
+        for name in self.osi_datasets:
             self._keys(name)
-        for name in self.datasets:
-            for join in self.models[name].joins:
-                self._relationship(name, join)
-        metrics = [m for name in self.datasets for m in self._measures(name)]
+        for name in self.osi_datasets:
+            for relationship in self.datasets[name].relationships:
+                self._relationship(name, relationship)
+        metrics = [m for name in self.osi_datasets for m in self._metrics(name)]
         self._name_entities(metrics)
         for metric in metrics:
             self._place(metric)
@@ -318,94 +312,96 @@ class _Exporter:
     # ---- datasets and sources ----
 
     def _dataset(self, name: str) -> None:
-        model = self.models[name]
-        if model.access_tags and not self.extensions:
-            self._report(f"Model {name!r} has access tags; re-importing it without them would make it public, "
+        dataset = self.datasets[name]
+        if dataset.access_tags and not self.extensions:
+            self._report(f"Dataset {name!r} has access tags; re-importing it without them would make it public, "
                          f"so it is not exported.", severity="dropped", category="access",
-                         suggestion="Export with SLAYER extensions so its access tags travel with it.", model=name)
+                         suggestion="Export with SLAYER extensions so its access tags travel with it.", dataset=name)
             return
         try:
-            source, structure = self._source(name, model)
+            source, structure = self._source(name, dataset)
         except _Refused as refused:
-            self._report(f"Model {name!r} {refused.reason}; not exported.", severity="dropped", category="dataset",
-                         suggestion=refused.suggestion, model=name)
+            self._report(f"Dataset {name!r} {refused.reason}; not exported.", severity="dropped", category="dataset",
+                         suggestion=refused.suggestion, dataset=name)
             return
-        self.datasets[name] = _Dataset(model=model, graph=self.graph[name], source=source, structure=structure)
+        self.osi_datasets[name] = _Dataset(dataset=dataset, graph=self.graph[name], source=source, structure=structure)
 
-    def _source(self, name: str, model: SlayerModel) -> tuple[str, ext.SourceStructure]:
-        if model.source_queries:
+    def _source(self, name: str, dataset: SlayerDataset) -> tuple[str, ext.SourceStructure]:
+        if dataset.source_queries:
             rendered = self.virtual.get(name)
-            if not isinstance(rendered, SlayerModel):
+            if not isinstance(rendered, SlayerDataset):
                 raise _Refused(f"is query-backed and its query does not render ({rendered})",
-                               "Fix the saved query so the model runs.")
+                               "Fix the saved query so the dataset runs.")
             assert rendered.sql is not None
             return rendered.sql, ext.SourceStructure(
-                source_queries=[q.model_dump(mode="json", exclude_none=True) for q in model.source_queries],
-                query_variables=dict(model.query_variables),
+                source_queries=[q.model_dump(mode="json", exclude_none=True) for q in dataset.source_queries],
+                query_variables=dict(dataset.query_variables),
             )
-        structure = ext.SourceStructure(sql_table=model.sql_table, sql=model.sql, filters=list(model.filters))
-        base = model.sql_table or model.sql
+        structure = ext.SourceStructure(sql_table=dataset.sql_table, sql=dataset.sql, filters=list(dataset.filters) or None)
+        base = dataset.sql_table or dataset.sql
         if base is None:
-            raise _Refused("has no source", "Give the model a table or SQL.")
-        if not model.filters:
+            raise _Refused("has no source", "Give the dataset a table or SQL.")
+        if not dataset.filters:
             return base, structure
-        conditions = [exp.Paren(this=self._own_filter(model, f)) for f in model.filters]
-        relation = (exp.to_table(model.sql_table, dialect=self.target) if model.sql_table
+        conditions = [exp.Paren(this=self._own_filter(dataset, f)) for f in dataset.filters]
+        relation = (exp.to_table(dataset.sql_table, dialect=self.target) if dataset.sql_table
                     else exp.Subquery(this=sqlglot.parse_one(base, read=self.target),
                                       alias=exp.TableAlias(this=exp.to_identifier("_src"))))
         query = exp.select("*").from_(relation).where(exp.and_(*conditions))
         return query.sql(dialect=self.target), structure
 
-    def _own_filter(self, model: SlayerModel, predicate: str) -> exp.Expr:
+    def _own_filter(self, dataset: SlayerDataset, predicate: str) -> exp.Expr:
         crossed: set[tuple[str, ...]] = set()
         try:
-            expanded = expand_derived_refs_sync(sql=predicate, model=model, alias_path=_SELF,
-                                                models_by_name=self.graph, dialect=self.target,
+            expanded = expand_derived_refs_sync(sql=predicate, dataset=dataset, alias_path=_SELF,
+                                                datasets_by_name=self.graph, dialect=self.target,
                                                 crossed_paths=crossed)
             tree = sqlglot.parse_one(expanded or predicate, read=self.target)
-        except Exception as exc:  # noqa: BLE001 — any expansion failure refuses the model
+        except Exception as exc:  # noqa: BLE001 — any expansion failure refuses the dataset
             raise _Refused(f"has a row filter {predicate!r} that does not expand ({exc})",
                            "Fix the filter.") from exc
         if crossed or any(c.table and c.table != _SELF for c in tree.find_all(exp.Column)):
-            raise _Refused(f"has the row filter {predicate!r}, which reads a joined model",
-                           "Express the restriction in the model's SQL, or apply it as a query filter.")
+            raise _Refused(f"has the row filter {predicate!r}, which reads a joined dataset",
+                           "Express the restriction in the dataset's SQL, or apply it as a query filter.")
         return _strip_self(tree)
 
     # ---- fields ----
 
-    def _columns(self, name: str) -> None:
-        ds = self.datasets[name]
-        stored = {c.name: c for c in ds.model.columns}
-        for column in ds.graph.columns:
-            ds.columns[column.name] = stored.get(column.name, column)
+    def _fields(self, name: str) -> None:
+        ds = self.osi_datasets[name]
+        stored = {c.name: c for c in ds.dataset.fields}
+        for field in ds.graph.fields:
+            if field.name.startswith(SOURCE_READER_PREFIX):
+                continue
+            ds.fields[field.name] = stored.get(field.name, field)
             try:
-                tree, crossed = self._expand(ds.graph, column)
-            except Exception as exc:  # noqa: BLE001 — an unexpandable column is SLayer-only
-                self._carry_column(ds, column, reason=f"does not expand to its source ({exc})", needs=set())
+                tree, crossed = self._expand(ds.graph, field)
+            except Exception as exc:  # noqa: BLE001 — an unexpandable field is SLayer-only
+                self._carry_field(ds, field, reason=f"does not expand to its source ({exc})", needs=set())
                 continue
             if crossed:
                 needs = {t.name for p in crossed
-                         if (t := terminal_model(root=ds.graph, path=p, models_by_name=self.graph)) is not None}
-                self._carry_column(ds, column, reason="reads a joined model", needs=needs)
+                         if (t := terminal_dataset(root=ds.graph, path=p, datasets_by_name=self.graph)) is not None}
+                self._carry_field(ds, field, reason="reads a joined dataset", needs=needs)
                 continue
-            ds.fields[column.name] = self._field(ds, column, tree)
+            ds.osi_fields[field.name] = self._field(ds, field, tree)
 
-    def _carry_column(self, ds: _Dataset, column: Column, *, reason: str, needs: set[str]) -> None:
-        name = ds.model.name
-        missing = self._missing_models(needs)
+    def _carry_field(self, ds: _Dataset, field: DatasetField, *, reason: str, needs: set[str]) -> None:
+        name = ds.dataset.name
+        missing = self._missing_datasets(needs)
         if missing:
-            self._report(f"Column {column.name!r} on {name!r} reads {missing}, which are not exported; "
+            self._report(f"Field {field.name!r} on {name!r} reads {missing}, which are not exported; "
                          f"not exported.", severity="dropped", category="subset",
-                         suggestion=self._needs_suggestion(missing), model=name)
+                         suggestion=self._needs_suggestion(missing), dataset=name)
             return
-        self._slayer_only(f"Column {column.name!r} on {name!r} {reason}", model=name)
+        self._slayer_only(f"Field {field.name!r} on {name!r} {reason}", dataset=name)
         if self.extensions:
-            ds.slayer_columns.append(column.model_copy(deep=True))
+            ds.slayer_fields.append(field.model_copy(deep=True))
 
-    def _expand(self, model: SlayerModel, column: Column) -> tuple[exp.Expr, set[tuple[str, ...]]]:
+    def _expand(self, dataset: SlayerDataset, field: DatasetField) -> tuple[exp.Expr, set[tuple[str, ...]]]:
         crossed: set[tuple[str, ...]] = set()
-        value, predicate = expand_column_definition_parts_sync(
-            column=column, model=model, alias_path=_SELF, models_by_name=self.graph, dialect=self.target,
+        value, predicate = expand_field_definition_parts_sync(
+            field=field, dataset=dataset, alias_path=_SELF, datasets_by_name=self.graph, dialect=self.target,
             crossed_paths=crossed,
         )
         tree = _strip_self(sqlglot.parse_one(value, read=self.target))
@@ -414,65 +410,107 @@ class _Exporter:
             tree = exp.Case(ifs=[exp.If(this=mask, true=tree)])
         return tree, crossed
 
-    def _expression(self, tree: exp.Expr, *, verbatim: str | None) -> dict[str, Any]:
-        """Portable ``sql`` when it reads back exactly in the datasource dialect, else one native entry."""
+    def _expression(self, ds: _Dataset, field: DatasetField, tree: exp.Expr) -> dict[str, Any]:
+        """Each stored form as itself: portable ``sql`` with field paths inlined while every part is portable, each
+        dialect entry verbatim; the datasource's own entry is ``tree`` (the native expansion) unless verbatim matches,
+        and the only form of a filtered field."""
+        stored = ds.fields[field.name]
         native = tree.sql(dialect=self.target)
+        if stored.filter is not None:
+            return {"dialects": [{"dialect": self.token, "expression": native}]}
+        own = dialect_entries(stored.expression, self.token)
+        verbatim = own[0].expression if own else stored.sql
         if verbatim is not None:
             try:
-                if sqlglot.parse_one(verbatim, read=self.target) == tree:
+                if _strip_self(sqlglot.parse_one(verbatim, read=self.target)) == tree:
                     native = verbatim
             except SqlglotError:
                 pass
-        try:
-            portable = tree.sql(dialect=PORTABLE_READER, unsupported_level=ErrorLevel.RAISE)
-            back = sqlglot.parse_one(portable, read=PORTABLE_READER).sql(
-                dialect=self.target, unsupported_level=ErrorLevel.RAISE)
-            exact = back == sqlglot.parse_one(native, read=self.target).sql(
-                dialect=self.target, unsupported_level=ErrorLevel.RAISE)
-        except SqlglotError:
-            exact = False
-        if exact:
-            return {"sql": portable}
-        return {"dialects": [{"dialect": self.token, "expression": native}]}
+        portable = self._portable(ds.dataset, stored, seen=frozenset())
+        others = [{"dialect": e.dialect, "expression": e.expression} for e in (
+            stored.expression.dialects or [] if isinstance(stored.expression, ExpressionObject) else [])
+            if token(e.dialect) not in (self.token, OSSIE_SQL)]
+        out: dict[str, Any] = {"sql": portable} if portable is not None else {}
+        if portable is None or own or stored.sql is not None:
+            others.append({"dialect": self.token, "expression": native})
+        if others:
+            out["dialects"] = others
+        return out
 
-    def _field(self, ds: _Dataset, column: Column, tree: exp.Expr) -> dict[str, Any]:
-        stored = ds.columns[column.name]
+    def _portable(self, dataset: SlayerDataset, field: DatasetField, *, seen: frozenset[str]) -> str | None:
+        """``field``'s portable form with each path to a field of ``dataset`` replaced by that field's portable form;
+        ``None`` when a part is not portable (a filter, a dialect-only or unconverted field, another dataset)."""
+        if field.filter is not None or field.sql is not None or field.name in seen:
+            return None
+        text = portable_text(field.expression) if field.expression is not None else None
+        if text is None:
+            return None if field.expression is not None else exp.to_identifier(field.name).sql(PORTABLE_READER)
+        try:
+            tree = sqlglot.parse_one(text, read=PORTABLE_READER)
+        except SqlglotError:
+            return None
+        if not isinstance(tree, Expression):
+            return None
+        root = root_scope_field_ids(parsed=tree)
+        paths = [col for col in tree.find_all(exp.Column) if id(col) in root and col.table]
+        for col in paths:
+            inner = self._portable_path(dataset, col, seen=seen | {field.name})
+            if inner is None:
+                return None
+            col.replace(exp.Paren(this=sqlglot.parse_one(inner, read=PORTABLE_READER)))
+        return tree.sql(dialect=PORTABLE_READER)
+
+    def _portable_path(self, dataset: SlayerDataset, col: exp.Column, *, seen: frozenset[str]) -> str | None:
+        """The portable form of the field of ``dataset`` that path ``col`` names (each part exactly when quoted, else in
+        any case), else ``None``."""
+        table = col.args.get("table")
+        if not isinstance(table, exp.Identifier) or col.args.get("db") or not isinstance(col.this, exp.Identifier):
+            return None
+        try:
+            own = match_name(name=table.name, declared=[dataset.name], quoted=table.quoted) is not None
+            ref = dataset.get_field(col.name, quoted=col.this.quoted) if own else None
+        except AmbiguousReferenceError:
+            return None
+        return self._portable(dataset, ref, seen=seen) if ref is not None else None
+
+    def _field(self, ds: _Dataset, field: DatasetField, tree: exp.Expr) -> dict[str, Any]:
+        stored = ds.fields[field.name]
         meta = stored.meta or {}
-        field: dict[str, Any] = {
-            "name": column.name,
-            "expression": self._expression(tree, verbatim=column.sql if not column.filter else None),
+        osi_field: dict[str, Any] = {
+            "name": field.name,
+            "expression": self._expression(ds, field, tree),
         }
-        datatype = _datatype(column)
+        datatype = _datatype(field)
         if _time_role(stored) != (datatype in TEMPORAL_DATATYPES):
-            field["dimension"] = {"is_time": _time_role(stored)}
+            osi_field["dimension"] = {"is_time": _time_role(stored)}
         if stored.label:
-            field["label"] = stored.label
+            osi_field["label"] = stored.label
         description = explicit_description(stored.description, meta.get("osi_ai_context"))
         if description:
-            field["description"] = description
+            osi_field["description"] = description
         if datatype:
-            field["datatype"] = datatype
+            osi_field["datatype"] = datatype
         if meta.get("osi_ai_context"):
-            field["ai_context"] = meta["osi_ai_context"]
-        payload = ext.FieldPayload(entity=column.name, column=ext.ColumnContent(
-            sql=stored.sql, filter=stored.filter, type=stored.type, hidden=stored.hidden,
+            osi_field["ai_context"] = meta["osi_ai_context"]
+        payload = ext.FieldPayload(entity=field.name, field=ext.FieldContent(
+            expression=field.expression, filter=field.filter, datatype=stored.datatype, hidden=stored.hidden,
             format=stored.format, granularity=stored.granularity,
             allowed_aggregations=stored.allowed_aggregations, meta=_slayer_meta(stored.meta),
         ))
-        self._extensions(field, meta, payload=payload, model=ds.model.name,
-                         ossie=ext.expression_digest(OSIExpression.model_validate(field["expression"])))
-        return field
+        self._extensions(osi_field, meta, payload=payload, dataset=ds.dataset.name,
+                         ossie=ext.expression_digest(OSIExpression.model_validate(osi_field["expression"])))
+        return osi_field
 
-    def _extensions(self, entity: dict[str, Any], meta: dict[str, Any], *, payload: Any, model: str,
+    def _extensions(self, entity: dict[str, Any], meta: dict[str, Any], *, payload: Any, dataset: str,
                     ossie: Any) -> None:
         """Re-emit valid foreign extensions recorded in ``meta``, then this entity's ``SLAYER`` payload."""
-        out = self._foreign(meta.get("osi_nonportable_extensions"), owner=repr(entity["name"]), model=model)
+        out = self._foreign(meta.get("osi_nonportable_extensions"), owner=repr(entity["name"]), dataset=dataset)
         if self.extensions:
             out.append(ext.encode(payload, ossie=ossie))
         if out:
             entity["nonportable_extensions"] = out
 
-    def _foreign(self, entries: Any, *, owner: str, model: str | None) -> list[dict[str, Any]]:
+    def _foreign(self, entries: Any, *, owner: str, dataset: str | None) -> list[dict[str, Any]]:
         """The valid foreign entries of a recorded list; the malformed ones are reported."""
         out: list[dict[str, Any]] = []
         if entries is None:
@@ -486,7 +524,7 @@ class _Exporter:
                 self._report(f"Non-portable extension {raw!r} on {owner} is malformed (it needs exactly a "
                              f"non-empty vendor_name and a JSON object data); not exported.", severity="dropped",
                              category="extension", suggestion="Fix or remove it in the entity's metadata.",
-                             model=model)
+                             dataset=dataset)
                 continue
             out.append(entry)
         return out
@@ -494,14 +532,14 @@ class _Exporter:
     # ---- keys ----
 
     def _keys(self, name: str) -> None:
-        ds = self.datasets[name]
-        columns = ds.graph.columns
-        plain = {n for n in ds.fields if ds.columns[n].filter is None}
-        primary = [c.name for c in columns if c.primary_key]
+        ds = self.osi_datasets[name]
+        fields = ds.graph.fields
+        plain = {n for n in ds.osi_fields if ds.fields[n].filter is None}
+        primary = [c.name for c in fields if c.primary_key]
         if primary and self._key_ok(name, primary, plain, kind="primary key"):
             ds.primary_key = primary
-        raw = [[c.name] for c in columns if c.unique]
-        raw += [list(k) for k in (ds.model.meta or {}).get("osi_unique_keys") or [] if isinstance(k, list)]
+        raw = [[c.name] for c in fields if c.unique]
+        raw += [list(k) for k in (ds.dataset.meta or {}).get("osi_unique_keys") or [] if isinstance(k, list)]
         seen: set[tuple[str, ...]] = set()
         for key in raw:
             if tuple(key) in seen or not key:
@@ -515,63 +553,63 @@ class _Exporter:
         if bad:
             self._report(f"The {kind} {key} of {name!r} names {bad}, which are not plain, unfiltered fields; "
                          f"not exported.", severity="dropped", category="key",
-                         suggestion="Key on plain, unfiltered columns of the model.", model=name)
+                         suggestion="Key on plain, unfiltered fields of the dataset.", dataset=name)
         return not bad
 
-    def _is_key(self, name: str, columns: list[str]) -> bool:
-        ds = self.datasets[name]
-        return any(set(columns) == set(k) for k in [ds.primary_key, *ds.unique_keys] if k)
+    def _is_key(self, name: str, fields: list[str]) -> bool:
+        ds = self.osi_datasets[name]
+        return any(set(fields) == set(k) for k in [ds.primary_key, *ds.unique_keys] if k)
 
     # ---- relationships ----
 
-    def _relationship(self, name: str, join: ModelJoin) -> None:
-        target = join.target_model
-        label = f"Join {join.name or target!r} from {name!r} to {target!r}"
-        if target not in self.datasets:
+    def _relationship(self, name: str, relationship: DatasetRelationship) -> None:
+        target = relationship.to
+        label = f"Relationship {relationship.name or target!r} from {name!r} to {target!r}"
+        if target not in self.osi_datasets:
             missing = [target]
             self._report(f"{label}: {target!r} is not exported; not exported.", severity="dropped",
-                         category="subset", suggestion=self._needs_suggestion(missing), model=name)
+                         category="subset", suggestion=self._needs_suggestion(missing), dataset=name)
             return
-        if join.cardinality is JoinCardinality.MANY_TO_MANY:
+        if relationship.cardinality is RelationshipCardinality.MANY_TO_MANY:
             self._report(f"{label} is many-to-many, which Ossie relationships cannot express; not exported.",
-                         severity="dropped", category="relationship", model=name,
-                         suggestion="Model the bridge as its own model with many-to-one joins to both sides.")
+                         severity="dropped", category="relationship", dataset=name,
+                         suggestion="Model the bridge as its own dataset with many-to-one relationships to both sides.")
             return
-        sources = [p[0] for p in join.join_pairs]
-        targets = [p[1] for p in join.join_pairs]
+        sources = [p[0] for p in relationship.column_pairs]
+        targets = [p[1] for p in relationship.column_pairs]
         bad = self._bad_keys(name, target, sources) + self._bad_keys(target, name, targets)
         if bad:
             self._report(f"{label} keys on {bad}; not exported.", severity="dropped", category="relationship",
-                         suggestion="Key the join on unfiltered base columns exported as fields.", model=name)
+                         suggestion="Key the relationship on unfiltered base fields exported as fields.", dataset=name)
             return
         forward = (name, target, sources, targets)
-        shape = self._relationship_shape(join, forward=forward)
+        shape = self._relationship_shape(relationship, forward=forward)
         if shape is None:
             self._report(f"{label} has no cardinality and its keys are a primary or unique key of neither "
-                         f"side; not exported.", severity="dropped", category="relationship", model=name,
-                         suggestion="Set the join's cardinality.")
+                         f"side; not exported.", severity="dropped", category="relationship", dataset=name,
+                         suggestion="Set the relationship's cardinality.")
             return
-        declaration = ext.JoinDeclaration(model=name, join=join)
+        declaration = ext.RelationshipDeclaration(dataset=name, relationship=relationship)
         rel = next((r for r in self.relationships
                     if (r.from_dataset, r.to, r.from_columns, r.to_columns) == shape), None)
         if rel is None:
             rel = _Relationship(from_dataset=shape[0], to=shape[1], from_columns=shape[2], to_columns=shape[3])
             self.relationships.append(rel)
         rel.declarations.append(declaration)
-        plain = (shape == forward and join.cardinality is JoinCardinality.MANY_TO_ONE
-                 and join.join_type.value == "left" and join.name is None)
+        plain = (shape == forward and relationship.cardinality is RelationshipCardinality.MANY_TO_ONE
+                 and relationship.join_type.value == "left" and relationship.name is None)
         if not plain:
-            self._lossy(f"{label} ({join.cardinality.value if join.cardinality else 'no cardinality'}, "
-                        f"{join.join_type.value}{', named' if join.name else ''}) imports back as a plain "
-                        f"many-to-one left join from {shape[0]!r}.", model=name)
+            self._lossy(f"{label} ({relationship.cardinality.value if relationship.cardinality else 'no cardinality'}, "
+                        f"{relationship.join_type.value}{', named' if relationship.name else ''}) imports back as a plain "
+                        f"many-to-one left join from {shape[0]!r}.", dataset=name)
 
-    def _relationship_shape(self, join: ModelJoin, *, forward: _Shape) -> _Shape | None:
+    def _relationship_shape(self, relationship: DatasetRelationship, *, forward: _Shape) -> _Shape | None:
         """``forward`` or its reverse, whichever points from the many side; ``None`` when undeterminable."""
         name, target, sources, targets = forward
         backward = (target, name, targets, sources)
-        if join.cardinality in (JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE):
+        if relationship.cardinality in (RelationshipCardinality.MANY_TO_ONE, RelationshipCardinality.ONE_TO_ONE):
             return forward
-        if join.cardinality is JoinCardinality.ONE_TO_MANY:
+        if relationship.cardinality is RelationshipCardinality.ONE_TO_MANY:
             return backward
         if self._is_key(target, targets):
             return forward
@@ -580,61 +618,61 @@ class _Exporter:
         return None
 
     def _bad_keys(self, side: str, other: str, keys: list[str]) -> list[str]:
-        ds = self.datasets[side]
+        ds = self.osi_datasets[side]
         return [f"{side}.{k}" for k in keys
-                if k not in ds.fields
-                or join_key_error(model=side, target=other, key=k, side=side, columns=ds.graph.columns) is not None]
+                if k not in ds.osi_fields
+                or relationship_key_error(dataset=side, target=other, key=k, side=side, fields=ds.graph.fields) is not None]
 
-    # ---- measures ----
+    # ---- metrics ----
 
-    def _measures(self, name: str) -> list[_Metric]:
-        ds = self.datasets[name]
+    def _metrics(self, name: str) -> list[_Metric]:
+        ds = self.osi_datasets[name]
         out: list[_Metric] = []
-        for measure in ds.graph.measures:
-            label = f"Measure {measure.name or measure.formula!r} on {name!r}"
+        for slayer_metric in ds.graph.metrics:
+            label = f"Metric {slayer_metric.name or slayer_metric.expression!r} on {name!r}"
             try:
-                key = bind_model_formula(measure.formula, model=ds.graph, models=list(self.graph.values()),
+                key = bind_dataset_expression(slayer_metric.text, dataset=ds.graph, datasets=list(self.graph.values()),
                                          dialect=self.target)
-            except Exception as exc:  # noqa: BLE001 — an unbindable measure travels verbatim
-                self._carry_measure(ds, measure, label=f"{label} does not bind ({exc})", needs=set())
+            except Exception as exc:  # noqa: BLE001 — an unbindable metric travels verbatim
+                self._carry_metric(ds, slayer_metric, label=f"{label} does not bind ({exc})", needs=set())
                 continue
-            needs = self._read_models(ds.graph, key)
+            needs = self._read_datasets(ds.graph, key)
             try:
-                metric = self._classify(ds, measure, key)
+                metric = self._classify(ds, slayer_metric, key)
             except _Refused as refused:
-                self._carry_measure(ds, measure, label=f"{label} {refused.reason}", needs=needs)
+                self._carry_metric(ds, slayer_metric, label=f"{label} {refused.reason}", needs=needs)
                 continue
-            missing = self._missing_models(needs)
+            missing = self._missing_datasets(needs)
             if missing:
                 self._report(f"{label} reads {missing}, which are not exported; not exported.",
                              severity="dropped", category="subset", suggestion=self._needs_suggestion(missing),
-                             model=name, metric=measure.name)
+                             dataset=name, metric=slayer_metric.name)
                 continue
             out.append(metric)
         return out
 
-    def _carry_measure(self, ds: _Dataset, measure: ModelMeasure, *, label: str, needs: set[str]) -> None:
-        name = ds.model.name
-        missing = self._missing_models(needs)
+    def _carry_metric(self, ds: _Dataset, metric: DatasetMetric, *, label: str, needs: set[str]) -> None:
+        name = ds.dataset.name
+        missing = self._missing_datasets(needs)
         if missing:
             self._report(f"{label}; it reads {missing}, which are not exported; not exported.",
                          severity="dropped", category="subset", suggestion=self._needs_suggestion(missing),
-                         model=name, metric=measure.name)
+                         dataset=name, metric=metric.name)
             return
-        self._slayer_only(label, model=name, metric=measure.name)
+        self._slayer_only(label, dataset=name, metric=metric.name)
         if self.extensions:
-            ds.slayer_measures.append(measure.model_copy(deep=True))
+            ds.slayer_metrics.append(metric.model_copy(deep=True))
 
-    def _read_models(self, home: SlayerModel, key: ValueKey) -> set[str]:
+    def _read_datasets(self, home: SlayerDataset, key: ValueKey) -> set[str]:
         out: set[str] = set()
         for leaf in walk_value_keys(key):
-            if isinstance(leaf, (ColumnKey, ColumnSqlKey, StarKey)):
-                owner = terminal_model(root=home, path=leaf.path, models_by_name=self.graph)
+            if isinstance(leaf, (FieldKey, FieldSqlKey, StarKey)):
+                owner = terminal_dataset(root=home, path=leaf.path, datasets_by_name=self.graph)
                 if owner is not None:
                     out.add(owner.name)
         return out
 
-    def _classify(self, ds: _Dataset, measure: ModelMeasure, key: ValueKey) -> _Metric:
+    def _classify(self, ds: _Dataset, metric: DatasetMetric, key: ValueKey) -> _Metric:
         if any(isinstance(k, TransformKey) for k in walk_value_keys(key)):
             raise _Refused("is a transform, which Ossie metrics exclude", _RESTORE)
         aggregates = list(_outermost_aggregates(key))
@@ -649,38 +687,38 @@ class _Exporter:
             tree = self._render(ds.graph, _instant_comparisons(key), scoped=scoped, portable=portable)
         except Exception as exc:  # noqa: BLE001 — anything the shared renderer refuses stays SLayer-only
             raise _Refused(f"does not render as standard SQL ({exc})", _RESTORE) from exc
-        return _Metric(home=ds.model.name, measure=measure, scope="dataset" if scoped else "model",
+        return _Metric(home=ds.dataset.name, metric=metric, scope="dataset" if scoped else "model",
                        dataset=readers[0], tree=tree, portable=portable)
 
     def _aggregate_reader(self, ds: _Dataset, agg: AggregateKey) -> str:
-        """The one model ``agg`` reads, or refused."""
+        """The one dataset ``agg`` reads, or refused."""
         _refuse_slayer_only(agg)
         leaves = list(_row_leaves(agg.source)) + [leaf for _, v in agg.kwargs for leaf in _row_leaves(v)]
         paths = {leaf.path for leaf in leaves} or {()}
         if len(paths) != 1:
-            raise _Refused("has an aggregate reading several models", _RESTORE)
+            raise _Refused("has an aggregate reading several datasets", _RESTORE)
         (path,) = paths
-        owner = terminal_model(root=ds.graph, path=path, models_by_name=self.graph)
+        owner = terminal_dataset(root=ds.graph, path=path, datasets_by_name=self.graph)
         if owner is None or not self._unique_route(ds.graph, path):
-            raise _Refused("reads a model it reaches by more than one join route", _RESTORE)
-        fields = self.datasets[owner.name].fields if owner.name in self.datasets else {}
+            raise _Refused("reads a dataset it reaches by more than one relationship route", _RESTORE)
+        fields = self.osi_datasets[owner.name].osi_fields if owner.name in self.osi_datasets else {}
         for leaf in leaves:
-            leaf_name = leaf.leaf if isinstance(leaf, ColumnKey) else getattr(leaf, "column_name", None)
-            if leaf_name is not None and leaf_name not in fields and owner.name in self.datasets:
-                raise _Refused(f"reads the SLayer-only column {leaf_name!r}", _RESTORE)
+            leaf_name = leaf.leaf if isinstance(leaf, FieldKey) else getattr(leaf, "field_name", None)
+            if leaf_name is not None and leaf_name not in fields and owner.name in self.osi_datasets:
+                raise _Refused(f"reads the SLayer-only field {leaf_name!r}", _RESTORE)
         return owner.name
 
-    def _unique_route(self, home: SlayerModel, path: tuple[str, ...]) -> bool:
+    def _unique_route(self, home: SlayerDataset, path: tuple[str, ...]) -> bool:
         try:
-            chain = walk(root=home, path=path, models_by_name=self.graph)
+            chain = walk(root=home, path=path, datasets_by_name=self.graph)
         except SlayerError:
             return False
         if chain is None:
             return False
         for hop in chain:
-            src, dst = self.graph[hop.source_model], self.graph[hop.target_model]
-            edges = [j for j in src.joins if j.target_model == dst.name]
-            edges += [j for j in dst.joins if j.target_model == src.name]
+            src, dst = self.graph[hop.source_dataset], self.graph[hop.to]
+            edges = [j for j in src.relationships if j.to == dst.name]
+            edges += [j for j in dst.relationships if j.to == src.name]
             if len(edges) != 1:
                 return False
         return True
@@ -694,47 +732,47 @@ class _Exporter:
             ident.set("quoted", True)
         return ident
 
-    def _ref(self, home: SlayerModel, leaf: ColumnKey | ColumnSqlKey, *, scoped: bool) -> exp.Column:
-        owner = terminal_model(root=home, path=leaf.path, models_by_name=self.graph)
+    def _ref(self, home: SlayerDataset, leaf: FieldKey | FieldSqlKey, *, scoped: bool) -> exp.Column:
+        owner = terminal_dataset(root=home, path=leaf.path, datasets_by_name=self.graph)
         assert owner is not None
-        name = leaf.leaf if isinstance(leaf, ColumnKey) else leaf.column_name
-        column = exp.Column(this=self._ident(name, list(self.datasets[owner.name].fields)))
+        name = leaf.leaf if isinstance(leaf, FieldKey) else leaf.field_name
+        column = exp.Column(this=self._ident(name, list(self.osi_datasets[owner.name].osi_fields)))
         if not scoped:
-            column.set("table", self._ident(owner.name, list(self.datasets)))
+            column.set("table", self._ident(owner.name, list(self.osi_datasets)))
         return column
 
-    def _render(self, home: SlayerModel, key: ValueKey, *, scoped: bool, portable: bool) -> exp.Expr:
+    def _render(self, home: SlayerDataset, key: ValueKey, *, scoped: bool, portable: bool) -> exp.Expr:
         dialect = self.neutral if portable else self.dialect
-        column_type = model_column_type(model=home, models_by_name=self.graph)
+        field_type = dataset_field_type(dataset=home, datasets_by_name=self.graph)
 
         def row(value: ValueKey) -> Expression:
-            leaves = [k for k in walk_value_keys(value) if isinstance(k, (ColumnKey, ColumnSqlKey))]
+            leaves = [k for k in walk_value_keys(value) if isinstance(k, (FieldKey, FieldSqlKey))]
             slots = {leaf: f"s{i}" for i, leaf in enumerate(leaves)}
             aliases = AliasFacilities(slot_id_by_key=slots,
                                       value_by_slot_id={s: self._ref(home, k, scoped=scoped) for k, s in slots.items()})
             return _ossie_division(render_value_key(key=value, ctx=RenderContext(
-                dialect=dialect, aliases=aliases, column_type=column_type)))
+                dialect=dialect, aliases=aliases, field_type=field_type)))
 
         def param(value: Any) -> Expression:
-            if isinstance(value, (ColumnKey, ColumnSqlKey)):
+            if isinstance(value, (FieldKey, FieldSqlKey)):
                 return row(value)
             return render_value_key(key=LiteralKey(value=value), ctx=RenderContext(dialect=dialect))
 
         def aggregate(agg: AggregateKey) -> Expression:
-            owner = aggregation_owner(root=home, source=agg.source, models_by_name=self.graph)
+            owner = aggregation_owner(root=home, source=agg.source, datasets_by_name=self.graph)
             definition = aggregation_definition(owner=owner, agg=agg.agg)
             rendered = render_aggregate(AggregateSpec(
                 aggregation=agg.agg,
                 value=None if isinstance(agg.source, StarKey) else row(agg.source),
                 bindings={name: param(value) for name, value in agg.kwargs},
-                input_type=aggregation_source_type(agg.source, column_type=column_type),
-                formula=rendered_formula(agg=agg.agg, definition=definition),
+                input_type=aggregation_source_type(agg.source, field_type=field_type),
+                expression=rendered_expression(agg=agg.agg, definition=definition),
             ), dialect=dialect)
             rendered.meta[_AGGREGATE_MARK] = True
             return rendered
 
         return _ossie_division(render_value_key(key=key, ctx=RenderContext(
-            dialect=dialect, composites=CompositeFacilities(agg_builder=aggregate), column_type=column_type)))
+            dialect=dialect, composites=CompositeFacilities(agg_builder=aggregate), field_type=field_type)))
 
     # ---- naming and placement ----
 
@@ -742,68 +780,68 @@ class _Exporter:
         scopes = self._field_scopes()
         dataset_scoped = [m for m in metrics if m.scope == "dataset"]
         for metric in (m for m in dataset_scoped if m.dataset == m.home):
-            metric.name = scopes[metric.home].allocate(metric.measure.name or "measure")
+            metric.name = scopes[metric.home].allocate(metric.metric.name or "measure")
         for metric in (m for m in dataset_scoped if m.dataset != m.home):
-            metric.name = scopes[metric.dataset].allocate(f"{metric.home}_{metric.measure.name or 'measure'}")
+            metric.name = scopes[metric.dataset].allocate(f"{metric.home}_{metric.metric.name or 'measure'}")
         self._name_document_entities([m for m in metrics if m.scope == "model"])
 
     def _field_scopes(self) -> dict[str, _Names]:
         scopes: dict[str, _Names] = {}
-        for name, ds in self.datasets.items():
+        for name, ds in self.osi_datasets.items():
             scopes[name] = _Names()
-            for field in ds.fields:
+            for field in ds.osi_fields:
                 scopes[name].allocate(field)
         return scopes
 
-    def _name_document_entities(self, model_metrics: list[_Metric]) -> None:
+    def _name_document_entities(self, dataset_metrics: list[_Metric]) -> None:
         """Explicitly named relationships first, then model metrics, then the remaining relationships."""
         document = _Names()
         for rel in self.relationships:
-            explicit = next((d.join.name for d in rel.declarations if d.join.name), None)
+            explicit = next((d.relationship.name for d in rel.declarations if d.relationship.name), None)
             if explicit:
                 rel.name = document.allocate(explicit)
-        for metric in model_metrics:
-            metric.name = document.allocate(metric.measure.name or "measure")
+        for metric in dataset_metrics:
+            metric.name = document.allocate(metric.metric.name or "measure")
         for rel in self.relationships:
             if not rel.name:
                 rel.name = document.allocate(f"{rel.from_dataset}_{rel.to}")
 
     def _place(self, metric: _Metric) -> None:
-        measure = metric.measure
-        meta = measure.meta or {}
+        slayer_metric = metric.metric
+        meta = slayer_metric.meta or {}
         text = metric.tree.sql(dialect=PORTABLE_READER if metric.portable else self.target)
         expression: dict[str, Any] = (
             {"sql": text} if metric.portable else {"dialects": [{"dialect": self.token, "expression": text}]})
         entity: dict[str, Any] = {"name": metric.name, "expression": expression}
-        description = explicit_description(measure.description, meta.get("osi_ai_context"))
+        description = explicit_description(slayer_metric.description, meta.get("osi_ai_context"))
         if description:
             entity["description"] = description
-        if isinstance(meta.get("osi_datatype"), str):
-            entity["datatype"] = meta["osi_datatype"]
+        if slayer_metric.datatype is not None and slayer_metric.datatype.value in OSSIE_DATATYPES:
+            entity["datatype"] = slayer_metric.datatype.value
         if meta.get("osi_ai_context"):
             entity["ai_context"] = meta["osi_ai_context"]
-        payload = ext.MetricPayload(entity=metric.name, model=metric.home, measure=measure.model_copy(
-            update={"meta": _slayer_meta(measure.meta)}))
-        self._extensions(entity, meta, payload=payload, model=metric.home,
+        payload = ext.MetricPayload(entity=metric.name, dataset=metric.home, metric=slayer_metric.model_copy(
+            update={"meta": _slayer_meta(slayer_metric.meta)}))
+        self._extensions(entity, meta, payload=payload, dataset=metric.home,
                          ossie=ext.expression_digest(OSIExpression.model_validate(expression)))
         if metric.scope == "dataset":
-            self.datasets[metric.dataset].metrics.append(entity)
+            self.osi_datasets[metric.dataset].metrics.append(entity)
             relocated = metric.dataset != metric.home
         else:
             self.model_metrics.append(entity)
-            relocated = metric.home not in self._read_datasets(metric)
+            relocated = metric.home not in self._read_osi_datasets(metric)
         if relocated:
-            self._lossy(f"Measure {measure.name!r} on {metric.home!r} is exported as metric {metric.name!r} "
+            self._lossy(f"Metric {slayer_metric.name!r} on {metric.home!r} is exported as metric {metric.name!r} "
                         f"{'on ' + repr(metric.dataset) if metric.scope == 'dataset' else 'of the model'} and "
-                        f"imports back there.", model=metric.home, metric=measure.name)
+                        f"imports back there.", dataset=metric.home, metric=slayer_metric.name)
 
-    def _read_datasets(self, metric: _Metric) -> set[str]:
+    def _read_osi_datasets(self, metric: _Metric) -> set[str]:
         return {c.table for c in metric.tree.find_all(exp.Column) if c.table}
 
     # ---- document ----
 
     def _shared_semantic_model(self) -> dict[str, Any] | None:
-        shared = [(ds.model.meta or {}).get("osi_semantic_model") for ds in self.datasets.values()]
+        shared = [(ds.dataset.meta or {}).get("osi_semantic_model") for ds in self.osi_datasets.values()]
         first = shared[0]
         if isinstance(first, dict) and first.get("name") and all(s == first for s in shared):
             return first
@@ -822,84 +860,85 @@ class _Exporter:
             document["name"] = self.config.name
             if self.config.description:
                 document["description"] = self.config.description
-        document["datasets"] = [self._dataset_entity(ds) for _, ds in sorted(self.datasets.items())]
+        document["datasets"] = [self._dataset_entity(ds) for _, ds in sorted(self.osi_datasets.items())]
         relationships = sorted(self.relationships,
                                key=lambda r: (r.from_dataset, r.to, r.from_columns, r.to_columns))
         if relationships:
             document["relationships"] = [self._relationship_entity(r) for r in relationships]
         if self.model_metrics:
             document["metrics"] = self.model_metrics
-        foreign = self._foreign((semantic or {}).get("nonportable_extensions"), owner="the document", model=None)
+        foreign = self._foreign((semantic or {}).get("nonportable_extensions"), owner="the document", dataset=None)
         if foreign:
             document["nonportable_extensions"] = foreign
         return document
 
     def _dataset_entity(self, ds: _Dataset) -> dict[str, Any]:
-        model = ds.model
-        meta = model.meta or {}
-        entity: dict[str, Any] = {"name": model.name, "source": ds.source}
+        dataset = ds.dataset
+        meta = dataset.meta or {}
+        entity: dict[str, Any] = {"name": dataset.name, "source": ds.source}
         if ds.primary_key:
             entity["primary_key"] = ds.primary_key
         if ds.unique_keys:
             entity["unique_keys"] = ds.unique_keys
-        description = explicit_description(model.description, meta.get("osi_ai_context"))
+        description = explicit_description(dataset.description, meta.get("osi_ai_context"))
         if description:
             entity["description"] = description
         if meta.get("osi_ai_context"):
             entity["ai_context"] = meta["osi_ai_context"]
-        if ds.fields:
-            entity["fields"] = list(ds.fields.values())
+        if ds.osi_fields:
+            entity["fields"] = list(ds.osi_fields.values())
         if ds.metrics:
             entity["metrics"] = ds.metrics
         payload = ext.DatasetPayload(
-            entity=model.name, source=ds.structure, hidden=model.hidden, access_tags=list(model.access_tags),
-            default_time_dimension=model.default_time_dimension, meta=_slayer_meta(model.meta),
-            aggregations=list(model.aggregations),
-            columns=[Column.model_validate(c.model_dump(exclude=_EXCLUDED_COLUMN_FIELDS))
-                     for c in ds.slayer_columns],
-            measures=ds.slayer_measures,
+            entity=dataset.name, source=ds.structure, hidden=dataset.hidden, access_tags=list(dataset.access_tags),
+            default_time_dimension=dataset.default_time_dimension, meta=_slayer_meta(dataset.meta),
+            aggregations=list(dataset.aggregations),
+            fields=[DatasetField.model_validate(c.model_dump(exclude=_EXCLUDED_FIELD_FIELDS))
+                     for c in ds.slayer_fields],
+            metrics=ds.slayer_metrics,
         )
-        self._extensions(entity, meta, payload=payload, model=model.name,
+        self._extensions(entity, meta, payload=payload, dataset=dataset.name,
                          ossie=ext.source_digest(ds.source, reader=self.target))
         return entity
 
     def _relationship_entity(self, rel: _Relationship) -> dict[str, Any]:
         entity: dict[str, Any] = {"name": rel.name, "from": rel.from_dataset, "to": rel.to,
                                   "from_columns": rel.from_columns, "to_columns": rel.to_columns}
-        meta = rel.declarations[0].join.meta or {}
+        meta = rel.declarations[0].relationship.meta or {}
         if meta.get("osi_ai_context"):
             entity["ai_context"] = meta["osi_ai_context"]
-        declarations = [d.model_copy(update={"join": d.join.model_copy(update={"meta": _slayer_meta(d.join.meta)})})
+        declarations = [d.model_copy(update={"relationship": d.relationship.model_copy(update={"meta": _slayer_meta(d.relationship.meta)})})
                         for d in rel.declarations]
         self._extensions(entity, meta, payload=ext.RelationshipPayload(entity=rel.name, declarations=declarations),
-                         model=rel.from_dataset, ossie=ext.relationship_digest(
+                         dataset=rel.from_dataset, ossie=ext.relationship_digest(
                              from_dataset=rel.from_dataset, to=rel.to, from_columns=rel.from_columns,
                              to_columns=rel.to_columns))
         return entity
 
 
-async def export_osi(*, engine: SlayerQueryEngine, datasource: str, models: list[str] | None = None,
+async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: list[str] | None = None,
                      extensions: bool = True) -> OsiExportResult:
-    """Export ``datasource``'s models (or the ``models`` subset) as an Ossie document and its report."""
+    """Export ``datasource``'s datasets (or the ``datasets`` subset) as an Ossie document and its report."""
     storage = engine.storage
     config = await storage.get_datasource(datasource)
     if config is None:
         raise OsiExportError(f"Datasource {datasource!r} not found.")
-    stored: dict[str, SlayerModel] = {}
-    for name in sorted(await storage.list_models(data_source=datasource)):
-        model = await storage.get_model(name, data_source=datasource)
-        if model is not None:
-            stored[name] = model
-    unknown = [m for m in models or [] if m not in stored]
+    stored: dict[str, SlayerDataset] = {}
+    for name in sorted(await storage.list_datasets(data_source=datasource)):
+        dataset = await storage.get_dataset(name, data_source=datasource)
+        if dataset is not None:
+            stored[name] = dataset
+    unknown = [m for m in datasets or [] if m not in stored]
     if unknown:
-        raise OsiExportError(f"Unknown model(s) in datasource {datasource!r}: {', '.join(unknown)}.")
-    selected = sorted(set(models)) if models is not None else sorted(stored)
-    virtual: dict[str, SlayerModel | Exception] = {}
+        raise OsiExportError(f"Unknown dataset(s) in datasource {datasource!r}: {', '.join(unknown)}.")
+    selected = sorted(set(datasets)) if datasets is not None else sorted(stored)
+    virtual: dict[str, SlayerDataset | Exception] = {}
     for name in selected:
         if stored[name].source_queries:
             try:
-                virtual[name] = await engine.expand_query_backed_model(stored[name])
-            except Exception as exc:  # noqa: BLE001 — reported on the model
+                virtual[name] = await engine.expand_query_backed_dataset(stored[name])
+            except Exception as exc:  # noqa: BLE001 — reported on the dataset
                 virtual[name] = exc
-    return _Exporter(config=config, models=stored, selected=selected, virtual=virtual,
-                     extensions=extensions).run()
+    resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
+    return _Exporter(config=config, datasets=stored, selected=selected, virtual=virtual, extensions=extensions,
+                     resolved=resolved).run()

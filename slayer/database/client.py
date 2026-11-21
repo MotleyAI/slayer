@@ -13,7 +13,7 @@ import weakref
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 
 import sqlalchemy as sa
 import sqlalchemy.exc
@@ -61,6 +61,7 @@ from slayer.sql.render.parse import is_read_only_query, parse_query
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.type_probe import TypeProbe, mint_type_probe
 from slayer.core import timing
+from slayer.core import probes
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +232,7 @@ def _abandon(engines: list[AsyncEngine]) -> None:
             logger.warning("Failed to abandon a closed loop's async engine.", exc_info=True)
 
 
-_TEXT = ResultColumnType(type=DataType.TEXT)
+_TEXT = ResultColumnType(type=DataType.STRING)
 
 
 def _first_value_type(value: Any) -> ResultColumnType:
@@ -241,9 +242,9 @@ def _first_value_type(value: Any) -> ResultColumnType:
     if isinstance(value, (list, tuple)):
         return ResultColumnType(type=DataType.ARRAY)
     if isinstance(value, (int, float, Decimal)):
-        return ResultColumnType(type=DataType.DOUBLE)
+        return ResultColumnType(type=DataType.FLOAT)
     if isinstance(value, datetime):
-        return ResultColumnType(type=DataType.TIMESTAMP)
+        return ResultColumnType(type=DataType.DATETIME)
     if isinstance(value, date):
         return ResultColumnType(type=DataType.DATE)
     return _TEXT
@@ -298,14 +299,14 @@ def _rows_as_dicts(result: Any) -> list[dict[str, Any]]:
     return [dict(zip(keys, row)) for row in result.fetchall()]
 
 
-def sql_model_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:
-    """The zero-row trial of read-only model ``sql``; anything else raises."""
+def sql_dataset_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:
+    """The zero-row trial of read-only dataset ``sql``; anything else raises."""
     inner = parse_query(sql=sql, target_dialect=dialect)
     return exp.select("*").from_(inner.subquery("_sd_validate")).where(
         exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))
 
 
-def classify_model_sql(sql: str, *, dialect: str | None = None) -> str:
+def classify_dataset_sql(sql: str, *, dialect: str | None = None) -> str:
     """'unparseable', 'modifying' (anything not a proven read-only query), or
     'read_only'. Parses like the generator (prequote + parse_one), so SQL it
     rejects is non-functional there too — rejected with no DB round-trip."""
@@ -450,7 +451,7 @@ async def _set_timeout_async(
 def _statement_timeout(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
     transaction_local: bool = False,
-) -> Iterator[list[StatementTimeoutSkippedWarning]]:
+) -> Generator[list[StatementTimeoutSkippedWarning], None, None]:
     """Put the dialect's timeout on ``conn`` for the block (a session statement once per value); yields the skips."""
     if dialect.timeout_reads_profile and not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
@@ -470,7 +471,7 @@ def _statement_timeout(
 async def _statement_timeout_async(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
     transaction_local: bool = False,
-) -> AsyncIterator[list[StatementTimeoutSkippedWarning]]:
+) -> AsyncGenerator[list[StatementTimeoutSkippedWarning], None]:
     """Async sibling of ``_statement_timeout``."""
     if dialect.timeout_reads_profile and not dialect.timeout_permitted(
         await _server_profile_async(conn, engine=engine, dialect=dialect),
@@ -675,6 +676,28 @@ class SqlClient(Protocol):
     def close(self) -> None: ...
 
 
+def _db_probe_attributes(bound: Any) -> dict[str, Any]:
+    client = bound.arguments["self"]
+    datasource = client.datasource
+    executed = bound.arguments.get("sql")
+    statements = bound.arguments.get("statements")
+    if executed is None and statements is not None:  # _explain passes the statement inside its plan
+        executed = statements.statement
+    attributes: dict[str, Any] = {
+        "datasource.name": datasource.name,
+        "datasource.type": datasource.type or "",
+        "db.query.text": executed,
+    }
+    with contextlib.suppress(Exception):
+        url = client.connection_url()  # host, port and database only; never the credentials
+        attributes.update({"server.address": url.host, "server.port": url.port, "db.namespace": url.database})
+    return attributes
+
+
+def _returned_rows(executed: ExecutionResult) -> dict[str, int]:
+    return {"db.response.returned_rows": len(executed.rows)}
+
+
 class SlayerSQLClient:
     """Executes SQL against databases via SQLAlchemy, through one driver.
 
@@ -776,6 +799,21 @@ class SlayerSQLClient:
     @property
     def _dialect(self) -> SqlDialect:
         return dialect_for_ds_type(self.datasource.type)
+
+    def connection_url(self) -> URL:
+        """The URL this client connects through: its running loop's or sync engine's, else its datasource's."""
+        engine = self._running_loop_async_engine() or self._sync_engine
+        if engine is not None:
+            return engine.url
+        return make_url(self._connection_datasource().get_connection_string())
+
+    def _running_loop_async_engine(self) -> AsyncEngine | None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        with self._async_lock:
+            return self._async_engines.get(loop)
 
     def _in_memory(self) -> bool:
         """Whether this client's database is an in-memory one, which it may write."""
@@ -920,6 +958,10 @@ class SlayerSQLClient:
         writes = admit_statement(sql, dialect=self._dialect, writes_allowed=self._in_memory())
         return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
 
+    @probes.probe(
+        name="db.execute", extract=_db_probe_attributes,
+        result=_returned_rows,
+    )
     async def _typed_execute(self, *, sql: str, timeout_seconds: int, writes: bool) -> ExecutionResult:
         try:
             return await self._execute(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
@@ -967,6 +1009,7 @@ class SlayerSQLClient:
             await self._typed(exc)
             raise
 
+    @probes.probe(name="db.explain", extract=_db_probe_attributes, result=_returned_rows)
     async def _explain(self, *, statements: ExplainStatements, timeout_seconds: int) -> ExecutionResult:
         ds = self.datasource
         async_engine = self._async_engine_here()
@@ -1030,6 +1073,7 @@ class SlayerSQLClient:
 
     # Live metadata: one read on one open sync connection — the async engine's, else the sync engine's off the loop.
 
+    @probes.probe(name="db.metadata", extract=_db_probe_attributes)
     async def _metadata(self, read: Callable[[sa.Connection], _T]) -> _T:
         try:
             async_engine = self._async_engine_here()
@@ -1176,6 +1220,13 @@ class SlayerSQLClient:
         writes = admit_statement(sql, dialect=self._dialect, writes_allowed=self._in_memory())
         if self._async_url() is not None:
             return run_sync(self._execute_bridged(sql=sql, timeout_seconds=timeout_seconds, writes=writes))
+        return self._typed_execute_sync(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
+
+    @probes.probe(
+        name="db.execute", extract=_db_probe_attributes,
+        result=_returned_rows,
+    )
+    def _typed_execute_sync(self, *, sql: str, timeout_seconds: int, writes: bool) -> ExecutionResult:
         try:
             return _execute_with_retry_sync(
                 sql=sql,
@@ -1380,6 +1431,7 @@ async def _retry_with_backoff(
         except _RETRYABLE_ERRORS as exc:
             _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay, writes=writes)
             await asyncio.sleep(delay)
+            _record_retry(exc=exc, attempt=attempt)
             delay = min(delay * 2, max_delay)
     return await do_call()
 
@@ -1390,6 +1442,13 @@ def _check_max_attempts(max_attempts: int) -> None:
 
 
 _RETRYABLE_ERRORS = (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError)
+
+
+def _record_retry(*, exc: Exception, attempt: int) -> None:
+    """A retry event once the backoff is over and the next attempt starts."""
+    probes.current().add_event(
+        name="db.retry", attributes={"db.attempt": attempt + 1, "error.type": type(exc).__qualname__},
+    )
 
 
 def _log_transient_or_raise(*, exc: Exception, sql: str, attempt: int, delay: float, writes: bool = False) -> None:
@@ -1523,6 +1582,7 @@ def _execute_with_retry_sync(
         except _RETRYABLE_ERRORS as exc:
             _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay, writes=writes)
             time.sleep(delay)
+            _record_retry(exc=exc, attempt=attempt)
             delay = min(delay * 2, max_delay)
     return _call()
 

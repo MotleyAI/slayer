@@ -29,7 +29,7 @@ arithmetic over partitioned aggregates).
 - **THEN** queries against it succeed and return the summed revenue
 
 #### Scenario: Model-extension and inline-model measures
-- **WHEN** a `ModelExtension` measure uses the functional spelling
+- **WHEN** a `DatasetExtension` measure uses the functional spelling
 - **THEN** the query succeeds and returns the aggregation's executed values
 
 #### Scenario: Multi-stage source-query formulas
@@ -42,7 +42,7 @@ arithmetic over partitioned aggregates).
   per-row average revenue of each group
 
 #### Scenario: Cross-spelling rename and filter-form matching
-- **WHEN** a measure is declared `{"formula": "sum(revenue)", "name": "rev"}` and a filter references `SUM(revenue)` (or vice versa)
+- **WHEN** a measure is declared `{"metric": "sum(revenue)", "alias": "rev"}` and a filter references `SUM(revenue)` (or vice versa)
 - **THEN** the filter resolves to the same measure — spelling never affects matching
 
 #### Scenario: Computed dimension with a functional partitioned aggregate
@@ -289,7 +289,7 @@ canonical text.
   `sum(a) / count(*)`) and parses
 
 #### Scenario: Recommendation paths are functional
-- **WHEN** `recommend_root_model` is given `sum(orders.amount)` or
+- **WHEN** `recommend_population` is given `sum(orders.amount)` or
   `percentile(orders.amount, p=0.9)`, and recommends `orders`
 - **THEN** the item paths are `sum(amount)` and `percentile(amount, p=0.9)`; a
   cross-model item keeps its join path inside the call (`sum(customers.regions.population)`)
@@ -301,7 +301,7 @@ canonical text.
 #### Scenario: Tool descriptions teach the functional spelling
 - **WHEN** the MCP tool descriptions and help are listed
 - **THEN** none shows the colon spelling; a custom aggregation is shown used as
-  `sum_sq(column)`
+  `sum_sq(field)`
 
 #### Scenario: The SQL facade translates to functional queries
 - **WHEN** a SQL client runs `SELECT COUNT(*), SUM(revenue) FROM orders GROUP BY status HAVING SUM(revenue) > 1000`, and another selects a joined model's row count and `customers.region` count
@@ -475,7 +475,7 @@ stay separate producers; equal keys, however spelled, SHALL share one.
 
 ### Requirement: The colon spelling is refused
 
-Fresh input using the colon aggregation spelling `<source>:<name>[(<args>)]` — a column, a join-path column, `*` or `<path>.*` source — or the colon granularity spelling `<column>:<granularity>` SHALL be rejected with a typed error naming the colon span and its twin, in every Mode-B position (query measures, filters, order keys, dimensions, time dimensions, `main_time_dimension`, computed-dimension expressions, model measure formulas, model-extension measures, stage formulas), when a model or saved query is saved, and in entity references (`recommend_root_model` items, memory `linked_entities`). The twin SHALL be `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written. A colon inside a string literal, a quoted identifier or a `::` cast SHALL NOT be refused.
+Fresh input using the colon aggregation spelling `<source>:<name>[(<args>)]` — a column, a join-path column, `*` or `<path>.*` source — or the colon granularity spelling `<field>:<granularity>` SHALL be rejected with a typed error naming the colon span and its twin, in every Mode-B position (query measures, filters, order keys, dimensions, time dimensions, `main_time_dimension`, computed-dimension expressions, model measure formulas, model-extension measures, stage formulas), when a model or saved query is saved, and in entity references (`recommend_population` items, memory `linked_entities`). The twin SHALL be `date_trunc('<name>', <source>)` when `<name>` is a built-in granularity, and `<name>(<source>[, <args>])` otherwise, with the source and arguments as written. A colon inside a string literal, a quoted identifier or a `::` cast SHALL NOT be refused.
 
 #### Scenario: Measure
 
@@ -519,7 +519,7 @@ Fresh input using the colon aggregation spelling `<source>:<name>[(<args>)]` —
 
 #### Scenario: Entity references
 
-- **WHEN** `recommend_root_model` is given `orders.amount:sum`, or a memory is saved with the linked entity `orders.amount:sum`
+- **WHEN** `recommend_population` is given `orders.amount:sum`, or a memory is saved with the linked entity `orders.amount:sum`
 - **THEN** each is rejected with the typed error naming `sum(orders.amount)`
 
 #### Scenario: Colons that are not the colon spelling

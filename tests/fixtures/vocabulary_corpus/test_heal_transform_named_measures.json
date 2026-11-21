@@ -1,0 +1,111 @@
+{
+ "source": "tests/test_heal_transform_named_measures.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "change",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "change",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "created_at"
+   },
+   "new": {
+    "field": "created_at"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "chg",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "chg",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "created_at"
+   },
+   "new": {
+    "field": "created_at"
+   }
+  },
+  {
+   "kind": "refinement",
+   "old": {
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "rank"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "rank"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rank",
+    "formula": "count(*)"
+   },
+   "new": {
+    "name": "rank",
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rank",
+    "formula": "count(*)"
+   },
+   "new": {
+    "name": "rank",
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "n",
+    "formula": "count(*)"
+   },
+   "new": {
+    "name": "n",
+    "expression": "count(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 15,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 124,
+   "reason": "not a standalone aggregation: ValidationError"
+  }
+ ]
+}

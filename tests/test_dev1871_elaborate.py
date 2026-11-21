@@ -1,4 +1,4 @@
-"""DEV-1871 — the one elaboration pass and its typing environment (design D2).
+"""The one elaboration pass and its typing environment (design D2).
 
 ``elaborate_query`` gives every top-level expression a position verdict, home
 dataset, resolved grain, and Broadcast insertions at grain-union points, and
@@ -10,9 +10,9 @@ from __future__ import annotations
 
 
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey, ColumnKey
-from slayer.core.models import Column, SlayerModel
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.keys import AggregateKey, FieldKey
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryDimension, SlayerQuery
 from slayer.engine.compile import compile_query
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.plan import plan_query
@@ -21,33 +21,33 @@ from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.elaborated import ElaboratedQuery
-from slayer.ir.terms import Aggregate, ModelDataset
+from slayer.ir.terms import Aggregate, StoredDataset
 
 
 _DS = "elab_ds"
-_STATUS = ColumnKey(leaf="status")
-_TIER = ColumnKey(leaf="tier")
+_STATUS = FieldKey(leaf="status")
+_TIER = FieldKey(leaf="tier")
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source=_DS, sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect="postgres", source_model=_orders_model())
+    return ResolvedSourceBundle(dialect="postgres", population=_orders_dataset())
 
 
-def _partitioned_key(partition: ColumnKey) -> AggregateKey:
+def _partitioned_key(partition: FieldKey) -> AggregateKey:
     return AggregateKey(
-        source=ColumnKey(leaf="amount"), agg="sum",
+        source=FieldKey(leaf="amount"), agg="sum",
         partition_keys=Grain.of({partition}),
     )
 
@@ -55,37 +55,37 @@ def _partitioned_key(partition: ColumnKey) -> AggregateKey:
 class TestTypingEnvironment:
     def test_every_position_gets_a_verdict(self) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
-            "filters": ["status = 'ok'", "sum(amount) > 5"],
-            "order": [{"column": "status", "direction": "asc"}],
+            "population": "orders",
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+            "filter": ["orders.status = 'ok'", "sum(orders.amount) > 5"],
+            "order": [{"field": "orders.status", "direction": "asc"}],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
         assert isinstance(elab, ElaboratedQuery)
         assert [e.verdict for e in elab.dimensions] == ["field"]
-        assert [e.verdict for e in elab.measures] == ["measure"]
-        assert [e.verdict for e in elab.filters] == ["field", "measure"]
+        assert [e.verdict for e in elab.metrics] == ["metric"]
+        assert [e.verdict for e in elab.filters] == ["field", "metric"]
         assert [e.verdict for e in elab.order] == ["field"]
 
     def test_measure_entry_home_and_resolved_grain(self) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "population": "orders",
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
-        entry = elab.measures[0]
-        assert entry.home == ModelDataset(data_source=_DS, model_name="orders")
+        entry = elab.metrics[0]
+        assert entry.home == StoredDataset(data_source=_DS, dataset_name="orders")
         assert entry.grain == Grain.of({_STATUS})
 
     def test_aggregate_terms_memoized_by_key_identity(self) -> None:
-        """The same aggregate in measure and filter position is one term."""
+        """The same aggregate in metric and filter position is one term."""
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
-            "filters": ["sum(amount) > 5"],
+            "population": "orders",
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+            "filter": ["sum(orders.amount) > 5"],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
         agg_keys = [k for k in elab.terms if isinstance(k, AggregateKey)]
@@ -99,15 +99,15 @@ class TestTypingEnvironment:
         """Mixed-partition arithmetic combines at the union grain, each side
         lifted by an explicit Broadcast."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             dimensions=[
-                "status",
-                ComputedDimension(
-                    expression=(
-                        "sum(amount, partition_by=status)"
-                        " + sum(amount, partition_by=tier)"
+                "orders.status",
+                QueryDimension(
+                    field=(
+                        "sum(orders.amount, partition_by=orders.status)"
+                        " + sum(orders.amount, partition_by=orders.tier)"
                     ),
-                    name="mix",
+                    alias="mix",
                 ),
             ],
         )
@@ -130,11 +130,11 @@ class TestEntryEquivalence:
     def test_raw_and_prebound_entries_build_the_same_environment(self) -> None:
         """D9 stage 2: binding is a sub-phase, so both doors agree."""
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
-            "filters": ["sum(amount) > 5"],
-            "order": [{"column": "status", "direction": "asc"}],
+            "population": "orders",
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+            "filter": ["sum(orders.amount) > 5"],
+            "order": [{"field": "orders.status", "direction": "asc"}],
         })
         bundle = _bundle()
         raw = elaborate_query(query=query, bundle=bundle)
@@ -148,9 +148,9 @@ class TestEntryEquivalence:
 class TestCompileSeam:
     def test_compile_of_elaborated_matches_plan_query(self) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "population": "orders",
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         planned = plan_query(query=query, bundle=_bundle())
         compiled = compile_query(

@@ -20,7 +20,7 @@ import yaml
 from pydantic import BaseModel
 
 from slayer.cli import _import_osi_workflow
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
@@ -77,28 +77,28 @@ def _close(engine: SlayerQueryEngine, env: Env) -> None:
     engine_factory.invalidate_engine(env.config)
 
 
-async def save(env: Env, *models: SlayerModel) -> None:
-    """Save ``models`` through the engine, validating each."""
+async def save(env: Env, *datasets: SlayerDataset) -> None:
+    """Save ``datasets`` through the engine, validating each."""
     engine = _engine(env)
     try:
-        for model in models:
-            await engine.save_model(model.model_copy(update={"data_source": env.datasource}))
+        for model in datasets:
+            await engine.save_dataset(model.model_copy(update={"data_source": env.datasource}))
     finally:
         _close(engine, env)
 
 
-async def export(env: Env, *, models: list[str] | None = None, extensions: bool = True) -> OsiExportResult:
+async def export(env: Env, *, datasets: list[str] | None = None, extensions: bool = True) -> OsiExportResult:
     engine = _engine(env)
     try:
-        return await export_osi(engine=engine, datasource=env.datasource, models=models, extensions=extensions)
+        return await export_osi(engine=engine, datasource=env.datasource, datasets=datasets, extensions=extensions)
     finally:
         _close(engine, env)
 
 
-async def export_models(env: Env, *models: SlayerModel, extensions: bool = True,
+async def export_datasets(env: Env, *datasets: SlayerDataset, extensions: bool = True,
                         subset: list[str] | None = None) -> OsiExportResult:
-    await save(env, *models)
-    return await export(env, models=subset, extensions=extensions)
+    await save(env, *datasets)
+    return await export(env, datasets=subset, extensions=extensions)
 
 
 async def reimport(env: Env, document: dict[str, Any], *, name: str = "reimported") -> tuple[Env, str]:
@@ -126,9 +126,9 @@ def convert_document(env: Env, document: dict[str, Any]) -> ConversionResult:
     )
 
 
-async def stored(env: Env, name: str) -> SlayerModel:
-    model = await YAMLStorage(base_dir=str(env.store)).get_model(name, data_source=env.datasource)
-    assert model is not None, f"model {name!r} not in {env.store}"
+async def stored(env: Env, name: str) -> SlayerDataset:
+    model = await YAMLStorage(base_dir=str(env.store)).get_dataset(name, data_source=env.datasource)
+    assert model is not None, f"dataset {name!r} not in {env.store}"
     return model
 
 
@@ -221,7 +221,7 @@ def same_sql(actual: str, expected: str, *, read_dialect: str = "snowflake") -> 
 
 
 def eval_field(env: Env, ds: dict[str, Any], name: str, *, order_by: str) -> list[Any]:
-    """``ds``'s field ``name`` evaluated over its source, ordered by the source column ``order_by``."""
+    """``ds``'s field ``name`` evaluated over its source, ordered by the source field ``order_by``."""
     entity = field(ds, name)
     assert entity is not None, f"no field {name!r} on {ds['name']!r}"
     target = sqlglot_target(env)
@@ -239,10 +239,10 @@ def sqlglot_target(env: Env) -> str:
 
 def mentions(result: OsiExportResult | ConversionResult, name: str, *, severity: str | None = None,
              category: str | None = None) -> list[ConversionWarning]:
-    """Report entries naming ``name`` (as model, metric, or in the message), optionally filtered."""
+    """Report entries naming ``name`` (as dataset, metric, or in the message), optionally filtered."""
     return [
         e for e in result.entries
-        if name in (e.model_name, e.metric_name) or name in e.message
+        if name in (e.dataset_name, e.metric_name) or name in e.message
         if severity is None or e.severity == severity
         if category is None or e.category == category
     ]

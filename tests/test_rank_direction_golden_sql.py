@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from slayer.core.models import ModelMeasure
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev1847_fixtures import gen, sales_q
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -17,21 +16,21 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "rank_direction_sql_baseline.js
 ALLOWED_DELTAS: dict[str, str] = {}
 
 
-def _q(formula: str, dimensions: list[str]) -> SlayerQuery:
-    return sales_q(dimensions=dimensions, measures=[ModelMeasure(formula=formula, name="r")])
+def _q(expression: str, dimensions: list[str]) -> SlayerQuery:
+    return sales_q(dimensions=dimensions, metrics=[QueryMetric(metric=expression, alias="r")])
 
 
 def _cases() -> dict[str, SlayerQuery]:
-    region, region_city = ["region"], ["region", "city"]
+    region, region_city = ["sales.region"], ["sales.region", "sales.city"]
     return {
-        "rank/asc": _q("rank(sum(amount), direction='asc')", region),
-        "rank/desc": _q("rank(sum(amount), direction='desc')", region),
-        "rank/asc_partitioned": _q("rank(sum(amount), partition_by=region, direction='asc')", region_city),
-        "dense_rank/asc": _q("dense_rank(sum(amount), direction='asc')", region),
-        "dense_rank/desc": _q("dense_rank(sum(amount), direction='desc')", region),
-        "ntile/n4": _q("ntile(sum(amount), n=4)", region),
-        "percent_rank/plain": _q("percent_rank(sum(amount))", region),
-        "rank/non_numeric": _q("rank(min(city), direction='asc')", region),
+        "rank/asc": _q("rank(sum(sales.amount), direction='asc')", region),
+        "rank/desc": _q("rank(sum(sales.amount), direction='desc')", region),
+        "rank/asc_partitioned": _q("rank(sum(sales.amount), partition_by=sales.region, direction='asc')", region_city),
+        "dense_rank/asc": _q("dense_rank(sum(sales.amount), direction='asc')", region),
+        "dense_rank/desc": _q("dense_rank(sum(sales.amount), direction='desc')", region),
+        "ntile/n4": _q("ntile(sum(sales.amount), n=4)", region),
+        "percent_rank/plain": _q("percent_rank(sum(sales.amount))", region),
+        "rank/non_numeric": _q("rank(min(sales.city), direction='asc')", region),
     }
 
 

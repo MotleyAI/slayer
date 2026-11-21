@@ -1,4 +1,4 @@
-"""DEV-1847 task 1.4/4.2 — nested producers compose to arbitrary depth (SQLite +
+"""Nested producers compose to arbitrary depth (SQLite +
 DuckDB): depth-three executed values, one flat WITH with closed scopes and no
 placeholder leak, and a producer consumed at two depths that renders once
 (spec: queries/partitioned-aggregates)."""
@@ -11,11 +11,12 @@ import pytest
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1847_fixtures import (
     DEPTH3_MAX_AVG_BY_PRODUCT,
     INNER_CR,
     INNER_CRP,
-    ModelMeasure,
     SHAPE_B_ACR,
     SHAPE_B_GROUP_SUM,
     SPEND_BAND_EXPR,
@@ -26,7 +27,7 @@ from tests._dev1847_fixtures import (
     sales_q,
 )
 
-DEPTH3 = f"max(avg({INNER_CRP}, partition_by=[region, product]))"
+DEPTH3 = f"max(avg({INNER_CRP}, partition_by=[sales.region, sales.product]))"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -61,11 +62,11 @@ class TestDepthThree:
         """Scenario: Depth-three re-aggregation — per product, the maximum over
         regions of the average over cities, by hand-computed values."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["product"],
-            measures=[ModelMeasure(formula=DEPTH3, name="d3")]))
+            dimensions=["sales.product"],
+            metrics=[QueryMetric(metric=DEPTH3, alias="d3")]))
         by = rows_by(resp, "sales.product")
         for product, expected in DEPTH3_MAX_AVG_BY_PRODUCT.items():
-            assert float(by[(product,)]["sales.d3"]) == pytest.approx(expected)
+            assert float(by[(product,)]["d3"]) == pytest.approx(expected)
 
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb", "postgres"])
     async def test_depth_three_sql_is_flat_closed_and_leak_free(self, dialect):
@@ -73,8 +74,8 @@ class TestDepthThree:
         at depth three, on each emission path. ``gen`` already asserts the SQL
         parses with no nested WITH (``_assert_valid_sql``)."""
         sql = await gen(sales_q(
-            dimensions=["product"],
-            measures=[ModelMeasure(formula=DEPTH3, name="d3")]), dialect=dialect)
+            dimensions=["sales.product"],
+            metrics=[QueryMetric(metric=DEPTH3, alias="d3")]), dialect=dialect)
         assert "__regroup__" not in sql, sql
         assert_scope_closed(sql, dialect=dialect)
 
@@ -82,39 +83,39 @@ class TestDepthThree:
 class TestSharedProducerRendersOnce:
     async def test_one_producer_two_depths_renders_once(self, exec_engine):
         """Scenario: One producer consumed at two depths renders once — a
-        computed dimension bands the city-region total AND a measure
+        computed dimension bands the city-region total AND a metric
         re-aggregates it; a single city-region producer serves both."""
-        band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+        band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         both = sales_q(
-            dimensions=["region", band],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
+            dimensions=["sales.region", band],
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       reagg("avg", INNER_CR, name="acr")])
         resp = await exec_engine.execute(both)
-        by = rows_by(resp, "sales.region", "sales.spend_band")
+        by = rows_by(resp, "sales.region", "spend_band")
         # BOTH consuming depths produce correct values: the row-attach band sum
         # (tot) and the re-aggregated avg of city totals (acr).
         for (region, label), total in SHAPE_B_GROUP_SUM.items():
-            cell = by[(region, label)]["sales.tot"]
+            cell = by[(region, label)]["tot"]
             assert (cell is None) if total is None else float(cell) == pytest.approx(total)
         for (region, label), acr in SHAPE_B_ACR.items():
-            cell = by[(region, label)]["sales.acr"]
+            cell = by[(region, label)]["acr"]
             assert (cell is None) if acr is None else float(cell) == pytest.approx(acr)
 
     async def test_producer_not_duplicated_by_second_consumer(self, exec_engine):
-        """The re-aggregating measure reuses the banded dimension's producer —
+        """The re-aggregating metric reuses the banded dimension's producer —
         the city-region producer CTE count does not grow with the second
-        consumer (interning, DEV-1838)."""
-        band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+        consumer (interning)."""
+        band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         dialect = "postgres"
-        single = sales_q(dimensions=["region", band],
-                         measures=[ModelMeasure(formula="sum(amount)", name="tot")])
-        both = sales_q(dimensions=["region", band],
-                       measures=[ModelMeasure(formula="sum(amount)", name="tot"),
+        single = sales_q(dimensions=["sales.region", band],
+                         metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")])
+        both = sales_q(dimensions=["sales.region", band],
+                       metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                                  reagg("avg", INNER_CR, name="acr")])
         s_sql = await gen(single, dialect=dialect)
         b_sql = await gen(both, dialect=dialect)
         s_count = _grain_producer_count(s_sql, dialect=dialect)
-        # Interning: the re-aggregating measure reuses the banded dimension's
+        # Interning: the re-aggregating metric reuses the banded dimension's
         # city-region producer, so the second consumer adds no new one. Relative
         # (b == s) rather than absolute, to survive any substring miscount.
         assert s_count >= 1

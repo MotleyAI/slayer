@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
 from slayer.cube.report import CubeConversionReport
@@ -10,23 +10,23 @@ from slayer.cube.report import CubeConversionReport
 DS = "test_ds"
 
 
-def convert(project: CubeProject) -> tuple[dict[str, SlayerModel], CubeConversionReport]:
+def convert(project: CubeProject) -> tuple[dict[str, SlayerDataset], CubeConversionReport]:
     result = CubeToSlayerConverter(project=project, data_source=DS).convert()
-    return {m.name: m for m in result.models}, result.report
+    return {m.name: m for m in result.datasets}, result.report
 
 
-def measure(model: SlayerModel, name: str) -> ModelMeasure:
-    m = model.get_measure(name)
-    assert m is not None, f"measure {name} missing on {model.name}"
+def metric(dataset: SlayerDataset, name: str) -> DatasetMetric:
+    m = dataset.get_metric(name)
+    assert m is not None, f"metric {name} missing on {dataset.name}"
     return m
 
 
-def column(model: SlayerModel, name: str) -> Column:
-    c = model.get_column(name)
-    assert c is not None, f"column {name} missing on {model.name}"
+def field_of(dataset: SlayerDataset, name: str) -> DatasetField:
+    c = dataset.get_field(name)
+    assert c is not None, f"field {name} missing on {dataset.name}"
     return c
 
 
-def meta(model: SlayerModel) -> dict[str, Any]:
-    assert model.meta is not None, f"{model.name} has no meta"
-    return model.meta
+def meta(dataset: SlayerDataset) -> dict[str, Any]:
+    assert dataset.meta is not None, f"{dataset.name} has no meta"
+    return dataset.meta

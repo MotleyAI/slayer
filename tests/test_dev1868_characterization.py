@@ -14,7 +14,9 @@ import pytest
 
 import slayer.engine.compile.stages as stages_mod
 
-from tests._dev1836_fixtures import ModelMeasure, make_exec_engine, month_td, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1836_fixtures import make_exec_engine, month_td, q
 from tests._dev1868_fixtures import (
     CM_PART_TIER,
     CUMSUM_PART_BY_TIER_MONTH,
@@ -23,11 +25,11 @@ from tests._dev1868_fixtures import (
     keyed_by_month,
 )
 
-TIER = "orders.customers.tier"
+TIER = "customers.tier"
 
 
 @pytest.fixture(params=["sqlite"])
-async def bypassed_engine(request, monkeypatch):
+async def bypassed_engine(request, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(stages_mod, "check_partitioned_measures",
                         lambda **kw: None, raising=False)
     async for engine in make_exec_engine(request):
@@ -38,9 +40,9 @@ class TestW1SubstrateIsComplete:
     async def test_ranked_measure_executes_end_to_end(self, bypassed_engine) -> None:
         resp = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula=LAST_TIER, name="l")],
+            metrics=[QueryMetric(metric=LAST_TIER, alias="l")],
         ))
-        got = {r[TIER]: r["orders.l"] for r in resp.data}
+        got = {r[TIER]: r["l"] for r in resp.data}
         for tier, expected in LAST_SPEND_BY_TIER.items():
             if expected is None:
                 assert got[tier] is None
@@ -50,15 +52,15 @@ class TestW1SubstrateIsComplete:
     async def test_filter_and_order_positions_execute(self, bypassed_engine) -> None:
         filtered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
-            filters=[f"{LAST_TIER} > 100"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            filter=[f"{LAST_TIER} > 100"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert [r[TIER] for r in filtered.data] == ["silver"]
         ordered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
-            filters=["customers.tier is not null"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
-            order=[{"column": LAST_TIER, "direction": "desc"}],
+            filter=["customers.tier is not null"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
+            order=[{"field": LAST_TIER, "direction": "desc"}],
         ))
         assert [r[TIER] for r in ordered.data] == ["silver", "gold", "bronze"]
 
@@ -69,12 +71,12 @@ class TestW2SubstrateIsComplete:
     ) -> None:
         resp = await bypassed_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=f"cumsum({CM_PART_TIER})", name="c")],
+            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")],
         ))
         by = keyed_by_month(resp, TIER)
         assert set(by) == set(CUMSUM_PART_BY_TIER_MONTH)
         for key, expected in CUMSUM_PART_BY_TIER_MONTH.items():
-            cell = by[key]["orders.c"]
+            cell = by[key]["c"]
             if expected is None:
                 assert cell is None
             else:

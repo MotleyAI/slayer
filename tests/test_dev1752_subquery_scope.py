@@ -1,7 +1,7 @@
-"""DEV-1752 — Mode-A expansion must not qualify subquery columns against the
+"""Mode-A expansion must not qualify subquery columns against the
 outer root.
 
-A subquery's own columns belong to the subquery's scope, not the outer model's.
+A subquery's own columns belong to the subquery's scope, not the outer dataset's.
 Before the fix, ``_process_column_node_sync`` qualified every column node against
 the outer root BEFORE the root-scope gate, so ``amount IN (SELECT amount FROM
 other_tbl)`` became ``orders.amount IN (SELECT orders.amount FROM other_tbl)`` —
@@ -9,7 +9,7 @@ silently rebinding the inner ``amount`` to the wrong table.
 
 Contract: a Mode-A subquery must be self-contained (scope-closed). A bare name
 binds to the subquery's own FROM; the expander leaves it alone. Correlation to
-the outer model is NOT a supported Mode-A feature — an explicit outer reference
+the outer dataset is NOT a supported Mode-A feature — an explicit outer reference
 (``orders.col``) is a scope leak flagged by the ``assert_scope_closed``
 invariant (enabled by ``SLAYER_VALIDATE_SCOPES``: on in CI, off in production for
 performance; the only legal correlated ref in generated SQL is the RLS
@@ -27,9 +27,9 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.sql.column_expansion import collect_root_scope_joined_paths
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryDimension, SlayerQuery
+from slayer.sql.field_expansion import collect_root_scope_joined_paths
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
@@ -40,9 +40,10 @@ from tests.test_dev1745_mode_a_door import (
     _scope,
     _sql_of,
 )
+import pytest
 
 
-# The orders/customers/regions ScopeFrame fixtures are shared with the DEV-1745
+# The orders/customers/regions ScopeFrame fixtures are shared with the Mode-A
 # door pack; import them rather than duplicate the fixture triple.
 
 
@@ -79,7 +80,7 @@ class TestSubqueryColumnsStayLocal:
         assert "orders.status =" in out, out
 
     def test_inner_name_colliding_with_root_column_stays_bare(self) -> None:
-        # ``amount`` IS a real orders column; the fix must be scope-driven, not
+        # ``amount`` IS a real orders field; the fix must be scope-driven, not
         # name-driven — the inner ``amount`` still must not bind to orders.
         out = _sql_of(
             _scope().enter_predicate(
@@ -90,7 +91,7 @@ class TestSubqueryColumnsStayLocal:
         assert "orders" not in inner, out
 
     def test_expression_surface_keeps_inner_bare(self) -> None:
-        # Not predicate-only: a Column.sql scalar containing a subquery behaves
+        # Not predicate-only: a DatasetField.sql scalar containing a subquery behaves
         # the same through enter_expression.
         out = _sql_of(
             _scope().enter_expression("(SELECT amount FROM other_tbl LIMIT 1)")
@@ -144,13 +145,13 @@ class TestRootScopeUnaffected:
         assert "orders.amount > 1" in out, out
 
     def test_top_level_derived_column_still_inlines(self) -> None:
-        out = _sql_of(_scope().enter_predicate("doubled > 1"))
+        out = _sql_of(_scope().enter_predicate("orders.doubled > 1"))
         # ``doubled`` derives to ``amount * 2`` and inlines, qualified to root.
         assert "orders.amount * 2" in out, out
 
 
 # --------------------------------------------------------------------------- #
-# Join-path discovery stays root-only (a subquery ref registers no join)
+# Relationship-path discovery stays root-only (a subquery ref registers none)
 # --------------------------------------------------------------------------- #
 class TestJoinDiscoveryRootOnly:
 
@@ -159,9 +160,9 @@ class TestJoinDiscoveryRootOnly:
         scope.enter_predicate(
             "id IN (SELECT x FROM other WHERE other.k = customers.balance)"
         )
-        assert scope.join_paths.as_list() == [], (
-            "a join-target-looking ref INSIDE a subquery must not register a "
-            f"root join path: {scope.join_paths.as_list()}"
+        assert scope.relationship_paths.as_list() == [], (
+            "a relationship-target-looking ref INSIDE a subquery must not register a "
+            f"root relationship path: {scope.relationship_paths.as_list()}"
         )
 
     def test_collect_paths_ignores_subquery_scope(self) -> None:
@@ -172,10 +173,10 @@ class TestJoinDiscoveryRootOnly:
         host = _orders()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[host, _customers(), _regions()],
+            population=host, referenced_datasets=[host, _customers(), _regions()],
         )
         paths = collect_root_scope_joined_paths(
-            parsed=parsed, source_model=host,
+            parsed=parsed, source_dataset=host,
             source_relation=host.name, bundle=bundle,
         )
         assert paths == [], paths
@@ -191,10 +192,10 @@ class TestJoinDiscoveryRootOnly:
         host = _orders()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[host, _customers(), _regions()],
+            population=host, referenced_datasets=[host, _customers(), _regions()],
         )
         paths = collect_root_scope_joined_paths(
-            parsed=parsed, source_model=host,
+            parsed=parsed, source_dataset=host,
             source_relation=host.name, bundle=bundle,
         )
         assert paths == [], paths
@@ -237,22 +238,22 @@ def _seed_sqlite(db_path: str) -> None:
         )
 
 
-async def _engine_with_filter(base_dir: str, db_path: str, *, model_filter: str) -> SlayerQueryEngine:
+async def _engine_with_filter(base_dir: str, db_path: str, *, dataset_filter: str) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=base_dir)
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=db_path),
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        filters=[model_filter],
+        filters=[dataset_filter],
     )
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -272,20 +273,20 @@ class TestExecution:
             _seed_sqlite(db)
             engine = await _engine_with_filter(
                 os.path.join(d, "store"), db,
-                model_filter="amount IN (SELECT amount FROM other_tbl)",
+                dataset_filter="amount IN (SELECT amount FROM other_tbl)",
             )
             resp = await engine.execute(
-                SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="id")]),
+                SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.id")]),
             )
             assert _ids(resp) == {1, 3}, resp.data
 
     async def test_correlated_subquery_passes_scope_validation(
-        self, monkeypatch,
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A correlated Mode-A subquery references the outer relation — legal
-        SQL that DEV-1840's correlation-aware ``assert_scope_closed`` now
+        SQL that the correlation-aware ``assert_scope_closed`` now
         accepts (an expression subquery may bind ancestor sources). The
-        DEV-1752 fix still leaves the outer ref untouched, so the shape
+        fix still leaves the outer ref untouched, so the shape
         executes with correlated semantics: orders 1 & 3 have line items."""
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
         with tempfile.TemporaryDirectory() as d:
@@ -293,13 +294,13 @@ class TestExecution:
             _seed_sqlite(db)
             engine = await _engine_with_filter(
                 os.path.join(d, "store"), db,
-                model_filter=(
+                dataset_filter=(
                     "EXISTS (SELECT 1 FROM line_items "
                     "WHERE line_items.order_id = orders.id)"
                 ),
             )
             query = SlayerQuery(
-                source_model="orders", dimensions=[ColumnRef(name="id")],
+                population="orders", dimensions=[QueryDimension(field="orders.id")],
             )
             resp = await engine.execute(query)
             assert _ids(resp) == {1, 3}, resp.data

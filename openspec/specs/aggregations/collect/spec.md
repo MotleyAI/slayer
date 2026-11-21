@@ -70,7 +70,7 @@ A `collect` result SHALL be usable wherever a list is accepted: as an operand of
 
 ### Requirement: A model's own collect formula is its aggregation
 
-When a model defines the aggregation `collect` with a `formula`, every `collect` call over that model's columns SHALL be that aggregation: its result type, empty value, database support and SQL SHALL follow the formula, never the built-in list aggregation. Other models SHALL keep the built-in.
+When a model defines the aggregation `collect` with a `expression`, every `collect` call over that model's columns SHALL be that aggregation: its result type, empty value, database support and SQL SHALL follow the formula, never the built-in list aggregation. Other models SHALL keep the built-in.
 
 #### Scenario: Custom collect on a database without lists
 

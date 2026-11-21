@@ -14,12 +14,12 @@ from sqlglot.expressions.datatypes import DType
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import SlayerError
 from slayer.core.granularity import CustomGranularity, Granularity
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.dialects import get_dialect
 from slayer.sql.render.joins import build_grain_joinback_condition
 
-from tests._dev2018_fixtures import DS_GRANULARITIES, GRANULARITIES, bucket_type, mx_model, px_model
+from tests._dev2018_fixtures import DS_GRANULARITIES, GRANULARITIES, bucket_type, mx_dataset, px_dataset
 from tests._engine_helpers import _engine_generate
 from tests._time_points_fixtures import PinnedClock
 
@@ -27,7 +27,7 @@ TIER1 = ["sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "snowfla
 TIER2 = ["redshift"]
 PROMOTING = [d for d in TIER1 if d != "sqlite"] + TIER2
 UNITS = ["second", "hour", "day", "week", "week_sunday", "month", "quarter", "year", "fiscal_year", "quarter_hour"]
-OPERANDS = [DataType.DATE, DataType.TIMESTAMP]
+OPERANDS = [DataType.DATE, DataType.DATETIME]
 ZONED = {exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMESTAMPLTZ}
 _CUSTOM = {g["name"]: CustomGranularity.model_validate(g) for g in GRANULARITIES}
 SQLITE_CANONICAL = "STRFTIME('%Y-%m-%d %H:%M:%f',"
@@ -109,7 +109,7 @@ def test_custom_bucket_demotes_exactly_when_the_rule_says_date(dialect, unit, op
 
 @pytest.mark.parametrize("unit", ["day", "week", "week_sunday", "month", "quarter", "year"])
 def test_mysql_day_or_coarser_bucket_of_a_datetime_is_a_datetime(unit) -> None:
-    node = _bucket("mysql", unit, DataType.TIMESTAMP)
+    node = _bucket("mysql", unit, DataType.DATETIME)
     assert isinstance(node, exp.Cast), _render("mysql", node)
     assert node.to.sql(dialect="mysql").upper().startswith("DATETIME"), _render("mysql", node)
 
@@ -150,43 +150,43 @@ def test_sub_day_bucket_of_a_date_promotes_the_source(dialect, unit) -> None:
 # DATE meeting TIMESTAMP in generated SQL: comparisons, null-safe equality, conditionals, nullif.
 # ---------------------------------------------------------------------------
 
-async def _sql(dialect: str, query: dict[str, Any], *, model: Optional[SlayerModel] = None,
-               extra: Optional[list[SlayerModel]] = None) -> str:
+async def _sql(dialect: str, query: dict[str, Any], *, model: Optional[SlayerDataset] = None,
+               extra: Optional[list[SlayerDataset]] = None) -> str:
     return await _engine_generate(
-        query=SlayerQuery.model_validate(query), model=model or mx_model(), extra_models=extra, dialect=dialect,
+        query=SlayerQuery.model_validate(query), dataset=model or mx_dataset(), extra_datasets=extra, dialect=dialect,
         validate=False, clock=PinnedClock(), datasource_fields=DS_GRANULARITIES,
     )
 
 
 MIXED_FILTERS = [
-    "d = ts",
-    "d is not distinct from ts",
-    "date_trunc('day', ts) = d",
-    "coalesce(shipped_at, d) = ts",
-    "iif(shipped_at is null, d, shipped_at) = ts",
-    "greatest(d, ts) = ts",
+    "mx.d = mx.ts",
+    "mx.d is not distinct from mx.ts",
+    "date_trunc('day', mx.ts) = mx.d",
+    "coalesce(mx.shipped_at, mx.d) = mx.ts",
+    "iif(mx.shipped_at is null, mx.d, mx.shipped_at) = mx.ts",
+    "greatest(mx.d, mx.ts) = mx.ts",
 ]
 
 
 @pytest.mark.parametrize("dialect", PROMOTING)
 @pytest.mark.parametrize("filt", MIXED_FILTERS)
 async def test_mixed_filter_promotes_the_date(dialect, filt) -> None:
-    sql = _flat(await _sql(dialect, {"source_model": "mx", "dimensions": ["id"], "filters": [filt]}))
+    sql = _flat(await _sql(dialect, {"population": "mx", "dimensions": ["mx.id"], "filter": [filt]}))
     assert _promoted(dialect, exp.column("d", table="mx")) in sql, sql
 
 
 @pytest.mark.parametrize("dialect", PROMOTING)
 async def test_mixed_nullif_compares_at_midnight_and_returns_the_date(dialect) -> None:
     sql = _flat(await _sql(dialect, {
-        "source_model": "mx", "dimensions": ["id", {"expression": "nullif(d, ts)", "name": "v"}],
+        "population": "mx", "dimensions": ["mx.id", {"field": "nullif(mx.d, mx.ts)", "alias": "v"}],
     }))
     assert _promoted(dialect, exp.column("d", table="mx")) in sql, sql
     assert "NULLIF(" not in sql.upper(), sql
 
 
-@pytest.mark.parametrize("filt", ["d = ts", "ts = shipped_at", "d is not distinct from ts", "date_trunc('day', ts) = ts"])
+@pytest.mark.parametrize("filt", ["mx.d = mx.ts", "mx.ts = mx.shipped_at", "mx.d is not distinct from mx.ts", "date_trunc('day', mx.ts) = mx.ts"])
 async def test_sqlite_temporal_pair_compares_in_canonical_form(filt) -> None:
-    sql = _flat(await _sql("sqlite", {"source_model": "mx", "dimensions": ["id"], "filters": [filt]}))
+    sql = _flat(await _sql("sqlite", {"population": "mx", "dimensions": ["mx.id"], "filter": [filt]}))
     where = sql.split(" WHERE ", 1)[1]
     assert where.count(SQLITE_CANONICAL) >= 2, sql
 
@@ -206,7 +206,7 @@ def _joinback(dialect: str, *pairs: tuple[DataType | None, DataType | None]) -> 
 
 @pytest.mark.parametrize("dialect", PROMOTING)
 def test_joinback_promotes_the_date_side(dialect) -> None:
-    sql = _joinback(dialect, (DataType.DATE, DataType.TIMESTAMP), (DataType.TIMESTAMP, DataType.DATE))
+    sql = _joinback(dialect, (DataType.DATE, DataType.DATETIME), (DataType.DATETIME, DataType.DATE))
     assert _promoted(dialect, exp.column("l0")) in sql, sql
     assert _promoted(dialect, exp.column("r1")) in sql, sql
     assert _promoted(dialect, exp.column("r0")) not in sql, sql
@@ -214,19 +214,19 @@ def test_joinback_promotes_the_date_side(dialect) -> None:
 
 
 @pytest.mark.parametrize("dialect", PROMOTING)
-@pytest.mark.parametrize("pair", [(DataType.DATE, DataType.DATE), (DataType.TIMESTAMP, DataType.TIMESTAMP),
-                                  (DataType.INT, DataType.INT), (None, None)])
+@pytest.mark.parametrize("pair", [(DataType.DATE, DataType.DATE), (DataType.DATETIME, DataType.DATETIME),
+                                  (DataType.INTEGER, DataType.INTEGER), (None, None)])
 def test_joinback_same_types_are_untouched(dialect, pair) -> None:
     assert not _promote_pattern(dialect).search(_joinback(dialect, pair))
 
 
-@pytest.mark.parametrize("pair", [(DataType.DATE, DataType.TIMESTAMP), (DataType.TIMESTAMP, DataType.TIMESTAMP)])
+@pytest.mark.parametrize("pair", [(DataType.DATE, DataType.DATETIME), (DataType.DATETIME, DataType.DATETIME)])
 def test_sqlite_joinback_compares_in_canonical_form(pair) -> None:
     assert _joinback("sqlite", pair).count(SQLITE_CANONICAL) == 2
 
 
 @pytest.mark.parametrize("dialect", TIER1 + TIER2)
-@pytest.mark.parametrize("pair", [(DataType.DATE, None), (None, DataType.TIMESTAMP)])
+@pytest.mark.parametrize("pair", [(DataType.DATE, None), (None, DataType.DATETIME)])
 def test_joinback_temporal_pair_of_unknown_type_fails_closed(dialect, pair) -> None:
     with pytest.raises(SlayerError):
         _joinback(dialect, pair)
@@ -238,8 +238,8 @@ def test_joinback_temporal_pair_of_unknown_type_fails_closed(dialect, pair) -> N
 
 def _spine(granularity: str, date_range: list[str]) -> dict[str, Any]:
     return {
-        "measures": [{"formula": "count(px.id)", "name": "n"}],
-        "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": granularity,
+        "metrics": [{"metric": "count(px.id)", "alias": "n"}],
+        "time_dimensions": [{"field": "time_spine.timestamp", "granularity": granularity,
                              "date_range": date_range}],
     }
 
@@ -258,7 +258,7 @@ def _axis_comparisons(tree: Expr) -> list[Expression]:
 @pytest.mark.parametrize("dialect", TIER1)
 @pytest.mark.parametrize("granularity", ["month", "hour"])
 async def test_spine_over_a_date_axis(dialect, granularity) -> None:
-    sql = await _sql(dialect, _spine(granularity, ["2024-05-15 06:00:00", "2024-08-01"]), model=px_model())
+    sql = await _sql(dialect, _spine(granularity, ["2024-05-15 06:00:00", "2024-08-01"]), model=px_dataset())
     read = get_dialect(dialect).sqlglot_name
     tree = sqlglot.parse_one(sql, read=read)
     ons = [_flat(j.args["on"].sql(dialect=read)) for j in tree.find_all(exp.Join) if j.args.get("on") is not None]
@@ -281,23 +281,23 @@ async def test_spine_over_a_date_axis(dialect, granularity) -> None:
 # BigQuery zoned TIMESTAMP: every bucket reads the column once.
 # ---------------------------------------------------------------------------
 
-def _zoned(model: SlayerModel) -> SlayerModel:
-    return model.model_copy(update={"columns": [
-        c.model_copy(update={"db_type": "TIMESTAMP"}) if c.name == "ts" else c for c in model.columns]})
+def _zoned(model: SlayerDataset) -> SlayerDataset:
+    return model.model_copy(update={"fields": [
+        c.model_copy(update={"db_type": "TIMESTAMP"}) if c.name == "ts" else c for c in model.fields]})
 
 
 @pytest.mark.parametrize("query", [
-    {"source_model": "mx", "measures": [{"formula": "count(*)", "name": "n"}],
-     "time_dimensions": [{"dimension": "ts", "granularity": "month"}]},
-    {"source_model": "mx", "measures": [{"formula": "count(*)", "name": "n"}],
-     "time_dimensions": [{"dimension": "ts", "granularity": "quarter_hour"}]},
-    {"source_model": "mx", "dimensions": [{"expression": "date_trunc('hour', ts)", "name": "h"}]},
-    {"measures": [{"formula": "count(mx.id)", "name": "n"}],
-     "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "day",
+    {"population": "mx", "metrics": [{"metric": "count(mx.*)", "alias": "n"}],
+     "time_dimensions": [{"field": "mx.ts", "granularity": "month"}]},
+    {"population": "mx", "metrics": [{"metric": "count(mx.*)", "alias": "n"}],
+     "time_dimensions": [{"field": "mx.ts", "granularity": "quarter_hour"}]},
+    {"population": "mx", "dimensions": [{"field": "date_trunc('hour', mx.ts)", "alias": "h"}]},
+    {"metrics": [{"metric": "count(mx.id)", "alias": "n"}],
+     "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "day",
                           "date_range": ["2025-03-01", "2025-03-03"]}]},
 ], ids=["built_in", "custom", "row_expression", "spine"])
 async def test_bigquery_zoned_bucket_reads_the_column_once(query) -> None:
-    sql = await _sql("bigquery", query, model=_zoned(mx_model()))
+    sql = await _sql("bigquery", query, model=_zoned(mx_dataset()))
     tree = sqlglot.parse_one(sql, read="bigquery")
     reads = [c for c in tree.find_all(exp.Column)
              if c.name == "ts" and c.table == "mx" and c.find_ancestor(exp.Where) is None]
@@ -310,8 +310,8 @@ async def test_bigquery_zoned_bucket_reads_the_column_once(query) -> None:
 
 
 async def test_bigquery_zoned_column_meets_a_date_as_midnight() -> None:
-    sql = _flat(await _sql("bigquery", {"source_model": "mx", "dimensions": ["id"], "filters": ["d = ts"]},
-                           model=_zoned(mx_model())))
+    sql = _flat(await _sql("bigquery", {"population": "mx", "dimensions": ["mx.id"], "filter": ["mx.d = mx.ts"]},
+                           model=_zoned(mx_dataset())))
     where = sql.split(" WHERE ", 1)[1].upper()
     assert "MX.D = CAST(MX.TS AS DATETIME)" not in where, sql
     assert "CAST(MX.D AS " in where, sql

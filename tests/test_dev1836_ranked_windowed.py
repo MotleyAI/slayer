@@ -1,23 +1,24 @@
-"""Cross-model ranked (first/last), windowed, and
+"""Cross-dataset ranked (first/last), windowed, and
 partitioned aggregates at safe grains (SQLite + DuckDB).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Explicit grain and
 window on cross-model aggregates". Every explicit key must be attributable
-from the aggregate's root; a windowed cross-model aggregate requires the
+from the aggregate's root; a windowed cross-dataset aggregate requires the
 query's active time dimension attributable from its root.
 """
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.errors import SlayerError
-from slayer.core.query import TimeDimension
+from slayer.core.errors import TimeAxisError
+from slayer.core.query import QueryMetric, TimeDimension
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
-    ModelMeasure,
     SPEND_1Y_BY_SIGNUP_MONTH,
     SPEND_BY_TIER,
     SPEND_FIRST_BY_TIER,
@@ -29,8 +30,6 @@ from tests._dev1836_fixtures import (
     rows_by,
 )
 
-RAISES = (SlayerError, ValueError, NotImplementedError)
-
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend(request):
@@ -38,12 +37,12 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 def signup_month_td() -> list[TimeDimension]:
     return [TimeDimension(
-        dimension="customers.signup_at",
+        field="customers.signup_at",
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -60,20 +59,20 @@ class TestCrossModelPartitioned:
         and broadcast to the query rows."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier", "status"],
-            measures=[M, ModelMeasure(
-                formula="sum(customers.spend, partition_by=customers.tier)",
-                name="pt",
+            dimensions=["customers.tier", "orders.status"],
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.tier)",
+                alias="pt",
             )],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.customers.tier", "orders.status")
+        by = rows_by(resp, "customers.tier", "orders.status")
         for (tier, _status), row in by.items():
             expected = SPEND_BY_TIER.get(tier)  # None for the NULL-tier row
             if expected is None:
-                assert row["orders.pt"] is None, (tier, _status)
+                assert row["pt"] is None, (tier, _status)
             else:
-                assert float(row["orders.pt"]) == pytest.approx(expected), tier
+                assert float(row["pt"]) == pytest.approx(expected), tier
         await _dry_scope_closed(engine, query, dialect)
 
 
@@ -82,41 +81,41 @@ class TestCrossModelRanked:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[
+            metrics=[
                 M,
-                ModelMeasure(formula="first(customers.spend, customers.signup_at)",
-                             name="f"),
-                ModelMeasure(formula="last(customers.spend, customers.signup_at)",
-                             name="l"),
+                QueryMetric(metric="first(customers.spend, customers.signup_at)",
+                             alias="f"),
+                QueryMetric(metric="last(customers.spend, customers.signup_at)",
+                             alias="l"),
             ],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         for tier in ("gold", "silver", "bronze"):
-            assert float(by[(tier,)]["orders.f"]) == pytest.approx(
+            assert float(by[(tier,)]["f"]) == pytest.approx(
                 SPEND_FIRST_BY_TIER[tier],
             ), f"first:{tier}"
-            assert float(by[(tier,)]["orders.l"]) == pytest.approx(
+            assert float(by[(tier,)]["l"]) == pytest.approx(
                 SPEND_LAST_BY_TIER[tier],
             ), f"last:{tier}"
-        assert by[(None,)]["orders.f"] is None
-        assert by[(None,)]["orders.l"] is None
+        assert by[(None,)]["f"] is None
+        assert by[(None,)]["l"] is None
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_ranked_is_cardinality_neutral(self, exec_backend):
         _, engine = exec_backend
-        solo = await engine.execute(q(dimensions=["customers.tier"], measures=[M]))
+        solo = await engine.execute(q(dimensions=["customers.tier"], metrics=[M]))
         both = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[M, ModelMeasure(
-                formula="last(customers.spend, customers.signup_at)", name="l",
+            metrics=[M, QueryMetric(
+                metric="last(customers.spend, customers.signup_at)", alias="l",
             )],
         ))
-        solo_by = rows_by(solo, "orders.customers.tier")
-        both_by = rows_by(both, "orders.customers.tier")
+        solo_by = rows_by(solo, "customers.tier")
+        both_by = rows_by(both, "customers.tier")
         assert set(solo_by) == set(both_by)
         for key, row in both_by.items():
-            assert row["orders.m"] == solo_by[key]["orders.m"], key
+            assert row["m"] == solo_by[key]["m"], key
 
 
 class TestCrossModelWindowed:
@@ -125,13 +124,13 @@ class TestCrossModelWindowed:
         dialect, engine = exec_backend
         query = q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula="sum(customers.spend, window='1y')",
-                                   name="w")],
+            metrics=[QueryMetric(metric="sum(customers.spend, window='1y')",
+                                   alias="w")],
         )
         resp = await engine.execute(query)
         rows = [r for r in resp.data
-                if r["orders.customers.signup_at"] is not None]
-        got = {month_key(r["orders.customers.signup_at"]): r["orders.w"]
+                if r["customers.signup_at"] is not None]
+        got = {month_key(r["customers.signup_at"]): r["w"]
                for r in rows}
         assert len(got) == len(rows), "duplicate result rows for one month"
         assert set(got) == set(SPEND_1Y_BY_SIGNUP_MONTH)
@@ -144,16 +143,16 @@ class TestCrossModelWindowed:
         query = q(
             dimensions=["customers.tier"],
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, window='1y', partition_by=customers.tier)",
-                name="w",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='1y', partition_by=customers.tier)",
+                alias="w",
             )],
         )
         resp = await engine.execute(query)
-        rows = [r for r in resp.data if r["orders.customers.tier"] is not None]
+        rows = [r for r in resp.data if r["customers.tier"] is not None]
         got = {
-            (r["orders.customers.tier"],
-             month_key(r["orders.customers.signup_at"])): r["orders.w"]
+            (r["customers.tier"],
+             month_key(r["customers.signup_at"])): r["w"]
             for r in rows
         }
         assert len(got) == len(rows), "duplicate result rows for one group"
@@ -169,18 +168,19 @@ class TestCrossModelWindowed:
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_windowed_requires_attributable_td(self, exec_backend):
-        """The query's active TD (orders.ordered_at) is not attributable from
-        customers: clear error, not wrong numbers."""
+        """Under broadcast, the query's active TD (orders.ordered_at), not attributable from customers, is a typed
+        error naming association among the remedies — not wrong numbers."""
         _, engine = exec_backend
         query = q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, window='1y')", name="w",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='1y')", alias="w",
             )],
             to_many_handling="broadcast",
         )
-        with pytest.raises(RAISES) as ei:
+        with pytest.raises(TimeAxisError) as ei:
             await engine.execute(query)
         message = str(ei.value)
         assert "ordered_at" in message or "time dimension" in message
+        assert re.search(r"to_many_handling|associat", ei.value.suggestion or "", re.IGNORECASE), message
         assert "__regroup__" not in message

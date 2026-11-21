@@ -11,11 +11,12 @@ import pytest
 import sqlalchemy as sa
 import yaml
 
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.importers.column_types import LiveSource
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.osi.converter import OsiToSlayerConverter
+from slayer.osi.dialects import OSSIE_SQL, ossie_token
 from slayer.osi.models import OSIDocument
 from slayer.database import engine_factory
 from slayer.database.client import SqlClient
@@ -155,20 +156,37 @@ def convert(*, db: Path, docs: list[OSIDocument], db_dialect: str = "duckdb", **
     )
 
 
-def by_name(result: ConversionResult) -> dict[str, SlayerModel]:
-    return {model.name: model for model in result.models}
+def by_name(result: ConversionResult) -> dict[str, SlayerDataset]:
+    return {model.name: model for model in result.datasets}
 
 
-def cols(model: SlayerModel) -> dict[str, Column]:
-    return {c.name: c for c in model.columns}
+def cols(dataset: SlayerDataset) -> dict[str, DatasetField]:
+    return {c.name: c for c in dataset.fields}
 
 
-def visible(model: SlayerModel) -> set[str]:
-    return {c.name for c in model.columns if not c.hidden}
+def stored_expression(field: DatasetField) -> Any:
+    """``field``'s stored ``expression`` as dumped (shorthand string or object), else ``None``."""
+    return field.model_dump(mode="json", exclude_none=True).get("expression")
 
 
-def hidden(model: SlayerModel) -> list[Column]:
-    return [c for c in model.columns if c.hidden]
+def running_form(field: DatasetField | None, *, target: str) -> str | None:
+    """The text of ``field``'s expression that runs on a ``target``-typed datasource, else ``None``."""
+    expression = stored_expression(field) if field is not None else None
+    if isinstance(expression, str) or not isinstance(expression, dict):
+        return expression
+    entries: dict[str, str] = {}
+    for item in expression.get("dialects", []):
+        entries.setdefault(item["dialect"].upper(), item["expression"])
+    own = entries.get(ossie_token(target))
+    return own if own is not None else expression.get("sql", entries.get(OSSIE_SQL))
+
+
+def visible(dataset: SlayerDataset) -> set[str]:
+    return {c.name for c in dataset.fields if not c.hidden}
+
+
+def hidden(dataset: SlayerDataset) -> list[DatasetField]:
+    return [c for c in dataset.fields if c.hidden]
 
 
 def entries(result: ConversionResult) -> list[ConversionWarning]:
@@ -184,21 +202,21 @@ def mentions(result: ConversionResult, name: str, *, severity: str | None = None
 
 
 def unconverted(result: ConversionResult, metric: str) -> bool:
-    """True when ``metric`` is reported as unconverted and is on no model."""
-    on_a_model = any(meas.name == metric for model in result.models for meas in model.measures)
+    """True when ``metric`` is reported as unconverted and is on no dataset."""
+    on_a_model = any(meas.name == metric for model in result.datasets for meas in model.metrics)
     return not on_a_model and any(e.metric_name == metric for e in result.unconverted_metrics)
 
 
-def measure_home(result: ConversionResult, measure: str) -> SlayerModel:
-    homes = [model for model in result.models if any(meas.name == measure for meas in model.measures)]
-    assert len(homes) == 1, f"measure {measure!r} on {[h.name for h in homes]}"
+def metric_home(result: ConversionResult, metric: str) -> SlayerDataset:
+    homes = [model for model in result.datasets if any(meas.name == metric for meas in model.metrics)]
+    assert len(homes) == 1, f"metric {metric!r} on {[h.name for h in homes]}"
     return homes[0]
 
 
 async def query(*, result: ConversionResult, db: Path, payload: dict[str, Any],
                 dialect: str = "duckdb") -> list[dict[str, Any]]:
-    """Save the imported models over ``db`` and run one query, disposing every engine."""
-    engine = await build_exec_engine(str(db), dialect=dialect, models=result.models, datasource=DATASOURCE)
+    """Save the imported datasets over ``db`` and run one query, disposing every engine."""
+    engine = await build_exec_engine(str(db), dialect=dialect, datasets=result.datasets, datasource=DATASOURCE)
     try:
         response = await engine.execute(payload)
     finally:
@@ -207,10 +225,10 @@ async def query(*, result: ConversionResult, db: Path, payload: dict[str, Any],
     return response.data
 
 
-async def scalar(*, result: ConversionResult, db: Path, model: str, formula: str,
+async def scalar(*, result: ConversionResult, db: Path, dataset: str, expression: str,
                  dialect: str = "duckdb") -> Any:
-    """The single value of ``formula`` over ``model``."""
+    """The single value of ``expression`` over ``dataset``."""
     rows = await query(result=result, db=db, dialect=dialect,
-                       payload={"source_model": model, "measures": [{"formula": formula, "name": "v"}]})
+                       payload={"population": dataset, "metrics": [{"metric": expression, "alias": "v"}]})
     assert len(rows) == 1
-    return rows[0][f"{model}.v"]
+    return rows[0]["v"]

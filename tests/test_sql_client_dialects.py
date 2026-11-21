@@ -15,7 +15,7 @@ from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._gateway_harness import COUNT_ORDERS_MEM, mem_count_model
+from tests._gateway_harness import COUNT_ORDERS_MEM, mem_count_dataset
 
 
 def _duck(path: Path, statements: list[str]) -> None:
@@ -58,13 +58,13 @@ async def test_in_memory_sqlite_is_one_database_per_owning_engine(tmp_path: Path
     ds = DatasourceConfig(name="mem", type="sqlite", database=":memory:")
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(ds)
-    await storage.save_model(mem_count_model(), _validate=False)
+    await storage.save_dataset(mem_count_dataset(), _validate=False)
     owner, other = SlayerQueryEngine(storage=storage), SlayerQueryEngine(storage=storage)
     try:
         await owner.client_for(ds).execute("CREATE TABLE t (v INTEGER)")
         assert "t" in (await owner.client_for(ds).list_objects(None)).tables
         assert "t" not in (await other.client_for(ds).list_objects(None)).tables
-        assert (await owner.execute(COUNT_ORDERS_MEM)).data[0]["t.n"] == 0
+        assert (await owner.execute(COUNT_ORDERS_MEM)).data[0]["n"] == 0
         with pytest.raises(Exception, match="no such table"):  # NOSONAR(S5958) — the driver's message is the contract
             await other.execute(COUNT_ORDERS_MEM)
     finally:

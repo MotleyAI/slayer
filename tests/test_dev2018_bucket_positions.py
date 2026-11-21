@@ -45,8 +45,8 @@ def _value(row: dict[str, Any], name: str) -> Any:
 
 async def _spine(eng, *, model: str, granularity: str, date_range: list[str]) -> dict[str, float]:
     resp = await eng.execute(SlayerQuery.model_validate({
-        "measures": [{"formula": f"count({model}.id)", "name": "n"}],
-        "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": granularity,
+        "metrics": [{"metric": f"count({model}.id)", "alias": "n"}],
+        "time_dimensions": [{"field": "time_spine.timestamp", "granularity": granularity,
                              "date_range": date_range}],
     }))
     return {bucket_text(r["time_spine.timestamp"]): float(_value(r, "n") or 0) for r in resp.data}
@@ -82,28 +82,28 @@ class TestSpineOverDateAxis:
 # ---------------------------------------------------------------------------
 
 INNER = {
-    "name": "s1", "source_model": "bk",
+    "name": "s1", "population": "bk",
     "dimensions": [
-        {"expression": "date_trunc('month', d)", "name": "m_d"},
-        {"expression": "date_trunc('hour', d)", "name": "h_d"},
-        {"expression": "date_trunc('month', ts)", "name": "m_ts"},
-        {"expression": "date_trunc('fiscal_year', d)", "name": "fy_d"},
+        {"field": "date_trunc('month', bk.d)", "alias": "m_d"},
+        {"field": "date_trunc('hour', bk.d)", "alias": "h_d"},
+        {"field": "date_trunc('month', bk.ts)", "alias": "m_ts"},
+        {"field": "date_trunc('fiscal_year', bk.d)", "alias": "fy_d"},
     ],
-    "measures": [{"formula": "count(*)", "name": "n"}],
+    "metrics": [{"metric": "count(bk.*)", "alias": "n"}],
 }
 OUTER = {
-    "source_model": "s1",
+    "population": "s1",
     "dimensions": [
-        "h_d",
-        {"expression": "date_trunc('quarter', m_d)", "name": "q"},
-        {"expression": "date_trunc('day', h_d)", "name": "dh"},
-        {"expression": "date_add(h_d, 1, 'hour')", "name": "h1"},
-        {"expression": "date_add(m_d, 1, 'month')", "name": "nm"},
-        {"expression": "date_diff('day', m_d, h_d)", "name": "dd"},
-        {"expression": "date_diff('month', fy_d, m_ts)", "name": "fm"},
+        "s1.h_d",
+        {"field": "date_trunc('quarter', s1.m_d)", "alias": "q"},
+        {"field": "date_trunc('day', s1.h_d)", "alias": "dh"},
+        {"field": "date_add(s1.h_d, 1, 'hour')", "alias": "h1"},
+        {"field": "date_add(s1.m_d, 1, 'month')", "alias": "nm"},
+        {"field": "date_diff('day', s1.m_d, s1.h_d)", "alias": "dd"},
+        {"field": "date_diff('month', s1.fy_d, s1.m_ts)", "alias": "fm"},
     ],
-    "filters": ["m_d <= m_ts"],
-    "order": [{"column": "h_d", "direction": "desc"}],
+    "filter": ["s1.m_d <= s1.m_ts"],
+    "order": [{"field": "s1.h_d", "direction": "desc"}],
 }
 OUTER_ROWS = [
     # h_d, q, dh, h1, nm, dd, fm
@@ -112,16 +112,16 @@ OUTER_ROWS = [
     (D(2024, 12, 29), date(2024, 10, 1), D(2024, 12, 29), D(2024, 12, 29, 1), date(2025, 1, 1), 28, 8),
     (D(2024, 6, 15), date(2024, 4, 1), D(2024, 6, 15), D(2024, 6, 15, 1), date(2024, 7, 1), 14, 2),
 ]
-OUTER_TYPES = [DataType.TIMESTAMP, DataType.DATE, DataType.TIMESTAMP, DataType.TIMESTAMP, DataType.DATE]
+OUTER_TYPES = [DataType.DATETIME, DataType.DATE, DataType.DATETIME, DataType.DATETIME, DataType.DATE]
 
 
 class TestTwoStages:
     async def test_stage_columns_record_the_bucket_types(self, engine) -> None:
         _backend, eng = engine
-        model = await eng.create_model_from_query(query=INNER, name="staged", save=False)
-        types = {c.name: c.type for c in model.columns}
+        model = await eng.create_dataset_from_query(query=INNER, name="staged", save=False)
+        types = {c.name: c.datatype for c in model.fields}
         assert {k: types[k] for k in ("m_d", "h_d", "m_ts", "fy_d")} == {
-            "m_d": DataType.DATE, "h_d": DataType.TIMESTAMP, "m_ts": DataType.TIMESTAMP, "fy_d": DataType.DATE,
+            "m_d": DataType.DATE, "h_d": DataType.DATETIME, "m_ts": DataType.DATETIME, "fy_d": DataType.DATE,
         }
 
     async def test_outer_stage_values_follow_the_types(self, engine) -> None:
@@ -141,39 +141,41 @@ class TestTwoStages:
 # DATE and TIMESTAMP parity: ``px.ts`` is midnight of ``px.d``, so every series agrees; only the type differs.
 # ---------------------------------------------------------------------------
 
-def _m(formula: str, name: str) -> dict[str, str]:
-    return {"formula": formula, "name": name}
+def _m(metric: str, alias: str) -> dict[str, str]:
+    """A metric over the series' dataset, written with ``{m}`` for its name."""
+    return {"metric": metric, "alias": alias}
 
 
 async def _series(eng, *, column: str, granularity: str, measures: list[dict[str, str]],
                   date_range: Any = None, whole_periods_only: bool = False) -> tuple[dict[str, tuple], list[Any]]:
     model = "px" if column == "d" else "px_ts"
-    td: dict[str, Any] = {"dimension": column, "granularity": granularity}
+    td: dict[str, Any] = {"field": f"{model}.{column}", "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
+    metrics = [{"metric": m["metric"].format(m=model), "alias": m["alias"]} for m in measures]
     resp = await eng.execute(SlayerQuery.model_validate({
-        "source_model": model, "measures": measures, "time_dimensions": [td],
+        "population": model, "metrics": metrics, "time_dimensions": [td],
         "whole_periods_only": whole_periods_only,
     }))
     key = f"{model}.{column}"
-    series = {bucket_text(r[key]): tuple(_num(_value(r, m["name"])) for m in measures) for r in resp.data}
+    series = {bucket_text(r[key]): tuple(_num(_value(r, m["alias"])) for m in measures) for r in resp.data}
     return series, [r[key] for r in resp.data]
 
 
 PARITY_CASES: list[tuple[str, str, list[dict[str, str]], Any, bool]] = [
-    ("shift_month", "month", [_m("time_shift(sum(amount), -1)", "p"), _m("time_shift(sum(amount), 1)", "n")],
+    ("shift_month", "month", [_m("time_shift(sum({m}.amount), -1)", "p"), _m("time_shift(sum({m}.amount), 1)", "n")],
      ["2024-01-01", "2024-08-31"], False),
-    ("shift_day", "day", [_m("time_shift(sum(amount), -1)", "p"), _m("time_shift(sum(amount), 1)", "n")],
+    ("shift_day", "day", [_m("time_shift(sum({m}.amount), -1)", "p"), _m("time_shift(sum({m}.amount), 1)", "n")],
      ["2024-05-14", "2024-05-18"], False),
-    ("shift_month_end", "day", [_m("time_shift(sum(amount), -1, 'month')", "p"),
-                                _m("time_shift(sum(amount), 1, 'month')", "n")], None, False),
-    ("shift_sub_day", "hour", [_m("time_shift(sum(amount), -24, 'hour')", "p"),
-                               _m("time_shift(sum(amount), 24, 'hour')", "n")], ["2024-05-15", "2024-05-17"], False),
-    ("consecutive_day", "day", [_m("consecutive_periods(count(*) > 0)", "c")], ["2024-05-14", "2024-05-18"], False),
-    ("consecutive_month", "month", [_m("consecutive_periods(count(*) > 0)", "c")], None, False),
-    ("trailing_window", "month", [_m("sum(amount, window='2m')", "w")], ["2024-01-01", "2024-08-31"], False),
-    ("whole_periods", "month", [_m("sum(amount)", "s")], ["2024-01-15", "2024-05-16"], True),
-    ("sunday_weeks", "week_sunday", [_m("sum(amount)", "s"), _m("time_shift(sum(amount), -1)", "p")], None, False),
+    ("shift_month_end", "day", [_m("time_shift(sum({m}.amount), -1, 'month')", "p"),
+                                _m("time_shift(sum({m}.amount), 1, 'month')", "n")], None, False),
+    ("shift_sub_day", "hour", [_m("time_shift(sum({m}.amount), -24, 'hour')", "p"),
+                               _m("time_shift(sum({m}.amount), 24, 'hour')", "n")], ["2024-05-15", "2024-05-17"], False),
+    ("consecutive_day", "day", [_m("consecutive_periods(count({m}.*) > 0)", "c")], ["2024-05-14", "2024-05-18"], False),
+    ("consecutive_month", "month", [_m("consecutive_periods(count({m}.*) > 0)", "c")], None, False),
+    ("trailing_window", "month", [_m("sum({m}.amount, window='2m')", "w")], ["2024-01-01", "2024-08-31"], False),
+    ("whole_periods", "month", [_m("sum({m}.amount)", "s")], ["2024-01-15", "2024-05-16"], True),
+    ("sunday_weeks", "week_sunday", [_m("sum({m}.amount)", "s"), _m("time_shift(sum({m}.amount), -1)", "p")], None, False),
 ]
 
 
@@ -227,7 +229,7 @@ class TestDateTimestampParity:
         assert any(any(v is not None for v in row) for row in on_date.values())
         if case in EXPECTED:
             assert on_date == EXPECTED[case]
-        for buckets, source in ((date_buckets, DataType.DATE), (ts_buckets, DataType.TIMESTAMP)):
+        for buckets, source in ((date_buckets, DataType.DATE), (ts_buckets, DataType.DATETIME)):
             expected = bucket_type(source, granularity)
             problems = [(b, why) for b in buckets if (why := physical_type_error(b, expected, backend=backend))]
             assert not problems, problems
@@ -256,6 +258,6 @@ class TestShiftOracle:
 
     async def test_sunday_weeks_group_sunday_with_the_following_monday(self, engine) -> None:
         _backend, eng = engine
-        series, _ = await _series(eng, column="d", granularity="week_sunday", measures=[_m("sum(amount)", "s")])
+        series, _ = await _series(eng, column="d", granularity="week_sunday", measures=[_m("sum({m}.amount)", "s")])
         assert series["2024-12-29 00:00:00"] == (9.0 + 10.0,)
         assert series["2025-01-05 00:00:00"] == (11.0 + 12.0,)

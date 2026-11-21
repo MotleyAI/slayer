@@ -1,0 +1,309 @@
+{
+ "source": "tests/test_dev1846_composite_transforms.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / sum(qty)",
+    "name": "cur"
+   },
+   "new": {
+    "expression": "sum(revenue) / sum(qty)",
+    "name": "cur"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue) / sum(qty), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue) / sum(qty), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change_pct(sum(revenue) / count(*))",
+    "name": "pct"
+   },
+   "new": {
+    "expression": "change_pct(sum(revenue) / count(*))",
+    "name": "pct"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(revenue) / sum(qty))",
+    "name": "delta"
+   },
+   "new": {
+    "expression": "change(sum(revenue) / sum(qty))",
+    "name": "delta"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "coalesce(sum(revenue), 0)",
+    "name": "cur"
+   },
+   "new": {
+    "expression": "coalesce(sum(revenue), 0)",
+    "name": "cur"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(coalesce(sum(revenue), 0), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(coalesce(sum(revenue), 0), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wrevenue_sum(revenue) + sum(hi_rev)",
+    "name": "cur"
+   },
+   "new": {
+    "expression": "wrevenue_sum(revenue) + sum(hi_rev)",
+    "name": "cur"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(wrevenue_sum(revenue) + sum(hi_rev), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(wrevenue_sum(revenue) + sum(hi_rev), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wrevenue_sum(revenue) * 2",
+    "name": "cur"
+   },
+   "new": {
+    "expression": "wrevenue_sum(revenue) * 2",
+    "name": "cur"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(wrevenue_sum(revenue) * 2, -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(wrevenue_sum(revenue) * 2, -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(revenue) - sum(cost))",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(revenue) - sum(cost))",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(change(sum(revenue)) > 0)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(change(sum(revenue)) > 0)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(cumsum(sum(revenue)))",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(cumsum(sum(revenue)))",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(round(sum(revenue)) >= 10)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(round(sum(revenue)) >= 10)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(revenue) > 90 or sum(cost) > 40)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(revenue) > 90 or sum(cost) > 40)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(not (sum(revenue) > 90))",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(not (sum(revenue) > 90))",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(store in ('A', 'B'))",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(store in ('A', 'B'))",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(store not in ('B', 'C'))",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(store not in ('B', 'C'))",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(hi_rev) > 0 or sum(cost) > 1000)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(hi_rev) > 0 or sum(cost) > 1000)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(store in ('A', 'C') and sum(revenue) > 0)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(store in ('A', 'C') and sum(revenue) > 0)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(iif(sum(revenue) > 0, 1, 0))",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(iif(sum(revenue) > 0, 1, 0))",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(lower(max(sku)))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "consecutive_periods(lower(max(sku)))",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods((sum(revenue) > 0) in (1, 0))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "consecutive_periods((sum(revenue) > 0) in (1, 0))",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(regions.factor)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(regions.factor)",
+    "name": "cm"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 347,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 385,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 396,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 399,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -96,8 +96,8 @@ def nests_into(fine: Granularity, coarse: Granularity) -> bool:
 
 
 def bucket_type(source: DataType, g: Granularity) -> DataType:
-    """A bucket's logical type: DATE for a day-or-coarser bucket of a DATE, else TIMESTAMP."""
-    return DataType.DATE if source is DataType.DATE and not is_sub_day(g) else DataType.TIMESTAMP
+    """A bucket's logical type: Date for a day-or-coarser bucket of a Date, else a naive DateTime."""
+    return DataType.DATE if source is DataType.DATE and not is_sub_day(g) else DataType.DATETIME
 
 
 def definition_error(g: CustomGranularity, *, reserved: Mapping[str, str]) -> Optional[str]:

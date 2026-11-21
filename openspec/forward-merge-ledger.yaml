@@ -1,2 +1,40 @@
 # 1.x requirements intentionally absent from this line: {title, one_x_hash, reason}; see scripts/forward_merge_specs.py.
-[]
+- title: Distinct-entity association over the virtual model
+  one_x_hash: f539a99f4d1981438c90d9e8224f2dd6f803ab7b72700ba2a7b5cbd63fcb9cc5
+  reason: main associates by default (mode omitted) and keeps its own body; same primary-key-else-row-identity rule.
+- title: Association eligibility, input handling and row identity
+  one_x_hash: e911996f925ff4db6ee273387fad6ab5224111e60e916b72d7d18642a753f44b
+  reason: main associates by default, so an ineligible aggregate broadcasts when the mode is omitted; same keyless-home rule.
+- title: Per-query row identity for keyless homes
+  one_x_hash: d60459d0ec1963a3e06f3aff445946aeeeb021572e309cc19830c2c57ca49bf6
+  reason: main's body applies in every mode that associates, the default included; same primary-key rule and scenarios.
+- title: Association across a list hop needs no key
+  one_x_hash: fd0e2538ffef4ebe8c330e8f9eb31d468cfc27729627ae4429277a9b4a9be0a9
+  reason: main applies it when the mode is omitted too (association is the default); same primary-key-else-row-identity rule.
+- title: REST requests are named by their route template
+  one_x_hash: ef055ce6b1e1df5117331cc42408225d955f7a1f437c8442f7ed4d997b4a6867
+  reason: "main keeps its own wording: the route-template scenario uses main's `/datasets/{name}` route."
+- title: A query is one span tree
+  one_x_hash: 230b283a638025e775dc66e8283458d2c86c0be4f1fab06433e7e92b4a7b3333
+  reason: "main keeps its own wording: an EXPLAIN query's database span is `slayer.db.explain`, not 1.x's `slayer.db.execute`."
+- title: An ingest is one span tree with its outcome
+  one_x_hash: 723dd7fe97e18f037f5308e0f943ebe38b1dc133224d3910baf5c02bb49bc677
+  reason: "main keeps its own wording: datasets where 1.x says models, MCP `ingest_datasource`; same span tree and outcome attributes."
+- title: Errors are reported by class
+  one_x_hash: 173ba814f40df827dc70806333970fc0c693ae78e2b241ca7a14868af61cef87
+  reason: "main keeps its own wording: the unknown-dataset scenario reports `DatasetNotFoundError`."
+- title: Duration histograms in seconds
+  one_x_hash: 9e36b909dd1443455d7c3c62866422e879c2116ca6564bfcec549612f09b3f30
+  reason: "main keeps its own wording: the failed-query scenario is labeled `DatasetNotFoundError`."
+- title: Counters for retries, cache and ingest
+  one_x_hash: f0a4c287d9ab88aeaa6ab1422222825312b96ed6f116933dc2ed11a2fb0ec724
+  reason: "main keeps its own wording: `slayer.ingest.datasets` counts ingested datasets, not models."
+- title: datasources create --ingest runs the idempotent ingest
+  one_x_hash: b187d3b691f0b7ca6699252e30846dacc585ebac304259b361c4c02157cb9b01
+  reason: "main keeps its own wording: datasets where 1.x says models, and the printed sections include main's failed-key-read section."
+- title: The empty-ingest message needs an empty result
+  one_x_hash: bb2356376e15674635f9e3804578351da2495bb37eec28a2ec750e22906c80c3
+  reason: "main keeps its own wording: datasets where 1.x says models, and a failed key read also makes the result non-empty."
+- title: create_datasource auto-ingest runs the idempotent ingest
+  one_x_hash: 80998e6c6ef5f2cc4fa4323ae41d28d59a38874e6cc80e6875c9ef9862ba1f8e
+  reason: "main keeps its own wording: MCP `ingest_datasource` and datasets where 1.x says `ingest_datasource_models` and models, failed key reads included."

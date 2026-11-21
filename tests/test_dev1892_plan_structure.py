@@ -1,8 +1,8 @@
-"""DEV-1892 task 1.3 — plan-structure pins for the lifted parameter: the kernel
+"""Plan-structure pins for the lifted parameter: the kernel
 carries ``picked_params``; a weight aggregate's partition keys need not be query
 dimensions (the combined-consumer exemption extends to args/kwargs); the operand
 carrier is one producer; the emitted SQL is scope-closed; adding the weighted
-measure is cardinality-neutral.
+metric is cardinality-neutral.
 
 Spec: queries/partitioned-aggregates — "Parameter partition keys need not be
 query dimensions"; queries/semantics — "Aggregation parameters are typed by the
@@ -19,31 +19,32 @@ from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
-from tests._dev1841_fixtures import assoc_q, dev1840_models
+from slayer.core.query import QueryMetric
+
+from tests._dev1841_fixtures import assoc_q, dev1840_datasets
 from tests._dev1847_fixtures import (
     INNER_CR,
     INNER_CRP,
-    ModelMeasure,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     make_exec_engine,
     region_key,
     sales_q,
 )
-from tests._dev1892_fixtures import weighted_sales_models
+from tests._dev1892_fixtures import weighted_sales_datasets
 
-_WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
+_WEIGHT_COUNT = "weight=count(sales.id, partition_by=[sales.city, sales.region])"
 _WAVG_REAGG = f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})"
 
 
 def _sales_bundle() -> ResolvedSourceBundle:
-    models = dev1847_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+    models = dev1847_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
 def _orders_bundle() -> ResolvedSourceBundle:
-    models = dev1840_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+    models = dev1840_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
 def _association_attaches(planned) -> list:
@@ -53,15 +54,15 @@ def _association_attaches(planned) -> list:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def reagg_engine(request):
-    async for engine in make_exec_engine(request, models=weighted_sales_models()):
+    async for engine in make_exec_engine(request, datasets=weighted_sales_datasets()):
         yield engine
 
 
 class TestKernelCarriesPickedParams:
     def test_reaggregation_kernel_picks_the_weight(self) -> None:
         planned = plan_query(
-            query=sales_q(dimensions=["region"],
-                          measures=[ModelMeasure(formula=_WAVG_REAGG, name="w")]),
+            query=sales_q(dimensions=["sales.region"],
+                          metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]),
             bundle=_sales_bundle())
         [attach] = _association_attaches(planned)
         names = [p.name for p in attach.kernel.picked_params]
@@ -69,9 +70,9 @@ class TestKernelCarriesPickedParams:
 
     def test_association_kernel_picks_the_weight(self) -> None:
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], measures=[ModelMeasure(
-                formula="weighted_avg(customers.spend, weight=customers.spend)",
-                name="w")]),
+            query=assoc_q(dimensions=["orders.status"], metrics=[QueryMetric(
+                metric="weighted_avg(customers.spend, weight=customers.spend)",
+                alias="w")]),
             bundle=_orders_bundle())
         [attach] = _association_attaches(planned)
         names = [p.name for p in attach.kernel.picked_params]
@@ -84,8 +85,8 @@ class TestCombinedConsumerExemption:
         which is not a query dimension; planning must not raise the
         combined-consumer partition-key error (the exemption covers kwargs)."""
         planned = plan_query(
-            query=sales_q(dimensions=["region"],
-                          measures=[ModelMeasure(formula=_WAVG_REAGG, name="w")]),
+            query=sales_q(dimensions=["sales.region"],
+                          metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]),
             bundle=_sales_bundle())
         assert _association_attaches(planned)
 
@@ -93,11 +94,11 @@ class TestCombinedConsumerExemption:
         """A re-aggregation nested inside another, carrying a weight, plans."""
         formula = (
             f"avg(weighted_avg({INNER_CRP}, "
-            "weight=count(id, partition_by=[city, region, product]), "
-            "partition_by=[region, product]))")
+            "weight=count(sales.id, partition_by=[sales.city, sales.region, sales.product]), "
+            "partition_by=[sales.region, sales.product]))")
         planned = plan_query(
-            query=sales_q(dimensions=["product"],
-                          measures=[ModelMeasure(formula=formula, name="d")]),
+            query=sales_q(dimensions=["sales.product"],
+                          metrics=[QueryMetric(metric=formula, alias="d")]),
             bundle=_sales_bundle())
         assert _association_attaches(planned)
 
@@ -105,8 +106,8 @@ class TestCombinedConsumerExemption:
 class TestEmittedShape:
     async def test_operand_carrier_is_one_producer_and_scope_closed(self) -> None:
         sql = await gen(sales_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula=_WAVG_REAGG, name="w")]))
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))
         # value (amount:sum) and weight (id:count) ride ONE operand carrier.
         ctes = re.findall(r"(_cm_\w+) AS \(", sql)
         carriers = [n for n in ctes if "weighted_avg" not in n]
@@ -116,8 +117,8 @@ class TestEmittedShape:
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb", "postgres", "bigquery"])
     async def test_no_placeholder_leak(self, dialect) -> None:
         sql = await gen(sales_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula=_WAVG_REAGG, name="w")]), dialect=dialect)
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]), dialect=dialect)
         assert "__regroup__" not in sql, sql
 
 
@@ -126,14 +127,14 @@ class TestCardinalityInvariant:
         self, reagg_engine,
     ) -> None:
         base = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         withw = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
-                      ModelMeasure(formula=_WAVG_REAGG, name="w")]))
-        a = {k: v["sales.tot"] for k, v in region_key(base).items()}
-        b = {k: v["sales.tot"] for k, v in region_key(withw).items()}
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
+                      QueryMetric(metric=_WAVG_REAGG, alias="w")]))
+        a = {k: v["tot"] for k, v in region_key(base).items()}
+        b = {k: v["tot"] for k, v in region_key(withw).items()}
         assert set(a) == set(b)
         for k in a:
             assert a[k] == b[k]

@@ -3,7 +3,7 @@ the ``tests/test_law_*.py`` files (the generative backend of the laws in
 ``architecture/semantics.arc42.md`` §3).
 
 Builds on the partition-by / computed-dimension fixture stack: orders → customers → regions,
-the 7-row dataset, ``DIM_FAMILY_DIMS`` and the attach + transform measure pool.
+the 7-row dataset, ``DIM_FAMILY_DIMS`` and the attach + transform metric pool.
 Everything is seeded (``LAW_SEED``) — no Hypothesis, no run-to-run drift; shape
 ids are stable across collections.
 
@@ -12,7 +12,7 @@ of 8): split-invariance ≤ (1 + 4)×(40 + 8) = 240 engine runs; grain-union
 2×(40 + 8) = 96; broadcast coherence 2 runs × (24 + 6 slice) pairs per grain
 × 3 grains = 180, plus the named chain/refusal cases; lowering soundness ~12.
 ≈ 540 total, all on tmpfile-backed engines. The pools also carry the
-cross-model partitioned operands (``cm_part`` / ``cm_last``, family
+cross-dataset partitioned operands (``cm_part`` / ``cm_last``, family
 ``cmgrain``, pair grain ``rn``).
 """
 
@@ -29,21 +29,22 @@ from pydantic import BaseModel
 
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import open_connection
+from slayer.core.query import QueryMetric
 
-from tests._dev1739_fixtures import dev1739_models, _seed_duckdb, _seed_sqlite
+from tests._dev1739_fixtures import dev1739_datasets, _seed_duckdb, _seed_sqlite
 from tests._engine_helpers import seeded_exec_engine
 from tests._dev1837_fixtures import (
     DIM_FAMILY_DIMS,
     TD_TRANSFORM_OPS,
-    TRANSFORM_FORMULAS,
-    ModelMeasure,
+    TRANSFORM_EXPRESSIONS,
+    DatasetMetric,
     SlayerQuery,
     dim_key,
     month_key,
     month_td,
     q,
 )
-from tests.test_dev1837_dimension_measure_matrix import ATTACH_MEASURES, TD_ATTACH
+from tests.test_dev1837_dimension_measure_matrix import ATTACH_METRICS, TD_ATTACH
 
 LAW_SEED = 1869
 N_SHAPES = 40
@@ -51,44 +52,44 @@ N_DUCKDB = 8
 N_PAIRS = 24
 DUCKDB_PAIR_STRIDE = 4
 
-#: Cross-model partitioned operands. A combined consumer needs its
+#: Cross-dataset partitioned operands. A combined consumer needs its
 #: partition key among the query dimensions, so these pin to ``cmgrain``.
-CM_PARTITIONED_MEASURES = {
+CM_PARTITIONED_METRICS = {
     "cm_part": "sum(customers.spend, partition_by=customers.regions.name)",
     "cm_last": "last(customers.spend, partition_by=customers.regions.name)",
 }
-CM_PARTITIONED_OPERANDS = frozenset(CM_PARTITIONED_MEASURES)
-MEASURE_REQUIRED_FAMILY = {k: "cmgrain" for k in CM_PARTITIONED_MEASURES}
+CM_PARTITIONED_OPERANDS = frozenset(CM_PARTITIONED_METRICS)
+METRIC_REQUIRED_FAMILY = {k: "cmgrain" for k in CM_PARTITIONED_METRICS}
 
 #: A local ratio composite and a transform over it.
-RATIO_MEASURES = {
-    "ratio": "sum(amount) / count(*)",
-    "ratio_cumsum": "cumsum(sum(amount) / count(*))",
+RATIO_METRICS = {
+    "ratio": "sum(orders.amount) / count(orders.*)",
+    "ratio_cumsum": "cumsum(sum(orders.amount) / count(orders.*))",
 }
 TD_RATIO = frozenset({"ratio_cumsum"})
 
-#: The full measure pool: every attach family + every transform op + the
-#: cross-model partitioned operands + the ratio composites.
-MEASURE_POOL = {
-    **ATTACH_MEASURES, **TRANSFORM_FORMULAS, **CM_PARTITIONED_MEASURES, **RATIO_MEASURES,
+#: The full metric pool: every attach family + every transform op + the
+#: cross-dataset partitioned operands + the ratio composites.
+METRIC_POOL = {
+    **ATTACH_METRICS, **TRANSFORM_EXPRESSIONS, **CM_PARTITIONED_METRICS, **RATIO_METRICS,
 }
 
 #: Law-local dimension families: the ``DIM_FAMILY_DIMS`` set plus the grain carrying the
-#: cross-model partition key.
+#: cross-dataset partition key.
 LAW_DIM_FAMILY_DIMS = {
     **DIM_FAMILY_DIMS,
-    "cmgrain": ["region", "customers.regions.name"],
+    "cmgrain": ["orders.region", "customers.regions.name"],
 }
 
 #: Row-level filter pool (tag → predicate; ``f0`` = unfiltered).
 FILTERS = {
     "f0": None,
-    "fr": "region = 'North'",
-    "fs": "status = 'ok'",
+    "fr": "orders.region = 'North'",
+    "fs": "orders.status = 'ok'",
     "fc": "customers.tier = 'gold'",
 }
 
-_MEASURE_ABBREV = {
+_METRIC_ABBREV = {
     "plain": "pl", "part": "pt", "win_part": "wp", "last_part": "lp",
     "wm": "wm", "rk": "rk", "cm": "cm", "time_shift": "ts", "lag": "lg",
     "lead": "ld", "change": "ch", "change_pct": "cp", "cumsum": "cs",
@@ -98,7 +99,7 @@ _MEASURE_ABBREV = {
 
 #: Explicit semantic grain of the broadcast-attach operands (grain-union law):
 #: partition keys, plus the month bucket for ``window=`` operands; ``cm`` is the
-#: grand cross-model total — the empty grain.
+#: grand cross-dataset total — the empty grain.
 OPERAND_GRAIN = {
     "part": ("region",),
     "last_part": ("region",),
@@ -110,18 +111,18 @@ OPERAND_GRAIN = {
 
 #: Broadcast-coherence operand families (design D4) × arithmetic ops.
 OPERANDS = {
-    "plain": "sum(amount)",
-    "part_region": "sum(amount, partition_by=region)",
-    "part_city": "sum(amount, partition_by=city)",
-    "last_part": "last(amount, partition_by=region)",
-    "win_part": "sum(amount, window='90d', partition_by=region)",
+    "plain": "sum(orders.amount)",
+    "part_region": "sum(orders.amount, partition_by=orders.region)",
+    "part_city": "sum(orders.amount, partition_by=orders.city)",
+    "last_part": "last(orders.amount, partition_by=orders.region)",
+    "win_part": "sum(orders.amount, window='90d', partition_by=orders.region)",
     "cm": "sum(customers.spend)",
-    "cm_part": CM_PARTITIONED_MEASURES["cm_part"],
-    "cm_last": CM_PARTITIONED_MEASURES["cm_last"],
+    "cm_part": CM_PARTITIONED_METRICS["cm_part"],
+    "cm_last": CM_PARTITIONED_METRICS["cm_last"],
 }
 OPS = ("+", "-", "*")
 
-#: Registry key marking the measure-free (dims-only) variant of a shape.
+#: Registry key marking the metric-free (dims-only) variant of a shape.
 DIMS_ONLY = "<dims-only>"
 
 
@@ -142,63 +143,63 @@ _FRAGMENTS = frozenset(site.fragment for site in DEFERRAL_SITES)
 
 
 class LawShape(BaseModel):
-    """One generated query shape: a dimension family, 2–4 pool measures, and a
-    filter; the month time dimension is auto-forced by the FULL measure set so
+    """One generated query shape: a dimension family, 2–4 pool metrics, and a
+    filter; the month time dimension is auto-forced by the FULL metric set so
     the grain never moves between a shape's variants."""
 
     shape_id: str
     dim_family: str
-    measure_keys: Tuple[str, ...]
+    metric_keys: Tuple[str, ...]
     filter: Optional[str]
 
     @property
     def with_month(self) -> bool:
         return any(
             k in TD_ATTACH or k in TD_TRANSFORM_OPS or k in TD_RATIO
-            for k in self.measure_keys
+            for k in self.metric_keys
         )
 
     def __str__(self) -> str:
         return (
             f"{self.shape_id}(family={self.dim_family}, "
-            f"measures={list(self.measure_keys)}, filter={self.filter!r})"
+            f"measures={list(self.metric_keys)}, filter={self.filter!r})"
         )
 
 
 def _shape(idx: int, family: str, keys: Sequence[str], ftag: str) -> LawShape:
-    pool_order = tuple(MEASURE_POOL)
+    pool_order = tuple(METRIC_POOL)
     ordered = tuple(sorted(keys, key=pool_order.index))
-    abbrev = "".join(_MEASURE_ABBREV[k] for k in ordered)
+    abbrev = "".join(_METRIC_ABBREV[k] for k in ordered)
     return LawShape(
         shape_id=f"s{idx:02d}-{family}-{abbrev}-{ftag}",
-        dim_family=family, measure_keys=ordered, filter=FILTERS[ftag],
+        dim_family=family, metric_keys=ordered, filter=FILTERS[ftag],
     )
 
 
 def _forced_family(keys: Sequence[str]) -> Optional[str]:
-    """The family a constrained measure pins its shape to, else None."""
+    """The family a constrained metric pins its shape to, else None."""
     for k in keys:
-        family = MEASURE_REQUIRED_FAMILY.get(k)
+        family = METRIC_REQUIRED_FAMILY.get(k)
         if family is not None:
             return family
     return None
 
 
 def sample_shapes() -> Tuple[LawShape, ...]:
-    """Deterministic covering core (every family, measure, and filter; ≥1
-    cross-model, ≥1 windowed, the ratio beside its transform), then seeded random
-    fill to ``N_SHAPES``. A measure with a required family (cm_part / cm_last)
+    """Deterministic covering core (every family, metric, and filter; ≥1
+    cross-dataset, ≥1 windowed, the ratio beside its transform), then seeded random
+    fill to ``N_SHAPES``. A metric with a required family (cm_part / cm_last)
     forces its shape there."""
     rng = random.Random(LAW_SEED)
     families = tuple(LAW_DIM_FAMILY_DIMS)
-    measures = tuple(MEASURE_POOL)
+    measures = tuple(METRIC_POOL)
     ftags = tuple(FILTERS)
     cores: list[tuple[str, Sequence[str], str]] = []
     for idx, start in enumerate(range(0, len(measures), 3)):
         keys = measures[start:start + 3]
         family = _forced_family(keys) or families[idx % len(families)]
         cores.append((family, keys, ftags[idx % len(ftags)]))
-    cores.append(("col", tuple(RATIO_MEASURES), "f0"))
+    cores.append(("col", tuple(RATIO_METRICS), "f0"))
     covered = {family for family, _, _ in cores}
     for j, family in enumerate(families):
         if family not in covered:
@@ -214,13 +215,13 @@ def sample_shapes() -> Tuple[LawShape, ...]:
 
 def _assert_covering(shapes: Sequence[LawShape]) -> None:
     assert {s.dim_family for s in shapes} == set(LAW_DIM_FAMILY_DIMS)
-    assert {k for s in shapes for k in s.measure_keys} == set(MEASURE_POOL)
+    assert {k for s in shapes for k in s.metric_keys} == set(METRIC_POOL)
     assert {s.filter for s in shapes} == set(FILTERS.values())
-    assert any("cm" in s.measure_keys for s in shapes)
-    assert any(set(s.measure_keys) & {"wm", "win_part"} for s in shapes)
+    assert any("cm" in s.metric_keys for s in shapes)
+    assert any(set(s.metric_keys) & {"wm", "win_part"} for s in shapes)
     assert all(
-        s.dim_family == MEASURE_REQUIRED_FAMILY[k]
-        for s in shapes for k in s.measure_keys if k in MEASURE_REQUIRED_FAMILY
+        s.dim_family == METRIC_REQUIRED_FAMILY[k]
+        for s in shapes for k in s.metric_keys if k in METRIC_REQUIRED_FAMILY
     )
 
 
@@ -274,7 +275,7 @@ def sample_pairs(
 #: ``rn`` = (region, customers.regions.name). Each grain excludes the operands
 #: ill-typed there (a partition key outside the query grain is the axiom-6
 #: typed refusal, pinned by a named coherence test instead): part_city outside
-#: ``rc``, and the cross-model partitioned operands outside ``rn``.
+#: ``rc``, and the cross-dataset partitioned operands outside ``rn``.
 PAIRS_BY_GRAIN = {
     "rc": sample_pairs(exclude=CM_PARTITIONED_OPERANDS),
     "rm": sample_pairs(exclude=CM_PARTITIONED_OPERANDS | {"part_city"}),
@@ -319,7 +320,7 @@ async def make_law_engine(
         pytest.importorskip("duckdb")
     seed = _seed_sqlite if dialect == "sqlite" else _seed_duckdb
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=dev1739_models(),
+        dialect=dialect, seed=seed, datasets=dev1739_datasets(),
     ) as (engine, db_path):
         # Copy the oracle right after entering — engine connections are lazy, so
         # the file is not yet locked (DuckDB rejects a second config on it).
@@ -347,19 +348,19 @@ def build_query(
 ) -> SlayerQuery:
     kwargs: dict[str, Any] = {"dimensions": LAW_DIM_FAMILY_DIMS[shape.dim_family]}
     if not dims_only:
-        kwargs["measures"] = [
-            ModelMeasure(formula=MEASURE_POOL[k], name=f"m_{k}")
-            for k in shape.measure_keys if k != drop
+        kwargs["metrics"] = [
+            QueryMetric(metric=METRIC_POOL[k], alias=f"m_{k}")
+            for k in shape.metric_keys if k != drop
         ]
     if shape.with_month:
         kwargs["time_dimensions"] = month_td()
     if shape.filter:
-        kwargs["filters"] = [shape.filter]
+        kwargs["filter"] = [shape.filter]
     return q(**kwargs)
 
 
 #: Shape variants that hit an enumerated fail-closed guard, keyed by
-#: (shape_id, dropped-measure-key | DIMS_ONLY | None) → a DEFERRAL_SITES
+#: (shape_id, dropped-metric-key | DIMS_ONLY | None) → a DEFERRAL_SITES
 #: fragment. Never a bare NotImplementedError catch; no silent skips — an
 #: unregistered raise fails the test, a registered one must match its site.
 EXPECTED_RAISES: dict[Tuple[str, Optional[str]], str] = {}
@@ -393,7 +394,7 @@ def law_dim_key(row: dict, *, family: str, with_month: bool):
     """``dim_key`` over the law-local families (adds ``cmgrain``)."""
     if family != "cmgrain":
         return dim_key(row, family=family, with_month=with_month)
-    key: tuple = (row["orders.region"], row["orders.customers.regions.name"])
+    key: tuple = (row["orders.region"], row["customers.regions.name"])
     if with_month:
         key += (month_key(row["orders.ordered_at"]),)
     return key
@@ -439,16 +440,143 @@ def law_assert(condition: bool, *, law: str, detail: str, shape) -> None:
     assert condition, f"LAW {law} violated — {detail}; shape={shape}"
 
 
+# --------------------------------------------------------------------------- #
+# Root-less shapes over the Ossie Appendix B seed (``tests._dev2212_fixtures``):
+# the row laws of inferred queries. A one-metric shape is single-source, a
+# shape whose metrics have several homes is a key union.
+# --------------------------------------------------------------------------- #
+ROOTLESS_DIMS: dict[str, list[str]] = {
+    "region": ["customers.region"],
+    "region_segment": ["customers.region", "customers.segment"],
+    "status": ["orders.status"],
+    "region_status": ["customers.region", "orders.status"],
+    "unit": [],
+}
+#: The population naming each family's anchored twin.
+ROOTLESS_POPULATION = {"region": "customers", "region_segment": "customers", "status": "orders",
+                       "region_status": "orders", "unit": "customers"}
+ROOTLESS_METRICS = {
+    "rev": "sum(orders.amount)",
+    "ret": "sum(returns.amount)",
+    "vis": "count(visits.*)",
+    "tix": "count(tickets.*)",
+    "cust": "count(customers.*)",
+    "part": "sum(orders.amount, partition_by=[customers.region])",
+    "maxret": "max(returns.amount)",
+    "ratio": "sum(orders.amount) / count(customers.*)",
+}
+#: Each metric's value in a cell it lacks (Axiom 4).
+ROOTLESS_EMPTY = {"vis": 0, "tix": 0, "cust": 0}
+#: A metric that needs a dimension among the query's.
+ROOTLESS_REQUIRES = {"part": "customers.region"}
+ROOTLESS_FILTERS = {
+    "f0": None,
+    "fa": "orders.amount > 60",
+    "fs": "customers.segment = 'retail'",
+    "fr": "returns.amount > 20",
+    "fz": "1 = 0",
+}
+N_ROOTLESS = 24
+ROOTLESS_DUCKDB_STRIDE = 4
+
+
+class RootlessShape(BaseModel):
+    """One root-less query shape: a dimension family, 1–3 pool metrics and a filter."""
+
+    shape_id: str
+    family: str
+    metric_keys: Tuple[str, ...]
+    filter: Optional[str]
+
+    @property
+    def dims(self) -> list[str]:
+        return ROOTLESS_DIMS[self.family]
+
+    def __str__(self) -> str:
+        return f"{self.shape_id}(dims={self.dims}, metrics={list(self.metric_keys)}, filter={self.filter!r})"
+
+
+def _rootless_allowed(family: str, key: str) -> bool:
+    need = ROOTLESS_REQUIRES.get(key)
+    return need is None or need in ROOTLESS_DIMS[family]
+
+
+def sample_rootless_shapes() -> Tuple[RootlessShape, ...]:
+    """Covering core (every family single-source and as a key union, every metric and filter), then seeded fill."""
+    rng = random.Random(LAW_SEED)
+    families, ftags = tuple(ROOTLESS_DIMS), tuple(ROOTLESS_FILTERS)
+    cores: list[tuple[str, Tuple[str, ...], str]] = []
+    for i, family in enumerate(families):
+        cores.append((family, ("rev",), ftags[i % len(ftags)]))
+        cores.append((family, ("rev", "ret", "vis"), ftags[(i + 1) % len(ftags)]))
+    for i, key in enumerate(ROOTLESS_METRICS):
+        family = "region" if key in ROOTLESS_REQUIRES else families[i % len(families)]
+        cores.append((family, (key, "rev" if key == "ret" else "ret"), ftags[i % len(ftags)]))
+    while len(cores) < N_ROOTLESS:
+        family = rng.choice(families)
+        pool = [k for k in ROOTLESS_METRICS if _rootless_allowed(family, k)]
+        cores.append((family, tuple(rng.sample(pool, rng.randint(1, 3))), rng.choice(ftags)))
+    shapes = tuple(
+        RootlessShape(shape_id=f"r{i:02d}-{family}-{'.'.join(keys)}-{ftag}", family=family, metric_keys=keys,
+                      filter=ROOTLESS_FILTERS[ftag])
+        for i, (family, keys, ftag) in enumerate(cores)
+    )
+    assert {s.family for s in shapes} == set(ROOTLESS_DIMS)
+    assert {k for s in shapes for k in s.metric_keys} == set(ROOTLESS_METRICS)
+    assert {s.filter for s in shapes} == set(ROOTLESS_FILTERS.values())
+    return shapes
+
+
+ROOTLESS_SHAPES = sample_rootless_shapes()
+
+
+def rootless_params(predicate=lambda s: True) -> list:
+    """``(dialect, shape)`` params: SQLite over every shape, DuckDB over every ``ROOTLESS_DUCKDB_STRIDE``-th."""
+    shapes = [s for s in ROOTLESS_SHAPES if predicate(s)]
+    return [
+        pytest.param((dialect, s), id=f"{dialect}-{s.shape_id}")
+        for dialect in ("sqlite", "duckdb")
+        for i, s in enumerate(shapes)
+        if dialect == "sqlite" or i % ROOTLESS_DUCKDB_STRIDE == 0
+    ]
+
+
+def rootless_query(shape: RootlessShape, *, keys: Optional[Sequence[str]] = None, filter: Any = "<shape>",
+                   population: Optional[str] = None) -> SlayerQuery:
+    """``shape`` as a query over ``keys`` (default: its own), its filter (or ``filter``), optionally anchored."""
+    chosen = shape.filter if filter == "<shape>" else filter
+    body: dict[str, Any] = {
+        "dimensions": shape.dims,
+        "metrics": [{"metric": ROOTLESS_METRICS[k], "alias": f"m_{k}"} for k in (keys or shape.metric_keys)],
+    }
+    if chosen:
+        body["filter"] = [chosen]
+    if population:
+        body["population"] = population
+    return SlayerQuery.model_validate(body)
+
+
+def rootless_rows(resp, *, shape: RootlessShape) -> dict[tuple, dict]:
+    """Rows keyed by the shape's dimension tuple; a repeated key is a grain violation."""
+    out = {tuple(canon(r[d]) for d in shape.dims): r for r in resp.data}
+    law_assert(len(out) == len(resp.data), law="grain guarantee",
+               detail=f"duplicate rows for one key ({len(resp.data)} rows, {len(out)} keys)", shape=shape)
+    return out
+
+
 __all__ = [
-    "CM_PARTITIONED_MEASURES", "CM_PARTITIONED_OPERANDS", "DEFERRAL_SITES",
+    "CM_PARTITIONED_METRICS", "CM_PARTITIONED_OPERANDS", "DEFERRAL_SITES",
     "DIMS_ONLY", "DUCKDB_PAIR_IDS", "DUCKDB_SHAPE_IDS",
     "EXPECTED_RAISES", "FILTERS", "LAW_DIM_FAMILY_DIMS", "LAW_SEED",
-    "MEASURE_POOL", "MEASURE_REQUIRED_FAMILY", "N_DUCKDB",
+    "METRIC_POOL", "METRIC_REQUIRED_FAMILY", "N_DUCKDB",
     "N_PAIRS", "N_SHAPES", "OPERANDS", "OPERAND_GRAIN", "OPS",
     "PAIRS_BY_GRAIN", "SHAPES", "CoherencePair", "DeferralSite", "LawShape",
-    "ModelMeasure",
+    "DatasetMetric",
     "build_query", "canon", "execute_shape", "keyed_rows", "law_assert",
     "law_dim_key", "law_params", "make_law_engine", "month_key", "month_td",
     "pair_params", "q", "raw_rows", "sample_pairs", "sample_shapes",
     "values_equal",
+    "N_ROOTLESS", "ROOTLESS_DIMS", "ROOTLESS_EMPTY", "ROOTLESS_FILTERS", "ROOTLESS_METRICS",
+    "ROOTLESS_POPULATION", "ROOTLESS_SHAPES", "RootlessShape", "rootless_params", "rootless_query",
+    "rootless_rows", "sample_rootless_shapes",
 ]

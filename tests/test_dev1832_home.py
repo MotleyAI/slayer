@@ -1,4 +1,4 @@
-"""DEV-1832 task 1.3 — the home dataset resolved on the term (D2).
+"""The home dataset resolved on the term (D2).
 
 Every ``#### Scenario`` of ``queries/semantics`` › *Home dataset of a row-level
 aggregation source*: the elaborator resolves each aggregate's home once and the
@@ -11,49 +11,48 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import Aggregate
 
 from tests._dev1832_fixtures import (
-    ModelMeasure,
     bundle,
-    dev1832_models,
+    dev1832_datasets,
     orders_q,
 )
 
 
-def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
-    """The ``home_path`` of the outer aggregate in a measure over orders (the
-    measure's bound value key — robust to a nested constituent aggregate)."""
+def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
+    """The ``home_path`` of the outer aggregate in a metric over orders (the
+    metric's bound value key — robust to a nested constituent aggregate)."""
     elab = elaborate_query(
         query=orders_q(
             dimensions=dimensions or [],
-            measures=[ModelMeasure(formula=formula, name="m")]),
-        bundle=bundle(dev1832_models()))
+            metrics=[QueryMetric(metric=expression, alias="m")]),
+        bundle=bundle(dev1832_datasets()))
     assert elab.prebound is not None
-    root = elab.prebound.declared_measures[-1].bound.value_key
+    root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
     term = elab.terms[root]
     assert isinstance(term, Aggregate), term
     return term.home_path
 
 
-def _parallel_edge_models() -> list[SlayerModel]:
-    """A model with two NAMED joins to the same target (parallel edges)."""
-    tickets = SlayerModel(
+def _parallel_edge_datasets() -> list[SlayerDataset]:
+    """A dataset with two NAMED relationships to the same target (parallel edges)."""
+    tickets = SlayerDataset(
         name="tk", data_source="test", sql_table="tk",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="opened_by", type=DataType.INT),
-                 Column(name="closed_by", type=DataType.INT)],
-        joins=[ModelJoin(target_model="ag", join_pairs=[["opened_by", "id"]], name="opener"),
-               ModelJoin(target_model="ag", join_pairs=[["closed_by", "id"]], name="closer")])
-    ag = SlayerModel(
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="opened_by", datatype=DataType.INTEGER),
+                 DatasetField(name="closed_by", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="ag", from_columns=["opened_by"], to_columns=["id"], name="opener"),
+               DatasetRelationship(to="ag", from_columns=["closed_by"], to_columns=["id"], name="closer")])
+    ag = SlayerDataset(
         name="ag", data_source="test", sql_table="ag",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="score", type=DataType.DOUBLE)])
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="score", datatype=DataType.FLOAT)])
     return [tickets, ag]
 
 
@@ -64,7 +63,7 @@ class TestHomeDatasetPerScenario:
 
     def test_host_side_leaf_pulls_home_to_root(self):
         # amount is host-local → home is orders (the root).
-        assert _home_path("sum(amount - customers.discount)") == ()
+        assert _home_path("sum(orders.amount - customers.discount)") == ()
 
     def test_branches_meet_at_common_ancestor(self):
         # customers.spend and stores.rent diverge at the root → home is orders.
@@ -73,7 +72,7 @@ class TestHomeDatasetPerScenario:
     def test_a_parameter_widens_the_home(self):
         # weight=amount (orders-local) pulls the home to the root.
         assert _home_path(
-            "wsum(customers.spend + customers.regions.pop, weight=amount)") == ()
+            "wsum(customers.spend + customers.regions.pop, weight=orders.amount)") == ()
 
     def test_a_definition_default_widens_the_home_the_same_way(self):
         # wsum's default weight (spend) is customers-local → home stays customers,
@@ -96,7 +95,7 @@ class TestHomeDatasetPerScenario:
         # bad_pop crosses the fanning regions→region_events hop, so no dataset
         # determines it; the home resolves to the anchor and the input-safety
         # checker raises downstream (exercised in test_dev1832_cross_model_exec).
-        assert _home_path("sum(amount - customers.regions.bad_pop)") == ()
+        assert _home_path("sum(orders.amount - customers.regions.bad_pop)") == ()
 
 
 class TestHomeIsSpellingInvariant:
@@ -113,7 +112,7 @@ class TestHomeIsSpellingInvariant:
             "sum(customers.spend - customers.regions.pop)") == ("customers",)
 
     @pytest.mark.parametrize("formula,expected", [
-        ("sum(amount - cost)", ()),                       # both host-local
+        ("sum(orders.amount - orders.cost)", ()),                       # both host-local
         ("sum(customers.spend - customers.discount)", ("customers",)),
     ])
     def test_home_path_matrix(self, formula, expected):
@@ -128,35 +127,35 @@ class TestAttachedConstituentGrainWidensTheHome:
 
     def test_explicit_status_partition_pulls_home_to_root(self):
         assert _home_path(
-            "sum(customers.discount * avg(amount, partition_by=status))") == ()
+            "sum(customers.discount * avg(orders.amount, partition_by=orders.status))") == ()
 
     def test_explicit_tier_partition_keeps_home_at_customers(self):
         assert _home_path(
-            "sum(customers.discount * avg(amount, partition_by=customers.tier))"
+            "sum(customers.discount * avg(orders.amount, partition_by=customers.tier))"
         ) == ("customers",)
 
     def test_ungrained_constituent_takes_the_query_dimension(self):
         assert _home_path(
-            "sum(customers.discount * avg(amount))", dimensions=["status"]) == ()
+            "sum(customers.discount * avg(orders.amount))", dimensions=["orders.status"]) == ()
         assert _home_path(
-            "sum(customers.discount * avg(amount))",
+            "sum(customers.discount * avg(orders.amount))",
             dimensions=["customers.tier"]) == ("customers",)
 
 
 class TestParallelNamedEdges:
-    """Two named joins to the same target carry distinct path segments (the join
-    name), so their leaves resolve to distinct paths (see test_dev1832_anchor's
+    """Two named relationships to the same target carry distinct path segments (the
+    relationship name), so their leaves resolve to distinct paths (see test_dev1832_anchor's
     ``test_parallel_named_edges_yield_distinct_paths``); the home is their common
-    ancestor. (The synthesized-sub-plan root-relativity and the nested cross-model
+    ancestor. (The synthesized-sub-plan root-relativity and the nested cross-dataset
     producer's consumption of ``home_path`` are observable in
     test_dev1832_cross_model_exec's target-homed execution and the golden SQL.)"""
 
     def test_home_at_root_over_parallel_edges(self):
-        models = _parallel_edge_models()
+        models = _parallel_edge_datasets()
         elab = elaborate_query(
-            query=SlayerQuery(source_model="tk", measures=[
-                ModelMeasure(formula="sum(opener.score - closer.score)", name="m")]),
-            bundle=ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:]))
+            query=SlayerQuery(population="tk", metrics=[
+                QueryMetric(metric="sum(tk.opener.score - tk.closer.score)", alias="m")]),
+            bundle=ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:]))
         aggs = [k for k in elab.terms if isinstance(k, AggregateKey)]
         assert len(aggs) == 1
         term = elab.terms[aggs[0]]

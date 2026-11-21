@@ -1,0 +1,50 @@
+{
+ "source": "tests/test_dev1915_windowed_exec.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(amount, window='90d')",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 268,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 291,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 296,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 326,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 336,
+   "reason": "not fully literal"
+  }
+ ]
+}

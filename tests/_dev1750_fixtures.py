@@ -1,15 +1,15 @@
-"""Shared fixtures for DEV-1750 — time_shift / consecutive_periods over a
-cross-model or crossing-fragment aggregate.
+"""Shared fixtures for time_shift / consecutive_periods over a
+cross-dataset or crossing-fragment aggregate.
 
-The models mirror ``tests/test_dev1745_fragment_joins.py`` (orders → customers →
-regions, ``wscaled_sum`` template crossing a join) so the shifted-CTE half reads
+The datasets mirror ``tests/test_dev1745_fragment_joins.py`` (orders → customers →
+regions, ``wscaled_sum`` template crossing a relationship) so the shifted-CTE half reads
 against the same shape the ``_cm_`` half was fixed against. Underscore-prefixed
 so pytest skips collection here (like ``tests/_engine_helpers.py``).
 
-The three time_shift inner-aggregate shapes DEV-1750 distinguishes:
+The three time_shift inner-aggregate shapes distinguished here:
 
 * **(a) local inner** — ``time_shift(sum(amount), -1)`` with a *sibling*
-  cross-model measure. Guarded today only by association.
+  cross-dataset metric. Guarded today only by association.
 * **(b) host-rooted inner** — ``time_shift(wscaled_sum(amount), -1)`` whose
   default param crosses ``orders → customers → regions``. The crossing fragment
   isolates the aggregate host-rooted (``cte_root_model`` = host); the shifted CTE
@@ -32,12 +32,12 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._engine_helpers import seeded_exec_engine
 
@@ -46,101 +46,101 @@ from tests._engine_helpers import _engine_generate, _extract_cte_body
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers → regions.
+# Datasets — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="weight", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
         ],
     )
 
 
-def customers_model() -> SlayerModel:
-    """``customers`` carries ``spend`` (the target-grain measure for shape (c))
+def customers_dataset() -> SlayerDataset:
+    """``customers`` carries ``spend`` (the target-grain metric for shape (c))
     and a ``signup_at`` a first/last explicit time arg can rank by."""
-    return SlayerModel(
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def line_items_model() -> SlayerModel:
+def line_items_dataset() -> SlayerDataset:
     """A 1:N child of ``orders`` (each order has several line items). The
-    ``liscaled_sum`` fragment crosses this ONE-TO-MANY join, so a wrong host-base
-    isolation would fan the join out and MULTIPLY sibling measures — which is
+    ``liscaled_sum`` fragment crosses this ONE-TO-MANY relationship, so a wrong host-base
+    isolation would fan the join out and MULTIPLY sibling metrics — which is
     what the sibling-protection execution test detects (Codex F1)."""
-    return SlayerModel(
+    return SlayerDataset(
         name="line_items", data_source="test", sql_table="line_items",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="factor", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="factor", datatype=DataType.FLOAT),
         ],
     )
 
 
-def orders_model() -> SlayerModel:
-    """Host model. ``wscaled_sum`` is declared HERE with a default param crossing
+def orders_dataset() -> SlayerDataset:
+    """Host dataset. ``wscaled_sum`` is declared HERE with a default param crossing
     two hops (``customers__regions.weight``), so ``wscaled_sum(amount)`` is the
     host-rooted crossing-fragment aggregate (shape (b)). ``liscaled_sum`` crosses
-    the 1:N ``line_items`` join for the sibling-protection fan-out proof."""
-    return SlayerModel(
+    the 1:N ``line_items`` relationship for the sibling-protection fan-out proof."""
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="line_items", join_pairs=[["id", "order_id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"]),
         ],
         aggregations=[
             Aggregation(
-                name="wscaled_sum", formula="SUM({value} * {w})",
+                name="wscaled_sum", expression="SUM({value} * {w})",
                 params=[AggregationParam(
                     name="w", sql="customers.regions.weight",
                 )],
             ),
             Aggregation(
-                name="liscaled_sum", formula="SUM({value} * {f})",
+                name="liscaled_sum", expression="SUM({value} * {f})",
                 params=[AggregationParam(name="f", sql="line_items.factor")],
             ),
         ],
     )
 
 
-def dev1750_models() -> List[SlayerModel]:
+def dev1750_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model(), regions_model(), line_items_model()]
+    return [orders_dataset(), customers_dataset(), regions_dataset(), line_items_dataset()]
 
 
 # --------------------------------------------------------------------------- #
 # SQL-shape generation.
 # --------------------------------------------------------------------------- #
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
-    models = dev1750_models()
+    models = dev1750_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=False,
     )
 
 
-def month_td(column: str = "ordered_at") -> List[TimeDimension]:
+def month_td(field: str = "orders.ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=column,
+        field=field,
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -271,7 +271,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1750_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1750_datasets()) as (engine, _db):
         yield engine
 
 
@@ -290,8 +290,8 @@ def rows_by(resp, *keys) -> dict:
 
 
 __all__ = [
-    "orders_model", "customers_model", "regions_model", "dev1750_models",
+    "orders_dataset", "customers_dataset", "regions_dataset", "dev1750_datasets",
     "gen", "month_td", "shifted_cte_body", "shifted_relation", "base_cte_body", "cte_names",
-    "make_exec_engine", "month_key", "rows_by", "SlayerQuery", "ModelMeasure",
-    "ColumnRef", "TimeDimension", "TimeGranularity",
+    "make_exec_engine", "month_key", "rows_by", "SlayerQuery", "DatasetMetric",
+    "FieldRef", "TimeDimension", "TimeGranularity",
 ]

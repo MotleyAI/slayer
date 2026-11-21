@@ -7,7 +7,7 @@ Defines the Mode-B expression grammar: one SQL-compatible syntax shared by every
 
 ### Requirement: One grammar in every Mode-B position
 
-Query measures, dimensions (string and object form), filters, order targets, `ModelMeasure.formula` and `ModelExtension.measures` SHALL all be parsed by the same grammar: any construct accepted in one of these positions SHALL be accepted syntactically in all of them, and whether it is legal there SHALL be decided only by typing (field / measure / position rules), never by the position's parser.
+Query measures, dimensions (string and object form), filters, order targets, `DatasetMetric.expression` and `DatasetExtension.metrics` SHALL all be parsed by the same grammar: any construct accepted in one of these positions SHALL be accepted syntactically in all of them, and whether it is legal there SHALL be decided only by typing (field / measure / position rules), never by the position's parser.
 
 #### Scenario: SQL predicate spellings in a measure
 
@@ -50,7 +50,7 @@ The grammar SHALL accept, with keywords matched case-insensitively:
 
 #### Scenario: Concatenation operator
 
-- **WHEN** a dimension is `{"expression": "status || '-' || region", "name": "tag"}`
+- **WHEN** a dimension is `{"field": "status || '-' || region", "alias": "tag"}`
 - **THEN** each row's `tag` is the two values joined by `-`, and NULL when either is NULL
 
 #### Scenario: Modulo sign

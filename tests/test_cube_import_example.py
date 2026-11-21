@@ -16,16 +16,18 @@ from pathlib import Path
 import pytest
 
 from slayer.async_utils import run_sync
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.cube.report import CubeConversionResult
 from slayer.core.query import (
     SlayerQuery,
-    extract_model_variables,
+    extract_dataset_variables,
     extract_variable_refs,
     list_valued_variable_names,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.inspect.model_render import render_model_skeleton
+from slayer.inspect.dataset_render import render_dataset_skeleton
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -37,7 +39,7 @@ setup_cube = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(setup_cube)
 
 DS = setup_cube.DATASOURCE_NAME
-EXPECTED_MODELS = {"orders", "customers", "order_facts", "orders_overview"}
+EXPECTED_DATASETS = {"orders", "customers", "order_facts", "orders_overview"}
 _BOTH = ["Beverages", "Bakery"]
 
 
@@ -57,7 +59,7 @@ async def _prepare(tmp_path):
     setup_cube.build_shop_duckdb(db_path)
     gold = setup_cube.compute_gold(db_path)  # read-only, before SLayer opens RW
 
-    result = setup_cube.import_cube_lib(models_dir=store)
+    result = setup_cube.import_cube_lib(datasets_dir=store)
     assert not result.report.has_errors, [
         i.message for i in result.report.issues if i.severity == "error"
     ]
@@ -69,8 +71,8 @@ async def _prepare(tmp_path):
     return SlayerQueryEngine(storage=storage), storage, gold, db_path
 
 
-async def _model(storage, name) -> SlayerModel:
-    model = await storage.get_model(name, data_source=DS)
+async def _dataset(storage: StorageBackend, name) -> SlayerDataset:
+    model = await storage.get_dataset(name, data_source=DS)
     assert model is not None
     return model
 
@@ -94,8 +96,8 @@ def _by_group(resp, *, group="region", value="total_amount"):
 async def _count(engine, **variables):
     """Count order_facts rows with the given FILTER_PARAMS variables."""
     q = SlayerQuery.model_validate({
-        "source_model": "order_facts",
-        "measures": [{"formula": "count"}],
+        "population": "order_facts",
+        "metrics": [{"metric": "order_facts.count"}],
         "variables": variables,
     })
     return _sole(await engine.execute(q))
@@ -126,9 +128,9 @@ def test_gold_values_are_exact(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_library_import_persists_all_models(tmp_path):
     store = tmp_path / "slayer_models"
-    result = setup_cube.import_cube_lib(models_dir=store)
+    result: CubeConversionResult = setup_cube.import_cube_lib(datasets_dir=store)
     assert not result.report.has_errors
-    assert {m.name for m in result.models} == EXPECTED_MODELS
+    assert {m.name for m in result.datasets} == EXPECTED_DATASETS
     fp_members = {
         i.member
         for i in result.report.issues
@@ -140,7 +142,7 @@ def test_library_import_persists_all_models(tmp_path):
 def test_cli_import_writes_report_and_models(tmp_path):
     store = tmp_path / "slayer_models"
     report = tmp_path / "cube_import_report.json"
-    proc = setup_cube.import_cube_cli(models_dir=store, report_path=report)
+    proc = setup_cube.import_cube_cli(datasets_dir=store, report_path=report)
     assert proc.returncode == 0, proc.stderr
 
     data = json.loads(report.read_text())
@@ -148,8 +150,8 @@ def test_cli_import_writes_report_and_models(tmp_path):
     assert not errors, errors
 
     storage = YAMLStorage(base_dir=str(store))
-    for name in EXPECTED_MODELS:
-        model = run_sync(storage.get_model(name, data_source=DS))
+    for name in EXPECTED_DATASETS:
+        model = run_sync(storage.get_dataset(name, data_source=DS))
         assert model is not None
         assert model.name == name
 
@@ -164,15 +166,15 @@ def test_cli_import_writes_report_and_models(tmp_path):
 # --------------------------------------------------------------------------- #
 async def test_variable_contract_required_optional(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    model = await _model(storage, "order_facts")
-    mv = extract_model_variables(model)
+    model = await _dataset(storage, "order_facts")
+    mv = extract_dataset_variables(model)
     assert mv.required == ["category"]
     assert mv.optional == ["region"]
 
 
 async def test_both_pushdowns_are_list_valued(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    model = await _model(storage, "order_facts")
+    model = await _dataset(storage, "order_facts")
     assert list_valued_variable_names(model) == {"category", "region"}
     assert model.meta is not None
     cube_vars = model.meta["cube_variables"]
@@ -187,8 +189,8 @@ async def test_both_pushdowns_are_list_valued(tmp_path):
 
 async def test_skeleton_variables_line_exact(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    model = await _model(storage, "order_facts")
-    lines = render_model_skeleton(model=model).splitlines()
+    model = await _dataset(storage, "order_facts")
+    lines = render_dataset_skeleton(dataset=model).splitlines()
     var_line = next(ln for ln in lines if ln.startswith("Variables:"))
     assert var_line == "Variables: category (required), region"
 
@@ -197,7 +199,7 @@ async def test_required_bare_optional_blocked_in_sql(tmp_path):
     """Structural proof: the required var is bare (outside any ``{? ?}`` block)
     and the optional var lives inside one; all three tables are joined."""
     _, storage, _, _ = await _prepare(tmp_path)
-    model = await _model(storage, "order_facts")
+    model = await _dataset(storage, "order_facts")
     assert model.sql is not None
     bare, blocked = extract_variable_refs(model.sql)
     assert "category" in bare
@@ -215,14 +217,14 @@ async def test_required_bare_optional_blocked_in_sql(tmp_path):
 # --------------------------------------------------------------------------- #
 async def test_orders_joins_customers(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    orders = await _model(storage, "orders")
-    assert "customers" in {j.target_model for j in orders.joins}
+    orders = await _dataset(storage, "orders")
+    assert "customers" in {j.to for j in orders.relationships}
 
 
 async def test_view_is_clean_facade(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    view = await _model(storage, "orders_overview")
-    assert "region" in {c.name for c in view.columns}
+    view = await _dataset(storage, "orders_overview")
+    assert "region" in {c.name for c in view.fields}
     assert not view.filters  # no default_filters -> no always-applied WHERE
 
 
@@ -253,8 +255,8 @@ async def test_scalar_coerced_to_one_element_list(tmp_path):
 async def test_required_omitted_raises_naming_category(tmp_path):
     engine, _, _, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
-        "source_model": "order_facts",
-        "measures": [{"formula": "count"}],
+        "population": "order_facts",
+        "metrics": [{"metric": "order_facts.count"}],
         "variables": {"region": ["North"]},  # category (required) omitted
     })
     with pytest.raises(ValueError, match=r"Undefined variable 'category'"):
@@ -264,8 +266,8 @@ async def test_required_omitted_raises_naming_category(tmp_path):
 async def test_empty_list_raises_not_treated_as_omission(tmp_path):
     engine, _, _, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
-        "source_model": "order_facts",
-        "measures": [{"formula": "count"}],
+        "population": "order_facts",
+        "metrics": [{"metric": "order_facts.count"}],
         "variables": {"category": _BOTH, "region": []},
     })
     with pytest.raises(ValueError, match=r"cannot be an empty list"):
@@ -278,9 +280,9 @@ async def test_empty_list_raises_not_treated_as_omission(tmp_path):
 async def test_view_total_by_region(tmp_path):
     engine, _, gold, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
-        "source_model": "orders_overview",
-        "measures": ["total_amount"],
-        "dimensions": ["region"],
+        "population": "orders_overview",
+        "metrics": ["orders_overview.total_amount"],
+        "dimensions": ["orders_overview.region"],
     })
     got = _by_group(await engine.execute(q))
     assert got == {g["region"]: g["amount"] for g in gold["by_region"]}
@@ -289,8 +291,8 @@ async def test_view_total_by_region(tmp_path):
 async def test_join_total_by_customer_region(tmp_path):
     engine, _, gold, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
-        "source_model": "orders",
-        "measures": ["total_amount"],
+        "population": "orders",
+        "metrics": ["orders.total_amount"],
         "dimensions": ["customers.region"],
     })
     got = _by_group(await engine.execute(q))

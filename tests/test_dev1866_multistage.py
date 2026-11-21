@@ -23,11 +23,11 @@ async def test_nonfinal_stage_inferred_independently() -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         root = SlayerQuery.model_validate({
-            "source_model": "s1",
-            "measures": [{"formula": "sum(rev)", "name": "total"}],
+            "population": "s1",
+            "metrics": [{"metric": "sum(s1.rev)", "alias": "total"}],
         })
         resp = await engine.execute([s1, root])
         assert resp.data  # executed end to end ⇒ s1's population was inferred
@@ -39,9 +39,9 @@ async def test_sibling_anchored_stage_fails_closed_via_execute() -> None:
     engine = await make_inference_engine()
     s1 = SlayerQuery.model_validate({
         "name": "s1",
-        "source_model": "orders",
-        "dimensions": ["status"],
-        "measures": [{"formula": "sum(amount)", "name": "rev"}],
+        "population": "orders",
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
     })
     root = SlayerQuery(dimensions=["s1.status"])  # rootless, anchored at the sibling
     with pytest.raises(PopulationInferenceError) as ei:

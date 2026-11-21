@@ -14,17 +14,17 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column
+from slayer.core.models import Aggregation, DatasetField
 from slayer.sql.dialects import SQLGLOT_NAMES
 
-from tests._dev2046_fixtures import customers_model, m, orders_model, orders_q
+from tests._dev2046_fixtures import customers_dataset, m, orders_dataset, orders_q
 from tests._engine_helpers import _engine_generate
 
 INT_TYPES = frozenset(exp.DataType.INTEGER_TYPES) - {exp.DataType.Type.BIT}
 BOOLEAN_TYPES = frozenset({exp.DataType.Type.BOOLEAN, exp.DataType.Type.BIT})
 FLOAT_TYPES = frozenset({exp.DataType.Type.FLOAT, exp.DataType.Type.DOUBLE})
 LOWERED = (exp.Sum, exp.Avg, exp.Min, exp.Max)
-BOOLEAN_SOURCES = ["flag", "big_order", "coalesce(flag, false)", "amount > 15"]
+BOOLEAN_SOURCES = ["orders.flag", "orders.big_order", "coalesce(orders.flag, false)", "orders.amount > 15"]
 
 
 def _bool_type(dialect: str):
@@ -35,10 +35,10 @@ def _bool_type(dialect: str):
     return cast.to.this
 
 
-async def _statement(dialect: str, *formulas: str, **kw) -> Expr:
-    model = kw.pop("model", None) or orders_model()
-    query = orders_q(measures=[m(f, f"v{i}") for i, f in enumerate(formulas)], **kw)
-    sql = await _engine_generate(query=query, model=model, extra_models=[customers_model()], dialect=dialect)
+async def _statement(dialect: str, *expressions: str, **kw) -> Expr:
+    model = kw.pop("model", None) or orders_dataset()
+    query = orders_q(metrics=[m(f, f"v{i}") for i, f in enumerate(expressions)], **kw)
+    sql = await _engine_generate(query=query, dataset=model, extra_datasets=[customers_dataset()], dialect=dialect)
     return sqlglot.parse_one(sql, read=dialect)
 
 
@@ -80,7 +80,7 @@ class TestLoweringOnEveryDialect:
     async def test_having_lowers_like_projection(self, dialect: str) -> None:
         """The post-aggregation filter path applies the same lowering."""
         tree = await _statement(
-            dialect, "count(*)", dimensions=["region"], filters=["sum(flag) > 1", "max(flag) = true"],
+            dialect, "count(orders.*)", dimensions=["orders.region"], filter=["sum(orders.flag) > 1", "max(orders.flag) = true"],
         )
         having = _nodes(tree, exp.Having)[0]
         for agg in (*_nodes(having, exp.Sum), *_nodes(having, exp.Max)):
@@ -90,19 +90,19 @@ class TestLoweringOnEveryDialect:
 class TestAvgIsFractional:
     """T-SQL's AVG over integers truncates: there, and only there, its input is read as a float."""
 
-    @pytest.mark.parametrize("source", ["flag", "amount", "amount > 15", "amount - customer_id", "sum(amount)"])
+    @pytest.mark.parametrize("source", ["orders.flag", "orders.amount", "orders.amount > 15", "orders.amount - orders.customer_id", "sum(orders.amount)"])
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_float_input_only_where_avg_truncates(self, dialect: str, source: str) -> None:
-        tree = await _statement(dialect, f"avg({source})", dimensions=["region"])
+        tree = await _statement(dialect, f"avg({source})", dimensions=["orders.region"])
         for agg in _nodes(tree, exp.Avg):
             assert _float_cast(agg.this) is (dialect == "tsql"), agg.sql(dialect=dialect)
 
     @pytest.mark.parametrize("db_type", ["DECIMAL(10, 2)", "FLOAT"])
     async def test_double_input_unchanged(self, db_type: str) -> None:
         """An exact decimal keeps its precision; a float needs no conversion."""
-        model = orders_model()
-        model.columns.append(Column(name="price", type=DataType.DOUBLE, db_type=db_type))
-        tree = await _statement("tsql", "avg(price)", model=model)
+        model = orders_dataset()
+        model.fields.append(DatasetField(name="price", datatype=DataType.FLOAT, db_type=db_type))
+        tree = await _statement("tsql", "avg(orders.price)", model=model)
         (agg,) = _nodes(tree, exp.Avg)
         assert not _float_cast(agg.this), agg.sql(dialect="tsql")
 
@@ -112,16 +112,16 @@ def _float_cast(node: Expr) -> bool:
 
 
 class TestStatisticalBuildersTakeTheInteger:
-    """The stat, dialect-hook and formula builders read a boolean input as its integer."""
+    """The stat, dialect-hook and expression builders read a boolean input as its integer."""
 
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
-    @pytest.mark.parametrize("formula", ["stddev_samp(flag)", "weighted_avg(flag, weight=amount)"])
+    @pytest.mark.parametrize("formula", ["stddev_samp(orders.flag)", "weighted_avg(orders.flag, weight=orders.amount)"])
     async def test_every_dialect(self, dialect: str, formula: str) -> None:
         tree = await _statement(dialect, formula)
         assert _bare_flags(tree) == [], tree.sql(dialect=dialect)
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite", "snowflake"])
-    @pytest.mark.parametrize("formula", ["median(flag)", "percentile(flag, p=0.5)"])
+    @pytest.mark.parametrize("formula", ["median(orders.flag)", "percentile(orders.flag, p=0.5)"])
     async def test_percentile_family(self, dialect: str, formula: str) -> None:
         tree = await _statement(dialect, formula)
         assert _bare_flags(tree) == [], tree.sql(dialect=dialect)
@@ -138,14 +138,14 @@ def _bare_flags(tree: Expr) -> List[str]:
 class TestBooleansInNumericPositions:
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_arithmetic_and_scalar_operands(self, dialect: str) -> None:
-        tree = await _statement(dialect, "sum(flag * amount)", "max(round(flag))", "sum(coalesce(flag, 0))")
+        tree = await _statement(dialect, "sum(orders.flag * orders.amount)", "max(round(orders.flag))", "sum(coalesce(orders.flag, 0))")
         assert _bare_flags(tree) == [], tree.sql(dialect=dialect)
 
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_compared_with_numeric_expressions(self, dialect: str) -> None:
         """A boolean compared with a numeric scalar or aggregate reads as its integer."""
         tree = await _statement(
-            dialect, "count(*)", dimensions=["region"], filters=["flag = abs(amount)", "max(flag) = count(*)"],
+            dialect, "count(orders.*)", dimensions=["orders.region"], filter=["orders.flag = abs(orders.amount)", "max(orders.flag) = count(orders.*)"],
         )
         assert _bare_flags(_nodes(tree, exp.Where)[0]) == [], tree.sql(dialect=dialect)
         having = _nodes(tree, exp.Having)[0].this
@@ -155,7 +155,7 @@ class TestBooleansInNumericPositions:
 
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_boolean_compared_with_a_boolean_stays_boolean(self, dialect: str) -> None:
-        tree = await _statement(dialect, "count(*)", filters=["flag = true"])
+        tree = await _statement(dialect, "count(orders.*)", filter=["orders.flag = true"])
         where = _nodes(tree, exp.Where)[0]
         assert not [c for c in where.find_all(exp.Cast) if _int_cast(c)], where.sql(dialect=dialect)
 
@@ -163,7 +163,7 @@ class TestBooleansInNumericPositions:
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_having_boolean_compared_with_a_boolean_stays_boolean(self, dialect: str) -> None:
         """``max(flag) = true`` compares two booleans: neither side reads as an integer."""
-        tree = await _statement(dialect, "count(*)", dimensions=["region"], filters=["max(flag) = true"])
+        tree = await _statement(dialect, "count(orders.*)", dimensions=["orders.region"], filter=["max(orders.flag) = true"])
         having = _nodes(tree, exp.Having)[0]
         # Only the aggregate's own lowering / restore casts may appear (SQLite / MySQL spell BOOLEAN as an int).
         stray = [c for c in having.find_all(exp.Cast) if not isinstance(c.parent, exp.Max) and not isinstance(c.this, exp.Max)]
@@ -175,11 +175,11 @@ class TestUnchangedAggregations:
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "tsql", "bigquery"])
     async def test_no_integer_cast_around_the_boolean(self, dialect: str) -> None:
-        model = orders_model()
-        model.aggregations.append(Aggregation(name="trues", formula="COUNT(CASE WHEN {value} THEN 1 END)"))
+        model = orders_dataset()
+        model.aggregations.append(Aggregation(name="trues", expression="COUNT(CASE WHEN {value} THEN 1 END)"))
         tree = await _statement(
-            dialect, "count(flag)", "count_distinct(flag)", "count_distinct_approx(flag)",
-            "first(flag)", "last(flag)", "trues(flag)", "sum(flag)", model=model,
+            dialect, "count(orders.flag)", "count_distinct(orders.flag)", "count_distinct_approx(orders.flag)",
+            "first(orders.flag)", "last(orders.flag)", "trues(orders.flag)", "sum(orders.flag)", model=model,
         )
         lowered = {id(s.this) for s in _nodes(tree, exp.Sum) if _int_cast(s.this)}
         assert lowered, "sum(flag) must lower its input"
@@ -194,7 +194,7 @@ class TestUnchangedAggregations:
 class TestMixedCoalesce:
     async def test_no_lowering(self) -> None:
         """Scenario: mixed-type coalesce is not boolean — aggregated as plain numeric."""
-        tree = await _statement("postgres", "sum(coalesce(flag, amount))")
+        tree = await _statement("postgres", "sum(coalesce(orders.flag, orders.amount))")
         (agg,) = _nodes(tree, exp.Sum)
         assert isinstance(agg.this, exp.Coalesce)
 
@@ -247,13 +247,13 @@ def _projection(tree: Expr, suffix: str) -> Expr:
 
 class TestSqlServerPredicateValues:
     async def test_projected_boolean_measure(self) -> None:
-        tree = await _statement("tsql", "sum(amount) > 50", dimensions=["region"])
+        tree = await _statement("tsql", "sum(orders.amount) > 50", dimensions=["orders.region"])
         assert _is_bit_value(_projection(tree, "v0"))
         assert _bare_value_predicates(tree) == []
 
     @pytest.mark.parametrize("agg", ["sum", "count"])
     async def test_predicate_aggregation_input(self, agg: str) -> None:
-        tree = await _statement("tsql", f"{agg}(amount > 15)", dimensions=["region"])
+        tree = await _statement("tsql", f"{agg}(orders.amount > 15)", dimensions=["orders.region"])
         node = _nodes(tree, exp.Sum if agg == "sum" else exp.Count)[0]
         inner = node.this.this if agg == "sum" and _int_cast(node.this) else node.this
         assert _is_bit_value(inner), node.sql(dialect="tsql")
@@ -261,28 +261,28 @@ class TestSqlServerPredicateValues:
 
     async def test_conditions_stay_bare(self) -> None:
         tree = await _statement(
-            "tsql", "sum(amount) > 50", "sum(amount)", dimensions=["region"],
-            filters=["amount > 15", "sum(amount) > 50"],
+            "tsql", "sum(orders.amount) > 50", "sum(orders.amount)", dimensions=["orders.region"],
+            filter=["orders.amount > 15", "sum(orders.amount) > 50"],
         )
         assert isinstance(_nodes(tree, exp.Where)[0].this, exp.GT)
         assert isinstance(_nodes(tree, exp.Having)[0].this, exp.GT)
         assert _bare_value_predicates(tree) == []
 
     async def test_case_condition_stays_bare(self) -> None:
-        tree = await _statement("tsql", "sum(iif(amount > 15, 1, 0))", "sum(amount > 15)")
+        tree = await _statement("tsql", "sum(iif(orders.amount > 15, 1, 0))", "sum(orders.amount > 15)")
         assert _bare_value_predicates(tree) == []
         conditions = [i.this for i in tree.find_all(exp.If)]
         assert any(isinstance(c, exp.GT) for c in conditions)
 
     async def test_join_condition_stays_bare(self) -> None:
-        tree = await _statement("tsql", "sum(amount > 15)", dimensions=["customers.name"])
+        tree = await _statement("tsql", "sum(orders.amount > 15)", dimensions=["customers.name"])
         (join,) = _nodes(tree, exp.Join)
         assert isinstance(join.args["on"], exp.EQ)
         assert _bare_value_predicates(tree) == []
 
     async def test_arithmetic_operand_is_a_value(self) -> None:
         """A boolean arithmetic operand is its integer: the INT of the predicate's BIT value."""
-        tree = await _statement("tsql", "(sum(amount) > 50) + 0", dimensions=["region"])
+        tree = await _statement("tsql", "(sum(orders.amount) > 50) + 0", dimensions=["orders.region"])
         (add,) = _nodes(_projection(tree, "v0"), exp.Add)
         operand = add.this.unnest() if isinstance(add.this, exp.Paren) else add.this
         assert _int_cast(operand), add.sql(dialect="tsql")
@@ -292,7 +292,7 @@ class TestSqlServerPredicateValues:
     async def test_nested_predicate_wrapped_once(self) -> None:
         """Only the outermost predicate in a value position becomes a value; its
         operands stay bare inside the CASE condition."""
-        tree = await _statement("tsql", "(sum(amount) > 50) and (count(*) > 1)", dimensions=["region"])
+        tree = await _statement("tsql", "(sum(orders.amount) > 50) and (count(orders.*) > 1)", dimensions=["orders.region"])
         value = _projection(tree, "v0")
         assert _is_bit_value(value)
         case = value.find(exp.Case)
@@ -304,7 +304,7 @@ class TestSqlServerPredicateValues:
         assert _bare_value_predicates(tree) == []
 
     async def test_postgres_projection_unchanged(self) -> None:
-        tree = await _statement("postgres", "sum(amount) > 50", dimensions=["region"])
+        tree = await _statement("postgres", "sum(orders.amount) > 50", dimensions=["orders.region"])
         value = _projection(tree, "v0")
         while isinstance(value, exp.Cast):
             value = value.this

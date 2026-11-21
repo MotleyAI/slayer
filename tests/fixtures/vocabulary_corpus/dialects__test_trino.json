@@ -1,0 +1,77 @@
+{
+ "source": "tests/dialects/test_trino.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "dt",
+    "dimensions": [
+     "id",
+     {
+      "expression": "date_add(d1, 1, 'month')",
+      "name": "a"
+     },
+     {
+      "expression": "date_add(d1, 2, 'hour')",
+      "name": "b"
+     },
+     {
+      "expression": "date_add(t1, n, 'day')",
+      "name": "c"
+     },
+     {
+      "expression": "date_diff('day', d1, d2)",
+      "name": "e"
+     },
+     {
+      "expression": "date_diff('second', t1, t2)",
+      "name": "f"
+     },
+     {
+      "expression": "date_part('iso_year', d1)",
+      "name": "g"
+     },
+     {
+      "expression": "date_part('day_of_week', t1)",
+      "name": "h"
+     }
+    ]
+   },
+   "new": {
+    "population": "dt",
+    "dimensions": [
+     "id",
+     {
+      "field": "date_add(d1, 1, 'month')",
+      "alias": "a"
+     },
+     {
+      "field": "date_add(d1, 2, 'hour')",
+      "alias": "b"
+     },
+     {
+      "field": "date_add(t1, n, 'day')",
+      "alias": "c"
+     },
+     {
+      "field": "date_diff('day', d1, d2)",
+      "alias": "e"
+     },
+     {
+      "field": "date_diff('second', t1, t2)",
+      "alias": "f"
+     },
+     {
+      "field": "date_part('iso_year', d1)",
+      "alias": "g"
+     },
+     {
+      "field": "date_part('day_of_week', t1)",
+      "alias": "h"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

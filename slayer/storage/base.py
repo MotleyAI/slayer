@@ -14,48 +14,53 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Hashable, Iterable
 
-from slayer.core.enums import RESERVED_NAMES, DataType, TimeGranularity
+from typing_extensions import deprecated
+
+from slayer.core.deprecation import outside_stacklevel
+from slayer.core.enums import DataType, RESERVED_NAMES, TEMPORAL_DATATYPES, TimeGranularity, stored_datatype
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
-from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine_spelling, spine_model, spine_variant_warnings
+from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset, spine_variant_warnings
 from slayer.core.errors import (
-    AmbiguousModelError,
+    AmbiguousDatasetError,
     AmbiguousReferenceError,
     CaseCollisionError,
     ColonSpellingError,
     IdCollisionError,
-    JoinTargetCaseError,
+    RelationshipTargetCaseError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
     ReservedFunctionNameError,
-    ReservedModelNameError,
+    ReservedDatasetNameError,
     StoredDocumentLoadError,
     TimeSpineError,
     UnknownGranularityError,
 )
-from slayer.engine.column_dependency import check_model_filters, validate_derived_columns, warn_broken_dependents
-from slayer.core.join_walker import edges_between
+from slayer.engine.field_dependency import check_dataset_filters, validate_derived_fields, warn_broken_dependents
+from slayer.core.relationship_walker import edges_between
 from slayer.core.names import folded_collisions, match_name
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
+from slayer.core.field_expression import stored_definition_text
 from slayer.core.models import (
     DatasourceConfig,
-    ModelJoin,
-    SlayerModel,
-    _validate_column_name,
+    DatasetRelationship,
+    SlayerDataset,
+    _validate_field_name,
     case_collisions,
     name_collision_warnings,
-    is_base_column_sql,
+    is_base_field_sql,
     physical_column_sql,
     shadows_library_function,
 )
 from slayer.core.query import SlayerQuery, mode_a_texts
 from slayer.core.syntax import parse_expr
+from slayer.core.vocabulary import bridge_renamed_hooks, method_twin
 from slayer.core.warnings import (
     DeprecatedSpellingWarning,
     LibraryNameShadowWarning,
     SlayerLibraryNameShadowWarning,
     SlayerNameCollisionWarning,
-    SlayerSpineJoinDroppedWarning,
-    SpineJoinDroppedWarning,
+    SlayerSpineRelationshipDroppedWarning,
+    SpineRelationshipDroppedWarning,
     caller_announces,
 )
 from slayer.embeddings.models import Embedding
@@ -67,37 +72,48 @@ from slayer.memories.models import (
 )
 from slayer.storage import migrations as _mig
 from slayer.storage.date_only_migration import (
-    StoredModels, below_date_only_upgrade, is_exact_inverse_join, needs_typing, stored_type, typing_with, upgraded_text,
+    StoredDatasets, below_date_only_upgrade, is_exact_inverse_relationship, needs_typing, stored_type, typing_with, upgraded_text,
+)
+from slayer.storage.document_keys import (
+    CURRENT_KEYS,
+    LEGACY_KEYS,
+    dataset_in,
+    keys_for,
+    relationship_pairs,
+    with_relationship_pairs,
 )
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
+from slayer.storage.field_expression_migration import FIELD_EXPRESSION_VERSION, respell_source_paths
 from slayer.storage.granularity_rename import (
     Renames,
     granularity_renames,
-    memory_source_model,
+    memory_source_dataset,
     rename_in_memory,
-    rename_in_model,
+    rename_in_dataset,
     renamed_datasource,
 )
 from slayer.storage.mode_b_texts import (
     canonical_spellings,
     custom_buckets_as_date_trunc,
     rewrite_memory_doc,
-    rewrite_model_doc,
+    rewrite_dataset_doc,
 )
 from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
-    apply_dunder_rewrite_to_model_dict,
+    apply_dunder_rewrite_to_dataset_dict,
     extract_dunder_chains,
     mode_a_surface_texts,
 )
 from slayer.database.client import SqlClient
+from slayer.sql.definitions import check_forms, with_converted_sql
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.mode_a_variables import check_placeholders
-from slayer.storage.extension_columns import holds_removed_forms, inline_extension_columns
+from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
+from slayer.storage.qualified_references import qualified_stages
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.live_schema.type_refinement import (
-    has_refineable_columns,
-    has_sqlite_widenable_columns,
+    has_refineable_fields,
+    has_sqlite_widenable_fields,
     refine_dict_with_live_schema,
 )
 
@@ -108,128 +124,135 @@ ClientSource = Callable[[DatasourceConfig], SqlClient]
 
 _TO_ONE_CARDINALITIES = {"many_to_one", "one_to_one"}
 # v8 is the first version written only by ingest that refined both DOUBLE and SQLite INT
-# columns; older documents are refined against the live schema on load.
+# fields; older documents are refined against the live schema on load.
 _LIVE_REFINEMENT_BELOW_VERSION = 8
-_MODEL_LOAD_CONCURRENCY = 8
+_DATASET_LOAD_CONCURRENCY = 8
 _MEMORY_FILTER_REPAIR_BELOW_VERSION = 4
-# Below v25 a stored join target may reach its model only by case, or target the spine.
-_JOIN_TARGET_REPAIR_BELOW_VERSION = 25
-#: The Memory version from which stored extension columns are inlined.
-_EXTENSION_COLUMNS_INLINED_AT = 10
-# Raw document reads of the enclosing ``load_models`` pass, by ``(backend, data_source, name)``.
+# Below v25 a stored relationship target may reach its dataset only by case, or target the spine.
+_RELATIONSHIP_TARGET_REPAIR_BELOW_VERSION = 25
+#: The Memory version from which stored extension fields are inlined.
+_EXTENSION_FIELDS_INLINED_AT = 10
+# Raw document reads of the enclosing ``load_datasets`` pass, by ``(backend, data_source, name)``.
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
 # Inside the one-time granularity settle, whose own loads must not wait on it.
 _SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
-# The stored models whose extension columns are being inlined (their own loads must not recurse into them).
+# The stored datasets whose extension fields are being inlined (their own loads must not recurse into them).
 _INLINING: ContextVar[frozenset[tuple[str, str]]] = ContextVar("_INLINING", default=frozenset())
+#: The versions whose saves wrote qualified references.
+_QUALIFIED_AT = {"SlayerModel": 28, "SlayerQuery": 17, "Memory": 13}
+
+
+def _unqualified(query: Any, *, document_version: int, entity: str) -> bool:
+    """Whether a raw stored query was written before qualified references (a version-less one, by its document)."""
+    if not isinstance(query, dict):
+        return False
+    version = query.get("version")
+    if version is not None:
+        return int(version) < _QUALIFIED_AT["SlayerQuery"]
+    return document_version < _QUALIFIED_AT[entity]
 # The loading query engine's client source, set by its storage view around each call it delegates.
 CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
 
 def _inverse_survivor(
-    *, model_a: str, join_a: dict, model_b: str, join_b: dict,
+    *, dataset_a: str, relationship_a: dict, dataset_b: str, relationship_b: dict,
 ) -> str:
-    """Which model keeps its half of an exact-inverse pair: to-one side, else cardinality-carrying side, else lexicographic — a pure function of both halves, so load orders agree."""
-    a_card, b_card = join_a.get("cardinality"), join_b.get("cardinality")
+    """Which dataset keeps its half of an exact-inverse pair: to-one side, else cardinality-carrying side, else lexicographic — a pure function of both halves, so load orders agree."""
+    a_card, b_card = relationship_a.get("cardinality"), relationship_b.get("cardinality")
     a_to_one = a_card in _TO_ONE_CARDINALITIES
     b_to_one = b_card in _TO_ONE_CARDINALITIES
     if a_to_one != b_to_one:
-        return model_a if a_to_one else model_b
+        return dataset_a if a_to_one else dataset_b
     if (a_card is None) != (b_card is None):
-        return model_a if a_card is not None else model_b
-    return min((model_a, model_b), (model_b, model_a))[0]
+        return dataset_a if a_card is not None else dataset_b
+    return min((dataset_a, dataset_b), (dataset_b, dataset_a))[0]
 
 
-def _canonical_key(*, key: Any, columns: Any) -> Any:
-    """``key`` unless it names no declared column but is exactly one base column's physical rename."""
-    if not isinstance(key, str) or not isinstance(columns, list):
+def _canonical_key(*, key: Any, fields: Any) -> Any:
+    """``key`` unless it names no declared field but is exactly one base field's physical rename."""
+    if not isinstance(key, str) or not isinstance(fields, list):
         return key
-    cols = [c for c in columns if isinstance(c, dict) and isinstance(c.get("name"), str)]
+    cols = [c for c in fields if isinstance(c, dict) and isinstance(c.get("name"), str)]
     if any(c["name"] == key for c in cols):
         return key
     renames = [
         c["name"] for c in cols
-        if isinstance(c.get("sql"), str) and is_base_column_sql(c["sql"])
-        and physical_column_sql(sql=c["sql"], name=c["name"]) == key
+        if isinstance(text := stored_definition_text(c), str) and is_base_field_sql(text)
+        and physical_column_sql(sql=text, name=c["name"]) == key
     ]
     return renames[0] if len(renames) == 1 else key
 
 
-def canonical_join_pairs(*, pairs: Any, source_columns: Any, target_columns: Any) -> Any:
-    """Raw ``join_pairs`` with stored physical spellings rewritten to ``Column.name``."""
-    if not isinstance(pairs, list):
-        return pairs
-    return [
-        [_canonical_key(key=p[0], columns=source_columns), _canonical_key(key=p[1], columns=target_columns)]
-        if isinstance(p, list) and len(p) == 2 else p
-        for p in pairs
-    ]
+def canonical_relationship_keys(*, relationship: dict, source_fields: Any, target_fields: Any) -> dict:
+    """A raw relationship with its stored physical key spellings rewritten to ``DatasetField.name``."""
+    pairs = relationship_pairs(relationship)
+    if not pairs:
+        return relationship
+    return with_relationship_pairs(relationship, [
+        (_canonical_key(key=a, fields=source_fields), _canonical_key(key=b, fields=target_fields)) for a, b in pairs
+    ])
 
 
-def _undeclared_key(*, key: Any, columns: list) -> bool:
-    """A valid column name that no column of ``columns`` declares or spells physically."""
+def _undeclared_key(*, key: Any, fields: list) -> bool:
+    """A valid field name that no field of ``fields`` declares or spells physically."""
     if not isinstance(key, str):
         return False
     try:
-        _validate_column_name(key, "join key")
+        _validate_field_name(key, "relationship key")
     except ValueError:
         return False
     return not any(
         isinstance(c, dict) and isinstance(c.get("name"), str) and (
             c["name"] == key
-            or (is_base_column_sql(c.get("sql")) and physical_column_sql(sql=c.get("sql"), name=c["name"]) == key)
+            or (isinstance(text := stored_definition_text(c), (str, type(None))) and is_base_field_sql(text)
+                and physical_column_sql(sql=text, name=c["name"]) == key)
         )
-        for c in columns
+        for c in fields
     )
 
 
-def _key_pairs(join: Any) -> list[tuple[Any, Any]]:
-    pairs = join.get("join_pairs") if isinstance(join, dict) else None
-    return [(p[0], p[1]) for p in pairs if isinstance(p, list) and len(p) == 2] if isinstance(pairs, list) else []
-
-
 def _stage_names(data: dict) -> frozenset[str]:
-    """The names of a stored model's own stages."""
+    """The names of a stored dataset's own stages."""
     queries = data.get("source_queries")
     return frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str)) if isinstance(
         queries, list) else frozenset()
 
 
-def _incoming_keys(*, sibling: dict, target: str, target_columns: list) -> list[tuple[Any, str | None]]:
-    """``target``-side keys of ``sibling``'s joins into ``target``, each typed like its source key."""
-    joins = sibling.get("joins")
+def _incoming_keys(*, sibling: dict, target: str, target_fields: list) -> list[tuple[Any, str | None]]:
+    """``target``-side keys of ``sibling``'s relationships into ``target``, each typed like its source key."""
+    relationships = sibling.get("relationships")
     out: list[tuple[Any, str | None]] = []
-    for join in joins if isinstance(joins, list) else []:
-        if not isinstance(join, dict) or join.get("target_model") != target:
+    for relationship in relationships if isinstance(relationships, list) else []:
+        if not isinstance(relationship, dict) or relationship.get("to") != target:
             continue
-        canonical = {**join, "join_pairs": canonical_join_pairs(
-            pairs=join.get("join_pairs"), source_columns=sibling.get("columns"), target_columns=target_columns,
-        )}
-        out.extend((tgt, stored_type(key=src, columns=sibling.get("columns"))) for src, tgt in _key_pairs(canonical))
+        canonical = canonical_relationship_keys(
+            relationship=relationship, source_fields=sibling.get("fields"), target_fields=target_fields,
+        )
+        out.extend((tgt, stored_type(key=src, fields=sibling.get("fields"), keys=CURRENT_KEYS))
+                   for src, tgt in relationship_pairs(canonical))
     return out
 
 
-def _stored_counterpart(*, join: dict, name: str, peer: dict | None, columns: Any):
-    """The exact-inverse of ``join`` in ``peer``'s raw joins (canonicalised against ``columns``, this document's), or ``None``."""
-    peer_joins = peer.get("joins") if isinstance(peer, dict) else None
-    if not isinstance(peer, dict) or not isinstance(peer_joins, list):
+def _stored_counterpart(*, relationship: dict, name: str, peer: dict | None, fields: Any):
+    """The exact-inverse of ``relationship`` in ``peer``'s raw relationships (canonicalised against ``fields``, this document's), or ``None``."""
+    peer_relationships = peer.get("relationships") if isinstance(peer, dict) else None
+    if not isinstance(peer, dict) or not isinstance(peer_relationships, list):
         return None
     return next(
         (
-            j for j in peer_joins
-            if isinstance(j, dict) and j.get("target_model") == name
-            and is_exact_inverse_join(join, {**j, "join_pairs": canonical_join_pairs(
-                pairs=j.get("join_pairs"), source_columns=peer.get("columns"),
-                target_columns=columns,
-            )})
+            j for j in peer_relationships
+            if isinstance(j, dict) and j.get("to") == name
+            and is_exact_inverse_relationship(relationship, canonical_relationship_keys(
+                relationship=j, source_fields=peer.get("fields"), target_fields=fields,
+            ))
         ),
         None,
     )
 
 
 def _repaired_target(target: str, *, names: set[str]) -> str:
-    """``target`` respelled to the one model of ``names`` it reaches only by case, else unchanged."""
+    """``target`` respelled to the one dataset of ``names`` it reaches only by case, else unchanged."""
     if target in names:
         return target
     hits = [n for n in names if n.casefold() == target.casefold()]
@@ -237,180 +260,180 @@ def _repaired_target(target: str, *, names: set[str]) -> str:
 
 
 def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
-    """A raw peer document's joins as its pre-v23 target repair will read them."""
-    joins = raw.get("joins") if isinstance(raw, dict) else None
-    if not isinstance(joins, list):
+    """A raw peer document's relationships as its pre-v23 target repair will read them."""
+    relationships = raw.get("relationships") if isinstance(raw, dict) else None
+    if not isinstance(relationships, list):
         return raw
     try:
-        if int(raw.get("version", 1)) >= _JOIN_TARGET_REPAIR_BELOW_VERSION:
+        if int(raw.get("version", 1)) >= _RELATIONSHIP_TARGET_REPAIR_BELOW_VERSION:
             return raw
     except (TypeError, ValueError):  # a malformed version is reported at that document's own load
         return raw
-    return {**raw, "joins": [
-        {**j, "target_model": _repaired_target(j["target_model"], names=names)}
-        if isinstance(j, dict) and isinstance(j.get("target_model"), str) else j
-        for j in joins
+    return {**raw, "relationships": [
+        {**j, "to": _repaired_target(j["to"], names=names)}
+        if isinstance(j, dict) and isinstance(j.get("to"), str) else j
+        for j in relationships
     ]}
 
 
-def _checked_join_names(model: SlayerModel) -> list[str]:
-    """Names of ``model``'s named edges; raises on duplicates."""
-    names = [j.name for j in model.joins if j.name]
+def _checked_relationship_names(dataset: SlayerDataset) -> list[str]:
+    """Names of ``dataset``'s named edges; raises on duplicates."""
+    names = [j.name for j in dataset.relationships if j.name]
     dupes = sorted({n for n in names if names.count(n) > 1})
     if dupes:
         raise ValueError(
-            f"Model '{model.name}': duplicate join names {dupes}. Each "
-            f"edge name incident to a model must be unique."
+            f"Dataset '{dataset.name}': duplicate relationship names {dupes}. Each "
+            f"edge name incident to a dataset must be unique."
         )
     return names
 
 
-def _checked_join_name_namespace(
-    *, model: SlayerModel, names: list[str],
+def _checked_relationship_name_namespace(
+    *, dataset: SlayerDataset, names: list[str],
     identities: Iterable[tuple[str, str]],
 ) -> set[str]:
-    """Datasource model-name namespace; raises when an edge name collides."""
-    ds_model_names = {
-        n for ds, n in identities if ds == model.data_source
-    } | {model.name}
+    """Datasource dataset-name namespace; raises when an edge name collides."""
+    ds_dataset_names = {
+        n for ds, n in identities if ds == dataset.data_source
+    } | {dataset.name}
     for n in names:
-        if n in ds_model_names:
+        if n in ds_dataset_names:
             raise ValueError(
-                f"Model '{model.name}': join name '{n}' collides with "
-                f"model '{n}' in datasource '{model.data_source}'. Edge "
-                f"names and model names share the path-segment namespace."
+                f"Dataset '{dataset.name}': relationship name '{n}' collides with "
+                f"dataset '{n}' in datasource '{dataset.data_source}'. Edge "
+                f"names and dataset names share the path-segment namespace."
             )
-    return ds_model_names
+    return ds_dataset_names
 
 
 def _check_edges_against_peers(
-    *, model: SlayerModel, peers: dict[str, SlayerModel],
+    *, dataset: SlayerDataset, peers: dict[str, SlayerDataset],
 ) -> None:
     """Reject edge-name reuse across incident edges and exact-inverse twins."""
     incident_to_self = {
-        j.name for p in peers.values() for j in p.joins
-        if j.target_model == model.name and j.name
+        j.name for p in peers.values() for j in p.relationships
+        if j.to == dataset.name and j.name
     }
-    for join in model.joins:
-        target = peers.get(join.target_model)
-        if join.name:
+    for relationship in dataset.relationships:
+        target = peers.get(relationship.to)
+        if relationship.name:
             _check_edge_name_free(
-                model=model, join=join, target=target, peers=peers,
+                dataset=dataset, relationship=relationship, target=target, peers=peers,
                 incident_to_self=incident_to_self,
             )
         if target is not None:
-            _check_not_exact_inverse(model=model, join=join, target=target)
+            _check_not_exact_inverse(dataset=dataset, relationship=relationship, target=target)
 
 
 def _check_edge_name_free(
-    *, model: SlayerModel, join, target: SlayerModel | None,
-    peers: dict[str, SlayerModel], incident_to_self: set,
+    *, dataset: SlayerDataset, relationship: DatasetRelationship, target: SlayerDataset | None,
+    peers: dict[str, SlayerDataset], incident_to_self: set,
 ) -> None:
     target_incident = set(incident_to_self)
     if target is not None:
-        target_incident |= {j2.name for j2 in target.joins if j2.name}
+        target_incident |= {j2.name for j2 in target.relationships if j2.name}
         target_incident |= {
-            j3.name for p in peers.values() for j3 in p.joins
-            if j3.target_model == join.target_model and j3.name
+            j3.name for p in peers.values() for j3 in p.relationships
+            if j3.to == relationship.to and j3.name
         }
-    if join.name in target_incident:
+    if relationship.name in target_incident:
         raise ValueError(
-            f"Model '{model.name}': join name '{join.name}' is "
+            f"Dataset '{dataset.name}': relationship name '{relationship.name}' is "
             f"already used by another edge incident to "
-            f"'{model.name}' or '{join.target_model}'."
+            f"'{dataset.name}' or '{relationship.to}'."
         )
 
 
 def _check_not_exact_inverse(
-    *, model: SlayerModel, join, target: SlayerModel,
+    *, dataset: SlayerDataset, relationship, target: SlayerDataset,
 ) -> None:
-    raw = join.model_dump(mode="json")
-    for j2 in target.joins:
-        if j2.target_model != model.name:
+    raw = relationship.model_dump(mode="json")
+    for j2 in target.relationships:
+        if j2.to != dataset.name:
             continue
-        if is_exact_inverse_join(raw, j2.model_dump(mode="json")):
+        if is_exact_inverse_relationship(raw, j2.model_dump(mode="json")):
             raise ValueError(
-                f"Model '{model.name}': join to '{target.name}' is "
+                f"Dataset '{dataset.name}': relationship to '{target.name}' is "
                 f"the exact inverse of the edge already declared on "
                 f"'{target.name}' — reverse traversal is automatic; "
                 f"remove this declaration."
             )
 
 
-def _check_list_hop_collisions(*, model: SlayerModel, peers: dict[str, SlayerModel]) -> None:
-    """A list column ``L`` is the hop ``L`` to its elements, so no other hop from its model may share the name — checked
-    on this model's list columns and on the peers its new edges reach (design D12)."""
-    incident = [(j.name or j.target_model, j.target_model) for j in model.joins] + [
-        (j.name or p.name, p.name) for p in peers.values() for j in p.joins if j.target_model == model.name
+def _check_list_hop_collisions(*, dataset: SlayerDataset, peers: dict[str, SlayerDataset]) -> None:
+    """A list field ``L`` is the hop ``L`` to its elements, so no other hop from its dataset may share the name — checked
+    on this dataset's list fields and on the peers its new edges reach (design D12)."""
+    incident = [(j.name or j.to, j.to) for j in dataset.relationships] + [
+        (j.name or p.name, p.name) for p in peers.values() for j in p.relationships if j.to == dataset.name
     ]
-    for column in model.columns:
-        hop = next((target for token, target in incident if token == column.name), None)
-        if column.type is DataType.ARRAY and hop is not None:
+    for field in dataset.fields:
+        hop = next((target for token, target in incident if token == field.name), None)
+        if field.datatype is DataType.ARRAY and hop is not None:
             raise ValueError(
-                f"Model '{model.name}': list column '{column.name}' has the name of its hop to '{hop}'; the list's "
-                f"elements are reached as '{column.name}.value', so rename the column or name the edge."
+                f"Dataset '{dataset.name}': list field '{field.name}' has the name of its hop to '{hop}'; the list's "
+                f"elements are reached as '{field.name}.value', so rename the field or name the edge."
             )
-    for join in model.joins:
-        peer = peers.get(join.target_model)
-        token = join.name or model.name
-        column = peer.get_column(token) if peer is not None else None
-        if column is not None and column.type is DataType.ARRAY:
+    for relationship in dataset.relationships:
+        peer = peers.get(relationship.to)
+        token = relationship.name or dataset.name
+        field = peer.get_field(token) if peer is not None else None
+        if field is not None and field.datatype is DataType.ARRAY:
             raise ValueError(
-                f"Model '{model.name}': its join to '{join.target_model}' is the hop '{token}' from "
-                f"'{join.target_model}', which collides with the list column '{join.target_model}.{token}'; "
+                f"Dataset '{dataset.name}': its relationship to '{relationship.to}' is the hop '{token}' from "
+                f"'{relationship.to}', which collides with the list field '{relationship.to}.{token}'; "
                 "name the edge differently."
             )
 
 
-def check_join_target_spellings(
-    model: SlayerModel, *, names: Iterable[str], peers: dict[str, SlayerModel],
+def check_relationship_target_spellings(
+    dataset: SlayerDataset, *, names: Iterable[str], peers: dict[str, SlayerDataset],
 ) -> None:
-    """Refuse a join of ``model`` whose target reaches a model of ``names`` (its datasource's) only by case or targets
-    the spine, and a name of ``model`` that a join of ``peers`` reaches only by case."""
-    declared = {*names, model.name}
-    for join in model.joins:
-        if join.target_model not in declared:
-            _check_join_target(model=model, join=join, declared=declared)
+    """Refuse a relationship of ``dataset`` whose target reaches a dataset of ``names`` (its datasource's) only by case or targets
+    the spine, and a name of ``dataset`` that a relationship of ``peers`` reaches only by case."""
+    declared = {*names, dataset.name}
+    for relationship in dataset.relationships:
+        if relationship.to not in declared:
+            _check_relationship_target(dataset=dataset, relationship=relationship, declared=declared)
     for peer in sorted(peers.values(), key=lambda p: p.name):
-        for join in peer.joins:
-            target = join.target_model
-            if target not in declared and target.casefold() == model.name.casefold():
-                raise JoinTargetCaseError(
-                    model=peer.name, join=join.name, target=target, declared=model.name, saving=True,
+        for relationship in peer.relationships:
+            target = relationship.to
+            if target not in declared and target.casefold() == dataset.name.casefold():
+                raise RelationshipTargetCaseError(
+                    dataset=peer.name, relationship=relationship.name, target=target, declared=dataset.name, saving=True,
                 )
 
 
-def _check_join_target(*, model: SlayerModel, join: ModelJoin, declared: set[str]) -> None:
-    """Refuse ``join``, whose target names no model of ``declared`` exactly, if it targets the spine or one by case."""
-    target = join.target_model
+def _check_relationship_target(*, dataset: SlayerDataset, relationship: DatasetRelationship, declared: set[str]) -> None:
+    """Refuse ``relationship``, whose target names no dataset of ``declared`` exactly, if it targets the spine or one by case."""
+    target = relationship.to
     if is_spine_spelling(target):
-        edge = f"join {join.name!r}" if join.name else f"the unnamed join to {target!r}"
+        edge = f"relationship {relationship.name!r}" if relationship.name else f"the unnamed relationship to {target!r}"
         raise TimeSpineError(
-            summary=f"Model {model.name!r}: {edge} targets the built-in time spine.",
-            suggestion="Remove the join: the spine joins each dataset through its time axis, so a declared join "
+            summary=f"Dataset {dataset.name!r}: {edge} targets the built-in time spine.",
+            suggestion="Remove the relationship: the spine joins each dataset through its time axis, so a declared relationship "
             "to it is never needed.",
         )
     hits = sorted(n for n in declared if n.casefold() == target.casefold())
     if len(hits) > 1:
-        raise AmbiguousReferenceError(target, hits, suggestion="Write the join target exactly as one of them.")
+        raise AmbiguousReferenceError(target, hits, suggestion="Write the relationship target exactly as one of them.")
     if hits:
-        raise JoinTargetCaseError(model=model.name, join=join.name, target=target, declared=hits[0])
+        raise RelationshipTargetCaseError(dataset=dataset.name, relationship=relationship.name, target=target, declared=hits[0])
 
 
 def _warn_unnamed_parallel_edges(
-    *, model: SlayerModel, peers: dict[str, SlayerModel],
+    *, dataset: SlayerDataset, peers: dict[str, SlayerDataset],
 ) -> None:
-    for peer_name in {j.target_model for j in model.joins}:
+    for peer_name in {j.to for j in dataset.relationships}:
         target = peers.get(peer_name)
         if target is None:
             continue
-        edges = edges_between(source=model, target=target)
+        edges = edges_between(source=dataset, target=target)
         unnamed = [e for e in edges if e.name is None]
         # An unnamed edge in a parallel set is unaddressable (bare token ambiguous).
         if len(edges) >= 2 and unnamed:
             warnings.warn(
-                f"Model '{model.name}': {len(edges)} parallel edges connect "
-                f"'{model.name}' and '{peer_name}' and {len(unnamed)} of "
+                f"Dataset '{dataset.name}': {len(edges)} parallel edges connect "
+                f"'{dataset.name}' and '{peer_name}' and {len(unnamed)} of "
                 f"them are unnamed — the bare path token is ambiguous and "
                 f"an unnamed edge has no token of its own. Name the edges "
                 f"to make them addressable.",
@@ -426,7 +449,7 @@ def _write_sample_fields(
     sampled_values: list[str] | None,
     distinct_count: int | None,
 ) -> None:
-    """Write ``sampled``/``sampled_values``/``distinct_count`` into a column dict in place (``None`` pops the key, non-None writes it); shared by every backend's ``update_column_sampled``."""
+    """Write ``sampled``/``sampled_values``/``distinct_count`` into a field dict in place (``None`` pops the key, non-None writes it); shared by every backend's ``update_field_sampled``."""
     if sampled is None:
         col.pop("sampled", None)
     else:
@@ -445,23 +468,23 @@ def _write_sample_fields(
 _CUSTOM_BUCKET_CALLS_BELOW = {"SlayerModel": 20, "Memory": 9}
 
 
-def with_canonical_spellings(model: SlayerModel) -> tuple[SlayerModel, list[DeprecatedSpellingWarning]]:
-    """``model`` with each deprecated spelling in its Mode-B texts replaced by its twin, and one warning per spelling."""
+def with_canonical_spellings(dataset: SlayerDataset) -> tuple[SlayerDataset, list[DeprecatedSpellingWarning]]:
+    """``dataset`` with each deprecated spelling in its Mode-B texts replaced by its twin, and one warning per spelling."""
     found: dict[str, LegacySpan] = {}
-    dumped = model.model_dump(mode="json", exclude_none=True)
-    rewritten = rewrite_model_doc(dumped, lambda text: canonical_spellings(text, found=found))
+    dumped = dataset.model_dump(mode="json", exclude_none=True)
+    rewritten = rewrite_dataset_doc(dumped, lambda text: canonical_spellings(text, found=found), keys=CURRENT_KEYS)
     if not found:
-        return model, []
-    return SlayerModel.model_validate(rewritten), emit_deprecations(found)
+        return dataset, []
+    return SlayerDataset.model_validate(rewritten), emit_deprecations(found)
 
 
-def warn_library_shadows(model: SlayerModel) -> None:
-    """One warning per aggregation of ``model`` that shadows a library function."""
-    for agg in model.aggregations:
+def warn_library_shadows(dataset: SlayerDataset) -> None:
+    """One warning per aggregation of ``dataset`` that shadows a library function."""
+    for agg in dataset.aggregations:
         if shadows_library_function(agg):
             warnings.warn(SlayerLibraryNameShadowWarning(LibraryNameShadowWarning(
-                model=model.name, aggregation=agg.name, function=agg.name,
-            )), stacklevel=3)
+                dataset=dataset.name, aggregation=agg.name, function=agg.name,
+            )), stacklevel=outside_stacklevel())
 
 
 def without_none(value: Any) -> Any:
@@ -501,7 +524,7 @@ _PATH_COMPONENT_DISALLOWED = ("/", "\\", "\x00", ".")
 def _entity_matches_cascade(
     *, entry: str, canonical_id: str, is_memory_ref: bool,
 ) -> bool:
-    """Cascade match: ``memory:<id>`` refs exact-only; ``<ds>[.<model>[.<leaf>]]`` refs exact or strict dotted descendant."""
+    """Cascade match: ``memory:<id>`` refs exact-only; ``<ds>[.<dataset>[.<leaf>]]`` refs exact or strict dotted descendant."""
     if is_memory_ref:
         return entry == canonical_id
     if entry == canonical_id:
@@ -550,21 +573,37 @@ def _validate_path_component(value: str, *, kind: str) -> None:
             )
 
 
-def _refuse_colon_measures(model: SlayerModel) -> None:
-    """A measure formula in a removed colon spelling fails the save; other parse errors surface at binding."""
-    for measure in model.measures:
+def _refuse_colon_metrics(dataset: SlayerDataset) -> None:
+    """A metric expression in a removed colon spelling fails the save; other parse errors surface at binding."""
+    for metric in dataset.metrics:
         try:
-            parse_expr(measure.formula)
+            parse_expr(metric.text)
         except ColonSpellingError:
             raise
         except Exception:  # noqa: BLE001, S112 — reported when a query binds it
             continue
 
 
-def _validate_default_time_dimension(model: SlayerModel) -> None:
-    column = model.get_column(model.default_time_dimension) if model.default_time_dimension else None
-    if column is not None and column.type not in (DataType.DATE, DataType.TIMESTAMP):
-        raise DefaultTimeDimensionTypeError(model=model.name, column=column.name, column_type=column.type)
+def _validate_default_time_dimension(dataset: SlayerDataset) -> None:
+    field = dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
+    if field is not None and field.datatype not in TEMPORAL_DATATYPES:
+        raise DefaultTimeDimensionTypeError(dataset=dataset.name, field=field.name, field_type=field.datatype)
+
+
+#: The 1.x methods and hooks a custom backend may still override, by their 2.0 names.
+HOOK_RENAMES = {
+    "get_model": "get_dataset", "save_model": "save_dataset", "delete_model": "delete_dataset",
+    "list_models": "list_datasets", "get_model_or_builtin": "get_dataset_or_builtin",
+    "resolve_model_identity": "resolve_dataset_identity", "load_models": "load_datasets",
+    "builtin_models": "builtin_datasets", "update_column_sampled": "update_field_sampled",
+    "_save_model_impl": "_save_dataset_impl", "_list_all_model_identities": "_list_all_dataset_identities",
+    "_delete_model_row": "_delete_dataset_row",
+}
+#: A 1.x override's keywords, by the 2.0 name (new → old).
+HOOK_ARGUMENTS = {
+    "save_dataset": {"dataset": "model"}, "_save_dataset_impl": {"dataset": "model"},
+    "update_field_sampled": {"dataset_name": "model_name", "field_name": "column_name"},
+}
 
 
 class StorageBackend(ABC):
@@ -575,210 +614,268 @@ class StorageBackend(ABC):
     _ids_collide_as_filenames = False
     _instance_identity: str | None = None
 
-    # ---- model CRUD (composite key) ----------------------------------------
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        bridge_renamed_hooks(cls, HOOK_RENAMES, arguments=HOOK_ARGUMENTS)
 
+    @method_twin("get_dataset")
+    @deprecated("get_model is deprecated; use get_dataset", category=None)
+    async def get_model(self, name: str, data_source: str | None = None) -> SlayerDataset | None: ...
+
+    @method_twin("save_dataset", arguments={"model": "dataset"})
+    @deprecated("save_model is deprecated; use save_dataset", category=None)
     async def save_model(
-        self, model: SlayerModel, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
-    ) -> None:
-        """Persist a model after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only), each
-        deprecated Mode-B spelling stored as its twin. Backends must NOT override this."""
-        if _validate:
-            model, _ = with_canonical_spellings(model)
-            await self.validate_for_save(model, failures=failures)
-            warn_library_shadows(model)
-        await self._save_model_impl(model)
-        self._forget_raw(data_source=model.data_source, name=model.name)
+        self, dataset: SlayerDataset, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
+    ) -> None: ...
 
-    async def validate_for_save(self, model: SlayerModel, *, failures: DocumentLoadFailures | None = None) -> None:
-        """Reserved-name and case-collision rejection, derived-column and model-filter well-formedness (reference arity + cycles) and join-edge validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
-        identities = await self._list_all_model_identities()
-        if is_spine_spelling(model.name) and (model.data_source, model.name) not in identities:
-            raise ReservedModelNameError(name=model.name)
-        _refuse_colon_measures(model)
+    @method_twin("delete_dataset")
+    @deprecated("delete_model is deprecated; use delete_dataset", category=None)
+    async def delete_model(self, name: str, data_source: str | None = None) -> bool: ...
+
+    @method_twin("list_datasets")
+    @deprecated("list_models is deprecated; use list_datasets", category=None)
+    async def list_models(self, data_source: str | None = None) -> list[str]: ...
+
+    @method_twin("resolve_dataset_identity")
+    @deprecated("resolve_model_identity is deprecated; use resolve_dataset_identity", category=None)
+    async def resolve_model_identity(
+        self, name: str, *, prefer_data_source: str | None = None,
+    ) -> tuple[str, str] | None: ...
+
+    @method_twin("get_dataset_or_builtin")
+    @deprecated("get_model_or_builtin is deprecated; use get_dataset_or_builtin", category=None)
+    async def get_model_or_builtin(self, name: str, data_source: str | None = None) -> SlayerDataset | None: ...
+
+    @method_twin("load_datasets")
+    @deprecated("load_models is deprecated; use load_datasets", category=None)
+    async def load_models(
+        self, *, data_source: str | None = None, exclude: str | None = None,
+    ) -> Loaded[SlayerDataset]: ...
+
+    @method_twin("builtin_datasets")
+    @deprecated("builtin_models is deprecated; use builtin_datasets", category=None)
+    async def builtin_models(
+        self, data_source: str, *, detailed: bool = False, failures: DocumentLoadFailures | None = None,
+    ) -> list[SlayerDataset]: ...
+
+    @method_twin("update_field_sampled", arguments={"model_name": "dataset_name", "column_name": "field_name"})
+    @deprecated("update_column_sampled is deprecated; use update_field_sampled", category=None)
+    async def update_column_sampled(
+        self, *, data_source: str, dataset_name: str, field_name: str, sampled: str | None,
+        sampled_values: list[str] | None, distinct_count: int | None,
+    ) -> None: ...
+
+    # ---- dataset CRUD (composite key) --------------------------------------
+
+    async def save_dataset(
+        self, dataset: SlayerDataset, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
+    ) -> None:
+        """Persist a dataset after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only), each
+        deprecated Mode-B spelling stored as its twin and a deprecated field ``sql`` as its datasource's entry. Backends
+        must NOT override this."""
+        if _validate:
+            dataset, _ = with_canonical_spellings(dataset)
+            datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
+            if datasource is not None and not dataset.source_queries:
+                dataset = with_converted_sql(dataset, ds_type=datasource.type)
+            await self.validate_for_save(dataset, failures=failures)
+            warn_library_shadows(dataset)
+        await self._save_dataset_impl(dataset)
+        self._forget_raw(data_source=dataset.data_source, name=dataset.name)
+
+    async def validate_for_save(self, dataset: SlayerDataset, *, failures: DocumentLoadFailures | None = None) -> None:
+        """Reserved-name and case-collision rejection, derived-field and dataset-filter well-formedness (reference arity + cycles) and relationship validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
+        identities = await self._list_all_dataset_identities()
+        if is_spine_spelling(dataset.name) and (dataset.data_source, dataset.name) not in identities:
+            raise ReservedDatasetNameError(name=dataset.name)
+        _refuse_colon_metrics(dataset)
+        datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
+        if datasource is not None and not dataset.source_queries:
+            check_forms(dataset, ds_type=datasource.type)
         if self._ids_collide_as_filenames:
-            await self._check_model_identity_collision(model)
-        await self._check_case_collisions(model)
+            await self._check_dataset_identity_collision(dataset)
+        await self._check_case_collisions(dataset)
         # A skipped (unloadable) peer is invisible to these checks; its edge names go unchecked.
         failures = failures or DocumentLoadFailures()
-        loaded, unloaded = await self.load_models(data_source=model.data_source, exclude=model.name)
+        loaded, unloaded = await self.load_datasets(data_source=dataset.data_source, exclude=dataset.name)
         peers = {m.name: m for m in failures.skip((loaded, unloaded))}
-        check_join_target_spellings(model, names=[n for ds, n in identities if ds == model.data_source], peers=peers)
-        await self._validate_mode_a_placeholders(model)
-        validate_derived_columns(model=model, peers=peers, unloaded=frozenset(e.name for e in unloaded))
-        check_model_filters(model=model, reachable=peers)
-        self._validate_join_edges(model, peers=peers, identities=identities)
-        await self._validate_aggregations(model)
-        await self._validate_column_granularities(model)
-        _validate_default_time_dimension(model)
+        check_relationship_target_spellings(dataset, names=[n for ds, n in identities if ds == dataset.data_source], peers=peers)
+        await self._validate_mode_a_placeholders(dataset)
+        validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
+        check_dataset_filters(dataset=dataset, reachable=peers)
+        self._validate_relationship_edges(dataset, peers=peers, identities=identities)
+        await self._validate_aggregations(dataset)
+        await self._validate_field_granularities(dataset)
+        _validate_default_time_dimension(dataset)
         if failures.report:
             warn_broken_dependents(
-                model=model, stored=await self.get_model(model.name, data_source=model.data_source), peers=peers,
+                dataset=dataset, stored=await self.get_dataset(dataset.name, data_source=dataset.data_source), peers=peers,
             )
 
-    async def _check_case_collisions(self, model: SlayerModel) -> None:
-        """Refuse a name that newly collides by case with another in its namespace (the datasource's model names
+    async def _check_case_collisions(self, dataset: SlayerDataset) -> None:
+        """Refuse a name that newly collides by case with another in its namespace (the datasource's dataset names
         included); a collision the stored document already holds is grandfathered, with a warning."""
-        identities = await self._list_all_model_identities()
-        peers = [n for d, n in identities if d == model.data_source]
-        new = [g for g in folded_collisions([*peers, model.name]) if model.name in g] if model.name not in peers else []
+        identities = await self._list_all_dataset_identities()
+        peers = [n for d, n in identities if d == dataset.data_source]
+        new = [g for g in folded_collisions([*peers, dataset.name]) if dataset.name in g] if dataset.name not in peers else []
         if new:
-            raise CaseCollisionError(names=new[0], namespace=f"datasource {model.data_source!r}'s models")
+            raise CaseCollisionError(names=new[0], namespace=f"datasource {dataset.data_source!r}'s datasets")
         stored = None
         with contextlib.suppress(Exception):
-            stored = await self.get_model(model.name, data_source=model.data_source)
+            stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
         held = {(w, tuple(g)) for w, g in case_collisions(stored)} if stored is not None else set()
-        for where, group in case_collisions(model):
+        for where, group in case_collisions(dataset):
             if (where, tuple(group)) not in held:
-                raise CaseCollisionError(names=group, namespace=f"model {model.name!r}'s {where}")
-        for payload in [*name_collision_warnings(model), *spine_variant_warnings(model)]:
-            warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=4)
+                raise CaseCollisionError(names=group, namespace=f"dataset {dataset.name!r}'s {where}")
+        for payload in [*name_collision_warnings(dataset), *spine_variant_warnings(dataset)]:
+            warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=outside_stacklevel())
 
-    async def _validate_mode_a_placeholders(self, model: SlayerModel) -> None:
-        ds = await self.get_datasource(model.data_source) if model.data_source else None
-        check_placeholders(mode_a_texts(model), dialect=dialect_for_ds_type(ds.type if ds else None))
+    async def _validate_mode_a_placeholders(self, dataset: SlayerDataset) -> None:
+        ds = await self.get_datasource(dataset.data_source) if dataset.data_source else None
+        check_placeholders(mode_a_texts(dataset), dialect=dialect_for_ds_type(ds.type if ds else None))
 
-    async def _validate_column_granularities(self, model: SlayerModel) -> None:
-        named = [(c, c.granularity) for c in model.columns if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
+    async def _validate_field_granularities(self, dataset: SlayerDataset) -> None:
+        named = [(c, c.granularity) for c in dataset.fields if c.granularity is not None and not isinstance(c.granularity, TimeGranularity)]
         if not named:
             return
-        ds = await self.get_datasource(model.data_source) if model.data_source else None
+        ds = await self.get_datasource(dataset.data_source) if dataset.data_source else None
         defined = ds.granularity_definitions if ds is not None else {}
-        for column, granularity in named:
+        for field, granularity in named:
             if resolve_granularity(granularity, defined=defined) is None:
                 raise UnknownGranularityError(summary=unknown_granularity_message(
                     name=str(granularity), defined=defined.values(),
-                    where=f"column {column.name!r} of model {model.name!r}",
+                    where=f"field {field.name!r} of dataset {dataset.name!r}",
                 ))
 
-    async def _validate_aggregations(self, model: SlayerModel) -> None:
-        if not model.aggregations:
+    async def _validate_aggregations(self, dataset: SlayerDataset) -> None:
+        if not dataset.aggregations:
             return
-        ds = await self.get_datasource(model.data_source) if model.data_source else None
+        ds = await self.get_datasource(dataset.data_source) if dataset.data_source else None
         dialect = dialect_for_ds_type(ds.type).sqlglot_name if ds else ""
-        for agg in model.aggregations:
+        for agg in dataset.aggregations:
             check_aggregation_definition(
-                where=f"Model '{model.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect,
+                where=f"Dataset '{dataset.name}', aggregation '{agg.name}'", agg=agg, dialect=dialect,
             )
             if agg.name.lower() in RESERVED_NAMES:
-                raise ReservedFunctionNameError(name=agg.name, where=f"Model '{model.name}', aggregation")
+                raise ReservedFunctionNameError(name=agg.name, where=f"Dataset '{dataset.name}', aggregation")
 
     @staticmethod
-    def _validate_join_edges(
-        model: SlayerModel, *, peers: dict[str, SlayerModel], identities: list[tuple[str, str]],
+    def _validate_relationship_edges(
+        dataset: SlayerDataset, *, peers: dict[str, SlayerDataset], identities: list[tuple[str, str]],
     ) -> None:
-        """Save-time join validation against the loaded datasource ``peers``: reject duplicate incident edge names, edge/model name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
-        clash = next((n for n, p in sorted(peers.items()) if any(j.name == model.name for j in p.joins)), None)
+        """Save-time relationship validation against the loaded datasource ``peers``: reject duplicate incident edge names, edge/dataset name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
+        clash = next((n for n, p in sorted(peers.items()) if any(j.name == dataset.name for j in p.relationships)), None)
         if clash is not None:
             raise ValueError(
-                f"Model name '{model.name}' collides with the join name "
-                f"'{model.name}' declared on model '{clash}' in datasource "
-                f"'{model.data_source}'. Edge names and model names share "
+                f"Dataset name '{dataset.name}' collides with the relationship name "
+                f"'{dataset.name}' declared on dataset '{clash}' in datasource "
+                f"'{dataset.data_source}'. Edge names and dataset names share "
                 f"the path-segment namespace."
             )
-        _check_list_hop_collisions(model=model, peers=peers)
-        if not model.joins:
+        _check_list_hop_collisions(dataset=dataset, peers=peers)
+        if not dataset.relationships:
             return
-        names = _checked_join_names(model)
-        _checked_join_name_namespace(model=model, names=names, identities=identities)
-        # Join targets always; every peer when a named edge must be checked against incident edges.
+        names = _checked_relationship_names(dataset)
+        _checked_relationship_name_namespace(dataset=dataset, names=names, identities=identities)
+        # Relationship targets always; every peer when a named edge must be checked against incident edges.
         if not names:
-            targets = {j.target_model for j in model.joins}
+            targets = {j.to for j in dataset.relationships}
             peers = {n: p for n, p in peers.items() if n in targets}
-        _check_edges_against_peers(model=model, peers=peers)
-        _warn_unnamed_parallel_edges(model=model, peers=peers)
+        _check_edges_against_peers(dataset=dataset, peers=peers)
+        _warn_unnamed_parallel_edges(dataset=dataset, peers=peers)
 
-    async def _check_model_identity_collision(self, model: SlayerModel) -> None:
-        """Reject a model whose ``data_source`` or ``name`` case-collides with an existing one (both are YAML filename components)."""
-        identities = await self._list_all_model_identities()
+    async def _check_dataset_identity_collision(self, dataset: SlayerDataset) -> None:
+        """Reject a dataset whose ``data_source`` or ``name`` case-collides with an existing one (both are YAML filename components)."""
+        identities = await self._list_all_dataset_identities()
         known_ds = {ds for ds, _ in identities}
         known_ds.update(await self.list_datasources())
         collide = _find_case_colliding_id(
-            candidate=model.data_source, existing=known_ds,
+            candidate=dataset.data_source, existing=known_ds,
         )
         if collide is not None:
             raise IdCollisionError(
-                kind="datasource", new_id=model.data_source, existing_id=collide,
+                kind="datasource", new_id=dataset.data_source, existing_id=collide,
             )
-        names_in_ds = [n for ds, n in identities if ds == model.data_source]
+        names_in_ds = [n for ds, n in identities if ds == dataset.data_source]
         collide = _find_case_colliding_id(
-            candidate=model.name, existing=names_in_ds,
+            candidate=dataset.name, existing=names_in_ds,
         )
         if collide is not None:
             raise IdCollisionError(
-                kind="model",
-                new_id=model.name,
+                kind="dataset",
+                new_id=dataset.name,
                 existing_id=collide,
-                data_source=model.data_source,
+                data_source=dataset.data_source,
             )
 
-    async def builtin_models(
+    async def builtin_datasets(
         self, data_source: str, *, detailed: bool = False, failures: DocumentLoadFailures | None = None,
-    ) -> list[SlayerModel]:
-        """The datasource's built-in models (the time spine, unless a stored model shadows it);
+    ) -> list[SlayerDataset]:
+        """The datasource's built-in datasets (the time spine, unless a stored dataset shadows it);
         ``detailed`` describes its wiring, else its description points at ``inspect``. Empty for an unknown datasource."""
         if await self.get_datasource(data_source) is None:
             return []
-        if (data_source, TIME_SPINE_MODEL) in await self._list_all_model_identities():
+        if (data_source, TIME_SPINE_DATASET) in await self._list_all_dataset_identities():
             return []
         if not detailed:
-            return [spine_model(data_source=data_source)]
-        peers = (failures or DocumentLoadFailures()).skip(await self.load_models(data_source=data_source))
-        return [spine_model(data_source=data_source, wired=peers)]
+            return [spine_dataset(data_source=data_source)]
+        peers = (failures or DocumentLoadFailures()).skip(await self.load_datasets(data_source=data_source))
+        return [spine_dataset(data_source=data_source, wired=peers)]
 
-    async def load_models(self, *, data_source: str | None = None, exclude: str | None = None) -> Loaded[SlayerModel]:
-        """Every stored model (of ``data_source`` when given, bar ``exclude``), and the ones that failed to load."""
-        sem = asyncio.Semaphore(_MODEL_LOAD_CONCURRENCY)
+    async def load_datasets(self, *, data_source: str | None = None, exclude: str | None = None) -> Loaded[SlayerDataset]:
+        """Every stored dataset (of ``data_source`` when given, bar ``exclude``), and the ones that failed to load."""
+        sem = asyncio.Semaphore(_DATASET_LOAD_CONCURRENCY)
 
-        async def _load(ds: str, name: str) -> SlayerModel | StoredDocumentLoadError | None:
+        async def _load(ds: str, name: str) -> SlayerDataset | StoredDocumentLoadError | None:
             async with sem:
                 try:
-                    return await self.get_model(name, data_source=ds)
+                    return await self.get_dataset(name, data_source=ds)
                 except StoredDocumentLoadError as exc:
                     return exc
 
         token = _RAW_PASS.set({}) if _RAW_PASS.get() is None else None
         try:
             loaded = await asyncio.gather(*(
-                _load(ds, name) for ds, name in await self._list_all_model_identities()
+                _load(ds, name) for ds, name in await self._list_all_dataset_identities()
                 if (data_source is None or ds == data_source) and name != exclude
             ))
         finally:
             if token is not None:
                 _RAW_PASS.reset(token)
         return (
-            [m for m in loaded if isinstance(m, SlayerModel)],
+            [m for m in loaded if isinstance(m, SlayerDataset)],
             [e for e in loaded if isinstance(e, StoredDocumentLoadError)],
         )
 
-    async def get_model_or_builtin(self, name: str, data_source: str | None = None) -> SlayerModel | None:
-        """``get_model``, falling back to a built-in model of the datasource (the only one when unnamed)."""
-        model = await self.get_model(name, data_source=data_source)
-        if model is not None or name != TIME_SPINE_MODEL:
-            return model
+    async def get_dataset_or_builtin(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
+        """``get_dataset``, falling back to a built-in dataset of the datasource (the only one when unnamed)."""
+        dataset = await self.get_dataset(name, data_source=data_source)
+        if dataset is not None or name != TIME_SPINE_DATASET:
+            return dataset
         datasources = [data_source] if data_source is not None else await self.list_datasources()
         if len(datasources) != 1:
             return None
-        return next(iter(await self.builtin_models(datasources[0], detailed=True)), None)
+        return next(iter(await self.builtin_datasets(datasources[0], detailed=True)), None)
 
     @abstractmethod
-    async def _save_model_impl(self, model: SlayerModel) -> None:
-        """Backend-specific durable write of ``model`` (backends implement this, not ``save_model``)."""
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        """Backend-specific durable write of ``dataset`` (backends implement this, not ``save_dataset``)."""
 
     @abstractmethod
-    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+    async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
         """Every saved ``(data_source, name)`` pair (backends pick the cheapest enumeration)."""
 
     @abstractmethod
-    async def get_model(
+    async def get_dataset(
         self,
         name: str,
         data_source: str | None = None,
-    ) -> SlayerModel | None: ...
+    ) -> SlayerDataset | None: ...
 
-    async def _load_raw_model_dict(
+    async def _load_raw_dataset_dict(
         self, *, name: str, data_source: str,
     ) -> dict | None:
-        """The persisted model dict verbatim — no migration, no validation; ``None`` when absent. The legacy-``__`` rewrite reads sibling models raw through this to avoid recursing their load pipeline; YAML/SQLite override, the default ``None`` limits the rewrite to first-hop walks."""
+        """The persisted dataset dict verbatim — no migration, no validation; ``None`` when absent. The legacy-``__`` rewrite reads sibling datasets raw through this to avoid recursing their load pipeline; YAML/SQLite override, the default ``None`` limits the rewrite to first-hop walks."""
         await asyncio.sleep(0)  # awaited protocol hook; async impls override
         return None
 
@@ -791,7 +888,7 @@ class StorageBackend(ABC):
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
         raise NotImplementedError
 
-    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+    async def _write_raw_dataset_dict(self, *, name: str, data_source: str, data: dict) -> None:
         raise NotImplementedError
 
     async def _raw_memory_dicts(self) -> dict[str, dict]:
@@ -812,14 +909,14 @@ class StorageBackend(ABC):
         return partial(custom_buckets_as_date_trunc, units=frozenset(units))
 
     async def _memory_data_sources(self, data: dict) -> list[str]:
-        """The datasources a stored memory's query reads: its inline model's, else those holding its root model."""
-        inline_data_source, source = memory_source_model(data)
+        """The datasources a stored memory's query reads: its inline dataset's, else those holding its root dataset."""
+        inline_data_source, source = memory_source_dataset(data)
         if inline_data_source is not None:
             return [inline_data_source]
-        return sorted({d for d, n in await self._list_all_model_identities() if n == source})
+        return sorted({d for d, n in await self._list_all_dataset_identities() if n == source})
 
     async def _settle_library_granularities(self) -> None:
-        """Once per instance, before any model or memory loads: rename the library-named granularities of every stored
+        """Once per instance, before any dataset or memory loads: rename the library-named granularities of every stored
         datasource dict (an unloadable datasource is reported where it is used)."""
         if getattr(self, "_granularities_settled", False) or _SETTLING.get():
             return
@@ -851,17 +948,17 @@ class StorageBackend(ABC):
         return renamed_datasource(data, renames=renames)
 
     async def _rename_granularities(self, *, data_source: str, raw: dict, renames: Renames) -> None:
-        identities = await self._list_all_model_identities()
+        identities = await self._list_all_dataset_identities()
         own = {n for d, n in identities if d == data_source}
         elsewhere = {n for d, n in identities if d != data_source}
         renamed = self._granularity_renamed_docs = getattr(self, "_granularity_renamed_docs", {})
         for name in sorted(own):
-            data = await self._load_raw_model_dict(name=name, data_source=data_source)
-            if isinstance(data, dict) and (new := rename_in_model(data, renames=renames)) != data:
-                await self._write_raw_model_dict(name=name, data_source=data_source, data=new)
-                renamed[("model", f"{data_source}.{name}")] = (data, new)
+            data = await self._load_raw_dataset_dict(name=name, data_source=data_source)
+            if isinstance(data, dict) and (new := rename_in_dataset(data, renames=renames)) != data:
+                await self._write_raw_dataset_dict(name=name, data_source=data_source, data=new)
+                renamed[("dataset", f"{data_source}.{name}")] = (data, new)
         for memory_id, data in (await self._raw_memory_dicts()).items():
-            inline_data_source, source = memory_source_model(data)
+            inline_data_source, source = memory_source_dataset(data)
             in_datasource = inline_data_source == data_source if inline_data_source is not None else (
                 source in own and (source not in elsewhere or f"{data_source}.{source}" in (data.get("entities") or []))
             )
@@ -880,16 +977,20 @@ class StorageBackend(ABC):
         original, new = getattr(self, "_granularity_renamed_docs", {}).get((kind, key), (None, None))
         return new if original is not None and data == original else data
 
-    async def _cached_raw_model_dict(self, *, name: str, data_source: str) -> dict | None:
-        """``_load_raw_model_dict``, read once per ``load_models`` pass (callers must not mutate it)."""
+    async def _cached_raw_dataset_dict(self, *, name: str, data_source: str) -> dict | None:
+        """``_load_raw_dataset_dict``, read once per ``load_datasets`` pass (callers must not mutate it)."""
         memo = _RAW_PASS.get()
         if memo is None:
-            return await self._load_raw_model_dict(name=name, data_source=data_source)
+            return await self._load_raw_dataset_dict(name=name, data_source=data_source)
         read = memo.get((self, data_source, name))
         if read is None:
             read = memo[(self, data_source, name)] = asyncio.ensure_future(
-                self._load_raw_model_dict(name=name, data_source=data_source))
+                self._load_raw_dataset_dict(name=name, data_source=data_source))
         return await asyncio.shield(read)  # one waiter's cancellation must not fail the others
+
+    async def _peer_dataset_dict(self, *, name: str, data_source: str) -> dict | None:
+        """A peer's raw stored dataset, read once per pass, spelled in the current vocabulary."""
+        return dataset_in(await self._cached_raw_dataset_dict(name=name, data_source=data_source), CURRENT_KEYS)
 
     def _forget_raw(self, *, data_source: str, name: str) -> None:
         """Drop ``(data_source, name)`` from the enclosing pass's raw reads after a write to it."""
@@ -897,17 +998,17 @@ class StorageBackend(ABC):
         if memo is not None:
             memo.pop((self, data_source, name), None)
 
-    async def delete_model(
+    async def delete_dataset(
         self,
         name: str,
         data_source: str | None = None,
     ) -> bool:
-        """Delete one model by ``(data_source, name)`` and cascade-delete its embeddings. Bare ``name`` resolves via the priority list; ``False`` (no cascade) when no model matches."""
+        """Delete one dataset by ``(data_source, name)`` and cascade-delete its embeddings. Bare ``name`` resolves via the priority list; ``False`` (no cascade) when no dataset matches."""
         target = await self._resolve_target_or_none(name, data_source=data_source)
         if target is None:
             return False
         resolved_data_source, resolved_name = target
-        deleted = await self._delete_model_row(
+        deleted = await self._delete_dataset_row(
             data_source=resolved_data_source, name=resolved_name,
         )
         if deleted:
@@ -922,25 +1023,25 @@ class StorageBackend(ABC):
         return deleted
 
     @abstractmethod
-    async def _delete_model_row(
+    async def _delete_dataset_row(
         self, *, data_source: str, name: str,
     ) -> bool:
-        """Delete the persisted row for ``(data_source, name)`` (``True`` if removed); the embedding cascade is the public ``delete_model`` wrapper's job."""
+        """Delete the persisted row for ``(data_source, name)`` (``True`` if removed); the embedding cascade is the public ``delete_dataset`` wrapper's job."""
 
     @abstractmethod
-    async def update_column_sampled(
+    async def update_field_sampled(
         self,
         *,
         data_source: str,
-        model_name: str,
-        column_name: str,
+        dataset_name: str,
+        field_name: str,
         sampled: str | None,
         sampled_values: list[str] | None,
         distinct_count: int | None,
     ) -> None:
-        """Patch a column's ``sampled``/``sampled_values``/``distinct_count`` as one read-modify-write (``None`` drops the key; other fields untouched). Raises ``ValueError`` when the model or column is absent."""
+        """Patch a field's ``sampled``/``sampled_values``/``distinct_count`` as one read-modify-write (``None`` drops the key; other fields untouched). Raises ``ValueError`` when the dataset or field is absent."""
 
-    # ---- shared model lookup / load helpers --------------------------------
+    # ---- shared dataset lookup / load helpers ------------------------------
 
     async def _resolve_target_or_none(
         self,
@@ -949,11 +1050,11 @@ class StorageBackend(ABC):
         data_source: str | None,
     ) -> tuple[str, str] | None:
         """Sanitize inputs and resolve a bare ``name`` to its ``(data_source, name)`` identity via the priority list; ``None`` when ``data_source`` is omitted and no such bare name exists."""
-        _validate_path_component(name, kind="model name")
+        _validate_path_component(name, kind="dataset name")
         if data_source is not None:
             _validate_path_component(data_source, kind="data_source")
             return (data_source, name)
-        identity = await self.resolve_model_identity(name)
+        identity = await self.resolve_dataset_identity(name)
         if identity is None:
             return None
         return identity
@@ -963,19 +1064,19 @@ class StorageBackend(ABC):
     ) -> None:
         """Refine ``data`` against its live table through the loading engine's client (``CLIENT_SOURCE``).
 
-        DOUBLE base columns require it: a missing datasource, or no loading engine, raises
+        DOUBLE base fields require it: a missing datasource, or no loading engine, raises
         ``ValueError``. SQLite-INT widening is best-effort (warn and skip). No-op when neither applies.
         """
-        needs_double = has_refineable_columns(data)
-        needs_sqlite_int = has_sqlite_widenable_columns(data)
+        needs_double = has_refineable_fields(data)
+        needs_sqlite_int = has_sqlite_widenable_fields(data)
         if not (needs_double or needs_sqlite_int):
             return
         ds = await self.get_datasource(data_source)
         client_source = CLIENT_SOURCE.get()
         if ds is not None and client_source is None and needs_double:
             raise ValueError(
-                f"Cannot migrate model {name!r}: its DOUBLE columns are refined against datasource "
-                f"{data_source!r}, so the model must be loaded through a query engine "
+                f"Cannot migrate dataset {name!r}: its DOUBLE fields are refined against datasource "
+                f"{data_source!r}, so the dataset must be loaded through a query engine "
                 f"(SlayerQueryEngine(storage=...).storage)."
             )
         if ds is not None and client_source is not None:
@@ -990,10 +1091,10 @@ class StorageBackend(ABC):
             return
         if ds is None and needs_double:
             raise ValueError(
-                f"Cannot migrate model {name!r}: datasource "
+                f"Cannot migrate dataset {name!r}: datasource "
                 f"{data_source!r} is unavailable for type "
                 f"refinement. Restore the datasource entry or "
-                f"remove the stale model file."
+                f"remove the stale dataset file."
             )
         self._warn_skipped_int_probe(name=name, data_source=data_source)
 
@@ -1004,9 +1105,9 @@ class StorageBackend(ABC):
         safe_name = name.replace("\r", "\\r").replace("\n", "\\n")
         logging.getLogger(__name__).warning(
             "Datasource '%s' unavailable; skipping SQLite "
-            "affinity probe for INT base columns on '%s'. "
+            "affinity probe for INT base fields on '%s'. "
             "Re-run `slayer ingest` once the datasource is "
-            "back to widen any mis-typed columns.",
+            "back to widen any mis-typed fields.",
             safe_ds,
             safe_name,
         )
@@ -1017,145 +1118,175 @@ class StorageBackend(ABC):
         name: str,
         data: Any,
         data_source: str,
-    ) -> SlayerModel:
-        """Migrate a below-version on-disk model dict forward, refine it (below v8) against its live table through the loading engine, validate into a ``SlayerModel``, and (when a migration ran) persist it back so later loads short-circuit."""
+    ) -> SlayerDataset:
+        """Migrate a below-version on-disk dataset dict forward, refine it (below v8) against its live table through the loading engine, validate into a ``SlayerDataset``, and (when a migration ran) persist it back so later loads short-circuit."""
         if not isinstance(data, dict):
             # e.g. a zero-byte/corrupt YAML file (safe_load -> None): give the
             # remediation, not a bare Pydantic model_type error.
             raise ValueError(
-                f"Model {name!r} in datasource {data_source!r} has an empty or "
+                f"Dataset {name!r} in datasource {data_source!r} has an empty or "
                 f"corrupt stored definition (got {type(data).__name__} instead "
                 f"of a mapping). Delete the stored entry (YAML layout: "
                 f"models/{data_source}/{name}.yaml) and re-run `slayer ingest` "
                 f"to recreate it."
             )
         await self._settle_library_granularities()
-        data = self._renamed_since_read(data, kind="model", key=f"{data_source}.{name}")
+        data = self._renamed_since_read(data, kind="dataset", key=f"{data_source}.{name}")
         data = _mig.stamp_stored(data)
         pre_version = int(data["version"])
         if pre_version < _CUSTOM_BUCKET_CALLS_BELOW["SlayerModel"]:
-            data = rewrite_model_doc(data, await self._custom_bucket_calls(data_sources=[data_source]))
-        typing = StoredModels()
+            data = rewrite_dataset_doc(
+                data, await self._custom_bucket_calls(data_sources=[data_source]),
+                keys=keys_for(entity="SlayerModel", version=pre_version),
+            )
+        typing = StoredDatasets()
         if needs_typing("SlayerModel", data):
-            typing = (await self._stored_models(data_source)).model_copy(update={"stages": _stage_names(data)})
+            typing = (await self._stored_datasets(data_source)).model_copy(update={"stages": _stage_names(data)})
         with typing_with(typing):
-            model, write_back = await self._migrated_model(name=name, data=data, data_source=data_source)
+            dataset, write_back = await self._migrated_dataset(name=name, data=data, data_source=data_source)
         if not caller_announces():
-            warn_library_shadows(model)
-            for payload in [*name_collision_warnings(model), *spine_variant_warnings(model)]:
+            warn_library_shadows(dataset)
+            for payload in [*name_collision_warnings(dataset), *spine_variant_warnings(dataset)]:
                 warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
         if write_back:
-            # Write-back must not re-validate: legacy models may hold cycles or
+            # Write-back must not re-validate: legacy datasets may hold cycles or
             # fanning refs a user needs to load to repair.
-            await self.save_model(model, _validate=False)
-        return model
+            await self.save_dataset(dataset, _validate=False)
+        return dataset
 
-    async def _migrated_model(self, *, name: str, data: dict, data_source: str) -> tuple[SlayerModel, bool]:
-        """A stamped stored model dict migrated, repaired and validated; and whether a migration ran."""
+    async def _migrated_dataset(self, *, name: str, data: dict, data_source: str) -> tuple[SlayerDataset, bool]:
+        """A stamped stored dataset dict migrated, repaired and validated; and whether a migration ran."""
         write_back = False
         pre_version = int(data["version"])
+        queries = data.get("source_queries")
+        pending = [_unqualified(q, document_version=pre_version, entity="SlayerModel")
+                   for q in queries] if isinstance(queries, list) else []
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
-            if pre_version < _JOIN_TARGET_REPAIR_BELOW_VERSION:
-                await self._repair_join_targets(name=name, data=data, data_source=data_source)
+            if pre_version < _RELATIONSHIP_TARGET_REPAIR_BELOW_VERSION:
+                await self._repair_relationship_targets(name=name, data=data, data_source=data_source)
             # Rewrite legacy ``__`` split-alias qualifiers to dotted on the RAW
             # dict, before validation (every forward migration may carry them).
             data = await self._rewrite_legacy_join_aliases(
                 name=name, data=data, data_source=data_source,
             )
-            await self._canonicalize_join_key_spellings(data=data, data_source=data_source)
-            await self._declare_join_keys(name=name, data=data, data_source=data_source)
+            await self._canonicalize_relationship_key_spellings(data=data, data_source=data_source)
+            await self._declare_relationship_keys(name=name, data=data, data_source=data_source)
             await self._repair_source_query_filters(name=name, data=data, data_source=data_source)
             data = await self._inlined_source_queries(name=name, data=data, data_source=data_source)
+            data = await self._qualified_source_queries(name=name, data=data, data_source=data_source,
+                                                        pending=pending)
             # Collapse stored exact-inverse mirror pairs.
-            data = await self._dedup_exact_inverse_joins(
+            data = await self._dedup_exact_inverse_relationships(
                 name=name, data=data, data_source=data_source,
             )
+            if pre_version < FIELD_EXPRESSION_VERSION:
+                data = respell_source_paths(data, peer_relationships=await self._peer_relationships(
+                    data=data, data_source=data_source))
             write_back = True
             if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
                 await self._apply_refinement_or_raise(
                     name=name, data=data, data_source=data_source,
                 )
-        return SlayerModel.model_validate(data), write_back
+        elif any(pending):
+            # A current document can hold an older nested stage: its own version decides.
+            data = await self._qualified_source_queries(name=name, data=data, data_source=data_source,
+                                                        pending=pending)
+            write_back = True
+        dataset = SlayerDataset.model_validate(data)
+        datasource = await self.get_datasource(data_source) if any(c.sql is not None for c in dataset.fields) else None
+        if datasource is not None:
+            dataset, write_back = with_converted_sql(dataset, ds_type=datasource.type), True
+        # A field's sql waiting for its datasource's dialect is never written back.
+        return dataset, write_back and not any(c.sql is not None for c in dataset.fields)
 
-    async def _model_names(self, data_source: str) -> set[str]:
-        return {n for ds, n in await self._list_all_model_identities() if ds == data_source}
+    async def _peer_relationships(self, *, data: dict, data_source: str) -> dict[str, list]:
+        """Each relationship target's own stored relationships, by target name."""
+        out: dict[str, list] = {}
+        for relationship in data.get("relationships") or []:
+            target = relationship.get("to") if isinstance(relationship, dict) else None
+            if isinstance(target, str) and target not in out:
+                peer = await self._peer_dataset_dict(name=target, data_source=data_source)
+                rels = peer.get("relationships") if isinstance(peer, dict) else None
+                out[target] = rels if isinstance(rels, list) else []
+        return out
 
-    async def _repair_join_targets(self, *, name: str, data: dict, data_source: str) -> None:
-        """Respell each join target of ``data`` naming no model exactly but one by case to that model; drop each join
+    async def _dataset_names(self, data_source: str) -> set[str]:
+        return {n for ds, n in await self._list_all_dataset_identities() if ds == data_source}
+
+    async def _repair_relationship_targets(self, *, name: str, data: dict, data_source: str) -> None:
+        """Respell each relationship target of ``data`` naming no dataset exactly but one by case to that dataset; drop each relationship
         into the spine, with a warning."""
-        joins = data.get("joins")
-        if not isinstance(joins, list):
+        relationships = data.get("relationships")
+        if not isinstance(relationships, list):
             return
-        names = await self._model_names(data_source) | {name}
+        names = await self._dataset_names(data_source) | {name}
         kept: list = []
-        for join in joins:
-            target = join.get("target_model") if isinstance(join, dict) else None
+        for relationship in relationships:
+            target = relationship.get("to") if isinstance(relationship, dict) else None
             if not isinstance(target, str) or target in names:
-                kept.append(join)
+                kept.append(relationship)
                 continue
             if is_spine_spelling(target):
-                warnings.warn(SlayerSpineJoinDroppedWarning(SpineJoinDroppedWarning(
-                    model=name, join=str(join.get("name") or target),
+                warnings.warn(SlayerSpineRelationshipDroppedWarning(SpineRelationshipDroppedWarning(
+                    dataset=name, relationship=str(relationship.get("name") or target),
                 )), stacklevel=2)
                 continue
-            join["target_model"] = _repaired_target(target, names=names)
-            kept.append(join)
-        data["joins"] = kept
+            relationship["to"] = _repaired_target(target, names=names)
+            kept.append(relationship)
+        data["relationships"] = kept
 
-    async def _canonicalize_join_key_spellings(self, *, data: dict, data_source: str) -> None:
-        """Rewrite stored physical join-key spellings in ``data`` to ``Column.name``, both sides."""
-        joins = data.get("joins")
-        if not isinstance(joins, list):
+    async def _canonicalize_relationship_key_spellings(self, *, data: dict, data_source: str) -> None:
+        """Rewrite stored physical relationship-key spellings in ``data`` to ``DatasetField.name``, both sides."""
+        relationships = data.get("relationships")
+        if not isinstance(relationships, list):
             return
-        for join in joins:
-            if not isinstance(join, dict) or not isinstance(join.get("target_model"), str):
+        for i, relationship in enumerate(relationships):
+            if not isinstance(relationship, dict) or not isinstance(relationship.get("to"), str):
                 continue
-            peer = await self._cached_raw_model_dict(
-                name=join["target_model"], data_source=data_source,
-            )
-            join["join_pairs"] = canonical_join_pairs(
-                pairs=join.get("join_pairs"), source_columns=data.get("columns"),
-                target_columns=peer.get("columns") if isinstance(peer, dict) else None,
+            peer = await self._peer_dataset_dict(name=relationship["to"], data_source=data_source)
+            relationships[i] = canonical_relationship_keys(
+                relationship=relationship, source_fields=data.get("fields"),
+                target_fields=peer.get("fields") if isinstance(peer, dict) else None,
             )
 
-    async def _declare_join_keys(self, *, name: str, data: dict, data_source: str) -> None:
-        """Declare each join key naming no column of this table- or SQL-backed document as its hidden base column:
-        source keys from its own joins, target keys from its siblings' joins into it. Typed like the opposite key."""
-        columns = data.get("columns")
-        if data.get("source_queries") or not isinstance(columns, list):
+    async def _declare_relationship_keys(self, *, name: str, data: dict, data_source: str) -> None:
+        """Declare each relationship key naming no field of this table- or SQL-backed document as its hidden base field:
+        source keys from its own relationships, target keys from its siblings' relationships into it. Typed like the opposite key."""
+        fields = data.get("fields")
+        if data.get("source_queries") or not isinstance(fields, list):
             return
-        keys = await self._outgoing_keys(joins=data.get("joins"), data_source=data_source)
-        keys += await self._sibling_keys_into(name=name, columns=columns, data_source=data_source)
+        keys = await self._outgoing_keys(relationships=data.get("relationships"), data_source=data_source)
+        keys += await self._sibling_keys_into(name=name, fields=fields, data_source=data_source)
         for key, key_type in keys:
-            if _undeclared_key(key=key, columns=columns):
-                columns.append({"name": key, "hidden": True, **({"type": key_type} if key_type else {})})
+            if _undeclared_key(key=key, fields=fields):
+                fields.append({"name": key, "hidden": True, **({"datatype": key_type} if key_type else {})})
 
-    async def _outgoing_keys(self, *, joins: Any, data_source: str) -> list[tuple[Any, str | None]]:
-        """Source-side keys of ``joins``, each typed like its target key."""
+    async def _outgoing_keys(self, *, relationships: Any, data_source: str) -> list[tuple[Any, str | None]]:
+        """Source-side keys of ``relationships``, each typed like its target key."""
         keys: list[tuple[Any, str | None]] = []
-        for join in joins if isinstance(joins, list) else []:
-            target = join.get("target_model") if isinstance(join, dict) else None
-            peer = await self._cached_raw_model_dict(name=target, data_source=data_source) if isinstance(target, str) else None
-            peer_columns = peer.get("columns") if isinstance(peer, dict) else None
-            keys.extend((src, stored_type(key=tgt, columns=peer_columns)) for src, tgt in _key_pairs(join))
+        for relationship in relationships if isinstance(relationships, list) else []:
+            target = relationship.get("to") if isinstance(relationship, dict) else None
+            peer = await self._peer_dataset_dict(name=target, data_source=data_source) if isinstance(target, str) else None
+            peer_fields = peer.get("fields") if isinstance(peer, dict) else None
+            keys.extend((src, stored_type(key=tgt, fields=peer_fields, keys=CURRENT_KEYS)) for src, tgt in relationship_pairs(relationship))
         return keys
 
-    async def _sibling_keys_into(self, *, name: str, columns: list, data_source: str) -> list[tuple[Any, str | None]]:
-        """Target-side keys of every same-datasource sibling's joins into ``name``."""
+    async def _sibling_keys_into(self, *, name: str, fields: list, data_source: str) -> list[tuple[Any, str | None]]:
+        """Target-side keys of every same-datasource sibling's relationships into ``name``."""
         keys: list[tuple[Any, str | None]] = []
-        identities = await self._list_all_model_identities()
+        identities = await self._list_all_dataset_identities()
         names = {n for ds, n in identities if ds == data_source}
         for sibling_name in [n for ds, n in identities if ds == data_source and n != name]:
             sibling = _with_repaired_targets(
-                await self._cached_raw_model_dict(name=sibling_name, data_source=data_source), names=names,
+                await self._peer_dataset_dict(name=sibling_name, data_source=data_source), names=names,
             )
             if sibling is not None:
-                keys.extend(_incoming_keys(sibling=sibling, target=name, target_columns=columns))
+                keys.extend(_incoming_keys(sibling=sibling, target=name, target_fields=fields))
         return keys
 
     async def _inlined_source_queries(self, *, name: str, data: dict, data_source: str) -> dict:
-        """``data`` with its stages' extension columns inlined (``extension_columns``)."""
+        """``data`` with its stages' extension fields inlined (``extension_fields``)."""
         queries = data.get("source_queries")
         if not isinstance(queries, list) or not all(isinstance(q, dict) for q in queries):
             return data
@@ -1167,23 +1298,69 @@ class StorageBackend(ABC):
         return data if inlined is None else {**data, "source_queries": inlined}
 
     async def _inlined_queries(self, *, queries: list[dict], data_source: str | None, document: str) -> list | None:
-        """Raw stored ``queries`` with their extension columns inlined; ``None`` when none holds a removed form."""
+        """Raw stored ``queries`` with their extension fields inlined; ``None`` when none holds a removed form."""
         migrated = [_mig.migrate("SlayerQuery", _mig.stamp_stored(q)) for q in queries]
         if not any(holds_removed_forms(q) for q in migrated):
             return None
-        models_by_ds: dict[str, dict[str, SlayerModel]] = {}
-        for ds, model_name in await self._list_all_model_identities():
-            if (data_source is not None and ds != data_source) or (ds, model_name) in _INLINING.get():
+        converted = inline_extension_fields(
+            migrated, datasets_by_ds=await self._converting_datasets(data_source), data_source=data_source,
+            priority=await self.get_datasource_priority(), document=document,
+        )
+        return [without_none(q.model_dump(mode="json")) for q in converted]
+
+    async def _converting_datasets(self, data_source: str | None) -> dict[str, dict[str, SlayerDataset]]:
+        """The loadable datasets a stored query's conversion reads, by datasource (the documents converting excluded)."""
+        datasets_by_ds: dict[str, dict[str, SlayerDataset]] = {}
+        for ds, dataset_name in await self._list_all_dataset_identities():
+            if (data_source is not None and ds != data_source) or (ds, dataset_name) in _INLINING.get():
                 continue
             try:
-                model = await self.get_model(model_name, data_source=ds)
+                dataset = await self.get_dataset(dataset_name, data_source=ds)
             except StoredDocumentLoadError:
                 continue
-            if model is not None:
-                models_by_ds.setdefault(ds, {})[model.name] = model
-        converted = inline_extension_columns(
-            migrated, models_by_ds=models_by_ds, data_source=data_source,
-            priority=await self.get_datasource_priority(), document=document,
+            if dataset is not None:
+                datasets_by_ds.setdefault(ds, {})[dataset.name] = dataset
+        return datasets_by_ds
+
+    async def _qualified_source_queries(self, *, name: str, data: dict, data_source: str, pending: list[bool]) -> dict:
+        """``data`` with its pre-2.0 stages' references qualified (``qualified_references``)."""
+        queries = data.get("source_queries")
+        if not any(pending) or not isinstance(queries, list) or len(queries) != len(pending):
+            return data
+        token = _INLINING.set(_INLINING.get() | {(data_source, name)})
+        try:
+            qualified = await self._qualified_queries(queries=queries, pending=pending, data_source=data_source,
+                                                      document=name)
+        finally:
+            _INLINING.reset(token)
+        return {**data, "source_queries": qualified}
+
+    async def incident_edge_names(self, name: str, *, data_source: str) -> frozenset[str]:
+        """The names of the stored edges incident to dataset ``name`` of ``data_source``, declared on either side."""
+        return (await self._stored_datasets(data_source)).incident_names(name)
+
+    async def qualified_stored_queries(
+        self, queries: list[SlayerQuery], *, versions: list[int | None], data_source: str | None, document: str,
+    ) -> list[SlayerQuery]:
+        """``queries`` (stages read from a stored document, each written at ``versions``) with the pre-2.0 ones'
+        references qualified, keeping their meaning; an unversioned stage counts as current."""
+        pending = [v is not None and int(v) < _QUALIFIED_AT["SlayerQuery"] for v in versions]
+        if len(pending) != len(queries) or not any(pending):
+            return queries
+        qualified = await self._qualified_queries(queries=queries, pending=pending, data_source=data_source,
+                                                  document=document)
+        return [SlayerQuery.model_validate(q) for q in qualified]
+
+    async def _qualified_queries(
+        self, *, queries: list[Any], pending: list[bool], data_source: str | None, document: str,
+    ) -> list[Any]:
+        """Raw stored ``queries`` with each ``pending`` one's references qualified, keeping their meaning."""
+        with _mig.migrating_document(document, stored=True):
+            validated = [q if isinstance(q, SlayerQuery) else SlayerQuery.model_validate(
+                _mig.stamp_stored(q) if isinstance(q, dict) else q) for q in queries]
+        converted = qualified_stages(
+            validated, pending=pending, datasets_by_ds=await self._converting_datasets(data_source),
+            data_source=data_source, priority=await self.get_datasource_priority(),
         )
         return [without_none(q.model_dump(mode="json")) for q in converted]
 
@@ -1199,7 +1376,7 @@ class StorageBackend(ABC):
     async def _repair_query_filters(
         self, *, query: Any, data_source: str | None, stage_names: frozenset[str] = frozenset(),
     ) -> None:
-        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP column;
+        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP field;
         the stored query is migrated first, so its filters read under the current grammar."""
         if not isinstance(query, dict):
             return
@@ -1207,131 +1384,131 @@ class StorageBackend(ABC):
         migrated = _mig.migrate("SlayerQuery", _mig.stamp_stored(query))
         query.clear()
         query.update(migrated)
-        filters = query.get("filters")
+        filters = query.get("filter")
         if not isinstance(filters, list):
             return
         found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]
         if not any(found):
             return
-        resolved = await self._query_host(source=query.get("source_model"), data_source=data_source,
+        resolved = await self._query_host(source=query.get("population"), data_source=data_source,
                                           stage_names=stage_names)
         if resolved is None:
             return
-        host, models = resolved
+        host, datasets = resolved
         extensions = query.get("extensions")
         extensions = [e for e in extensions if isinstance(e, dict)] if isinstance(extensions, list) else []
         for i, pairs in enumerate(found):
             if pairs is None:
                 continue
             temporal = [
-                literal for literal, column in pairs
-                if models.column_type(host=host, parts=[p.name for p in column.parts], extensions=extensions)
-                in (DataType.DATE.value, DataType.TIMESTAMP.value)
+                literal for literal, field in pairs
+                if stored_datatype(datasets.field_type(host=host, parts=[p.name for p in field.parts], extensions=extensions))
+                in TEMPORAL_DATATYPES
             ]
             if temporal and whole_day_dates:
                 # A repaired legacy date is a date-only literal meant as its whole day, as stored.
                 filters[i] = upgraded_text(repaired_filter(filters[i], temporal), host=host, extensions=extensions,
-                                           models=models, label=query.get("name"))
+                                           datasets=datasets, label=query.get("name"))
             elif temporal:
                 filters[i] = repaired_filter(filters[i], temporal)
 
     async def _query_host(
         self, *, source: Any, data_source: str | None, stage_names: frozenset[str],
-    ) -> tuple[dict, StoredModels] | None:
-        """The raw stored model (or the spine) a stored query reads, and the stored models typing it; ``None`` for a stage
+    ) -> tuple[dict, StoredDatasets] | None:
+        """The raw stored dataset (or the spine) a stored query reads, and the stored datasets typing it; ``None`` for a stage
         or an unresolvable source."""
-        if isinstance(source, dict) and isinstance(source.get("columns"), list):
+        if isinstance(source, dict) and isinstance(source.get("fields"), list):
             inline_ds = str(source.get("data_source") or data_source)
-            return source, (await self._stored_models(inline_ds)).model_copy(update={"stages": stage_names})
+            return source, (await self._stored_datasets(inline_ds)).model_copy(update={"stages": stage_names})
         if not isinstance(source, str):
             return None
         if data_source is None:
             try:
                 data_source = await self._source_data_source(source)
-            except (AmbiguousModelError, AmbiguousReferenceError):
+            except (AmbiguousDatasetError, AmbiguousReferenceError):
                 return None
-        models = (await self._stored_models(data_source)).model_copy(update={"stages": stage_names})
-        host = models.host(source)
-        return (host, models) if host is not None else None
+        datasets = (await self._stored_datasets(data_source)).model_copy(update={"stages": stage_names})
+        host = datasets.host(source)
+        return (host, datasets) if host is not None else None
 
     async def _source_data_source(self, source: str) -> str | None:
-        """The datasource of the stored model an unquoted ``source`` names (the spine counted as a model), else the
-        store's only datasource; raises when several stored models or datasources hold it."""
-        names = {n for _, n in await self._list_all_model_identities()}
-        name = match_name(name=source, declared=sorted(names | {TIME_SPINE_MODEL}), quoted=False)
+        """The datasource of the stored dataset an unquoted ``source`` names (the spine counted as a dataset), else the
+        store's only datasource; raises when several stored datasets or datasources hold it."""
+        names = {n for _, n in await self._list_all_dataset_identities()}
+        name = match_name(name=source, declared=sorted(names | {TIME_SPINE_DATASET}), quoted=False)
         if name not in names:
             datasources = await self.list_datasources()
             return datasources[0] if len(datasources) == 1 else None
-        identity = await self.resolve_model_identity(name)
+        identity = await self.resolve_dataset_identity(name)
         return identity[0] if identity is not None else None
 
-    async def _stored_models(self, data_source: str | None) -> StoredModels:
-        """Every raw stored model dict of ``data_source``."""
+    async def _stored_datasets(self, data_source: str | None) -> StoredDatasets:
+        """Every raw stored dataset dict of ``data_source``."""
         if data_source is None:
-            return StoredModels()
-        models: dict[str, dict] = {}
-        for ds, name in await self._list_all_model_identities():
-            raw = await self._cached_raw_model_dict(name=name, data_source=ds) if ds == data_source else None
+            return StoredDatasets()
+        datasets: dict[str, dict] = {}
+        for ds, name in await self._list_all_dataset_identities():
+            raw = await self._cached_raw_dataset_dict(name=name, data_source=ds) if ds == data_source else None
             if isinstance(raw, dict):
-                models[name] = raw
-        return StoredModels(data_source=data_source, models=models)
+                datasets[name] = dataset_in(raw, LEGACY_KEYS)
+        return StoredDatasets(data_source=data_source, datasets=datasets)
 
-    async def _memory_typing(self, data: dict) -> StoredModels | None:
-        """The stored models of the datasource a stored memory's query reads; ``None`` (nothing typed) when that
+    async def _memory_typing(self, data: dict) -> StoredDatasets | None:
+        """The stored datasets of the datasource a stored memory's query reads; ``None`` (nothing typed) when that
         datasource is ambiguous."""
-        data_source, source = memory_source_model(data)
+        data_source, source = memory_source_dataset(data)
         if data_source is None and source is not None:
             try:
                 data_source = await self._source_data_source(source)
-            except (AmbiguousModelError, AmbiguousReferenceError):
+            except (AmbiguousDatasetError, AmbiguousReferenceError):
                 return None
-        return await self._stored_models(data_source)
+        return await self._stored_datasets(data_source)
 
-    async def _dedup_exact_inverse_joins(
+    async def _dedup_exact_inverse_relationships(
         self, *, name: str, data: dict, data_source: str,
     ) -> dict:
-        """Drop this document's half of a stored exact-inverse join pair when the counterpart holds the surviving half. Load-order-independent (survivor reads only the two halves); a missing/drifted peer leaves the document untouched."""
-        joins = data.get("joins")
-        if not isinstance(joins, list) or not joins:
+        """Drop this document's half of a stored exact-inverse relationship pair when the counterpart holds the surviving half. Load-order-independent (survivor reads only the two halves); a missing/drifted peer leaves the document untouched."""
+        relationships = data.get("relationships")
+        if not isinstance(relationships, list) or not relationships:
             return data
         cache: dict[str, dict | None] = {}
-        names = await self._model_names(data_source)
+        names = await self._dataset_names(data_source)
         kept = [
-            join for join in joins
+            relationship for relationship in relationships
             if await self._survives_stored_inverse(
-                join=join, name=name, data_source=data_source, cache=cache,
-                columns=data.get("columns"), names=names,
+                relationship=relationship, name=name, data_source=data_source, cache=cache,
+                fields=data.get("fields"), names=names,
             )
         ]
-        if len(kept) != len(joins):
-            data["joins"] = kept
+        if len(kept) != len(relationships):
+            data["relationships"] = kept
         return data
 
     async def _survives_stored_inverse(
-        self, *, join, name: str, data_source: str,
-        cache: dict[str, dict | None], columns: Any, names: set[str],
+        self, *, relationship, name: str, data_source: str,
+        cache: dict[str, dict | None], fields: Any, names: set[str],
     ) -> bool:
-        """True when ``join`` has no stored exact-inverse counterpart, or wins
+        """True when ``relationship`` has no stored exact-inverse counterpart, or wins
         against it."""
-        peer_name = join.get("target_model") if isinstance(join, dict) else None
+        peer_name = relationship.get("to") if isinstance(relationship, dict) else None
         if not isinstance(peer_name, str) or peer_name == name:
             return True
         if peer_name not in cache:
-            cache[peer_name] = _with_repaired_targets(await self._cached_raw_model_dict(
+            cache[peer_name] = _with_repaired_targets(await self._peer_dataset_dict(
                 name=peer_name, data_source=data_source,
             ), names=names)
         counterpart = _stored_counterpart(
-            join=join, name=name, peer=cache[peer_name], columns=columns,
+            relationship=relationship, name=name, peer=cache[peer_name], fields=fields,
         )
         return counterpart is None or _inverse_survivor(
-            model_a=name, join_a=join,
-            model_b=peer_name, join_b=counterpart,
+            dataset_a=name, relationship_a=relationship,
+            dataset_b=peer_name, relationship_b=counterpart,
         ) == name
 
     async def _rewrite_legacy_join_aliases(
         self, *, name: str, data: dict, data_source: str,
     ) -> dict:
-        """Rewrite legacy ``__`` split-alias qualifiers to dotted across every Mode-A surface on the raw dict. Each ``a__b__c`` is naive-split and resolved as a join walk (first hop against ``data``'s joins, deeper hops against sibling raw dicts); only fully resolvable walks are rewritten, an unresolvable ``__`` is left verbatim. Mutates and returns ``data``."""
+        """Rewrite legacy ``__`` split-alias qualifiers to dotted across every Mode-A surface on the raw dict. Each ``a__b__c`` is naive-split and resolved as a relationship walk (first hop against ``data``'s relationships, deeper hops against sibling raw dicts); only fully resolvable walks are rewritten, an unresolvable ``__`` is left verbatim. Mutates and returns ``data``."""
         all_chains: set[tuple[str, ...]] = set()
         for text in mode_a_surface_texts(data):
             all_chains |= extract_dunder_chains(text)
@@ -1339,20 +1516,20 @@ class StorageBackend(ABC):
             return data
 
         raw_cache: dict[str, dict | None] = {name: data}
-        names = await self._model_names(data_source)
+        names = await self._dataset_names(data_source)
         resolvable: set[tuple[str, ...]] = set()
         for chain in all_chains:
-            if await self._dunder_chain_is_join_walk(
+            if await self._dunder_chain_is_relationship_walk(
                 chain=chain, host=data, data_source=data_source, cache=raw_cache, names=names,
             ):
                 resolvable.add(chain)
         if not resolvable:
             return data
 
-        apply_dunder_rewrite_to_model_dict(data, resolvable=resolvable)
+        apply_dunder_rewrite_to_dataset_dict(data, resolvable=resolvable)
         return data
 
-    async def _dunder_chain_is_join_walk(
+    async def _dunder_chain_is_relationship_walk(
         self,
         *,
         chain: tuple[str, ...],
@@ -1361,14 +1538,14 @@ class StorageBackend(ABC):
         cache: dict[str, dict | None],
         names: set[str],
     ) -> bool:
-        """True iff every hop in ``chain`` is a join target on the preceding model (host first, then each hop's own model), a hop matching its target by case as a target repair would; sibling dicts loaded raw, target-repaired and memoised, a broken intermediate collapses the chain."""
-        # An exact ``__``-named join target beats a split-alias reading: a host
-        # join to a model literally named ``"__".join(chain)`` is exact, not a walk.
-        host_joins = host.get("joins")
+        """True iff every hop in ``chain`` is a relationship target on the preceding dataset (host first, then each hop's own dataset), a hop matching its target by case as a target repair would; sibling dicts loaded raw, target-repaired and memoised, a broken intermediate collapses the chain."""
+        # An exact ``__``-named relationship target beats a split-alias reading: a host
+        # relationship to a dataset literally named ``"__".join(chain)`` is exact, not a walk.
+        host_relationships = host.get("relationships")
         host_targets = {
-            j.get("target_model")
-            for j in host_joins if isinstance(j, dict)
-        } if isinstance(host_joins, list) else set()
+            j.get("to")
+            for j in host_relationships if isinstance(j, dict)
+        } if isinstance(host_relationships, list) else set()
         if "__".join(chain) in host_targets:
             return False
 
@@ -1376,17 +1553,17 @@ class StorageBackend(ABC):
         for i, hop in enumerate(chain):
             if current is None:
                 return False
-            joins = current.get("joins")
+            relationships = current.get("relationships")
             targets = {
-                t for j in joins if isinstance(j, dict) and isinstance(t := j.get("target_model"), str)
-            } if isinstance(joins, list) else set()
+                t for j in relationships if isinstance(j, dict) and isinstance(t := j.get("to"), str)
+            } if isinstance(relationships, list) else set()
             target = _repaired_target(hop, names=targets)
             if target not in targets:
                 return False
             if i == len(chain) - 1:
                 return True
             if target not in cache:
-                cache[target] = _with_repaired_targets(await self._cached_raw_model_dict(
+                cache[target] = _with_repaired_targets(await self._peer_dataset_dict(
                     name=target, data_source=data_source,
                 ), names=names)
             current = cache[target]
@@ -1405,9 +1582,9 @@ class StorageBackend(ABC):
         """Backend-specific durable write; filename-backed backends should call ``check_datasource_id_collision`` first."""
 
     async def check_datasource_id_collision(self, name: str) -> None:
-        """Raise :class:`IdCollisionError` when ``name`` case-collides with an existing datasource name or a saved model's ``data_source`` (public so backends call it from ``_save_datasource_impl``)."""
+        """Raise :class:`IdCollisionError` when ``name`` case-collides with an existing datasource name or a saved dataset's ``data_source`` (public so backends call it from ``_save_datasource_impl``)."""
         existing = set(await self.list_datasources())
-        existing.update(ds for ds, _ in await self._list_all_model_identities())
+        existing.update(ds for ds, _ in await self._list_all_dataset_identities())
         collide = _find_case_colliding_id(candidate=name, existing=existing)
         if collide is not None:
             raise IdCollisionError(
@@ -1421,7 +1598,7 @@ class StorageBackend(ABC):
     async def list_datasources(self) -> list[str]: ...
 
     async def delete_datasource(self, name: str) -> bool:
-        """Delete the datasource config and cascade-delete every embedding under its canonical prefix. Models in the datasource are NOT deleted — they become orphans; re-creating the datasource and re-ingesting repopulates embeddings."""
+        """Delete the datasource config and cascade-delete every embedding under its canonical prefix. Datasets in the datasource are NOT deleted — they become orphans; re-creating the datasource and re-ingesting repopulates embeddings."""
         # Sanitize the raw name before it composes a path / cascade prefix.
         _validate_path_component(name, kind="datasource name")
         deleted = await self._delete_datasource_row(name)
@@ -1462,15 +1639,15 @@ class StorageBackend(ABC):
 
     # ---- list_models with auto-detect or required arg ----------------------
 
-    async def list_models(self, data_source: str | None = None) -> list[str]:
-        """Model names within one datasource. With ``data_source``: models stored under it (accepted if registered OR referenced by any saved model, so orphans list; unknown names raise ``ValueError``). Without it: the sole datasource's models, ``[]`` when empty, or a ``ValueError`` naming the datasources when ≥2 hold models."""
-        identities = await self._list_all_model_identities()
+    async def list_datasets(self, data_source: str | None = None) -> list[str]:
+        """Dataset names within one datasource. With ``data_source``: datasets stored under it (accepted if registered OR referenced by any saved dataset, so orphans list; unknown names raise ``ValueError``). Without it: the sole datasource's datasets, ``[]`` when empty, or a ``ValueError`` naming the datasources when ≥2 hold datasets."""
+        identities = await self._list_all_dataset_identities()
         if data_source is not None:
             known = set(await self.list_datasources())
             existing_sources = {ds for ds, _ in identities}
             if data_source not in known and data_source not in existing_sources:
                 raise ValueError(
-                    f"list_models: unknown data_source {data_source!r}; "
+                    f"list_datasets: unknown data_source {data_source!r}; "
                     f"known datasources: {sorted(known | existing_sources) or '[]'}."
                 )
             return sorted(name for ds, name in identities if ds == data_source)
@@ -1480,20 +1657,20 @@ class StorageBackend(ABC):
         if len(distinct_sources) == 1:
             return sorted(name for _, name in identities)
         raise ValueError(
-            f"list_models: models exist in multiple datasources "
+            f"list_datasets: datasets exist in multiple datasources "
             f"{distinct_sources}; supply data_source=... to pick one."
         )
 
     # ---- bare-name resolver (priority-aware) ------------------------------
 
-    async def resolve_model_identity(
+    async def resolve_dataset_identity(
         self,
         name: str,
         *,
         prefer_data_source: str | None = None,
     ) -> tuple[str, str] | None:
-        """Resolve a bare model name to ``(data_source, name)``: ``None`` if no match, the sole match, ``prefer_data_source`` when it is a candidate, else the first priority-listed datasource holding it, else raise ``AmbiguousModelError``. ``prefer_data_source`` is the internal join-target hint; explicit callers use ``get_model(..., data_source=...)``."""
-        identities = await self._list_all_model_identities()
+        """Resolve a bare dataset name to ``(data_source, name)``: ``None`` if no match, the sole match, ``prefer_data_source`` when it is a candidate, else the first priority-listed datasource holding it, else raise ``AmbiguousDatasetError``. ``prefer_data_source`` is the internal relationship-target hint; explicit callers use ``get_dataset(..., data_source=...)``."""
+        identities = await self._list_all_dataset_identities()
         candidates = [ds for ds, n in identities if n == name]
         if not candidates:
             return None
@@ -1505,7 +1682,7 @@ class StorageBackend(ABC):
         for ds in priority:
             if ds in candidates:
                 return (ds, name)
-        raise AmbiguousModelError(name=name, candidates=candidates)
+        raise AmbiguousDatasetError(name=name, candidates=candidates)
 
     # ---- memories ----
     # Ids are non-empty strings; auto-allocation walks max(int-shaped id)+1
@@ -1538,17 +1715,25 @@ class StorageBackend(ABC):
             data = _mig.stamp_stored(self._renamed_since_read(decode(), kind="memory", key=memory_id))
             if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
                 data = rewrite_memory_doc(data, await self._custom_bucket_calls(
-                    data_sources=await self._memory_data_sources(data)))
-            typing = await self._memory_typing(data) if needs_typing("Memory", data) else StoredModels()
+                    data_sources=await self._memory_data_sources(data)),
+                    keys=keys_for(entity="Memory", version=int(data["version"])))
+            typing = await self._memory_typing(data) if needs_typing("Memory", data) else StoredDatasets()
+            unqualified = isinstance(data, dict) and _unqualified(
+                data.get("query"), document_version=int(data["version"]), entity="Memory")
             with typing_with(typing):
                 # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
                 if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
                     await self._repair_query_filters(query=data.get("query"), data_source=None)
-                # ...and so does the extension-column inlining, on every load of a pre-v10 document.
-                if isinstance(data, dict) and int(data["version"]) < _EXTENSION_COLUMNS_INLINED_AT and isinstance(
+                # ...and so does the extension-field inlining, on every load of a pre-v10 document.
+                if isinstance(data, dict) and int(data["version"]) < _EXTENSION_FIELDS_INLINED_AT and isinstance(
                         data.get("query"), dict):
                     inlined = await self._inlined_queries(queries=[data["query"]], data_source=None, document=memory_id)
                     data = data if inlined is None else {**data, "query": inlined[0]}
+                # ...and so does the upgrade to qualified references.
+                if unqualified and isinstance(data, dict):
+                    qualified = await self._qualified_queries(queries=[data["query"]], pending=[True],
+                                                              data_source=None, document=memory_id)
+                    data = {**data, "query": qualified[0]}
                 return Memory.model_validate(data)
 
     @abstractmethod
@@ -1634,7 +1819,7 @@ class StorageBackend(ABC):
     async def strip_dangling_entities_from_memories(
         self, *, canonical_id: str,
     ) -> int:
-        """Remove ``canonical_id`` from every memory's ``entities`` list; returns the count rewritten. Match: ``memory:<id>`` exact-only, ``<ds>[.<model>[.<leaf>]]`` exact or strict dotted descendant. Per-row read-modify-write via ``_save_memory_row`` (not the service); learning-only embeddings mean no refresh fires."""
+        """Remove ``canonical_id`` from every memory's ``entities`` list; returns the count rewritten. Match: ``memory:<id>`` exact-only, ``<ds>[.<dataset>[.<leaf>]]`` exact or strict dotted descendant. Per-row read-modify-write via ``_save_memory_row`` (not the service); learning-only embeddings mean no refresh fires."""
         if not canonical_id:
             return 0
         is_memory_ref = canonical_id.startswith(_MEMORY_PREFIX)
@@ -1732,7 +1917,7 @@ class StorageBackend(ABC):
     async def delete_embeddings_for_canonical(
         self, *, canonical_id_prefix: str,
     ) -> int:
-        """Cascade-delete embedding rows whose ``canonical_id`` is exactly ``canonical_id_prefix`` or a strict dotted descendant (never a character prefix — ``"orders"`` ≠ ``"orders_archive"``, ``"memory:4"`` ≠ ``"memory:42"``). Returns the count deleted; used by delete_model/_memory/_datasource."""
+        """Cascade-delete embedding rows whose ``canonical_id`` is exactly ``canonical_id_prefix`` or a strict dotted descendant (never a character prefix — ``"orders"`` ≠ ``"orders_archive"``, ``"memory:4"`` ≠ ``"memory:42"``). Returns the count deleted; used by delete_dataset/_memory/_datasource."""
 
     # Batched helpers: defaults call the single-row methods M times so any
     # backend works unchanged; bundled backends override with one round-trip.

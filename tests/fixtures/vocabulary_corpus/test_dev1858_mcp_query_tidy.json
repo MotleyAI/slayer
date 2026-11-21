@@ -1,0 +1,452 @@
+{
+ "source": "tests/test_dev1858_mcp_query_tidy.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "monthly",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "name": "monthly",
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "monthly",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "monthly",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "order": [
+     {
+      "column": "count(*)",
+      "direction": "desc"
+     }
+    ],
+    "limit": 1
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "order": [
+     {
+      "field": "count(*)",
+      "direction": "desc"
+     }
+    ],
+    "limit": 1
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "m"
+     },
+     {
+      "formula": "sum(customers.spend)",
+      "name": "cm"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "m"
+     },
+     {
+      "metric": "sum(customers.spend)",
+      "alias": "cm"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "filters": [
+     "status == '{s}'"
+    ],
+    "variables": {
+     "s": "pending"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ],
+    "filter": [
+     "status == '{s}'"
+    ],
+    "variables": {
+     "s": "pending"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "name": "a",
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "a",
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "revenue"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "revenue"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  }
+ ]
+}

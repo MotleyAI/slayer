@@ -1,0 +1,116 @@
+{
+ "source": "tests/test_dev1740_expr_dim_execution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "lc",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "lc",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  }
+ ],
+ "skipped": []
+}

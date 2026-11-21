@@ -41,11 +41,11 @@ ds = DatasourceConfig(
 )
 run_sync(storage.save_datasource(ds))
 
-# Auto-generate models from schema, reading the database through the engine's client
-models = engine.ingest_sync(ds, schema="public")
-for model in models:
-    run_sync(storage.save_model(model))
-    print(f"  {model.name}: {len(model.columns)} columns, {len(model.measures)} measures")
+# Auto-generate datasets from schema, reading the database through the engine's client
+datasets = engine.ingest_sync(ds, schema="public")
+for dataset in datasets:
+    run_sync(storage.save_dataset(dataset))
+    print(f"  {dataset.name}: {len(dataset.fields)} fields, {len(dataset.metrics)} metrics")
 ```
 
 Storage methods are async: `await` them inside async code, or wrap them with `run_sync` as above.
@@ -58,9 +58,9 @@ The free functions `ingest_datasource(ds, client=...)` and `ingest_datasource_re
 engine = SlayerQueryEngine(storage=storage)
 
 result = engine.execute_sync(query={
-    "source_model": "orders",
-    "measures": ["count(*)", "sum(order_total)"],
-    "dimensions": ["status"],
+    "population": "orders",
+    "metrics": ["count(orders.*)", "sum(orders.order_total)"],
+    "dimensions": ["orders.status"],
 })
 
 for row in result.data:
@@ -79,7 +79,7 @@ result.data        # list of row dicts
 result.columns     # list of column names
 result.row_count   # number of rows
 result.sql         # generated SQL (when dry_run or explain is set)
-result.attributes  # ResponseAttributes with .dimensions and .measures dicts
+result.attributes  # ResponseAttributes with .dimensions and .metrics dicts
 ```
 
 ### Tenant scoping (row-level security)
@@ -110,9 +110,9 @@ client = SlayerClient(url="http://localhost:5143")
 
 # Query — returns SlayerResponse (same as embedded mode)
 result = client.query_sync({
-    "source_model": "orders",
-    "measures": ["count(*)"],
-    "dimensions": ["status"],
+    "population": "orders",
+    "metrics": ["count(orders.*)"],
+    "dimensions": ["orders.status"],
 })
 print(result.data)
 ```
@@ -122,9 +122,9 @@ print(result.data)
 ```python
 # With pandas (requires motley-slayer[client] extra)
 df = client.query_df({
-    "source_model": "orders",
-    "measures": ["count(*)", "sum(order_total)"],
-    "dimensions": ["status"],
+    "population": "orders",
+    "metrics": ["count(orders.*)", "sum(orders.order_total)"],
+    "dimensions": ["orders.status"],
 })
 print(df)
 ```
@@ -159,11 +159,11 @@ from slayer.engine.query_engine import SlayerQueryEngine
 storage = resolve_storage("./slayer_data")
 engine = SlayerQueryEngine(storage=storage)
 
-# Should list your ingested models
-print(run_sync(storage.list_models()))
+# Should list your ingested datasets
+print(run_sync(storage.list_datasets()))
 
 # Should return data
-result = engine.execute_sync(query={"source_model": "orders", "measures": ["count(*)"]})
+result = engine.execute_sync(query={"population": "orders", "metrics": ["count(orders.*)"]})
 print(f"{result.row_count} row(s), columns: {result.columns}")
 ```
 
@@ -189,18 +189,18 @@ resp = run_sync(client.search(
 ))
 
 for hit in resp.results:
-    # kind: "memory" | "datasource" | "model" | "column" | "measure" | "aggregation"
+    # kind: "memory" | "datasource" | "dataset" | "field" | "metric" | "aggregation"
     # hit.query is not None marks a saved example query
     print(hit.kind, hit.id, round(hit.score, 3), hit.text[:80])
 ```
 
-`client.search` also accepts `cypher_filter` for graph-shaped narrowing — full openCypher with the `advanced_search` extra (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges), naive `MATCH (n:Label) RETURN n.id AS id` kind-filter otherwise. Without `advanced_search` (or a provider API key) the dense-embedding channel emits a single warning into `SearchResponse.warnings` and search degrades to BM25 + Tantivy. Column hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale profiles are refreshed lazily inside `search()`.
+`client.search` also accepts `cypher_filter` for graph-shaped narrowing — full openCypher with the `advanced_search` extra (LadybugDB property graph with `Memory` / `Datasource` / `Dataset` / `DatasetField` / `Metric` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `RELATIONSHIPS` edges), naive `MATCH (n:Label) RETURN n.id AS id` kind-filter otherwise. Without `advanced_search` (or a provider API key) the dense-embedding channel emits a single warning into `SearchResponse.warnings` and search degrades to BM25 + Tantivy. Field hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded; overflow fields are marked `50+ distinct` in the text snapshot); stale profiles are refreshed lazily inside `search()`.
 
 See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [Python Client Reference](../reference/python-client.md#memories-semantic-search) for the full signature.
 
 ## Embedded REST / MCP servers
 
-If you're mounting SLayer's REST or MCP surface inside your own process and want models freshly ingested by the time the server starts handling requests, pass `ingest_on_startup=True` to the constructor:
+If you're mounting SLayer's REST or MCP surface inside your own process and want datasets freshly ingested by the time the server starts handling requests, pass `ingest_on_startup=True` to the constructor:
 
 ```python
 from slayer.api.server import create_app

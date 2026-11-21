@@ -84,7 +84,7 @@ A dataset SHALL reach the spine by its nearest axis along a chain of provably to
 
 ### Requirement: A spine query's population is the spine times P
 
-A query with one or more time dimensions on `time_spine.timestamp` SHALL have population `time_spine × P`, where P is the population of its remaining determination items — its other dimensions and time dimensions and the field-typed filters not on the spine column — inferred by the dimension-determined default, or the model named by `source_model`, or the one-row unit when there are no remaining items (`source_model: time_spine` also denotes the unit). The result SHALL have one row per combination of a spine bucket in range and a distinct value combination of P's dimensions among P's filtered rows; adding or removing a measure SHALL never change this row set. This SHALL hold for every query of a query list alike: the main query and each named stage.
+A query with one or more time dimensions on `time_spine.timestamp` SHALL have population `time_spine × P`, where P is the model named by `population`, else the dimension anchor of its other dimensions and time dimensions (`queries/population` › Dimension-determined default; field filters restrict P by association and never choose it), or the one-row unit when there are no other dimensions (`population: time_spine` also denotes the unit). The result SHALL have one row per combination of a spine bucket in range and a distinct value combination of P's dimensions among P's filtered rows; adding or removing a measure SHALL never change this row set, and a query omitting `population` SHALL keep this row set rather than its row supply. This SHALL hold for every query of a query list alike: the main query and each named stage.
 
 #### Scenario: Every month in range, both facts on one axis
 
@@ -98,7 +98,7 @@ A query with one or more time dimensions on `time_spine.timestamp` SHALL have po
 
 #### Scenario: Explicit P and explicit spine
 
-- **WHEN** the per-group query names `source_model: customers`, and the two-fact query names `source_model: time_spine`
+- **WHEN** the per-group query names `population: customers`, and the two-fact query names `population: time_spine`
 - **THEN** each returns exactly the rows of its inferred twin
 
 #### Scenario: Two spine time dimensions
@@ -113,7 +113,7 @@ A query with one or more time dimensions on `time_spine.timestamp` SHALL have po
 
 #### Scenario: A spine stage keeps every bucket
 
-- **WHEN** a query list's stage `monthly` groups by the spine month with `date_range: ["2025-01-01", "2025-03-31"]` and selects `sum(orders.amount)` named `o`, once without `source_model` and once with `source_model: time_spine`, and the main query over `monthly` selects `sum(o)` and `count(*)`
+- **WHEN** a query list's stage `monthly` groups by the spine month with `date_range: ["2025-01-01", "2025-03-31"]` and selects `sum(orders.amount)` named `o`, once without `population` and once with `population: time_spine`, and the main query over `monthly` selects `sum(o)` and `count(*)`
 - **THEN** both variants read 220 and 3: the stage has one row per month Jan–Mar, March included
 
 #### Scenario: A per-group spine stage
@@ -125,6 +125,14 @@ A query with one or more time dimensions on `time_spine.timestamp` SHALL have po
 
 - **WHEN** the main query over the stage `monthly` groups by months Jan–Jun and selects `sum(monthly.o)`
 - **THEN** the stage's axis is its month column and the rows are Jan 150, Feb 70, then NULL for Mar–Jun
+
+#### Scenario: A filter on a finer dataset keeps P
+- **WHEN** the per-group query omits `population` and adds the filter `orders.amount > 60`
+- **THEN** P stays `customers`, restricted to customers with such an order, and the population is reported `time_spine × customers`
+
+#### Scenario: An orphan beside the spine is not yet a row
+- **WHEN** the per-group query omits `population` and an order references no customer
+- **THEN** no NULL-region row appears: the spine query keeps `time_spine × customers`
 
 ### Requirement: Spine bounds decide which buckets exist
 
@@ -190,7 +198,7 @@ An aggregation whose home is `time_spine` (any aggregation over `time_spine.time
 
 #### Scenario: Aggregation over the spine
 
-- **WHEN** a spine-month query, or a spine-month stage of a query list, selects `count(*)` with `source_model: time_spine`, or `min(time_spine.timestamp)`
+- **WHEN** a spine-month query, or a spine-month stage of a query list, selects `count(*)` with `population: time_spine`, or `min(time_spine.timestamp)`
 - **THEN** it fails with the typed no-countable-rows error
 
 #### Scenario: Plain spine dimension
@@ -284,18 +292,18 @@ A dataset's axis SHALL be a column, never an expression: a time dimension whose 
 
 #### Scenario: Extraction of the spine column as a time dimension
 
-- **WHEN** a query has `time_dimensions=[{"dimension": "month(time_spine.timestamp)", "granularity": "month"}]`
+- **WHEN** a query has `time_dimensions=[{"field": "month(time_spine.timestamp)", "granularity": "month"}]`
 - **THEN** planning fails with the typed expression-axis error, whose remedy names `date_trunc('month', time_spine.timestamp)`, and no SQL is generated
 
 ### Requirement: The spine is reached in any case
-Every model-name position a query writes — `source_model`, an extension's model, the join targets of an extension, and the first segment of every dotted path in its dimensions, time dimensions, measures, filters and order — SHALL reach the built-in `time_spine` when its unquoted spelling equals `time_spine` case-insensitively, exactly as `time_spine` would, in every query of a query list. A stage of the list whose name the spelling matches SHALL take precedence; a spelling that names a stored model exactly SHALL reach that model. When the datasource the query runs against stores a model whose name differs from `time_spine` only in case, any other spelling that is not exactly `time_spine` SHALL fail with the typed ambiguity error naming `time_spine` and that model. A quoted spelling SHALL reach the spine only when it is exactly `"time_spine"`. String literals and the rest of every text SHALL be left unchanged.
+Every model-name position a query writes — `population`, an extension's model, the join targets of an extension, and the first segment of every dotted path in its dimensions, time dimensions, measures, filters and order — SHALL reach the built-in `time_spine` when its unquoted spelling equals `time_spine` case-insensitively, exactly as `time_spine` would, in every query of a query list. A stage of the list whose name the spelling matches SHALL take precedence; a spelling that names a stored model exactly SHALL reach that model. When the datasource the query runs against stores a model whose name differs from `time_spine` only in case, any other spelling that is not exactly `time_spine` SHALL fail with the typed ambiguity error naming `time_spine` and that model. A quoted spelling SHALL reach the spine only when it is exactly `"time_spine"`. String literals and the rest of every text SHALL be left unchanged.
 
 #### Scenario: Upper-case spine root
-- **WHEN** a query has `source_model: TIME_SPINE`, the time dimension `TIME_SPINE.timestamp` by month over Jan–Feb, and the measure `sum(orders.amount)`
+- **WHEN** a query has `population: TIME_SPINE`, the time dimension `TIME_SPINE.timestamp` by month over Jan–Feb, and the measure `sum(orders.amount)`
 - **THEN** it returns the same rows and result keys as the same query spelled `time_spine`
 
 #### Scenario: Mixed-case spine reference without a root
-- **WHEN** a query without `source_model` groups by `Time_Spine.timestamp` month over Jan–Feb and sums `orders.amount`, once as a dimension filter `Time_Spine.timestamp >= '2024-01-01'` and once in its order
+- **WHEN** a query without `population` groups by `Time_Spine.timestamp` month over Jan–Feb and sums `orders.amount`, once as a dimension filter `Time_Spine.timestamp >= '2024-01-01'` and once in its order
 - **THEN** each returns the same rows as the query spelled `time_spine`
 
 #### Scenario: Quoted and literal spellings are untouched
@@ -315,7 +323,7 @@ Every model-name position a query writes — `source_model`, an extension's mode
 - **THEN** it reads datasource `b`'s built-in spine
 
 ### Requirement: A stored join never targets the spine
-Saving a model SHALL be refused with a typed error naming the model and the join when a join's `target_model` equals `time_spine` case-insensitively and no stored model of its datasource is named exactly as written; the error SHALL state that the spine joins each dataset through its time axis, so a declared join to it is never needed. On load, a stored model below schema version 25 SHALL have each such join removed, with a structured warning naming the model and the join, and SHALL be written back at the current version.
+Saving a model SHALL be refused with a typed error naming the model and the join when a join's `to` equals `time_spine` case-insensitively and no stored model of its datasource is named exactly as written; the error SHALL state that the spine joins each dataset through its time axis, so a declared join to it is never needed. On load, a stored model below schema version 25 SHALL have each such join removed, with a structured warning naming the model and the join, and SHALL be written back at the current version.
 
 #### Scenario: A join to the spine is refused in any spelling
 - **WHEN** a model `orders` is saved with a join to `time_spine` on `created_at = timestamp`, and again with the join target `TIME_SPINE`

@@ -1,0 +1,72 @@
+{
+ "source": "tests/test_dev1824_multistage_boundary.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "bt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "bt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(bt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(bt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "band",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "band",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(bt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(bt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(bt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(bt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(bt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(bt)",
+    "name": "total"
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -13,47 +13,48 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.keys import AggregateKey, ColumnKey, walk_value_keys
+from slayer.core.keys import AggregateKey, FieldKey, walk_value_keys
 from slayer.engine.plan import plan_query
 from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
+
+from slayer.core.query import QueryMetric
 
 from tests._dev1847_fixtures import (
     INNER_UP_CITY,
     INNER_UP_PRODUCT,
     MIXED_BAND_EXPR,
     MIXED_SUM,
-    ModelMeasure,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     sales_q,
 )
 
 TWO_CONSTITUENTS = (
-    f"sum(quantity * ({INNER_UP_PRODUCT} + {INNER_UP_CITY}))"
+    f"sum(sales.quantity * ({INNER_UP_PRODUCT} + {INNER_UP_CITY}))"
 )
-_REGION_SUM = "sum(amount, partition_by=region)"
+_REGION_SUM = "sum(sales.amount, partition_by=sales.region)"
 #: mixed source + attached parameter — both inputs must row-attach.
-MIXED_PARAM = f"weighted_avg(quantity * {INNER_UP_PRODUCT}, weight={_REGION_SUM})"
+MIXED_PARAM = f"weighted_avg(sales.quantity * {INNER_UP_PRODUCT}, weight={_REGION_SUM})"
 #: the SAME attached aggregate as source constituent AND parameter — one producer.
-DEDUP_SHARED = f"weighted_avg(quantity * {_REGION_SUM}, weight={_REGION_SUM})"
+DEDUP_SHARED = f"weighted_avg(sales.quantity * {_REGION_SUM}, weight={_REGION_SUM})"
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1847_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0],
-                                referenced_models=models[1:])
+    models = dev1847_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0],
+                                referenced_datasets=models[1:])
 
 
-def _plan(formula: str):
+def _plan(expression: str):
     return plan_query(
-        query=sales_q(dimensions=["region"],
-                      measures=[ModelMeasure(formula=formula, name="m")]),
+        query=sales_q(dimensions=["sales.region"],
+                      metrics=[QueryMetric(metric=expression, alias="m")]),
         bundle=_bundle())
 
 
 def _references_quantity(key) -> bool:
-    return any(isinstance(k, ColumnKey) and k.leaf == "quantity"
+    return any(isinstance(k, FieldKey) and k.leaf == "quantity"
                for k in walk_value_keys(key))
 
 
@@ -123,8 +124,8 @@ class TestEmittedGroupByStaysPure:
     @pytest.mark.parametrize("formula", [MIXED_SUM, TWO_CONSTITUENTS])
     async def test_no_group_by_references_the_row_leaf(self, formula):
         sql = await gen(sales_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula=formula, name="m")]))
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric=formula, alias="m")]))
         ast = sqlglot.parse_one(sql, read="postgres")
         groups = list(ast.find_all(exp.Group))
         assert groups
@@ -167,9 +168,9 @@ class TestDedupOneProducer:
 
     def test_shared_between_two_measures(self):
         planned = plan_query(
-            query=sales_q(dimensions=["region"], measures=[
-                ModelMeasure(formula=f"sum(quantity * {_REGION_SUM})", name="a"),
-                ModelMeasure(formula=f"sum(unit_price * {_REGION_SUM})", name="b")]),
+            query=sales_q(dimensions=["sales.region"], metrics=[
+                QueryMetric(metric=f"sum(sales.quantity * {_REGION_SUM})", alias="a"),
+                QueryMetric(metric=f"sum(sales.unit_price * {_REGION_SUM})", alias="b")]),
             bundle=_bundle())
         assert len(planned.regroup_attach_plans) == 1
 
@@ -183,8 +184,8 @@ class TestBandedDimensionOpacity:
     def test_one_attach_inner_nested(self):
         planned = plan_query(
             query=sales_q(
-                dimensions=[{"expression": MIXED_BAND_EXPR, "name": "mixed_band"}],
-                measures=[ModelMeasure(formula="sum(amount)", name="tot")]),
+                dimensions=[{"field": MIXED_BAND_EXPR, "alias": "mixed_band"}],
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]),
             bundle=_bundle())
         assert len(planned.regroup_attach_plans) == 1
 
@@ -197,11 +198,11 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
     9). The combined-phase escape the root's inner produces today goes with §5.2."""
 
     def _plan_banded_partition(self):
-        band = {"expression": MIXED_BAND_EXPR, "name": "mixed_band"}
+        band = {"field": MIXED_BAND_EXPR, "alias": "mixed_band"}
         return plan_query(
-            query=sales_q(dimensions=[band], measures=[ModelMeasure(
-                formula=f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=mixed_band)",
-                name="m")]),
+            query=sales_q(dimensions=[band], metrics=[QueryMetric(
+                metric=f"sum(sales.quantity * {INNER_UP_PRODUCT}, partition_by=mixed_band)",
+                alias="m")]),
             bundle=_bundle())
 
     def test_dimension_attach_is_planned(self):
@@ -217,8 +218,8 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
 class TestFirstOverMixedSource:
     async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         q = sales_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(
-                formula=f"first(quantity * {INNER_UP_PRODUCT}, id)",
-                name="f")])
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(
+                metric=f"first(sales.quantity * {INNER_UP_PRODUCT}, sales.id)",
+                alias="f")])
         assert "ROW_NUMBER" in (await gen(q)).upper()

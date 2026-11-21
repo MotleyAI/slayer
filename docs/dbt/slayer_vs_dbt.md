@@ -2,10 +2,10 @@
 
 This document compares SLayer and the dbt Semantic Layer (MetricFlow), highlighting where each system is more or less expressive than the other.
 
-Both are semantic layers that sit between a database and consumers (LLMs, BI tools, applications). They share core concepts — models/tables, dimensions (GROUP BY columns), measures (aggregatable expressions), and joins — but differ significantly in design philosophy:
+Both are semantic layers that sit between a database and consumers (LLMs, BI tools, applications). They share core concepts — datasets/tables, dimensions (GROUP BY columns), metrics (aggregatable expressions), and relationships — but differ significantly in design philosophy:
 
 - **dbt Semantic Layer** bakes aggregation into the measure definition and uses a separate "metrics" layer for business KPIs. Joins are implicit via entity matching.
-- **SLayer** keeps measures as raw expressions and specifies aggregation at query time. There is no separate metrics layer — filtered measures and composable formulas handle the same use cases. Joins are explicit.
+- **SLayer** keeps fields as raw expressions and specifies aggregation at query time. There is no separate metrics layer — filtered fields and composable expressions handle the same use cases. Relationships are explicit.
 
 For details on importing dbt definitions into SLayer, see [dbt Import](dbt_import.md).
 
@@ -13,16 +13,16 @@ For details on importing dbt definitions into SLayer, see [dbt Import](dbt_impor
 
 ## Where SLayer Expresses dbt Constructs Differently
 
-Some dbt constructs that look missing at first glance are in fact expressible in SLayer — just via different primitives. The three building blocks are query-time [aggregations](../examples/07_aggregations/aggregations.md), multi-stage queries via [query-as-model](../examples/06_multistage_queries/multistage_queries.md), and dynamic [query extensions](../concepts/queries.md#query-extensions).
+Some dbt constructs that look missing at first glance are in fact expressible in SLayer — just via different primitives. The three building blocks are query-time [aggregations](../examples/07_aggregations/aggregations.md), multi-stage queries via [query-as-dataset](../examples/06_multistage_queries/multistage_queries.md), and dynamic [query extensions](../concepts/queries.md#query-extensions).
 
 ### Semi-Additive Measures (`non_additive_dimension`)
 
 dbt supports measures like account balances where `SUM` across time is wrong — you need `MAX` or `MIN` over the time dimension, then `SUM` across other dimensions. The `non_additive_dimension` with `window_choice` and `window_groupings` handles this.
 
-In SLayer this is one expression, `sum(last(balance, snapshot_date, partition_by=[account_id, customer_id, snapshot_date]))` grouped by `customer_id` and a month `snapshot_date` time dimension (the time column in `partition_by` stands for its bucket), or equivalently a two-stage query:
+In SLayer this is one expression, `sum(last(account_snapshots.balance, account_snapshots.snapshot_date, partition_by=[account_snapshots.account_id, account_snapshots.customer_id, account_snapshots.snapshot_date]))` grouped by `account_snapshots.customer_id` and a month `account_snapshots.snapshot_date` time dimension (the time field in `partition_by` stands for its bucket), or equivalently a two-stage query:
 
-- **Stage 1** — group by `window_groupings` plus the time bucket, and pick the latest (or earliest) value per group using the [`first` / `last` aggregations](../examples/07_aggregations/aggregations.md#first-and-last) with an explicit time column: `last(balance, snapshot_date)` for `window_choice: max`, `first(balance, snapshot_date)` for `window_choice: min`.
-- **Stage 2** — feed stage 1 into the next query via a [query list](../concepts/queries.md#query-lists); because [any SLayer query automatically becomes a model](../concepts/models.md#creating-models-from-queries), the outer query can aggregate additively (`sum`, `avg`, …) across the remaining dimensions.
+- **Stage 1** — group by `window_groupings` plus the time bucket, and pick the latest (or earliest) value per group using the [`first` / `last` aggregations](../examples/07_aggregations/aggregations.md#first-and-last) with an explicit time field: `last(account_snapshots.balance, account_snapshots.snapshot_date)` for `window_choice: max`, `first(account_snapshots.balance, account_snapshots.snapshot_date)` for `window_choice: min`.
+- **Stage 2** — feed stage 1 into the next query via a [query list](../concepts/queries.md#query-lists); because [any SLayer query automatically becomes a dataset](../concepts/datasets.md#creating-datasets-from-queries), the outer query can aggregate additively (`sum`, `avg`, …) across the remaining dimensions.
 
 Example — account balances rolled up to customer-level monthly totals:
 
@@ -30,25 +30,25 @@ Example — account balances rolled up to customer-level monthly totals:
 [
   {
     "name": "latest_balance_per_account",
-    "source_model": "account_snapshots",
-    "measures": ["last(balance, snapshot_date)"],
-    "dimensions": ["account_id", "customer_id"],
-    "time_dimensions": [{"dimension": "snapshot_date", "granularity": "month"}]
+    "population": "account_snapshots",
+    "metrics": ["last(account_snapshots.balance, account_snapshots.snapshot_date)"],
+    "dimensions": ["account_snapshots.account_id", "account_snapshots.customer_id"],
+    "time_dimensions": [{"field": "account_snapshots.snapshot_date", "granularity": "month"}]
   },
   {
-    "source_model": "latest_balance_per_account",
-    "measures": ["sum(balance_last_snapshot_date)"],
-    "dimensions": ["customer_id"],
-    "time_dimensions": [{"dimension": "snapshot_date", "granularity": "month"}]
+    "population": "latest_balance_per_account",
+    "metrics": ["sum(latest_balance_per_account.balance_last_snapshot_date)"],
+    "dimensions": ["latest_balance_per_account.customer_id"],
+    "time_dimensions": [{"field": "latest_balance_per_account.snapshot_date", "granularity": "month"}]
   }
 ]
 ```
 
-If the source model does not already expose the grouping entities, pull them in via [query extensions](../concepts/queries.md#query-extensions) on the inner query — see [Joins](../examples/05_joins/joins.md) and [Measures from joined models](../examples/05_joined_measures/joined_measures.md) for the cross-model semantics.
+If the source dataset does not already expose the grouping entities, pull them in via [query extensions](../concepts/queries.md#query-extensions) on the inner query — see [Relationships](../examples/05_relationships/relationships.md) and [Metrics from joined datasets](../examples/05_joined_metrics/joined_metrics.md) for the cross-dataset semantics.
 
 ### Per-Measure `agg_time_dimension`
 
-dbt allows each measure within a semantic model to have its own default time dimension. SLayer has one [`default_time_dimension`](../concepts/models.md) per model, and the user picks the time dimension at query time via [`time_dimensions`](../concepts/queries.md#timedimension) — same outcome, specified one layer later. For aggregations that inherently need a time column — notably [`first` / `last`](../examples/07_aggregations/aggregations.md#first-and-last) — you can pin the column directly on the field: `last(measure_name, time_col)`. This explicit argument overrides both the query's `time_dimensions` and the model's `default_time_dimension`.
+dbt allows each measure within a semantic model to have its own default time dimension. SLayer has one [`default_time_dimension`](../concepts/datasets.md) per dataset, and the user picks the time dimension at query time via [`time_dimensions`](../concepts/queries.md#timedimension) — same outcome, specified one layer later. For aggregations that inherently need a time field — notably [`first` / `last`](../examples/07_aggregations/aggregations.md#first-and-last) — you can pin the time field directly in the aggregation: `last(field_name, time_col)`. This explicit argument overrides both the query's `time_dimensions` and the dataset's `default_time_dimension`.
 
 ---
 
@@ -58,11 +58,11 @@ These constructs are **failed cleanly** by the importer — routed to the [conve
 
 ### Rolling-Window Cumulative (not imported)
 
-SLayer expresses trailing windows at query time with [`window=`](../concepts/formulas.md#windowed-aggregations) (e.g. `sum(revenue, window='30d')`), but the importer does not yet convert dbt's windowed cumulative metrics and fails them cleanly.
+SLayer expresses trailing windows at query time with [`window=`](../concepts/expressions.md#windowed-aggregations) (e.g. `sum(orders.revenue, window='30d')`), but the importer does not yet convert dbt's windowed cumulative metrics and fails them cleanly.
 
 ### No `grain_to_date` Cumulative Reset
 
-dbt supports resetting cumulative at grain boundaries (e.g., month-to-date resets each month). SLayer's [`cumsum`](../concepts/formulas.md) has no partition-reset variant — put the grain dimension in the query instead.
+dbt supports resetting cumulative at grain boundaries (e.g., month-to-date resets each month). SLayer's [`cumsum`](../concepts/expressions.md) has no partition-reset variant — put the grain dimension in the query instead.
 
 ### No Conversion Metrics
 
@@ -80,9 +80,9 @@ Entity-based sequential event tracking (e.g., "users who visited then purchased 
 
 dbt: Want `revenue` summed AND averaged? Define two separate metrics. 20 columns x 3 aggregations = 60 metric definitions.
 
-SLayer: One measure `revenue`. Query `sum(revenue)`, `avg(revenue)`, `min(revenue)` as needed. Zero duplication.
+SLayer: One field `revenue`. Query `sum(orders.revenue)`, `avg(orders.revenue)`, `min(orders.revenue)` as needed. Zero duplication.
 
-### Composable Formula Syntax
+### Composable Expression Syntax
 
 dbt requires separate metric type definitions for each analytical pattern:
 - Simple metric for `revenue_sum`
@@ -92,30 +92,30 @@ dbt requires separate metric type definitions for each analytical pattern:
 
 SLayer handles all of these inline in a single query:
 ```json
-"measures": [
-  "sum(revenue)",
-  {"formula": "sum(revenue) / count(*)", "name": "aov"},
-  {"formula": "cumsum(sum(revenue))", "name": "running"},
-  {"formula": "change_pct(sum(revenue))", "name": "growth"}
+"metrics": [
+  "sum(orders.revenue)",
+  {"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov"},
+  {"metric": "cumsum(sum(orders.revenue))", "alias": "running"},
+  {"metric": "change_pct(sum(orders.revenue))", "alias": "growth"}
 ]
 ```
 
 ### No Jinja Templating
 
-dbt filters require `{{ Dimension('entity__name') }}` syntax with entity resolution. SLayer filters are plain SQL-like strings: `"status = 'active'"`. More readable, no template engine needed.
+dbt filters require `{{ Dimension('entity__name') }}` syntax with entity resolution. SLayer filters are plain SQL-like strings: `"orders.status = 'active'"`. More readable, no template engine needed.
 
-### Explicit Joins (Predictable)
+### Explicit Relationships (Predictable)
 
-dbt's entity-based implicit join resolution is powerful but opaque — you must understand the entity graph to predict which tables will be joined. SLayer's explicit `join_pairs` are visible in the model definition.
+dbt's entity-based implicit join resolution is powerful but opaque — you must understand the entity graph to predict which tables will be joined. SLayer's explicit `from_columns` and `to_columns` are visible in the dataset definition.
 
-### Query-as-Model (Multi-Stage Without New Concepts)
+### Query-as-Dataset (Multi-Stage Without New Concepts)
 
 dbt: Multi-stage analytics require creating new dbt models (SQL files) and new semantic model definitions.
 
-SLayer: Any query can be used as a model in the next query via query lists. No new files needed.
+SLayer: Any query can be used as a dataset in the next query via query lists. No new files needed.
 
 ### Flatter Concept Stack
 
 dbt has 3 layers: semantic models, metrics, saved queries.
 
-SLayer has 2 layers: models, queries (with queries optionally becoming models).
+SLayer has 2 layers: datasets, queries (with queries optionally becoming datasets).

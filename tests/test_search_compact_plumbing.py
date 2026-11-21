@@ -21,7 +21,7 @@ import pytest_asyncio
 from fastapi.testclient import TestClient
 
 from tests._cli_inprocess import run_cli_in_process
-from tests.search_helpers import seed_warehouse_models
+from tests.search_helpers import seed_warehouse_datasets
 
 from slayer.api.server import SearchRequest, create_app
 from slayer.cli import _run_search_query
@@ -41,7 +41,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
     tmpdir = tempfile.mkdtemp()
     try:
         s = resolve_storage(tmpdir)
-        await seed_warehouse_models(s)
+        await seed_warehouse_datasets(s)
         await s.save_memory(
             learning="full body of memory for plumbing tests",
             entities=["warehouse.orders.amount_paid"],
@@ -57,7 +57,7 @@ def yaml_storage() -> Generator[YAMLStorage, None, None]:
     tmpdir = tempfile.mkdtemp()
     try:
         s = YAMLStorage(base_dir=tmpdir)
-        asyncio.run(seed_warehouse_models(s))
+        asyncio.run(seed_warehouse_datasets(s))
         asyncio.run(s.save_memory(
             learning="full body of memory for plumbing tests",
             entities=["warehouse.orders.amount_paid"],

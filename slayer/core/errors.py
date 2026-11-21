@@ -6,10 +6,13 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
+from typing_extensions import deprecated
+
 from slayer.core.enums import TimeGranularity
 
 if TYPE_CHECKING:
-    from slayer.core.join_walker import OrientedJoin  # noqa: F401
+    from slayer.core.relationship_walker import OrientedRelationship  # noqa: F401
+    from slayer.live_schema.schema_drift import ToDeleteEntry
 
 
 class SlayerError(ValueError):
@@ -20,50 +23,50 @@ class SlayerError(ValueError):
     ``(SlayerError, ValueError)`` classes remain valid (redundant but harmless)."""
 
 
-class AmbiguousModelError(SlayerError):
-    """A bare model name resolves to ≥2 datasources with no priority winner; the surface-neutral message lets each surface append its own remediation."""
+class AmbiguousDatasetError(SlayerError):
+    """A bare dataset name resolves to ≥2 datasources with no priority winner; the surface-neutral message lets each surface append its own remediation."""
 
     def __init__(self, name: str, candidates: list[str]) -> None:
         self.name = name
         self.candidates = list(candidates)
         super().__init__(
-            f"Model '{name}' exists in multiple datasources: "
+            f"Dataset '{name}' exists in multiple datasources: "
             f"{sorted(self.candidates)}. Specify a data_source or set a "
             f"datasource priority to disambiguate."
         )
 
 
-class AmbiguousJoinPathError(SlayerError):
-    """A hop between two models is spanned by two or more edges and no edge
+class AmbiguousRelationshipPathError(SlayerError):
+    """A hop between two datasets is spanned by two or more edges and no edge
     name disambiguates it, so traversal fails closed in both directions rather
     than silently picking the first stored edge. ``candidates`` holds the
-    competing oriented edges; the message names each edge's declaring model,
-    name (if any), join pairs, and cardinality, plus the remediation."""
+    competing oriented edges; the message names each edge's declaring dataset,
+    name (if any), key pairs, and cardinality, plus the remediation."""
 
     def __init__(
         self,
         *,
-        source_model: str,
-        target_model: str,
-        candidates: "Sequence[OrientedJoin]",
+        source_dataset: str,
+        target_dataset: str,
+        candidates: "Sequence[OrientedRelationship]",
         token: str | None = None,
         context: str | None = None,
     ) -> None:
-        self.source_model = source_model
-        self.target_model = target_model
+        self.source_dataset = source_dataset
+        self.target_dataset = target_dataset
         self.candidates = list(candidates)
         self.token = token
         lines = [
             (f"{context}: " if context else "")
-            + f"Ambiguous join hop {source_model!r} → {target_model!r}: "
-            f"{len(self.candidates)} edges connect these models and no edge "
+            + f"Ambiguous relationship hop {source_dataset!r} → {target_dataset!r}: "
+            f"{len(self.candidates)} edges connect these datasets and no edge "
             f"name resolves it."
         ]
         for c in self.candidates:
-            pairs = ", ".join(f"{a}={b}" for a, b in c.join_pairs)
+            pairs = ", ".join(f"{a}={b}" for a, b in c.column_pairs)
             named = f" name={c.name!r}" if c.name else ""
             lines.append(
-                f"  - declared on {c.declaring_model!r}{named}: "
+                f"  - declared on {c.declaring_dataset!r}{named}: "
                 f"pairs [{pairs}], cardinality {c.cardinality}"
             )
         lines.append(
@@ -74,19 +77,19 @@ class AmbiguousJoinPathError(SlayerError):
 
 
 class QueryExtensionError(SlayerError):
-    """A query extension that cannot apply: a join conflicting with the join graph, or an INNER join the population cannot reach."""
+    """A query extension that cannot apply: a relationship conflicting with the relationship graph, or an INNER relationship the population cannot reach."""
 
 
 class EntityResolutionError(SlayerError):
-    """An entity ref can't resolve to canonical ``<datasource>.<model>[.<leaf>]`` form; distinct from ``AmbiguousModelError`` (the model leg of bare-name resolution)."""
+    """An entity ref can't resolve to canonical ``<datasource>.<dataset>[.<leaf>]`` form; distinct from ``AmbiguousDatasetError`` (the dataset leg of bare-name resolution)."""
 
 
-class ModelNotFoundError(SlayerError):
-    """A query names a model that does not exist in storage; ``context`` names where it was named."""
+class DatasetNotFoundError(SlayerError):
+    """A query names a dataset that does not exist in storage; ``context`` names where it was named."""
 
     def __init__(self, name: str, *, context: str | None = None) -> None:
         self.name = name
-        super().__init__(f"{context}: model '{name}' not found" if context else f"Model '{name}' not found")
+        super().__init__(f"{context}: dataset '{name}' not found" if context else f"Dataset '{name}' not found")
 
 
 class MemoryNotFoundError(SlayerError):
@@ -98,147 +101,155 @@ class MemoryNotFoundError(SlayerError):
 
 
 class SchemaDriftError(SlayerError):
-    """A query failed and schema drift in the models it read explains it; carries the drifted models, their
+    """A query failed and schema drift in the datasets it read explains it; carries the drifted datasets, their
     ``to_delete`` entries, the report-only ``findings`` and the DBAPI cause (as ``__cause__``)."""
 
     def __init__(
         self,
-        models: list[str],
-        to_delete: list[Any],
+        datasets: list[str],
+        to_delete: "Sequence[ToDeleteEntry]",
         original: BaseException,
         findings: list[Any] | None = None,
     ) -> None:
-        self.models = list(models)
+        self.datasets = list(datasets)
         self.to_delete = list(to_delete)
         self.findings = list(findings or [])
         notes = "".join(f" {getattr(f, 'summary', f)}" for f in self.findings)
         super().__init__(
-            f"Schema drift detected on models {sorted(self.models)}. "
-            f"Run validate_models to inspect the {len(self.to_delete)} "
+            f"Schema drift detected on datasets {sorted(self.datasets)}. "
+            f"Run validate_datasets to inspect the {len(self.to_delete)} "
             f"pending delete(s).{notes} Original error: {original}"
         )
         self.__cause__ = original
 
 
-class ColumnSqlStatementError(SlayerError):
-    """A column's ``sql`` is a statement, or several, not one expression."""
+class FieldSqlStatementError(SlayerError):
+    """A field's native SQL is a statement, or several, not one expression."""
 
-    def __init__(self, *, column: str, sql: str) -> None:
-        self.column = column
+    def __init__(self, *, field: str, sql: str) -> None:
+        self.field = field
         super().__init__(
-            f"Column {column!r}: sql must be one SQL expression, not a statement or several ({sql!r}); a "
+            f"Field {field!r}: its SQL must be one SQL expression, not a statement or several ({sql!r}); a "
             f"parenthesised scalar subquery is an expression."
         )
 
 
-class ColumnCycleError(SlayerError, ValueError):
-    """A derived ``Column.sql`` chain contains a cycle; carries it as ordered ``(model, column)`` tuples."""
+class FieldExpressionError(SlayerError):
+    """A field's or metric's ``expression`` has no form it can run, or two entries for one dialect."""
+
+    def __init__(self, *, owner: str, reason: str, suggestion: str | None = None) -> None:
+        self.owner = owner
+        super().__init__(f"{owner}: {reason}" + (f" {suggestion}" if suggestion else ""))
+
+
+class DatasetFieldCycleError(SlayerError, ValueError):
+    """A derived ``DatasetField.sql`` chain contains a cycle; carries it as ordered ``(dataset, field)`` tuples."""
 
     def __init__(self, cycle: list[tuple[str, str]]) -> None:
         self.cycle: list[tuple[str, str]] = list(cycle)
         chain = " → ".join(f"{m}.{c}" for m, c in self.cycle)
-        super().__init__(f"Circular column reference detected: {chain}")
+        super().__init__(f"Circular field reference detected: {chain}")
 
 
-class ModelFilterCycleError(SlayerError, ValueError):
-    """A model's filters read its own dataset; carries the ordered model ``cycle``."""
+class DatasetFilterCycleError(SlayerError, ValueError):
+    """A dataset's filters read its own dataset; carries the ordered dataset ``cycle``."""
 
     def __init__(self, cycle: Sequence[str]) -> None:
         self.cycle: list[str] = list(cycle)
         super().__init__(
-            f"Circular model filters: {' → '.join(self.cycle)}. A model's filters read the "
-            f"filtered dataset of every model they join, so these models' datasets depend on "
+            f"Circular dataset filters: {' → '.join(self.cycle)}. A dataset's filters read the "
+            f"filtered rows of every dataset they reach through a relationship, so these datasets' filtered rows depend on "
             f"themselves; drop the filter that closes the cycle."
         )
 
 
-class DerivedColumnFanningError(SlayerError, ValueError):
-    """A derived ``Column.sql``/``Column.filter`` reference provably crosses a fanning hop from its declaring model — a set per row, not a column; carries ``column``/``model``/``hop``/``reference``."""
+class DerivedFieldFanningError(SlayerError, ValueError):
+    """A derived ``DatasetField.sql``/``DatasetField.filter`` reference provably crosses a fanning hop from its declaring dataset — a set per row, not a field; carries ``field``/``dataset``/``hop``/``reference``."""
 
-    def __init__(self, *, column: str, model: str, hop: str, reference: str) -> None:
-        self.column = column
-        self.model = model
+    def __init__(self, *, field: str, dataset: str, hop: str, reference: str) -> None:
+        self.field = field
+        self.dataset = dataset
         self.hop = hop
         self.reference = reference
         super().__init__(
-            f"Derived column {column!r} on model {model!r} references {reference!r}, "
-            f"crossing a fanning join hop to {hop!r}: it is a set per row, not a "
-            f"column of {model!r}. Aggregate the target column (<aggregation>({reference})) "
+            f"Derived field {field!r} on dataset {dataset!r} references {reference!r}, "
+            f"crossing a fanning relationship hop to {hop!r}: it is a set per row, not a "
+            f"field of {dataset!r}. Aggregate the target field (<aggregation>({reference})) "
             f"or filter by it; if the hop is really to-one, declare its cardinality "
             f"(many_to_one/one_to_one) or a covering unique key."
         )
 
 
-class CircularJoinPathError(SlayerError, ValueError):
-    """A join path revisits a model already on it (``a → b → a``) — a definite
+class CircularRelationshipPathError(SlayerError, ValueError):
+    """A relationship path revisits a dataset already on it (``a → b → a``) — a definite
     malformation, like ambiguity, which the shared walker raises. ``None`` from the
     walker now means only an unknown/unloaded hop. Carries the ``reference`` (full
-    user spelling), ``root_model``, the ``revisited`` model, the revisiting ``hop``
-    token and the ``via`` model it leaves; an optional declaring ``column``."""
+    user spelling), ``root_model``, the ``revisited`` dataset, the revisiting ``hop``
+    token and the ``via`` dataset it leaves; an optional declaring ``field``."""
 
     def __init__(
-        self, *, reference: str, root_model: str, revisited: str,
-        hop: str, via: str, column: str | None = None,
+        self, *, reference: str, root_dataset: str, revisited: str,
+        hop: str, via: str, field: str | None = None,
     ) -> None:
         self.reference = reference
-        self.root_model = root_model
+        self.root_dataset = root_dataset
         self.revisited = revisited
         self.hop = hop
         self.via = via
-        self.column = column
+        self.field = field
         super().__init__(self._message())
 
     def _message(self) -> str:
         msg = (
-            f"Circular join detected resolving {self.reference!r} from "
-            f"{self.root_model!r}: hop {self.hop!r} revisits model {self.revisited!r}."
+            f"Circular relationship path detected resolving {self.reference!r} from "
+            f"{self.root_dataset!r}: hop {self.hop!r} revisits dataset {self.revisited!r}."
         )
-        if self.column is not None:
-            msg += f" (in the definition of column {self.column!r})"
+        if self.field is not None:
+            msg += f" (in the definition of field {self.field!r})"
         return msg
 
 
-class DerivedColumnCircularError(CircularJoinPathError):
-    """A derived ``Column.sql``/``Column.filter`` whose path revisits a model on it —
-    not a function of its declaring model's row; ``model`` aliases ``root_model``."""
+class DerivedFieldCircularError(CircularRelationshipPathError):
+    """A derived ``DatasetField.sql``/``DatasetField.filter`` whose path revisits a dataset on it —
+    not a function of its declaring dataset's row; ``dataset`` aliases ``root_model``."""
 
     def __init__(
-        self, *, column: str, reference: str, root_model: str,
+        self, *, field: str, reference: str, root_dataset: str,
         revisited: str, hop: str, via: str,
     ) -> None:
         super().__init__(
-            reference=reference, root_model=root_model, revisited=revisited,
-            hop=hop, via=via, column=column,
+            reference=reference, root_dataset=root_dataset, revisited=revisited,
+            hop=hop, via=via, field=field,
         )
 
     @property
-    def model(self) -> str:
-        return self.root_model
+    def dataset(self) -> str:
+        return self.root_dataset
 
     def _message(self) -> str:
         return (
-            f"Derived column {self.column!r} on model {self.model!r} references "
-            f"{self.reference!r}, which revisits model {self.revisited!r} (hop "
-            f"{self.hop!r} from {self.via!r}): a join path never revisits a model on "
-            f"it, so this is not a column of {self.model!r}. Reference the column on "
+            f"Derived field {self.field!r} on dataset {self.dataset!r} references "
+            f"{self.reference!r}, which revisits dataset {self.revisited!r} (hop "
+            f"{self.hop!r} from {self.via!r}): a relationship path never revisits a dataset on "
+            f"it, so this is not a field of {self.dataset!r}. Reference the field on "
             f"{self.revisited!r} directly if you mean this row's value, or declare the "
             f"aggregate on {self.via!r}, which reaches {self.revisited!r} forward."
         )
 
 
-class DerivedColumnAmbiguousError(AmbiguousJoinPathError):
-    """A derived ``Column.sql``/``Column.filter`` reference crossing a hop that two or more edges span."""
+class DerivedFieldAmbiguousError(AmbiguousRelationshipPathError):
+    """A derived ``DatasetField.sql``/``DatasetField.filter`` reference crossing a hop that two or more edges span."""
 
     def __init__(
-        self, *, column: str, model: str, reference: str, error: AmbiguousJoinPathError,
+        self, *, field: str, dataset: str, reference: str, error: AmbiguousRelationshipPathError,
     ) -> None:
-        self.column = column
-        self.model = model
+        self.field = field
+        self.dataset = dataset
         self.reference = reference
         super().__init__(
-            source_model=error.source_model, target_model=error.target_model,
+            source_dataset=error.source_dataset, target_dataset=error.target_dataset,
             candidates=error.candidates, token=error.token,
-            context=f"Derived column {column!r} on model {model!r} references {reference!r}",
+            context=f"Derived field {field!r} on dataset {dataset!r} references {reference!r}",
         )
 
 
@@ -295,8 +306,8 @@ class ExplainUnsupportedError(SlayerError):
     """An EXPLAIN its dialect, or the client serving it, cannot run."""
 
 
-class ModelSqlValidationError(SlayerError, ValueError):
-    """Raw-``sql`` model source rejected by its reachable datasource at save time.
+class DatasetSqlValidationError(SlayerError, ValueError):
+    """Raw-``sql`` dataset source rejected by its reachable datasource at save time.
 
     ``ValueError`` subclass so REST 400 / ``except ValueError`` callers catch it;
     names the datasource *type* only, never ``repr(ds)`` (no secret leak)."""
@@ -304,17 +315,17 @@ class ModelSqlValidationError(SlayerError, ValueError):
     def __init__(
         self,
         *,
-        model_name: str,
+        dataset_name: str,
         data_source: str,
         ds_type: str | None,
         reason: str,
     ) -> None:
-        self.model_name = model_name
+        self.dataset_name = dataset_name
         self.data_source = data_source
         self.ds_type = ds_type
         self.reason = reason
         super().__init__(
-            f"Model {model_name!r} has invalid SQL for datasource "
+            f"Dataset {dataset_name!r} has invalid SQL for datasource "
             f"{data_source!r} (type {ds_type!r}): {reason}"
         )
 
@@ -386,8 +397,8 @@ class TimeAxisError(QueryTypeError):
     """A time-ordered or windowed computation lacks a usable time axis."""
 
 
-class TimeDimensionColumnError(TimeAxisError):
-    """A time dimension's column is non-temporal, or re-buckets to a non-nesting granularity."""
+class TimeDimensionFieldError(TimeAxisError):
+    """A time dimension's field is non-temporal, or re-buckets to a non-nesting granularity."""
 
 
 class WindowDurationError(QueryTypeError):
@@ -398,12 +409,12 @@ class PartitionKeyError(QueryTypeError):
     """A ``partition_by=`` key that does not resolve or is not attributable."""
 
 
-class UnsafeJoinInputError(QueryTypeError):
-    """An aggregate input read across an unproven or fanning join hop."""
+class UnsafeRelationshipInputError(QueryTypeError):
+    """An aggregate input read across an unproven or fanning relationship hop."""
 
 
 class UnanalyzableDependencyError(QueryTypeError):
-    """A dependency whose definition cannot be analysed for join hops."""
+    """A dependency whose definition cannot be analysed for relationship hops."""
 
 
 class TransformInputError(QueryTypeError):
@@ -435,15 +446,15 @@ class NameCollisionError(QueryTypeError):
 
 
 class DimensionTypeError(QueryTypeError):
-    """A column whose type cannot be grouped on."""
+    """A field whose type cannot be grouped on."""
 
 
-class ModelFilterError(QueryTypeError):
-    """A model filter referencing something only a query filter may."""
+class DatasetFilterError(QueryTypeError):
+    """A dataset filter referencing something only a query filter may."""
 
 
 class PositionTypingError(QueryTypeError):
-    """A filter conjunct / order target is valid as neither field nor measure."""
+    """A filter conjunct / order target is valid as neither field nor metric."""
 
 
 class DateOperandTypeError(QueryTypeError):
@@ -463,12 +474,12 @@ class UnknownGranularityError(QueryTypeError):
 
 
 class TimeSpineError(QueryTypeError):
-    """A query shape the time spine cannot take: no lower bound, spine rows counted, the spine column
-    outside a bucketed time dimension or a bound, or a stored model shadowing ``time_spine``."""
+    """A query shape the time spine cannot take: no lower bound, spine rows counted, the spine field
+    outside a bucketed time dimension or a bound, or a stored dataset shadowing ``time_spine``."""
 
 
 class UnrelatedDatasetError(QueryTypeError):
-    """A row-level read of a dataset no join path reaches, outside an aggregation or a one-sided filter."""
+    """A row-level read of a dataset no relationship path reaches, outside an aggregation or a one-sided filter."""
 
 
 class CastTypeError(QueryTypeError):
@@ -503,18 +514,18 @@ class UnsupportedServerFunctionError(QueryTypeError):
 
 
 class UnreachableDefinitionError(SlayerError, ValueError):
-    """A stored ``Column.sql`` / ``Column.filter`` / model filter naming a dataset no join path reaches from its model."""
+    """A stored ``DatasetField.sql`` / ``DatasetField.filter`` / dataset filter naming a dataset no relationship path reaches from its dataset."""
 
-    def __init__(self, *, model: str, reference: str, dataset: str, definition: str | None = None) -> None:
-        self.model = model
-        self.reference = reference
+    def __init__(self, *, dataset: str, reference: str, unreached: str, definition: str | None = None) -> None:
         self.dataset = dataset
+        self.reference = reference
+        self.unreached = unreached
         self.definition = definition
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary=f"{definition or 'A definition'} on model {model!r} reads {reference!r}, but no join path "
-            f"reaches {dataset!r} from {model!r}.",
-            suggestion=f"Declare a join between them, or read {dataset!r} in a query through aggregates.",
+            summary=f"{definition or 'A definition'} on dataset {dataset!r} reads {reference!r}, but no relationship path "
+            f"reaches {unreached!r} from {dataset!r}.",
+            suggestion=f"Declare a relationship between them, or read {unreached!r} in a query through aggregates.",
         ))
 
     def labelled(self, definition: str) -> "UnreachableDefinitionError":
@@ -522,7 +533,7 @@ class UnreachableDefinitionError(SlayerError, ValueError):
         if self.definition is not None:
             return self
         return UnreachableDefinitionError(
-            model=self.model, reference=self.reference, dataset=self.dataset, definition=definition,
+            dataset=self.dataset, reference=self.reference, unreached=self.unreached, definition=definition,
         )
 
     def __reduce__(self):
@@ -538,13 +549,13 @@ class GranularityDefinitionError(SlayerError):
         super().__init__(f"Granularity {name!r}: {rule}.")
 
 
-class ReservedModelNameError(SlayerError):
-    """A user model named after a built-in model."""
+class ReservedDatasetNameError(SlayerError):
+    """A user dataset named after a built-in dataset."""
 
     def __init__(self, *, name: str) -> None:
         self.name = name
         super().__init__(
-            f"Model name {name!r} is reserved for the built-in time spine model 'time_spine' (model names match in "
+            f"Dataset name {name!r} is reserved for the built-in time spine dataset 'time_spine' (dataset names match in "
             f"any case); choose another name."
         )
 
@@ -563,54 +574,108 @@ class UnrecognizedStrictValueError(SlayerError):
         return type(self), (self.value,)
 
 
-class DefaultTimeDimensionTypeError(SlayerError):
-    """A model's declared ``default_time_dimension`` names a column of a non-temporal type."""
+class SpellingConflictError(SlayerError):
+    """One object spells a concept both the pre-2.0 way (``old``) and the Ossie way (``new``)."""
 
-    def __init__(self, *, model: str, column: str, column_type: str) -> None:
-        self.model = model
-        self.column = column
+    def __init__(self, *, old: str, new: str) -> None:
+        self.old = old
+        self.new = new
+        super().__init__(f"Both `{new}` and its pre-2.0 spelling `{old}` are given; keep only `{new}`.")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _rebuild_spelling_conflict, (self.old, self.new)
+
+
+def _rebuild_spelling_conflict(old: str, new: str) -> SpellingConflictError:
+    return SpellingConflictError(old=old, new=new)
+
+
+class UnknownKeyError(SlayerError):
+    """An input object carries ``key`` (at ``path``, in ``dataset`` when known), which SLayer does not read; ``keys``
+    says what the object takes."""
+
+    def __init__(self, *, key: str, path: str, dataset: str | None = None, keys: str | None = None) -> None:
+        self.key = key
+        self.path = path
+        self.dataset = dataset
+        self.keys = keys
+        at = f" at {path!r}" if path != key else ""
+        where = f" of dataset {dataset!r}" if dataset is not None else ""
+        takes = f"; {keys}" if keys else ""
+        super().__init__(f"Unknown key {key!r}{at}{where}{takes}.")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _rebuild_unknown_key, (self.key, self.path, self.dataset, self.keys)
+
+
+def _rebuild_unknown_key(key: str, path: str, dataset: str | None, keys: str | None) -> UnknownKeyError:
+    return UnknownKeyError(key=key, path=path, dataset=dataset, keys=keys)
+
+
+class FieldTextError(SlayerError):
+    """A query entry's ``field`` is an object where it takes a reference or expression as text."""
+
+    def __init__(self, *, where: str, value: Any) -> None:
+        self.where = where
+        self.value = value
+        super().__init__(f"The {where} `field` takes a reference or an expression as text, got {value!r}.")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _rebuild_field_text, (self.where, self.value)
+
+
+def _rebuild_field_text(where: str, value: Any) -> FieldTextError:
+    return FieldTextError(where=where, value=value)
+
+
+class DefaultTimeDimensionTypeError(SlayerError):
+    """A dataset's declared ``default_time_dimension`` names a field of a non-temporal type."""
+
+    def __init__(self, *, dataset: str, field: str, field_type: str) -> None:
+        self.dataset = dataset
+        self.field = field
         super().__init__(
-            f"Model {model!r}: default_time_dimension {column!r} has type {column_type}; "
-            f"it must name a date or time column."
+            f"Dataset {dataset!r}: default_time_dimension {field!r} has type {field_type}; "
+            f"it must name a date or time field."
         )
 
 
-class DuplicateMeasureNameError(NameCollisionError):
-    """Two measures in one query declare the same explicit ``name``."""
+class DuplicateMetricNameError(NameCollisionError):
+    """Two metrics in one query declare the same explicit ``name``."""
 
     def __init__(self, name: str, occurrences: List[str]) -> None:
         self.name = name
         self.occurrences = list(occurrences)
         super().__init__(
-            summary="The measure name is declared more than once.",
-            location=f"measure {name!r}",
+            summary="The metric name is declared more than once.",
+            location=f"metric {name!r}",
             extras=[("occurrences", repr(self.occurrences))],
         )
 
 
-class MeasureNameCollidesWithColumnError(NameCollisionError):
-    """A declared measure ``name`` matches a source column, so the alias-form filter would bind to the column."""
+class MetricNameCollidesWithFieldError(NameCollisionError):
+    """A declared metric ``name`` matches a source field, so the alias-form filter would bind to the field."""
 
-    def __init__(self, name: str, model: str, suggestion: str | None = None) -> None:
+    def __init__(self, name: str, dataset: str, suggestion: str | None = None) -> None:
         self.name = name
-        self.model = model
+        self.dataset = dataset
         super().__init__(
-            summary=f"The declared measure name matches a source column on model {model!r}.",
-            location=f"measure {name!r}",
+            summary=f"The declared metric name matches a source field on dataset {dataset!r}.",
+            location=f"metric {name!r}",
             suggestion=suggestion,
         )
 
 
-class CanonicalAliasShadowsColumnError(NameCollisionError):
-    """A formula's canonical alias (``amount_sum`` for ``sum(amount)``) shadows a source column."""
+class CanonicalAliasShadowsFieldError(NameCollisionError):
+    """An expression's canonical alias (``amount_sum`` for ``sum(amount)``) shadows a source field."""
 
-    def __init__(self, formula: str, canonical: str, model: str) -> None:
-        self.formula = formula
+    def __init__(self, expression: str, canonical: str, dataset: str) -> None:
+        self.expression = expression
         self.canonical = canonical
-        self.model = model
+        self.dataset = dataset
         super().__init__(
-            summary=f"The canonical alias {canonical!r} shadows a source column on model {model!r}.",
-            location=f"measure {formula!r}",
+            summary=f"The canonical alias {canonical!r} shadows a source field on dataset {dataset!r}.",
+            location=f"metric {expression!r}",
         )
 
 
@@ -633,6 +698,22 @@ class UnknownReferenceError(SlayerError, ValueError):
             summary=f"Cannot resolve reference {name!r}.",
             scope=f"{scope_kind}: {scope_summary}",
             suggestion=suggestion,
+        ))
+
+
+class UnknownMetricError(UnknownReferenceError):
+    """A bare query name that is neither an alias of the query nor a metric."""
+
+
+class UnqualifiedRowCountError(SlayerError, ValueError):
+    """``count(*)`` in a query that names no population: a row count names its dataset."""
+
+    def __init__(self, *, suggestion: str | None = None) -> None:
+        self.suggestion = suggestion
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary="'count(*)' names no dataset in a query without a population.",
+            suggestion=suggestion or "Write count(<dataset>.*), or name the query's population.",
         ))
 
 
@@ -699,22 +780,22 @@ class AmbiguousReferenceError(SlayerError, ValueError):
 
 
 class AmbiguousAggregationError(SlayerError):
-    """A call matches several of its model's aggregations case-insensitively and none exactly."""
+    """A call matches several of its dataset's aggregations case-insensitively and none exactly."""
 
-    def __init__(self, *, model: str, call: str, candidates: List[str]) -> None:
-        self.model = model
+    def __init__(self, *, dataset: str, call: str, candidates: List[str]) -> None:
+        self.dataset = dataset
         self.call = call
         self.candidates = sorted(candidates)
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary=f"Aggregation call {call!r} is ambiguous on model {model!r}: it matches "
+            summary=f"Aggregation call {call!r} is ambiguous on dataset {dataset!r}: it matches "
             f"{', '.join(self.candidates)} case-insensitively.",
             suggestion="Spell the call exactly as one of them.",
         ))
 
 
 class IllegalScopeReferenceError(SlayerError, ValueError):
-    """A reference is syntactically rejected by the scope kind (``__`` in a Mode-B ``ModelScope`` ref; a dotted ref against a flat ``StageSchema``)."""
+    """A reference is syntactically rejected by the scope kind (``__`` in a Mode-B ``DatasetScope`` ref; a dotted ref against a flat ``StageSchema``)."""
 
     def __init__(self, name: str, scope_kind: str, reason: str) -> None:
         self.name = name
@@ -729,13 +810,13 @@ class IllegalScopeReferenceError(SlayerError, ValueError):
 
 
 class IllegalWindowInFilterError(SlayerError, ValueError):
-    """A filter contains a raw ``OVER(...)`` window (directly or via a ``Column.sql``); use a rank-family transform instead."""
+    """A filter contains a raw ``OVER(...)`` window (directly or via a ``DatasetField.sql``); use a rank-family transform instead."""
 
     def __init__(
         self,
         filter_expr: str,
         source: str,
-        suggestion: str = "use a rank-family transform (e.g. `rank(<measure>, direction='desc') <= N`).",
+        suggestion: str = "use a rank-family transform (e.g. `rank(<metric>, direction='desc') <= N`).",
     ) -> None:
         self.filter_expr = filter_expr
         self.source = source
@@ -752,15 +833,15 @@ class IllegalWindowInFilterError(SlayerError, ValueError):
 
 
 class AggregationNotAllowedError(SlayerError, ValueError):
-    """An aggregation can't apply to a column: type-bucket (``sum`` on TEXT), primary-key, or ``allowed_aggregations`` whitelist violation."""
+    """An aggregation can't apply to a field: type-bucket (``sum`` on TEXT), primary-key, or ``allowed_aggregations`` whitelist violation."""
 
-    def __init__(self, column: str, agg: str, reason: str) -> None:
-        self.column = column
+    def __init__(self, field: str, agg: str, reason: str) -> None:
+        self.field = field
         self.agg = agg
         self.reason = reason
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary=f"Aggregation {agg!r} is not allowed on column {column!r}.",
+            summary=f"Aggregation {agg!r} is not allowed on field {field!r}.",
             extras=[("reason", reason)],
         ))
 
@@ -774,24 +855,24 @@ class UnanalyzableAggregationParameterError(SlayerError):
     window function or subquery, so it cannot bind to a value."""
 
     def __init__(
-        self, *, model: str | None, aggregation: str, parameter: str, text: str, reason: str,
+        self, *, dataset: str | None, aggregation: str, parameter: str, text: str, reason: str,
     ) -> None:
-        self.model = model
+        self.dataset = dataset
         self.aggregation = aggregation
         self.parameter = parameter
         self.text = text
-        where = f" on model '{model}'" if model else ""
+        where = f" on dataset '{dataset}'" if dataset else ""
         super().__init__(
             f"Aggregation '{aggregation}'{where}: parameter '{parameter}' = `{text}` "
-            f"cannot be used ({reason}); a parameter must be a column, a literal, or a "
-            f"row-level expression over columns."
+            f"cannot be used ({reason}); a parameter must be a field, a literal, or a "
+            f"row-level expression over fields."
         )
 
 
 class UnknownFunctionError(SlayerError, ValueError):
-    """A Mode-B function call is not in the ``SCALAR_FUNCTIONS`` allowlist, transform registry, or model aggregation set (REST maps it to 400)."""
+    """A Mode-B function call is not in the ``SCALAR_FUNCTIONS`` allowlist, transform registry, or dataset aggregation set (REST maps it to 400)."""
 
-    _DEFAULT_SUGGESTION = "move the call to a derived Column.sql (Mode A)."
+    _DEFAULT_SUGGESTION = "move the call to a derived DatasetField.sql (Mode A)."
 
     def __init__(
         self,
@@ -811,27 +892,27 @@ class UnknownFunctionError(SlayerError, ValueError):
         ))
 
 
-class MeasureRecursionLimitError(SlayerError, ValueError):
-    """Named-measure expansion exceeded the depth limit (default 32; ``SLAYER_MEASURE_EXPANSION_DEPTH``)."""
+class MetricRecursionLimitError(SlayerError, ValueError):
+    """Named-metric expansion exceeded the depth limit (default 32; ``SLAYER_METRIC_EXPANSION_DEPTH``)."""
 
     def __init__(self, chain: List[str], limit: int = 32) -> None:
         self.chain = list(chain)
         self.limit = limit
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary=f"Named-measure expansion exceeded depth (limit={limit}).",
+            summary=f"Named-metric expansion exceeded depth (limit={limit}).",
             extras=[("chain", " → ".join(self.chain))],
         ))
 
 
-class MeasureCycleError(SlayerError, ValueError):
-    """Named-measure expansion encountered a cycle."""
+class MetricCycleError(SlayerError, ValueError):
+    """Named-metric expansion encountered a cycle."""
 
     def __init__(self, chain: List[str]) -> None:
         self.chain = list(chain)
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary="Cyclic reference in named-measure expansion.",
+            summary="Cyclic reference in named-metric expansion.",
             extras=[("chain", " → ".join(self.chain))],
         ))
 
@@ -851,43 +932,38 @@ class UnresolvedPlaceholderError(SlayerError):
             summary=f"{{{name}}} looks like a variable placeholder, but no value was substituted into it.",
             location=repr(expression),
             suggestion=(
-                f"supply {name!r} through `variables` (a saved measure reached through a join "
+                f"supply {name!r} through `variables` (a saved metric reached through a relationship "
                 "is not substituted); write `{{` / `}}` for literal braces."
             ),
         ))
 
 
 class BroadcastGrainWarning(UserWarning):
-    """A cross-model aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
+    """A cross-dataset aggregate's implicit grain lost a dimension (not attributable from its root) to broadcasting; result grain unchanged. Visibility warning, not an error."""
 
-    def __init__(self, measure: str, reason: str, association_unsupported: str | None = None) -> None:
-        super().__init__(measure, reason, association_unsupported)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
-        self.measure = measure
+    def __init__(self, metric: str, reason: str) -> None:
+        super().__init__(metric, reason)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
+        self.metric = metric
         self.reason = reason
-        self.association_unsupported = association_unsupported
 
     def __str__(self) -> str:
-        fallback = (
-            "" if self.association_unsupported is None
-            else f" (association does not support {self.association_unsupported})"
-        )
         return (
-            f"Metric {self.measure!r} broadcast across an unattributable "
-            f"dimension{fallback}: {self.reason}"
+            f"Metric {self.metric!r} broadcast across an unattributable "
+            f"dimension: {self.reason}"
         )
 
 
 class AssociatedGrainWarning(UserWarning):
     """An aggregate resolved by distinct-entity association over unattributable dimension(s); cells' populations may overlap and are not additive. Visibility warning, not an error."""
 
-    def __init__(self, measure: str, dimensions: str) -> None:
-        super().__init__(measure, dimensions)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
-        self.measure = measure
+    def __init__(self, metric: str, dimensions: str) -> None:
+        super().__init__(metric, dimensions)  # args mirror params so cls(*w.args) reconstructs across pytest-xdist
+        self.metric = metric
         self.dimensions = dimensions
 
     def __str__(self) -> str:
         return (
-            f"Metric {self.measure!r} associated over unattributable dimension(s) "
+            f"Metric {self.metric!r} associated over unattributable dimension(s) "
             f"{self.dimensions}; cell populations may overlap and are not additive."
         )
 
@@ -918,7 +994,7 @@ class IdCollisionError(SlayerError, ValueError):
     """YAML storage saving an entity whose id differs from an existing one only by case (they collide as filenames on case-insensitive filesystems)."""
 
     _LABELS = {
-        "model": "Model name",
+        "dataset": "Dataset name",
         "datasource": "Datasource name",
         "memory": "Memory id",
     }
@@ -965,8 +1041,8 @@ class IdentifierCollisionError(SlayerError, ValueError):
         super().__init__(
             f"{namespace} collision on dialect '{dialect}' "
             f"(max_identifier_bytes={limit}): {first!r} and {second!r} both "
-            f"emit as {emitted!r}. Rename one of the underlying models or "
-            f"columns to break the tie."
+            f"emit as {emitted!r}. Rename one of the underlying datasets or "
+            f"fields to break the tie."
         )
 
 
@@ -1012,7 +1088,7 @@ class ForcedFilterError(SlayerError):
 
 
 class GranularityCallError(SlayerError, ValueError):
-    """A time-bucket query entry is malformed or unresolvable: a ``date_trunc`` of the wrong shape, a granularity called like a function, a ``time_dimensions`` string that is not ``date_trunc('<unit>', expr)``, a same-column+granularity metadata conflict, or an order key with no matching projected time dimension."""
+    """A time-bucket query entry is malformed or unresolvable: a ``date_trunc`` of the wrong shape, a granularity called like a function, a ``time_dimensions`` string that is not ``date_trunc('<unit>', expr)``, a same-field+granularity metadata conflict, or an order key with no matching projected time dimension."""
 
     @classmethod
     def wrong_shape(cls, entry: str) -> "GranularityCallError":
@@ -1035,8 +1111,8 @@ class ReservedFunctionNameError(SlayerError, ValueError):
     def __init__(self, *, name: str, where: str) -> None:
         self.name = name
         super().__init__(
-            f"{where}: {name!r} is reserved — AGG (`agg` in any case) names measure evaluation, so it is never a "
-            f"function or an aggregation name. A field, metric or column may still be named agg."
+            f"{where}: {name!r} is reserved — AGG (`agg` in any case) names metric evaluation, so it is never a "
+            f"function or an aggregation name. A field or metric may still be named agg."
         )
 
 
@@ -1064,49 +1140,49 @@ class ColonSpellingError(SlayerError, ValueError):
         super().__init__(f"The colon spelling {span!r} was removed in SLayer 2.0; write {twin} instead.")
 
 
-class UnresolvableOrderColumnError(SlayerError, ValueError):
-    """An ``order`` item references a column not bindable to the query's FROM scope (usually an unprojected joined column whose join was never resolved); rejected at compile time rather than emitting failing SQL."""
+class UnresolvableOrderFieldError(SlayerError, ValueError):
+    """An ``order`` item references a field not bindable to the query's FROM scope (usually an unprojected joined field whose relationship was never resolved); rejected at compile time rather than emitting failing SQL."""
 
-    def __init__(self, *, column: str, qualifier: str) -> None:
-        self.column = column
+    def __init__(self, *, field: str, qualifier: str) -> None:
+        self.field = field
         self.qualifier = qualifier
         super().__init__(
-            f"ORDER BY column '{qualifier}.{column}' cannot be resolved: it is not a "
-            f"projected field, a base column, or a column on a join that is in scope. "
-            f"Project it (add to dimensions/measures), reference it in a filter, or "
+            f"ORDER BY field '{qualifier}.{field}' cannot be resolved: it is not a "
+            f"projected field, a base field, or a field on a joined dataset that is in scope. "
+            f"Project it (add to dimensions/metrics), reference it in a filter, or "
             f"order by a projected field instead."
         )
 
 
-class UnresolvableDimensionJoinError(SlayerError, ValueError):
-    """A dimension dotted path that is not a valid direct-join chain and can't be uniquely
+class UnresolvableDimensionRelationshipError(SlayerError, ValueError):
+    """A dimension dotted path that is not a valid direct-relationship chain and can't be uniquely
     routed to its target. ``__str__`` is computed from the fields so a ``suggested_path`` set after construction shows."""
 
     def __init__(
         self,
         *,
         reference: str,
-        root_model: str,
+        root_dataset: str,
         reason: str | None = None,
-        available_joins: "list[str] | None" = None,
+        available_relationships: "list[str] | None" = None,
         suggested_path: str | None = None,
     ) -> None:
         self.reference = reference
-        self.root_model = root_model
+        self.root_dataset = root_dataset
         self.reason = reason
-        self.available_joins = available_joins
+        self.available_relationships = available_relationships
         self.suggested_path = suggested_path
         super().__init__()
 
     def __str__(self) -> str:
         msg = (
-            f"Cannot resolve dimension '{self.reference}': not a valid join path "
-            f"from '{self.root_model}'."
+            f"Cannot resolve dimension '{self.reference}': not a valid relationship path "
+            f"from '{self.root_dataset}'."
         )
         if self.reason:
             msg += f" {self.reason}"
-        if self.available_joins is not None:
-            msg += f" Available joins from '{self.root_model}': {sorted(self.available_joins)}."
+        if self.available_relationships is not None:
+            msg += f" Available relationships from '{self.root_dataset}': {sorted(self.available_relationships)}."
         if self.suggested_path:
             msg += f" Did you mean '{self.suggested_path}'?"
         return msg
@@ -1133,31 +1209,31 @@ class PopulationInferenceError(SlayerError, ValueError):
     _SUMMARIES = {
         PopulationErrorReason.TIE: (
             "Multiple minimal populations determine every queried dimension; "
-            "name one explicitly as `source_model`."
+            "name one explicitly as `population`."
         ),
         PopulationErrorReason.NO_VIABLE_CANDIDATE: (
-            "No single model determines every queried dimension along "
-            "provably to-one join paths; name a `source_model` explicitly."
+            "No single dataset determines every queried dimension along "
+            "provably to-one relationship paths; name a `population` explicitly."
         ),
         PopulationErrorReason.EMPTY_DETERMINATION: (
             "There is nothing to infer a population from: the query has no "
             "dimensions and no field-typed filters. Add a dimension or name a "
-            "`source_model`."
+            "`population`."
         ),
         PopulationErrorReason.AMBIGUOUS_PATH: (
-            "A queried dimension's join path is ambiguous from every otherwise "
-            "viable population; name a `source_model` explicitly."
+            "A queried dimension's relationship path is ambiguous from every otherwise "
+            "viable population; name a `population` explicitly."
         ),
         PopulationErrorReason.AMBIGUOUS_DATASOURCE: (
-            "The referenced models exist together in more than one datasource; "
+            "The referenced datasets exist together in more than one datasource; "
             "pass a `data_source` to disambiguate."
         ),
         PopulationErrorReason.NO_DATASOURCE: (
-            "No single datasource holds every referenced model."
+            "No single datasource holds every referenced dataset."
         ),
         PopulationErrorReason.SIBLING_STAGE: (
             "A rootless stage's dimensions anchor at a sibling stage; name that "
-            "sibling as the stage's `source_model`."
+            "sibling as the stage's `population`."
         ),
     }
 
@@ -1194,8 +1270,8 @@ class MaterialisationStageError(SlayerError, ValueError):
         ))
 
 
-class JoinKeyError(SlayerError, ValueError):
-    """A join key that does not name a declared base column on its side."""
+class RelationshipKeyError(SlayerError, ValueError):
+    """A relationship key that does not name a declared base field on its side."""
 
     def __init__(self, *, summary: str, suggestion: str | None = None) -> None:
         super().__init__(_format_error_message(
@@ -1204,35 +1280,47 @@ class JoinKeyError(SlayerError, ValueError):
 
 
 class LegacyDunderAliasError(SlayerError, ValueError):
-    """A ``__``-delimited Mode-A join qualifier that is no longer accepted (``.`` is now the only chain separator) — the legacy split-alias spelling."""
+    """A ``__``-delimited Mode-A relationship qualifier that is no longer accepted (``.`` is now the only chain separator) — the legacy split-alias spelling."""
 
-    def __init__(self, *, alias: str, dotted: str, model: str) -> None:
+    def __init__(self, *, alias: str, dotted: str, dataset: str) -> None:
         self.alias = alias
         self.dotted = dotted
-        self.model = model
+        self.dataset = dataset
         super().__init__()
 
     def __str__(self) -> str:
         return (
-            f"No joined model named '{self.alias}' on '{self.model}'. The "
+            f"No joined dataset named '{self.alias}' on '{self.dataset}'. The "
             f"'__'-delimited split-alias form is no longer accepted; write the "
-            f"join path with dots instead: '{self.dotted}'."
+            f"relationship path with dots instead: '{self.dotted}'."
         )
 
 
 class UnconvertibleStoredQueryError(SlayerError):
-    """A stored query holding a removed form (extension columns, an inline model) that cannot be converted."""
+    """A stored query holding a removed form (extension fields, an inline dataset) that cannot be converted."""
 
     def __init__(self, construct: str) -> None:
         self.construct = construct
         super().__init__(
-            f"Stored query cannot be converted: {construct}. Rewrite the per-query column as an expression where it "
-            f"is used, or the inline model as a stored model, and save the document again."
+            f"Stored query cannot be converted: {construct}. Rewrite the per-query field as an expression where it "
+            f"is used, or the inline dataset as a stored dataset, and save the document again."
+        )
+
+
+class UnqualifiableReferenceError(SlayerError):
+    """A stored query's reference whose pre-2.0 reading has no qualified spelling with the same meaning."""
+
+    def __init__(self, *, reference: str, reason: str) -> None:
+        self.reference = reference
+        self.reason = reason
+        super().__init__(
+            f"Stored query cannot be upgraded to qualified references: {reference!r} {reason}. Spell it as a "
+            f"reference starting at a dataset and save the document again."
         )
 
 
 class StoredDocumentLoadError(SlayerError, ValueError):
-    """One stored model or memory could not be loaded; the original failure is ``__cause__``."""
+    """One stored dataset or memory could not be loaded; the original failure is ``__cause__``."""
 
     def __init__(self, *, kind: str, name: str, data_source: str | None, cause: BaseException) -> None:
         self.kind = kind
@@ -1245,7 +1333,7 @@ class StoredDocumentLoadError(SlayerError, ValueError):
 
     @property
     def document(self) -> str:
-        """``<data_source>.<name>`` for a model, ``memory:<id>`` for a memory."""
+        """``<data_source>.<name>`` for a dataset, ``memory:<id>`` for a memory."""
         return f"{self.data_source}.{self.name}" if self.data_source is not None else f"memory:{self.name}"
 
     def __reduce__(self):
@@ -1266,58 +1354,171 @@ class HiddenContentConflictError(SlayerError):
 
 
 class AccessTagsEditError(SlayerError):
-    """A caller without bypass tried to set or change a model's ``access_tags``."""
+    """A caller without bypass tried to set or change a dataset's ``access_tags``."""
 
-    def __init__(self, *, model: str) -> None:
-        self.model = model
+    def __init__(self, *, dataset: str) -> None:
+        self.dataset = dataset
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary=f"Model {model!r}: only a caller with full access may set or change access_tags.",
+            summary=f"Dataset {dataset!r}: only a caller with full access may set or change access_tags.",
         ))
 
 
-class UnknownJoinTargetError(SlayerError):
-    """A saved join names a model the caller cannot see."""
+class UnknownRelationshipTargetError(SlayerError):
+    """A saved relationship names a dataset the caller cannot see."""
 
-    def __init__(self, *, model: str, target: str) -> None:
-        self.model = model
+    def __init__(self, *, dataset: str, target: str) -> None:
+        self.dataset = dataset
         self.target = target
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary=f"Model {model!r}: join target {target!r} is not a known model.",
+            summary=f"Dataset {dataset!r}: relationship target {target!r} is not a known dataset.",
         ))
 
 
-class JoinTargetCaseError(SlayerError, ValueError):
-    """A stored join target that reaches a model only by case. ``saving`` is the model whose save the peer's join
-    blocks; without it, ``model``'s own join is refused."""
+class RelationshipTargetCaseError(SlayerError, ValueError):
+    """A stored relationship target that reaches a dataset only by case. ``saving`` is the dataset whose save the
+    peer's relationship blocks; without it, ``dataset``'s own relationship is refused."""
 
     def __init__(
-        self, *, model: str, join: str | None, target: str, declared: str, saving: bool = False,
+        self, *, dataset: str, relationship: str | None, target: str, declared: str, saving: bool = False,
     ) -> None:
-        self.model = model
-        self.join = join
+        self.dataset = dataset
+        self.relationship = relationship
         self.target = target
         self.declared = declared
-        edge = f"join {join!r}" if join else f"the unnamed join to {target!r}"
+        edge = f"relationship {relationship!r}" if relationship else f"the unnamed relationship to {target!r}"
         if saving:
-            summary = (f"Model {declared!r} differs only in case from the target {target!r} of {edge} on model "
-                       f"{model!r}; a stored join target names its model exactly.")
-            suggestion = f"Respell that join's target to {declared!r} first, then save {declared!r}."
+            summary = (f"Dataset {declared!r} differs only in case from the target {target!r} of {edge} on dataset "
+                       f"{dataset!r}; a stored relationship target names its dataset exactly.")
+            suggestion = f"Respell that relationship's target to {declared!r} first, then save {declared!r}."
         else:
-            summary = (f"Model {model!r}: {edge} targets {target!r}, which matches model {declared!r} only by case; "
-                       f"a stored join target names its model exactly.")
+            summary = (f"Dataset {dataset!r}: {edge} targets {target!r}, which matches dataset {declared!r} only by case; "
+                       f"a stored relationship target names its dataset exactly.")
             suggestion = f"Write the target as {declared!r}."
         super().__init__(_format_error_message(cls_name=type(self).__name__, summary=summary, suggestion=suggestion))
 
 
 class QueryBackedCycleError(SlayerError, ValueError):
-    """A query-backed model that references itself, directly or transitively."""
+    """A query-backed dataset that references itself, directly or transitively."""
 
     def __init__(self, *, path: Sequence[str]) -> None:
         self.path = list(path)
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
-            summary=f"Query-backed models reference each other in a cycle: {' -> '.join(self.path)}.",
-            suggestion="Break the cycle so no query-backed model reads itself.",
+            summary=f"Query-backed datasets reference each other in a cycle: {' -> '.join(self.path)}.",
+            suggestion="Break the cycle so no query-backed dataset reads itself.",
         ))
+
+_RENAMED_CLASSES = {
+    "AmbiguousJoinPathError": "AmbiguousRelationshipPathError",
+    "AmbiguousModelError": "AmbiguousDatasetError",
+    "CanonicalAliasShadowsColumnError": "CanonicalAliasShadowsFieldError",
+    "CircularJoinPathError": "CircularRelationshipPathError",
+    "ColumnCycleError": "DatasetFieldCycleError",
+    "ColumnSqlStatementError": "FieldSqlStatementError",
+    "DerivedColumnAmbiguousError": "DerivedFieldAmbiguousError",
+    "DerivedColumnCircularError": "DerivedFieldCircularError",
+    "DerivedColumnFanningError": "DerivedFieldFanningError",
+    "DuplicateMeasureNameError": "DuplicateMetricNameError",
+    "JoinKeyError": "RelationshipKeyError",
+    "JoinTargetCaseError": "RelationshipTargetCaseError",
+    "MeasureCycleError": "MetricCycleError",
+    "MeasureNameCollidesWithColumnError": "MetricNameCollidesWithFieldError",
+    "MeasureRecursionLimitError": "MetricRecursionLimitError",
+    "ModelFilterCycleError": "DatasetFilterCycleError",
+    "ModelFilterError": "DatasetFilterError",
+    "ModelNotFoundError": "DatasetNotFoundError",
+    "ModelSqlValidationError": "DatasetSqlValidationError",
+    "ReservedModelNameError": "ReservedDatasetNameError",
+    "TimeDimensionColumnError": "TimeDimensionFieldError",
+    "UnknownJoinTargetError": "UnknownRelationshipTargetError",
+    "UnresolvableDimensionJoinError": "UnresolvableDimensionRelationshipError",
+    "UnresolvableOrderColumnError": "UnresolvableOrderFieldError",
+    "UnsafeJoinInputError": "UnsafeRelationshipInputError",
+}
+
+if TYPE_CHECKING:
+    @deprecated("AmbiguousJoinPathError is deprecated; use AmbiguousRelationshipPathError", category=None)
+    class AmbiguousJoinPathError(AmbiguousRelationshipPathError): ...
+
+    @deprecated("AmbiguousModelError is deprecated; use AmbiguousDatasetError", category=None)
+    class AmbiguousModelError(AmbiguousDatasetError): ...
+
+    @deprecated("CanonicalAliasShadowsColumnError is deprecated; use CanonicalAliasShadowsFieldError", category=None)
+    class CanonicalAliasShadowsColumnError(CanonicalAliasShadowsFieldError): ...
+
+    @deprecated("CircularJoinPathError is deprecated; use CircularRelationshipPathError", category=None)
+    class CircularJoinPathError(CircularRelationshipPathError): ...
+
+    @deprecated("ColumnCycleError is deprecated; use DatasetFieldCycleError", category=None)
+    class ColumnCycleError(DatasetFieldCycleError): ...
+
+    @deprecated("ColumnSqlStatementError is deprecated; use FieldSqlStatementError", category=None)
+    class ColumnSqlStatementError(FieldSqlStatementError): ...
+
+    @deprecated("DerivedColumnAmbiguousError is deprecated; use DerivedFieldAmbiguousError", category=None)
+    class DerivedColumnAmbiguousError(DerivedFieldAmbiguousError): ...
+
+    @deprecated("DerivedColumnCircularError is deprecated; use DerivedFieldCircularError", category=None)
+    class DerivedColumnCircularError(DerivedFieldCircularError): ...
+
+    @deprecated("DerivedColumnFanningError is deprecated; use DerivedFieldFanningError", category=None)
+    class DerivedColumnFanningError(DerivedFieldFanningError): ...
+
+    @deprecated("DuplicateMeasureNameError is deprecated; use DuplicateMetricNameError", category=None)
+    class DuplicateMeasureNameError(DuplicateMetricNameError): ...
+
+    @deprecated("JoinKeyError is deprecated; use RelationshipKeyError", category=None)
+    class JoinKeyError(RelationshipKeyError): ...
+
+    @deprecated("JoinTargetCaseError is deprecated; use RelationshipTargetCaseError", category=None)
+    class JoinTargetCaseError(RelationshipTargetCaseError): ...
+
+    @deprecated("MeasureCycleError is deprecated; use MetricCycleError", category=None)
+    class MeasureCycleError(MetricCycleError): ...
+
+    @deprecated("MeasureNameCollidesWithColumnError is deprecated; use MetricNameCollidesWithFieldError", category=None)
+    class MeasureNameCollidesWithColumnError(MetricNameCollidesWithFieldError): ...
+
+    @deprecated("MeasureRecursionLimitError is deprecated; use MetricRecursionLimitError", category=None)
+    class MeasureRecursionLimitError(MetricRecursionLimitError): ...
+
+    @deprecated("ModelFilterCycleError is deprecated; use DatasetFilterCycleError", category=None)
+    class ModelFilterCycleError(DatasetFilterCycleError): ...
+
+    @deprecated("ModelFilterError is deprecated; use DatasetFilterError", category=None)
+    class ModelFilterError(DatasetFilterError): ...
+
+    @deprecated("ModelNotFoundError is deprecated; use DatasetNotFoundError", category=None)
+    class ModelNotFoundError(DatasetNotFoundError): ...
+
+    @deprecated("ModelSqlValidationError is deprecated; use DatasetSqlValidationError", category=None)
+    class ModelSqlValidationError(DatasetSqlValidationError): ...
+
+    @deprecated("ReservedModelNameError is deprecated; use ReservedDatasetNameError", category=None)
+    class ReservedModelNameError(ReservedDatasetNameError): ...
+
+    @deprecated("TimeDimensionColumnError is deprecated; use TimeDimensionFieldError", category=None)
+    class TimeDimensionColumnError(TimeDimensionFieldError): ...
+
+    @deprecated("UnknownJoinTargetError is deprecated; use UnknownRelationshipTargetError", category=None)
+    class UnknownJoinTargetError(UnknownRelationshipTargetError): ...
+
+    @deprecated(
+        "UnresolvableDimensionJoinError is deprecated; use UnresolvableDimensionRelationshipError", category=None,
+    )
+    class UnresolvableDimensionJoinError(UnresolvableDimensionRelationshipError): ...
+
+    @deprecated("UnresolvableOrderColumnError is deprecated; use UnresolvableOrderFieldError", category=None)
+    class UnresolvableOrderColumnError(UnresolvableOrderFieldError): ...
+
+    @deprecated("UnsafeJoinInputError is deprecated; use UnsafeRelationshipInputError", category=None)
+    class UnsafeJoinInputError(UnsafeRelationshipInputError): ...
+
+
+from slayer.core import vocabulary  # noqa: E402  # ALLOW(import-not-top): circular — vocabulary imports errors
+
+
+def __getattr__(name: str) -> Any:
+    return vocabulary.renamed_name(name, namespace=globals(), renames=_RENAMED_CLASSES)

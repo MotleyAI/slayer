@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_dev2120_coercion.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  }
+ ]
+}

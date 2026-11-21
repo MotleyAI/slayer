@@ -1,0 +1,641 @@
+{
+ "source": "tests/test_api_server.py",
+ "pairs": [
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders",
+    "sql_table": "public.orders",
+    "data_source": "test",
+    "columns": [
+     {
+      "name": "id",
+      "sql": "id",
+      "type": "number"
+     },
+     {
+      "name": "revenue",
+      "sql": "amount",
+      "type": "number"
+     }
+    ]
+   },
+   "new": {
+    "name": "orders",
+    "sql_table": "public.orders",
+    "data_source": "test",
+    "fields": [
+     {
+      "name": "id",
+      "sql": "id",
+      "datatype": "Float"
+     },
+     {
+      "name": "revenue",
+      "sql": "amount",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders",
+    "sql_table": "t",
+    "data_source": "test",
+    "columns": [
+     {
+      "name": "id",
+      "sql": "id",
+      "type": "number"
+     },
+     {
+      "name": "internal_flag",
+      "sql": "flag",
+      "type": "string",
+      "hidden": true
+     },
+     {
+      "name": "revenue",
+      "sql": "amount",
+      "type": "number"
+     },
+     {
+      "name": "secret_sum",
+      "sql": "x",
+      "type": "number",
+      "hidden": true
+     }
+    ]
+   },
+   "new": {
+    "name": "orders",
+    "sql_table": "t",
+    "data_source": "test",
+    "fields": [
+     {
+      "name": "id",
+      "sql": "id",
+      "datatype": "Float"
+     },
+     {
+      "name": "internal_flag",
+      "sql": "flag",
+      "datatype": "String",
+      "hidden": true
+     },
+     {
+      "name": "revenue",
+      "sql": "amount",
+      "datatype": "Float"
+     },
+     {
+      "name": "secret_sum",
+      "sql": "x",
+      "datatype": "Float",
+      "hidden": true
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders",
+    "sql_table": "t",
+    "data_source": "test",
+    "columns": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "type": "number"
+     }
+    ],
+    "measures": [
+     {
+      "name": "aov",
+      "formula": "sum(amount) / count(*)"
+     },
+     {
+      "name": "revenue",
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "name": "orders",
+    "sql_table": "t",
+    "data_source": "test",
+    "fields": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "datatype": "Float"
+     }
+    ],
+    "metrics": [
+     {
+      "name": "aov",
+      "expression": "sum(amount) / count(*)"
+     },
+     {
+      "name": "revenue",
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "nonexistent",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "nonexistent",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(revenue)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "qb_via_api",
+    "data_source": "ds",
+    "source_queries": [
+     {
+      "source_model": "upstream",
+      "measures": [
+       {
+        "formula": "sum(amount)"
+       }
+      ],
+      "dry_run": true
+     }
+    ],
+    "query_variables": {}
+   },
+   "new": {
+    "name": "qb_via_api",
+    "data_source": "ds",
+    "source_queries": [
+     {
+      "population": "upstream",
+      "metrics": [
+       {
+        "metric": "sum(amount)"
+       }
+      ],
+      "dry_run": true
+     }
+    ],
+    "query_variables": {}
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "qb_bad",
+    "data_source": "ds",
+    "source_queries": [
+     {
+      "source_model": "upstream",
+      "measures": [
+       {
+        "formula": "sum(amount)"
+       }
+      ]
+     }
+    ],
+    "columns": [
+     {
+      "name": "x",
+      "type": "string"
+     }
+    ]
+   },
+   "new": {
+    "name": "qb_bad",
+    "data_source": "ds",
+    "source_queries": [
+     {
+      "population": "upstream",
+      "metrics": [
+       {
+        "metric": "sum(amount)"
+       }
+      ]
+     }
+    ],
+    "fields": [
+     {
+      "name": "x",
+      "datatype": "String"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "some_model",
+    "source_model": "other"
+   },
+   "new": {
+    "name": "some_model",
+    "population": "other"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": null
+   },
+   "new": {
+    "population": null
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders",
+    "data_source": "ds_list",
+    "sql_table": "orders",
+    "columns": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "type": "DOUBLE"
+     },
+     {
+      "name": "status",
+      "sql": "status",
+      "type": "TEXT"
+     },
+     {
+      "name": "customer_id",
+      "sql": "customer_id",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "orders",
+    "data_source": "ds_list",
+    "sql_table": "orders",
+    "fields": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "datatype": "Float"
+     },
+     {
+      "name": "status",
+      "sql": "status",
+      "datatype": "String"
+     },
+     {
+      "name": "customer_id",
+      "sql": "customer_id",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders",
+    "data_source": "ds_inline",
+    "sql_table": "orders",
+    "columns": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "type": "DOUBLE"
+     }
+    ]
+   },
+   "new": {
+    "name": "orders",
+    "data_source": "ds_inline",
+    "sql_table": "orders",
+    "fields": [
+     {
+      "name": "amount",
+      "sql": "amount",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "qb_dryrun",
+    "data_source": "ds",
+    "source_queries": [
+     {
+      "source_model": "upstream",
+      "measures": [
+       {
+        "formula": "sum(amount)"
+       }
+      ]
+     }
+    ]
+   },
+   "new": {
+    "name": "qb_dryrun",
+    "data_source": "ds",
+    "source_queries": [
+     {
+      "population": "upstream",
+      "metrics": [
+       {
+        "metric": "sum(amount)"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "good_model",
+    "sql": "SELECT id FROM orders",
+    "data_source": "livedb",
+    "columns": [
+     {
+      "name": "id",
+      "sql": "id",
+      "type": "number"
+     }
+    ]
+   },
+   "new": {
+    "name": "good_model",
+    "sql": "SELECT id FROM orders",
+    "data_source": "livedb",
+    "fields": [
+     {
+      "name": "id",
+      "sql": "id",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "bad_model",
+    "sql": "SELECT nope FROM ghosts",
+    "data_source": "livedb",
+    "columns": [
+     {
+      "name": "id",
+      "sql": "id",
+      "type": "number"
+     }
+    ]
+   },
+   "new": {
+    "name": "bad_model",
+    "sql": "SELECT nope FROM ghosts",
+    "data_source": "livedb",
+    "fields": [
+     {
+      "name": "id",
+      "sql": "id",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "upd",
+    "sql": "SELECT id FROM orders",
+    "data_source": "livedb",
+    "columns": [
+     {
+      "name": "id",
+      "sql": "id",
+      "type": "number"
+     }
+    ]
+   },
+   "new": {
+    "name": "upd",
+    "sql": "SELECT id FROM orders",
+    "data_source": "livedb",
+    "fields": [
+     {
+      "name": "id",
+      "sql": "id",
+      "datatype": "Float"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "upd",
+    "sql": "SELECT nope FROM ghosts",
+    "data_source": "livedb",
+    "columns": [
+     {
+      "name": "id",
+      "sql": "id",
+      "type": "number"
+     }
+    ]
+   },
+   "new": {
+    "name": "upd",
+    "sql": "SELECT nope FROM ghosts",
+    "data_source": "livedb",
+    "fields": [
+     {
+      "name": "id",
+      "sql": "id",
+      "datatype": "Float"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 288,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 292,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 340,
+   "reason": "the respelled literal keeps a deprecated form"
+  },
+  {
+   "line": 363,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 365,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 395,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 397,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 478,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 491,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 496,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 507,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 558,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 581,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 614,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 647,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 667,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 739,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 741,
+   "reason": "not fully literal"
+  }
+ ]
+}

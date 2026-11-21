@@ -25,8 +25,8 @@ def test_currency_measure_renders_formatted_in_table(shop: str) -> None:
 
 
 def test_text_cell_plain_currency_cell_formatted(shop: str) -> None:
-    query = json.dumps({"source_model": "orders", "dimensions": ["status"], "measures": ["sum(order_total)"],
-                        "order": [{"column": "status", "direction": "asc"}]})
+    query = json.dumps({"population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.order_total)"],
+                        "order": [{"field": "orders.status", "direction": "asc"}]})
     result = run_cli_in_process(["query", query, "--storage", shop])
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[2:4] == ["open | $647.33", "paid | $193.00K"]

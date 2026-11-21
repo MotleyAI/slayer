@@ -7,11 +7,11 @@ import tempfile
 from typing import AsyncIterator, List
 
 import pytest
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.keys import TransformKey
-from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.ir.planned import PlannedQuery, ValueSlot, TrailingWindowProducerKernel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -19,7 +19,7 @@ from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope import ScopeFrame
 
-from tests._cross_model_chain import (
+from tests._cross_dataset_chain import (
     _countries,
     _customers_v2,
     _gen,
@@ -44,8 +44,8 @@ from tests._engine_helpers import (
 def _chain_bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=_orders_x(),
-        referenced_models=[_customers_v2(), _regions(), _countries()],
+        population=_orders_x(),
+        referenced_datasets=[_customers_v2(), _regions(), _countries()],
     )
 
 
@@ -58,43 +58,43 @@ async def exec_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 def _cm_declared_first_query() -> SlayerQuery:
-    """A cross-model measure declared BEFORE a local one; B7 keeps its position."""
+    """A cross-dataset metric declared BEFORE a local one; B7 keeps its position."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="status")],
-        measures=[
-            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="cm_first"),
-            ModelMeasure(formula="sum(amount)", name="local_second"),
+        population="orders_x",
+        dimensions=[QueryDimension(field="orders_x.status")],
+        metrics=[
+            QueryMetric(metric="sum(customers_v2.lifetime_value)", alias="cm_first"),
+            QueryMetric(metric="sum(orders_x.amount)", alias="local_second"),
         ],
     )
 
 
 def _windowed_declared_first_query() -> SlayerQuery:
-    """A windowed measure declared BEFORE a local one."""
+    """A windowed metric declared BEFORE a local one."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="status")],
+        population="orders_x",
+        dimensions=[QueryDimension(field="orders_x.status")],
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="orders_x.created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(amount, window='90d')", name="w_first"),
-            ModelMeasure(formula="sum(amount)", name="local_second"),
+        metrics=[
+            QueryMetric(metric="sum(orders_x.amount, window='90d')", alias="w_first"),
+            QueryMetric(metric="sum(orders_x.amount)", alias="local_second"),
         ],
     )
 
 
 def _interleaved_query() -> SlayerQuery:
-    """local, cross-model, local — an order no grouped-pass scheme can produce,
+    """local, cross-dataset, local — an order no grouped-pass scheme can produce,
     because any such scheme emits all host slots before all ``_cm_`` ones."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="status")],
-        measures=[
-            ModelMeasure(formula="sum(amount)", name="a_local"),
-            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="b_cross"),
-            ModelMeasure(formula="avg(amount)", name="c_local"),
+        population="orders_x",
+        dimensions=[QueryDimension(field="orders_x.status")],
+        metrics=[
+            QueryMetric(metric="sum(orders_x.amount)", alias="a_local"),
+            QueryMetric(metric="sum(customers_v2.lifetime_value)", alias="b_cross"),
+            QueryMetric(metric="avg(orders_x.amount)", alias="c_local"),
         ],
     )
 
@@ -137,7 +137,7 @@ class TestB7DeclarationOrderProjection:
         emitted = _alias_suffixes(outer_select_aliases(sql))
         assert emitted == ["status", "cm_first", "local_second"], (
             f"emitted projection order {emitted} is not declaration order — the "
-            f"cross-model measure was grouped after the host slots.\n\n{sql}"
+            f"cross-dataset metric was grouped after the host slots.\n\n{sql}"
         )
 
     async def test_windowed_measure_keeps_its_declared_position(self) -> None:
@@ -148,12 +148,12 @@ class TestB7DeclarationOrderProjection:
         )
 
     async def test_interleaved_local_and_cross_model_measures(self) -> None:
-        """The decisive shape: local, cross-model, local — only walking the plan's list emits this order."""
+        """The decisive shape: local, cross-dataset, local — only walking the plan's list emits this order."""
         sql = await _gen(_interleaved_query(), dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))
         assert emitted == ["status", "a_local", "b_cross", "c_local"], (
-            f"emitted {emitted}; a cross-model measure cannot be woven between "
-            f"two host measures unless the renderer consumes the plan's "
+            f"emitted {emitted}; a cross-dataset metric cannot be woven between "
+            f"two host metrics unless the renderer consumes the plan's "
             f"ordered projection.\n\n{sql}"
         )
 
@@ -180,11 +180,11 @@ class TestB7DeclarationOrderProjection:
     ) -> None:
         """``response.columns`` is read off the emitted outer SELECT, so its order follows the projection."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="sum(customers.spend)", name="cm_first"),
-                ModelMeasure(formula="sum(amount)", name="local_second"),
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[
+                QueryMetric(metric="sum(customers.spend)", alias="cm_first"),
+                QueryMetric(metric="sum(orders.amount)", alias="local_second"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -200,18 +200,18 @@ class TestB7DeclarationOrderProjection:
     ) -> None:
         """A slot both projected and consumed as a transform operand exercises the combined-SELECT leftover guard; the three preconditions are asserted below."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(
-                    formula="sum(customers_v2.lifetime_value)", name="ltv",
+            metrics=[
+                QueryMetric(
+                    metric="sum(customers_v2.lifetime_value)", alias="ltv",
                 ),
-                ModelMeasure(
-                    formula="cumsum(sum(customers_v2.lifetime_value))",
-                    name="running",
+                QueryMetric(
+                    metric="cumsum(sum(customers_v2.lifetime_value))",
+                    alias="running",
                 ),
             ],
         )
@@ -235,15 +235,15 @@ class TestB7DeclarationOrderProjection:
         )
         assert operand_sid == ltv_sid, (
             f"precondition: the transform's operand must be the SAME slot as "
-            f"the projected measure, or this shape does not exercise the "
+            f"the projected metric, or this shape does not exercise the "
             f"guard. operand={operand_sid} projected={ltv_sid}"
         )
 
-        # (2) The cross-model path — the guard lives in that builder.
+        # (2) The cross-dataset path — the guard lives in that builder.
         assert any(
-            a.producer_root_model == "customers_v2"
+            a.producer_root_dataset == "customers_v2"
             for a in planned.regroup_attach_plans
-        ), "precondition: this query must take the cross-model path"
+        ), "precondition: this query must take the cross-dataset path"
         assert planned.transform_layers, (
             "precondition: this query must carry a transform chain"
         )
@@ -278,13 +278,13 @@ class TestB7DeclarationOrderProjection:
     ) -> None:
         """The combined ORDER BY must go through the dialect's ``build_ordered`` to pin ``nulls_first`` and suppress the T-SQL NULLS-emulation CASE wrapper (whose alias mis-resolves); the wrapper appears on ASC only."""
         query = SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="customers_v2.status")],
-            measures=[ModelMeasure(
-                formula="sum(customers_v2.lifetime_value)", name="ltv",
+            population="orders_x",
+            dimensions=[QueryDimension(field="customers_v2.status")],
+            metrics=[QueryMetric(
+                metric="sum(customers_v2.lifetime_value)", alias="ltv",
             )],
             order=[OrderItem.model_validate({
-                "column": "sum(customers_v2.lifetime_value)", "direction": direction,
+                "field": "sum(customers_v2.lifetime_value)", "direction": direction,
             })],
         )
         sql = await _gen(query, dialect="tsql")
@@ -296,10 +296,10 @@ class TestB7DeclarationOrderProjection:
     async def test_hidden_slots_are_absent_from_the_projection(self) -> None:
         """Unified trimming: an order-only aggregate never reaches the public projection — it is simply not in ``projection``."""
         query = SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="count(*)", name="n")],
-            order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})],
+            population="orders_x",
+            dimensions=[QueryDimension(field="orders_x.status")],
+            metrics=[QueryMetric(metric="count(orders_x.*)", alias="n")],
+            order=[OrderItem.model_validate({"field": "sum(orders_x.amount)", "direction": "desc"})],
         )
         sql = await _gen(query, dialect="postgres")
         emitted = _alias_suffixes(outer_select_aliases(sql))
@@ -311,17 +311,17 @@ class TestB7DeclarationOrderProjection:
     async def test_hidden_cross_model_order_slot_is_trimmed_but_orderable(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """A hidden cross-model aggregate must drive ORDER BY while absent from the projection."""
+        """A hidden cross-dataset aggregate must drive ORDER BY while absent from the projection."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="customers.tier")],
-            measures=[ModelMeasure(formula="count(*)", name="n")],
-            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
+            population="orders",
+            dimensions=[QueryDimension(field="customers.tier")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+            order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
         assert _alias_suffixes(list(resp.columns)) == ["tier", "n"], resp.columns
-        assert [r["orders.customers.tier"] for r in resp.data] == ["gold", None], (
-            f"hidden cross-model order slot did not drive the ordering: {resp.data}"
+        assert [r["customers.tier"] for r in resp.data] == ["gold", None], (
+            f"hidden cross-dataset order slot did not drive the ordering: {resp.data}"
         )
 
 
@@ -353,14 +353,14 @@ class TestProjectionInvariant:
     def test_a_slot_may_repeat_once_per_declared_public_name(self) -> None:
         """One key selected under two names is listed twice, each consuming the next alias — a legitimate plan the duplicate check must not reject."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="sum(amount, window='90d')", name="wa"),
-                ModelMeasure(formula="sum(amount, window='90d')", name="wb"),
+            metrics=[
+                QueryMetric(metric="sum(orders_x.amount, window='90d')", alias="wa"),
+                QueryMetric(metric="sum(orders_x.amount, window='90d')", alias="wb"),
             ],
         )
         planned = plan_query(query=query, bundle=_chain_bundle())
@@ -450,61 +450,61 @@ class TestWindowedGrainInvariant:
 
 
 class TestB8InnerStagePlanOrder:
-    """Measures named so alphabetical and declaration order disagree (``zz_running`` before ``aa_total``)."""
+    """Metrics named so alphabetical and declaration order disagree (``zz_running`` before ``aa_total``)."""
 
     def _transform_query(self) -> SlayerQuery:
         return SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="cumsum(sum(amount))", name="zz_running"),
-                ModelMeasure(formula="avg(amount)", name="aa_total"),
+            metrics=[
+                QueryMetric(metric="cumsum(sum(orders_x.amount))", alias="zz_running"),
+                QueryMetric(metric="avg(orders_x.amount)", alias="aa_total"),
             ],
         )
 
-    def _cross_model_transform_query(self) -> SlayerQuery:
+    def _cross_dataset_transform_query(self) -> SlayerQuery:
         return SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="cumsum(sum(amount))", name="zz_running"),
-                ModelMeasure(
-                    formula="sum(customers_v2.lifetime_value)", name="aa_cross",
+            metrics=[
+                QueryMetric(metric="cumsum(sum(orders_x.amount))", alias="zz_running"),
+                QueryMetric(
+                    metric="sum(customers_v2.lifetime_value)", alias="aa_cross",
                 ),
             ],
         )
 
     def _time_shift_query(self) -> SlayerQuery:
         return SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="zz_prev"),
-                ModelMeasure(formula="avg(amount)", name="aa_total"),
+            metrics=[
+                QueryMetric(metric="time_shift(sum(orders_x.amount), -1)", alias="zz_prev"),
+                QueryMetric(metric="avg(orders_x.amount)", alias="aa_total"),
             ],
         )
 
     def _consecutive_periods_query(self) -> SlayerQuery:
         return SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders_x.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(
-                    formula="consecutive_periods(sum(amount) > 0)", name="zz_streak",
+            metrics=[
+                QueryMetric(
+                    metric="consecutive_periods(sum(orders_x.amount) > 0)", alias="zz_streak",
                 ),
-                ModelMeasure(formula="avg(amount)", name="aa_total"),
+                QueryMetric(metric="avg(orders_x.amount)", alias="aa_total"),
             ],
         )
 
@@ -512,7 +512,7 @@ class TestB8InnerStagePlanOrder:
         "factory_name",
         [
             "_transform_query",
-            "_cross_model_transform_query",
+            "_cross_dataset_transform_query",
             "_time_shift_query",
             "_consecutive_periods_query",
         ],
@@ -520,7 +520,7 @@ class TestB8InnerStagePlanOrder:
     async def test_carried_aliases_follow_base_order_not_alphabetical(
         self, factory_name: str,
     ) -> None:
-        """Every downstream stage carries its aliases in the base's plan order, not ``sorted()`` (the measure names make the two disagree)."""
+        """Every downstream stage carries its aliases in the base's plan order, not ``sorted()`` (the metric names make the two disagree)."""
         query = getattr(self, factory_name)()
         sql = await _gen(query, dialect="postgres")
         violations = carry_list_order_violations(sql)
@@ -534,7 +534,7 @@ class TestB8InnerStagePlanOrder:
         "factory_name",
         [
             "_transform_query",
-            "_cross_model_transform_query",
+            "_cross_dataset_transform_query",
             "_time_shift_query",
             "_consecutive_periods_query",
         ],
@@ -542,7 +542,7 @@ class TestB8InnerStagePlanOrder:
     async def test_no_carried_alias_is_dropped(self, factory_name: str) -> None:
         """Fail closed at both ends: every public alias survives to the projection, and no stage omits an alias the next stage reads."""
         query = getattr(self, factory_name)()
-        if factory_name == "_cross_model_transform_query":
+        if factory_name == "_cross_dataset_transform_query":
             query = query.model_copy(update={"to_many_handling": "broadcast"})
         sql = await _gen(query, dialect="postgres")
         expected = set(_alias_suffixes(_expected_projection_aliases(query)))
@@ -562,46 +562,46 @@ class TestB8InnerStagePlanOrder:
     ) -> None:
         """Executed: reordering inner-stage projections must not change values — running total 15.0 then 42.0."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="cumsum(sum(amount))", name="zz_running"),
-                ModelMeasure(formula="sum(amount)", name="aa_total"),
+            metrics=[
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="zz_running"),
+                QueryMetric(metric="sum(orders.amount)", alias="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
-        assert [r["orders.zz_running"] for r in resp.data] == pytest.approx(
+        assert [r["zz_running"] for r in resp.data] == pytest.approx(
             [15.0, 42.0],
         ), f"cumulative sum changed under the reorder: {resp.data}"
-        assert [r["orders.aa_total"] for r in resp.data] == pytest.approx(
+        assert [r["aa_total"] for r in resp.data] == pytest.approx(
             [15.0, 27.0],
         ), resp.data
 
     async def test_cross_model_transform_chain_executes(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """Executed: a transform chain that also carries a cross-model measure."""
+        """Executed: a transform chain that also carries a cross-dataset metric."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="cumsum(sum(amount))", name="zz_running"),
-                ModelMeasure(formula="sum(customers.spend)", name="aa_cross"),
+            metrics=[
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="zz_running"),
+                QueryMetric(metric="sum(customers.spend)", alias="aa_cross"),
             ],
             to_many_handling="broadcast",
         )
         resp = await exec_engine.execute(query)
-        assert [r["orders.zz_running"] for r in resp.data] == pytest.approx(
+        assert [r["zz_running"] for r in resp.data] == pytest.approx(
             [15.0, 42.0],
         ), resp.data
-        # The scalar cross-model total is the same on every row (no shared grain).
-        assert [r["orders.aa_cross"] for r in resp.data] == pytest.approx(
+        # The scalar cross-dataset total is the same on every row (no shared grain).
+        assert [r["aa_cross"] for r in resp.data] == pytest.approx(
             [1325.0, 1325.0],
         ), resp.data
 
@@ -610,20 +610,20 @@ class TestB8InnerStagePlanOrder:
     ) -> None:
         """EXECUTED (Codex D5), family 3 of 4: the ``sjoin_`` carry list."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="zz_prev"),
-                ModelMeasure(formula="sum(amount)", name="aa_total"),
+            metrics=[
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="zz_prev"),
+                QueryMetric(metric="sum(orders.amount)", alias="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
         by_month = {
             str(r["orders.created_at"])[:7]: (
-                r["orders.aa_total"], r["orders.zz_prev"],
+                r["aa_total"], r["zz_prev"],
             )
             for r in resp.data
         }
@@ -639,20 +639,20 @@ class TestB8InnerStagePlanOrder:
     ) -> None:
         """Executed: the ``cp_reset_`` carry list — both months positive, so the streak runs 1 then 2."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(
-                    formula="consecutive_periods(sum(amount) > 0)", name="zz_streak",
+            metrics=[
+                QueryMetric(
+                    metric="consecutive_periods(sum(orders.amount) > 0)", alias="zz_streak",
                 ),
-                ModelMeasure(formula="sum(amount)", name="aa_total"),
+                QueryMetric(metric="sum(orders.amount)", alias="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
-        assert [r["orders.zz_streak"] for r in resp.data] == [1, 2], (
+        assert [r["zz_streak"] for r in resp.data] == [1, 2], (
             f"consecutive-period streak changed under the reorder: {resp.data}"
         )
 
@@ -662,9 +662,9 @@ class TestB11JoinOrdering:
     async def test_join_set_is_unchanged_for_a_projected_join(self) -> None:
         sql = await _gen(
             SlayerQuery(
-                source_model="orders_x",
-                dimensions=[ColumnRef(name="customers_v2.status")],
-                measures=[ModelMeasure(formula="sum(amount)")],
+                population="orders_x",
+                dimensions=[QueryDimension(field="customers_v2.status")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
             ),
             dialect="postgres",
         )
@@ -674,10 +674,10 @@ class TestB11JoinOrdering:
         """A join no projection mentions — discovered while rendering the filter — must survive the switch to registration-order collection."""
         sql = await _gen(
             SlayerQuery(
-                source_model="orders_x",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(amount)")],
-                filters=["customers_v2.status == 'active'"],
+                population="orders_x",
+                dimensions=[QueryDimension(field="orders_x.status")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
+                filter=["customers_v2.status == 'active'"],
             ),
             dialect="postgres",
         )
@@ -688,13 +688,13 @@ class TestB11JoinOrdering:
     async def test_filter_on_a_joined_derived_column_pulls_the_deeper_hop(
         self,
     ) -> None:
-        """Filtering on a joined model's crossing derived column: both the filter renderer and the join scanner must expand with ``is_root=False`` so the hop is joined."""
+        """Filtering on a joined dataset's crossing derived field: both the filter renderer and the join scanner must expand with ``is_root=False`` so the hop is joined."""
         sql = await _gen(
             SlayerQuery(
-                source_model="orders_x",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(amount)")],
-                filters=["customers_v2.deep_pop > 0"],
+                population="orders_x",
+                dimensions=[QueryDimension(field="orders_x.status")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
+                filter=["customers_v2.deep_pop > 0"],
             ),
             dialect="postgres",
         )
@@ -709,9 +709,9 @@ class TestB11JoinOrdering:
         """A three-hop path must emit every hop, each after its parent — asserted over the full sequence."""
         sql = await _gen(
             SlayerQuery(
-                source_model="orders_x",
-                dimensions=[ColumnRef(name="customers_v2.deep_gdp")],
-                measures=[ModelMeasure(formula="sum(amount)")],
+                population="orders_x",
+                dimensions=[QueryDimension(field="customers_v2.deep_gdp")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
             ),
             dialect="postgres",
         )
@@ -730,13 +730,13 @@ class TestB11JoinOrdering:
     async def test_generation_is_deterministic(self) -> None:
         """Whatever the order, it must be the same every run — a set would vary between processes."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=[
-                ColumnRef(name="customers_v2.status"),
-                ColumnRef(name="customers_v2.deep_pop"),
+                QueryDimension(field="customers_v2.status"),
+                QueryDimension(field="customers_v2.deep_pop"),
             ],
-            measures=[ModelMeasure(formula="sum(amount)")],
-            filters=["customers_v2.status != 'x'"],
+            metrics=[QueryMetric(metric="sum(orders_x.amount)")],
+            filter=["customers_v2.status != 'x'"],
         )
         first = await _gen(query, dialect="postgres")
         second = await _gen(query, dialect="postgres")
@@ -746,10 +746,10 @@ class TestB11JoinOrdering:
         """A join arriving via a projected dimension and one named by a filter must each be emitted exactly once."""
         sql = await _gen(
             SlayerQuery(
-                source_model="orders_x",
-                dimensions=[ColumnRef(name="customers_v2.deep_pop")],
-                measures=[ModelMeasure(formula="sum(amount)")],
-                filters=["customers_v2.status != 'x'"],
+                population="orders_x",
+                dimensions=[QueryDimension(field="customers_v2.deep_pop")],
+                metrics=[QueryMetric(metric="sum(orders_x.amount)")],
+                filter=["customers_v2.status != 'x'"],
             ),
             dialect="postgres",
         )
@@ -763,13 +763,13 @@ class TestB11JoinOrdering:
     ) -> None:
         """Executed: join reordering is only safe if rows are unchanged; region 2's NULL name covers a nullable two-hop dimension."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="customers.regions.name")],
-            measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
+            population="orders",
+            dimensions=[QueryDimension(field="customers.regions.name")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="revenue")],
         )
         resp = await exec_engine.execute(query)
         by_region = {
-            r["orders.customers.regions.name"]: r["orders.revenue"]
+            r["customers.regions.name"]: r["revenue"]
             for r in resp.data
         }
         assert by_region.get("West") == pytest.approx(30.0), resp.data
@@ -778,15 +778,15 @@ class TestB11JoinOrdering:
     async def test_join_order_is_stable_across_dialects(self) -> None:
         """Relative join order does not depend on the dialect, only quoting; the sequence is read from the parsed JOIN nodes, not string membership."""
         query = SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="customers_v2.deep_pop")],
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders_x",
+            dimensions=[QueryDimension(field="customers_v2.deep_pop")],
+            metrics=[QueryMetric(metric="sum(orders_x.amount)")],
         )
         sequences = {}
         for dialect in ("postgres", "sqlite", "duckdb"):
             sql = await _engine_generate(
-                query=query, model=_orders_x(), dialect=dialect,
-                extra_models=[_customers_v2(), _regions(), _countries()],
+                query=query, dataset=_orders_x(), dialect=dialect,
+                extra_datasets=[_customers_v2(), _regions(), _countries()],
             )
             sequences[dialect] = base_cte_join_sequence(sql, dialect=dialect)
         assert all(seq for seq in sequences.values()), (
@@ -799,25 +799,25 @@ class TestB11JoinOrdering:
     ) -> None:
         """Whatever the host scope registers must end up in the FROM; a path in one list but not the other becomes a missing join (order is not pinned — B11 is execution-identical)."""
         registered: List[str] = []
-        original = ScopeFrame._register_join_paths
+        original = ScopeFrame._register_relationship_paths
 
-        def _wrapped(self_frame, parsed):
+        def _wrapped(self_frame: ScopeFrame, parsed: Expression) -> None:
             result = original(self_frame, parsed)
             # Only the HOST scope; throwaway frames' join_paths are intentionally discarded and need not appear in the FROM.
             if self_frame.root_relation == "orders_x":
                 registered.extend(
-                    "__".join(p) for p in self_frame.join_paths.as_list()
+                    "__".join(p) for p in self_frame.relationship_paths.as_list()
                 )
             return result
 
         monkeypatch.setattr(
-            ScopeFrame, "_register_join_paths", _wrapped, raising=True,
+            ScopeFrame, "_register_relationship_paths", _wrapped, raising=True,
         )
         query = SlayerQuery(
-            source_model="orders_x",
-            dimensions=[ColumnRef(name="customers_v2.status")],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
-            filters=["customers_v2.status != 'x'"],
+            population="orders_x",
+            dimensions=[QueryDimension(field="customers_v2.status")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
+            filter=["customers_v2.status != 'x'"],
         )
         sql = await _gen(query, dialect="postgres")
         emitted = set(_join_aliases(sql))

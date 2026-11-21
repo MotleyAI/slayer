@@ -1,0 +1,332 @@
+{
+ "source": "tests/test_dev1800_materialisation_stage.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(cumsum(sum(amount)))",
+    "name": "n"
+   },
+   "new": {
+    "expression": "change(cumsum(sum(amount)))",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount) > 0)",
+    "name": "p"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount) > 0)",
+    "name": "p"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "ch"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "ch"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(change(cumsum(sum(amount))))",
+    "name": "t"
+   },
+   "new": {
+    "expression": "last(change(cumsum(sum(amount))))",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(cumsum(sum(amount)))",
+    "name": "n"
+   },
+   "new": {
+    "expression": "change(cumsum(sum(amount)))",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "ch"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "ch"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(change(sum(amount)))",
+    "name": "t"
+   },
+   "new": {
+    "expression": "last(change(sum(amount)))",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "ch"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "ch"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(cumsum(sum(amount)))",
+    "name": "ch"
+   },
+   "new": {
+    "expression": "change(cumsum(sum(amount)))",
+    "name": "ch"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(change(cumsum(sum(amount))))",
+    "name": "t"
+   },
+   "new": {
+    "expression": "last(change(cumsum(sum(amount))))",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount) > 0)",
+    "name": "p"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount) > 0)",
+    "name": "p"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 238,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 252,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 339,
+   "reason": "not fully literal"
+  }
+ ]
+}

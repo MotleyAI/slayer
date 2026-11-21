@@ -50,26 +50,26 @@ def test_prepare_demo_from_prebuilt_skips_jafgen_and_localizes_path(
 def test_warm_demo_setup_rebuilds_and_writes_nothing(
     shared_demo_duckdb: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A second demo setup over warm models reconciles in place: no DuckDB rebuild, no model write."""
+    """A second demo setup over warm datasets reconciles in place: no DuckDB rebuild, no dataset write."""
     base = tmp_path / "warm"
     (base / "demo").mkdir(parents=True)
     shutil.copy2(shared_demo_duckdb, base / "demo" / "jaffle_shop.duckdb")
     storage = YAMLStorage(base_dir=str(base))
 
-    # First setup populates all base models.
+    # First setup populates all base datasets.
     ensure_demo_datasource(
-        storage, storage_path=str(base), ingest_models=True, assume_yes=True
+        storage, storage_path=str(base), ingest_datasets=True, assume_yes=True
     )
-    present = set(run_sync(storage.list_models(data_source=DEMO_NAME)))
+    present = set(run_sync(storage.list_datasets(data_source=DEMO_NAME)))
     assert all(t in present for t in TABLE_NAMES)
 
     async def _forbid_save(*_args, **_kwargs):
         raise AssertionError("a warm demo setup must not rewrite any model")
 
     monkeypatch.setattr(jaffle, "generate_data", _forbid_jafgen)
-    monkeypatch.setattr(storage, "save_model", _forbid_save)
+    monkeypatch.setattr(storage, "save_dataset", _forbid_save)
     _ds, models, db_built = ensure_demo_datasource(
-        storage, storage_path=str(base), ingest_models=True, assume_yes=True
+        storage, storage_path=str(base), ingest_datasets=True, assume_yes=True
     )
     assert db_built is False
     assert {m.name for m in models} == set(TABLE_NAMES)

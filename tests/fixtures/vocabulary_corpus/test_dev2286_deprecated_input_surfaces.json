@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_dev2286_deprecated_input_surfaces.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 34,
+   "reason": "the respelled literal keeps a deprecated form"
+  }
+ ]
+}

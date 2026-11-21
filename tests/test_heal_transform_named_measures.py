@@ -1,4 +1,4 @@
-"""Measures may be named after transforms (spec: queries/measure-naming)."""
+"""Metrics may be named after transforms (spec: queries/measure-naming)."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import Aggregation, ModelMeasure
+from slayer.core.models import Aggregation, DatasetMetric
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._query_heal_fixtures import BACKENDS, heal_engine, heal_models, orders_model, table
+from tests._query_heal_fixtures import BACKENDS, heal_engine, heal_datasets, orders_dataset, table
 
-MONTH = {"dimension": "created_at", "granularity": "month"}
+MONTH = {"field": "created_at", "granularity": "month"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -23,8 +23,8 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 def monthly(name: str, **kw: Any) -> dict[str, Any]:
     return {
-        "source_model": "orders", "time_dimensions": [MONTH],
-        "measures": [{"formula": "change(sum(amount))", "name": name}], **kw,
+        "population": "orders", "time_dimensions": [MONTH],
+        "metrics": [{"metric": "change(sum(amount))", "alias": name}], **kw,
     }
 
 
@@ -40,19 +40,19 @@ async def assert_renamed_twin(engine: SlayerQueryEngine, healed: Any, control: A
 class TestQueryMeasureNamedAfterTransform:
     async def test_result_key_rows_and_sql(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(monthly("change"))
-        assert "orders.change" in resp.columns
+        assert "change" in resp.columns
         await assert_renamed_twin(engine, monthly("change"), monthly("chg"))
 
     async def test_filter_reference(self, engine: SlayerQueryEngine) -> None:
         await assert_renamed_twin(
-            engine, monthly("change", filters=["change > 0"]), monthly("chg", filters=["chg > 0"]),
+            engine, monthly("change", filter=["change > 0"]), monthly("chg", filter=["chg > 0"]),
         )
 
     async def test_order_reference(self, engine: SlayerQueryEngine) -> None:
         await assert_renamed_twin(
             engine,
-            monthly("change", order=[{"column": "change", "direction": "desc"}, {"column": "created_at"}]),
-            monthly("chg", order=[{"column": "chg", "direction": "desc"}, {"column": "created_at"}]),
+            monthly("change", order=[{"field": "change", "direction": "desc"}, {"field": "created_at"}]),
+            monthly("chg", order=[{"field": "chg", "direction": "desc"}, {"field": "created_at"}]),
             ordered=True,
         )
 
@@ -60,7 +60,7 @@ class TestQueryMeasureNamedAfterTransform:
         def stages(name: str) -> list[dict[str, Any]]:
             return [
                 {**monthly(name), "name": "s"},
-                {"source_model": "s", "measures": [{"formula": f"max({name})", "name": f"top_{name}"}]},
+                {"population": "s", "metrics": [{"metric": f"max({name})", "alias": f"top_{name}"}]},
             ]
 
         await assert_renamed_twin(engine, stages("change"), stages("chg"))
@@ -68,21 +68,21 @@ class TestQueryMeasureNamedAfterTransform:
     @pytest.mark.parametrize("name", ["cumsum", "change", "change_pct", "time_shift", "first", "last", "lag", "lead",
                                       "consecutive_periods", "rank", "percent_rank", "dense_rank", "ntile"])
     def test_every_transform_name_accepted(self, name: str) -> None:
-        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)", "name": name}]})
-        assert [m.name for m in query.measures or []] == [name]
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)", "alias": name}]})
+        assert [m.alias for m in query.metrics or []] == [name]
 
     def test_refinement_measure_accepted(self) -> None:
-        refinement = QueryRefinement.model_validate({"measures": [{"formula": "count(*)", "name": "rank"}]})
-        assert [m.name for m in refinement.measures or []] == ["rank"]
+        refinement = QueryRefinement.model_validate({"metrics": [{"metric": "count(*)", "alias": "rank"}]})
+        assert [m.alias for m in refinement.metrics or []] == ["rank"]
 
 
 class TestModelExtensionMeasure:
     async def test_extension_measure_named_lag(self, engine: SlayerQueryEngine) -> None:
         def query(name: str) -> dict[str, Any]:
             return {
-                "source_model": "orders",
-                "extensions": [{"source_name": "orders", "measures": [{"name": name, "formula": "sum(amount)"}]}],
-                "dimensions": ["region"], "measures": [name],
+                "population": "orders",
+                "extensions": [{"dataset": "orders", "metrics": [{"name": name, "expression": "sum(amount)"}]}],
+                "dimensions": ["region"], "metrics": [name],
             }
 
         expected = await engine.execute(query("total"))
@@ -93,32 +93,32 @@ class TestModelExtensionMeasure:
 
 class TestSavedMeasureNamedRank:
     def test_model_measure_accepted(self) -> None:
-        assert ModelMeasure(name="rank", formula="count(*)").name == "rank"
+        assert DatasetMetric(name="rank", expression="count(*)").name == "rank"
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_bare_name_reads_measure_and_call_is_transform(self, backend: str) -> None:
-        orders = orders_model(measures=[
-            ModelMeasure(name="rank", formula="count(*)"), ModelMeasure(name="n", formula="count(*)"),
+        orders = orders_dataset(metrics=[
+            DatasetMetric(name="rank", expression="count(*)"), DatasetMetric(name="n", expression="count(*)"),
         ])
 
         def query(saved: str) -> dict[str, Any]:
             return {
-                "source_model": "orders", "dimensions": ["region"],
-                "measures": [
-                    {"formula": f"{saved} * 2", "name": "doubled"},
-                    {"formula": "rank(sum(amount), direction='desc')", "name": "r"},
+                "population": "orders", "dimensions": ["region"],
+                "metrics": [
+                    {"metric": f"{saved} * 2", "alias": "doubled"},
+                    {"metric": "rank(sum(amount), direction='desc')", "alias": "r"},
                 ],
             }
 
-        async with heal_engine(backend, models=heal_models(orders=orders)) as eng:
+        async with heal_engine(backend, datasets=heal_datasets(orders=orders)) as eng:
             actual = await eng.execute(query("rank"))
             expected = await eng.execute(query("n"))
         assert actual.columns == expected.columns
         assert table(actual, ordered=False) == table(expected, ordered=False)
-        by_region = {r["orders.region"]: (r["orders.doubled"], r["orders.r"]) for r in actual.data}
+        by_region = {r["orders.region"]: (r["doubled"], r["r"]) for r in actual.data}
         assert by_region == {"EU": (6, 1), "US": (6, 2), None: (2, 3)}
 
 
 def test_custom_aggregation_keeps_transform_reservation() -> None:
     with pytest.raises(ValueError, match="transform"):
-        Aggregation(name="cumsum", formula="SUM({value})")
+        Aggregation(name="cumsum", expression="SUM({value})")

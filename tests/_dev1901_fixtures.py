@@ -1,16 +1,16 @@
-"""Shared fixtures for DEV-1901 — aggregation parameters bind once.
+"""Shared fixtures for aggregation parameters binding once.
 
-The DEV-1908 graph (``orders → customers → regions → countries``, fanning
+The ``_dev1908_fixtures`` graph (``orders → customers → regions → countries``, fanning
 ``regions → region_events``) plus:
 
-* ``orders.factor`` / ``customers.factor`` — one column name on the root AND the
+* ``orders.factor`` / ``customers.factor`` — one field name on the root AND the
   owner (a bare ``factor`` default must read the owner's);
-* ``customers."group"`` — a reserved-word column that must stay quoted;
+* ``customers."group"`` — a reserved-word field that must stay quoted;
 * ``orders.cust_spend`` — derived ``customers.spend`` (crosses a to-one hop);
-* aggregations whose defaults are a bare / dotted / derived column, a literal, a
+* aggregations whose defaults are a bare / dotted / derived field, a literal, a
   free SQL expression, or unanalysable text.
 
-Dataset extensions (DEV-1908 dataset otherwise verbatim): ``orders.factor = 100 +
+Dataset extensions (``_dev1908_fixtures`` dataset otherwise verbatim): ``orders.factor = 100 +
 id``; ``customers.factor = id``; ``customers."group" = id``.
 """
 
@@ -21,14 +21,14 @@ from typing import AsyncIterator, Dict, List, Optional
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -36,11 +36,11 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
 from tests import _dev1908_fixtures
 from tests._dev1840_fixtures import _CUSTOMERS_ROWS, _ORDERS_ROWS, _REGIONS_ROWS
-from tests._dev1908_fixtures import _COUNTRIES_ROWS, _REGION_COUNTRY, dev1908_models
+from tests._dev1908_fixtures import _COUNTRIES_ROWS, _REGION_COUNTRY, dev1908_datasets
 from tests._engine_helpers import seeded_exec_engine
 
 W = "SUM({value} * {weight})"
-CASE_O = "CASE WHEN amount > 10 THEN amount ELSE 0 END"
+CASE_O = "CASE WHEN orders.amount > 10 THEN orders.amount ELSE 0 END"
 CASE_C = "CASE WHEN spend > 50 THEN spend ELSE 0 END"
 CASE_POP = ("CASE WHEN customers.regions.pop > 150 THEN customers.regions.pop "
             "ELSE 0 END")
@@ -48,7 +48,7 @@ CASE_POP = ("CASE WHEN customers.regions.pop > 150 THEN customers.regions.pop "
 #: Unanalysable default texts, by aggregation name.
 BAD_DEFAULTS = {
     "wbad_parse": ")((( bad",
-    "wbad_agg": "SUM(amount)",
+    "wbad_agg": "SUM(orders.amount)",
     "wbad_win": "ROW_NUMBER() OVER (ORDER BY id)",
     "wbad_sub": "(SELECT MAX(amount) FROM orders)",
     "wbad_alias": "amount AS x",
@@ -61,46 +61,46 @@ BAD_DEFAULTS = {
     "wbad_star_arg": "FOO(*)",
     "wbad_values_in": "amount IN (VALUES (1))",
     "wbad_txn": "BEGIN",
-    "wbad_unnest": "UNNEST(amount)",
-    "wbad_series": "generate_series(1, amount)",
+    "wbad_unnest": "UNNEST(orders.amount)",
+    "wbad_series": "generate_series(1, orders.amount)",
 }
 
 
-def _w(name: str, default: str, *, formula: str = W, param: str = "weight") -> Aggregation:
-    return Aggregation(name=name, formula=formula,
+def _w(name: str, default: str, *, expression: str = W, param: str = "weight") -> Aggregation:
+    return Aggregation(name=name, expression=expression,
                        params=[AggregationParam(name=param, sql=default)])
 
 
-def _by_name(models: List[SlayerModel], name: str) -> SlayerModel:
-    return next(m for m in models if m.name == name)
+def _by_name(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
+    return next(m for m in datasets if m.name == name)
 
 
-def dev1901_models() -> List[SlayerModel]:
-    """DEV-1908 graph + the DEV-1901 columns and aggregations. Host first (orders)."""
-    models = dev1908_models()
+def dev1901_datasets() -> List[SlayerDataset]:
+    """``_dev1908_fixtures`` graph + this module's fields and aggregations. Host first (orders)."""
+    models = dev1908_datasets()
     orders = _by_name(models, "orders")
-    orders.columns.extend([
-        Column(name="factor", type=DataType.DOUBLE),
-        Column(name="cust_spend", type=DataType.DOUBLE, sql="customers.spend"),
+    orders.fields.extend([
+        DatasetField(name="factor", datatype=DataType.FLOAT),
+        DatasetField(name="cust_spend", datatype=DataType.FLOAT, expression="customers.spend"),
     ])
     orders.aggregations.extend([
-        _w("wsum", "store_no"),
+        _w("wsum", "orders.store_no"),
         _w("wcase", CASE_O),
         _w("wcs", "customers.spend"),
-        _w("wcd", "cust_spend"),
+        _w("wcd", "orders.cust_spend"),
         _w("wcase_pop", CASE_POP),
-        _w("wlit", "2", formula="SUM({value}) * {k}", param="k"),
+        _w("wlit", "2", expression="SUM({value}) * {k}", param="k"),
         _w("wzero", "1 + 1"),
         _w("wfmt_a", "customers.spend * 1"),
         _w("wfmt_b", "customers.spend*1"),
         _w("wmissing", "nosuch"),
-        Aggregation(name="wunbound", formula="SUM({value}) * {scale}"),
+        Aggregation(name="wunbound", expression="SUM({value}) * {scale}"),
         *(_w(name, text) for name, text in BAD_DEFAULTS.items()),
     ])
     customers = _by_name(models, "customers")
-    customers.columns.extend([
-        Column(name="factor", type=DataType.DOUBLE),
-        Column(name="group", type=DataType.DOUBLE),
+    customers.fields.extend([
+        DatasetField(name="factor", datatype=DataType.FLOAT),
+        DatasetField(name="group", datatype=DataType.FLOAT),
     ])
     customers.aggregations.extend([
         _w("wcase_c", CASE_C),
@@ -108,59 +108,59 @@ def dev1901_models() -> List[SlayerModel]:
         _w("wmix_q", '"group" + orders.amount'),
         _w("wstore", "stores.rent"),
     ])
-    customers.measures.append(ModelMeasure(name="wsaved", formula="wshadow(spend)"))
+    customers.metrics.append(DatasetMetric(name="wsaved", expression="wshadow(spend)"))
     return models
 
 
-def revisit_models() -> List[SlayerModel]:
+def revisit_datasets() -> List[SlayerDataset]:
     """``orders → customers →(hr) regions →(back) customers``; ``wrev`` on customers
     defaults to ``hr.back.spend`` (a revisit through edge names, which never cancel)."""
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="customer_id", type=DataType.INT),
-                 Column(name="amount", type=DataType.DOUBLE)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                         cardinality=JoinCardinality.MANY_TO_ONE)])
-    customers = SlayerModel(
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                 DatasetField(name="amount", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
+                         cardinality=RelationshipCardinality.MANY_TO_ONE)])
+    customers = SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="region_id", type=DataType.INT),
-                 Column(name="spend", type=DataType.DOUBLE)],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                         name="hr", cardinality=JoinCardinality.MANY_TO_ONE)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="region_id", datatype=DataType.INTEGER),
+                 DatasetField(name="spend", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
+                         name="hr", cardinality=RelationshipCardinality.MANY_TO_ONE)],
         aggregations=[_w("wrev", "hr.back.spend"), _w("wrev_expr", "hr.back.spend * 1")])
-    regions = SlayerModel(
+    regions = SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="manager_id", type=DataType.INT)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["manager_id", "id"]],
-                         name="back", cardinality=JoinCardinality.MANY_TO_ONE)])
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="manager_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["manager_id"], to_columns=["id"],
+                         name="back", cardinality=RelationshipCardinality.MANY_TO_ONE)])
     return [orders, customers, regions]
 
 
-def window_param_models(*, placeholder: bool) -> List[SlayerModel]:
-    """``orders`` with ``wwin``, whose formula reads ``{window}`` (``placeholder``)
+def window_param_datasets(*, placeholder: bool) -> List[SlayerDataset]:
+    """``orders`` with ``wwin``, whose expression reads ``{window}`` (``placeholder``)
     or which declares a ``window`` parameter."""
-    agg = (Aggregation(name="wwin", formula="SUM({value}) * {window}",
+    agg = (Aggregation(name="wwin", expression="SUM({value}) * {window}",
                        params=[AggregationParam(name="window", sql="2")])
            if placeholder else
-           Aggregation(name="wwin", formula="SUM({value}) * {window}"))
-    orders = SlayerModel(
+           Aggregation(name="wwin", expression="SUM({value}) * {window}"))
+    orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="amount", type=DataType.DOUBLE)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="amount", datatype=DataType.FLOAT)],
         aggregations=[agg])
     return [orders]
 
 
-def bundle_of(models: List[SlayerModel], *, dialect: str = "postgres") -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect=dialect, source_model=models[0],
-                                referenced_models=models[1:])
+def bundle_of(datasets: List[SlayerDataset], *, dialect: str = "postgres") -> ResolvedSourceBundle:
+    return ResolvedSourceBundle(dialect=dialect, population=datasets[0],
+                                referenced_datasets=datasets[1:])
 
 
 def bundle1901(*, dialect: str = "postgres") -> ResolvedSourceBundle:
-    return bundle_of(dev1901_models(), dialect=dialect)
+    return bundle_of(dev1901_datasets(), dialect=dialect)
 
 
 # --------------------------------------------------------------------------- #
@@ -196,7 +196,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerModel]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
@@ -205,13 +205,13 @@ async def make_exec_engine(
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
         dialect=dialect, seed=seed,
-        models=models if models is not None else dev1901_models(),
+        datasets=datasets if datasets is not None else dev1901_datasets(),
     ) as (engine, _db):
         yield engine
 
 
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery.model_validate(kw)
 
 

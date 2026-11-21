@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1847_fixtures import INNER_CR, INNER_CRP, dev1847_models
+from tests._dev1847_fixtures import INNER_CR, INNER_CRP, dev1847_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 from slayer.core.query import SlayerQuery
@@ -20,40 +20,40 @@ ALLOWED_DELTAS: dict[str, str] = {}
 def _cases() -> dict:
     return {
         "reagg/avg_by_region": {
-            "kw": {"dimensions": ["region"],
-                   "measures": [{"formula": f"avg({INNER_CR})", "name": "acr"}]}},
+            "kw": {"dimensions": ["sales.region"],
+                   "metrics": [{"metric": f"avg({INNER_CR})", "alias": "acr"}]}},
         "reagg/count_by_region": {
-            "kw": {"dimensions": ["region"],
-                   "measures": [{"formula": f"count({INNER_CR})", "name": "nc"}]}},
+            "kw": {"dimensions": ["sales.region"],
+                   "metrics": [{"metric": f"count({INNER_CR})", "alias": "nc"}]}},
         "reagg/degenerate": {
-            "kw": {"dimensions": ["region"],
-                   "measures": [{"formula": "avg(sum(amount))", "name": "d"}]}},
+            "kw": {"dimensions": ["sales.region"],
+                   "metrics": [{"metric": "avg(sum(sales.amount))", "alias": "d"}]}},
         "reagg/broadcast_city": {
-            "kw": {"dimensions": ["region"], "to_many_handling": "broadcast",
-                   "measures": [{"formula": "avg(sum(amount, partition_by=city))",
-                                 "name": "acc"}]}},
+            "kw": {"dimensions": ["sales.region"], "to_many_handling": "broadcast",
+                   "metrics": [{"metric": "avg(sum(sales.amount, partition_by=sales.city))",
+                                 "alias": "acc"}]}},
         "reagg/associate_city": {
-            "kw": {"dimensions": ["region"], "to_many_handling": "associate",
-                   "measures": [{"formula": "avg(sum(amount, partition_by=city))",
-                                 "name": "acc"}]}},
+            "kw": {"dimensions": ["sales.region"], "to_many_handling": "associate",
+                   "metrics": [{"metric": "avg(sum(sales.amount, partition_by=sales.city))",
+                                 "alias": "acc"}]}},
         "reagg/explicit_grain": {
-            "kw": {"dimensions": ["region", "product"],
-                   "measures": [{"formula": f"avg({INNER_CR}, partition_by=region)",
-                                 "name": "acr"}]}},
+            "kw": {"dimensions": ["sales.region", "sales.product"],
+                   "metrics": [{"metric": f"avg({INNER_CR}, partition_by=sales.region)",
+                                 "alias": "acr"}]}},
         "reagg/depth3": {
-            "kw": {"dimensions": ["product"],
-                   "measures": [{"formula":
-                                 f"max(avg({INNER_CRP}, partition_by=[region, product]))",
-                                 "name": "d3"}]}},
+            "kw": {"dimensions": ["sales.product"],
+                   "metrics": [{"metric":
+                                 f"max(avg({INNER_CRP}, partition_by=[sales.region, sales.product]))",
+                                 "alias": "d3"}]}},
     }
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1847_models()
+    models = dev1847_datasets()
     try:
-        query = SlayerQuery(source_model="sales", **case["kw"])
+        query = SlayerQuery(population="sales", **case["kw"])
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

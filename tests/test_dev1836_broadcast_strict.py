@@ -15,10 +15,9 @@ import warnings as _warnings
 import pytest
 
 from slayer.core.errors import BroadcastGrainWarning, SlayerError
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 
 from tests._dev1836_fixtures import (
-    ModelMeasure,
     SPEND_BY_TIER,
     SPEND_TOTAL,
     broadcast_warnings,
@@ -34,8 +33,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
 class TestBroadcastMetadata:
@@ -44,15 +43,15 @@ class TestBroadcastMetadata:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
-                to_many_handling="broadcast", dimensions=["status"], measures=[M, CM],
+                to_many_handling="broadcast", dimensions=["orders.status"], metrics=[M, CM],
             ))
         (w,) = broadcast_warnings(resp)
-        assert "cm" in w.measure
+        assert "cm" in w.metric
         dims = {d.dimension for d in w.dimensions}
         assert any("status" in d for d in dims), dims
         assert all(d.reason for d in w.dimensions)
-        # The local measure never warns.
-        assert "m" != w.measure
+        # The local metric never warns.
+        assert "m" != w.metric
         hits = [c for c in caught
                 if issubclass(c.category, BroadcastGrainWarning)]
         assert len(hits) == 1
@@ -62,7 +61,7 @@ class TestBroadcastMetadata:
         resp = await engine.execute(
             q(
                 to_many_handling="broadcast",
-                dimensions=["customers.tier", "status"], measures=[M, CM],
+                dimensions=["customers.tier", "orders.status"], metrics=[M, CM],
             ),
         )
         (w,) = broadcast_warnings(resp)
@@ -71,13 +70,13 @@ class TestBroadcastMetadata:
         assert not any("tier" in d for d in dims), dims
 
     async def test_same_aggregate_in_several_roles_warns_once(self, exec_backend):
-        """F8 — measure + filter + ORDER BY roles dedup to one warning."""
+        """F8 — metric + filter + ORDER BY roles dedup to one warning."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="broadcast",
-            dimensions=["status"], measures=[M, CM],
-            filters=["sum(customers.spend) > 0"],
-            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
+            dimensions=["orders.status"], metrics=[M, CM],
+            filter=["sum(customers.spend) > 0"],
+            order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
         ))
         assert len(broadcast_warnings(resp)) == 1
 
@@ -85,10 +84,10 @@ class TestBroadcastMetadata:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="broadcast",
-            dimensions=["status"],
-            measures=[
+            dimensions=["orders.status"],
+            metrics=[
                 CM,
-                ModelMeasure(formula="sum(customers.regions.pop)", name="pop"),
+                QueryMetric(metric="sum(customers.regions.pop)", alias="pop"),
             ],
         ))
         assert len(broadcast_warnings(resp)) == 2
@@ -99,39 +98,39 @@ class TestBroadcastMetadata:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="broadcast",
-            dimensions=["status"], measures=[M],
-            filters=["sum(customers.spend) > 0"],
+            dimensions=["orders.status"], metrics=[M],
+            filter=["sum(customers.spend) > 0"],
         ))
         (w,) = broadcast_warnings(resp)
-        assert "spend" in w.measure
+        assert "spend" in w.metric
 
     async def test_attributable_grain_never_warns(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(
-            q(dimensions=["customers.tier"], measures=[M, CM]),
+            q(dimensions=["customers.tier"], metrics=[M, CM]),
         )
         assert broadcast_warnings(resp) == []
 
     async def test_explicit_partition_broadcast_never_warns(self, exec_backend):
         _, engine = exec_backend
-        control = await engine.execute(q(dimensions=["status"], measures=[M]))
+        control = await engine.execute(q(dimensions=["orders.status"], metrics=[M]))
         resp = await engine.execute(q(
-            dimensions=["status"],
-            measures=[M, ModelMeasure(
-                formula="sum(customers.spend, partition_by=[])", name="total",
+            dimensions=["orders.status"],
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=[])", alias="total",
             )],
         ))
         assert broadcast_warnings(resp) == []
         # The keyless (single-row producer) attach is cardinality-neutral.
         assert len(resp.data) == len(control.data) == 2
         for row in resp.data:
-            assert float(row["orders.total"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["total"]) == pytest.approx(SPEND_TOTAL)
 
     async def test_broadcast_reason_names_the_hop_forward_and_reverse(
         self, exec_backend,
     ):
-        """The per-dimension reason names the actual join hop — an unproven forward
-        hop by its target, a fanning reverse hop by the model it fans back to —
+        """The per-dimension reason names the actual relationship hop — an unproven forward
+        hop by its target, a fanning reverse hop by the dataset it fans back to —
         never 'unreachable' (a prefix-side dimension reached back over a
         fanning hop names that hop, not the old round-trip artifact)."""
         _, engine = exec_backend
@@ -139,7 +138,7 @@ class TestBroadcastMetadata:
         via_hop = await engine.execute(
             q(
                 to_many_handling="broadcast",
-                dimensions=["customers.segments.label"], measures=[CM],
+                dimensions=["customers.segments.label"], metrics=[CM],
             ),
         )
         (w_hop,) = broadcast_warnings(via_hop)
@@ -148,8 +147,8 @@ class TestBroadcastMetadata:
         via_reverse = await engine.execute(q(
             to_many_handling="broadcast",
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="sum(customers.regions.pop)",
-                                   name="pop")],
+            metrics=[QueryMetric(metric="sum(customers.regions.pop)",
+                                   alias="pop")],
         ))
         (w_rev,) = broadcast_warnings(via_reverse)
         hop_reasons = " ".join(d.reason for d in w_hop.dimensions).lower()
@@ -163,7 +162,7 @@ class TestBroadcastMetadata:
 class TestStrictMode:
     async def test_strict_broadcast_errors_with_remedy(self, exec_backend):
         _, engine = exec_backend
-        query = q(to_many_handling="error", dimensions=["status"], measures=[M, CM])
+        query = q(to_many_handling="error", dimensions=["orders.status"], metrics=[M, CM])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)
         message = str(ei.value)
@@ -177,51 +176,51 @@ class TestStrictMode:
         nothing to flag; the metric covers the app customers (c1, c3)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM],
-            filters=["channel = 'app'"],
+            to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
+            filter=["orders.channel = 'app'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",)}
-        assert float(by[("gold",)]["orders.m"]) == pytest.approx(30.0)
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
+        assert float(by[("gold",)]["m"]) == pytest.approx(30.0)
+        assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
 
     async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
         """A root-local OR cross-path conjunct no longer errors — the
         producer is restricted by a boolean-total semi-join (gold cm = 160)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM],
-            filters=["customers.tier = 'gold' OR channel = 'app'"],
+            to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
+            filter=["customers.tier = 'gold' OR orders.channel = 'app'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         # Every app order belongs to a gold customer, so both legs yield gold only.
         assert set(by) == {("gold",)}
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
+        assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
 
     async def test_strict_passes_when_all_attributable(self, exec_backend):
         _, engine = exec_backend
         lenient = await engine.execute(
-            q(dimensions=["customers.tier"], measures=[M, CM]),
+            q(dimensions=["customers.tier"], metrics=[M, CM]),
         )
         strict = await engine.execute(
-            q(to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM]),
+            q(to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM]),
         )
-        lenient_by = rows_by(lenient, "orders.customers.tier")
-        strict_by = rows_by(strict, "orders.customers.tier")
+        lenient_by = rows_by(lenient, "customers.tier")
+        strict_by = rows_by(strict, "customers.tier")
         assert set(strict_by) == set(lenient_by)
         for key, row in strict_by.items():
-            for col in ("orders.m", "orders.cm"):
+            for col in ("m", "cm"):
                 assert row[col] == lenient_by[key][col], (key, col)
         for tier, expected in SPEND_BY_TIER.items():
-            assert float(strict_by[(tier,)]["orders.cm"]) == pytest.approx(expected)
+            assert float(strict_by[(tier,)]["cm"]) == pytest.approx(expected)
 
     async def test_strict_allows_explicit_partition_broadcast(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(
-            to_many_handling="error", dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, partition_by=[])", name="total",
+            to_many_handling="error", dimensions=["orders.status"],
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=[])", alias="total",
             )],
         ))
         for row in resp.data:
-            assert float(row["orders.total"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["total"]) == pytest.approx(SPEND_TOTAL)

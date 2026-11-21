@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1824_fixtures import BAND35, ModelMeasure, dev1824_models, month_td, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1824_fixtures import BAND35, dev1824_datasets, month_td, q
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -21,12 +23,12 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 WORKING_PREFIX = "lift/"
 
-RANK_DIM = "rank(sum(amount, partition_by=region), direction='desc')"
+RANK_DIM = "rank(sum(orders.amount, partition_by=orders.region), direction='desc')"
 WBAND = (
-    "CASE WHEN sum(amount, window='90d', partition_by=region) > 50 THEN 1 ELSE 0 END"
+    "CASE WHEN sum(orders.amount, window='90d', partition_by=orders.region) > 50 THEN 1 ELSE 0 END"
 )
 CBAND = (
-    "CASE WHEN cumsum(sum(amount, partition_by=[region, ordered_at])) > 50 "
+    "CASE WHEN cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) > 50 "
     "THEN 1 ELSE 0 END"
 )
 
@@ -34,180 +36,180 @@ CBAND = (
 def _cases() -> dict:
     return {
         "lift/window_partition": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="sum(amount, window='90d', partition_by=region)", name="w",
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
+            metrics=[QueryMetric(
+                metric="sum(orders.amount, window='90d', partition_by=orders.region)", alias="w",
             )],
         ),
         "lift/two_ranked_producers": q(
-            dimensions=["region", "city"],
-            measures=[
-                ModelMeasure(formula="last(amount, partition_by=region)", name="a"),
-                ModelMeasure(formula="last(amount, partition_by=city)", name="b"),
+            dimensions=["orders.region", "orders.city"],
+            metrics=[
+                QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="a"),
+                QueryMetric(metric="last(orders.amount, partition_by=orders.city)", alias="b"),
             ],
         ),
         "lift/three_level_nesting": q(
-            dimensions=["region", {"expression": CBAND, "name": "cband"}],
+            dimensions=["orders.region", {"field": CBAND, "alias": "cband"}],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(
-                    formula="sum(amount, window='90d', partition_by=region)",
-                    name="w",
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(
+                    metric="sum(orders.amount, window='90d', partition_by=orders.region)",
+                    alias="w",
                 ),
-                ModelMeasure(formula="last(amount, partition_by=region)", name="l"),
+                QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="l"),
             ],
         ),
         "lift/first_last_partition": q(
-            dimensions=["region", "city"],
-            measures=[ModelMeasure(
-                formula="last(amount, partition_by=region)", name="l",
+            dimensions=["orders.region", "orders.city"],
+            metrics=[QueryMetric(
+                metric="last(orders.amount, partition_by=orders.region)", alias="l",
             )],
         ),
         "lift/temporal_partition_last": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="last(amount, partition_by=[region, ordered_at])", name="l",
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
+            metrics=[QueryMetric(
+                metric="last(orders.amount, partition_by=[orders.region, orders.ordered_at])", alias="l",
             )],
         ),
         "lift/cumsum_partitioned": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="cumsum(sum(amount, partition_by=[region, ordered_at]))",
-                name="c",
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
+            metrics=[QueryMetric(
+                metric="cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at]))",
+                alias="c",
             )],
         ),
         "lift/rank_partitioned_measure": q(
-            dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=RANK_DIM, name="r")],
+            dimensions=["orders.region", "orders.city"],
+            metrics=[QueryMetric(metric=RANK_DIM, alias="r")],
         ),
         "lift/filter_partitioned": q(
-            dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/filter_conjunct_split": q(
-            dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50 and orders.city != 'CityB'"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/coexist_row_combined": q(
-            dimensions=["region", {"expression": BAND35, "name": "band"}],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            dimensions=["orders.region", {"field": BAND35, "alias": "band"}],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
         ),
         "lift/coexist_same_agg_both": q(
             dimensions=[
-                "region",
-                {"expression": "CASE WHEN sum(amount, partition_by=region) > 55 "
-                               "THEN 1 ELSE 0 END", "name": "band"},
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 "
+                               "THEN 1 ELSE 0 END", "alias": "band"},
             ],
-            measures=[ModelMeasure(
-                formula="sum(amount, partition_by=region)", name="rt",
+            metrics=[QueryMetric(
+                metric="sum(orders.amount, partition_by=orders.region)", alias="rt",
             )],
         ),
         "lift/order_raw_aggregate": q(
-            dimensions=["region", "city", {"expression": BAND35, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
-            order=[{"column": "sum(amount, partition_by=city)", "direction": "asc"}],
+            dimensions=["orders.region", "orders.city", {"field": BAND35, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
+            order=[{"field": "sum(orders.amount, partition_by=orders.city)", "direction": "asc"}],
         ),
         "lift/coexist_windowed": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         ),
         "lift/coexist_first_last": q(
-            dimensions=["region", "city"],
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="last(amount)", name="l"),
+            dimensions=["orders.region", "orders.city"],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="last(orders.amount)", alias="l"),
             ],
         ),
         "lift/coexist_cross_model": q(
             to_many_handling="broadcast",
-            dimensions=["region", "city"],
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="sum(customers.spend)", name="cm"),
+            dimensions=["orders.region", "orders.city"],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ),
         "lift/coexist_transform": q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="cumsum(sum(amount))", name="c"),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="c"),
             ],
         ),
         "lift/dim_two_partition_sets": q(
             dimensions=[
-                "region",
-                {"expression": "sum(amount, partition_by=city) - "
-                               "sum(amount, partition_by=region)", "name": "gap"},
+                "orders.region",
+                {"field": "sum(orders.amount, partition_by=orders.city) - "
+                               "sum(orders.amount, partition_by=orders.region)", "alias": "gap"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/dim_rank": q(
-            dimensions=["region", {"expression": RANK_DIM, "name": "rr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", {"field": RANK_DIM, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/dim_first_last": q(
             dimensions=[
-                "region",
-                {"expression": "last(amount, partition_by=region)", "name": "la"},
+                "orders.region",
+                {"field": "last(orders.amount, partition_by=orders.region)", "alias": "la"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/dim_window": q(
-            dimensions=["region", {"expression": WBAND, "name": "wband"}],
+            dimensions=["orders.region", {"field": WBAND, "alias": "wband"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "guard/dim_bare_aggregate": q(
             dimensions=[
-                "region",
-                {"expression": "CASE WHEN sum(amount) > 50 THEN 1 ELSE 0 END",
-                 "name": "b"},
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount) > 50 THEN 1 ELSE 0 END",
+                 "alias": "b"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "guard/dim_cross_model_source": q(
             to_many_handling="broadcast",
             dimensions=[
-                "region",
-                {"expression": "CASE WHEN sum(customers.spend, partition_by=region) "
-                               "> 100 THEN 1 ELSE 0 END", "name": "cband"},
+                "orders.region",
+                {"field": "CASE WHEN sum(customers.spend, partition_by=orders.region) "
+                               "> 100 THEN 1 ELSE 0 END", "alias": "cband"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "guard/filter_no_common_scope": q(
-            dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50 or orders.status == 'ok'"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "lift/nested_attach": q(
             dimensions=[
-                {"expression": BAND35, "name": "band"},
+                {"field": BAND35, "alias": "band"},
                 # partition_by carries extra keys so the internal CTE alias stays
                 # over bigquery's 300-byte limit — the tier-1 identifier-fitting
                 # premise pinned in test_dev1891_internal_identifier_fit.py (D5's
-                # Column.filter desugar shortened the encoding).
-                {"expression": "sum(amount, partition_by=[band, region, customer_id])",
-                 "name": "b2"},
+                # DatasetField.filter desugar shortened the encoding).
+                {"field": "sum(orders.amount, partition_by=[band, orders.region, orders.customer_id])",
+                 "alias": "b2"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
     }
 
 
 async def _generate_one(query, dialect: str):
-    models = dev1824_models()
+    models = dev1824_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

@@ -1,0 +1,45 @@
+{
+ "source": "tests/test_model_access_tags.py",
+ "pairs": [
+  {
+   "kind": "field",
+   "old": {
+    "name": "id",
+    "type": "number",
+    "primary_key": true
+   },
+   "new": {
+    "name": "id",
+    "datatype": "Float",
+    "primary_key": true
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "items",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "items",
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -3,34 +3,34 @@
 These tests pin the contract of :class:`slayer.inspect.service.InspectService`
 (the shared core behind the MCP ``inspect`` tool + REST/CLI/SlayerClient
 surfaces) and the ``include_hidden`` refactor of
-:func:`slayer.search.render.collect_model_entity_pairs`.
+:func:`slayer.search.render.collect_dataset_entity_pairs`.
 
 Design (settled in the spec interview + two Codex review passes):
 
 * ``inspect(reference, entity_type, ...)`` returns the rendered detail for
   EXACTLY one entity — no RRF / fusion / cypher / bundled memories.
 * ``entity_type`` is REQUIRED, one of
-  ``datasource/model/column/measure/aggregation/memory``. It disambiguates
-  the 3-part canonical collision (a name shared by a column and an
+  ``datasource/dataset/field/metric/aggregation/memory``. It disambiguates
+  the 3-part canonical collision (a name shared by a field and an
   aggregation) and asserts the resolved kind; a mismatch raises a detailed
   error.
-* The reference is normalized via ``resolve_entity`` (so join paths like
-  ``orders.customers.region`` resolve to the owning model's canonical), and
+* The reference is normalized via ``resolve_entity`` (so relationship paths like
+  ``orders.customers.region`` resolve to the owning dataset's canonical), and
   the normalized canonical id is echoed back (always in the JSON shape).
-* ``compact=True`` (default): a **column**, datasource, and memory render
-  description-only; **measure** / **aggregation** leaves also include their full
-  text (formula / params / type — no sample data, so cheap); the **model** kind
-  renders a cheap schema *skeleton* (column / measure / aggregation **names** +
-  join targets, zero DB calls). ``compact=False`` → full render; for the
-  **datasource** kind, ``compact=False`` renders a per-model skeleton for each
-  visible model. ``format`` is ``markdown`` (default) | ``json``.
+* ``compact=True`` (default): a **field**, datasource, and memory render
+  description-only; **metric** / **aggregation** leaves also include their full
+  text (expression / params / type — no sample data, so cheap); the **dataset** kind
+  renders a cheap schema *skeleton* (field / metric / aggregation **names** +
+  relationship targets, zero DB calls). ``compact=False`` → full render; for the
+  **datasource** kind, ``compact=False`` renders a per-dataset skeleton for each
+  visible dataset. ``format`` is ``markdown`` (default) | ``json``.
 * JSON ``text`` is present **iff non-empty**: ``compact=True`` JSON omits the
-  ``text`` key for columns / datasource / memory but keeps it for measures /
+  ``text`` key for fields / datasource / memory but keeps it for metrics /
   aggregations; ``compact=False`` JSON carries ``text`` wherever it holds a
-  render (memory / leaf), ``models`` for the datasource kind, and the full
-  ``inspect_model`` payload for the model kind.
+  render (memory / leaf), ``datasets`` for the datasource kind, and the full
+  ``inspect_model`` payload for the dataset kind.
 * ``inspect`` RENDERS hidden entities (deliberate escape-hatch lookup).
-* Model-only args (``num_rows``/``show_sql``/``sections``/
+* Dataset-only args (``num_rows``/``show_sql``/``sections``/
   ``descriptions_max_chars``) apply where they map; otherwise ignored with a
   warning (warn only when set to a non-default value).
 """
@@ -49,27 +49,27 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.storage.yaml_storage import YAMLStorage
 
 # The module under test does not exist yet — importing it is the first
 # right-reason failure for this TDD suite.
-from slayer.inspect.model_render import (  # noqa: E402
-    model_skeleton_fields,
-    render_model_skeleton,
+from slayer.inspect.dataset_render import (  # noqa: E402
+    dataset_skeleton_fields,
+    render_dataset_skeleton,
 )
 from slayer.inspect.service import InspectService  # noqa: E402
 from slayer.storage.sqlite_conn import transaction
 
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.inspect import model_render as mr
+from slayer.inspect import dataset_render as mr
 from slayer.inspect import service as service_mod
-from slayer.search.render import collect_model_entity_pairs
+from slayer.search.render import collect_dataset_entity_pairs
 from slayer.search.service import SearchService
 
 
@@ -79,59 +79,59 @@ from slayer.search.service import SearchService
 
 
 async def _seed_basic(storage: YAMLStorage) -> None:
-    """A ``mydb`` datasource with ``orders`` (+ a column, a measure, and an
-    aggregation that collides by name with a column) and a joined
-    ``customers`` model so join-path normalization is exercisable."""
+    """A ``mydb`` datasource with ``orders`` (+ a field, a metric, and an
+    aggregation that collides by name with a field) and a joined
+    ``customers`` dataset so relationship-path normalization is exercisable."""
     await storage.save_datasource(
         DatasourceConfig(
             name="mydb", type="sqlite", database=":memory:",
             description="Primary analytics warehouse.",
         )
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="mydb",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(
-                name="region", sql="region", type=DataType.TEXT,
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(
+                name="region", expression="region", datatype=DataType.STRING,
                 description="Customer billing region.",
             ),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
         description="One row per placed order.",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(
-                name="amount", sql="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(
+                name="amount", expression="amount", datatype=DataType.FLOAT,
                 description="Order total in USD.",
             ),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
             # Collides by name with the aggregation below.
-            Column(
-                name="big", sql="amount", type=DataType.DOUBLE,
+            DatasetField(
+                name="big", expression="amount", datatype=DataType.FLOAT,
                 description="Order amount, aliased.",
             ),
         ],
-        measures=[
-            ModelMeasure(
-                name="aov", formula="sum(amount) / count(*)",
+        metrics=[
+            DatasetMetric(
+                name="aov", expression="sum(amount) / count(*)",
                 description="Average order value.",
             ),
         ],
         aggregations=[
             Aggregation(
-                name="big", formula="MAX({col})",
+                name="big", expression="MAX({col})",
                 description="A custom aggregation named 'big'.",
             ),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     ))
     await storage.set_datasource_priority(["mydb"])
@@ -163,7 +163,7 @@ class TestArgValidation:
     async def test_invalid_format_raises(self, svc: InspectService) -> None:
         with pytest.raises(ValueError, match="format"):
             await svc.inspect(
-                reference="mydb.orders", entity_type="model", format="yaml",
+                reference="mydb.orders", entity_type="dataset", format="yaml",
             )
 
     async def test_negative_descriptions_max_chars_raises(
@@ -171,7 +171,7 @@ class TestArgValidation:
     ) -> None:
         with pytest.raises(ValueError, match="descriptions_max_chars"):
             await svc.inspect(
-                reference="mydb.orders.amount", entity_type="column",
+                reference="mydb.orders.amount", entity_type="field",
                 descriptions_max_chars=-1,
             )
 
@@ -191,17 +191,17 @@ class TestPerKindFullRender:
 
     async def test_column(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
         assert "Order total in USD." in out
         assert "Type:" in out
 
     async def test_measure(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.aov", entity_type="measure", compact=False,
+            reference="mydb.orders.aov", entity_type="metric", compact=False,
         )
-        assert "Measure: mydb.orders.aov" in out
+        assert "Metric: mydb.orders.aov" in out
         assert "sum(amount) / count(*)" in out
 
     async def test_aggregation(self, svc: InspectService) -> None:
@@ -211,12 +211,12 @@ class TestPerKindFullRender:
         assert "Aggregation: mydb.orders.big" in out
         assert "MAX({col})" in out
 
-    async def test_model(self, svc: InspectService) -> None:
+    async def test_dataset(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
+            reference="mydb.orders", entity_type="dataset", compact=False,
         )
         # Reuses the inspect_model renderer.
-        assert "# Model: `orders`" in out
+        assert "# Dataset: `orders`" in out
         assert "amount" in out
 
 
@@ -230,7 +230,7 @@ class TestCompact:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=True,
+            reference="mydb.orders.amount", entity_type="field", compact=True,
         )
         assert "Order total in USD." in out
         # Full-render-only fields must be absent in compact mode.
@@ -239,43 +239,43 @@ class TestCompact:
 
     async def test_compact_is_default(self, svc: InspectService) -> None:
         default = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column",
+            reference="mydb.orders.amount", entity_type="field",
         )
         explicit = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=True,
+            reference="mydb.orders.amount", entity_type="field", compact=True,
         )
         assert default == explicit
 
     async def test_model_compact_is_skeleton(
         self, svc: InspectService
     ) -> None:
-        # Model compact is a cheap schema *skeleton* (names
+        # Dataset compact is a cheap schema *skeleton* (names
         # only, zero DB), NOT description-only and NOT the full renderer.
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=True,
+            reference="mydb.orders", entity_type="dataset", compact=True,
         )
         # Description still shown.
         assert "One row per placed order." in out
         # Skeleton lines present (all four, names only).
-        assert "Columns: " in out
+        assert "Fields: " in out
         assert "amount" in out
         assert "customer_id" in out
-        assert "Measures: aov" in out
+        assert "Metrics: aov" in out
         assert "Aggregations: big" in out
-        assert "Joins to: customers" in out
-        # Standalone skeleton heading is the backticked model name (no "Model:"
+        assert "Relationships to: customers" in out
+        # Standalone skeleton heading is the backticked dataset name (no "Dataset:"
         # prefix, distinguishing it from the full render).
         assert "# `orders`" in out
         # Full-render-only markers must be absent (proves the skeleton path,
         # not render_model_inspection).
-        assert "# Model: `orders`" not in out   # full-render heading
-        assert "## Columns (" not in out         # full-render columns table
+        assert "# Dataset: `orders`" not in out   # full-render heading
+        assert "## Fields (" not in out         # full-render fields table
         assert "- **data_source:**" not in out   # metadata bullets
         assert "## Data Profile" not in out
 
 
 # ---------------------------------------------------------------------------
-# Reference normalization (join paths) + normalized-id echo
+# Reference normalization (relationship paths) + normalized-id echo
 # ---------------------------------------------------------------------------
 
 
@@ -283,23 +283,23 @@ class TestNormalization:
     async def test_join_path_normalizes_to_owning_model(
         self, svc: InspectService
     ) -> None:
-        # orders -> customers join; region lives on customers.
+        # orders -> customers relationship; region lives on customers.
         out = await svc.inspect(
-            reference="mydb.orders.customers.region", entity_type="column",
+            reference="mydb.orders.customers.region", entity_type="field",
             compact=False,
         )
-        # Rendered against the OWNING model, not orders.
-        assert "Column: mydb.customers.region" in out
+        # Rendered against the OWNING dataset, not orders.
+        assert "Field: mydb.customers.region" in out
         assert "Customer billing region." in out
 
     async def test_normalized_id_echoed_in_json(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.customers.region", entity_type="column",
+            reference="mydb.orders.customers.region", entity_type="field",
             format="json", compact=False,
         )
         payload = json.loads(out)
         assert payload["canonical_id"] == "mydb.customers.region"
-        assert payload["entity_type"] == "column"
+        assert payload["entity_type"] == "field"
 
 
 # ---------------------------------------------------------------------------
@@ -311,11 +311,11 @@ class TestCollision:
     async def test_column_wins_when_entity_type_column(
         self, svc: InspectService
     ) -> None:
-        # 'big' is both a column and an aggregation on orders.
+        # 'big' is both a field and an aggregation on orders.
         out = await svc.inspect(
-            reference="mydb.orders.big", entity_type="column", compact=False,
+            reference="mydb.orders.big", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.big" in out
+        assert "Field: mydb.orders.big" in out
         assert "Aggregation:" not in out
 
     async def test_aggregation_wins_when_entity_type_aggregation(
@@ -325,20 +325,20 @@ class TestCollision:
             reference="mydb.orders.big", entity_type="aggregation", compact=False,
         )
         assert "Aggregation: mydb.orders.big" in out
-        assert "Column:" not in out
+        assert "Field:" not in out
 
     async def test_duplicate_aggregation_errors(
         self, storage: YAMLStorage
     ) -> None:
         # Two aggregations share a name → entity_type cannot make it unique.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="dupes",
             sql_table="dupes",
             data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
             aggregations=[
-                Aggregation(name="dup", formula="MAX({col})"),
-                Aggregation(name="dup", formula="MIN({col})"),
+                Aggregation(name="dup", expression="MAX({col})"),
+                Aggregation(name="dup", expression="MIN({col})"),
             ],
         ))
         svc = InspectService(storage=storage)
@@ -348,33 +348,33 @@ class TestCollision:
         assert "dup" in out
         # A "cannot uniquely identify"-style message, not a render.
         assert "uniquely" in out.lower()
-        # Neither formula body should appear (it's an error, not a render).
+        # Neither expression body should appear (it's an error, not a render).
         assert "MAX({col})" not in out
         assert "MIN({col})" not in out
 
     async def test_measure_vs_aggregation_collision(
         self, storage: YAMLStorage
     ) -> None:
-        # A measure and an aggregation share the name 'same'.
-        await storage.save_model(SlayerModel(
+        # A metric and an aggregation share the name 'same'.
+        await storage.save_dataset(SlayerDataset(
             name="ma",
             sql_table="ma",
             data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="same", formula="sum(id)")],
-            aggregations=[Aggregation(name="same", formula="MAX({col})")],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
+            metrics=[DatasetMetric(name="same", expression="sum(id)")],
+            aggregations=[Aggregation(name="same", expression="MAX({col})")],
         ))
         svc = InspectService(storage=storage)
         as_measure = await svc.inspect(
-            reference="mydb.ma.same", entity_type="measure", compact=False,
+            reference="mydb.ma.same", entity_type="metric", compact=False,
         )
-        assert "Measure: mydb.ma.same" in as_measure
+        assert "Metric: mydb.ma.same" in as_measure
         assert "Aggregation:" not in as_measure
         as_agg = await svc.inspect(
             reference="mydb.ma.same", entity_type="aggregation", compact=False,
         )
         assert "Aggregation: mydb.ma.same" in as_agg
-        assert "Measure:" not in as_agg
+        assert "Metric:" not in as_agg
 
 
 # ---------------------------------------------------------------------------
@@ -386,41 +386,41 @@ class TestEntityTypeMismatch:
     async def test_wrong_kind_names_available_kind(
         self, svc: InspectService
     ) -> None:
-        # amount is a column; asking for measure must error and name what's
+        # amount is a field; asking for metric must error and name what's
         # actually there.
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="measure", compact=False,
+            reference="mydb.orders.amount", entity_type="metric", compact=False,
         )
-        assert "measure" in out.lower()
-        assert "column" in out.lower()
+        assert "metric" in out.lower()
+        assert "field" in out.lower()
 
     async def test_model_entity_type_on_three_part_id_errors(
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="model", compact=False,
+            reference="mydb.orders.amount", entity_type="dataset", compact=False,
         )
-        assert "model" in out.lower()
+        assert "dataset" in out.lower()
 
     async def test_dotted_leaf_does_not_resolve_to_unrelated_model(
         self, storage: YAMLStorage
     ) -> None:
-        # A model literally named like the leaf must NOT be
-        # returned for `inspect("mydb.orders.amount", "model")` — the dotted
+        # A dataset literally named like the leaf must NOT be
+        # returned for `inspect("mydb.orders.amount", "dataset")` — the dotted
         # leaf is a kind mismatch, not a bare-name fallback.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="amount",  # collides with orders.amount leaf name
             sql_table="amount",
             data_source="mydb",
             description="UNRELATED model named amount.",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="model", compact=False,
+            reference="mydb.orders.amount", entity_type="dataset", compact=False,
         )
         assert "UNRELATED model named amount." not in out
-        assert "# Model: `amount`" not in out
+        assert "# Dataset: `amount`" not in out
 
     async def test_memory_entity_type_on_non_memory_ref_errors(
         self, svc: InspectService
@@ -439,14 +439,14 @@ class TestEntityTypeMismatch:
 class TestNotFound:
     async def test_unknown_column(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.nope", entity_type="column", compact=False,
+            reference="mydb.orders.nope", entity_type="field", compact=False,
         )
         assert "nope" in out
         assert "not" in out.lower()
 
     async def test_unknown_model(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.ghost", entity_type="model", compact=False,
+            reference="mydb.ghost", entity_type="dataset", compact=False,
         )
         assert "ghost" in out.lower()
         assert "not" in out.lower()
@@ -465,59 +465,59 @@ class TestNotFound:
 
 class TestHiddenRendered:
     async def test_hidden_column_renders(self, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="withsecret",
             sql_table="withsecret",
             data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(
-                    name="secret", sql="secret", type=DataType.TEXT,
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(
+                    name="secret", expression="secret", datatype=DataType.STRING,
                     description="Hidden but inspectable.", hidden=True,
                 ),
             ],
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="mydb.withsecret.secret", entity_type="column",
+            reference="mydb.withsecret.secret", entity_type="field",
             compact=False,
         )
-        assert "Column: mydb.withsecret.secret" in out
+        assert "Field: mydb.withsecret.secret" in out
         assert "Hidden but inspectable." in out
 
     async def test_hidden_model_renders(self, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="hiddenmodel",
             sql_table="hiddenmodel",
             data_source="mydb",
             hidden=True,
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
             ],
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="mydb.hiddenmodel", entity_type="model", compact=False,
+            reference="mydb.hiddenmodel", entity_type="dataset", compact=False,
         )
         assert "hiddenmodel" in out
 
 
 # ---------------------------------------------------------------------------
-# Datasource-vs-model collision (Case D): entity_type decides
+# Datasource-vs-dataset collision (Case D): entity_type decides
 # ---------------------------------------------------------------------------
 
 
 class TestDatasourceModelCollision:
     async def _seed_collision(self, storage: YAMLStorage) -> None:
-        # A datasource named "shared" AND a model named "shared" in mydb.
+        # A datasource named "shared" AND a dataset named "shared" in mydb.
         await storage.save_datasource(
             DatasourceConfig(name="shared", type="sqlite", database=":memory:")
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="shared",
             sql_table="shared",
             data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
 
     async def test_datasource_interpretation(self, storage: YAMLStorage) -> None:
@@ -534,10 +534,10 @@ class TestDatasourceModelCollision:
         await self._seed_collision(storage)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="shared", entity_type="model", compact=False,
+            reference="shared", entity_type="dataset", compact=False,
         )
-        # entity_type=model must win over the resolver's datasource default.
-        assert "# Model: `shared`" in out
+        # entity_type=dataset must win over the resolver's datasource default.
+        assert "# Dataset: `shared`" in out
 
 
 # ---------------------------------------------------------------------------
@@ -549,18 +549,18 @@ class TestBareReferences:
     async def test_bare_star_count_errors_without_model_context(
         self, svc: InspectService
     ) -> None:
-        # '*:count' needs a model context; inspect passes source_model=None.
+        # '*:count' needs a dataset context; inspect passes population=None.
         out = await svc.inspect(
-            reference="count(*)", entity_type="model", compact=False,
+            reference="count(*)", entity_type="dataset", compact=False,
         )
         assert "count" in out.lower()
 
     async def test_bare_unique_leaf_resolves(self, svc: InspectService) -> None:
-        # 'region' is a unique column across mydb → resolves to its owner.
+        # 'region' is a unique field across mydb → resolves to its owner.
         out = await svc.inspect(
-            reference="region", entity_type="column", compact=False,
+            reference="region", entity_type="field", compact=False,
         )
-        assert "Column: mydb.customers.region" in out
+        assert "Field: mydb.customers.region" in out
 
 
 # ---------------------------------------------------------------------------
@@ -619,16 +619,16 @@ class TestMemory:
 
 
 # ---------------------------------------------------------------------------
-# Model-only arg matrix
+# Dataset-only arg matrix
 # ---------------------------------------------------------------------------
 
 
 class TestModelOnlyArgs:
     async def test_sections_honored_on_model(self, svc: InspectService) -> None:
-        # sections=["columns"] collapses other sections; "amount" still shows.
+        # sections=["fields"] collapses other sections; "amount" still shows.
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
-            sections=["columns"],
+            reference="mydb.orders", entity_type="dataset", compact=False,
+            sections=["fields"],
         )
         assert "amount" in out
 
@@ -636,7 +636,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
             num_rows=10,
         )
         assert "num_rows" in out
@@ -646,7 +646,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.aov", entity_type="measure", compact=False,
+            reference="mydb.orders.aov", entity_type="metric", compact=False,
             num_rows=10,
         )
         assert "num_rows" in out
@@ -655,10 +655,10 @@ class TestModelOnlyArgs:
     async def test_model_path_never_warns_for_its_own_args(
         self, svc: InspectService
     ) -> None:
-        # All four args are valid for a model — none must produce a warning.
+        # All four args are valid for a dataset — none must produce a warning.
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
-            sections=["columns"], num_rows=10, show_sql=True,
+            reference="mydb.orders", entity_type="dataset", compact=False,
+            sections=["fields"], num_rows=10, show_sql=True,
             descriptions_max_chars=200,
         )
         assert "ignored" not in out.lower()
@@ -667,7 +667,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
+            reference="mydb.orders", entity_type="dataset", compact=False,
             descriptions_max_chars=4,
         )
         assert "One row per placed order." not in out
@@ -676,8 +676,8 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
-            sections=["columns"],
+            reference="mydb.orders.amount", entity_type="field", compact=False,
+            sections=["fields"],
         )
         assert "sections" in out
         assert "ignored" in out.lower() or "warning" in out.lower()
@@ -686,10 +686,10 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
             show_sql=True,
         )
-        # The column's SQL is intrinsic to its render; flag is a silent no-op.
+        # The field's SQL is intrinsic to its render; flag is a silent no-op.
         assert "show_sql" not in out
 
     async def test_show_sql_on_datasource_warns(self, svc: InspectService) -> None:
@@ -704,7 +704,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
         )
         assert "ignored" not in out.lower()
         assert "warning" not in out.lower()
@@ -713,7 +713,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
             descriptions_max_chars=5,
         )
         # "Order total in USD." → truncated; full text must be gone.
@@ -721,7 +721,7 @@ class TestModelOnlyArgs:
 
 
 # ---------------------------------------------------------------------------
-# engine=None contract for the model path
+# engine=None contract for the dataset path
 # ---------------------------------------------------------------------------
 
 
@@ -731,11 +731,11 @@ class TestEngineNone:
     ) -> None:
         # svc was constructed with no engine.
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
+            reference="mydb.orders", entity_type="dataset", compact=False,
             sections=["samples"], num_rows=3,
         )
-        # Renders the model header; sample-data is skipped (no engine).
-        assert "# Model: `orders`" in out
+        # Renders the dataset header; sample-data is skipped (no engine).
+        assert "# Dataset: `orders`" in out
 
 
 # ---------------------------------------------------------------------------
@@ -746,12 +746,12 @@ class TestEngineNone:
 class TestJsonShapes:
     async def test_column_json_shape(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column",
+            reference="mydb.orders.amount", entity_type="field",
             format="json", compact=False,
         )
         payload = json.loads(out)
         assert payload["canonical_id"] == "mydb.orders.amount"
-        assert payload["entity_type"] == "column"
+        assert payload["entity_type"] == "field"
         assert "text" in payload
         assert "warnings" in payload
 
@@ -761,7 +761,7 @@ class TestJsonShapes:
         # ``text`` is present iff non-empty, so compact
         # JSON drops the key entirely (a consumer never sees ``text: ""``).
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column",
+            reference="mydb.orders.amount", entity_type="field",
             format="json", compact=True,
         )
         payload = json.loads(out)
@@ -770,19 +770,19 @@ class TestJsonShapes:
 
     async def test_model_json_shape(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model",
+            reference="mydb.orders", entity_type="dataset",
             format="json", compact=False,
         )
         payload = json.loads(out)
         # Reuses inspect_model JSON keys ...
-        assert payload["model_name"] == "orders"
+        assert payload["dataset_name"] == "orders"
         # ... plus the inspect additions (normalized id always present).
         assert payload["canonical_id"] == "mydb.orders"
         assert "warnings" in payload
 
 
 # ---------------------------------------------------------------------------
-# Engine-backed model sample rows (real sqlite, non-integration)
+# Engine-backed dataset sample rows (real sqlite, non-integration)
 # ---------------------------------------------------------------------------
 
 
@@ -806,22 +806,22 @@ class TestModelSamplesWithEngine:
             await st.save_datasource(
                 DatasourceConfig(name="live", type="sqlite", database=db_path)
             )
-            await st.save_model(SlayerModel(
+            await st.save_dataset(SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="live",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             ))
             engine = SlayerQueryEngine(storage=st)
             svc = InspectService(storage=st, engine=engine)
             out = await svc.inspect(
-                reference="live.orders", entity_type="model", compact=False,
+                reference="live.orders", entity_type="dataset", compact=False,
                 sections=["samples"], num_rows=3,
             )
-            assert "# Model: `orders`" in out
+            assert "# Dataset: `orders`" in out
 
 
 # ---------------------------------------------------------------------------
@@ -830,38 +830,38 @@ class TestModelSamplesWithEngine:
 
 
 class TestCollectModelEntityPairsIncludeHidden:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _dataset(self) -> SlayerDataset:
+        return SlayerDataset(
             name="m",
             sql_table="m",
             data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="visible", sql="visible", type=DataType.TEXT),
-                Column(name="secret", sql="secret", type=DataType.TEXT, hidden=True),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="visible", expression="visible", datatype=DataType.STRING),
+                DatasetField(name="secret", expression="secret", datatype=DataType.STRING, hidden=True),
             ],
         )
 
     def test_default_excludes_hidden_columns(self) -> None:
-        pairs = collect_model_entity_pairs(model=self._model())
+        pairs = collect_dataset_entity_pairs(dataset=self._dataset())
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m.visible" in ids
         assert "mydb.m.secret" not in ids
 
     def test_include_hidden_adds_hidden_columns(self) -> None:
-        pairs = collect_model_entity_pairs(model=self._model(), include_hidden=True)
+        pairs = collect_dataset_entity_pairs(dataset=self._dataset(), include_hidden=True)
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m.secret" in ids
 
     def test_default_returns_empty_for_hidden_model(self) -> None:
-        hidden = self._model()
+        hidden = self._dataset()
         hidden.hidden = True
-        assert collect_model_entity_pairs(model=hidden) == []
+        assert collect_dataset_entity_pairs(dataset=hidden) == []
 
     def test_include_hidden_emits_for_hidden_model(self) -> None:
-        hidden = self._model()
+        hidden = self._dataset()
         hidden.hidden = True
-        pairs = collect_model_entity_pairs(model=hidden, include_hidden=True)
+        pairs = collect_dataset_entity_pairs(dataset=hidden, include_hidden=True)
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m" in ids
         assert "mydb.m.secret" in ids
@@ -874,14 +874,14 @@ class TestHiddenStaysOutOfSearch:
     async def test_hidden_column_absent_from_search_results(
         self, storage: YAMLStorage
     ) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="leaky",
             sql_table="leaky",
             data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(
-                    name="topsecret", sql="topsecret", type=DataType.TEXT,
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(
+                    name="topsecret", expression="topsecret", datatype=DataType.STRING,
                     hidden=True,
                 ),
             ],
@@ -893,164 +893,134 @@ class TestHiddenStaysOutOfSearch:
 
 
 # ---------------------------------------------------------------------------
-# Model/datasource compact skeleton
+# Dataset/datasource compact skeleton
 # ---------------------------------------------------------------------------
 
 
-def _orders_like_model() -> SlayerModel:
-    """A standalone (no-storage) ``orders`` model mirroring the seed fixture —
-    columns id/amount/customer_id/big, one named measure, one aggregation, one
-    join. Used to unit-test the pure skeleton helpers."""
-    return SlayerModel(
+def _orders_like_dataset() -> SlayerDataset:
+    """A standalone (no-storage) ``orders`` dataset mirroring the seed fixture —
+    fields id/amount/customer_id/big, one named metric, one aggregation, one
+    relationship. Used to unit-test the pure skeleton helpers."""
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
         description="One row per placed order.",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
-            Column(name="big", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="big", expression="amount", datatype=DataType.FLOAT),
         ],
-        measures=[ModelMeasure(name="aov", formula="sum(amount) / count(*)")],
-        aggregations=[Aggregation(name="big", formula="MAX({col})")],
-        joins=[ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")])],
+        metrics=[DatasetMetric(name="aov", expression="sum(amount) / count(*)")],
+        aggregations=[Aggregation(name="big", expression="MAX({col})")],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
 class TestModelSkeletonHelpers:
-    """Pure helpers in ``slayer.inspect.model_render`` — no DB, no engine."""
+    """Pure helpers in ``slayer.inspect.dataset_render`` — no DB, no engine."""
 
     def test_render_model_skeleton_is_heading_less(self) -> None:
 
-        md = render_model_skeleton(model=_orders_like_model())
+        md = render_dataset_skeleton(dataset=_orders_like_dataset())
         # The caller prepends the `#`/`##` heading — the helper body must not.
         assert not any(line.startswith("#") for line in md.splitlines())
         assert "One row per placed order." in md
         # Exact plain-CSV (no backticks) per the locked format.
-        assert "Columns: id, amount, customer_id, big" in md
-        assert "Measures: aov" in md
+        assert "Fields: id, amount, customer_id, big" in md
+        assert "Metrics: aov" in md
         assert "Aggregations: big" in md
-        assert "Joins to: customers" in md
+        assert "Relationships to: customers" in md
 
     def test_render_model_skeleton_empty_sections_render_none(self) -> None:
 
-        bare = SlayerModel(
+        bare = SlayerDataset(
             name="customers", sql_table="customers", data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
-        md = render_model_skeleton(model=bare)
+        md = render_dataset_skeleton(dataset=bare)
         lines = md.splitlines()
-        # No description set → no description line; body starts at `Columns:`.
-        assert lines[0] == "Columns: id, region"
+        # No description set → no description line; body starts at `Fields:`.
+        assert lines[0] == "Fields: id, region"
         # All four lines always present; empty ones render `_(none)_`
-        # (aligned to models_summary(compact)).
-        assert "Measures: _(none)_" in md
+        # (aligned to datasets_summary(compact)).
+        assert "Metrics: _(none)_" in md
         assert "Aggregations: _(none)_" in md
-        assert "Joins to: _(none)_" in md
-        # No blank trailing-space "Measures: " line.
-        assert "Measures: \n" not in md
-        assert not md.endswith("Measures: ")
+        assert "Relationships to: _(none)_" in md
+        # No blank trailing-space "Metrics: " line.
+        assert "Metrics: \n" not in md
+        assert not md.endswith("Metrics: ")
 
     def test_render_model_skeleton_hidden_only_columns_render_none(self) -> None:
 
-        m = SlayerModel(
+        m = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            columns=[
-                Column(name="secret", sql="secret", type=DataType.TEXT, hidden=True),
+            fields=[
+                DatasetField(name="secret", expression="secret", datatype=DataType.STRING, hidden=True),
             ],
         )
-        md = render_model_skeleton(model=m)
-        assert "Columns: _(none)_" in md
+        md = render_dataset_skeleton(dataset=m)
+        assert "Fields: _(none)_" in md
         assert "secret" not in md
-
-    def test_render_model_skeleton_unnamed_only_measures_render_none(
-        self,
-    ) -> None:
-
-        # SlayerModel rejects unnamed measures at validation, so model_copy is
-        # used to reach the defensive ``m.name is not None`` filter path.
-        base = SlayerModel(
-            name="m", sql_table="m", data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="tmp", formula="sum(id)")],
-        )
-        m = base.model_copy(update={"measures": [ModelMeasure(formula="max(id)")]})
-        md = render_model_skeleton(model=m)
-        assert "Measures: _(none)_" in md
 
     def test_render_model_skeleton_truncates_description(self) -> None:
 
-        md = render_model_skeleton(model=_orders_like_model(), max_chars=4)
+        md = render_dataset_skeleton(dataset=_orders_like_dataset(), max_chars=4)
         assert "One row per placed order." not in md
-        assert "Columns: " in md
+        assert "Fields: " in md
 
     def test_model_skeleton_fields_shape(self) -> None:
 
-        fields = model_skeleton_fields(model=_orders_like_model())
+        fields = dataset_skeleton_fields(dataset=_orders_like_dataset())
         assert fields["name"] == "orders"
         assert fields["canonical_id"] == "mydb.orders"
         assert fields["description"] == "One row per placed order."
-        assert fields["column_names"] == ["id", "amount", "customer_id", "big"]
-        assert fields["measure_names"] == ["aov"]
+        assert fields["field_names"] == ["id", "amount", "customer_id", "big"]
+        assert fields["metric_names"] == ["aov"]
         assert fields["aggregation_names"] == ["big"]
-        assert fields["joins_to"] == ["customers"]
+        assert fields["relationships_to"] == ["customers"]
 
     def test_model_skeleton_fields_excludes_hidden_columns(self) -> None:
 
-        m = SlayerModel(
+        m = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="visible", sql="visible", type=DataType.TEXT),
-                Column(name="secret", sql="secret", type=DataType.TEXT, hidden=True),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="visible", expression="visible", datatype=DataType.STRING),
+                DatasetField(name="secret", expression="secret", datatype=DataType.STRING, hidden=True),
             ],
         )
-        assert model_skeleton_fields(model=m)["column_names"] == ["id", "visible"]
-
-    def test_model_skeleton_fields_excludes_unnamed_measures(self) -> None:
-
-        # model_copy bypasses the SlayerModel "every measure must be named"
-        # validator so we can prove the defensive filter in the helper.
-        base = SlayerModel(
-            name="m", sql_table="m", data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="named", formula="sum(id)")],
-        )
-        m = base.model_copy(update={"measures": [
-            ModelMeasure(name="named", formula="sum(id)"),
-            ModelMeasure(formula="max(id)"),  # unnamed
-        ]})
-        assert model_skeleton_fields(model=m)["measure_names"] == ["named"]
+        assert dataset_skeleton_fields(dataset=m)["field_names"] == ["id", "visible"]
 
     def test_model_skeleton_fields_joins_sorted_deduped(self) -> None:
 
-        m = SlayerModel(
+        m = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="z_id", sql="z_id", type=DataType.INT),
-                Column(name="a_id", sql="a_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="z_id", expression="z_id", datatype=DataType.INTEGER),
+                DatasetField(name="a_id", expression="a_id", datatype=DataType.INTEGER),
             ],
-            joins=[
-                ModelJoin(target_model="zebra", join_pairs=[("z_id", "id")]),
-                ModelJoin(target_model="apple", join_pairs=[("a_id", "id")]),
+            relationships=[
+                DatasetRelationship(to="zebra", from_columns=["z_id"], to_columns=["id"]),
+                DatasetRelationship(to="apple", from_columns=["a_id"], to_columns=["id"]),
             ],
         )
-        assert model_skeleton_fields(model=m)["joins_to"] == ["apple", "zebra"]
+        assert dataset_skeleton_fields(dataset=m)["relationships_to"] == ["apple", "zebra"]
 
     def test_canonical_id_has_no_leading_dot_without_data_source(self) -> None:
 
         # model_copy bypasses validators so we can simulate a not-yet-refined
-        # (empty data_source) model and prove the guard.
-        m = _orders_like_model().model_copy(update={"data_source": ""})
-        assert model_skeleton_fields(model=m)["canonical_id"] == "orders"
+        # (empty data_source) dataset and prove the guard.
+        m = _orders_like_dataset().model_copy(update={"data_source": ""})
+        assert dataset_skeleton_fields(dataset=m)["canonical_id"] == "orders"
 
     def test_model_render_module_does_not_import_slayer_mcp(self) -> None:
-        # The skeleton helpers live in slayer.inspect.model_render, which
+        # The skeleton helpers live in slayer.inspect.dataset_render, which
         # mcp/server.py imports — so the reverse would be a circular import.
         src = pathlib.Path(mr.__file__).read_text()
         tree = ast.parse(src)
@@ -1066,72 +1036,72 @@ class TestModelSkeletonHelpers:
 class TestModelCompactSkeletonJson:
     async def test_model_compact_json_shape(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model",
+            reference="mydb.orders", entity_type="dataset",
             format="json", compact=True,
         )
         p = json.loads(out)
         assert p["canonical_id"] == "mydb.orders"
-        assert p["entity_type"] == "model"
+        assert p["entity_type"] == "dataset"
         assert p["name"] == "orders"
         assert p["description"] == "One row per placed order."
-        assert p["column_names"] == ["id", "amount", "customer_id", "big"]
-        assert p["measure_names"] == ["aov"]
+        assert p["field_names"] == ["id", "amount", "customer_id", "big"]
+        assert p["metric_names"] == ["aov"]
         assert p["aggregation_names"] == ["big"]
-        assert p["joins_to"] == ["customers"]
+        assert p["relationships_to"] == ["customers"]
         assert "text" not in p
         assert "warnings" in p
 
     async def test_model_compact_json_empty_lists_present(
         self, svc: InspectService
     ) -> None:
-        # ``customers`` has no measures / aggregations / joins — the JSON keys
+        # ``customers`` has no metrics / aggregations / relationships — the JSON keys
         # are still present as empty lists (stable shape).
         out = await svc.inspect(
-            reference="mydb.customers", entity_type="model",
+            reference="mydb.customers", entity_type="dataset",
             format="json", compact=True,
         )
         p = json.loads(out)
         assert p["canonical_id"] == "mydb.customers"
-        assert p["column_names"] == ["id", "region"]
-        assert p["measure_names"] == []
+        assert p["field_names"] == ["id", "region"]
+        assert p["metric_names"] == []
         assert p["aggregation_names"] == []
-        assert p["joins_to"] == []
+        assert p["relationships_to"] == []
         assert "text" not in p
 
     async def test_model_compact_markdown_empty_sections_render_none(
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.customers", entity_type="model", compact=True,
+            reference="mydb.customers", entity_type="dataset", compact=True,
         )
-        assert "Columns: " in out
+        assert "Fields: " in out
         assert "region" in out
-        assert "Measures: _(none)_" in out
+        assert "Metrics: _(none)_" in out
         assert "Aggregations: _(none)_" in out
-        assert "Joins to: _(none)_" in out
+        assert "Relationships to: _(none)_" in out
 
     async def test_model_compact_descriptions_max_chars(
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=True,
+            reference="mydb.orders", entity_type="dataset", compact=True,
             descriptions_max_chars=4,
         )
         assert "One row per placed order." not in out
-        assert "Columns: " in out
+        assert "Fields: " in out
 
     async def test_model_compact_json_truncates_description(
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model",
+            reference="mydb.orders", entity_type="dataset",
             format="json", compact=True, descriptions_max_chars=4,
         )
         p = json.loads(out)
         assert p["description"] != "One row per placed order."
         assert p["description"].startswith("One ")
         # Structure intact despite truncation.
-        assert p["column_names"] == ["id", "amount", "customer_id", "big"]
+        assert p["field_names"] == ["id", "amount", "customer_id", "big"]
 
 
 class TestDatasourceCompactFalseSkeletons:
@@ -1143,12 +1113,12 @@ class TestDatasourceCompactFalseSkeletons:
         )
         assert "Datasource: mydb" in out
         assert "Primary analytics warehouse." in out
-        # Per-model heading + skeleton body for each visible model.
+        # Per-dataset heading + skeleton body for each visible dataset.
         assert "## `customers`" in out
         assert "## `orders`" in out
-        assert "region" in out            # customers column name
-        assert "Measures: aov" in out     # orders measure
-        assert "Joins to: customers" in out
+        assert "region" in out            # customers field name
+        assert "Metrics: aov" in out     # orders metric
+        assert "Relationships to: customers" in out
         # Sorted by name: customers heading precedes orders heading.
         assert out.index("## `customers`") < out.index("## `orders`")
 
@@ -1162,20 +1132,20 @@ class TestDatasourceCompactFalseSkeletons:
         assert p["entity_type"] == "datasource"
         assert p["description"] == "Primary analytics warehouse."
         assert "text" not in p
-        names = [m["name"] for m in p["models"]]
+        names = [m["name"] for m in p["datasets"]]
         assert names == ["customers", "orders", "time_spine"]   # sorted by name
-        orders = next(m for m in p["models"] if m["name"] == "orders")
+        orders = next(m for m in p["datasets"] if m["name"] == "orders")
         assert orders["canonical_id"] == "mydb.orders"
-        assert orders["column_names"] == ["id", "amount", "customer_id", "big"]
-        assert orders["measure_names"] == ["aov"]
+        assert orders["field_names"] == ["id", "amount", "customer_id", "big"]
+        assert orders["metric_names"] == ["aov"]
         assert orders["aggregation_names"] == ["big"]
-        assert orders["joins_to"] == ["customers"]
+        assert orders["relationships_to"] == ["customers"]
 
     async def test_hidden_model_excluded(self, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="hiddends", sql_table="hiddends", data_source="mydb",
             hidden=True,
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
@@ -1186,7 +1156,7 @@ class TestDatasourceCompactFalseSkeletons:
             reference="mydb", entity_type="datasource",
             format="json", compact=False,
         )
-        assert all(m["name"] != "hiddends" for m in json.loads(outj)["models"])
+        assert all(m["name"] != "hiddends" for m in json.loads(outj)["datasets"])
 
     async def test_no_visible_models_empty_list(
         self, storage: YAMLStorage
@@ -1195,17 +1165,17 @@ class TestDatasourceCompactFalseSkeletons:
             name="emptyds", type="sqlite", database=":memory:",
             description="Empty one.",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="onlyhidden", sql_table="onlyhidden", data_source="emptyds",
             hidden=True,
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         svc = InspectService(storage=storage)
         outj = await svc.inspect(
             reference="emptyds", entity_type="datasource",
             format="json", compact=False,
         )
-        assert [m["name"] for m in json.loads(outj)["models"]] == ["time_spine"]
+        assert [m["name"] for m in json.loads(outj)["datasets"]] == ["time_spine"]
         outmd = await svc.inspect(
             reference="emptyds", entity_type="datasource", compact=False,
         )
@@ -1220,7 +1190,7 @@ class TestDatasourceCompactFalseSkeletons:
             descriptions_max_chars=4,
         )
         assert "Primary analytics warehouse." not in out   # ds description
-        assert "One row per placed order." not in out       # model description
+        assert "One row per placed order." not in out       # dataset description
         # Skeleton structure still present.
         assert "## `orders`" in out
 
@@ -1234,14 +1204,14 @@ class TestDatasourceCompactFalseSkeletons:
         p = json.loads(out)
         assert p["description"] != "Primary analytics warehouse."
         assert p["description"].startswith("Prim")
-        orders = next(m for m in p["models"] if m["name"] == "orders")
+        orders = next(m for m in p["datasets"] if m["name"] == "orders")
         assert orders["description"] != "One row per placed order."
         assert orders["description"].startswith("One ")
 
     async def test_warnings_preserved_in_json(
         self, svc: InspectService
     ) -> None:
-        # show_sql is a model-only arg → warns for the datasource kind, and the
+        # show_sql is a dataset-only arg → warns for the datasource kind, and the
         # warning must survive into the JSON ``warnings`` list.
         out = await svc.inspect(
             reference="mydb", entity_type="datasource",
@@ -1258,7 +1228,7 @@ class TestDatasourceCompactTrueUnchanged:
         )
         assert "Primary analytics warehouse." in out
         assert "## `orders`" not in out
-        assert "Columns:" not in out
+        assert "Fields:" not in out
 
     async def test_json_omits_text_and_models(
         self, svc: InspectService
@@ -1269,7 +1239,7 @@ class TestDatasourceCompactTrueUnchanged:
         )
         p = json.loads(out)
         assert "text" not in p
-        assert "models" not in p
+        assert "datasets" not in p
         assert p["description"] == "Primary analytics warehouse."
 
 
@@ -1277,13 +1247,13 @@ class TestCompactTextOmittedAllKinds:
     @pytest.mark.parametrize(
         "reference,entity_type",
         [
-            ("mydb.orders.amount", "column"),
+            ("mydb.orders.amount", "field"),
         ],
     )
     async def test_leaf_compact_json_omits_text(
         self, svc: InspectService, reference: str, entity_type: str
     ) -> None:
-        # Columns stay description-only in compact (their text can carry
+        # Fields stay description-only in compact (their text can carry
         # sampled values / DB reads).
         out = await svc.inspect(
             reference=reference, entity_type=entity_type,
@@ -1294,15 +1264,15 @@ class TestCompactTextOmittedAllKinds:
     @pytest.mark.parametrize(
         "reference,entity_type",
         [
-            ("mydb.orders.aov", "measure"),
+            ("mydb.orders.aov", "metric"),
             ("mydb.orders.big", "aggregation"),
         ],
     )
     async def test_leaf_compact_json_keeps_text_for_measure_and_aggregation(
         self, svc: InspectService, reference: str, entity_type: str
     ) -> None:
-        # Formula / params / type are essential and carry no sample data, so
-        # the compact leaf render includes them for measures/aggregations.
+        # Expression / params / type are essential and carry no sample data, so
+        # the compact leaf render includes them for metrics/aggregations.
         out = await svc.inspect(
             reference=reference, entity_type=entity_type,
             format="json", compact=True,
@@ -1314,8 +1284,8 @@ class TestCompactTextOmittedAllKinds:
     @pytest.mark.parametrize(
         "reference,entity_type",
         [
-            ("mydb.orders.amount", "column"),
-            ("mydb.orders.aov", "measure"),
+            ("mydb.orders.amount", "field"),
+            ("mydb.orders.aov", "metric"),
             ("mydb.orders.big", "aggregation"),
         ],
     )
@@ -1376,11 +1346,11 @@ class TestSkeletonZeroDB:
 
         svc = InspectService(storage=storage, engine=_ExplodingEngine())
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=True,
+            reference="mydb.orders", entity_type="dataset", compact=True,
         )
-        assert "Columns: " in out
+        assert "Fields: " in out
         outj = await svc.inspect(
-            reference="mydb.orders", entity_type="model",
+            reference="mydb.orders", entity_type="dataset",
             format="json", compact=True,
         )
         assert json.loads(outj)["name"] == "orders"
@@ -1395,28 +1365,28 @@ class TestSkeletonZeroDB:
                 "render_model_inspection must not run for compact=True"
             )
 
-        monkeypatch.setattr(service_mod, "render_model_inspection", _boom)
+        monkeypatch.setattr(service_mod, "render_dataset_inspection", _boom)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=True,
+            reference="mydb.orders", entity_type="dataset", compact=True,
         )
-        assert "Columns: " in out
+        assert "Fields: " in out
         # And the full path STILL uses it (guards against a stale patch /
         # wrong-symbol monkeypatch giving a false pass above).
         with pytest.raises(AssertionError, match="must not run"):
             await svc.inspect(
-                reference="mydb.orders", entity_type="model", compact=False,
+                reference="mydb.orders", entity_type="dataset", compact=False,
             )
 
 
 # ---------------------------------------------------------------------------
-# Ambiguous bare model name
+# Ambiguous bare dataset name
 # ---------------------------------------------------------------------------
 
 
 class TestAmbiguousModelName:
-    """A bare model name present in 2+ datasources with no priority winner
-    makes ``resolve_entity`` raise ``AmbiguousModelError`` (a SlayerError
+    """A bare dataset name present in 2+ datasources with no priority winner
+    makes ``resolve_entity`` raise ``AmbiguousDatasetError`` (a SlayerError
     sibling, NOT an EntityResolutionError). inspect must surface the message,
     not let it escape as an uncaught exception (which would 500 on REST)."""
 
@@ -1426,14 +1396,14 @@ class TestAmbiguousModelName:
         await storage.save_datasource(DatasourceConfig(
             name="otherdb", type="sqlite", database=":memory:",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="otherdb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         await storage.set_datasource_priority([])
 
     @pytest.mark.parametrize(
-        "entity_type", ["model", "datasource", "column"],
+        "entity_type", ["dataset", "datasource", "field"],
     )
     async def test_ambiguous_bare_model_returns_message_not_raise(
         self, storage: YAMLStorage, entity_type: str
@@ -1454,7 +1424,7 @@ class TestAmbiguousModelName:
         await self._seed_ambiguous(storage)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="orders", entity_type="model",
+            reference="orders", entity_type="dataset",
             format="json", compact=True,
         )
         # The ambiguity message is returned as a plain string (not JSON, not a
@@ -1464,10 +1434,10 @@ class TestAmbiguousModelName:
     async def test_datasource_prefix_not_blocked_by_ambiguous_model(
         self, storage: YAMLStorage
     ) -> None:
-        # A name that is BOTH a known datasource AND an ambiguous model (same
+        # A name that is BOTH a known datasource AND an ambiguous dataset (same
         # name in >=2 datasources, no priority winner). resolve_entity's
         # Case-D collision probe must not let that ambiguity abort the valid
-        # datasource interpretation (regression from the AmbiguousModelError
+        # datasource interpretation (regression from the AmbiguousDatasetError
         # handling — Codex re-review).
         await storage.save_datasource(DatasourceConfig(
             name="shared", type="sqlite", database=":memory:",
@@ -1476,15 +1446,15 @@ class TestAmbiguousModelName:
         await storage.save_datasource(DatasourceConfig(
             name="otherdb", type="sqlite", database=":memory:",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="shared", sql_table="shared", data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="shared", sql_table="shared", data_source="otherdb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
-        await storage.set_datasource_priority([])  # no model-leg winner
+        await storage.set_datasource_priority([])  # no dataset-leg winner
         svc = InspectService(storage=storage)
         out = await svc.inspect(
             reference="shared", entity_type="datasource", compact=False,

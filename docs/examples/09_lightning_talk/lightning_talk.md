@@ -21,26 +21,26 @@ The notebook covers each one in two or three cells.
 
 | # | What | Notebook cells |
 |---|------|----------------|
-| 1 | **See** — auto-ingestion: point SLayer at a database, get typed models with foreign-key joins. | 4, 6 |
-| 2 | **Get** — the same `order_total` column, three aggregations in one query. The definition lives in the model; the rollup is the agent's choice per query. | 8 |
+| 1 | **See** — auto-ingestion: point SLayer at a database, get typed datasets with foreign-key relationships. | 4, 6 |
+| 2 | **Get** — the same `order_total` field, three aggregations in one query. The definition lives in the dataset; the rollup is the agent's choice per query. | 8 |
 | 3 | **Ask** — a hero query that mixes month-over-month growth, year-over-year growth (via `time_shift`), a filter on the transform, and a top-N. | 10, 11 |
-| 4 | **Compose** — every query is also a model; multistage falls out of that. Inner stage sums revenue by store-month; outer stage averages those monthly sums per store. | 13 |
+| 4 | **Compose** — every query is also a dataset; multistage falls out of that. Inner stage sums revenue by store-month; outer stage averages those monthly sums per store. | 13 |
 | 5+6 | **Have & Find** — save a learning memory ("Brooklyn switched POS in late 2024"), save a known-good query pattern, then retrieve them three ways: question, entity, discovery. | 15–20 |
 
 ## The hero query
 
 ```json
 {
-  "source_model": "orders",
-  "measures": [
-    {"formula": "sum(order_total)", "name": "revenue"},
-    {"formula": "change_pct(sum(order_total))", "name": "mom_growth"},
-    {"formula": "sum(order_total) / time_shift(sum(order_total), -1, 'year') - 1", "name": "yoy_growth"}
+  "population": "orders",
+  "metrics": [
+    {"metric": "sum(orders.order_total)", "alias": "revenue"},
+    {"metric": "change_pct(sum(orders.order_total))", "alias": "mom_growth"},
+    {"metric": "sum(orders.order_total) / time_shift(sum(orders.order_total), -1, 'year') - 1", "alias": "yoy_growth"}
   ],
   "dimensions": ["stores.name"],
-  "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}],
-  "filters": ["change_pct(sum(order_total)) > 0"],
-  "order": [{"column": "mom_growth", "direction": "desc"}],
+  "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
+  "filter": ["change_pct(sum(orders.order_total)) > 0"],
+  "order": [{"field": "mom_growth", "direction": "desc"}],
   "limit": 10
 }
 ```
@@ -51,11 +51,11 @@ One declarative object. SLayer handles the joins, the window function for `chang
 
 The notebook saves two memories — one learning (Brooklyn POS) and one query-bearing (top-5 customers by lifetime spend) — and then retrieves them three ways through a single `search` call. Channels:
 
-- **BM25** over each memory's stored entity tags (`<datasource>.<model>.<column>` triples). Strongest when the agent already has an entity reference.
+- **BM25** over each memory's stored entity tags (`<datasource>.<dataset>.<field>` triples). Strongest when the agent already has an entity reference.
 - **tantivy** full-text over learning text plus canonical entities. Best for natural-language questions and entity discovery.
 - **embeddings** (dense cosine, via litellm). Optional — degrades gracefully without an API key; runs once added.
 
-Ranks are merged via Reciprocal Rank Fusion into a single flat `results: List[SearchHit]`. Each hit carries a `kind` discriminator (`"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`); the agent splits the list itself rather than picking a channel.
+Ranks are merged via Reciprocal Rank Fusion into a single flat `results: List[SearchHit]`. Each hit carries a `kind` discriminator (`"memory"`, `"datasource"`, `"dataset"`, `"field"`, `"metric"`, `"aggregation"`); the agent splits the list itself rather than picking a channel.
 
 The same call also accepts `cypher_filter` — a graph pre-narrowing pass run before all three channels (full openCypher with `advanced_search` installed, naive `MATCH (n:Label) RETURN n.id AS id` kind-filter without).
 
@@ -71,12 +71,12 @@ Then ask Claude in any project: *"What stores are in jaffle_shop and which one h
 
 ## What's here
 
-**Here today:** MIT-licensed. Interfaces: MCP, CLI, REST, Python, Flight SQL. Auto-ingestion. Postgres, MySQL, Snowflake, BigQuery, DuckDB, ClickHouse, SQLite. Multistage queries, named measures, custom aggregations, memories with embedding search. Graph-backed `cypher_filter` pre-filter — full openCypher with the `advanced_search` extra (Memory / Datasource / Model / ModelColumn / Measure / Aggregation nodes; MENTIONS / CONTAINS / JOINS edges), naive label-only fallback without.
+**Here today:** MIT-licensed. Interfaces: MCP, CLI, REST, Python, Flight SQL. Auto-ingestion. Postgres, MySQL, Snowflake, BigQuery, DuckDB, ClickHouse, SQLite. Multistage queries, named metrics, custom aggregations, memories with embedding search. Graph-backed `cypher_filter` pre-filter — full openCypher with the `advanced_search` extra (Memory / Datasource / Dataset / DatasetField / Metric / Aggregation nodes; MENTIONS / CONTAINS / RELATIONSHIPS edges), naive label-only fallback without.
 
 ## Links
 
 - [Notebook](lightning_talk_nb.ipynb) (runnable)
-- [Models concept](../../concepts/models.md)
+- [Datasets concept](../../concepts/datasets.md)
 - [Queries concept](../../concepts/queries.md)
 - [Memories concept](../../concepts/memories.md)
 - [Search concept](../../concepts/search.md)

@@ -1,0 +1,33 @@
+{
+ "source": "tests/test_storage_backend_compat.py",
+ "pairs": [
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders",
+    "data_source": "shop",
+    "sql_table": "orders",
+    "columns": [
+     {
+      "name": "id",
+      "type": "INT",
+      "primary_key": true
+     }
+    ]
+   },
+   "new": {
+    "name": "orders",
+    "data_source": "shop",
+    "sql_table": "orders",
+    "fields": [
+     {
+      "name": "id",
+      "datatype": "Integer",
+      "primary_key": true
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

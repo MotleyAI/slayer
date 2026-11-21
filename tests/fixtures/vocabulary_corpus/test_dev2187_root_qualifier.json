@@ -1,0 +1,435 @@
+{
+ "source": "tests/test_dev2187_root_qualifier.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "orders.status"
+   },
+   "new": {
+    "field": "orders.status"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "status"
+   },
+   "new": {
+    "field": "status"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "extensions": [
+     {
+      "source_name": "orders"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "extensions": [
+     {
+      "dataset": "orders"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qb"
+   },
+   "new": {
+    "population": "qb"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qb",
+    "dimensions": [
+     "qb.status"
+    ],
+    "measures": [
+     "sum(qb.tot)"
+    ],
+    "filters": [
+     "qb.tot > 25"
+    ]
+   },
+   "new": {
+    "population": "qb",
+    "dimensions": [
+     "qb.status"
+    ],
+    "metrics": [
+     "sum(qb.tot)"
+    ],
+    "filter": [
+     "qb.tot > 25"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qb",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "sum(tot)"
+    ],
+    "filters": [
+     "tot > 25"
+    ]
+   },
+   "new": {
+    "population": "qb",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "sum(tot)"
+    ],
+    "filter": [
+     "tot > 25"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "tot"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "tot"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "sum(amount_sum)"
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "sum(amount_sum)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "orders.status"
+    ],
+    "measures": [
+     "sum(orders.amount)"
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "orders.status"
+    ],
+    "metrics": [
+     "sum(orders.amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(basket.id)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(basket.id)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(time_spine.basket.id)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(time_spine.basket.id)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "revenue"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "revenue"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "revenue",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "revenue",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "revenue"
+   },
+   "new": {
+    "metric": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "orders.revenue",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "orders.revenue",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "orders.revenue",
+      "label": "Rev"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "metric": "orders.revenue",
+      "label": "Rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(orders.amount)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(orders.amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(iif(status = 'paid', amount, 0))"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(iif(status = 'paid', amount, 0))"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(iif(status = 'orders.paid', amount, 0))"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(iif(status = 'orders.paid', amount, 0))"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 138,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 170,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 231,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 257,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 253,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 292,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 293,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 298,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 300,
+   "reason": "unclassifiable"
+  }
+ ]
+}

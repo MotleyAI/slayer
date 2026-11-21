@@ -11,11 +11,12 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import QueryRequest, create_app
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from tests import _dev1883_fixtures as fx
+from slayer.storage.base import StorageBackend
 
 GRANULARITIES = [g.value for g in TimeGranularity]
 
@@ -47,18 +48,18 @@ def _rows(out: str) -> list:
 
 
 EXPLICIT_TD_QUERY = {
-    "source_model": "orders",
-    "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-    "measures": [{"formula": "sum(amount)"}],
+    "population": "orders",
+    "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+    "metrics": [{"metric": "sum(orders.amount)"}],
 }
 
 
 class TestMcpSurface:
     async def test_string_time_dimensions_entry_accepted(self, mcp_server) -> None:
         string_form = await _call(mcp_server, query={
-            "source_model": "orders",
-            "time_dimensions": ["date_trunc('month', created_at)"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "time_dimensions": ["date_trunc('month', orders.created_at)"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }, format="json")
         explicit_form = await _call(
             mcp_server, query=EXPLICIT_TD_QUERY, format="json",
@@ -67,9 +68,9 @@ class TestMcpSurface:
 
     async def test_functional_dimensions_entry_accepted(self, mcp_server) -> None:
         out = await _call(mcp_server, query={
-            "source_model": "orders",
-            "dimensions": ["date_trunc('month', created_at)"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "dimensions": ["date_trunc('month', orders.created_at)"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }, format="json")
         assert {
             r["orders.created_at"]: r["orders.amount_sum"] for r in _rows(out)
@@ -87,7 +88,7 @@ class TestMcpSurface:
                 f"dimensions docs must name granularity {gran!r}"
             )
         for arg in ("dimensions", "time_dimensions"):
-            assert "date_trunc('month', created_at)" in (props[arg].get("description") or ""), (
+            assert "date_trunc('month', orders.created_at)" in (props[arg].get("description") or ""), (
                 f"{arg} docs must show the date_trunc form"
             )
 
@@ -104,18 +105,18 @@ class TestSchemaAdvertisesString:
 
 
 class TestStoredQuerySurface:
-    async def test_stored_query_document_accepts_string_entry(self, storage) -> None:
-        """A query-backed model whose stored document carries the string form
+    async def test_stored_query_document_accepts_string_entry(self, storage: StorageBackend) -> None:
+        """A query-backed dataset whose stored document carries the string form
         loads and runs identically to the explicit form."""
-        model = SlayerModel.model_validate({
+        model = SlayerDataset.model_validate({
             "name": "monthly_rev", "data_source": "test",
             "source_queries": [{
-                "source_model": "orders",
-                "time_dimensions": ["date_trunc('month', created_at)"],
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "time_dimensions": ["date_trunc('month', orders.created_at)"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             }],
         })
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         resp = await engine.execute("monthly_rev")
         assert {
@@ -126,9 +127,9 @@ class TestStoredQuerySurface:
 class TestRestSurface:
     def test_string_time_dimensions_entry_accepted(self, rest_client) -> None:
         string_form = rest_client.post("/query", json={
-            "source_model": "orders",
-            "time_dimensions": ["date_trunc('month', created_at)"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "time_dimensions": ["date_trunc('month', orders.created_at)"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
         assert string_form.status_code == 200, string_form.text
         explicit_form = rest_client.post("/query", json=EXPLICIT_TD_QUERY)
@@ -137,11 +138,11 @@ class TestRestSurface:
 
     def test_query_request_annotation_accepts_strings(self) -> None:
         req = QueryRequest.model_validate({
-            "source_model": "orders",
-            "time_dimensions": ["date_trunc('month', created_at)"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "time_dimensions": ["date_trunc('month', orders.created_at)"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
         query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert query.time_dimensions == [
-            fx.td(dimension="created_at", granularity="month")
+            fx.td(field="orders.created_at", granularity="month")
         ]

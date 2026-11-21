@@ -4,14 +4,14 @@ Pins ``render_value_key(key, ctx)`` in ``slayer/sql/render/value_expr.py`` — t
 one ``ValueKey``→AST renderer, parameterised by an explicit ``RenderContext``
 and failing closed when the context lacks a facility a key kind needs. It
 replaced five independent per-path renderers in ``generator.py`` (host
-WHERE/HAVING, cross-model CTE routed filters, POST/alias space, outer combined
+WHERE/HAVING, cross-dataset CTE routed filters, POST/alias space, outer combined
 WHERE, AGGREGATE-phase composites) plus three arithmetic composer shims, all of
 which had drifted; those were deleted. Materialisation stays on
 ``ScopeFrame`` (P-B) — the renderer anchors leaves through
 ``scope.resolve(ref, consumer=...)`` and never by hand.
 
-Also pinned here: B10 (``ScopeFrame._model_for`` raises instead of silently
-substituting the root model) and the aggregation registry (``AGG_REGISTRY``)
+Also pinned here: B10 (``ScopeFrame._dataset_for`` raises instead of silently
+substituting the root dataset) and the aggregation registry (``AGG_REGISTRY``)
 that `_build_agg` reads instead of several ad-hoc dispatch mechanisms.
 
 B5 is the sharpest drift instance: the same ``ScalarCallKey`` reached Postgres
@@ -46,8 +46,8 @@ from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     CastKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
@@ -59,13 +59,12 @@ from slayer.core.keys import (
 from slayer.core.keys import Grain
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
@@ -93,51 +92,51 @@ from slayer.storage.sqlite_conn import transaction
 
 
 # ===========================================================================
-# Models + scope construction (mirrors tests/test_scope.py's idiom).
+# Datasets + scope construction (mirrors tests/test_scope.py's idiom).
 # ===========================================================================
 
 
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="population", sql="population", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-            Column(name="balance", sql="balance", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="label", sql="label", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="net", sql="amount - 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="label", expression="label", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="net", expression="amount - 1", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
 def _scope(
-    host: Optional[SlayerModel] = None,
-    *others: SlayerModel,
+    host: Optional[SlayerDataset] = None,
+    *others: SlayerDataset,
     dialect: str = "postgres",
     allocator: Optional[AliasAllocator] = None,
 ) -> ScopeFrame:
@@ -146,11 +145,11 @@ def _scope(
     alloc = allocator or AliasAllocator()
     bundle = ResolvedSourceBundle(
         dialect="postgres",
-        source_model=host, referenced_models=[host, *others],
+        population=host, referenced_datasets=[host, *others],
     )
     return ScopeFrame(
         scope_id=alloc.next_scope_id(host.name),
-        root_model=host, root_relation=host.name,
+        root_dataset=host, root_relation=host.name,
         bundle=bundle, dialect=get_dialect(dialect), allocator=alloc,
     )
 
@@ -180,27 +179,27 @@ def _sql(expr: exp.Expression, dialect: str = "postgres") -> str:
 
 
 # ===========================================================================
-# B10 — ScopeFrame._model_for raises on an unknown model.
+# B10 — ScopeFrame._dataset_for raises on an unknown dataset.
 # ===========================================================================
 
 
 class TestB10UnknownModelRaises:
-    """Today ``_model_for`` ends in ``or self.root_model``: a ``ColumnSqlKey``
-    naming a model absent from the bundle silently expands the ROOT model's
+    """Today ``_dataset_for`` ends in ``or self.root_dataset``: a ``FieldSqlKey``
+    naming a dataset absent from the bundle silently expands the ROOT dataset's
     derived SQL instead. That turns a wiring bug into a wrong answer — the
-    query runs and returns numbers computed from the wrong model."""
+    query runs and returns numbers computed from the wrong dataset."""
     def test_unknown_model_in_columnsqlkey_raises(self) -> None:
 
         scope = _scope()
-        key = ColumnSqlKey(model="not_in_bundle", column_name="net")
+        key = FieldSqlKey(dataset="not_in_bundle", field_name="net")
         with pytest.raises(UnknownReferenceError):
             scope.resolve(key)
 
     def test_error_names_the_missing_model(self) -> None:
-        """The message must be actionable: which model was asked for, what the
+        """The message must be actionable: which dataset was asked for, what the
         scope root is, and what the bundle actually knows."""
         scope = _scope()
-        key = ColumnSqlKey(model="not_in_bundle", column_name="net")
+        key = FieldSqlKey(dataset="not_in_bundle", field_name="net")
         with pytest.raises(UnknownReferenceError) as excinfo:
             scope.resolve(key)
         message = str(excinfo.value)
@@ -208,27 +207,27 @@ class TestB10UnknownModelRaises:
         assert "orders" in message
 
     def test_known_models_still_resolve(self) -> None:
-        """Parity guard: the root model and every bundle member keep working —
+        """Parity guard: the root dataset and every bundle member keep working —
         B10 removes only the silent FALLBACK, not the lookup."""
         scope = _scope()
-        expr = scope.resolve(ColumnSqlKey(model="orders", column_name="net"))
+        expr = scope.resolve(FieldSqlKey(dataset="orders", field_name="net"))
         assert "amount" in _sql(expr)
 
     def test_root_model_lookup_does_not_consult_the_bundle(self) -> None:
-        """A scope whose root model is not listed in ``referenced_models`` must
-        still resolve its own root — the first branch of ``_model_for``."""
+        """A scope whose root dataset is not listed in ``referenced_datasets`` must
+        still resolve its own root — the first branch of ``_dataset_for``."""
         host = _orders()
         alloc = AliasAllocator()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[_customers(), _regions()],
+            population=host, referenced_datasets=[_customers(), _regions()],
         )
         scope = ScopeFrame(
             scope_id=alloc.next_scope_id(host.name),
-            root_model=host, root_relation=host.name,
+            root_dataset=host, root_relation=host.name,
             bundle=bundle, dialect=get_dialect("postgres"), allocator=alloc,
         )
-        expr = scope.resolve(ColumnSqlKey(model="orders", column_name="net"))
+        expr = scope.resolve(FieldSqlKey(dataset="orders", field_name="net"))
         assert "amount" in _sql(expr)
 
 
@@ -262,19 +261,19 @@ class TestRenderContextApi:
     @pytest.mark.parametrize(
         "label,key",
         [
-            ("local_column", ColumnKey(leaf="amount")),
-            ("joined_column", ColumnKey(path=("customers",), leaf="balance")),
-            ("derived_column", ColumnSqlKey(model="orders", column_name="net")),
+            ("local_column", FieldKey(leaf="amount")),
+            ("joined_column", FieldKey(path=("customers",), leaf="balance")),
+            ("derived_column", FieldSqlKey(dataset="orders", field_name="net")),
         ],
     )
     def test_consumer_routes_column_like_leaves_through_materialization(
         self, label, key,
     ) -> None:
-        """With a consumer named, EVERY column-like leaf must come back as a
+        """With a consumer named, EVERY field-like leaf must come back as a
         BARE materialisation alias and be projected in the PRODUCING scope —
         the single Law-2 mechanism, not a second one grown inside the renderer.
 
-        Parametrised over all three column-like kinds because a renderer that
+        Parametrised over all three field-like kinds because a renderer that
         special-cases one of them would otherwise slip through."""
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
@@ -294,7 +293,7 @@ class TestRenderContextApi:
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
         )
-        alias = _sql(render_value_key(key=ColumnKey(leaf="amount"), ctx=ctx))
+        alias = _sql(render_value_key(key=FieldKey(leaf="amount"), ctx=ctx))
         select = producer.apply_materializations(
             exp.Select().from_(exp.to_table("orders")),
         )
@@ -311,21 +310,21 @@ class TestRenderContextApi:
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
         )
-        a = render_value_key(key=ColumnKey(leaf="amount"), ctx=ctx)
-        b = render_value_key(key=ColumnKey(leaf="amount"), ctx=ctx)
+        a = render_value_key(key=FieldKey(leaf="amount"), ctx=ctx)
+        b = render_value_key(key=FieldKey(leaf="amount"), ctx=ctx)
         assert _sql(a) == _sql(b)
         assert len(producer.materializations) == 1
 
     def test_join_paths_register_as_a_side_effect_of_rendering(self) -> None:
-        """P-A: join discovery is a side effect of rendering, never a separate
+        """P-A: relationship-path discovery is a side effect of rendering, never a separate
         pass. Rendering a joined leaf must register the crossed path on the
         scope without the caller asking."""
         scope = _scope()
         ctx = RenderContext(scope=scope, dialect=scope.dialect)
         render_value_key(
-            key=ColumnKey(path=("customers", "regions"), leaf="name"), ctx=ctx,
+            key=FieldKey(path=("customers", "regions"), leaf="name"), ctx=ctx,
         )
-        assert scope.join_paths.as_list() == [
+        assert scope.relationship_paths.as_list() == [
             ("customers",), ("customers", "regions"),
         ]
 
@@ -339,7 +338,7 @@ class TestRenderContextApi:
         # materialised aliases, which live in the ALIAS facility group.
         key = TransformKey(
             op="time_shift",
-            input=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+            input=AggregateKey(source=FieldKey(leaf="amount"), agg="sum"),
         )
         with pytest.raises(RenderContextMissingFacilityError):
             render_value_key(key=key, ctx=bare)
@@ -350,7 +349,7 @@ class TestRenderContextApi:
         bare = RenderContext(scope=scope, dialect=scope.dialect)
         key = TransformKey(
             op="time_shift",
-            input=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+            input=AggregateKey(source=FieldKey(leaf="amount"), agg="sum"),
         )
         with pytest.raises(RenderContextMissingFacilityError) as excinfo:
             render_value_key(key=key, ctx=bare)
@@ -372,7 +371,7 @@ class TestRenderContextApi:
         """
         scope = _scope()
         bare = RenderContext(scope=scope, dialect=scope.dialect)
-        key = AggregateKey(source=ColumnKey(leaf="amount"), agg="first")
+        key = AggregateKey(source=FieldKey(leaf="amount"), agg="first")
         with pytest.raises(RenderContextMissingFacilityError) as excinfo:
             render_value_key(key=key, ctx=bare)
         assert "composite" in str(excinfo.value).lower(), str(excinfo.value)
@@ -381,7 +380,7 @@ class TestRenderContextApi:
         """Same rule for args/kwargs, which need the generator's parameter
         resolution."""
         key = AggregateKey(
-            source=ColumnKey(leaf="amount"),
+            source=FieldKey(leaf="amount"),
             agg="sum",
             kwargs=(("window", "90d"),),
         )
@@ -392,9 +391,9 @@ class TestRenderContextApi:
     def test_cross_model_star_without_a_builder_fails_closed(self) -> None:
         """``count(customers.*)`` counts rows of the JOINED relation.
 
-        ``StarKey.path`` carries that hop, and routing it needs the join graph.
+        ``StarKey.path`` carries that hop, and routing it needs the relationship graph.
         Emitting a bare ``*`` would count HOST rows instead — a wrong number,
-        the same failure class as a dropped column filter.
+        the same failure class as a dropped field filter.
         """
         key = AggregateKey(source=StarKey(path=("customers",)), agg="count")
         ctx = _composite_ctx()
@@ -417,7 +416,7 @@ class TestRenderContextApi:
         indistinguishable from "not implemented".
         """
         scope = _scope()
-        agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+        agg = AggregateKey(source=FieldKey(leaf="amount"), agg="sum")
         key = TransformKey(op="time_shift", input=agg)
         ctx = RenderContext(
             scope=scope,
@@ -442,20 +441,20 @@ class TestRendersEveryKeyKind:
     a bare ``None`` or a stringified repr."""
     def test_local_column_key(self) -> None:
 
-        out = render_value_key(key=ColumnKey(leaf="amount"), ctx=_filter_ctx())
+        out = render_value_key(key=FieldKey(leaf="amount"), ctx=_filter_ctx())
         assert _sql(out) == "orders.amount"
 
     def test_joined_column_key_anchors_at_the_path_alias(self) -> None:
 
         out = render_value_key(
-            key=ColumnKey(path=("customers",), leaf="balance"), ctx=_filter_ctx(),
+            key=FieldKey(path=("customers",), leaf="balance"), ctx=_filter_ctx(),
         )
         assert _sql(out) == "customers.balance"
 
     def test_multi_hop_column_key(self) -> None:
 
         out = render_value_key(
-            key=ColumnKey(path=("customers", "regions"), leaf="name"),
+            key=FieldKey(path=("customers", "regions"), leaf="name"),
             ctx=_filter_ctx(),
         )
         assert _sql(out) == "customers__regions.name"
@@ -464,15 +463,15 @@ class TestRendersEveryKeyKind:
         """Exact SQL, not a substring check: ``net`` is ``amount - 1``, and the
         expansion must be anchored at the scope root."""
         out = render_value_key(
-            key=ColumnSqlKey(model="orders", column_name="net"), ctx=_filter_ctx(),
+            key=FieldSqlKey(dataset="orders", field_name="net"), ctx=_filter_ctx(),
         )
         assert _sql(out) == "orders.amount - 1"
 
     def test_time_trunc_key(self) -> None:
         """Exact per-dialect SQL — a substring check would accept a truncation
-        at the wrong granularity or over the wrong column."""
+        at the wrong granularity or over the wrong field."""
         key = TimeTruncKey(
-            source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
+            source=FieldKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
         assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', CAST(orders.created_at AS TIMESTAMP))"
@@ -488,7 +487,7 @@ class TestRendersEveryKeyKind:
         defect this module exists to remove.
         """
         key = TimeTruncKey(
-            source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
+            source=FieldKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx(dialect)), dialect)
         if dialect == "sqlite":
@@ -503,7 +502,7 @@ class TestRendersEveryKeyKind:
         ``DATE_TRUNC('WEEK_SUNDAY', col)``, which no dialect accepts.
         """
         key = TimeTruncKey(
-            source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.WEEK_SUNDAY,
+            source=FieldKey(leaf="created_at"), granularity=TimeGranularity.WEEK_SUNDAY,
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert "WEEK_SUNDAY" not in out.upper(), out
@@ -528,7 +527,7 @@ class TestRendersEveryKeyKind:
         out = render_value_key(
             key=ArithmeticKey(
                 op="+",
-                operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
+                operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(1))),
             ),
             ctx=_filter_ctx(),
         )
@@ -539,7 +538,7 @@ class TestRendersEveryKeyKind:
         out = render_value_key(
             key=ArithmeticKey(
                 op=">",
-                operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
+                operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(5))),
             ),
             ctx=_filter_ctx(),
         )
@@ -550,7 +549,7 @@ class TestRendersEveryKeyKind:
         out = render_value_key(
             key=ArithmeticKey(
                 op=">=",
-                operands=(ColumnKey(leaf="amount"), LiteralKey(value=date(2024, 1, 1))),
+                operands=(FieldKey(leaf="amount"), LiteralKey(value=date(2024, 1, 1))),
             ),
             ctx=_filter_ctx(),
         )
@@ -560,7 +559,7 @@ class TestRendersEveryKeyKind:
 
         out = render_value_key(
             key=InKey(
-                column=ColumnKey(leaf="label"),
+                field=FieldKey(leaf="label"),
                 values=(LiteralKey(value="a"), LiteralKey(value="b")),
             ),
             ctx=_filter_ctx(),
@@ -571,7 +570,7 @@ class TestRendersEveryKeyKind:
 
         out = render_value_key(
             key=InKey(
-                column=ColumnKey(leaf="label"),
+                field=FieldKey(leaf="label"),
                 values=(LiteralKey(value="a"),),
                 negated=True,
             ),
@@ -583,7 +582,7 @@ class TestRendersEveryKeyKind:
 
     def test_in_key_with_temporal_literal(self) -> None:
         out = render_value_key(
-            key=InKey(column=ColumnKey(leaf="label"), values=(LiteralKey(value=date(2024, 1, 31)),)),
+            key=InKey(field=FieldKey(leaf="label"), values=(LiteralKey(value=date(2024, 1, 31)),)),
             ctx=_filter_ctx(),
         )
         assert _sql(out) == "orders.label IN (CAST('2024-01-31' AS DATE))"
@@ -591,7 +590,7 @@ class TestRendersEveryKeyKind:
     def test_local_aggregate_key(self) -> None:
 
         out = render_value_key(
-            key=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+            key=AggregateKey(source=FieldKey(leaf="amount"), agg="sum"),
             ctx=_composite_ctx(),
         )
         assert _sql(out) == "SUM(orders.amount)"
@@ -626,7 +625,7 @@ class TestRendersEveryKeyKind:
                     ArithmeticKey(
                         op=">",
                         operands=(
-                            ColumnKey(leaf="amount"),
+                            FieldKey(leaf="amount"),
                             LiteralKey(value=Decimal(5)),
                         ),
                     ),
@@ -649,7 +648,7 @@ class TestRendersEveryKeyKind:
                         ArithmeticKey(
                             op="+",
                             operands=(
-                                ColumnKey(leaf="amount"),
+                                FieldKey(leaf="amount"),
                                 LiteralKey(value=Decimal(1)),
                             ),
                         ),
@@ -664,7 +663,7 @@ class TestRendersEveryKeyKind:
                 ArithmeticKey(
                     op="-",
                     operands=(
-                        ColumnKey(leaf="amount"),
+                        FieldKey(leaf="amount"),
                         ArithmeticKey(
                             op="-",
                             operands=(
@@ -681,7 +680,7 @@ class TestRendersEveryKeyKind:
                 ArithmeticKey(
                     op="+",
                     operands=(
-                        ColumnKey(leaf="amount"),
+                        FieldKey(leaf="amount"),
                         ArithmeticKey(
                             op="*",
                             operands=(
@@ -752,13 +751,13 @@ class TestRendersEveryKeyKind:
 # emit-time pass over the finished statement, not part of value rendering.
 _SCALAR_MATRIX = [
     # R1 today: IFNULL(...) — invalid on Postgres, which has no IFNULL.
-    ("ifnull", (ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
+    ("ifnull", (FieldKey(leaf="amount"), LiteralKey(value=Decimal(0))),
      "COALESCE(orders.amount, 0)", "COALESCE(orders.amount, 0)"),
     # R1 today: CONCAT(...) verbatim on every dialect; the operator differs.
-    ("concat", (ColumnKey(leaf="label"), LiteralKey(value="x")),
+    ("concat", (FieldKey(leaf="label"), LiteralKey(value="x")),
      "orders.label || 'x'", "orders.label + 'x'"),
     # T-SQL LEN drops trailing spaces; an NVARCHAR(MAX) copy plus a sentinel keeps them.
-    ("length", (ColumnKey(leaf="label"),),
+    ("length", (FieldKey(leaf="label"),),
      "LENGTH(orders.label)", "(LEN((CAST(orders.label AS NVARCHAR(MAX)) + 'x') COLLATE Latin1_General_100_CS_AS_SC) - 1)"),
 ]
 
@@ -786,7 +785,7 @@ class TestB5ScalarCallPolicy:
         string: Postgres has no ``IFNULL``, so emitting it is broken SQL."""
         key = ScalarCallKey(
             name="ifnull",
-            args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
+            args=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(0))),
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert "IFNULL" not in out.upper(), out
@@ -801,7 +800,7 @@ class TestB5ScalarCallPolicy:
         ``_rewrite_log_aliases``. Applying transpile WITHOUT that rewrite would
         regress ``log10`` — so the unified renderer must apply both.
         """
-        key = ScalarCallKey(name="log10", args=(ColumnKey(leaf="amount"),))
+        key = ScalarCallKey(name="log10", args=(FieldKey(leaf="amount"),))
         out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert out.upper().startswith("LOG10("), out
 
@@ -811,7 +810,7 @@ class TestB5ScalarCallPolicy:
         Unifying must not lose it."""
         key = ScalarCallKey(
             name="round",
-            args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
+            args=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(0))),
         )
         out = _sql(render_value_key(key=key, ctx=_filter_ctx("postgres")), "postgres")
         assert "CAST" in out.upper(), out
@@ -822,7 +821,7 @@ class TestB5ScalarCallPolicy:
         escape of the one LIKE pattern language."""
         key = ScalarCallKey(
             name="like",
-            args=(ColumnKey(leaf="label"), LiteralKey(value="x%")),
+            args=(FieldKey(leaf="label"), LiteralKey(value="x%")),
         )
         out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
         assert isinstance(out, exp.Escape)
@@ -835,7 +834,7 @@ class TestB5ScalarCallPolicy:
         key = ScalarCallKey(
             name="ifnull",
             args=(
-                ScalarCallKey(name="length", args=(ColumnKey(leaf="label"),)),
+                ScalarCallKey(name="length", args=(FieldKey(leaf="label"),)),
                 LiteralKey(value=Decimal(0)),
             ),
         )
@@ -889,28 +888,28 @@ class TestPGSameConstructSameSql:
     of bug the five copies produced.
     """
     _KEYS = [
-        ("column", ColumnKey(leaf="amount")),
-        ("joined_column", ColumnKey(path=("customers",), leaf="balance")),
-        ("derived_column", ColumnSqlKey(model="orders", column_name="net")),
+        ("column", FieldKey(leaf="amount")),
+        ("joined_column", FieldKey(path=("customers",), leaf="balance")),
+        ("derived_column", FieldSqlKey(dataset="orders", field_name="net")),
         ("literal", LiteralKey(value=Decimal(7))),
         ("scalar_call", ScalarCallKey(
             name="ifnull",
-            args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
+            args=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(0))),
         )),
         ("nested_scalar_call", ScalarCallKey(
             name="upper",
-            args=(ScalarCallKey(name="trim", args=(ColumnKey(leaf="label"),)),),
+            args=(ScalarCallKey(name="trim", args=(FieldKey(leaf="label"),)),),
         )),
         ("arithmetic", ArithmeticKey(
             op="*",
-            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(2))),
+            operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(2))),
         )),
         ("in_predicate", InKey(
-            column=ColumnKey(leaf="label"), values=(LiteralKey(value="a"),),
+            field=FieldKey(leaf="label"), values=(LiteralKey(value="a"),),
         )),
         ("temporal_bound", ArithmeticKey(
             op="<",
-            operands=(ColumnKey(leaf="amount"), LiteralKey(value=datetime(2024, 1, 1, 10))),
+            operands=(FieldKey(leaf="amount"), LiteralKey(value=datetime(2024, 1, 1, 10))),
         )),
     ]
 
@@ -941,7 +940,7 @@ class TestAggregationRegistry:
     """``_build_agg`` reaches its builders five different ways: a hardcoded
     name pair for first/last, ``_AGG_FUNCTION_MAP`` plus a SECOND inline
     ``agg_class_map``, a frozenset membership test for the stat aggregates,
-    name equality for the dialect-hook aggregates, and a formula-template
+    name equality for the dialect-hook aggregates, and an expression-template
     fallback. One registry table replaces all five."""
 
     # Frozen INDEPENDENTLY of both BUILTIN_AGGREGATIONS and the registry, one
@@ -997,7 +996,7 @@ class TestAggregationRegistry:
     def test_registry_and_builtins_agree_both_ways(self) -> None:
         """The import-time invariant, asserted in both directions.
 
-        A missing built-in would fall through to the custom-formula path. A
+        A missing built-in would fall through to the custom-expression path. A
         registry key that is NOT a built-in — a typo such as ``sumn`` — is the
         subtler half: ``is_builtin_agg`` would accept it and route it AWAY from
         that path, so the typo would render as if it were a real aggregation.
@@ -1032,25 +1031,25 @@ async def _e2e_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryE
     await storage.save_datasource(
         DatasourceConfig(name="prod", type=dialect, database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
-            # first/last needs a resolvable ranking time column.
+            # first/last needs a resolvable ranking time field.
             default_time_dimension="created_at",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="disc", type=DataType.DOUBLE),
-                Column(name="qty", type=DataType.DOUBLE),
-                Column(name="created_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="disc", datatype=DataType.FLOAT),
+                DatasetField(name="qty", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
             ],
-            # Exercises the formula-template dispatch mechanism through the
+            # Exercises the expression-template dispatch mechanism through the
             # registry — a CUSTOM aggregation, not a builtin.
             aggregations=[
-                Aggregation(name="sum_sq", formula="SUM({value} * {value})"),
+                Aggregation(name="sum_sq", expression="SUM({value} * {value})"),
             ],
         )
     )
@@ -1069,10 +1068,10 @@ class TestMigratedCallSitesEndToEnd:
         ``disc = 5``."""
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="count(*)")],
-                filters=["ifnull(disc, 0) > 1"],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
+                filter=["ifnull(orders.disc, 0) > 1"],
             )
         )
         assert len(resp.data) == 1
@@ -1084,12 +1083,12 @@ class TestMigratedCallSitesEndToEnd:
         aggregate. Sums: new = 30, old = 30."""
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="ifnull(sum(amount), 0)", name="m")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="ifnull(sum(orders.amount), 0)", alias="m")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.m"] for r in resp.data}
+        by_status = {r["orders.status"]: r["m"] for r in resp.data}
         assert by_status == {"new": 30.0, "old": 30.0}
 
     async def test_arithmetic_composite_of_two_aggregates(self, e2e) -> None:
@@ -1097,59 +1096,59 @@ class TestMigratedCallSitesEndToEnd:
         must stay ONE inline expression, not two materialised slots."""
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="sum(amount) - sum(qty)", name="d"),
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[
+                    QueryMetric(metric="sum(orders.amount) - sum(orders.qty)", alias="d"),
                 ],
             )
         )
-        by_status = {r["orders.status"]: r["orders.d"] for r in resp.data}
+        by_status = {r["orders.status"]: r["d"] for r in resp.data}
         assert by_status == {"new": 24.0, "old": 29.0}
 
     async def test_custom_formula_aggregation_still_dispatches(
         self, e2e,
     ) -> None:
-        """The registry must keep the formula-template mechanism reachable for
+        """The registry must keep the expression-template mechanism reachable for
         aggregations that are NOT builtins — a closed builtin table would drop
         them. new = 10² + 20² = 500; old = 30² = 900."""
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum_sq(amount)", name="ss")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum_sq(orders.amount)", alias="ss")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.ss"] for r in resp.data}
+        by_status = {r["orders.status"]: r["ss"] for r in resp.data}
         assert by_status == {"new": 500.0, "old": 900.0}
 
     async def test_having_filter_over_an_aggregate_executes(self, e2e) -> None:
         """AGGREGATE-phase filter (HAVING) — the other half of R1's family."""
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(qty)", name="q")],
-                filters=["sum(qty) > 5"],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.qty)", alias="q")],
+                filter=["sum(orders.qty) > 5"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
-        assert resp.data[0]["orders.q"] == 6.0
+        assert resp.data[0]["q"] == 6.0
 
     async def test_first_last_composite_call_site_executes(self, e2e) -> None:
         """R5's SECOND production call site (``_build_first_last_base_select``,
-        the generator) — reached only by a first/last measure, which builds
+        the generator) — reached only by a first/last metric, which builds
         its own ranked base SELECT rather than the ordinary composite one.
 
         Ordered by ``id``: new -> last amount 20, old -> 30."""
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="last(amount)", name="la")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="last(orders.amount)", alias="la")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
+        by_status = {r["orders.status"]: r["la"] for r in resp.data}
         assert by_status == {"new": 20.0, "old": 30.0}
 
     async def test_scalar_call_inside_a_first_last_composite(self, e2e) -> None:
@@ -1157,14 +1156,14 @@ class TestMigratedCallSitesEndToEnd:
         surviving on that route could not pass unnoticed."""
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="ifnull(last(amount), 0)", name="la"),
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[
+                    QueryMetric(metric="ifnull(last(orders.amount), 0)", alias="la"),
                 ],
             )
         )
-        by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
+        by_status = {r["orders.status"]: r["la"] for r in resp.data}
         assert by_status == {"new": 20.0, "old": 30.0}
 
 
@@ -1207,38 +1206,38 @@ class TestOuterWrapperAndShiftedCteFamilies:
         await storage.save_datasource(
             DatasourceConfig(name="prod", type=dialect, database=db_path)
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="regions", sql_table="regions", data_source="prod",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="tier", type=DataType.TEXT),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="tier", datatype=DataType.STRING),
                 ],
             )
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders", sql_table="orders", data_source="prod",
                 default_time_dimension="created_at",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="region_id", type=DataType.INT),
-                    Column(name="status", type=DataType.TEXT),
-                    Column(name="amount", type=DataType.DOUBLE),
-                    Column(name="disc", type=DataType.DOUBLE),
-                    Column(name="created_at", type=DataType.TIMESTAMP),
-                    # Join-crossing Column.filter => filtered-local
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="region_id", datatype=DataType.INTEGER),
+                    DatasetField(name="status", datatype=DataType.STRING),
+                    DatasetField(name="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="disc", datatype=DataType.FLOAT),
+                    DatasetField(name="created_at", datatype=DataType.DATETIME),
+                    # Relationship-crossing DatasetField.filter => filtered-local
                     # isolation => the outer combined-SELECT wrapper (R4).
-                    Column(
-                        name="gold_amount", sql="amount",
-                        type=DataType.DOUBLE,
+                    DatasetField(
+                        name="gold_amount", expression="amount",
+                        datatype=DataType.FLOAT,
                         filter="regions.tier = 'gold'",
                     ),
                 ],
-                joins=[
-                    ModelJoin(
-                        target_model="regions",
-                        join_pairs=[["region_id", "id"]],
+                relationships=[
+                    DatasetRelationship(
+                        to="regions",
+                        from_columns=["region_id"], to_columns=["id"],
                     ),
                 ],
             )
@@ -1255,14 +1254,14 @@ class TestOuterWrapperAndShiftedCteFamilies:
         engine = await self._engine(tmp_path)
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
-                filters=["sum(gold_amount) > 100"],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                filter=["sum(orders.gold_amount) > 100"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
-        assert resp.data[0]["orders.g"] == 300.0
+        assert resp.data[0]["g"] == 300.0
 
     async def test_outer_wrapper_filter_carrying_a_scalar_call(self, tmp_path) -> None:
         """B5 on R4's route specifically — the patched scalar branch. Wrapping
@@ -1271,14 +1270,14 @@ class TestOuterWrapperAndShiftedCteFamilies:
         engine = await self._engine(tmp_path)
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
-                filters=["ifnull(sum(gold_amount), 0) > 100"],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                filter=["ifnull(sum(orders.gold_amount), 0) > 100"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
-        assert resp.data[0]["orders.g"] == 300.0
+        assert resp.data[0]["g"] == 300.0
 
     async def test_outer_wrapper_scalar_call_is_transpiled_on_postgres(
         self, tmp_path,
@@ -1297,10 +1296,10 @@ class TestOuterWrapperAndShiftedCteFamilies:
         engine = await self._engine(tmp_path, dialect="postgres")
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(gold_amount)", name="g")],
-                filters=["ifnull(sum(gold_amount), 0) > 100"],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                filter=["ifnull(sum(orders.gold_amount), 0) > 100"],
             ),
             dry_run=True,
         )
@@ -1318,29 +1317,29 @@ class TestOuterWrapperAndShiftedCteFamilies:
         engine = await self._engine(tmp_path)
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[
-                    ModelMeasure(formula="sum(amount)", name="amt"),
-                    ModelMeasure(
-                        formula="time_shift(sum(amount), -1, 'month')",
-                        name="prev",
+                metrics=[
+                    QueryMetric(metric="sum(orders.amount)", alias="amt"),
+                    QueryMetric(
+                        metric="time_shift(sum(orders.amount), -1, 'month')",
+                        alias="prev",
                     ),
                 ],
-                filters=["status = 'new'"],
+                filter=["orders.status = 'new'"],
             )
         )
         rows = sorted(resp.data, key=lambda r: str(r["orders.created_at"]))
         assert len(rows) == 2, rows
-        assert rows[0]["orders.amt"] == 100.0
-        assert rows[1]["orders.amt"] == 200.0
+        assert rows[0]["amt"] == 100.0
+        assert rows[1]["amt"] == 200.0
         # February's shifted value is January's filtered total.
-        assert rows[1]["orders.prev"] == 100.0
+        assert rows[1]["prev"] == 100.0
 
 
 # ===========================================================================
@@ -1362,17 +1361,17 @@ def _mutation_cases():
     (or make the render refuse). Two keys that differ but render identically
     means that field vanished.
     """
-    col = ColumnKey(leaf="amount")
-    other = ColumnKey(leaf="label")
-    ts = ColumnKey(leaf="created_at")
-    other_ts = CastKey(source=other, type_text="TIMESTAMP", data_type=DataType.TIMESTAMP)
+    col = FieldKey(leaf="amount")
+    other = FieldKey(leaf="label")
+    ts = FieldKey(leaf="created_at")
+    other_ts = CastKey(source=other, type_text="TIMESTAMP", data_type=DataType.DATETIME)
     return [
         ("ColumnKey.leaf", col, other),
-        ("ColumnKey.path", col, ColumnKey(path=("customers",), leaf="amount")),
+        ("ColumnKey.path", col, FieldKey(path=("customers",), leaf="amount")),
         (
-            "ColumnSqlKey.column_name",
-            ColumnSqlKey(model="orders", column_name="net"),
-            ColumnSqlKey(model="orders", column_name="amount"),
+            "ColumnSqlKey.field_name",
+            FieldSqlKey(dataset="orders", field_name="net"),
+            FieldSqlKey(dataset="orders", field_name="amount"),
         ),
         (
             "TimeTruncKey.granularity",
@@ -1444,13 +1443,13 @@ def _mutation_cases():
         ),
         (
             "InKey.values",
-            InKey(column=col, values=(LiteralKey(value="a"),)),
-            InKey(column=col, values=(LiteralKey(value="b"),)),
+            InKey(field=col, values=(LiteralKey(value="a"),)),
+            InKey(field=col, values=(LiteralKey(value="b"),)),
         ),
         (
             "InKey.negated",
-            InKey(column=col, values=(LiteralKey(value="a"),)),
-            InKey(column=col, values=(LiteralKey(value="a"),), negated=True),
+            InKey(field=col, values=(LiteralKey(value="a"),)),
+            InKey(field=col, values=(LiteralKey(value="a"),), negated=True),
         ),
         (
             "AggregateKey.agg",
@@ -1533,7 +1532,7 @@ class TestOperatorCompositionEdges:
             operands=(
                 ArithmeticKey(
                     op=">",
-                    operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
+                    operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(5))),
                 ),
                 LiteralKey(value=Decimal(1)),
             ),
@@ -1552,11 +1551,11 @@ class TestOperatorCompositionEdges:
                     operands=(
                         ArithmeticKey(
                             op=">",
-                            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
+                            operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(1))),
                         ),
                         ArithmeticKey(
                             op="<",
-                            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(9))),
+                            operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(9))),
                         ),
                     ),
                 ),
@@ -1577,7 +1576,7 @@ class TestOperatorCompositionEdges:
         key = ArithmeticKey(
             op="<",
             operands=(
-                ColumnKey(leaf="amount"),
+                FieldKey(leaf="amount"),
                 LiteralKey(value=Decimal(5)),
                 LiteralKey(value=Decimal(9)),
             ),
@@ -1592,7 +1591,7 @@ class TestOperatorCompositionEdges:
         key = ArithmeticKey(
             op="is",
             operands=(
-                ColumnKey(leaf="amount"),
+                FieldKey(leaf="amount"),
                 LiteralKey(value=None),
                 LiteralKey(value=Decimal(1)),
             ),
@@ -1607,14 +1606,14 @@ class TestContainsAggregate:
     answer "is there an aggregate in this tree", not "when does this evaluate"."""
     def test_bare_aggregate(self) -> None:
         assert contains_aggregate(
-            AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+            AggregateKey(source=FieldKey(leaf="amount"), agg="sum"),
         ) is True
 
     def test_plain_column_is_not_an_aggregate(self) -> None:
-        assert contains_aggregate(ColumnKey(leaf="amount")) is False
+        assert contains_aggregate(FieldKey(leaf="amount")) is False
 
     def test_aggregate_nested_in_arithmetic_and_scalar_calls(self) -> None:
-        agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+        agg = AggregateKey(source=FieldKey(leaf="amount"), agg="sum")
         nested = ScalarCallKey(
             name="ifnull",
             args=(
@@ -1628,16 +1627,16 @@ class TestContainsAggregate:
         """The case a phase test gets wrong.
 
         Every TransformKey is POST phase, so ``phase >= AGGREGATE`` reports
-        True even when the transform wraps a plain column — routing a
+        True even when the transform wraps a plain field — routing a
         non-aggregate predicate into HAVING.
         """
-        key = TransformKey(op="cumsum", input=ColumnKey(leaf="amount"))
+        key = TransformKey(op="cumsum", input=FieldKey(leaf="amount"))
         assert contains_aggregate(key) is False
 
     def test_transform_over_an_aggregate_is_an_aggregate(self) -> None:
         key = TransformKey(
             op="cumsum",
-            input=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+            input=AggregateKey(source=FieldKey(leaf="amount"), agg="sum"),
         )
         assert contains_aggregate(key) is True
 
@@ -1654,7 +1653,7 @@ class TestEqualPrecedenceRightChildren:
         return ArithmeticKey(
             op=outer_op,
             operands=(
-                ColumnKey(leaf="amount"),
+                FieldKey(leaf="amount"),
                 ArithmeticKey(
                     op=inner_op,
                     operands=(
@@ -1704,7 +1703,7 @@ class TestArithmeticArity:
         not fall through to the unary branch and report ``and`` as an
         unsupported unary operator."""
         inner = ArithmeticKey(
-            op=">", operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
+            op=">", operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(5))),
         )
         key = ArithmeticKey(op=op, operands=(inner,))
         assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "orders.amount > 5"
@@ -1715,27 +1714,27 @@ class TestContainsAggregateTransformDependencies:
     transform just as ``input`` is — an aggregate in either one still lands in
     the emitted SQL."""
     def test_aggregate_in_partition_keys(self) -> None:
-        agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+        agg = AggregateKey(source=FieldKey(leaf="amount"), agg="sum")
         key = TransformKey(
             op="rank",
-            input=ColumnKey(leaf="amount"),
+            input=FieldKey(leaf="amount"),
             partition_keys=Grain.of({agg}),
         )
         assert contains_aggregate(key) is True
 
     def test_aggregate_in_time_key(self) -> None:
-        agg = AggregateKey(source=ColumnKey(leaf="created_at"), agg="max")
+        agg = AggregateKey(source=FieldKey(leaf="created_at"), agg="max")
         key = TransformKey(
-            op="cumsum", input=ColumnKey(leaf="amount"), time_key=agg,
+            op="cumsum", input=FieldKey(leaf="amount"), time_key=agg,
         )
         assert contains_aggregate(key) is True
 
     def test_transform_with_no_aggregate_anywhere(self) -> None:
         key = TransformKey(
             op="rank",
-            input=ColumnKey(leaf="amount"),
-            partition_keys=Grain.of({ColumnKey(leaf="label")}),
-            time_key=ColumnKey(leaf="created_at"),
+            input=FieldKey(leaf="amount"),
+            partition_keys=Grain.of({FieldKey(leaf="label")}),
+            time_key=FieldKey(leaf="created_at"),
         )
         assert contains_aggregate(key) is False
 
@@ -1797,11 +1796,11 @@ class TestNewlyAdmittedScalars:
     @pytest.mark.parametrize(
         "predicate,expected_fragment",
         [
-            ("ceiling(amount) > 25", "CEIL("),
-            ("sign(amount) > 0", "SIGN("),
-            ("ltrim(status) = 'new'", "LTRIM("),
-            ("rtrim(status) = 'new'", "RTRIM("),
-            ("substring(status, 1, 3) = 'new'", "SUBSTRING("),
+            ("ceiling(orders.amount) > 25", "CEIL("),
+            ("sign(orders.amount) > 0", "SIGN("),
+            ("ltrim(orders.status) = 'new'", "LTRIM("),
+            ("rtrim(orders.status) = 'new'", "RTRIM("),
+            ("substring(orders.status, 1, 3) = 'new'", "SUBSTRING("),
         ],
     )
     async def test_binds_renders_and_executes(
@@ -1810,9 +1809,9 @@ class TestNewlyAdmittedScalars:
         """Not just "the binder accepts it" — the SQL has to run."""
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="count(*)", name="n")],
-                filters=[predicate],
+                population="orders",
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=[predicate],
             ),
         )
         assert expected_fragment in (resp.sql or ""), resp.sql
@@ -1886,31 +1885,31 @@ class TestArityIsRejectedAtBindTime:
     @staticmethod
     def _query(predicate: str) -> SlayerQuery:
         return SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="count(*)", name="n")],
-            filters=[predicate],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+            filter=[predicate],
         )
 
     async def test_round_with_three_args_is_rejected(self, e2e) -> None:
-        query = self._query("round(amount, 2, 99) > 1")
+        query = self._query("round(orders.amount, 2, 99) > 1")
         with pytest.raises(ValueError, match="round"):
             await e2e.execute(query, dry_run=True)
 
     async def test_length_with_two_args_is_rejected(self, e2e) -> None:
         """Previously emitted ``LENGTH(a, b)`` — invalid SQL the backend
         rejected with its own, less useful error."""
-        query = self._query("length(status, status) > 1")
+        query = self._query("length(orders.status, orders.status) > 1")
         with pytest.raises(ValueError, match="length"):
             await e2e.execute(query, dry_run=True)
 
     async def test_correct_arity_still_binds(self, e2e) -> None:
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="count(*)", name="n")],
-                filters=["round(amount, 2) > 1"],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["round(orders.amount, 2) > 1"],
             ),
             dry_run=True,
         )
@@ -1927,7 +1926,7 @@ class TestNullInInList:
     """
     def test_renderer_refuses_null_in_the_list(self) -> None:
         key = InKey(
-            column=ColumnKey(leaf="label"),
+            field=FieldKey(leaf="label"),
             values=(LiteralKey(value="a"), LiteralKey(value=None)),
         )
         ctx = _filter_ctx()
@@ -1936,7 +1935,7 @@ class TestNullInInList:
 
     def test_renderer_refuses_null_in_a_negated_list(self) -> None:
         key = InKey(
-            column=ColumnKey(leaf="label"),
+            field=FieldKey(leaf="label"),
             values=(LiteralKey(value="a"), LiteralKey(value=None)),
             negated=True,
         )
@@ -1946,7 +1945,7 @@ class TestNullInInList:
 
     def test_ordinary_in_list_still_renders(self) -> None:
         key = InKey(
-            column=ColumnKey(leaf="label"),
+            field=FieldKey(leaf="label"),
             values=(LiteralKey(value="a"), LiteralKey(value="b")),
         )
         assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == (
@@ -1962,11 +1961,11 @@ class TestIifDirectRender:
     def test_nested_chain_renders_one_flattened_case(self) -> None:
         key = ScalarCallKey(name="iif", args=(
             ArithmeticKey(op=">", operands=(
-                ColumnKey(leaf="amount"), LiteralKey(value=5))),
+                FieldKey(leaf="amount"), LiteralKey(value=5))),
             LiteralKey(value=1),
             ScalarCallKey(name="iif", args=(
                 ArithmeticKey(op=">", operands=(
-                    ColumnKey(leaf="amount"), LiteralKey(value=2))),
+                    FieldKey(leaf="amount"), LiteralKey(value=2))),
                 LiteralKey(value=2),
                 LiteralKey(value=0),
             )),
@@ -2004,32 +2003,32 @@ class TestIifDirectRender:
     @staticmethod
     def _query(predicate: str) -> SlayerQuery:
         return SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="count(*)", name="n")],
-            filters=[predicate],
+            population="orders",
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+            filter=[predicate],
         )
 
     async def test_bind_time_rejects_null_in_list(self, e2e) -> None:
         """The user-facing half: caught at bind, with a message pointing at
         ``is null`` rather than at three-valued logic in the abstract."""
-        query = self._query("status in ('new', None)")
+        query = self._query("orders.status in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
             await e2e.execute(query, dry_run=True)
 
     async def test_bind_time_rejects_null_in_negated_list(self, e2e) -> None:
         """The dangerous one: this previously returned zero rows in silence."""
-        query = self._query("status not in ('new', None)")
+        query = self._query("orders.status not in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
             await e2e.execute(query, dry_run=True)
 
     async def test_null_free_in_list_still_executes(self, e2e) -> None:
         resp = await e2e.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="count(*)", name="n")],
-                filters=["status in ('new', 'missing')"],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["orders.status in ('new', 'missing')"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
@@ -2049,7 +2048,7 @@ class TestUnaryOperandGrouping:
             operands=(
                 ArithmeticKey(
                     op="+",
-                    operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
+                    operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(1))),
                 ),
             ),
         )
@@ -2067,11 +2066,11 @@ class TestUnaryOperandGrouping:
                     operands=(
                         ArithmeticKey(
                             op=">",
-                            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
+                            operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(1))),
                         ),
                         ArithmeticKey(
                             op="<",
-                            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(9))),
+                            operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(9))),
                         ),
                     ),
                 ),
@@ -2088,14 +2087,14 @@ class TestUnaryOperandGrouping:
             operands=(
                 ArithmeticKey(
                     op=">",
-                    operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
+                    operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(5))),
                 ),
             ),
         )
         assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "NOT orders.amount > 5"
 
     def test_negated_column_needs_no_parens(self) -> None:
-        key = ArithmeticKey(op="-", operands=(ColumnKey(leaf="amount"),))
+        key = ArithmeticKey(op="-", operands=(FieldKey(leaf="amount"),))
         assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "-orders.amount"
 
 
@@ -2113,7 +2112,7 @@ class TestComparisonsAreNonAssociative:
 
     def _inner(self, op="="):
         return self._cmp(
-            op, ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5)),
+            op, FieldKey(leaf="amount"), LiteralKey(value=Decimal(5)),
         )
 
     def test_comparison_over_comparison_keeps_left_parens(self) -> None:
@@ -2143,8 +2142,8 @@ class TestComparisonsAreNonAssociative:
         assert out == "NOT (orders.amount = 5) IS NULL", out
 
     def test_plain_is_null_over_a_column_gains_no_parens(self) -> None:
-        """Don't over-wrap: a column is self-delimiting."""
-        key = self._cmp("is", ColumnKey(leaf="amount"), LiteralKey(value=None))
+        """Don't over-wrap: a field is self-delimiting."""
+        key = self._cmp("is", FieldKey(leaf="amount"), LiteralKey(value=None))
         assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "orders.amount IS NULL"
 
     def test_arithmetic_left_child_still_flattens(self) -> None:
@@ -2152,7 +2151,7 @@ class TestComparisonsAreNonAssociative:
         ``(a - 1) - 2`` is the tree a left-fold builds, and re-parenthesising
         every arithmetic left child would churn emission for no gain."""
         inner = self._cmp(
-            "-", ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1)),
+            "-", FieldKey(leaf="amount"), LiteralKey(value=Decimal(1)),
         )
         key = self._cmp("-", inner, LiteralKey(value=Decimal(2)))
         out = _sql(render_value_key(key=key, ctx=_filter_ctx()))
@@ -2361,10 +2360,10 @@ class TestArithmeticGroupingViaRender:
         """``a AND (b OR c)`` must not flatten to ``a AND b OR c``, which binds
         as ``(a AND b) OR c`` — a different, wider row set."""
         lt = ArithmeticKey(
-            op="<", operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(9))),
+            op="<", operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(9))),
         )
         gt = ArithmeticKey(
-            op=">", operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
+            op=">", operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(1))),
         )
         key = ArithmeticKey(
             op="and", operands=(lt, ArithmeticKey(op="or", operands=(gt, lt))),
@@ -2380,7 +2379,7 @@ class TestArithmeticGroupingViaRender:
         ``operands[0]``/``[1]`` and silently dropped operands past index 1."""
         cols = tuple(
             ArithmeticKey(
-                op=">", operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(n))),
+                op=">", operands=(FieldKey(leaf="amount"), LiteralKey(value=Decimal(n))),
             )
             for n in (1, 2, 3)
         )
