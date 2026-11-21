@@ -185,7 +185,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`\"to_many_handling\": \"broadcast\" | \"associate\" | \"error\"`"
+    how: "`\"to_many_handling\": \"associate\" | \"error\"`"
     caveat: Typed errors and structured warnings; every SLayer probe returns the right numbers or fails with a typed error (verified).
   malloy:
     verdict: partial

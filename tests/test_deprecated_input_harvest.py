@@ -15,7 +15,6 @@ from fastapi.testclient import TestClient
 from mcp.server.fastmcp.exceptions import ToolError
 
 from slayer.api.server import create_app
-from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import SlayerError
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -30,6 +29,7 @@ from tests._deprecated_input_helpers import (
     deprecated_in,
     deprecations,
     dumped,
+    http_client,
     mcp_payload,
     orders_engine,
     payload_of,
@@ -200,7 +200,7 @@ class TestStoredStages:
         assert len(deprecated_in(resp.json()["warnings"])) == 1
 
     def test_http_client_run_by_name(self, stored: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> None:
-        client = _http_client(stored, monkeypatch)
+        client = http_client(stored, monkeypatch)
         with recorded():
             response = client.query_sync(SAVED)
         assert len(deprecated_in(response.warnings)) == 1
@@ -225,30 +225,12 @@ class TestSurfaces:
         assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == expected
 
 
-def _http_client(engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> SlayerClient:
-    """A remote ``SlayerClient`` whose sync and async transports post to an in-process app."""
-    server = TestClient(create_app(storage=engine.storage))
-
-    def via_app(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:
-        resp = server.request(method, path, json=json, params=params)
-        resp.raise_for_status()
-        return resp.json()
-
-    async def via_app_async(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:  # NOSONAR(S7503) — matches the awaited transport
-        return via_app(method=method, path=path, json=json, params=params)
-
-    client = SlayerClient(url="http://testserver")
-    monkeypatch.setattr(client, "_request_sync", via_app)
-    monkeypatch.setattr(client, "_request", via_app_async)
-    return client
-
-
 class TestHttpClient:
     """The client converts locally, so the server never sees ``strict``; the client reports what it converted."""
 
     @pytest.fixture(params=["sync", "async"])
     def run(self, request, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch):
-        client = _http_client(engine, monkeypatch)
+        client = http_client(engine, monkeypatch)
 
         async def _run(query: Any, **kwargs: Any) -> Any:
             if request.param == "sync":

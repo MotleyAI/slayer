@@ -69,6 +69,7 @@ from slayer.core.query import (
     QueryMetric,
     QueryRefinement,
     SlayerQuery,
+    broadcast_deprecations,
     deprecated_inputs_of,
     extract_variable_refs,
     mode_a_texts,
@@ -106,6 +107,7 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
+    broadcast_hint,
     DeprecatedInputWarning,
     LibraryNameShadowWarning,
     NameCollisionWarning,
@@ -511,8 +513,10 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
 def _collect_broadcast_warnings(
     *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[BroadcastGrainWarningPayload]:
-    """One broadcast payload per ``(stage location, metric label)``; dimensions unioned."""
+    """One broadcast payload per ``(stage location, metric label)``; dimensions unioned, the first attach's
+    replacement named."""
     dims_by_key: "dict[tuple[str, str], list[tuple[str, str]]]" = {}
+    replacement_of: "dict[tuple[str, str], tuple[Optional[str], list[str]]]" = {}
     if labels is None:
         labels = _stage_labels(stages=stages, displays=displays)
     for planned, location in zip(planned_list, labels):
@@ -521,18 +525,31 @@ def _collect_broadcast_warnings(
             if not metric:
                 continue
             dims = dims_by_key.setdefault((location, metric), [])
+            replacement_of.setdefault((location, metric), (attach.broadcast_call, attach.broadcast_partition_by))
             seen = {d for d, _ in dims}
             for dim, reason in attach.broadcast_dimensions:
                 if dim not in seen:
                     dims.append((dim, reason))
                     seen.add(dim)
     return [
-        BroadcastGrainWarningPayload(
-            metric=metric, location=location,
-            dimensions=[BroadcastDimension(dimension=d, reason=r) for d, r in dims],
+        _broadcast_payload(
+            metric=metric, location=location, dims=dims, replacement=replacement_of[(location, metric)],
         )
         for (location, metric), dims in dims_by_key.items()
     ]
+
+
+def _broadcast_payload(
+    *, metric: str, location: str, dims: "list[tuple[str, str]]", replacement: "tuple[Optional[str], list[str]]",
+) -> BroadcastGrainWarningPayload:
+    call, partition_by = replacement
+    payload = BroadcastGrainWarningPayload(
+        metric=metric, location=location, partition_by=partition_by,
+        dimensions=[BroadcastDimension(dimension=d, reason=r) for d, r in dims],
+    )
+    if call is not None:
+        payload.hint = broadcast_hint(call=call, partition_by=partition_by)
+    return payload
 
 
 def _collect_associated_warnings(
@@ -1234,6 +1251,7 @@ class SlayerQueryEngine:
                 run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source,
                 deprecations_out=deprecations,
             )
+            deprecations.extend(broadcast_deprecations([*named_queries.values(), main_query]))
             response = await self._execute_pipeline(
                 query=main_query,
                 named_queries=named_queries,
@@ -1645,10 +1663,12 @@ class SlayerQueryEngine:
             if (read := bundle.datasets_by_name.get(name)) is not None and (dropped := read.unknown_stored_keys)
         )
         # Stored query-backed datasets the statement reads: their stages' input deprecations.
-        warnings.extend(deprecated_inputs_of(
+        read_stages = [
             stage for name in sorted(reads) if name in bundle.query_backed
             for stage in bundle.query_backed[name].source_queries or []
-        ))
+        ]
+        warnings.extend(deprecated_inputs_of(read_stages))
+        warnings.extend(broadcast_deprecations(read_stages))
         return _Rendered(
             built=built, dialect=dialect, datasource=datasource, bundle=bundle,
             planned_list=planned_list, emitted_list=plans, dataset=dataset, reads=reads, associated=built.associated,
@@ -3471,7 +3491,10 @@ class SlayerQueryEngine:
         """Persist a SlayerDataset, each deprecated spelling stored as its twin; query-backed datasets reject cache fields and validate via dry-run.
         The source queries' input deprecations, the spelling deprecations and narrowed-access warnings go to
         ``warnings_out`` when given; without it, narrowed-access warnings are emitted as Python warnings."""
-        deprecated_inputs = deprecated_inputs_of([dataset, *(dataset.source_queries or [])])
+        deprecated_inputs = [
+            *deprecated_inputs_of([dataset, *(dataset.source_queries or [])]),
+            *broadcast_deprecations(dataset.source_queries or []),
+        ]
         dataset, spellings = with_canonical_spellings(dataset)
         if dataset.source_queries:
             stages = await qualified_input(
