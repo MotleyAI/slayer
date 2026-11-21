@@ -314,7 +314,7 @@
             "dialects": [
               {
                 "dialect": "ANSI_SQL",
-                "expression": "SUM(amount)"
+                "expression": "SUM(orders.amount)"
               }
             ]
           }
@@ -337,7 +337,7 @@
             "dialects": [
               {
                 "dialect": "ANSI_SQL",
-                "expression": "(SUM(amount)) / (COUNT(*))"
+                "expression": "(SUM(orders.amount)) / (COUNT(*))"
               }
             ]
           }
@@ -349,7 +349,7 @@
             "dialects": [
               {
                 "dialect": "ANSI_SQL",
-                "expression": "SUM(quantity * amount)"
+                "expression": "SUM(orders.quantity * orders.amount)"
               }
             ]
           }
@@ -361,7 +361,7 @@
             "dialects": [
               {
                 "dialect": "ANSI_SQL",
-                "expression": "SUM(amount) / COUNT(DISTINCT customers.customer_id)"
+                "expression": "SUM(orders.amount) / COUNT(DISTINCT customers.customer_id)"
               }
             ]
           }
@@ -373,7 +373,7 @@
             "dialects": [
               {
                 "dialect": "ANSI_SQL",
-                "expression": "SUM(amount) + SUM(regions.population)"
+                "expression": "SUM(orders.amount) + SUM(regions.population)"
               }
             ]
           }

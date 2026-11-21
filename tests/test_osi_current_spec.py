@@ -1,7 +1,6 @@
 """Current-spec OSI documents: field visibility, keys, relationships and metric resolution."""
 
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +13,9 @@ from slayer.osi.converter import OsiConversionError
 from slayer.osi.parser import parse_osi_path
 from tests._osi_helpers import (
     by_name, cols, convert, documents, ds, entries, f, flat, legacy, m, metric_home, mentions, query, rel, scalar,
-    seed_db, unconverted, visible, write_yaml,
+    seed_db, visible, write_yaml,
 )
+from tests._ossie_validity_fixtures import assert_violation, refuse_converter, refuse_path
 
 
 @pytest.fixture
@@ -148,12 +148,13 @@ async def test_relationship_on_renamed_fields_joins_the_source_columns(db: Path)
     assert {r["customers.segment"]: r["s"] for r in rows} == {"b2b": 15, "b2c": 7}
 
 
-@pytest.mark.parametrize(("from_columns", "to_columns"), [(["o_custkey"], ["id"]), (["customer_id"], ["c_custkey"])])
-def test_relationship_on_a_source_column_is_reported(db: Path, from_columns: list[str], to_columns: list[str]) -> None:
+@pytest.mark.parametrize(("from_columns", "to_columns", "column"), [
+    (["o_custkey"], ["id"], "o_custkey"), (["customer_id"], ["c_custkey"], "c_custkey")])
+def test_relationship_on_a_source_column_is_refused(from_columns: list[str], to_columns: list[str],
+                                                    column: str) -> None:
     bad = rel("o2c_src", src="orders", to="customers", from_columns=from_columns, to_columns=to_columns)
-    result = convert(db=db, docs=documents(_shop(relationships=[bad])))
-    assert by_name(result)["orders"].relationships == []
-    assert mentions(result, "o2c_src")
+    assert_violation(refuse_converter(_shop(relationships=[bad])), rule="undeclared-key-field", entity="o2c_src",
+                     mentions=(column,))
 
 
 @pytest.mark.parametrize("side", ["from", "to"])
@@ -166,27 +167,21 @@ def test_computed_join_key_is_reported(db: Path, side: str) -> None:
     assert mentions(result, "o2c_code")
 
 
-def test_relationship_with_empty_keys_is_reported(db: Path) -> None:
+def test_relationship_with_empty_keys_is_refused() -> None:
     empty = rel("o2c_empty", src="orders", to="customers", from_columns=[], to_columns=[])
-    result = convert(db=db, docs=documents(_shop(relationships=[empty])))
-    assert by_name(result)["orders"].relationships == []
-    assert mentions(result, "o2c_empty")
+    assert_violation(refuse_converter(_shop(relationships=[empty])), rule="schema", entity="o2c_empty")
 
 
-def test_cross_document_relationship_is_reported(db: Path) -> None:
+def test_cross_document_relationship_is_refused() -> None:
     doc1 = flat([_orders()], relationships=[O2C], name="sales")
     doc2 = flat([_customers()], name="crm")
-    result = convert(db=db, docs=documents(doc1, doc2))
-    assert set(by_name(result)) == {"orders", "customers"}
-    assert by_name(result)["orders"].relationships == []
-    assert mentions(result, "o2c")
+    assert_violation(refuse_converter(doc1, doc2), rule="unknown-dataset", entity="o2c", mentions=("customers",))
 
 
-def test_primary_key_on_a_source_column_is_reported(db: Path) -> None:
+def test_primary_key_on_a_source_column_is_refused() -> None:
     orders = _orders([f("total_amount", "o_totalprice")], primary_key=["o_orderkey"])
-    result = convert(db=db, docs=documents(flat([orders])))
-    assert not [c for c in by_name(result)["orders"].fields if c.primary_key]
-    assert [e for e in result.warnings if e.dataset_name == "orders" and "o_orderkey" in e.message]
+    assert_violation(refuse_converter(flat([orders])), rule="undeclared-key-field", entity="orders",
+                     mentions=("o_orderkey",))
 
 
 def test_renamed_introspected_key_without_declaration(db: Path) -> None:
@@ -204,32 +199,26 @@ def test_composite_primary_key(db: Path) -> None:
     assert {c.name for c in by_name(result)["orders"].fields if c.primary_key} == {"order_id", "status"}
 
 
-def test_partly_unresolved_primary_key_is_reported_and_not_applied(db: Path) -> None:
-    result = convert(db=db, docs=documents(flat([_orders(primary_key=["order_id", "o_custkey"])])))
-    assert not cols(by_name(result)["orders"])["customer_id"].primary_key
-    assert [e for e in result.warnings if e.dataset_name == "orders" and "o_custkey" in e.message]
+def test_partly_unresolved_primary_key_is_refused() -> None:
+    assert_violation(refuse_converter(flat([_orders(primary_key=["order_id", "o_custkey"])])),
+                     rule="undeclared-key-field", entity="orders", mentions=("o_custkey",))
 
 
-def test_empty_primary_key_is_reported_and_does_not_count_as_absent(db: Path) -> None:
-    result = convert(db=db, docs=documents(flat([_orders(primary_key=[])])))
-    assert not [c for c in by_name(result)["orders"].fields if c.primary_key]
-    assert [e for e in result.warnings if e.dataset_name == "orders" and "primary_key" in e.message]
+def test_empty_primary_key_is_refused() -> None:
+    assert_violation(refuse_converter(flat([_orders(primary_key=[])])), rule="schema", entity="orders",
+                     mentions=("primary_key",))
 
 
-def test_empty_unique_key_entry_is_reported_and_others_kept(db: Path) -> None:
+def test_empty_unique_key_entry_is_refused() -> None:
     customers = _customers([*CUSTOMER_FIELDS, f("email")], unique_keys=[[], ["email"]])
-    result = convert(db=db, docs=documents(flat([customers])))
-    meta = by_name(result)["customers"].meta or {}
-    assert meta["osi_unique_keys"] == [["email"]]
-    assert [e for e in result.warnings if e.dataset_name == "customers" and "unique_keys" in e.message]
+    assert_violation(refuse_converter(flat([customers])), rule="schema", entity="customers",
+                     mentions=("unique_keys",))
 
 
-def test_unique_key_on_a_source_column_is_reported(db: Path) -> None:
+def test_unique_key_on_a_source_column_is_refused() -> None:
     customers = _customers(unique_keys=[["email"], ["segment"]])
-    result = convert(db=db, docs=documents(flat([customers])))
-    meta = by_name(result)["customers"].meta or {}
-    assert meta["osi_unique_keys"] == [["segment"]]
-    assert [e for e in result.warnings if e.dataset_name == "customers" and "email" in e.message]
+    assert_violation(refuse_converter(flat([customers])), rule="undeclared-key-field", entity="customers",
+                     mentions=("email",))
 
 
 # ─────────────────────────── metric resolution ─────────────────────────────
@@ -245,10 +234,10 @@ def test_qualified_reference_to_a_renamed_field(db: Path) -> None:
     pytest.param("SUM(orders.o_totalprice)", id="source-column"),
     pytest.param("SUM(orders.no_such_field)", id="undeclared"),
 ])
-def test_model_scoped_metric_reference_is_unconverted(db: Path, sql: str) -> None:
+def test_model_scoped_metric_reference_is_refused(sql: str) -> None:
     orders = _orders([*ORDER_FIELDS, f("total_amount", "o_totalprice")])
-    result = convert(db=db, docs=documents(_shop(orders=orders, metrics=[m("bad", sql)])))
-    assert unconverted(result, "bad")
+    assert_violation(refuse_converter(_shop(orders=orders, metrics=[m("bad", sql)])), rule="metric-scope",
+                     entity="bad")
 
 
 @pytest.mark.parametrize("sql", [
@@ -256,10 +245,9 @@ def test_model_scoped_metric_reference_is_unconverted(db: Path, sql: str) -> Non
     pytest.param("SUM(orders.net_amount)", id="self-qualified"),
     pytest.param("SUM(tip)", id="source-column"),
 ])
-def test_dataset_scoped_metric_reference_is_unconverted(db: Path, sql: str) -> None:
+def test_dataset_scoped_metric_reference_is_refused(sql: str) -> None:
     orders = _orders([*ORDER_FIELDS, f("net_amount", "amount")], metrics=[m("bad", sql)])
-    result = convert(db=db, docs=documents(_shop(orders=orders)))
-    assert unconverted(result, "bad")
+    assert_violation(refuse_converter(_shop(orders=orders)), rule="metric-scope", entity="bad")
 
 
 def test_unquoted_reference_matches_case_insensitively(db: Path) -> None:
@@ -269,52 +257,56 @@ def test_unquoted_reference_matches_case_insensitively(db: Path) -> None:
     assert _single_agg(_expression(result, "total2")) == ("sum", "amount")
 
 
-def test_quoted_reference_matches_exactly(db: Path) -> None:
-    fields = [f("order_id", "o_orderkey"), f("Amount", "amount")]
-    orders = _orders(fields, metrics=[m("wrong_case", 'SUM("amount")'), m("right_case", 'SUM("Amount")')])
+_AMOUNT_FIELDS = [f("order_id", "o_orderkey"), f("Amount", "amount")]
+
+
+def test_quoted_reference_matches_the_normalized_form(db: Path) -> None:
+    orders = _orders(_AMOUNT_FIELDS, metrics=[m("normalized", 'SUM("AMOUNT")')])
     result = convert(db=db, docs=documents(flat([orders])))
-    assert unconverted(result, "wrong_case")
-    assert _single_agg(_expression(result, "right_case")) == ("sum", "Amount")
+    assert _single_agg(_expression(result, "normalized")) == ("sum", "Amount")
 
 
-def test_case_only_ambiguity_is_reported(db: Path) -> None:
+@pytest.mark.parametrize("quoted", ['"amount"', '"Amount"'])
+def test_quoted_reference_not_in_the_normalized_form_is_refused(quoted: str) -> None:
+    orders = _orders(_AMOUNT_FIELDS, metrics=[m("total", f"SUM({quoted})")])
+    assert_violation(refuse_converter(flat([orders])), rule="metric-scope", entity="total", mentions=(quoted,))
+
+
+def test_case_only_ambiguity_is_refused() -> None:
     fields = [f("id", "o_orderkey"), f("ID", "o_custkey")]
-    docs = documents(flat([_orders(fields, metrics=[m("n", "COUNT(DISTINCT id)")])]))
-    with pytest.raises(OsiConversionError, match=r"'orders': 'id', 'ID'"):
-        convert(db=db, docs=docs)
+    error = refuse_converter(flat([_orders(fields, metrics=[m("n", "COUNT(DISTINCT id)")])]))
+    assert_violation(error, rule="duplicate-name", entity="orders", mentions=("id", "ID"))
 
 
-# ─────────────────────── legacy lenient resolution ─────────────────────────
+# ─────────────────────── legacy wrappers under the current rules ───────────
 
 def _legacy_docs(tmp_path: Path, dataset: dict[str, Any]) -> list:
     return parse_osi_path(write_yaml(tmp_path / "legacy.yaml", legacy(dataset)))
 
 
-def test_legacy_models_expose_source_columns_and_fields(db: Path, tmp_path: Path) -> None:
-    docs = _legacy_docs(tmp_path, {"name": "s", "datasets": [_orders([f("total_amount", "o_totalprice")])]})
-    assert {"o_orderkey", "o_totalprice", "total_amount", "o_comment"} <= visible(by_name(convert(db=db, docs=docs))["orders"])
+def _legacy_refusal(tmp_path: Path, model: dict[str, Any]) -> OsiConversionError:
+    return refuse_path(write_yaml(tmp_path / "legacy.yaml", legacy(model)))
 
 
-def test_legacy_unqualified_metric(db: Path, tmp_path: Path) -> None:
+def test_legacy_unqualified_metric_is_refused(tmp_path: Path) -> None:
     model = {"name": "s", "datasets": [_orders([f("order_id", "o_orderkey")]), _customers()],
              "metrics": [m("total", "SUM(amount)")]}
-    result = convert(db=db, docs=_legacy_docs(tmp_path, model))
-    assert metric_home(result, "total").name == "orders"
+    assert_violation(_legacy_refusal(tmp_path, model), rule="metric-scope", entity="total", mentions=("amount",))
 
 
-def test_legacy_relationship_on_a_source_column(db: Path, tmp_path: Path) -> None:
+def test_legacy_relationship_on_a_source_column_is_refused(tmp_path: Path) -> None:
     src_rel = rel("o2c", src="orders", to="customers", from_columns=["o_custkey"], to_columns=["c_custkey"])
     model = {"name": "s", "datasets": [_orders([f("amount")]), _customers([f("segment")])],
              "relationships": [src_rel]}
-    result = convert(db=db, docs=_legacy_docs(tmp_path, model))
-    assert [j.column_pairs for j in by_name(result)["orders"].relationships] == [[("o_custkey", "c_custkey")]]
+    assert_violation(_legacy_refusal(tmp_path, model), rule="undeclared-key-field", entity="o2c",
+                     mentions=("o_custkey",))
 
 
-def test_legacy_unique_keys_resolve_against_source_columns_and_fields(db: Path, tmp_path: Path) -> None:
+def test_legacy_unique_key_on_a_source_column_is_refused(tmp_path: Path) -> None:
     model = {"name": "s", "datasets": [_customers(unique_keys=[["email"], ["segment"], ["nope"]])]}
-    result = convert(db=db, docs=_legacy_docs(tmp_path, model))
-    assert (by_name(result)["customers"].meta or {})["osi_unique_keys"] == [["email"], ["segment"]]
-    assert mentions(result, "nope")
+    error = _legacy_refusal(tmp_path, model)
+    assert_violation(error, rule="undeclared-key-field", entity="customers", mentions=("email",))
+    assert_violation(error, rule="undeclared-key-field", entity="customers", mentions=("nope",))
 
 
 def test_legacy_dataset_scoped_metric(db: Path, tmp_path: Path) -> None:
@@ -337,26 +329,23 @@ def test_dataset_scoped_count_star_stays_on_its_dataset(db: Path) -> None:
     assert metric_home(result, "customer_count").name == "customers"
 
 
-def test_dataset_scoped_metric_colliding_with_a_field(db: Path) -> None:
+def test_dataset_scoped_metric_colliding_with_a_field() -> None:
     orders = _orders([*ORDER_FIELDS, f("revenue", "amount")], metrics=[m("revenue", "SUM(amount)")])
-    docs = documents(flat([orders]))
-    with pytest.raises(OsiConversionError, match=re.escape("'orders': 'revenue', 'revenue'")):
-        convert(db=db, docs=docs)
+    assert_violation(refuse_converter(flat([orders])), rule="duplicate-name", entity="orders", mentions=("revenue",))
 
 
 @pytest.mark.parametrize(("fields", "metrics", "names"), [
-    ([*ORDER_FIELDS, f("amount")], [], "'amount', 'amount'"),
-    ([*ORDER_FIELDS, f("Amount", "amount")], [], "'amount', 'Amount'"),
-    (ORDER_FIELDS, [m("STATUS", "COUNT(*)")], "'status', 'STATUS'"),
-    (ORDER_FIELDS, [m("tot", "SUM(amount)"), m("tot", "MAX(amount)")], "'tot', 'tot'"),
-    (ORDER_FIELDS, [m("tot", "SUM(amount)"), m("TOT", "MAX(amount)")], "'tot', 'TOT'"),
+    ([*ORDER_FIELDS, f("amount")], [], ("amount",)),
+    ([*ORDER_FIELDS, f("Amount", "amount")], [], ("amount", "Amount")),
+    (ORDER_FIELDS, [m("STATUS", "COUNT(*)")], ("status", "STATUS")),
+    (ORDER_FIELDS, [m("tot", "SUM(amount)"), m("tot", "MAX(amount)")], ("tot",)),
+    (ORDER_FIELDS, [m("tot", "SUM(amount)"), m("TOT", "MAX(amount)")], ("tot", "TOT")),
 ], ids=["field-twice", "field-case-only", "field-and-metric", "metric-twice", "metric-case-only"])
 def test_names_repeated_within_a_dataset_refuse_the_import(
-    db: Path, fields: list[dict[str, Any]], metrics: list[dict[str, Any]], names: str,
+    fields: list[dict[str, Any]], metrics: list[dict[str, Any]], names: tuple[str, ...],
 ) -> None:
-    docs = documents(flat([_orders(fields, metrics=metrics)]))
-    with pytest.raises(OsiConversionError, match=re.escape(f"'orders': {names}")):
-        convert(db=db, docs=docs)
+    error = refuse_converter(flat([_orders(fields, metrics=metrics)]))
+    assert_violation(error, rule="duplicate-name", entity="orders", mentions=names)
 
 
 def test_dataset_scoped_and_model_scoped_metric_name_clash(db: Path) -> None:

@@ -11,6 +11,7 @@ from slayer.ingest_report import ConversionResult
 from tests._osi_helpers import (
     by_name, convert, documents, ds, f, flat, hidden, m, metric_home, query, rel, seed_db, unconverted,
 )
+from tests._ossie_validity_fixtures import assert_violation, refuse_converter
 
 
 @pytest.fixture
@@ -22,12 +23,16 @@ ORDER_FIELDS = [f("order_id", "o_orderkey"), f("customer_id", "o_custkey"), f("a
                 f("status"), f("region"), f("is_paid"), f("first_name"), f("last_name")]
 
 
-def _import(db: Path, *metrics: dict[str, Any], dataset_metrics: list[dict[str, Any]] | None = None
-            ) -> ConversionResult:
+def _document(*metrics: dict[str, Any], dataset_metrics: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     orders = ds("orders", fields=ORDER_FIELDS, metrics=list(metrics))
     customers = ds("customers", fields=[f("id", "c_custkey"), f("segment"), f("discount")])
     o2c = rel("o2c", src="orders", to="customers", from_columns=["customer_id"], to_columns=["id"])
-    return convert(db=db, docs=documents(flat([orders, customers], relationships=[o2c], metrics=dataset_metrics)))
+    return flat([orders, customers], relationships=[o2c], metrics=dataset_metrics)
+
+
+def _import(db: Path, *metrics: dict[str, Any], dataset_metrics: list[dict[str, Any]] | None = None
+            ) -> ConversionResult:
+    return convert(db=db, docs=documents(_document(*metrics, dataset_metrics=dataset_metrics)))
 
 
 async def _value(result: ConversionResult, db: Path, metric: str) -> Any:
@@ -54,7 +59,7 @@ _FILTERED = [
     pytest.param("SUM(amount) FILTER (WHERE region IS NULL)", 5, id="is-null"),
     pytest.param("SUM(amount) FILTER (WHERE region IS NOT NULL)", 17, id="is-not-null"),
     pytest.param("SUM(amount) FILTER (WHERE UPPER(status) = 'COMPLETED')", 17, id="scalar-call"),
-    pytest.param("SUM(amount) FILTER (WHERE \"status\" = 'completed')", 17, id="quoted-identifier"),
+    pytest.param("SUM(amount) FILTER (WHERE \"STATUS\" = 'completed')", 17, id="quoted-identifier"),
     pytest.param("SUM(amount) FILTER (WHERE status = 'completed') / COUNT(*)", 17 / 3, id="in-arithmetic"),
 ]
 
@@ -85,7 +90,6 @@ async def test_filter_does_not_remove_groups(db: Path) -> None:
 @pytest.mark.parametrize("sql", [
     pytest.param("SUM(amount) FILTER (WHERE amount > AVG(amount))", id="aggregate"),
     pytest.param("SUM(amount) FILTER (WHERE ROW_NUMBER() OVER (ORDER BY amount) = 1)", id="window"),
-    pytest.param("SUM(amount) FILTER (WHERE amount IN (SELECT amount FROM orders))", id="subquery"),
     *[pytest.param(f"{agg}(DISTINCT amount){flt}", id=f"{agg.lower()}-distinct{'-filtered' if flt else ''}")
       for agg in ("SUM", "AVG", "MIN", "MAX")
       for flt in ("", " FILTER (WHERE status = 'completed')")],
@@ -94,9 +98,15 @@ def test_unsupported_filter_metric_is_unconverted(db: Path, sql: str) -> None:
     assert unconverted(_import(db, m("bad", sql), m("ok", "SUM(amount)")), "bad")
 
 
-def test_filter_predicate_on_another_dataset_is_unconverted(db: Path) -> None:
-    result = _import(db, dataset_metrics=[m("bad", "SUM(orders.amount) FILTER (WHERE customers.segment = 'b2b')")])
-    assert unconverted(result, "bad")
+def test_subquery_in_a_filter_predicate_is_refused() -> None:
+    error = refuse_converter(_document(m("bad", "SUM(amount) FILTER (WHERE amount IN (SELECT amount FROM orders))")))
+    assert_violation(error, rule="ossie-sql", entity="bad")
+
+
+def test_filter_predicate_on_another_dataset_is_refused() -> None:
+    error = refuse_converter(_document(dataset_metrics=[
+        m("bad", "SUM(orders.amount) FILTER (WHERE customers.segment = 'b2b')")]))
+    assert_violation(error, rule="ossie-sql", entity="bad", mentions=("customers.segment",))
 
 
 # ─────────────────────────── aggregate operands ────────────────────────────

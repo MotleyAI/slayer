@@ -11,6 +11,7 @@ from slayer.osi.parser import parse_osi_path
 from tests._osi_helpers import (
     by_name, convert, documents, ds, f, flat, hidden, legacy, m, query, seed_db, unconverted, visible, write_yaml,
 )
+from tests._ossie_validity_fixtures import assert_violation, refuse_converter
 
 DDL = [
     "CREATE TABLE orders (order_id INTEGER, amount DOUBLE, quantity INTEGER, price DOUBLE, status VARCHAR, "
@@ -131,16 +132,14 @@ def test_unreadable_source_column_is_unconverted_and_adds_no_column(db: Path, sq
 
 
 def test_metric_failing_after_its_source_column_resolves_adds_no_column(db: Path) -> None:
-    result = _import(db, m("units", "SUM(source.quantity) + SUM(no_such_field)"))
+    result = _import(db, m("units", "SUM(source.quantity) + SUM(DISTINCT amount)"))
     assert unconverted(result, "units")
     assert [c.name for c in by_name(result)["orders"].fields] == ["order_id", "amount"]
 
 
-def test_field_named_source_takes_precedence(db: Path) -> None:
-    result = _import(db, m("units", "SUM(source.quantity)"), fields=[*FIELDS, f("source", "status")])
-    assert unconverted(result, "units")
-    assert "'source'" in _reason(result, "units")
-    assert hidden(by_name(result)["orders"]) == []
+def test_field_named_source_takes_precedence() -> None:
+    dataset = ds("orders", fields=[*FIELDS, f("source", "status")], metrics=[m("units", "SUM(source.quantity)")])
+    assert_violation(refuse_converter(flat([dataset])), rule="metric-scope", entity="units", mentions=("source",))
 
 
 _RENAMED = [f("order_id"), f("status", "state")]
@@ -152,15 +151,15 @@ async def test_source_column_behind_a_renamed_field_reads_the_physical_column(db
     assert await _value(result, db, "open_orders") == 1
 
 
-def test_source_qualifier_in_a_model_scoped_metric(db: Path) -> None:
+def test_source_qualifier_in_a_model_scoped_metric() -> None:
     document = flat([ds("orders", fields=FIELDS)], metrics=[m("units", "SUM(source.quantity)")])
-    assert unconverted(convert(db=db, docs=documents(document)), "units")
+    assert_violation(refuse_converter(document), rule="metric-scope", entity="units", mentions=("source.quantity",))
 
 
-def test_legacy_source_qualifier_is_not_a_source_column(db: Path, tmp_path: Path) -> None:
+async def test_wrapper_source_qualifier_reads_the_source_column(db: Path, tmp_path: Path) -> None:
     model = {"name": "s", "datasets": [ds("orders", fields=FIELDS, metrics=[m("total", "SUM(source.amount)")])]}
     result = convert(db=db, docs=parse_osi_path(write_yaml(tmp_path / "legacy.yaml", legacy(model))))
-    assert unconverted(result, "total")
+    assert await _value(result, db, "total") == 22
 
 
 # ──────────────────── duplicate output labels of query sources ─────────────

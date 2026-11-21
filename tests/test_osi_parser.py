@@ -1,8 +1,8 @@
 """Tests for the OSI config parser (slayer/osi/parser.py).
 
-Covers: YAML + JSON, single file + directory, the ``from`` alias, version
-acceptance (every known version) + unknown-version warning, malformed-file
-skip, ai_context in both string and object form, and the flat / legacy-wrapper
+Covers: YAML + JSON, single file + directory, the ``from`` alias, the upgrade of
+every earlier version, refusal of unknown versions, unreadable files and malformed
+shapes, ai_context in both string and object form, and the flat / legacy-wrapper
 document shapes.
 """
 
@@ -17,6 +17,7 @@ import pytest
 from slayer.osi.models import OSIAIContextObject, OSIDocument
 from slayer.osi.parser import KNOWN_OSI_VERSIONS, parse_osi_path
 from tests._osi_helpers import FIXTURES, ds, f, flat, legacy, write_yaml
+from tests._ossie_validity_fixtures import assert_violation, refuse_path
 
 
 def test_parse_yaml_file_structure() -> None:
@@ -24,7 +25,7 @@ def test_parse_yaml_file_structure() -> None:
     assert len(docs) == 1
     doc = docs[0]
     assert isinstance(doc, OSIDocument)
-    assert doc.version == "0.2.0.dev0"
+    assert doc.version == "0.3.0.dev0"
     assert doc.name == "shop"
     assert {d.name for d in doc.datasets} == {"orders", "customers", "products", "regions"}
     orders = next(d for d in doc.datasets if d.name == "orders")
@@ -60,7 +61,7 @@ def test_metrics_parsed() -> None:
         "total_amount", "order_count", "aov",
         "revenue_line", "cust_reach", "rev_plus_pop", "bridge_metric",
     }
-    assert metrics["total_amount"].expression.dialects[0].expression == "SUM(amount)"
+    assert metrics["total_amount"].expression.dialects[0].expression == "SUM(orders.amount)"
 
 
 def test_yaml_and_json_parse_identically() -> None:
@@ -69,13 +70,12 @@ def test_yaml_and_json_parse_identically() -> None:
     assert y.model_dump() == j.model_dump()
 
 
-def test_parse_directory_collects_and_skips_malformed(tmp_path: Path) -> None:
+def test_parse_directory_with_a_malformed_file_is_refused(tmp_path: Path) -> None:
     shutil.copy(FIXTURES / "shop.yaml", tmp_path / "shop.yaml")
     shutil.copy(FIXTURES / "malformed.yaml", tmp_path / "malformed.yaml")
-    docs = parse_osi_path(tmp_path)
-    # malformed.yaml is skipped; only the valid doc is returned.
-    assert len(docs) == 1
-    assert docs[0].name == "shop"
+    error = refuse_path(tmp_path)
+    assert_violation(error, rule="unreadable-file", file="malformed.yaml")
+    assert {Path(v.file).name for v in error.violations} == {"malformed.yaml"}
 
 
 def test_known_versions_constant() -> None:
@@ -92,7 +92,7 @@ def test_known_version_no_warning(tmp_path: Path, caplog: pytest.LogCaptureFixtu
     with caplog.at_level(logging.WARNING):
         docs = parse_osi_path(f)
     assert len(docs) == 1
-    assert docs[0].version == version
+    assert docs[0].version == "0.3.0.dev0"
     assert not any("version" in r.message.lower() for r in caplog.records)
 
 
@@ -103,39 +103,31 @@ def test_flat_document_of_either_version_parses_silently(
     path = write_yaml(tmp_path / "flat.yaml", {**flat([ds("t", fields=[f("c")])]), "version": version})
     with caplog.at_level(logging.WARNING):
         docs = parse_osi_path(path)
-    assert [(d.name, d.legacy, d.version) for d in docs] == [("shop", False, version)]
+    assert [(d.name, d.version) for d in docs] == [("shop", "0.3.0.dev0")]
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
-def test_unknown_version_of_a_flat_document_warns_and_parses(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_unknown_version_of_a_flat_document_is_refused(tmp_path: Path) -> None:
     path = write_yaml(tmp_path / "flat.yaml", {**flat([ds("t", fields=[f("c")])]), "version": "0.4.0"})
-    with caplog.at_level(logging.WARNING):
-        docs = parse_osi_path(path)
-    assert [(d.legacy, d.version) for d in docs] == [(False, "0.4.0")]
-    assert any("0.4.0" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+    error = refuse_path(path)
+    assert_violation(error, rule="schema", file="flat.yaml", mentions=("version",))
+    assert "0.4.0" in str(error)
 
 
 @pytest.mark.parametrize("wrapped", [
     pytest.param(lambda m: [m], id="array"),
     pytest.param(lambda m: m, id="object"),
 ])
-def test_wrapped_03_document_is_skipped_and_the_rest_imports(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, wrapped: Any
-) -> None:
+def test_wrapped_03_document_is_refused(tmp_path: Path, wrapped: Any) -> None:
     write_yaml(tmp_path / "wrapped.yaml", {"version": "0.3.0.dev0", "semantic_model": wrapped(_legacy_model("a"))})
     shutil.copy(FIXTURES / "current_shop.yaml", tmp_path / "good.yaml")
-    with caplog.at_level(logging.WARNING):
-        docs = parse_osi_path(tmp_path)
-    assert [d.name for d in docs] == ["shop"]
-    warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any("wrapped.yaml" in w and "0.3.0.dev0" in w for w in warned)
+    error = refuse_path(tmp_path)
+    assert_violation(error, rule="legacy-shape", file="wrapped.yaml", mentions=("0.3.0.dev0",))
 
 
-def test_versionless_wrapper_is_legacy_without_a_declared_version(tmp_path: Path) -> None:
+def test_versionless_wrapper_is_upgraded(tmp_path: Path) -> None:
     path = write_yaml(tmp_path / "old.yaml", {"semantic_model": [_legacy_model("a")]})
-    assert [(d.name, d.legacy, d.version) for d in parse_osi_path(path)] == [("a", True, None)]
+    assert [(d.name, d.version) for d in parse_osi_path(path)] == [("a", "0.3.0.dev0")]
 
 
 def test_unquoted_numeric_version_parses_without_warning(
@@ -151,16 +143,14 @@ def test_unquoted_numeric_version_parses_without_warning(
     with caplog.at_level(logging.WARNING):
         docs = parse_osi_path(f)
     assert len(docs) == 1
-    assert docs[0].version == "1.0"
+    assert docs[0].version == "0.3.0.dev0"
     assert not any("version" in r.message.lower() for r in caplog.records)
 
 
-def test_unknown_version_warns_but_parses(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.WARNING):
-        docs = parse_osi_path(FIXTURES / "unknown_version.yaml")
-    assert len(docs) == 1
-    assert docs[0].version == "9.9.9"
-    assert any("version" in r.message.lower() for r in caplog.records)
+def test_unknown_version_wrapper_is_refused() -> None:
+    error = refuse_path(FIXTURES / "unknown_version.yaml")
+    assert_violation(error, rule="legacy-shape", file="unknown_version.yaml")
+    assert "9.9.9" in str(error)
 
 
 def test_single_non_osi_file_is_skipped(tmp_path: Path) -> None:
@@ -170,21 +160,18 @@ def test_single_non_osi_file_is_skipped(tmp_path: Path) -> None:
     assert parse_osi_path(f) == []
 
 
-def test_malformed_file_warns_and_returns_empty(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.WARNING):
-        docs = parse_osi_path(FIXTURES / "malformed.yaml")
-    assert docs == []
-    assert caplog.records  # a warning was emitted
+def test_malformed_file_is_refused() -> None:
+    assert_violation(refuse_path(FIXTURES / "malformed.yaml"), rule="unreadable-file", file="malformed.yaml")
 
 
 @pytest.mark.parametrize("content", [
     pytest.param(b"name: \xff\xfe\n", id="not-utf8"),
     pytest.param(b"version: 0.2.0.dev0\nwhen: 2026-13-45\n", id="invalid-timestamp"),
 ])
-def test_undecodable_file_is_skipped_and_the_rest_imports(tmp_path: Path, content: bytes) -> None:
+def test_undecodable_file_is_refused(tmp_path: Path, content: bytes) -> None:
     (tmp_path / "bad.yaml").write_bytes(content)
     shutil.copy(FIXTURES / "current_shop.yaml", tmp_path / "good.yaml")
-    assert [d.name for d in parse_osi_path(tmp_path)] == ["shop"]
+    assert_violation(refuse_path(tmp_path), rule="unreadable-file", file="bad.yaml")
 
 
 def test_ai_context_string_and_object_forms() -> None:
@@ -209,7 +196,6 @@ def test_flat_document_imports_as_one_current_spec_model() -> None:
     docs = parse_osi_path(FIXTURES / "current_shop.yaml")
     assert len(docs) == 1
     doc = docs[0]
-    assert doc.legacy is False
     assert doc.name == "shop"
     assert doc.version == "0.3.0.dev0"
     assert [d.name for d in doc.datasets] == ["orders", "customers"]
@@ -221,48 +207,43 @@ def test_flat_document_imports_as_one_current_spec_model() -> None:
 def test_legacy_array_splits_into_one_document_per_model(tmp_path: Path) -> None:
     path = write_yaml(tmp_path / "two.yaml", legacy(_legacy_model("a"), _legacy_model("b")))
     docs = parse_osi_path(path)
-    assert [(d.name, d.legacy, d.version) for d in docs] == [("a", True, "0.2.0.dev0"), ("b", True, "0.2.0.dev0")]
+    assert [(d.name, d.version) for d in docs] == [("a", "0.3.0.dev0"), ("b", "0.3.0.dev0")]
     assert [[x.name for x in d.datasets] for d in docs] == [["a_t"], ["b_t"]]
 
 
-def test_invalid_legacy_model_keeps_its_valid_siblings(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_invalid_legacy_model_is_refused(tmp_path: Path) -> None:
     path = write_yaml(tmp_path / "two.yaml", legacy({"name": "broken"}, _legacy_model("b")))
-    with caplog.at_level(logging.WARNING):
-        docs = parse_osi_path(path)
-    assert [d.name for d in docs] == ["b"]
-    assert any("broken" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+    assert_violation(refuse_path(path), rule="schema", file="two.yaml", document="broken", mentions=("datasets",))
 
 
 @pytest.mark.parametrize("entry", [pytest.param({}, id="empty-object"), pytest.param("shop", id="scalar")])
-def test_malformed_legacy_entry_keeps_its_valid_siblings(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, entry: Any
-) -> None:
+def test_malformed_legacy_entry_is_refused(tmp_path: Path, entry: Any) -> None:
     path = write_yaml(tmp_path / "two.yaml", legacy(_legacy_model("a"), entry))
-    with caplog.at_level(logging.WARNING):
-        docs = parse_osi_path(path)
-    assert [d.name for d in docs] == ["a"]
-    assert any("two.yaml" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+    assert_violation(refuse_path(path), rule="legacy-shape", file="two.yaml")
 
 
 def test_legacy_object_wrapper(tmp_path: Path) -> None:
     path = write_yaml(tmp_path / "one.yaml", {"version": "0.1.1", "semantic_model": _legacy_model("a")})
     docs = parse_osi_path(path)
-    assert [(d.name, d.legacy, d.version) for d in docs] == [("a", True, "0.1.1")]
+    assert [(d.name, d.version) for d in docs] == [("a", "0.3.0.dev0")]
 
 
-@pytest.mark.parametrize("mapping", [
-    pytest.param({**legacy(_legacy_model("a")), "datasets": [ds("t", fields=[f("c")])]}, id="mixed"),
-    pytest.param({"version": "0.2.0.dev0", "semantic_model": []}, id="empty-array"),
-    pytest.param({"version": "0.2.0.dev0", "semantic_model": {}}, id="empty-object"),
-    pytest.param({"version": "0.2.0.dev0", "semantic_model": None}, id="null"),
-    pytest.param({"version": "0.2.0.dev0", "semantic_model": "shop"}, id="scalar"),
-    pytest.param({"version": "0.2.0.dev0", "name": "shop"}, id="neither"),
-    pytest.param({"version": "0.3.0.dev0", "name": "Flights", "ontology": [{"concept": "Airport"}]}, id="ontology"),
+@pytest.mark.parametrize(("mapping", "rule"), [
+    pytest.param({**legacy(_legacy_model("a")), "datasets": [ds("t", fields=[f("c")])]}, "legacy-shape", id="mixed"),
+    pytest.param({"version": "0.2.0.dev0", "semantic_model": []}, "legacy-shape", id="empty-array"),
+    pytest.param({"version": "0.2.0.dev0", "semantic_model": {}}, "legacy-shape", id="empty-object"),
+    pytest.param({"version": "0.2.0.dev0", "semantic_model": None}, "legacy-shape", id="null"),
+    pytest.param({"version": "0.2.0.dev0", "semantic_model": "shop"}, "legacy-shape", id="scalar"),
+    pytest.param({"version": "0.2.0.dev0", "name": "shop"}, "schema", id="neither"),
 ])
-def test_invalid_shape_is_skipped_with_a_warning(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, mapping: dict
-) -> None:
+def test_invalid_shape_is_refused(tmp_path: Path, mapping: dict, rule: str) -> None:
     write_yaml(tmp_path / "bad.yaml", mapping)
+    shutil.copy(FIXTURES / "current_shop.yaml", tmp_path / "good.yaml")
+    assert_violation(refuse_path(tmp_path), rule=rule, file="bad.yaml")
+
+
+def test_ontology_shape_is_skipped_with_a_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    write_yaml(tmp_path / "bad.yaml", {"version": "0.3.0.dev0", "name": "Flights", "ontology": [{"concept": "Airport"}]})
     shutil.copy(FIXTURES / "current_shop.yaml", tmp_path / "good.yaml")
     with caplog.at_level(logging.WARNING):
         docs = parse_osi_path(tmp_path)
@@ -270,6 +251,6 @@ def test_invalid_shape_is_skipped_with_a_warning(
     assert any("bad.yaml" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
 
 
-def test_legacy_flag_is_not_read_from_the_document(tmp_path: Path) -> None:
+def test_legacy_flag_in_the_document_is_a_schema_violation(tmp_path: Path) -> None:
     path = write_yaml(tmp_path / "flat.yaml", {**flat([ds("t", fields=[f("c")])]), "legacy": True})
-    assert [d.legacy for d in parse_osi_path(path)] == [False]
+    assert_violation(refuse_path(path), rule="schema", file="flat.yaml", mentions=("legacy",))

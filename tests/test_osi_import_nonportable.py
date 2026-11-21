@@ -14,8 +14,11 @@ from slayer.core.enums import JoinType
 from slayer.core.models import SlayerDataset
 from slayer.ingest_report import ConversionResult
 from slayer.osi.models import OSIDataset
-from tests._osi_export_helpers import convert_document, make_env
-from tests._osi_helpers import FIXTURES, by_name, ds, f, flat, m, rel
+from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
+from slayer.osi.parser import parse_osi_path
+from tests._osi_export_helpers import Env, convert_document, make_env
+from tests._osi_helpers import FIXTURES, by_name, ds, f, flat, m, rel, run_converter
+from tests._ossie_validity_fixtures import assert_violation, refuse_converter, refuse_path
 
 LEGACY_FIXTURE = FIXTURES / "legacy_custom_extensions.yaml"
 LEVELS = ["document", "dataset", "field", "metric", "relationship"]
@@ -58,8 +61,35 @@ def _stored(datasets: dict[str, SlayerDataset], level: str) -> list[Any]:
 
 
 def _legacy_notes(result: ConversionResult) -> list:
-    """Informational entries naming the document ``shop`` with a workaround."""
-    return [e for e in result.entries if e.severity == "info" and "shop" in e.message and e.suggestion]
+    """Informational entries naming the document ``shop`` with a workaround (the version-upgrade note aside)."""
+    return [e for e in result.entries
+            if e.severity == "info" and "shop" in e.message and e.suggestion and "0.3.0.dev0" not in e.message]
+
+
+_NAMES = {"dataset": "orders", "field": "amount", "metric": "revenue", "relationship": "o2c"}
+
+
+def _convert_file(env: Env, doc: dict[str, Any] | Path) -> ConversionResult:
+    """The importer over ``doc`` read through the file reader."""
+    path = doc if isinstance(doc, Path) else env.store.parent / "doc.osi.yaml"
+    if not isinstance(doc, Path):
+        path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    converter = OsiToSlayerConverter(documents=parse_osi_path(path), data_source=env.datasource,
+                                     target_dialect=env.dialect)
+    return run_converter(converter, datasource=env.config)
+
+
+def _refuse_file(env: Env, doc: dict[str, Any]) -> OsiConversionError:
+    path = env.store.parent / "doc.osi.yaml"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    return refuse_path(path)
+
+
+def _at_level(error: OsiConversionError, *, rule: str, level: str, mentions: tuple[str, ...] = ()) -> None:
+    if level == "document":
+        assert_violation(error, rule=rule, document="shop", mentions=mentions)
+    else:
+        assert_violation(error, rule=rule, entity=_NAMES[level], mentions=mentions)
 
 
 def _reports(result: ConversionResult, *, entity: str, vendor: str) -> list:
@@ -93,7 +123,7 @@ async def test_foreign_entry_stored_as_object_at_every_level(env, level: str) ->
 async def test_legacy_key_read_at_every_level(env, level: str) -> None:
     doc = _shop()
     _entity(doc, level)["custom_extensions"] = [dict(LEGACY_ACME)]
-    result = convert_document(env, doc)
+    result = _convert_file(env, doc)
     assert _stored(by_name(result), level) == [ACME]
     assert len(_legacy_notes(result)) == 1
 
@@ -103,14 +133,14 @@ async def test_legacy_key_read_at_every_level(env, level: str) -> None:
 async def test_empty_legacy_key_still_reports(env, level: str, empty: Any) -> None:
     doc = _shop()
     _entity(doc, level)["custom_extensions"] = empty
-    assert len(_legacy_notes(convert_document(env, doc))) == 1
+    assert len(_legacy_notes(_convert_file(env, doc))) == 1
 
 
 async def test_legacy_key_on_every_level_reports_once(env) -> None:
     doc = _shop()
     for level in LEVELS:
         _entity(doc, level)["custom_extensions"] = [dict(LEGACY_ACME)]
-    result = convert_document(env, doc)
+    result = _convert_file(env, doc)
     models = by_name(result)
     for level in LEVELS:
         assert _stored(models, level) == [ACME], level
@@ -120,7 +150,7 @@ async def test_legacy_key_on_every_level_reports_once(env) -> None:
 async def test_legacy_key_on_any_version(env) -> None:
     doc = {**_shop(), "version": "0.2.0.dev0"}
     doc["datasets"][0]["custom_extensions"] = [dict(LEGACY_ACME)]
-    result = convert_document(env, doc)
+    result = _convert_file(env, doc)
     assert _stored(by_name(result), "dataset") == [ACME]
     assert len(_legacy_notes(result)) == 1
 
@@ -130,18 +160,15 @@ async def test_both_keys_on_one_entity(env) -> None:
     amount = _entity(doc, "field")
     amount["nonportable_extensions"] = [{"vendor_name": "ACME", "data": {"a": 1}}]
     amount["custom_extensions"] = [{"vendor_name": "OTHER", "data": '{"b": 2}'}]
-    stored = _stored(by_name(convert_document(env, doc)), "field")
+    stored = _stored(by_name(_convert_file(env, doc)), "field")
     assert sorted(stored, key=lambda e: e["vendor_name"]) == [
         {"vendor_name": "ACME", "data": {"a": 1}}, {"vendor_name": "OTHER", "data": {"b": 2}}]
 
 
-async def test_legacy_marker_in_the_input_is_ignored(env) -> None:
+async def test_legacy_marker_in_the_input_is_refused(env) -> None:
     doc = _shop()
     _entity(doc, "field")["nonportable_extensions"] = [{**LEGACY_ACME, "legacy": True}]
-    result = convert_document(env, doc)
-    assert _stored(by_name(result), "field") == []
-    assert _reports(result, entity="amount", vendor="ACME")
-    assert not _legacy_notes(result)
+    assert_violation(_refuse_file(env, doc), rule="schema", entity="amount", mentions=("ACME",))
 
 
 @pytest.mark.parametrize("current", [{}, "", 0])
@@ -152,29 +179,24 @@ def test_malformed_current_key_refused_beside_legacy_key(current: Any) -> None:
 
 
 @pytest.mark.parametrize("data", ["[1, 2]", "not json"])
-async def test_legacy_string_that_is_not_an_object(env, data: str) -> None:
+async def test_legacy_string_that_is_not_an_object_is_refused(env, data: str) -> None:
     doc = _shop()
     _entity(doc, "field")["custom_extensions"] = [{"vendor_name": "ACME", "data": data}]
-    result = convert_document(env, doc)
-    models = by_name(result)
-    assert _stored(models, "field") == []
-    assert _reports(result, entity="amount", vendor="ACME")
-    assert set(models) == {"orders", "customers"}
-    assert models["orders"].get_metric("revenue") is not None
+    assert_violation(_refuse_file(env, doc), rule="legacy-shape", entity="amount", mentions=("ACME",))
 
 
 # ────────────────────────────── invalid data ───────────────────────────────
 
 _BAD_DATA = [
-    pytest.param("{released: 2024-01-01}", id="unquoted-date"),
-    pytest.param("{log: {at: 2024-01-01T00:00:00Z}}", id="nested-timestamp"),
-    pytest.param("{stats: {ratio: .inf}}", id="nested-inf"),
-    pytest.param("{stats: {ratio: -.inf}}", id="nested-negative-inf"),
-    pytest.param("{stats: {ratio: .nan}}", id="nested-nan"),
-    pytest.param("{codes: {1: one}}", id="nested-non-string-key"),
-    pytest.param("[1, 2]", id="list"),
-    pytest.param("text", id="scalar"),
-    pytest.param("&a {self: *a}", id="recursive-alias"),
+    pytest.param("{released: 2024-01-01}", "extension-data", id="unquoted-date"),
+    pytest.param("{log: {at: 2024-01-01T00:00:00Z}}", "extension-data", id="nested-timestamp"),
+    pytest.param("{stats: {ratio: .inf}}", "extension-data", id="nested-inf"),
+    pytest.param("{stats: {ratio: -.inf}}", "extension-data", id="nested-negative-inf"),
+    pytest.param("{stats: {ratio: .nan}}", "extension-data", id="nested-nan"),
+    pytest.param("{codes: {1: one}}", "extension-data", id="nested-non-string-key"),
+    pytest.param("[1, 2]", "schema", id="list"),
+    pytest.param("text", "schema", id="scalar"),
+    pytest.param("&a {self: *a}", "extension-data", id="recursive-alias"),
 ]
 
 
@@ -186,13 +208,10 @@ def _with_bad_entry(level: str, data_yaml: str) -> dict[str, Any]:
     return doc
 
 
-@pytest.mark.parametrize("data_yaml", _BAD_DATA)
-async def test_invalid_data_drops_only_its_entry(env, data_yaml: str) -> None:
-    result = convert_document(env, _with_bad_entry("dataset", data_yaml))
-    models = by_name(result)
-    assert _stored(models, "dataset") == [ACME]
-    assert _reports(result, entity="orders", vendor="BAD")
-    assert {"id", "customer_id", "amount"} <= {c.name for c in models["orders"].fields}
+@pytest.mark.parametrize(("data_yaml", "rule"), _BAD_DATA)
+def test_invalid_data_is_refused(data_yaml: str, rule: str) -> None:
+    error = refuse_converter(_with_bad_entry("dataset", data_yaml))
+    assert_violation(error, rule=rule, entity="orders", mentions=("BAD",))
 
 
 _DEEP = 20000
@@ -209,10 +228,11 @@ def _deep() -> dict[str, Any]:
 
 @pytest.mark.parametrize("key", ["nonportable_extensions", "custom_extensions"])
 async def test_too_deep_data_drops_only_its_entry(env, key: str) -> None:
+    # Valid JSON too deep for SLayer: a SLayer limit, reported; never a refusal.
     data: Any = _deep() if key == "nonportable_extensions" else '{"a":' * _DEEP + "1" + "}" * _DEEP
     doc = _shop()
     _entity(doc, "field")[key] = [{"vendor_name": "DEEP", "data": data}]
-    result = convert_document(env, doc)
+    result = convert_document(env, doc) if key == "nonportable_extensions" else _convert_file(env, doc)
     assert _stored(by_name(result), "field") == []
     assert _reports(result, entity="amount", vendor="DEEP")
 
@@ -220,13 +240,14 @@ async def test_too_deep_data_drops_only_its_entry(env, key: str) -> None:
 @pytest.mark.parametrize("key", ["nonportable_extensions", "custom_extensions"])
 @pytest.mark.parametrize("entry", [{"vendor_name": "BAD"}, {"data": {"k": 1}}, "junk", [1, 2]],
                          ids=["no-data", "no-vendor", "scalar", "list"])
-async def test_incomplete_entry_drops_only_itself(env, key: str, entry: Any) -> None:
+async def test_incomplete_entry_is_refused(env, key: str, entry: Any) -> None:
     doc = _shop()
     _entity(doc, "dataset")[key] = [copy.deepcopy(entry),
                                     copy.deepcopy(ACME if key == "nonportable_extensions" else LEGACY_ACME)]
-    result = convert_document(env, doc)
-    assert _stored(by_name(result), "dataset") == [ACME]
-    assert _reports(result, entity="orders", vendor="non-portable extension")
+    if key == "nonportable_extensions":
+        assert_violation(refuse_converter(doc), rule="schema", entity="orders")
+    else:
+        assert_violation(_refuse_file(env, doc), rule="legacy-shape", entity="orders")
 
 
 async def test_shared_alias_data_kept(env) -> None:
@@ -238,10 +259,8 @@ async def test_shared_alias_data_kept(env) -> None:
 
 
 @pytest.mark.parametrize("level", LEVELS)
-async def test_invalid_data_dropped_at_every_level(env, level: str) -> None:
-    result = convert_document(env, _with_bad_entry(level, "[1, 2]"))
-    assert _stored(by_name(result), level) == [ACME]
-    assert [e for e in result.entries if "BAD" in e.message]
+def test_invalid_data_refused_at_every_level(level: str) -> None:
+    _at_level(refuse_converter(_with_bad_entry(level, "[1, 2]")), rule="schema", level=level, mentions=("BAD",))
 
 
 # ──────────────────────────── SLayer 1.8 export ────────────────────────────
@@ -270,7 +289,7 @@ def test_legacy_fixture_is_a_legacy_export() -> None:
 
 
 async def test_slayer_18_export_restores(env) -> None:
-    legacy = convert_document(env, _legacy_document())
+    legacy = _convert_file(env, LEGACY_FIXTURE)
     current = convert_document(env, _current_twin(_legacy_document()))
     assert [x.model_dump() for x in legacy.datasets] == [x.model_dump() for x in current.datasets]
     assert not _legacy_notes(current)

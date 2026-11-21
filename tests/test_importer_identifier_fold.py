@@ -15,7 +15,7 @@ from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.js_parser import parse_cube_js
@@ -38,7 +38,7 @@ from tests._dev2171_fixtures import (
 )
 from tests._engine_helpers import _engine_generate, disposable_engine
 from tests._osi_helpers import (
-    by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, rel, running_form, seed_db,
+    by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, running_form, seed_db,
 )
 
 DS = "ds"
@@ -405,11 +405,12 @@ def test_osi_fields_read_the_exact_and_folded_snowflake_columns(tmp_path: Path, 
     assert fields["upper"].definition_sql == "bar"
 
 
-def test_osi_self_qualified_path_to_an_undeclared_field_is_dropped(osi_db: Path) -> None:
+def test_osi_self_qualified_path_reads_the_source_column(osi_db: Path) -> None:
     result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([
         ds("Orders", source="orders", fields=[f("id"), f("double", "Orders.OrderAmount * 2")])])))
-    assert "double" not in cols(by_name(result)["Orders"])
-    assert any("Orders.OrderAmount" in w.message for w in result.warnings)
+    assert "double" in cols(by_name(result)["Orders"])
+    assert not any("double" in w.message or "Orders.OrderAmount" in w.message
+                   for w in (*result.warnings, *result.unconverted_metrics))
 
 
 def test_osi_self_qualified_path_to_a_declared_field_kept_as_written(osi_db: Path) -> None:
@@ -422,23 +423,6 @@ def test_osi_unquoted_self_qualified_path_matches_in_any_case(osi_db: Path) -> N
     result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([ds("Orders", source="orders", fields=[
         f("id"), f("OrderAmount", "orderamount"), f("double", "orders.orderamount * 2")])])))
     assert "double" in cols(by_name(result)["Orders"])
-
-
-def _two_dataset_import(db: Path, path: str, *, field_sql: str = "{} * 2") -> dict[str, DatasetField]:
-    result = convert(db=db, target_dialect="postgres", docs=documents(flat(
-        [ds("orders", source="orders", fields=[f("id"), f("double", field_sql.format(path))]),
-         ds("Totals", source="orders", fields=[f("id"), f("Amount", "orderamount", datatype="Date")])],
-        relationships=[rel("Totals", src="orders", to="Totals", from_columns=["id"], to_columns=["id"])])))
-    return cols(by_name(result)["orders"])
-
-
-def test_osi_quoted_relationship_hop_matches_exactly(osi_db: Path) -> None:
-    assert "double" in _two_dataset_import(osi_db, '"Totals".Amount')
-    assert "double" not in _two_dataset_import(osi_db, '"totals".Amount')
-
-
-def test_osi_unquoted_path_inherits_the_reached_field_type(osi_db: Path) -> None:
-    assert _two_dataset_import(osi_db, "totals.amount", field_sql="{}")["double"].datatype is DataType.DATE
 
 
 def test_osi_quoted_lowercase_source_introspects_the_exact_schema_and_table(osi_db: Path,

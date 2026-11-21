@@ -11,6 +11,7 @@ from tests._osi_helpers import (
     by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, m, mentions, running_form, scalar,
     seed_db, stored_expression, unconverted, visible,
 )
+from tests._ossie_validity_fixtures import assert_violation, refuse_converter
 
 
 @pytest.fixture
@@ -120,15 +121,12 @@ def test_open_dialect_token_imports(db: Path) -> None:
     assert sql == "amount"
 
 
-def test_expression_with_neither_form_is_reported(db: Path) -> None:
+def test_expression_with_neither_form_is_refused() -> None:
     doc = _orders({"name": "empty_field", "expression": {}},
                   metrics=[{"name": "empty_metric", "expression": {}}, m("total", "SUM(amount)")])
-    result = convert(db=db, docs=documents(doc))
-    orders = by_name(result)["orders"]
-    assert "empty_field" not in visible(orders)
-    assert mentions(result, "empty_field")
-    assert unconverted(result, "empty_metric")
-    assert {x.name for x in orders.metrics} == {"total"}
+    error = refuse_converter(doc)
+    assert_violation(error, rule="schema", entity="empty_field")
+    assert_violation(error, rule="schema", entity="empty_metric")
 
 
 # ─────────────────────── rendering for the target ──────────────────────────
@@ -225,8 +223,14 @@ async def test_quoted_mixed_case_identifier(db: Path) -> None:
     assert await scalar(result=result, db=db, dataset="orders", expression="count_distinct(legal_type)") == 2
 
 
-def test_unparseable_expression_is_reported(db: Path) -> None:
-    result = convert(db=db, docs=documents(_orders(f("broken", "amount +* 2"), f("status"))))
+def test_unparseable_portable_expression_is_refused() -> None:
+    error = refuse_converter(_orders(f_dialects("vendor", ("BIGQUERY", "amount +* 2")), f("broken", "amount +* 2")))
+    assert_violation(error, rule="ossie-sql", entity="broken")
+    assert not [v for v in error.violations if "vendor" in v.location]
+
+
+def test_unparseable_vendor_expression_is_reported(db: Path) -> None:
+    result = convert(db=db, docs=documents(_orders(f_dialects("broken", ("BIGQUERY", "amount +* 2")), f("status"))))
     orders = by_name(result)["orders"]
     assert "broken" not in visible(orders)
     assert mentions(result, "broken")

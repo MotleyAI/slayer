@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 import slayer.osi.converter as osi_converter_module
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.importers.column_types import LiveSource
 from slayer.ingest_report import ConversionResult
@@ -30,7 +30,8 @@ from slayer.osi.models import (
 )
 from slayer.osi.parser import parse_osi_path
 from tests._engine_helpers import disposable_engine
-from tests._osi_helpers import run_converter, stored_expression
+from tests._osi_helpers import run_converter
+from tests._ossie_validity_fixtures import assert_violation
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
 
@@ -213,20 +214,25 @@ def test_multihop_metric_anchor_relative_path(shop_engine):
 
 def _mini_doc(datasets, relationships=None, metrics=None, name="s"):
     return OSIDocument(
-        version="0.2.0.dev0", name=name, datasets=datasets,
-        relationships=relationships, metrics=metrics, legacy=True,
+        version="0.3.0.dev0", name=name, datasets=datasets,
+        relationships=relationships, metrics=metrics,
     )
 
 
-def test_duplicate_dataset_names_raise(shop_engine):
+def _refused(*docs: OSIDocument) -> OsiConversionError:
+    """The error constructing the converter over ``docs`` raises."""
+    with pytest.raises(OsiConversionError) as info:
+        OsiToSlayerConverter(documents=list(docs), data_source="testds")
+    return info.value
+
+
+def test_duplicate_dataset_names_are_refused(shop_engine):
     docs = [
         _mini_doc(datasets=[OSIDataset(name="orders", source="orders",
                                        fields=[OSIField(name="amount", expression=_expr("amount"))])], name=name)
         for name in ("a", "b")
     ]
-    converter = OsiToSlayerConverter(documents=docs, data_source="testds")
-    with pytest.raises(OsiConversionError):
-        converter.convert()
+    assert_violation(_refused(*docs), rule="duplicate-name", mentions=("orders",))
 
 
 def test_illegal_dataset_name_clean_fails(shop_engine):
@@ -281,13 +287,17 @@ def test_illegal_field_name_clean_fails_field_not_model(shop_engine):
     assert _reported(result)
 
 
+def _keys(*names: str) -> list[OSIField]:
+    return [OSIField(name=n, expression=_expr(n)) for n in names]
+
+
 def test_composite_key_join(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="ckey_child", source="ckey_child", primary_key=["k1", "k2"],
-                       fields=[OSIField(name="v", expression=_expr("v"))]),
+                       fields=[*_keys("k1", "k2"), OSIField(name="v", expression=_expr("v"))]),
             OSIDataset(name="ckey_parent", source="ckey_parent", primary_key=["k1", "k2"],
-                       fields=[OSIField(name="label", expression=_expr("label"))]),
+                       fields=[*_keys("k1", "k2"), OSIField(name="label", expression=_expr("label"))]),
         ],
         relationships=[OSIRelationship(
             name="c2p", **{"from": "ckey_child"}, to="ckey_parent",
@@ -300,7 +310,7 @@ def test_composite_key_join(shop_engine):
     assert join.column_pairs == [("k1", "k1"), ("k2", "k2")]
 
 
-def test_composite_key_length_mismatch_clean_fails(shop_engine):
+def test_composite_key_length_mismatch_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="ckey_child", source="ckey_child",
@@ -313,10 +323,7 @@ def test_composite_key_length_mismatch_clean_fails(shop_engine):
             from_columns=["k1", "k2"], to_columns=["k1"],
         )],
     )
-    result = _convert(shop_engine, doc)
-    child = {m.name: m for m in result.datasets}["ckey_child"]
-    assert child.relationships == []  # mismatched relationship dropped
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="relationship-arity", entity="bad")
 
 
 def test_missing_column_field_clean_fails(shop_engine):
@@ -392,45 +399,14 @@ def test_quoted_alias_field_preserves_quoting(shop_engine):
     assert {c.name: c for c in orders.fields}["legal_type"].definition_sql == '"status"'
 
 
-def test_invalid_osi_primary_key_keeps_introspected(shop_engine):
+def test_undeclared_osi_primary_key_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders", primary_key=["no_such_pk"],
                              fields=[OSIField(name="amount", expression=_expr("amount"))])]
     )
-    result = _convert(shop_engine, doc)
-    cols = {c.name: c for c in {m.name: m for m in result.datasets}["orders"].fields}
-    assert cols["order_id"].primary_key is True  # introspected PK preserved
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="undeclared-key-field", entity="orders", mentions=("no_such_pk",))
 
 
-def test_invalid_derived_overlay_reverts_to_physical_column(shop_engine):
-    # An overlay on a physical column (order_id) with an unresolvable cross-dataset
-    # ref must revert to the physical column (keep it + PK), not delete it.
-    doc = _mini_doc(
-        datasets=[OSIDataset(name="orders", source="orders",
-                             fields=[OSIField(name="order_id",
-                                              expression=_expr("customers.no_such_col"))])]
-    )
-    result = _convert(shop_engine, doc)
-    cols = {c.name: c for c in {m.name: m for m in result.datasets}["orders"].fields}
-    assert "order_id" in cols
-    assert cols["order_id"].primary_key is True
-    assert cols["order_id"].definition_sql != "customers.no_such_col"
-    assert _reported(result)
-
-
-def test_derived_overlay_preserves_primary_key(shop_engine):
-    # A derived overlay on the PK column (OSI not restating primary_key) keeps
-    # the introspected PK flag.
-    doc = _mini_doc(
-        datasets=[OSIDataset(name="orders", source="orders",
-                             fields=[OSIField(name="order_id", expression=_expr("order_id + 0"))])]
-    )
-    result = _convert(shop_engine, doc)
-    order_id = {c.name: c for c in {m.name: m for m in result.datasets}["orders"].fields}["order_id"]
-    assert order_id.primary_key is True
-    assert stored_expression(order_id) == {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id + 0"},
-                                                        {"dialect": "SQLITE", "expression": "order_id + 0"}]}
 
 
 def test_osi_primary_key_overrides_introspected(shop_engine):
@@ -438,7 +414,8 @@ def test_osi_primary_key_overrides_introspected(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders", primary_key=["customer_id"],
-            fields=[OSIField(name="customer_id", expression=_expr("customer_id"))],
+            fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
+                    OSIField(name="order_id", expression=_expr("order_id"))],
         )]
     )
     result = _convert(shop_engine, doc)
@@ -473,7 +450,8 @@ def test_unique_keys_into_meta(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders", unique_keys=[["order_id"]],
-            fields=[OSIField(name="amount", expression=_expr("amount"))],
+            fields=[OSIField(name="order_id", expression=_expr("order_id")),
+                    OSIField(name="amount", expression=_expr("amount"))],
         )]
     )
     result = _convert(shop_engine, doc)
@@ -499,9 +477,9 @@ def test_count_star_anchors_on_fact_root(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="ckey_child", source="ckey_child",
-                       fields=[OSIField(name="v", expression=_expr("v"))]),
+                       fields=[*_keys("k1"), OSIField(name="v", expression=_expr("v"))]),
             OSIDataset(name="ckey_parent", source="ckey_parent",
-                       fields=[OSIField(name="label", expression=_expr("label"))]),
+                       fields=[*_keys("k1"), OSIField(name="label", expression=_expr("label"))]),
         ],
         relationships=[OSIRelationship(
             name="c2p", **{"from": "ckey_child"}, to="ckey_parent",
@@ -585,7 +563,7 @@ def test_join_meta_carries_ai_context(shop_engine):
 
 # ─────────────────────── relationship / metric failures ─────────────────────
 
-def test_relationship_unknown_target_clean_fails(shop_engine):
+def test_relationship_unknown_target_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="customer_id", expression=_expr("customer_id"))])],
@@ -594,10 +572,7 @@ def test_relationship_unknown_target_clean_fails(shop_engine):
             from_columns=["customer_id"], to_columns=["customer_id"],
         )],
     )
-    result = _convert(shop_engine, doc)
-    orders = {m.name: m for m in result.datasets}["orders"]
-    assert orders.relationships == []
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="unknown-dataset", entity="dangling", mentions=("nonexistent",))
 
 
 def test_brand_new_derived_field_type_is_probed(shop_engine):
@@ -669,9 +644,7 @@ def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
     assert _reported(result)
 
 
-def test_cross_model_validation_fixed_point_transitive_drop(shop_engine):
-    # orders.cust_bad -> customers.bad_region -> regions.no_such_col.
-    # bad_region drops (regions.no_such_col missing); cust_bad must drop too.
+def test_cross_model_field_chain_is_refused_at_every_link(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders",
@@ -691,10 +664,9 @@ def test_cross_model_validation_fixed_point_transitive_drop(shop_engine):
                             from_columns=["region_id"], to_columns=["region_id"]),
         ],
     )
-    result = _convert(shop_engine, doc)
-    models = {m.name: m for m in result.datasets}
-    assert "bad_region" not in {c.name for c in models["customers"].fields}
-    assert "cust_bad" not in {c.name for c in models["orders"].fields}
+    error = _refused(doc)
+    assert_violation(error, rule="field-scope", entity="cust_bad", mentions=("customers.bad_region",))
+    assert_violation(error, rule="field-scope", entity="bad_region", mentions=("regions.no_such_col",))
 
 
 def test_nested_scope_alias_in_derived_field_not_flagged(shop_engine):
@@ -731,9 +703,7 @@ def test_duplicate_relationship_to_same_target_skipped(shop_engine):
     assert _reported(result)
 
 
-def test_valid_cross_model_derived_field_kept(shop_engine):
-    # A derived field with a valid cross-dataset ref (relationship exists, field exists)
-    # survives the post-join validation pass.
+def test_cross_model_derived_field_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders",
@@ -746,69 +716,13 @@ def test_valid_cross_model_derived_field_kept(shop_engine):
             name="o2c", **{"from": "orders"}, to="customers",
             from_columns=["customer_id"], to_columns=["customer_id"])],
     )
-    result = _convert(shop_engine, doc)
-    orders = {m.name: m for m in result.datasets}["orders"]
-    assert "cust_seg" in {c.name for c in orders.fields}
+    assert_violation(_refused(doc), rule="field-scope", entity="cust_seg", mentions=("customers.segment",))
 
 
-def test_cross_model_derived_field_inherits_target_type(shop_engine):
-    # A derived field that is a single cross-dataset ref (customers.segment) takes
-    # the resolved target field's TEXT type, not the DOUBLE local-probe fallback.
-    doc = _mini_doc(
-        datasets=[
-            OSIDataset(name="orders", source="orders",
-                       fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
-                               OSIField(name="seg", expression=_expr("customers.segment"))]),
-            OSIDataset(name="customers", source="customers",
-                       fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
-        ],
-        relationships=[OSIRelationship(
-            name="o2c", **{"from": "orders"}, to="customers",
-            from_columns=["customer_id"], to_columns=["customer_id"])],
-    )
-    result = _convert(shop_engine, doc)
-    orders = {m.name: m for m in result.datasets}["orders"]
-    assert {c.name: c for c in orders.fields}["seg"].datatype == DataType.STRING
 
 
-def _two_hop_doc():
-    # orders -> customers -> regions; regions.name is TEXT.
-    return _mini_doc(
-        datasets=[
-            OSIDataset(name="orders", source="orders", fields=[
-                OSIField(name="customer_id", expression=_expr("customer_id")),
-                OSIField(name="region_name",
-                         expression=_expr("customers.regions.name"))]),
-            OSIDataset(name="customers", source="customers", fields=[
-                OSIField(name="customer_id", expression=_expr("customer_id")),
-                OSIField(name="region_id", expression=_expr("region_id"))]),
-            OSIDataset(name="regions", source="regions", fields=[
-                OSIField(name="region_id", expression=_expr("region_id"))]),
-        ],
-        relationships=[
-            OSIRelationship(name="o2c", **{"from": "orders"}, to="customers",
-                            from_columns=["customer_id"], to_columns=["customer_id"]),
-            OSIRelationship(name="c2r", **{"from": "customers"}, to="regions",
-                            from_columns=["region_id"], to_columns=["region_id"]),
-        ],
-    )
 
-
-def test_two_hop_cross_model_derived_field_inherits_target_type(shop_engine):
-    # FAIL-FIRST (CR): a 2-hop dotted ref (customers.regions.name) must resolve
-    # through BOTH hops and inherit the target field's TEXT type — not drop the
-    # intermediate `customers` hop (reading only exp.Column.table) and fall back
-    # to the DOUBLE local-probe default.
-    result = _convert(shop_engine, _two_hop_doc())
-    orders = {m.name: m for m in result.datasets}["orders"]
-    cols = {c.name: c for c in orders.fields}
-    assert "region_name" in cols
-    assert cols["region_name"].datatype == DataType.STRING
-
-
-def test_two_hop_cross_model_ref_to_unknown_column_dropped(shop_engine):
-    # A bogus terminal on a real 2-hop path must be flagged + dropped, not
-    # silently admitted (the old db/catalog skip let every multi-hop ref pass).
+def test_two_hop_cross_model_ref_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders", fields=[
@@ -828,33 +742,25 @@ def test_two_hop_cross_model_ref_to_unknown_column_dropped(shop_engine):
                             from_columns=["region_id"], to_columns=["region_id"]),
         ],
     )
-    result = _convert(shop_engine, doc)
-    orders = {m.name: m for m in result.datasets}["orders"]
-    assert "bad" not in {c.name for c in orders.fields}
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="field-scope", entity="bad", mentions=("customers",))
 
 
-def test_physical_multipart_ref_whose_first_hop_is_not_a_join_is_kept(shop_engine):
-    # Precedence lock (Codex): the multi-hop physical/relationship classification mirrors
-    # the runtime resolver — a qualifier whose FIRST hop is NOT a relationship target is an
-    # opaque physical ``schema.table.column`` ref and is left alone (kept), NOT
-    # flagged. (The collision case — first hop IS a relationship but the walk is broken —
-    # is a broken relationship walk and IS dropped, per the sibling unknown-column test.)
+def test_physical_multipart_ref_is_a_live_mismatch(shop_engine):
+    # ``warehouse`` is neither the dataset nor a dataset of the document: the column is not in the source.
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders", fields=[
                 OSIField(name="customer_id", expression=_expr("customer_id")),
-                # ``warehouse`` is not a relationship target on orders → opaque.
                 OSIField(name="phys", expression=_expr("warehouse.sku.qty"))]),
         ],
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
-    assert "phys" in {c.name for c in orders.fields}
-    assert not [e for e in (*result.warnings, *result.unconverted_metrics) if e.severity != "info"]  # kept, not flagged
+    assert "phys" not in {c.name for c in orders.fields}
+    assert any("phys" in e.message for e in (*result.warnings, *result.unconverted_metrics))
 
 
-def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
+def test_cross_model_derived_field_unknown_column_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders",
@@ -867,10 +773,7 @@ def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
             name="o2c", **{"from": "orders"}, to="customers",
             from_columns=["customer_id"], to_columns=["customer_id"])],
     )
-    result = _convert(shop_engine, doc)
-    orders = {m.name: m for m in result.datasets}["orders"]
-    assert "bad" not in {c.name for c in orders.fields}
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="field-scope", entity="bad", mentions=("customers.no_such_col",))
 
 
 def test_dropped_time_default_dimension_is_reset(shop_engine):
@@ -887,8 +790,7 @@ def test_dropped_time_default_dimension_is_reset(shop_engine):
     assert orders.default_time_dimension != "ts"
 
 
-def test_cross_model_derived_field_no_join_path_dropped(shop_engine):
-    # products.category referenced from orders with NO relationship -> dropped.
+def test_cross_model_derived_field_without_a_join_path_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders",
@@ -897,10 +799,7 @@ def test_cross_model_derived_field_no_join_path_dropped(shop_engine):
                        fields=[OSIField(name="category", expression=_expr("category"))]),
         ],
     )
-    result = _convert(shop_engine, doc)
-    orders = {m.name: m for m in result.datasets}["orders"]
-    assert "cat" not in {c.name for c in orders.fields}
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="field-scope", entity="cat", mentions=("products.category",))
 
 
 def test_derived_field_unparseable_expression_clean_fails(shop_engine):
@@ -929,18 +828,13 @@ def test_derived_field_self_qualified_unknown_column_clean_fails(shop_engine):
     assert _reported(result)
 
 
-def test_metric_operand_unknown_column_clean_fails(shop_engine):
-    # A materialized aggregate operand where one column is unknown must clean-
-    # fail, not materialize SQL that still references the missing column.
+def test_metric_operand_unknown_column_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
         metrics=[OSIMetric(name="bad", expression=_expr("SUM(amount + no_such_col)"))],
     )
-    result = _convert(shop_engine, doc)
-    all_measures = {meas.name for m in result.datasets for meas in m.metrics}
-    assert "bad" not in all_measures
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="metric-scope", entity="bad")
 
 
 def test_bare_alias_field_shadowing_physical_column_replaces(shop_engine):
@@ -966,11 +860,12 @@ def test_materialized_name_avoids_existing_measure(shop_engine):
         datasets=[OSIDataset(
             name="orders", source="orders",
             fields=[OSIField(name="amount", expression=_expr("amount")),
-                    OSIField(name="quantity", expression=_expr("quantity"))],
+                    OSIField(name="quantity", expression=_expr("quantity")),
+                    OSIField(name="status", expression=_expr("status"))],
         )],
         metrics=[
-            OSIMetric(name="_rev_0", expression=_expr("SUM(amount)")),
-            OSIMetric(name="rev", expression=_expr("SUM(LENGTH(LPAD(status, 12, 'x')))")),
+            OSIMetric(name="_rev_0", expression=_expr("SUM(orders.amount)")),
+            OSIMetric(name="rev", expression=_expr("SUM(LENGTH(LPAD(orders.status, 12, 'x')))")),
         ],
     )
     result = _convert(shop_engine, doc)
@@ -985,7 +880,7 @@ def test_metric_named_after_transform_is_imported(shop_engine, name):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
-        metrics=[OSIMetric(name=name, expression=_expr("SUM(amount)"))],
+        metrics=[OSIMetric(name=name, expression=_expr("SUM(orders.amount)"))],
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
@@ -993,9 +888,7 @@ def test_metric_named_after_transform_is_imported(shop_engine, name):
     assert not any(u.metric_name == name for u in result.unconverted_metrics)
 
 
-def test_ambiguous_unqualified_column_clean_fails(shop_engine):
-    # customer_id exists on both orders and customers; an unqualified reference
-    # is ambiguous and must clean-fail rather than bind by dataset order.
+def test_unqualified_column_in_a_model_metric_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders",
@@ -1005,10 +898,7 @@ def test_ambiguous_unqualified_column_clean_fails(shop_engine):
         ],
         metrics=[OSIMetric(name="cid", expression=_expr("COUNT(customer_id)"))],
     )
-    result = _convert(shop_engine, doc)
-    all_measures = {meas.name for m in result.datasets for meas in m.metrics}
-    assert "cid" not in all_measures
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="metric-scope", entity="cid")
 
 
 def test_materialized_name_avoids_existing_column(shop_engine):
@@ -1020,10 +910,11 @@ def test_materialized_name_avoids_existing_column(shop_engine):
             fields=[
                 OSIField(name="amount", expression=_expr("amount")),
                 OSIField(name="quantity", expression=_expr("quantity")),
+                OSIField(name="status", expression=_expr("status")),
                 OSIField(name="_rev_0", expression=_expr("amount")),  # occupies name
             ],
         )],
-        metrics=[OSIMetric(name="rev", expression=_expr("SUM(LENGTH(LPAD(status, 12, 'x')))"))],
+        metrics=[OSIMetric(name="rev", expression=_expr("SUM(LENGTH(LPAD(orders.status, 12, 'x')))"))],
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
@@ -1032,26 +923,23 @@ def test_materialized_name_avoids_existing_column(shop_engine):
     assert any(c.name == derived and c.hidden for c in orders.fields)
 
 
-def test_duplicate_metric_name_clean_fails(shop_engine):
+def test_duplicate_metric_name_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
         metrics=[
-            OSIMetric(name="tot", expression=_expr("SUM(amount)")),
-            OSIMetric(name="tot", expression=_expr("MAX(amount)")),
+            OSIMetric(name="tot", expression=_expr("SUM(orders.amount)")),
+            OSIMetric(name="tot", expression=_expr("MAX(orders.amount)")),
         ],
     )
-    result = _convert(shop_engine, doc)
-    orders = {m.name: m for m in result.datasets}["orders"]
-    assert len([m for m in orders.metrics if m.name == "tot"]) == 1
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="duplicate-name", mentions=("tot",))
 
 
 def test_metric_named_as_column_clean_fails(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
-        metrics=[OSIMetric(name="amount", expression=_expr("SUM(amount)"))],
+        metrics=[OSIMetric(name="amount", expression=_expr("SUM(orders.amount)"))],
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
@@ -1059,7 +947,7 @@ def test_metric_named_as_column_clean_fails(shop_engine):
     assert _reported(result)
 
 
-def test_relationship_nonexistent_join_column_clean_fails(shop_engine):
+def test_relationship_nonexistent_join_column_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[
             OSIDataset(name="orders", source="orders",
@@ -1072,24 +960,16 @@ def test_relationship_nonexistent_join_column_clean_fails(shop_engine):
             from_columns=["no_such_fk"], to_columns=["customer_id"],
         )],
     )
-    result = _convert(shop_engine, doc)
-    orders = {m.name: m for m in result.datasets}["orders"]
-    assert orders.relationships == []
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="undeclared-key-field", entity="bad", mentions=("no_such_fk",))
 
 
-def test_qualified_metric_ref_to_nonexistent_column_clean_fails(shop_engine):
-    # A qualified ref whose field does not exist on the qualified dataset must
-    # clean-fail, not import a metric that fails at query time.
+def test_qualified_metric_ref_to_nonexistent_field_is_refused(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
         metrics=[OSIMetric(name="bad", expression=_expr("SUM(orders.no_such_col)"))],
     )
-    result = _convert(shop_engine, doc)
-    orders = {m.name: m for m in result.datasets}["orders"]
-    assert "bad" not in {meas.name for meas in orders.metrics}
-    assert _reported(result)
+    assert_violation(_refused(doc), rule="metric-scope", entity="bad", mentions=("orders.no_such_col",))
 
 
 def test_metric_no_join_path_clean_fails(shop_engine):
@@ -1120,7 +1000,7 @@ def test_dialect_fallback_among_sql_dialects(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
-        metrics=[OSIMetric(name="tot", expression=_expr("SUM(amount)", dialect="SNOWFLAKE"))],
+        metrics=[OSIMetric(name="tot", expression=_expr("SUM(orders.amount)", dialect="SNOWFLAKE"))],
     )
     result = _convert(shop_engine, doc, dialect="ANSI_SQL")
     orders = {m.name: m for m in result.datasets}["orders"]
@@ -1135,7 +1015,7 @@ def test_requested_non_sql_dialect_falls_back_to_sql(shop_engine):
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
         metrics=[OSIMetric(name="tot", expression=OSIExpression(dialects=[
             OSIDialectExpression(dialect="MDX", expression="[Measures].[x]"),
-            OSIDialectExpression(dialect="ANSI_SQL", expression="SUM(amount)"),
+            OSIDialectExpression(dialect="ANSI_SQL", expression="SUM(orders.amount)"),
         ]))],
     )
     result = _convert(shop_engine, doc, dialect="MDX")
@@ -1146,15 +1026,13 @@ def test_requested_non_sql_dialect_falls_back_to_sql(shop_engine):
 def test_databricks_dialect_expression_normalized(shop_engine):
     # A Databricks expression with backtick identifiers must be normalized to
     # default SQL so it parses and converts, not clean-fail.
-    doc = _mini_doc(
-        datasets=[OSIDataset(name="orders", source="orders",
-                             fields=[OSIField(name="amount", expression=_expr("amount"))])],
-        metrics=[OSIMetric(name="tot", expression=OSIExpression(dialects=[
-            OSIDialectExpression(dialect="DATABRICKS", expression="SUM(`amount`)")]))],
-    )
+    tot = OSIMetric(name="tot", expression=OSIExpression(dialects=[
+        OSIDialectExpression(dialect="DATABRICKS", expression="SUM(`AMOUNT`)")]))
+    doc = _mini_doc(datasets=[OSIDataset(name="orders", source="orders", metrics=[tot],
+                                         fields=[OSIField(name="AMOUNT", expression=_expr("amount"))])])
     result = _convert(shop_engine, doc, dialect="DATABRICKS")
     orders = {m.name: m for m in result.datasets}["orders"]
-    assert {m.name: m for m in orders.metrics}["tot"].text == "sum(amount)"
+    assert {m.name: m for m in orders.metrics}["tot"].text == "sum(AMOUNT)"
 
 
 def test_target_dialect_refusing_percentile_drops_the_metric(shop_engine):
@@ -1163,7 +1041,7 @@ def test_target_dialect_refusing_percentile_drops_the_metric(shop_engine):
                              fields=[OSIField(name="amount", expression=_expr("amount"))])],
         metrics=[OSIMetric(
             name="p90",
-            expression=_expr("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)"),
+            expression=_expr("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)"),
         )],
     )
     result = _convert(shop_engine, doc, target_dialect="mysql")
@@ -1225,7 +1103,7 @@ def test_emitted_formula_is_validated_by_the_mode_b_grammar(shop_engine):
                              fields=[OSIField(name="amount", expression=_expr("amount")),
                                      OSIField(name="status", expression=_expr("status"))])],
         metrics=[OSIMetric(name="paid_share",
-                           expression=_expr("SUM(CASE WHEN status = 'paid' THEN amount END) / COUNT(*)"))],
+                           expression=_expr("SUM(CASE WHEN orders.status = 'paid' THEN orders.amount END) / COUNT(*)"))],
     )
     orders = _by_name(_convert(shop_engine, doc))["orders"]
     formula = {m.name: m for m in orders.metrics}["paid_share"].text
@@ -1251,7 +1129,7 @@ def staff_engine(tmp_path: Path) -> Iterator[sa.Engine]:
 
 
 def _staff_fields(engine: sa.Engine, *, source: str, fields: list[OSIField]) -> dict:
-    doc = OSIDocument(version="0.2.0.dev0", name="s", datasets=[OSIDataset(name="staff", source=source, fields=fields)])
+    doc = OSIDocument(version="0.3.0.dev0", name="s", datasets=[OSIDataset(name="staff", source=source, fields=fields)])
     staff = _by_name(_convert(engine, doc, target_dialect="duckdb"))["staff"]
     return {c.name: (c.datatype, c.element_type) for c in staff.fields}
 
@@ -1272,7 +1150,7 @@ def test_a_derived_list_field_is_a_list(staff_engine):
 
 
 def test_a_list_valued_metric_operand_materializes_as_a_list(staff_engine):
-    doc = OSIDocument(version="0.2.0.dev0", name="s",
+    doc = OSIDocument(version="0.3.0.dev0", name="s",
                       datasets=[OSIDataset(name="staff", source="staff",
                                            fields=[OSIField(name="skills", expression=_expr("skills"))])],
                       metrics=[OSIMetric(name="sets", expression=_expr("COUNT(list_distinct(staff.skills))"))])
@@ -1281,23 +1159,6 @@ def test_a_list_valued_metric_operand_materializes_as_a_list(staff_engine):
     assert hidden == [(DataType.ARRAY, DataType.OPAQUE)]
 
 
-def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
-    doc = _mini_doc(
-        datasets=[
-            OSIDataset(name="assignments", source="assignments",
-                       fields=[OSIField(name="staff_id", expression=_expr("staff_id")),
-                               OSIField(name="staff_skills", expression=_expr("staff.skills"))]),
-            OSIDataset(name="staff", source="staff", fields=[OSIField(name="id", expression=_expr("id")),
-                                                            OSIField(name="skills", expression=_expr("skills"))]),
-        ],
-        relationships=[OSIRelationship.model_validate({"name": "a2s", "from": "assignments", "to": "staff",
-                                                       "from_columns": ["staff_id"], "to_columns": ["id"]})],
-    )
-    assignments = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["assignments"]
-    col = assignments.get_field("staff_skills")
-    assert col is not None
-    assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
-
 
 def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
@@ -1305,41 +1166,3 @@ def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine,
                           fields=[OSIField(name="skills", expression=_expr("list_distinct(skills)"))])
     assert cols["skills"] == (DataType.ARRAY, DataType.STRING)
 
-
-def test_a_chain_of_cross_model_refs_to_a_list_is_a_list(staff_engine):
-    def rel(name: str, frm: str, to: str, key: str) -> OSIRelationship:
-        return OSIRelationship.model_validate(
-            {"name": name, "from": frm, "to": to, "from_columns": [key], "to_columns": ["id"]})
-
-    doc = _mini_doc(
-        datasets=[  # the referrer first, so one pass would copy roles.skills_of before it is typed
-            OSIDataset(name="assignments", source="assignments",
-                       fields=[OSIField(name="role_id", expression=_expr("role_id")),
-                               OSIField(name="role_skills", expression=_expr("roles.skills_of"))]),
-            OSIDataset(name="roles", source="roles",
-                       fields=[OSIField(name="id", expression=_expr("id")),
-                               OSIField(name="staff_id", expression=_expr("staff_id")),
-                               OSIField(name="skills_of", expression=_expr("staff.skills"))]),
-            OSIDataset(name="staff", source="staff", fields=[OSIField(name="id", expression=_expr("id")),
-                                                            OSIField(name="skills", expression=_expr("skills"))]),
-        ],
-        relationships=[rel("a2r", "assignments", "roles", "role_id"), rel("r2s", "roles", "staff", "staff_id")],
-    )
-    assignments = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["assignments"]
-    col = assignments.get_field("role_skills")
-    assert col is not None
-    assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
-
-
-def test_a_cycle_of_cross_model_refs_has_no_end(monkeypatch: pytest.MonkeyPatch):
-    model = SlayerDataset(name="m", sql_table="m", data_source="testds", fields=[
-        DatasetField(name=n, expression=f"x.{n}", datatype=DataType.FLOAT) for n in ("a", "b", "c")])
-    nxt = {"a": "b", "b": "c", "c": "a"}
-    def _single_ref(
-        self: OsiToSlayerConverter, dataset: SlayerDataset, sql: str,
-    ) -> tuple[SlayerDataset, DatasetField | None]:
-        return dataset, dataset.get_field(nxt[sql.split(".")[1]])
-
-    monkeypatch.setattr(OsiToSlayerConverter, "_single_cross_dataset_ref", _single_ref)
-    converter = OsiToSlayerConverter(documents=[], data_source="testds")
-    assert [converter._ref_chain_end(dataset=model, col=c) for c in model.fields] == [None, None, None]

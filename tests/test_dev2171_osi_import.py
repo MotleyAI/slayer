@@ -17,7 +17,7 @@ from slayer.sql.dialects.base import ListFn
 from tests._dev2171_fixtures import (
     by_id, field_of, convert_osi, counts_by, entries, has_field, import_osi, datasets_of, rows, seed, value,
 )
-from tests._osi_helpers import ds, f, flat, legacy, m, mentions, unconverted, visible, write_yaml
+from tests._osi_helpers import ds, f, f_dialects, flat, legacy, m, mentions, unconverted, visible, write_yaml
 
 ID = f("id")
 LIST_FIELDS = [ID, f("tags"), f("status"), f("note")]
@@ -137,7 +137,7 @@ class TestArrayFunctions:
 
     async def test_any_over_a_subquery_stays_sql(self, db: Path) -> None:
         sql = "id = ANY(SELECT id FROM orders WHERE status = 'paid')"
-        result = import_osi(flat([orders([*LIST_FIELDS, f("paid_id", sql)])]), db=db)
+        result = import_osi(flat([orders([*LIST_FIELDS, f_dialects("paid_id", ("POSTGRES", sql))])]), db=db)
         assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="paid_id") == [True, True, False]
 
     def test_array_length_with_a_dimension_is_reported(self, db: Path) -> None:

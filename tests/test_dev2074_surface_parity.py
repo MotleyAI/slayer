@@ -211,12 +211,14 @@ class TestOsiConversion:
             return OSIRelationship.model_validate({"name": name, "from": src, "to": dst,
                                                    "from_columns": ["customer_id"], "to_columns": ["customer_id"]})
         doc = OSIDocument(
-            version="0.2.0.dev0", name="s", legacy=True,
+            version="0.3.0.dev0", name="s",
             datasets=[
                 OSIDataset(name="orders", source="orders",
-                           fields=[OSIField(name="amount", expression=_expr("amount"))]),
+                           fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
+                                   OSIField(name="amount", expression=_expr("amount"))]),
                 OSIDataset(name="customers", source="customers",
-                           fields=[OSIField(name="region_id", expression=_expr("region_id"))]),
+                           fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
+                                   OSIField(name="region_id", expression=_expr("region_id"))]),
             ],
             relationships=[rel("o2c", "orders", "customers"), rel("c2o", "customers", "orders")],
             metrics=[OSIMetric(name="cross",

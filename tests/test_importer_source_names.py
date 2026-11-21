@@ -32,6 +32,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import collect_over_engine, field_of, typing_notes, write_yaml
 from tests._engine_helpers import disposable_engine, owned_query_engine
 from tests._osi_helpers import ds, f, flat, rel
+from tests._ossie_validity_fixtures import assert_violation, refuse_converter
 
 pytest.importorskip("pytest_postgresql")
 
@@ -522,14 +523,13 @@ async def test_names_local_to_a_source_query(pg: Live, tmp_path: Path) -> None:
     assert await _grouped(pg, tmp_path, models, "recent", "total") == ["t"]
 
 
-async def test_osi_reference_to_another_datasets_field(pg: Live, tmp_path: Path) -> None:
-    models, messages = _osi(pg, flat(
+def test_osi_reference_to_another_datasets_field() -> None:
+    error = refuse_converter(flat(
         [ds("ords", fields=[f("id"), f("cust_id"), f("up", "UPPER(Customers.Region)", datatype="String")]),
          ds("Customers", source="custs", fields=[f("id"), f("Region", "region")])],
         relationships=[rel("ords_customers", src="ords", to="Customers", from_columns=["cust_id"],
                            to_columns=["id"])]))
-    assert [m for m in messages if "'up'" in m] == []
-    assert await _grouped(pg, tmp_path, models, "ords", "up") == ["N"]
+    assert_violation(error, rule="field-scope", entity="up", mentions=("Customers.Region",))
 
 
 def _dbt_files(live: Live, tmp_path: Path, *, quoting: dict[str, Any] | None, include_hidden: bool = False,

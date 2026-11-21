@@ -42,7 +42,7 @@ ORDERS_PROJECT = DbtProject(
     regular_models=[DbtRegularModel(name="orders", schema_name="main", alias="orders", description="Orders")],
 )
 ORDERS_OSI = OSIDocument.model_validate({
-    "version": "0.2.0.dev0", "name": "shop",
+    "version": "0.3.0.dev0", "name": "shop",
     "datasets": [{
         "name": "orders", "source": "orders",
         "fields": [{"name": "status", "expression": {"sql": "status"}},

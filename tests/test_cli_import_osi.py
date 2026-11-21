@@ -93,8 +93,7 @@ def test_import_osi_missing_datasource_exits(tmp_path: Path) -> None:
 def test_import_osi_duplicate_datasets_exits_cleanly(
     shop_setup, tmp_path: Path
 ) -> None:
-    # Duplicate dataset names raise OsiConversionError in the converter; the CLI
-    # must catch it and exit non-zero with the message, not dump a traceback.
+    # Duplicate dataset names refuse the import; the CLI exits non-zero with the violation, not a traceback.
     store, _ = shop_setup
     osi = tmp_path / "dupe.yaml"
     osi.write_text(
@@ -114,7 +113,7 @@ def test_import_osi_duplicate_datasets_exits_cleanly(
         "            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}\n"
     )
     args = _args(store, osi)
-    with pytest.raises(_CommandFailed, match="Duplicate dataset names"):
+    with pytest.raises(_CommandFailed, match=r"duplicate-name.*orders|orders.*duplicate-name"):
         _run_import_osi(args)
 
 
