@@ -604,15 +604,17 @@ def _off_midnight(value: Any) -> bool:
     return isinstance(parsed, datetime) and parsed.time() != datetime.min.time()
 
 
-def typed_temporal_literal(value: Any, *, operand: Optional[DataType]) -> Any:
-    """A literal compared with an ``operand`` value, typed to it when their temporal types differ; else ``value``,
-    its spelling kept. An off-midnight instant beside a DATE promotes the DATE instead."""
+def typed_temporal_literal(value: Any, *, operand: Optional[DataType], dialect: SqlDialect) -> Any:
+    """A literal compared with an ``operand`` value, typed to it; where dates live in text, a literal already of
+    that type keeps its spelling. An off-midnight instant beside a DATE promotes the DATE instead."""
     parsed = _parsed_temporal(value) if operand is not None else None
-    if operand is DataType.DATETIME and parsed is not None and not isinstance(parsed, datetime):
+    if parsed is None:
+        return value
+    if operand is DataType.DATETIME and not isinstance(parsed, datetime):
         return datetime.combine(parsed, datetime.min.time())
     if operand is DataType.DATE and isinstance(parsed, datetime) and parsed.time() == datetime.min.time():
         return parsed.date()
-    return value
+    return value if dialect.temporal_text_compatible else parsed
 
 
 def _typed_null_safe(
@@ -629,7 +631,7 @@ def _typed_null_safe(
             continue
         if operand is DataType.DATE and _off_midnight(literal.value):
             out[1 - i], operand = dialect.promote_to_timestamp(out[1 - i]), DataType.DATETIME
-        typed = typed_temporal_literal(literal.value, operand=operand)
+        typed = typed_temporal_literal(literal.value, operand=operand, dialect=dialect)
         if typed is not literal.value:
             out[i] = _literal(typed, dialect=dialect)
     return out
@@ -651,7 +653,8 @@ def render_in_predicate(
         # No DATE equals an off-midnight instant: the column reads as its midnight instead.
         column, operand = dialect.promote_to_timestamp(column), DataType.DATETIME
     node = exp.In(this=column, expressions=[
-        _literal(typed_temporal_literal(v.value, operand=operand), dialect=dialect) for v in key.values
+        _literal(typed_temporal_literal(v.value, operand=operand, dialect=dialect), dialect=dialect)
+        for v in key.values
     ])
     return exp.Not(this=node) if key.negated else node
 

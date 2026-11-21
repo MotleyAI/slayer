@@ -218,6 +218,17 @@ async def test_date_meeting_an_off_midnight_literal_is_promoted(dialect, filt) -
 
 @pytest.mark.parametrize("dialect", PROMOTING)
 @pytest.mark.parametrize("filt", [
+    "mx.d in ('2024-05-16', '2024-05-15 06:00:00')",
+    "mx.ts in ('2024-05-15T06:00:00')",
+    "mx.ts is not distinct from '2024-05-15 06:00:00'",
+])
+async def test_temporal_members_are_typed_where_dates_are_not_text(dialect, filt) -> None:
+    where = _flat(await _sql(dialect, {"population": "mx", "dimensions": ["mx.id"], "filter": [filt]})).split(" WHERE ")[1]
+    assert not re.search(r"(?:IN \(|,|FROM)\s*'2024-05-1[56]", where), where
+
+
+@pytest.mark.parametrize("dialect", PROMOTING)
+@pytest.mark.parametrize("filt", [
     "mx.d = timestamp '2024-05-15 00:00:00'",
     "mx.d >= timestamp '2024-05-15 06:00:00'",
     "mx.d in ('2024-05-16', '2024-05-15 00:00:00')",

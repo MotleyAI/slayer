@@ -180,7 +180,7 @@ def _assert_grain_pair(
     m = re.escape(marker.strip())
     pat = re.compile(
         r"base\." + _Q + r"([^\"`]*(?:" + col_regex + r")[^\"`]*)" + _Q
-        + (r"([^\n]*?)" if lookup else r"()\s*")
+        + (r"([^\n]*?)" if lookup else r"()\)?\s*")
         + m + r"\s*" + _SQLITE_CANONICAL + r"shifted_\w+\." + _Q + r"([^\"`]*)" + _Q
     )
 
