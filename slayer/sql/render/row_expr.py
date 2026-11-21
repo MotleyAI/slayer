@@ -14,7 +14,7 @@ between the ScopeFrame and the generator's spec-builder call sites.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -22,6 +22,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.time_points import date_bound, parse_temporal_value
 from slayer.core.keys import (
     CLOCK_FUNCTIONS,
     DATE_ADD_COUNT_ARG,
@@ -43,13 +44,17 @@ from slayer.core.keys import (
     _FrozenKey,
     boolean_valued,
     check_scalar_arity,
+    date_promotion_positions,
     integer_valued,
     is_list_call,
     list_element_type,
+    mixed_nullif,
     numbers_read_list,
     numeric_boolean_positions,
+    temporal_pair,
     temporal_type,
     unit_word,
+    value_type,
     reads_no_rows,
 )
 from slayer.sql.dialects.base import (
@@ -503,25 +508,78 @@ def int_value(value: Expression) -> Expression:
     return exp.Cast(this=value, to=exp.DataType.build("INT"))
 
 
-def numeric_parts(
-    *, key: Any, parts: List[Expression], field_type: FieldTypeFn,
+def coerced_parts(
+    *, key: Any, parts: List[Expression], field_type: FieldTypeFn, dialect: SqlDialect,
 ) -> List[Expression]:
-    """``key``'s rendered children with each boolean in a numeric position read as its integer."""
-    positions = numeric_boolean_positions(key, field_type=field_type)
-    return [int_value(p) if i in positions else p for i, p in enumerate(parts)]
+    """``key``'s rendered children with each boolean in a numeric position read as its integer, each DATE in a
+    TIMESTAMP position as its midnight, and two compared temporal values as the dialect compares them."""
+    ints = numeric_boolean_positions(key, field_type=field_type)
+    dates = date_promotion_positions(key, field_type=field_type)
+    out = [
+        int_value(p) if i in ints else dialect.promote_to_timestamp(p) if i in dates else p
+        for i, p in enumerate(parts)
+    ]
+    out = _typed_null_safe(key=key, parts=out, field_type=field_type, dialect=dialect)
+    if temporal_pair(key, field_type=field_type) is not None:
+        out = list(dialect.build_temporal_comparands(out[0], out[1]))
+    return out
+
+
+def bucket_operand(key: TimeTruncKey, *, field_type: FieldTypeFn) -> DataType:
+    """The DATE / TIMESTAMP type of a bucket's source."""
+    dt = temporal_type(key.source, field_type=field_type)
+    if dt is None:
+        # The checker rejects these at bind; reaching render is a wiring bug.
+        raise RuntimeError(f"date_trunc() source {key.source!r} has no DATE/TIMESTAMP type at render.")
+    return dt
+
+
+def render_bucket(
+    *, key: TimeTruncKey, source: Expression, dialect: SqlDialect, field_type: FieldTypeFn,
+) -> Expression:
+    """A bucket through the dialect, typed by its source."""
+    return dialect.build_bucket(
+        col_expr=source, granularity=key.granularity, operand=bucket_operand(key, field_type=field_type),
+    )
+
+
+def render_mixed_nullif(*, args: List[Expression], date_position: int, dialect: SqlDialect) -> Expression:
+    """``nullif`` of a DATE and a TIMESTAMP: compared at the DATE's midnight, its first argument returned as is."""
+    sides = [dialect.promote_to_timestamp(a) if i == date_position else a.copy() for i, a in enumerate(args)]
+    left, right = dialect.build_temporal_comparands(sides[0], sides[1])
+    return case((exp.EQ(this=left, expression=right), exp.Null()), default=args[0])
+
+
+def date_typed_comparison(
+    comparison: Tuple[TemporalComparisonOp, Any, date], *, field_type: FieldTypeFn,
+) -> Tuple[TemporalComparisonOp, Any, date, bool]:
+    """A date-time literal compared with a DATE operand as the exact DATE bound, else with the operand read as its
+    midnight (the trailing flag)."""
+    op, operand, value = comparison
+    if isinstance(value, datetime) and temporal_type(operand, field_type=field_type) is DataType.DATE:
+        bound = date_bound(op, value)
+        if bound is None:
+            return op, operand, value, True
+        return _TEMPORAL_COMPARISON_OPS[bound[0]], operand, bound[1], False
+    return op, operand, value, False
 
 
 def iif_case_chain(
-    *, key: ScalarCallKey, part: Callable[[Any], Expression], field_type: FieldTypeFn,
+    *, key: ScalarCallKey, part: Callable[[Any], Expression], field_type: FieldTypeFn, dialect: SqlDialect,
 ) -> exp.Case:
     """Render an ``iif`` chain as one multi-WHEN CASE, flattening nested ``iif``
     in the otherwise position; ``part`` renders each argument. A boolean branch of a
-    numeric chain reads as its integer."""
+    numeric chain reads as its integer, a DATE branch of a TIMESTAMP chain as its midnight."""
     mixed = bool(numeric_boolean_positions(key, field_type=field_type))
+    timestamp = value_type(key, field_type=field_type) is DataType.DATETIME
 
     def value(arg: Any) -> Expression:
         rendered = part(arg)
-        return int_value(rendered) if mixed and boolean_valued(arg, field_type=field_type) else rendered
+        if mixed and boolean_valued(arg, field_type=field_type):
+            return int_value(rendered)
+        if timestamp and temporal_type(arg, field_type=field_type) is DataType.DATE:
+            return dialect.promote_to_timestamp(rendered)
+        return rendered
 
     ifs: List[exp.If] = []
     node: Any = key
@@ -535,8 +593,54 @@ def iif_case_chain(
     return exp.Case(ifs=ifs, default=value(node))
 
 
-def render_in_predicate(*, key: InKey, column: Expression, dialect: SqlDialect) -> Expression:
-    """``column [NOT] IN (…)`` over ``key``'s literals."""
+def _parsed_temporal(value: Any) -> Optional[date]:
+    if isinstance(value, date):
+        return value
+    return parse_temporal_value(value) if isinstance(value, str) else None
+
+
+def _off_midnight(value: Any) -> bool:
+    parsed = _parsed_temporal(value)
+    return isinstance(parsed, datetime) and parsed.time() != datetime.min.time()
+
+
+def typed_temporal_literal(value: Any, *, operand: Optional[DataType], dialect: SqlDialect) -> Any:
+    """A literal compared with an ``operand`` value, typed to it; where dates live in text, a literal already of
+    that type keeps its spelling. An off-midnight instant beside a DATE promotes the DATE instead."""
+    parsed = _parsed_temporal(value) if operand is not None else None
+    if parsed is None:
+        return value
+    if operand is DataType.DATETIME and not isinstance(parsed, datetime):
+        return datetime.combine(parsed, datetime.min.time())
+    if operand is DataType.DATE and isinstance(parsed, datetime) and parsed.time() == datetime.min.time():
+        return parsed.date()
+    return value if dialect.temporal_text_compatible else parsed
+
+
+def _typed_null_safe(
+    *, key: Any, parts: List[Expression], field_type: FieldTypeFn, dialect: SqlDialect,
+) -> List[Expression]:
+    """A null-safe comparison's temporal literal typed to the other side, as ``IN`` types its members."""
+    if not (isinstance(key, ArithmeticKey) and key.op in NULL_SAFE_COMPARISON_OPS and len(key.operands) == 2):
+        return parts
+    out = list(parts)
+    for i, literal in enumerate(key.operands):
+        other = key.operands[1 - i]
+        operand = temporal_type(other, field_type=field_type)
+        if not isinstance(literal, LiteralKey) or isinstance(other, LiteralKey) or operand is None:
+            continue
+        if operand is DataType.DATE and _off_midnight(literal.value):
+            out[1 - i], operand = dialect.promote_to_timestamp(out[1 - i]), DataType.DATETIME
+        typed = typed_temporal_literal(literal.value, operand=operand, dialect=dialect)
+        if typed is not literal.value:
+            out[i] = _literal(typed, dialect=dialect)
+    return out
+
+
+def render_in_predicate(
+    *, key: InKey, column: Expression, dialect: SqlDialect, field_type: FieldTypeFn,
+) -> Expression:
+    """``column [NOT] IN (…)`` over ``key``'s literals, an ISO member typed to a temporal column."""
     # Backstop for the bind-time rule: a NULL member breaks IN, and ``NOT IN`` with one matches no rows.
     if any(v.value is None for v in key.values):
         raise NotImplementedError(
@@ -544,7 +648,14 @@ def render_in_predicate(*, key: InKey, column: Expression, dialect: SqlDialect) 
             "matches no rows. Test for null separately with IS NULL / "
             "IS NOT NULL.",
         )
-    node = exp.In(this=column, expressions=[_literal(v.value, dialect=dialect) for v in key.values])
+    operand = temporal_type(key.field, field_type=field_type)
+    if operand is DataType.DATE and any(_off_midnight(v.value) for v in key.values):
+        # No DATE equals an off-midnight instant: the column reads as its midnight instead.
+        column, operand = dialect.promote_to_timestamp(column), DataType.DATETIME
+    node = exp.In(this=column, expressions=[
+        _literal(typed_temporal_literal(v.value, operand=operand, dialect=dialect), dialect=dialect)
+        for v in key.values
+    ])
     return exp.Not(this=node) if key.negated else node
 
 
@@ -580,13 +691,13 @@ def render_row_expression(
     if isinstance(key, ArithmeticKey):
         return _row_arithmetic(key=key, part=_part, dialect=dialect, field_type=field_type)
     if isinstance(key, TimeTruncKey):
-        return dialect.build_bucket(col_expr=_part(key.source), granularity=key.granularity)
+        return render_bucket(key=key, source=_part(key.source), dialect=dialect, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         return _row_scalar_call(key=key, part=_part, dialect=dialect, field_type=field_type,
                                 field_element=field_element)
     if isinstance(key, InKey):
-        (column,) = numeric_parts(key=key, parts=[_part(key.field)], field_type=field_type)
-        return render_in_predicate(key=key, column=column, dialect=dialect)
+        (column,) = coerced_parts(key=key, parts=[_part(key.field)], field_type=field_type, dialect=dialect)
+        return render_in_predicate(key=key, column=column, dialect=dialect, field_type=field_type)
     if isinstance(key, CastKey):
         return render_cast(key=key, part=_part, dialect=dialect)
     if isinstance(key, ArrayLiteralKey):
@@ -604,12 +715,13 @@ def _row_arithmetic(
 ) -> Expression:
     comparison = temporal_comparison(key)
     if comparison is not None:
-        op, operand, value = comparison
-        return render_temporal_comparison(op=op, operand=part(operand), value=value, dialect=dialect)
+        op, operand, value, midnight = date_typed_comparison(comparison, field_type=field_type)
+        rendered = dialect.promote_to_timestamp(part(operand)) if midnight else part(operand)
+        return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=dialect)
     rendered = list_keyed(key.operands, [part(o) for o in key.operands], dialect=dialect)
+    operands = coerced_parts(key=key, parts=rendered, field_type=field_type, dialect=dialect)
     if key.op in NULL_SAFE_COMPARISON_OPS:
-        return render_null_safe(op=key.op, operands=rendered, dialect=dialect)
-    operands = numeric_parts(key=key, parts=rendered, field_type=field_type)
+        return render_null_safe(op=key.op, operands=operands, dialect=dialect)
     if key.op == "%":
         return render_modulo(key=key, operands=operands, dialect=dialect, field_type=field_type)
     return render_arithmetic(op=key.op.lower(), operands=operands)
@@ -629,8 +741,11 @@ def _row_scalar_call(
     field_element: Optional[FieldElementFn],
 ) -> Expression:
     if key.name == "iif":
-        return iif_case_chain(key=key, part=part, field_type=field_type)
-    args = numeric_parts(key=key, parts=[part(a) for a in key.args], field_type=field_type)
+        return iif_case_chain(key=key, part=part, field_type=field_type, dialect=dialect)
+    args = coerced_parts(key=key, parts=[part(a) for a in key.args], field_type=field_type, dialect=dialect)
+    date_position = mixed_nullif(key, field_type=field_type)
+    if date_position is not None:
+        return render_mixed_nullif(args=args, date_position=date_position, dialect=dialect)
     if key.name in DATE_FUNCTIONS:
         return render_date_call(key=key, args=args, dialect=dialect, field_type=field_type)
     return render_scalar_key(key=key, args=args, dialect=dialect, field_type=field_type, part=part,

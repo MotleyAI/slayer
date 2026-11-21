@@ -19,6 +19,7 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.granularity import Granularity, bucket_type
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
@@ -576,6 +577,18 @@ class ClickhouseDialect(SqlDialect):
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6)])
+
+    def demote_to_date(self, expr: Expression) -> Expression:
+        return exp.Anonymous(this="toDate", expressions=[expr])
+
+    def build_bucket(self, *, col_expr: Expression, granularity: Granularity, operand: DataType) -> Expression:
+        """The bucket wrapped to its type: ``dateTrunc``'s ``Date`` / ``DateTime`` result varies by unit and version."""
+        node = super().build_bucket(col_expr=col_expr, granularity=granularity, operand=operand)
+        if bucket_type(operand, granularity) is DataType.DATETIME:
+            return self.promote_to_timestamp(node)
+        if isinstance(node, exp.Anonymous) and node.name == "toDate":
+            return node
+        return self.demote_to_date(node)
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:

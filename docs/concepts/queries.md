@@ -339,6 +339,7 @@ RHS are not supported. Both `(...)` and `[...]` syntax are accepted.
 A string compared with a DATE / TIMESTAMP expression is a [time point](time.md#time-points):
 `"orders.created_at >= 'last month'"`, `"orders.created_at in '2025-Q1'"` and `"date_trunc('month', orders.created_at) = '2025-03'"`
 all work; a date-only string is its midnight (`orders.created_at in '2025-03-01'` is the whole day).
+A DATE expression compared with a TIMESTAMP one reads as its midnight instant (`orders.order_date = orders.created_at` holds only at midnight); see [time buckets](time.md#time-buckets).
 
 ### Boolean Logic
 

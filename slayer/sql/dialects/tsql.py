@@ -17,6 +17,7 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind
+from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
@@ -476,18 +477,19 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         ]
 
     def build_date_trunc(
-        self,
-        col_expr: Expression,
-        granularity: TimeGranularity,
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``DATETRUNC`` (2022+); ``iso_week`` keeps weeks ``@@DATEFIRST``-independent."""
+        """``DATETRUNC`` (2022+), which keeps its input's type: the input is cast to the bucket's type;
+        ``iso_week`` keeps weeks ``@@DATEFIRST``-independent."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity,
-            )
+            return super().build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
         gran_str = granularity.value
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
+        result = bucket_type(operand, granularity)
+        if result is DataType.DATETIME and (result is not operand or not isinstance(col_expr, (exp.Column, exp.Cast))):
+            # ``DATETIME2``: a legacy ``DATETIME`` rounds to 1/300 s, which can carry a value into the next bucket.
+            col_expr = self.promote_to_timestamp(col_expr)
+        elif not isinstance(col_expr, (exp.Column, exp.Cast)):
+            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("DATE"))
         tsql_gran = "iso_week" if gran_str == "week" else gran_str
         return exp.Anonymous(
             this="DATETRUNC",

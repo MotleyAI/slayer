@@ -408,7 +408,7 @@ def _neutral_defaults() -> dict[str, Expression]:
     d = SqlDialect()
     out: dict[str, Expression] = {}
     for g in TimeGranularity:
-        out[f"date_trunc:{g.value}"] = d.build_date_trunc(_X, g)
+        out[f"date_trunc:{g.value}"] = d.build_date_trunc(col_expr=_X, granularity=g, operand=DataType.DATETIME)
         out[f"date_diff:{g.value}"] = d.build_date_diff(unit=g, start=_X, end=_Y, operand=DataType.DATETIME)
         out[f"date_add:{g.value}"] = d.build_date_add(expr=_X, count=exp.Literal.number(2), unit=g,
                                                        operand=DataType.DATE)
