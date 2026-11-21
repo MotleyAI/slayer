@@ -140,7 +140,7 @@ LIST_FUNCTIONS: frozenset[str] = frozenset({"contains", "contains_any", "contain
 LIST_ONLY_FUNCTIONS: frozenset[str] = frozenset({"contains_any", "contains_all"})
 # Names the parser rewrites into a library call or a time bucket; reserved like the functions.
 SCALAR_SPELLINGS: frozenset[str] = frozenset({
-    "strpos", "date_trunc", "json_extract", "json_extract_scalar", "json_extract_path_text",
+    "strpos", "iff", "cardinality", "array_length", "array_contains", "date_trunc", "json_extract", "json_extract_scalar", "json_extract_path_text",
     "jsonb_extract_path_text",
 })
 RESERVED_SCALAR_NAMES: frozenset[str] = SCALAR_FUNCTIONS | SCALAR_SPELLINGS

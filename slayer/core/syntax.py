@@ -256,7 +256,10 @@ _LITERAL_VALUES = "variables supply literal values"
 _OPTIONAL_BLOCKS = (
     "Optional blocks '{? ... ?}' are supported only on raw-SQL dataset surfaces, not in Mode-B expressions."
 )
-_DISTINCT_ONLY = "DISTINCT is supported only as count(distinct x), i.e. count_distinct(x)"
+_DISTINCT_ONLY = ("DISTINCT is supported only as count(distinct x), i.e. count_distinct(x), and as array_agg(distinct x), "
+                  "i.e. collect(x)")
+#: Calls taking a leading DISTINCT, and the aggregation each spells.
+_DISTINCT_CALLS = {"count": "count_distinct", "array_agg": "collect"}
 
 
 class _Problem(ValueError):
@@ -697,9 +700,10 @@ def _dispatch_pending(call: _PendingCall) -> Any:
     args, kwargs, distinct = _split_args(call.items, call=name)
     if distinct:
         values = [a for a in args if not isinstance(a, NamedArg)]
-        if name.lower() != "count" or len(words) > 1 or len(values) != 1 or isinstance(args[0], (StarSource, NamedArg)):
+        if (name.lower() not in _DISTINCT_CALLS or len(words) > 1 or len(values) != 1
+                or isinstance(args[0], (StarSource, NamedArg))):
             raise _Problem(f"{_DISTINCT_ONLY}.")
-        name = "count_distinct"
+        name = _DISTINCT_CALLS[name.lower()]
     if len(words) > 1:
         return _method_call(
             path=tuple(w.name for w in words[:-1]), name=name, args=args, kwargs=kwargs, span=(call.start, call.end),
@@ -953,12 +957,40 @@ def _reject_over(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
 
 
 _OVER = (_kw("over") + pp.FollowedBy(LPAR)).set_parse_action(_reject_over)
-_PRIMARY = _ATOM + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE) | _OVER))
+
+
+class _WithinGroup:
+    """A parsed ``WITHIN GROUP (ORDER BY x)``: the ordered value of an ordered-set aggregate."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
+_WITHIN_GROUP = _on(
+    pp.Suppress(_kw("within")) + pp.Suppress(_kw("group")) + LPAR + pp.Suppress(_kw("order")) + pp.Suppress(_kw("by"))
+    + _need(expr, "WITHIN GROUP (ORDER BY …) needs a value.") + pp.Optional(pp.Suppress(_kw("asc")))
+    + _need(RPAR, "WITHIN GROUP (ORDER BY <value>) is missing its ')'."),
+    lambda toks: _WithinGroup(value=toks[0]),
+)
+_PRIMARY = _ATOM + pp.Optional(_WITHIN_GROUP) + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE) | _OVER))
+
+
+def _ordered_set(call: Any, within: _WithinGroup) -> AggCall:
+    """SQL ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` as ``percentile(x, p=p)``."""
+    if not isinstance(call, _PendingCall) or len(call.words) > 1 or call.words[0].name.lower() != "percentile_cont":
+        raise _Problem("WITHIN GROUP (ORDER BY …) applies only to PERCENTILE_CONT(p).")
+    args, _, distinct = _split_args(call.items, call="percentile_cont")
+    if distinct or len(args) != 1 or isinstance(args[0], NamedArg):
+        raise _Problem("PERCENTILE_CONT takes one fraction: PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x).")
+    return AggCall(source=within.value, agg="percentile", args=(NamedArg(name="p", value=args[0]),))
 
 
 def _primary_node(toks: List[Any]) -> Any:
-    node = _resolve(toks[0])
-    for clause in toks[1]:
+    clauses = toks[-1]
+    node = _ordered_set(toks[0], toks[1]) if len(toks) == 3 else _resolve(toks[0])
+    for clause in clauses:
         if isinstance(node, (Ref, DottedRef)) and node.evaluated:
             raise AggFilterError(expression=_STATE.text)
         if not isinstance(node, AggCall):
@@ -1153,7 +1185,10 @@ _IN_LIST = ((LPAR + _PLACEHOLDER_ATOM + RPAR)
             | _fail("the right-hand side of in / not in must be a literal list, e.g. status in ('a', 'b')."))
 
 _CMP_SUFFIX = (
-    _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
+    # SQL ``v = ANY(list)`` is list membership.
+    _suffix(_sym(r"==|=", "comparison") + pp.Suppress(_kw("any")) + LPAR + _concat_level + RPAR,
+            lambda left, t: ScalarCall(name="contains", args=(t[1], left)))
+    | _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
             lambda left, t: Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "="))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("distinct")) + pp.Suppress(_kw("from")) + _concat_level,
               lambda left, t: Cmp(op="is not distinct from" if t[0] else "is distinct from", left=left, right=t[1]))
@@ -2247,6 +2282,10 @@ def _json_key_list(name: str):
 # Spellings collapsed into one library node (engine P2); each name is reserved (``SCALAR_SPELLINGS``).
 _SPELLINGS: Dict[str, Callable[[Tuple[Any, ...]], ParsedExpr]] = {
     "strpos": lambda args: ScalarCall(name="instr", args=args),
+    "iff": lambda args: ScalarCall(name="iif", args=args),
+    "cardinality": lambda args: ScalarCall(name="length", args=args),
+    "array_length": lambda args: ScalarCall(name="length", args=args),
+    "array_contains": lambda args: ScalarCall(name="contains", args=args),
     "date_trunc": _date_trunc,
     "json_extract": _json_alias("json_extract"),
     "json_extract_scalar": _json_alias("json_extract_scalar"),

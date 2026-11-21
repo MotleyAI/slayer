@@ -706,9 +706,12 @@ class DatasetMetric(MetricBase, DatasetPart):
 
     @property
     def text(self) -> str:
-        """The metric's evaluated (portable) expression."""
+        """The metric's evaluated (portable) expression; an unevaluable one's first dialect entry."""
         text = portable_text(self.expression)
-        assert text is not None  # validated
+        if text is None:
+            assert self.load_warning is not None  # validated
+            entries = self.expression.dialects if isinstance(self.expression, ExpressionObject) else None
+            return next((e.expression for e in entries or []), "")
         return text
 
     # Expressions may contain ``__`` (flattened virtual-dataset relationship paths); typos are

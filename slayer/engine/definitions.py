@@ -53,8 +53,12 @@ def _column_type(dataset: SlayerDataset, *, column: str, live: ColumnTypes) -> D
 
 def _reader(dataset: SlayerDataset, *, name: str, column: str, quoted: bool, live: ColumnTypes) -> DatasetField:
     spelled = f'"{column}"' if quoted else column
+    datatype = _column_type(dataset, column=column, live=live)
+    declared = next((c for c in dataset.fields if c.is_physical_reader and c.physical_name == column), None)
+    element = (declared.element_type if declared is not None else None) or DataType.OPAQUE
     return DatasetField.model_construct(
-        name=name, expression=spelled, hidden=True, datatype=_column_type(dataset, column=column, live=live),
+        name=name, expression=spelled, hidden=True, datatype=datatype,
+        element_type=element if datatype is DataType.ARRAY else None,
     ).with_native(spelled)
 
 
