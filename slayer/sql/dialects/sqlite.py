@@ -146,11 +146,6 @@ def _strftime(fmt: str, col_expr: Expression, *modifiers: str) -> exp.Anonymous:
     ])
 
 
-def _normalised_timestamp(expr: Expression) -> Expression:
-    """``expr`` as ``YYYY-MM-DD HH:MM:SS.SSS`` text, whatever ISO spelling it is stored in."""
-    return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string("%Y-%m-%d %H:%M:%f"), expr])
-
-
 def _timestamp_text(expr: Expression) -> Expression:
     """``expr`` as ``YYYY-MM-DD HH:MM:SS.ffffff`` text through the registered UDF (``%f`` keeps only milliseconds)."""
     return exp.Anonymous(this="slayer_timestamp_text", expressions=[expr])
@@ -1011,14 +1006,14 @@ class SqliteDialect(SqlDialect):
         self, *, op: TemporalComparisonOp, operand: Expression, value: date,
     ) -> Expression:
         """A midnight ``>=`` / ``<`` bound compares as date text (sargable); anything else
-        normalises both sides to millisecond ISO text, independent of the stored spelling."""
+        compares as microsecond ISO text, independent of the stored spelling."""
         day = value.date() if isinstance(value, datetime) else value
-        midnight = value == day or value == datetime(day.year, day.month, day.day)
-        if op in (">=", "<") and midnight:
+        instant = value if isinstance(value, datetime) else datetime(day.year, day.month, day.day)
+        if op in (">=", "<") and instant.time() == datetime.min.time():
             return COMPARISON_NODES[op](this=operand, expression=exp.Literal.string(day.isoformat()))
         return COMPARISON_NODES[op](
-            this=_normalised_timestamp(operand),
-            expression=_normalised_timestamp(exp.Literal.string(iso_text(value))),
+            this=_timestamp_text(operand),
+            expression=exp.Literal.string(instant.isoformat(sep=" ", timespec="microseconds")),
         )
 
     def _date_part(self, part: DatePart, expr: Expression) -> Expression:

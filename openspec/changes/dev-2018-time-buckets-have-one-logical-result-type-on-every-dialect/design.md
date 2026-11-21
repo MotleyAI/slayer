@@ -29,7 +29,7 @@ Principles in force:
 **Non-Goals:**
 - Time zones and zoned physical types beyond the naive DATE/TIMESTAMP contract (DEV-2000).
 - Exporting buckets to Ossie as standard SQL (DEV-2266).
-- SQLite storage spelling in comparisons against a literal: DEV-1999 owns that, and this change does not alter it.
+- SQLite storage spelling in literal comparisons keeps DEV-1999's path; only the canonical form's precision changes.
 - Backporting to 1.x.
 
 ## Decisions

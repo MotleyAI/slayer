@@ -1036,6 +1036,29 @@ def test_date_meets_timestamp_as_midnight(sf_logical_types_storage, sf_datasourc
                          data_source=sf_datasource.name))
 
 
+def test_logical_types_hold_under_a_zoned_timestamp_mapping(
+    sf_logical_types_storage, sf_datasource: DatasourceConfig,
+) -> None:
+    """A bare ``TIMESTAMP`` would follow the session mapping: every cast SLayer emits stays naive."""
+    ds = run_sync(sf_logical_types_storage.get_datasource(sf_datasource.name))
+    engine_factory.invalidate_engine(ds)
+
+    def _zoned_session(dbapi_conn, _conn_record) -> None:  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        try:
+            cur.execute("ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_LTZ', TIMEZONE = 'America/Sao_Paulo'")
+        finally:
+            cur.close()
+
+    event.listen(engine_factory.get_engine(ds), "connect", _zoned_session)
+    try:
+        engine = SlayerQueryEngine(storage=sf_logical_types_storage)
+        run_sync(check_bucket_matrix(engine, backend="snowflake", data_source=sf_datasource.name))
+        run_sync(check_mixed(engine, backend="snowflake", data_source=sf_datasource.name))
+    finally:
+        engine_factory.invalidate_engine(ds)
+
+
 # ---------------------------------------------------------------------------
 # List fields: untyped ARRAY element inference (spec: models/list-columns, queries/list-functions,
 # queries/list-children, aggregations/collect)

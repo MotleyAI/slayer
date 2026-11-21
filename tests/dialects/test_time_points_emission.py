@@ -17,7 +17,7 @@ from tests._time_points_fixtures import PinnedClock, customers_dataset, ev_datas
 
 TIER1 = ["sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "snowflake", "bigquery"]
 TYPED = [d for d in TIER1 if d not in ("sqlite", "bigquery")]
-STRFTIME = "STRFTIME('%Y-%m-%d %H:%M:%f', "
+CANONICAL = "SLAYER_TIMESTAMP_TEXT("
 
 
 async def _sql(
@@ -117,7 +117,7 @@ async def test_sqlite_midnight_half_open_bounds_stay_plain_text() -> None:
     assert re.search(r"\bts\s*>=\s*'2025-01-01'", sql), sql
     assert re.search(r"\bts\s*<\s*'2025-04-01'", sql), sql
     assert re.search(r"\bts\s*<\s*'2025-03-01'", sql), sql
-    assert "STRFTIME('%Y-%m-%d %H:%M:%f', '2025-" not in sql, sql
+    assert CANONICAL not in sql, sql
 
 
 @pytest.mark.parametrize(("filt", "op", "value"), [
@@ -129,5 +129,5 @@ async def test_sqlite_midnight_half_open_bounds_stay_plain_text() -> None:
 ], ids=["sub-day", "literal-left", "relative", "inclusive-instant", "instant-equality"])
 async def test_sqlite_other_comparisons_normalise_both_sides(filt, op, value) -> None:
     sql = _flat(await _sql("sqlite", filters=[filt]))
-    pattern = re.escape(STRFTIME) + r"[^()]*\bts\)\s*" + re.escape(op) + r"\s*" + re.escape(f"{STRFTIME}'{value}')")
+    pattern = re.escape(CANONICAL) + r"[^()]*\bts\)\s*" + re.escape(op) + r"\s*" + re.escape(f"'{value}.000000'")
     assert re.search(pattern, sql), sql

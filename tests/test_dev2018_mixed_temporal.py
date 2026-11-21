@@ -124,6 +124,8 @@ class TestSqliteStorageSpelling:
         ("date_trunc('day', sp.ts) = sp.d", SP_VALID),
         ("date_trunc('day', sp.ts) in ('2025-03-01')", SP_VALID),
         ("sp.ts < sp.ts2", set()),
+        ("sp.ts = timestamp '2025-03-01 10:00:00.25'", {4}),
+        ("sp.ts = timestamp '2025-03-01 10:00:00.250001'", set()),
         ("sp.d is not distinct from timestamp '2025-03-01 00:00:00'", set(range(1, 8))),
         ("sp.d is distinct from timestamp '2025-03-01 06:00:00'", set(range(1, 8))),
         # A member of the column's own type keeps the author's spelling, as a literal bound does.
