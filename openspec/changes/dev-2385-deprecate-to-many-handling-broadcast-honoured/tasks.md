@@ -1,10 +1,10 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 New test file for `queries/attribution-modes` › Broadcast is a deprecated mode: one test per scenario (fresh on Python / REST / MCP; three runs; two stages incl. a pruned one; never-broadcasting stage executed / dry run / explain; stored stage on every run with no load `FutureWarning`; refinements set / inherit / override; REST / MCP / memory saves persisting `"broadcast"`; concrete `partition_by` with the round trip on SQLite + DuckDB; aliased / repeated / filter-only / order-only call naming; schema enum + validation; other modes silent). Verify: the new tests fail for the expected reason before implementation.
-- [ ] 1.2 Tripwire: add the `broadcast` site to `PINNED` in `tests/test_law_removal_tripwire.py` and a test for the kept-form scenario (fresh run, save, reload, run). Verify: fails before implementation.
-- [ ] 1.3 `tests/test_mcp_documented_idioms.py`: align "Cross-model aggregate broadcast vs associate" to `sum(customers.credit, partition_by=[])` with no warning — needs the user's approval (existing test contradicting the plan). Verify: fails before the description/idiom change.
-- [ ] 1.4 Duplicate guards (D1): a fresh broadcast query run directly, staged, as a refined saved query and through a save reports each payload exactly once. Verify: fails before implementation.
-- [ ] 1.5 Gotcha: existing tests that pin exact warning lists on fresh-`"broadcast"` queries will gain one `deprecated_input` entry — collect them (run the local scope) and ask the user once, naming each file, before aligning.
+- [x] 1.1 New test file for `queries/attribution-modes` › Broadcast is a deprecated mode: one test per scenario (fresh on Python / REST / MCP; three runs; two stages incl. a pruned one; never-broadcasting stage executed / dry run / explain; stored stage on every run with no load `FutureWarning`; refinements set / inherit / override; REST / MCP / memory saves persisting `"broadcast"`; concrete `partition_by` with the round trip on SQLite + DuckDB; aliased / repeated / filter-only / order-only call naming; schema enum + validation; other modes silent). Verify: the new tests fail for the expected reason before implementation.
+- [x] 1.2 Tripwire: add the `broadcast` site to `PINNED` in `tests/test_law_removal_tripwire.py` and a test for the kept-form scenario (fresh run, save, reload, run). Verify: fails before implementation.
+- [x] 1.3 `tests/test_mcp_documented_idioms.py`: align "Cross-model aggregate broadcast vs associate" to `sum(customers.credit, partition_by=[])` with no warning — needs the user's approval (existing test contradicting the plan). Verify: fails before the description/idiom change.
+- [x] 1.4 Duplicate guards (D1): a fresh broadcast query run directly, staged, as a refined saved query and through a save reports each payload exactly once. Verify: fails before implementation.
+- [x] 1.5 Gotcha: existing tests that pin exact warning lists on fresh-`"broadcast"` queries will gain one `deprecated_input` entry — collect them (run the local scope) and ask the user once, naming each file, before aligning.
 
 ## 2. Deprecation reporting (D1, D2)
 
