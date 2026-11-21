@@ -26,10 +26,10 @@
 
 - [x] 2.1 Move `slayer/osi/slayer_extension.py` into `slayer/core` with `dr-refactor` (dry run, review, `--apply`), leaving a moved-module stub; verify `la-typecheck` and `la-arch-check` pass
 - [x] 2.2 Strict Pydantic Ossie document model in `slayer/core` (Ossie shape, `extra="forbid"`, `0.3.0.dev0` only) plus native semantic validity checks mirroring upstream `validate.py`; verify corpus validity agreement tests pass
-- [ ] 2.3 Move `ruamel-yaml` to runtime dependencies (`poetry`), and implement the round-trip loader/patcher that changes only edited nodes; verify the golden-diff tests pass
-- [ ] 2.4 Storage hooks on `StorageBackend` with typed-unsupported defaults; YAML (`semantic_models/<ds>/<name>.yaml`, per-document flock) and SQLite (`semantic_models` table via `sqlite_conn`, `BEGIN IMMEDIATE` patch) implementations; `graph_fingerprint` covers documents; verify custom-backend and concurrency tests pass
-- [ ] 2.5 Decomposition into datasets/relationships/model-scoped metrics, merged into `get_dataset`/`load_datasets`/`list_datasets`; per-datasource namespace with dependency-aware quarantine; unevaluable-entity load warnings; verify the decomposition and collision tests pass
-- [ ] 2.6 Owner lookup routing every dataset mutation (decision 25) and the lossless SLayer → Ossie-core-or-`SLAYER` mapping (decision 26) built from the exporter's classification; verify edit-through tests pass
+- [x] 2.3 Move `ruamel-yaml` to runtime dependencies (`poetry`), and implement the round-trip loader/patcher that changes only edited nodes; verify the golden-diff tests pass
+- [x] 2.4 Storage hooks on `StorageBackend` with typed-unsupported defaults; YAML (`semantic_models/<ds>/<name>.yaml`, per-document flock) and SQLite (`semantic_models` table via `sqlite_conn`, `BEGIN IMMEDIATE` patch) implementations; `graph_fingerprint` covers documents; verify custom-backend and concurrency tests pass
+- [x] 2.5 Decomposition into datasets/relationships/model-scoped metrics, merged into `get_dataset`/`load_datasets`/`list_datasets`; per-datasource namespace with dependency-aware quarantine; unevaluable-entity load warnings; verify the decomposition and collision tests pass
+- [x] 2.6 Owner lookup routing every dataset mutation (decision 25) and the lossless SLayer → Ossie-core-or-`SLAYER` mapping (decision 26) built from the exporter's classification; verify edit-through tests pass
 - [x] 2.7 Delete cascades and broken-dependent warnings for document members and documents; save scope (decision 28); verify cascade and save-scope tests pass
 - [x] 2.8 Access filtering of documents with transitive model-scoped metric pruning; verify access tests pass
 - [x] 2.9 Lift the relationship refusals: edge-name/dataset-name namespace, self-relationships (inert, refused when spelled), computed keys (emission at ON, semi-join spine, profiling); ambiguous-hop refusal; verify relationship-shape tests pass
@@ -37,17 +37,17 @@
 ## 3. Engine and queries
 
 - [x] 3.1 Model-scoped metrics expanded in place once per statement at the planning entry (before population inference), so binding, population inference and the bundle see only qualified expressions; the legacy conversion skips model-scoped names; saved definitions keep the bare name; bare-name order alias → model-scoped → legacy → unknown; `recommend_population` resolves model-scoped items itself; verify resolution tests pass
-- [ ] 3.2 In-place expansion with one component per aggregate; result key = bare name; save-time reference rules and refusals (reserved word, library function, dataset name, circularity); verify model-scoped tests pass
-- [ ] 3.3 `AGG(d.m)` in `core.syntax` (the one Mode B reader) and binding, in queries, model-scoped metrics and dataset metrics, with every refusal; verify AGG tests pass
+- [x] 3.2 In-place expansion with one component per aggregate; result key = bare name; save-time reference rules and refusals (reserved word, library function, dataset name, circularity); verify model-scoped tests pass
+- [x] 3.3 `AGG(d.m)` in `core.syntax` (the one Mode B reader) and binding, in queries, model-scoped metrics and dataset metrics, with every refusal; verify AGG tests pass
 - [x] 3.4 Unknown datatype: explicit unknown on load; engine probe off the event loop, cached per engine + fingerprint; deferred save-time checks; verify unknown-type tests pass
 - [x] 3.5 Native parity for every construct the 1.x converter mapped (decision 34) and in-memory translation of expressions without a runnable form; verify parity tests pass against the converter's expected values before deleting the converter
 - [x] 3.6 Model-scoped metrics Ossie rejects but SLayer can evaluate (aggregate over several datasets, FILTER on another dataset) evaluate (decision 35); SLayer-authored ones are stored in the `SLAYER` entry; verify `test_a_cross_dataset_operand_keeps_its_meaning` passes
-- [ ] 3.7 Entity `ai_context` and foreign extensions read into `meta` on load and never written back (decision 36); verify `test_a_fields_ai_context_reaches_inspect_and_search` passes
+- [x] 3.7 Entity `ai_context` and foreign extensions read into `meta` on load and never written back (decision 36); verify `test_a_fields_ai_context_reaches_inspect_and_search` passes
 
 ## 4. Import, export, drift, surfaces
 
-- [ ] 4.1 `import-osi`: verbatim native store after the validity check, earlier-shape upgrades, legacy split with introspected fields, re-import replacing 1.x-converted datasets; retire `slayer/osi/converter.py` (keep the legacy-upgrade introspection); verify import tests pass
-- [ ] 4.2 `export-osi`: merged document per datasource, verbatim single-document case, `SLAYER` boundary entry, `AGG(…)` for model-scoped references; `slayer ossie-roundtrip`; verify export and grader tests pass
+- [x] 4.1 `import-osi`: verbatim native store after the validity check, earlier-shape upgrades, legacy split with introspected fields, re-import replacing 1.x-converted datasets; retire `slayer/osi/converter.py` (keep the legacy-upgrade introspection); verify import tests pass
+- [x] 4.2 `export-osi`: merged document per datasource, verbatim single-document case, `SLAYER` boundary entry, `AGG(…)` for model-scoped references; `slayer ossie-roundtrip`; verify export and grader tests pass
 - [x] 4.3 `validate-datasets` untyped finding on all surfaces and CLI `--force-clean` write-in; verify drift-type tests pass
 - [x] 4.4 MCP tools, `inspect`/`datasets_summary`, REST `/semantic-models`, Python client (sync + async), CLI `semantic-models`; query-tool guidance and a help topic; search indexing of documents and model-scoped metrics; verify surface and search tests pass
 
@@ -55,6 +55,6 @@
 
 - [ ] 5.1 Add the dedicated weekly-only job (schedule + `workflow_dispatch`, never on PRs) that fetches the corpus from apache/ossie `main`, runs the harvest, and runs the corpus, oracle and grader tests against the fresh copy; verify with a manual dispatch run
 - [ ] 5.2 Docs: new `docs/concepts/semantic-models.md` in the `zensical.toml` nav; update datasets, storage/configuration, `docs/osi/osi_import.md` (incl. the stale `osi_datatype` line) and `osi_export.md`, `schema-drift.md`, MCP/CLI/REST/Python reference pages; `docs/upgrading/2.0.md` section; verify `tests/test_doc_examples.py` passes
-- [ ] 5.3 Apply the approved semantics Principle 3 wording (design.md decision 12) verbatim; run `la-arch-diagrams` if needed; verify `la-arch-check` passes
+- [x] 5.3 Apply the approved semantics Principle 3 wording (design.md decision 12) verbatim; run `la-arch-diagrams` if needed; verify `la-arch-check` passes
 - [ ] 5.4 Post tracker records: DEV-2217 (its strict run takes over all wide-table cases incl. `e*`), DEV-2220 (upstream grader registration as a release task, entry point `slayer ossie-roundtrip`, expected all-PORTABLE), DEV-2388 (the `a16` xfail, retargeted), DEV-1661 (layout `semantic_models/<ds>/<name>.yaml` and the new storage hooks), DEV-2264 (import-osi's native path refuses invalid documents with every reason; closing it is the owner's call); verify each comment URL is recorded in the handoff comment
 - [ ] 5.5 Enforcement bundle: `la-arch-check`, `npx -y likec4@1.47.0 validate architecture`, `la-typecheck` (no new errors vs baseline), `poetry run ruff check slayer/ tests/`; verify all green
