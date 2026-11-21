@@ -6,7 +6,9 @@ from datetime import datetime
 
 import functools
 from enum import Enum, IntEnum
-from typing import AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypedDict, Union, cast,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -256,6 +258,14 @@ class EmptyBaseGrainPlan(BaseModel):
     host_gated: bool = False
 
 
+class KeyArgs(TypedDict):
+    """``SemiJoinHop``'s key fields, as ``SemiJoinHop.key_args`` builds them."""
+
+    join_pairs: Tuple[Tuple[str, str], ...]
+    quoted: Tuple[Tuple[bool, bool], ...]
+    computed: Tuple[Tuple[Optional[str], Optional[str]], ...]
+
+
 class SemiJoinHop(BaseModel):
     """One node of a semi-join correlation tree, joined from its parent node (the
     producer root for a first hop) on oriented PHYSICAL ``join_pairs`` (parent_col, hop_col).
@@ -284,7 +294,7 @@ class SemiJoinHop(BaseModel):
         return "/".join(self.node_path)
 
     @staticmethod
-    def key_args(keys: Sequence[Tuple[DatasetField, DatasetField]]) -> Dict[str, tuple]:
+    def key_args(keys: Sequence[Tuple[DatasetField, DatasetField]]) -> KeyArgs:
         """``join_pairs``, ``quoted`` and ``computed`` of oriented key field pairs."""
         return {
             "join_pairs": tuple((s.key_name, t.key_name) for s, t in keys),

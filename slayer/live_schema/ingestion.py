@@ -1201,20 +1201,22 @@ def _merge_persisted_field_with_probe(
         sqlite_widen_enabled
         and fresh_col is not None
         and persisted_col.datatype is DataType.INTEGER
+        and fresh_col.datatype is not None
         and fresh_col.datatype.kind in (TypeKind.DOUBLE, TypeKind.TEXT)
     ):
         return persisted_col, False
+    widened = fresh_col.datatype
 
-    updates: dict[str, Any] = {"datatype": fresh_col.datatype}
+    updates: dict[str, Any] = {"datatype": widened}
     if _is_auto_default_integer_format(persisted_col.format):
-        updates["format"] = _format_for_widened_type(fresh_col.datatype)
+        updates["format"] = _format_for_widened_type(widened)
     else:
         logger.info(
             "Custom format on %s.%s preserved on SQLite probe widening "
             "(persisted INT -> %s). Review whether the format still applies.",
             dataset_name,
             persisted_col.name,
-            fresh_col.datatype.value,
+            widened.value,
         )
     return persisted_col.model_copy(update=updates), True
 

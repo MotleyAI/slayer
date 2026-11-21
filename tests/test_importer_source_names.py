@@ -194,7 +194,7 @@ def _messages(result: ConversionResult) -> list[str]:
     return [e.message for e in (*result.warnings, *result.unconverted_metrics)]
 
 
-def _typed(dataset: SlayerDataset, name: str) -> DataType:
+def _typed(dataset: SlayerDataset, name: str) -> DataType | None:
     return field_of(dataset, name).datatype
 
 

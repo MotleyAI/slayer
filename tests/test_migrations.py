@@ -317,7 +317,7 @@ def test_model_v1_to_v2_dimensions_only() -> None:
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.fields] == ["status", "id"]
-    assert m.fields[0].datatype.value == "String"
+    assert str(m.fields[0].datatype) == "String"
     assert m.fields[1].primary_key is True
     assert m.metrics == []
 
@@ -337,7 +337,7 @@ def test_model_v1_to_v2_measures_only() -> None:
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.fields] == ["revenue", "high_value"]
-    assert all(c.datatype.value == "Float" for c in m.fields)
+    assert all(str(c.datatype) == "Float" for c in m.fields)
     assert all(c.primary_key is False for c in m.fields)
     assert m.fields[1].filter == "amount > 100"
     assert m.fields[1].allowed_aggregations == ["sum"]
@@ -381,7 +381,7 @@ def test_model_v1_to_v2_legacy_type_alias() -> None:
     })
     col = m.fields[0]
     assert col.name == "revenue"
-    assert col.datatype.value == "Float"  # default after stripping legacy `type: sum`
+    assert str(col.datatype) == "Float"  # default after stripping legacy `type: sum`
     assert col.allowed_aggregations == ["sum"]
 
 
@@ -1008,9 +1008,9 @@ class TestV4ToV5DictMigration:
                 {"name": "ts", "sql": "ts", "type": "time"},
             ],
         })
-        assert m.fields[0].datatype.name == "STRING"
-        assert m.fields[1].datatype.name == "FLOAT"
-        assert m.fields[2].datatype.name == "DATETIME"
+        assert (m.fields[0].datatype and m.fields[0].datatype.name) == "STRING"
+        assert (m.fields[1].datatype and m.fields[1].datatype.name) == "FLOAT"
+        assert (m.fields[2].datatype and m.fields[2].datatype.name) == "DATETIME"
 
     def test_v5_dict_passes_through_v4_to_v5_step_unchanged(self) -> None:
         """The v4→v5 step is a no-op for v5 input (called directly; the orchestrator never would)."""

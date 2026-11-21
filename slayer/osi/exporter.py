@@ -842,9 +842,10 @@ class _Exporter:
 
     def _referenced(self, home: SlayerDataset, ref: Ref | DottedRef) -> tuple[str, str] | None:
         """The exported dataset-scoped metric ``ref`` (a metric reference of ``home``) names: ``(dataset, name)``."""
-        parts = (ref.name,) if isinstance(ref, Ref) else ref.parts
-        owner = terminal_dataset(root=home, path=parts[:-1], datasets_by_name=self.graph) if len(parts) > 1 else home
-        target = owner.get_metric(parts[-1]) if owner is not None else None
+        parts: tuple[str, ...] = (ref.name,) if isinstance(ref, Ref) else ref.parts
+        path, leaf = parts[:-1], parts[-1]
+        owner = terminal_dataset(root=home, path=path, datasets_by_name=self.graph) if path else home
+        target = owner.get_metric(leaf) if owner is not None else None
         if target is None or target.name is None:
             return None
         return self.exported.get((owner.name.casefold(), target.name.casefold()))  # type: ignore[union-attr]

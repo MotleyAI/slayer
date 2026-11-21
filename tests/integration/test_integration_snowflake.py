@@ -1036,7 +1036,7 @@ def sf_lists(_sf_list_tables, sf_datasource: DatasourceConfig, tmp_path):
     return storage, _sf_list_tables
 
 
-def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataType, DataType | None]]:
+def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataType | None, DataType | None]]:
     (model,) = run_sync(_ingest(datasource, include_tables=[table]))
     return {c.name: (c.datatype, c.element_type) for c in model.fields if c.name != "id"}
 

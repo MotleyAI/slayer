@@ -199,7 +199,7 @@ def _markdown_table(rows: list[dict[str, Any]], fields: list[str]) -> str:
 
 def _render_field_type(field: DatasetField) -> str:
     """``datatype`` cell; opaque fields get their raw DB type and a not-queryable marker, a list its operations."""
-    if not field.datatype.is_opaque:
+    if field.datatype is None or not field.datatype.is_opaque:
         return field_type_text(field)
     detail = field.db_type or "unrecognized DB type"
     return f"{field.datatype} ({detail}; not queryable)"
@@ -234,7 +234,7 @@ def _choose_sample_agg(
     Restricted aggs without ``avg`` → first zero-arg-safe one, else the first allowed (intentional).
     Opaque fields are skipped: no equality operator, so they'd sink the whole profile query.
     """
-    if field.datatype.is_opaque:
+    if field.datatype is None or field.datatype.is_opaque:
         return None
     if field.datatype is DataType.ARRAY:
         return "count"
@@ -889,7 +889,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     # Opaque fields only (see _render_field_type).
                     **(
                         {"db_type": c.db_type, "queryable": False}
-                        if c.datatype.is_opaque else {}
+                        if c.datatype is not None and c.datatype.is_opaque else {}
                     ),
                     "primary_key": c.primary_key,
                     "unique": c.unique,

@@ -183,11 +183,12 @@ def physical_column_sql(*, sql: str | None, name: str) -> str:
     return (unquoted_identifier(sql) if sql is not None else None) or name
 
 
-def check_element_type(*, name: str, data_type: DataType, element_type: DataType | None) -> None:
+def check_element_type(*, name: str, data_type: DataType | None, element_type: DataType | None) -> None:
     """``element_type`` is rejected off a list and is never itself a list (the dataset requires it on one)."""
     if data_type is not DataType.ARRAY and element_type is not None:
+        shown = data_type.value if data_type is not None else "unknown"
         raise ValueError(
-            f"DatasetField {name!r} declares element_type {element_type.value} but its type is {data_type.value}; "
+            f"DatasetField {name!r} declares element_type {element_type.value} but its type is {shown}; "
             f"only an Array field has an element_type."
         )
     if element_type is DataType.ARRAY:
@@ -517,13 +518,13 @@ class DatasetField(DatasetPart):
 
     @property
     @deprecated("type is deprecated; use datatype", category=None)
-    def type(self) -> DataType:
+    def type(self) -> DataType | None:
         attribute_used(self, old="type", new="datatype")
         return self.datatype
 
     @type.setter
     @deprecated("type is deprecated; use datatype", category=None)
-    def type(self, value: DataType) -> None:
+    def type(self, value: DataType | None) -> None:
         attribute_used(self, old="type", new="datatype")
         self.datatype = value
 
@@ -558,6 +559,8 @@ def list_operations_hint(field: DatasetField) -> str:
 
 def field_type_text(field: DatasetField) -> str:
     """``Array<String> (list: …)`` for a list field, else its type."""
+    if field.datatype is None:
+        return "unknown (resolved from the live column at query time)"
     if field.datatype is not DataType.ARRAY:
         return str(field.datatype)
     return f"{type_display(field.datatype, field.element_type)} ({list_operations_hint(field)})"

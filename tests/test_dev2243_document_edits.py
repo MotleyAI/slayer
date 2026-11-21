@@ -1026,6 +1026,16 @@ async def test_an_untyped_field_loads_without_a_probe(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("kind", STORAGES)
+async def test_inspect_shows_an_untyped_field_as_unknown(tmp_path: Path, kind: str) -> None:
+    storage = make_storage(kind, tmp_path)
+    await store_document(storage, UNTYPED)
+    shown = await mcp_text(storage, "inspect", reference="orders.amount", entity_type="field", compact=False)
+    assert "Type: unknown" in shown
+    dataset_view = await mcp_text(storage, "inspect", reference="orders", entity_type="dataset", compact=False)
+    assert "amount" in dataset_view
+
+
+@pytest.mark.parametrize("kind", STORAGES)
 async def test_a_save_time_check_on_an_untyped_field_is_deferred(kind: str) -> None:
     async with document_engine(kind=kind, documents=(UNTYPED,), tables=[DECIMAL_ORDERS]) as engine:
         orders = await must_get(engine.storage, "orders")

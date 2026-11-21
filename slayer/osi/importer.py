@@ -140,8 +140,11 @@ def _document_payload(data: dict[str, Any]) -> ext.DocumentPayload | None:
     found = [e for e in data.get("nonportable_extensions") or [] if isinstance(e, dict) and ext.is_slayer(e)]
     if len(found) != 1:
         return None
+    raw = found[0].get("data")
+    if not isinstance(raw, dict):
+        return None
     try:
-        payload = ext.decode(found[0].get("data"))
+        payload = ext.decode(raw)
     except ValueError:
         return None
     return payload if isinstance(payload, ext.DocumentPayload) else None

@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Set as AbstractSet
 
 from typing_extensions import deprecated
 
@@ -595,7 +595,7 @@ def _refuse_colon_metrics(dataset: SlayerDataset) -> None:
 
 def _validate_default_time_dimension(dataset: SlayerDataset) -> None:
     field = dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
-    if field is not None and field.datatype not in TEMPORAL_DATATYPES:
+    if field is not None and field.datatype is not None and field.datatype not in TEMPORAL_DATATYPES:
         raise DefaultTimeDimensionTypeError(dataset=dataset.name, field=field.name, field_type=field.datatype)
 
 
@@ -1130,7 +1130,7 @@ class StorageBackend(ABC):
                 for d in decomposed.datasets if d.name.casefold() in wanted]
 
     async def _check_document_namespace(self, *, name: str, data_source: str, datasets: list[str],
-                                        metrics: list[str], moving: set[str] = frozenset()) -> None:
+                                        metrics: list[str], moving: AbstractSet[str] = frozenset()) -> None:
         """Refuse a dataset or model-scoped metric name the datasource already uses elsewhere, in any case; ``moving``
         names standalone datasets this write moves into the document."""
         owner = f"semantic model {name!r}"

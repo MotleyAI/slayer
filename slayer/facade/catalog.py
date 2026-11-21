@@ -444,7 +444,7 @@ def _eligible_aggregations(*, field: DatasetField, dataset: SlayerDataset) -> se
     if is_identifier(field=field, fields=dataset.fields):
         base = set(PRIMARY_KEY_AGGREGATIONS)
     else:
-        base = set(DEFAULT_AGGREGATIONS_BY_TYPE.get(field.datatype, frozenset()))
+        base = set(DEFAULT_AGGREGATIONS_BY_TYPE.get(field.datatype, frozenset()) if field.datatype else ())
     if field.allowed_aggregations is not None:
         base &= set(field.allowed_aggregations)
     # Strip parametric built-ins — they need named args (§5.1.3).
@@ -578,7 +578,7 @@ def _local_dimensions_for(*, dataset: SlayerDataset) -> list[FacadeDimension]:
             name=col.name,
             description=col.description,
             label=col.label,
-            data_type=col.datatype,
+            data_type=col.datatype or DataType.STRING,  # an unknown type is advertised as text
             is_time=col.datatype in TEMPORAL_DATATYPES,
             dimension_ref=col.name,
         ))
@@ -617,7 +617,7 @@ def _dimension_expansion(
                 name=col.name,
                 description=col.description,
                 label=col.label,
-                data_type=col.datatype,
+                data_type=col.datatype or DataType.STRING,  # an unknown type is advertised as text
                 is_time=col.datatype in TEMPORAL_DATATYPES,
                 dimension_ref=col.name,
             )
@@ -633,7 +633,7 @@ def _dimension_expansion(
                     name=ref,
                     description=col.description,
                     label=col.label,
-                    data_type=col.datatype,
+                    data_type=col.datatype or DataType.STRING,  # an unknown type is advertised as text
                     is_time=col.datatype in TEMPORAL_DATATYPES,
                     dimension_ref=ref,
                     row_preserving=row_preserving,

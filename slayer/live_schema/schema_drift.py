@@ -205,6 +205,8 @@ class RetypeFinding(BaseModel):
         cls, *, dataset: SlayerDataset, field: DatasetField, live_type: DataType, live_db_type: str | None,
         remedy_kind: RemedyKind,
     ) -> "RetypeFinding":
+        if field.datatype is None:
+            raise ValueError(f"field {field.name!r} is untyped: an untyped field is an UntypedFinding, not a retype")
         return cls(
             dataset_name=dataset.name, data_source=dataset.data_source, field=field.name, stored_type=field.datatype,
             live_type=live_type, live_db_type=live_db_type, remedy_kind=remedy_kind,
@@ -454,12 +456,14 @@ def retype_findings(
             continue
         name = col.physical_name
         live = live_table.columns.get(name)
-        if live is not None and col.datatype is None:
+        if live is None:
+            continue
+        if col.datatype is None:
             if untyped := untyped_finding(dataset=dataset, field=col, live_type=live,
                                           live_db_type=live_table.db_types.get(name)):
                 out.append(untyped)
             continue
-        if live is not None and _retyped(persisted=col.datatype, live=live, temporal_text=temporal_text):
+        if _retyped(persisted=col.datatype, live=live, temporal_text=temporal_text):
             out.append(RetypeFinding.of(
                 dataset=dataset, field=col, live_type=live, live_db_type=live_table.db_types.get(name),
                 remedy_kind="reingest" if live is DataType.ARRAY else "set_type",
@@ -477,12 +481,14 @@ def sql_dataset_retype_findings(
         live = (live_columns or {}).get(col.name)
         if live is None and col.definition_sql is not None:
             live = (live_columns or {}).get(col.definition_sql.strip())
-        if live is not None and col.datatype is None:
+        if live is None:
+            continue
+        if col.datatype is None:
             if untyped := untyped_finding(dataset=dataset, field=col, live_type=live.type, live_db_type=live.db_type,
                                           element_type=live.element_type):
                 out.append(untyped)
             continue
-        if live is not None and _retyped(persisted=col.datatype, live=live.type, temporal_text=temporal_text):
+        if _retyped(persisted=col.datatype, live=live.type, temporal_text=temporal_text):
             out.append(RetypeFinding.of(
                 dataset=dataset, field=col, live_type=live.type, live_db_type=live.db_type,
                 remedy_kind="reingest" if live.type is DataType.ARRAY else "set_type",

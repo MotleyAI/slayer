@@ -2371,7 +2371,7 @@ class SlayerQueryEngine:
             if c.allowed_aggregations is not None:
                 allowed = list(c.allowed_aggregations)
             else:
-                allowed = sorted(DEFAULT_AGGREGATIONS_BY_TYPE.get(c.datatype, frozenset()))
+                allowed = sorted(DEFAULT_AGGREGATIONS_BY_TYPE.get(c.datatype, frozenset()) if c.datatype else ())
             if not allowed:
                 continue
             agg = "max" if "max" in allowed else allowed[0]

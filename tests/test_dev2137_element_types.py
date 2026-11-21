@@ -18,7 +18,7 @@ async def engine():
         yield e
 
 
-def _typed(dataset: SlayerDataset, name: str) -> tuple[DataType, Any]:
+def _typed(dataset: SlayerDataset, name: str) -> tuple[DataType | None, Any]:
     col = dataset.get_field(name)
     assert col is not None, [c.name for c in dataset.fields]
     return col.datatype, col.element_type

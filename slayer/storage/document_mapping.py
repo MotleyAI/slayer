@@ -131,7 +131,7 @@ class _Writer:
         self.old = old
         self.new = new
         self.reader = reader
-        self.entry = _find(self.doc["datasets"], old.name if old is not None else new.name)
+        self.entry: dict[str, Any] | None = _find(self.doc["datasets"], old.name if old is not None else new.name)
         if self.entry is None:
             self.entry = {"name": new.name, "source": new.sql_table or new.sql or new.name}
             self.doc["datasets"].append(self.entry)

@@ -243,7 +243,9 @@ async def test_a_slayer_write_never_touches_ossies_version(tmp_path: Path, kind:
     orders = await storage.get_dataset("orders", data_source=DS)
     assert orders is not None
     await storage.save_dataset(orders.model_copy(update={"hidden": True}))
-    doc = yaml.safe_load(await storage.get_semantic_model_text("sales", data_source=DS))
+    text = await storage.get_semantic_model_text("sales", data_source=DS)
+    assert text is not None
+    doc = yaml.safe_load(text)
     assert doc["version"] == "0.3.0.dev0"
     slayer_entries = [e for e in doc.get("nonportable_extensions", []) if e.get("vendor_name") == "SLAYER"]
     assert len(slayer_entries) <= 1
@@ -385,7 +387,9 @@ async def test_a_multi_field_unique_key_is_kept_and_not_a_proof(tmp_path: Path, 
     customers = await storage.get_dataset("customers", data_source=DS)
     assert customers is not None
     assert not any(f.unique or f.primary_key for f in customers.fields)
-    stored = yaml.safe_load(await storage.get_semantic_model_text("sales", data_source=DS))
+    text = await storage.get_semantic_model_text("sales", data_source=DS)
+    assert text is not None
+    stored = yaml.safe_load(text)
     assert stored["datasets"][0]["unique_keys"] == [["region", "manager_id"]]
 
 
@@ -515,6 +519,7 @@ async def test_top_level_metrics_become_model_scoped_metrics(tmp_path: Path, kin
                                                 "    description: Revenue per customer.\n    datatype: Float\n"))
     [m] = await storage.list_model_scoped_metrics(DS)
     assert (m.name, m.semantic_model, m.data_source) == ("revenue_per_customer", "sales", DS)
+    assert isinstance(m.expression, str)
     assert "AGG(orders.total_revenue)" in m.expression
     assert m.description == "Revenue per customer."
     assert plain(m.ai_context) == {"synonyms": ["ARPU"]}

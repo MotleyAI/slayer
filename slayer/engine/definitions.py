@@ -43,7 +43,7 @@ ColumnTypes = Mapping[str, DataType]
 def _column_type(dataset: SlayerDataset, *, column: str, live: ColumnTypes) -> DataType:
     """A source column's type: its physical reader's declared type, else its live type, else ``Opaque``."""
     reader = next((c for c in dataset.fields if c.is_physical_reader and c.physical_name == column), None)
-    if reader is not None:
+    if reader is not None and reader.datatype is not None:
         return reader.datatype
     found = live.get(column)
     if found is None:
