@@ -56,7 +56,9 @@ async def _mismatches(original: Env, imported: Env, payloads: list[dict[str, Any
     async with _session(original) as before, _session(imported) as after:
         for payload in payloads:
             try:
-                expected = normalized(await before(payload))
+                # The model-scoped re-import keys by the bare name.
+                expected = normalized([{(_MODEL_SCOPED if k == f"orders.{_MODEL_SCOPED}" else k): v
+                                        for k, v in row.items()} for row in await before(payload)])
             except Exception:  # noqa: BLE001 — not a valid query on the original either
                 continue
             ran |= {(payload.get("population", ""), m) for m in payload.get("metrics", [])}
