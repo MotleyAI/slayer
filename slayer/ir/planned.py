@@ -430,6 +430,9 @@ class RegroupAttachPlan(BaseModel):
     producer_root_dataset: Optional[str] = None
     broadcast_metric: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
+    # The broadcast aggregate as the query writes it, and the ``partition_by=`` returning its values.
+    broadcast_call: Optional[str] = None
+    broadcast_partition_by: List[str] = Field(default_factory=list)
     # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).

@@ -567,7 +567,7 @@ class UnrecognizedStrictValueError(SlayerError):
         self.value = value
         super().__init__(
             f"Unrecognized strict value {value!r}; strict is deprecated, use "
-            f"to_many_handling='error' (one of broadcast|associate|error) instead."
+            f"to_many_handling='error' (one of associate|error) instead."
         )
 
     def __reduce__(self) -> tuple[type, tuple[Any]]:

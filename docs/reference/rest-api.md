@@ -77,7 +77,7 @@ The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, 
 
 - `whole_periods_only` (bool) — snap time bounds to bucket boundaries; see [Time](../concepts/time.md#whole_periods_only).
 - `distinct_dimension_values` (bool, default `true`) — set `false` to emit raw rows (no top-level `GROUP BY`); rejects any metric reference in `metrics` / `filter` / `order`.
-- `to_many_handling` (str, optional) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-dataset-metrics): omitted (per-cell value over the distinct associated rows, broadcasting with a warning where association is unsupported), `associate` (the same, refusing the unsupported), `broadcast` (repeat the safe-grain value and warn), or `error` (refuse). Rejected at the top level of run-by-name bodies (`{"name": ...}`) — put it in `refine` instead.
+- `to_many_handling` (str, optional) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-dataset-metrics): omitted or `associate` (per-cell value over the distinct associated rows) or `error` (refuse); `broadcast` is deprecated, removed in 3.0 — give each aggregate `partition_by=` instead. Rejected at the top level of run-by-name bodies (`{"name": ...}`) — put it in `refine` instead.
 
 Run-by-name bodies (`{"name": ...}`) run a query-backed dataset's stored query and allow only `name`, `variables`, `dry_run`, `explain` and `refine`; query clauses go inside `refine`, which merges them into the saved query's final stage ([Refining a saved query](../concepts/queries.md#refining-a-saved-query)).
 

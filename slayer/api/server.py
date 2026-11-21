@@ -31,7 +31,9 @@ from slayer.core.query import (
     SlayerQuery,
     SourceSpec,
     check_unique_extensions,
+    broadcast_already_warned,
     prepare_query_input,
+    warn_fresh_broadcast,
 )
 from slayer.core.vocabulary import deprecated_spelling
 from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
@@ -76,7 +78,7 @@ class QueryRequest(BaseModel):
     # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
-    # How aggregates resolve query dimensions unattributable from their root (broadcast|associate|error).
+    # How aggregates resolve query dimensions unattributable from their root (associate|error).
     to_many_handling: str | None = None
     dry_run: bool | None = None
     explain: bool | None = None
@@ -90,10 +92,13 @@ class QueryRequest(BaseModel):
     @classmethod
     def _prepare_query_input(cls, data: Any, handler: ModelWrapValidatorHandler["QueryRequest"]) -> "QueryRequest":
         payloads: list[DeprecatedInputWarning] = []
+        fresh = isinstance(data, dict) and "version" not in data
         if isinstance(data, dict):
             data, payloads = prepare_query_input(data)
         request = handler(data)
         request._deprecated_inputs = tuple(payloads)
+        if fresh:
+            warn_fresh_broadcast(request.to_many_handling)
         return request
 
     @property
@@ -502,7 +507,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 # (extra="forbid") doesn't reject them.
                 dry_run = bool(payload.pop("dry_run", False))
                 explain = bool(payload.pop("explain", False))
-                run_query = SlayerQuery.model_validate(payload)
+                with broadcast_already_warned():
+                    run_query = SlayerQuery.model_validate(payload)
             if dry_run:
                 usage_reporting.mark_dry_run()
             usage_reporting.observe_query(run_query)
