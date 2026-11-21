@@ -108,7 +108,8 @@ async def test_list_prints_datasource_name_and_datasets(tmp_path: Path, offline:
         assert text in result.stdout, text
     filtered = run_cli_in_process(["semantic-models", "list", "--datasource", DS, "--storage", str(store)])
     assert filtered.returncode == 0, filtered.stderr
-    assert "sales" in filtered.stdout and "support" in filtered.stdout
+    assert "sales" in filtered.stdout
+    assert "support" in filtered.stdout
     assert "staff" not in filtered.stdout
 
 
@@ -135,7 +136,8 @@ async def test_delete_with_yes_deletes_the_document_and_its_datasets(tmp_path: P
     assert result.returncode == 0, result.stderr
     assert await storage.list_semantic_models(DS) == [(DS, "support")]
     names = await storage.list_datasets(DS)
-    assert "orders" not in names and "customers" not in names
+    assert "orders" not in names
+    assert "customers" not in names
     assert "returns" in names
 
 

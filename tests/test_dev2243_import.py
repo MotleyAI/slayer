@@ -644,7 +644,8 @@ async def test_slayer_1_8_export_restores(tmp_path: Path) -> None:
     for dataset_name in ("customers", "orders"):
         modern_ds = await stores[0].get_dataset(dataset_name, data_source=EXPORT_DS)
         legacy_ds = await stores[1].get_dataset(dataset_name, data_source=EXPORT_DS)
-        assert modern_ds is not None and legacy_ds is not None
+        assert modern_ds is not None
+        assert legacy_ds is not None
         assert legacy_ds.model_dump(mode="json") == modern_ds.model_dump(mode="json")
     [entry] = kinds(results[1], "legacy_extensions")
     assert entry.document == name
@@ -964,7 +965,8 @@ async def test_reimport_carries_slayer_only_content_into_slayer_entries(legacy_1
                                                                         tmp_path: Path) -> None:
     await _reimport(legacy_1x, tmp_path)
     text = await legacy_1x.storage.get_semantic_model_text("sales", DS)
-    assert text is not None and "SLAYER" in text
+    assert text is not None
+    assert "SLAYER" in text
     orders_ds = await legacy_1x.storage.get_dataset("orders", data_source=DS)
     assert orders_ds is not None
     amount = next(f for f in orders_ds.fields if f.name == "amount")

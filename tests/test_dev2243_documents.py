@@ -458,7 +458,8 @@ async def test_a_relationship_decomposes_onto_its_from_dataset(tmp_path: Path, k
     await store_document(storage, SALES)
     orders = await storage.get_dataset("orders", data_source=DS)
     customers = await storage.get_dataset("customers", data_source=DS)
-    assert orders is not None and customers is not None
+    assert orders is not None
+    assert customers is not None
     [rel] = orders.relationships
     assert (rel.name, rel.to, rel.from_columns, rel.to_columns) == (
         "orders_to_customers", "customers", ["customer_id"], ["customer_id"])

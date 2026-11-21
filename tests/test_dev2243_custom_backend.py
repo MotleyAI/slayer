@@ -259,6 +259,7 @@ class TestABackendImplementingTheHooks:
         assert len({empty, stored, edited}) == 3
         assert deleted != edited
         assert "patch" in storage.log
-        assert edited_text is not None and "Customer master." in edited_text
+        assert edited_text is not None
+        assert "Customer master." in edited_text
         assert storage.documents == {}
         assert left == []

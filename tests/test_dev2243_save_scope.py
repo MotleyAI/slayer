@@ -77,9 +77,11 @@ class TestUnrelatedEdit:
                                description="Customer master.")
             after = await _text(engine)
             customers = await engine.storage.get_dataset("customers", data_source=DS)
-        assert before is not None and after is not None
+        assert before is not None
+        assert after is not None
         assert "Error" not in reply, reply
-        assert customers is not None and customers.description == "Customer master.", reply
+        assert customers is not None, reply
+        assert customers.description == "Customer master.", reply
         assert _metric(after, "running_rev") == _metric(before, "running_rev")
         assert "sql: SUM(orders.amount) OVER ()" in after
 
@@ -92,8 +94,10 @@ class TestUnrelatedEdit:
             await engine.save_dataset(customers.model_copy(update={"description": "Customer master."}))
             after = await _text(engine)
             saved = await engine.storage.get_dataset("customers", data_source=DS)
-        assert before is not None and after is not None
-        assert saved is not None and saved.description == "Customer master."
+        assert before is not None
+        assert after is not None
+        assert saved is not None
+        assert saved.description == "Customer master."
         assert _metric(after, "running_rev") == _metric(before, "running_rev")
 
 
@@ -123,7 +127,8 @@ class TestBrokenDependents:
                 warnings.simplefilter("always")
                 await engine.save_dataset(renamed)
             saved = await engine.storage.get_dataset("orders", data_source=DS)
-        assert saved is not None and saved.get_field("net_amount") is not None
+        assert saved is not None
+        assert saved.get_field("net_amount") is not None
         broken = [str(w.message) for w in caught if issubclass(w.category, UserWarning)
                   and "amount_total" in str(w.message) and "amount" in str(w.message).replace("amount_total", "")]
         assert broken, [str(w.message) for w in caught]

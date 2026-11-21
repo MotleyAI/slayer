@@ -157,7 +157,8 @@ def test_every_vendored_file_is_byte_identical_to_its_upstream_blob() -> None:
 
 
 def test_the_provenance_pins_a_commit_and_notes_the_harvest() -> None:
-    assert len(PROVENANCE["commit"]) == 40 and int(PROVENANCE["commit"], 16) >= 0
+    assert len(PROVENANCE["commit"]) == 40
+    assert int(PROVENANCE["commit"], 16) >= 0
     assert PROVENANCE["harvested"] == "harvested/"
     assert not any(path.startswith("harvested/") for path in PROVENANCE["files"])
 
@@ -175,7 +176,8 @@ def test_the_corpus_lists_every_semantic_model_source_and_the_oracles() -> None:
             "compliance/query/scott/scott_model.ossie.yaml", "validation/validate.py",
             "python/src/ossie/_loading.py", SCHEMA} <= files
     cases = {p.split("/")[3] for p in files if p.startswith("compliance/wide_table/cases/") and p.count("/") == 4}
-    assert {c for c in cases if c.startswith("a")} and {c for c in cases if c.startswith("e")}
+    assert {c for c in cases if c.startswith("a")}
+    assert {c for c in cases if c.startswith("e")}
     assert all(f"compliance/wide_table/cases/{c}/query.json" in files for c in cases)
     assert all(f"compliance/wide_table/cases/{c}/expected.txt" in files for c in cases)
 
@@ -209,7 +211,8 @@ def test_the_harvest_runs_upstream_validator_tests_under_uv_with_the_plugin() ->
     command = drift_check.harvest_command(CORPUS, uv="/bin/uv")
     assert command[:3] == ["/bin/uv", "run", "--no-project"]
     withs = [command[i + 1] for i, arg in enumerate(command) if arg == "--with"]
-    assert "pytest" in withs and "sqlglot>=30.19.0" in withs
+    assert "pytest" in withs
+    assert "sqlglot>=30.19.0" in withs
     assert ["-p", drift_check.HARVEST_PLUGIN] == command[command.index("-p"):command.index("-p") + 2]
     assert str(CORPUS / "validation" / "test_validate.py") in command
     assert str(CORPUS / "validation" / "tests") in command

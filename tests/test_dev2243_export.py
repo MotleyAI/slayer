@@ -232,10 +232,12 @@ SALES_EXTENDED_STRIPPED = SALES_EXTENDED.replace("".join(SLAYER_LINES), "", 1)
 
 async def test_no_extensions_strips_only_slayer_entries(tmp_path: Path) -> None:
     """Spec scenario: No extensions strips only SLAYER entries."""
-    assert "vendor_name: DBT" in SALES_EXTENDED_STRIPPED and "SLAYER" not in SALES_EXTENDED_STRIPPED
+    assert "vendor_name: DBT" in SALES_EXTENDED_STRIPPED
+    assert "SLAYER" not in SALES_EXTENDED_STRIPPED
     async with engine_over(tmp_path, seeded_config(tmp_path), documents=(SALES_EXTENDED,)) as engine:
         orders_ds = await engine.storage.get_dataset("orders", data_source=DS)
-        assert orders_ds is not None and orders_ds.hidden
+        assert orders_ds is not None
+        assert orders_ds.hidden
         full = await export_osi(engine=engine, datasource=DS, extensions=True)
         stripped = await export_osi(engine=engine, datasource=DS, extensions=False)
     assert full.text == SALES_EXTENDED

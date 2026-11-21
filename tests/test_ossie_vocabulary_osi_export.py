@@ -111,7 +111,8 @@ async def test_an_edited_v1_payload_fails_its_fingerprint(tmp_path: Path) -> Non
     imported, _ = await reimport(env, document)
     # Stale payload: a load warning naming the dataset; its SLayer-only measure applies as edited.
     running = (await stored(imported, "orders")).get_metric("running")
-    assert running is not None and running.expression == "cumsum(n)"
+    assert running is not None
+    assert running.expression == "cumsum(n)"
     text = await inspected(imported, "orders")
     assert "orders" in text
     assert "slayer" in text.lower()

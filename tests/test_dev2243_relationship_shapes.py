@@ -153,13 +153,15 @@ class TestComputedKeys:
 
     def test_an_expression_source_key_reading_another_dataset_is_rejected(self) -> None:
         """Spec: models/join-keys › An expression source key is rejected at construction."""
+        key = _f("ck", DataType.INTEGER, expression="customers.id")
         with pytest.raises(ValueError, match="key 'ck'"):
-            _k_orders(_f("ck", DataType.INTEGER, expression="customers.id"))
+            _k_orders(key)
 
     def test_a_filtered_source_key_is_rejected(self) -> None:
         """Spec: models/join-keys › A filtered source key is rejected at construction."""
+        key = _f("customer_key", DataType.INTEGER, expression=_CAST_KEY, filter="status = 'ok'")
         with pytest.raises(ValueError, match="key 'customer_key'"):
-            _k_orders(_f("customer_key", DataType.INTEGER, expression=_CAST_KEY, filter="status = 'ok'"))
+            _k_orders(key)
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_an_unresolvable_target_key_fails_closed_at_emission(self, backend: str) -> None:
@@ -260,9 +262,10 @@ class TestEdgeNames:
     async def test_duplicate_incident_edge_names_are_rejected(self) -> None:
         """Spec: models/join-traversal › Duplicate incident edge names are rejected."""
         async with _engine("sqlite", tables=_E_TABLES, datasets=[_customers()]) as engine:
+            orders = _orders(_rel("customers", "a_id", "customer_id", name="buyer"),
+                             _rel("customers", "b_id", "customer_id", name="buyer"))
             with pytest.raises(ValueError, match="buyer"):
-                await engine.save_dataset(_orders(_rel("customers", "a_id", "customer_id", name="buyer"),
-                                                  _rel("customers", "b_id", "customer_id", name="buyer")))
+                await engine.save_dataset(orders)
             assert await engine.storage.get_dataset("orders", data_source="test") is None
 
 

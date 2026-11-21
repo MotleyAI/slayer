@@ -140,8 +140,9 @@ async def run_case(case: Path, tmp: Path) -> tuple[Expected, dict[str, Any], Any
                                   ) as engine:
         await store_document(storage, (WIDE_TABLE / model).read_text(encoding="utf-8"), data_source=DS)
         if expected.error is not None:
+            translated = translate(query)
             with pytest.raises(Exception) as raised:  # noqa: PT011 — the case checks only the Ossie code
-                await engine.execute(translate(query))
+                await engine.execute(translated)
             return expected, query, raised.value
         return expected, query, await engine.execute(translate(query))
 

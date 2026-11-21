@@ -57,7 +57,8 @@ def test_the_ladder_lists_every_rung_document() -> None:
 def test_the_grader_grades_an_identity_round_trip_portable(grader: list[str]) -> None:
     """The oracle itself: a document returned unchanged grades every element PORTABLE."""
     report = grade(grader, original=RUNGS[0], returned=RUNGS[0])
-    assert report["findings"] and {f["outcome"] for f in report["findings"]} == {"PORTABLE"}
+    assert report["findings"]
+    assert {f["outcome"] for f in report["findings"]} == {"PORTABLE"}
 
 
 @pytest.mark.parametrize("rung", RUNGS, ids=IDS)

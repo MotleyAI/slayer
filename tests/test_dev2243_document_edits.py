@@ -144,7 +144,8 @@ async def test_a_case_only_collision_between_documents_is_refused(tmp_path: Path
     other = document_text(name="ledger", datasets=[dataset("ORDERS", source="orders", fields=[field("order_id")])])
     with pytest.raises(error("NamespaceCollisionError")) as info:
         await store_document(storage, other)
-    assert "sales" in str(info.value) and "ledger" in str(info.value)
+    assert "sales" in str(info.value)
+    assert "ledger" in str(info.value)
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -468,7 +469,8 @@ def _only_added(*expected: str) -> Callable[[list[str], list[str]], None]:
 def _added_containing(token: str) -> Callable[[list[str], list[str]], None]:
     def check(removed: list[str], added: list[str]) -> None:
         assert removed == []
-        assert added and token in "\n".join(added)
+        assert added
+        assert token in "\n".join(added)
     return check
 
 
@@ -1111,7 +1113,8 @@ async def test_rest_exposes_semantic_models(tmp_path: Path) -> None:
         created = await client.post("/semantic-models", json={"data_source": DS, "content": SALES})
         assert created.status_code in (200, 201), created.text
         listed = await client.get("/semantic-models", params={"data_source": DS})
-        assert listed.status_code == 200 and "sales" in listed.text
+        assert listed.status_code == 200
+        assert "sales" in listed.text
         got = await client.get(f"/semantic-models/{DS}/sales")
         assert got.json() == {"data_source": DS, "name": "sales", "text": SALES}
         put = await client.put(f"/semantic-models/{DS}/sales", json={"content": replaced})
@@ -1159,7 +1162,8 @@ def test_the_cli_lists_shows_and_deletes_semantic_models(tmp_path: Path) -> None
     assert listed.returncode == 0, listed.stderr
     assert "sales" in listed.stdout
     shown = run_cli_in_process(["semantic-models", "show", "sales", "--datasource", DS, *where])
-    assert shown.returncode == 0 and "# owned by finance" in shown.stdout
+    assert shown.returncode == 0
+    assert "# owned by finance" in shown.stdout
     deleted = run_cli_in_process(["semantic-models", "delete", "sales", "--datasource", DS, "--yes", *where])
     assert deleted.returncode == 0, deleted.stderr
     assert not document_path(tmp_path, name="sales").exists()
@@ -1189,12 +1193,14 @@ async def test_a_fields_ai_context_reaches_inspect_and_search(tmp_path: Path, ki
     storage = make_storage(kind, tmp_path)
     await store_document(storage, AI_AMOUNT)
     shown = await mcp_text(storage, "inspect", reference="orders.amount", entity_type="field", compact=False)
-    assert "revenue" in shown and "gross" in shown
+    assert "revenue" in shown
+    assert "gross" in shown
     hits = await SearchService(storage=storage).search(question="gross", max_results=20)
     assert f"{DS}.orders.amount" in {h.id for h in hits.results}
     orders = await must_get(storage, "orders")
     amount = orders.get_field("amount")
-    assert amount is not None and amount.meta is not None
+    assert amount is not None
+    assert amount.meta is not None
     assert amount.meta["osi_nonportable_extensions"] == [{"vendor_name": "SNOWFLAKE", "data": {"unit": "usd"}}]
     await storage.save_dataset(orders)
     assert await text_of(storage) == AI_AMOUNT
