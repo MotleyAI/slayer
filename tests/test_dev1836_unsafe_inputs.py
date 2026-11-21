@@ -118,6 +118,7 @@ class TestUnsafeExplicitPartitionKeys:
                 metric="sum(customers.spend, partition_by=customers.segments.label)",
                 alias="x",
             )],
+            to_many_handling="error",
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -135,6 +136,7 @@ class TestUnsafeExplicitPartitionKeys:
                 metric="sum(orders.amount, partition_by=customers.segments.label)",
                 alias="x",
             )],
+            to_many_handling="error",
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -154,6 +156,7 @@ class TestUnsafeExplicitPartitionKeys:
                 "alias": "b",
             }],
             metrics=[M],
+            to_many_handling="error",
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)

@@ -293,8 +293,17 @@ class TestOtherConsumerShapes:
                      {**{(k,): x for k, x in WAVG_BY_ACCOUNT_MAX.items()}, ("Cy",): None})
         _clean(resp)
 
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_fanning_constituent_key_still_errors(self, engine, mode):
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_fanning_constituent_key_associates(self, engine, mode):
+        resp = await engine.execute(query(
+            dimensions=["customers.name"], to_many_handling=mode,
+            metrics=[m(f"sum(count(customers.name, partition_by=[customers.id, {ACCOUNT}]))")]))
+        approx_cells(cells(resp, keys=("customers.name",)),
+                     {("Ann",): 2, ("Bob",): 1, ("Cy",): 1, ("Dee",): 2})
+        _clean(resp)
+
+    @pytest.mark.parametrize("mode", ["broadcast", "error"])
+    async def test_fanning_constituent_key_refused(self, engine, mode):
         q = query(dimensions=["customers.name"], to_many_handling=mode,
                   metrics=[m(f"sum(count(customers.name, partition_by=[customers.id, {ACCOUNT}]))")])
         with pytest.raises(PartitionKeyError, match="account_snapshots.account_id") as ei:

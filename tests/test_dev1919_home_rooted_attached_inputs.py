@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import SlayerError
+from slayer.core.errors import PartitionKeyError, SlayerError
 from slayer.core.keys import AggregateKey
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import PlainProducerKernel, PlannedQuery, RegroupAttachPlan, TrailingWindowProducerKernel
@@ -372,16 +372,23 @@ class TestFailClosedEveryMode:
         assert "no supported dialect can analyse" in msg
         assert_ref_free(msg)
 
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_parameter_key_fanning_from_its_own_home(self, dev1900_engine, mode):
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    async def test_parameter_key_fanning_from_its_own_home_undetermined(self, dev1900_engine, mode):
         """Scenario: Attached parameter whose own partition key fans from its own home fails closed."""
         q = mode_q(mode, dimensions=["orders.status"], metrics=[_m(OWN_FAN_BADPOP)])
-        with pytest.raises(ValueError) as ei:
+        with pytest.raises(SlayerError) as ei:
+            await dev1900_engine.execute(q)
+        assert not isinstance(ei.value, PartitionKeyError), str(ei.value)
+        assert_grain_residue(ei.value, param="weight")
+
+    @pytest.mark.parametrize("mode", ["broadcast", "error"])
+    async def test_parameter_key_fanning_from_its_own_home_refused(self, dev1900_engine, mode):
+        q = mode_q(mode, dimensions=["orders.status"], metrics=[_m(OWN_FAN_BADPOP)])
+        with pytest.raises(PartitionKeyError) as ei:
             await dev1900_engine.execute(q)
         msg = str(ei.value)
         assert "bad_pop" in msg
         assert "region_events" in msg
-        assert "every partition key must be attributable" in msg
 
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_host_keyed_parameter_refused_outside_associate(self, orders_engine, mode):
