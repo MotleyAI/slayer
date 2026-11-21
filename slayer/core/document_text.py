@@ -6,6 +6,7 @@ import io
 import json
 import re
 from collections.abc import Callable, MutableMapping
+from difflib import SequenceMatcher
 from typing import Any
 
 from ruamel.yaml import YAML
@@ -118,18 +119,74 @@ def _is_json(text: str) -> bool:
     return text.lstrip().startswith("{")
 
 
+def _splice(*, ours: str, base: str, theirs: str) -> str:
+    """``ours`` with the line hunks turning ``base`` into ``theirs``; ``base`` is ``ours`` re-emitted, so its
+    formatting-only differences from ``ours`` outside the hunks keep ``ours``' text."""
+    o, b, t = ours.splitlines(keepends=True), base.splitlines(keepends=True), theirs.splitlines(keepends=True)
+    to_ours: dict[int, int] = {}
+    for i, j, n in SequenceMatcher(a=b, b=o, autojunk=False).get_matching_blocks():
+        to_ours.update({i + k: j + k for k in range(n)})
+    edits = SequenceMatcher(a=b, b=t, autojunk=False).get_opcodes()
+
+    def start_of(s: int) -> int | None:
+        """Where base line ``s`` starts in ``ours``, when a pinned neighbour locates it."""
+        if s in (0, len(b)):
+            return 0 if s == 0 else len(o)
+        if s - 1 in to_ours:
+            return to_ours[s - 1] + 1
+        return to_ours.get(s)
+
+    def end_of(lo: int, e: int) -> int | None:
+        """Where base lines ``lo:e`` end in ``ours``, when a pinned line locates it."""
+        if e > lo and e - 1 in to_ours:
+            return to_ours[e - 1] + 1
+        if e == lo:
+            return start_of(lo)
+        return len(o) if e == len(b) else to_ours.get(e)
+
+    regions: list[list[int]] = []
+    for tag, i1, i2, _, _ in edits:
+        if tag == "equal":
+            continue
+        while start_of(i1) is None:
+            i1 -= 1
+        while end_of(i1, i2) is None:
+            i2 += 1
+        if regions and i1 <= regions[-1][1]:
+            regions[-1][1] = max(regions[-1][1], i2)
+        else:
+            regions.append([i1, i2])
+
+    def to_theirs(i: int, *, end: bool) -> int:
+        """Where base line ``i`` falls in ``theirs``; at a hunk boundary, after (``end``) or before an insertion."""
+        hits = [j1 + (i - i1) if tag == "equal" else (j2 if i == i2 else j1) if end else (j1 if i == i1 else j2)
+                for tag, i1, i2, j1, j2 in edits if i1 <= i <= i2]
+        return hits[-1] if end else hits[0]
+
+    out: list[str] = []
+    cursor = 0
+    for lo, hi in regions:
+        start, end = start_of(lo), end_of(lo, hi)
+        assert start is not None and end is not None
+        out += o[cursor:start] + t[to_theirs(lo, end=False):to_theirs(hi, end=True)]
+        cursor = end
+    return "".join(out + o[cursor:])
+
+
 def edit_text(text: str, edit: Callable[[dict[str, Any]], dict[str, Any]]) -> str:
     """``text`` (YAML or JSON) after ``edit`` maps its plain data to the desired data; unchanged parts keep their text."""
     if _is_json(text):
         data = json.loads(text)
-        _apply(data, edit(json.loads(text)))
         found = _JSON_INDENT.search(text)
         indent = found.group(1) if found else None
-        out = json.dumps(data, indent=indent, ensure_ascii=False)
-        return out + "\n" if text.endswith("\n") else out
+        newline = "\n" if text.endswith("\n") else ""
+        base = json.dumps(data, indent=indent, ensure_ascii=False) + newline
+        _apply(data, edit(json.loads(text)))
+        return _splice(ours=text, base=base, theirs=json.dumps(data, indent=indent, ensure_ascii=False) + newline)
     yaml = _yaml(text)
     tree = yaml.load(text)
+    base, theirs = io.StringIO(), io.StringIO()
+    yaml.dump(tree, base)
     _apply(tree, edit(plain(tree)))
-    buffer = io.StringIO()
-    yaml.dump(tree, buffer)
-    return buffer.getvalue()
+    yaml.dump(tree, theirs)
+    return _splice(ours=text, base=base.getvalue(), theirs=theirs.getvalue())

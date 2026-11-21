@@ -20,6 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
+from slayer.core.document_text import edit_text
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import UnknownMetricError
 from slayer.core.field_expression import portable_text
@@ -508,6 +509,36 @@ async def test_a_comment_survives_an_unrelated_edit(tmp_path: Path, kind: str) -
     removed, added = diff(SALES, await text_of(storage))
     assert removed == []
     assert [ln.strip() for ln in added] == ["description: One row per order."]
+
+
+FORMATTED = """\
+name: sales
+datasets:
+- name: orders
+  primary_key: [ order_id ]
+  description: "A long description folded by its author
+    onto a second line."
+- name: stores
+  primary_key: [ store_id ]
+"""
+
+
+def _describe_stores(data: dict[str, Any]) -> dict[str, Any]:
+    data["datasets"][1]["description"] = "Stores."
+    return data
+
+
+def test_an_edit_keeps_the_authors_formatting_of_unedited_nodes() -> None:
+    """Folded scalars and flow-sequence spacing the emitter would rewrite survive an edit elsewhere."""
+    edited = edit_text(FORMATTED, _describe_stores)
+    assert edited == FORMATTED + "  description: Stores.\n"
+    assert edit_text(FORMATTED, lambda data: data) == FORMATTED
+
+
+def test_a_json_edit_keeps_unedited_inline_arrays() -> None:
+    text = '{\n  "name": "sales",\n  "tags": ["a", "b"],\n  "description": "Old."\n}\n'
+    edited = edit_text(text, lambda data: {**data, "description": "New."})
+    assert edited == text.replace("Old.", "New.")
 
 
 @pytest.mark.parametrize("kind", STORAGES)
