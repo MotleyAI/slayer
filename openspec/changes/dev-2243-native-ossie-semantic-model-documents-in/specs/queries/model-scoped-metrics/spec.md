@@ -20,14 +20,18 @@ A bare name in a query's metric position SHALL resolve, in order, to a query ali
 - **THEN** the query fails with the unknown-metric error suggesting qualified names
 
 ### Requirement: A model-scoped metric evaluates as its expression in place
-A model-scoped metric SHALL evaluate exactly as its expression written in its place in the query: each aggregate call SHALL be one component, homed on the one dataset its arguments read (semantics Axiom 2.4), and the scalar expression SHALL be evaluated from the component values after they are combined. Its result SHALL be keyed and named by its bare name unless the query aliases it. It SHALL return the same values as the equivalent inline expression in every query, whatever row rule the query follows.
+A model-scoped metric SHALL evaluate exactly as its expression written in its place in the query: each aggregate call SHALL be one component, homed as the same aggregate written in a query (semantics Axiom 2.4); an aggregate reading several datasets or filtering on another dataset, which Ossie rejects, SHALL evaluate as it does in a query, SLayer being a superset of Ossie, and the scalar expression SHALL be evaluated from the component values after they are combined. Its result SHALL be keyed and named by its bare name unless the query aliases it. It SHALL return the same values as the equivalent inline expression in every query, whatever row rule the query follows.
 
 #### Scenario: Inline equality
 - **WHEN** one query names `revenue_per_customer` by `customers.region` and another names `sum(orders.amount) / count(distinct customers.customer_id)` by `customers.region` on the same data
 - **THEN** both return the same value in every row
 
+#### Scenario: An aggregate reading two datasets evaluates
+- **WHEN** a document's model-scoped metric `net` has expression `SUM(orders.amount - customers.discount)` over the to-one relationship `orders → customers`
+- **THEN** a query naming `net` returns the same value as the inline `sum(orders.amount - customers.discount)`
+
 ### Requirement: References inside a model-scoped metric read like a query
-Inside a model-scoped metric's expression, a dotted reference `d.f` SHALL be a field anchored at dataset `d` of the same document, resolved by the query reference rules; a bare name SHALL be a model-scoped metric; `AGG(d.m)` SHALL evaluate the dataset metric `d.m`. A bare name that is no model-scoped metric, a reference to a source column (including `source.x` unless a dataset is named `source`), a reference to a dataset of another document, and a bare dataset metric reference without `AGG` SHALL be refused when the metric is saved through SLayer, each with a typed error. A model-scoped metric referring to another model-scoped metric, which Ossie does not define, SHALL be stored only in the document's `SLAYER` extension and SHALL NOT appear in the document's core `metrics`.
+Inside a model-scoped metric's expression, a dotted reference `d.f` SHALL be a field anchored at dataset `d` of the same document, resolved by the query reference rules; a bare name SHALL be a model-scoped metric; `AGG(d.m)` SHALL evaluate the dataset metric `d.m`. A bare name that is no model-scoped metric, a reference to a source column (including `source.x` unless a dataset is named `source`), a reference to a dataset of another document, and a bare dataset metric reference without `AGG` SHALL be refused when the metric is saved through SLayer, each with a typed error. A model-scoped metric referring to another model-scoped metric, which Ossie does not define, SHALL be stored only in the document's `SLAYER` extension and SHALL NOT appear in the document's core `metrics`. A model-scoped metric SLayer authors whose aggregate reads several datasets or filters on another dataset SHALL likewise be stored only in the document's `SLAYER` extension.
 
 #### Scenario: An unqualified field reference is refused at save
 - **WHEN** `edit_semantic_model` adds a model-scoped metric with expression `SUM(amount)`

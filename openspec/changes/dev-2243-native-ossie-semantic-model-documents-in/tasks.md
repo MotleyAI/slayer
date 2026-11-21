@@ -41,6 +41,7 @@
 - [ ] 3.3 `AGG(d.m)` in `core.syntax` (the one Mode B reader) and binding, in queries, model-scoped metrics and dataset metrics, with every refusal; verify AGG tests pass
 - [x] 3.4 Unknown datatype: explicit unknown on load; engine probe off the event loop, cached per engine + fingerprint; deferred save-time checks; verify unknown-type tests pass
 - [ ] 3.5 Native parity for every construct the 1.x converter mapped (decision 34) and in-memory translation of expressions without a runnable form; verify parity tests pass against the converter's expected values before deleting the converter
+- [x] 3.6 Model-scoped metrics Ossie rejects but SLayer can evaluate (aggregate over several datasets, FILTER on another dataset) evaluate (decision 35); SLayer-authored ones are stored in the `SLAYER` entry; verify `test_a_cross_dataset_operand_keeps_its_meaning` passes
 
 ## 4. Import, export, drift, surfaces
 

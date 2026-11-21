@@ -270,8 +270,8 @@ def _aggregated(node: exp.Expr) -> bool:
 
 
 def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> str | None:
-    """Why Ossie rejects a model-scoped metric at query time (each aggregate reads one dataset, every field is
-    qualified and aggregated), else ``None``."""
+    """Why SLayer cannot evaluate a model-scoped metric (a field read unqualified or outside an aggregate), else
+    ``None``; an aggregate over several datasets evaluates as in a query."""
     text = expression if isinstance(expression, str) else (
         expression.sql or next((d.expression for d in expression.dialects or []), None))
     tree, _ = parse_ossie_sql(text, OSSIE_SQL) if text else (None, None)
@@ -285,16 +285,6 @@ def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> s
             return f"reads {column.table}.{column.name} outside an aggregate"
         elif column.name.casefold() not in metric_names:
             return f"reads the unqualified field {column.name!r}; qualify it by its dataset"
-    for aggregate in tree.find_all(exp.AggFunc):
-        if is_agg_call(aggregate) or _aggregated(aggregate):
-            continue
-        homes = {c.table.casefold() for c in aggregate.find_all(exp.Column) if c.table}
-        if len(homes) != 1:
-            return (f"has the aggregate {aggregate.sql()}, which reads {'no dataset' if not homes else 'several datasets'}"
-                    "; each aggregate of a model-scoped metric reads one dataset")
-        if isinstance(aggregate.parent, exp.Filter) and {
-                c.table.casefold() for c in aggregate.parent.expression.find_all(exp.Column) if c.table} - homes:
-            return f"filters the aggregate {aggregate.sql()} on another dataset"
     return None
 
 

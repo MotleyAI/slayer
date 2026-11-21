@@ -92,7 +92,7 @@ Each Ossie construct `slayer import-osi` converted in 1.x SHALL evaluate nativel
 - **THEN** a query naming `gross_revenue` returns the sum of `orders.total_amount`, and the document's text is unchanged
 
 ### Requirement: Entities SLayer cannot evaluate yet still load
-A field or metric of a valid document whose expression SLayer cannot evaluate yet — a window function, or a model-scoped metric Ossie itself rejects at query time — SHALL load with a structured load warning naming the entity and the reason, visible on `inspect`, `datasets_summary` and search results. Every query reading the entity SHALL fail with a typed error naming it and the reason; no other entity SHALL be affected.
+A field or metric of a valid document whose expression SLayer cannot evaluate yet — a window function, or a model-scoped metric reading a field unqualified or outside an aggregate — SHALL load with a structured load warning naming the entity and the reason, visible on `inspect`, `datasets_summary` and search results. Every query reading the entity SHALL fail with a typed error naming it and the reason; no other entity SHALL be affected.
 
 #### Scenario: A windowed field loads and fails only when read
 - **WHEN** a document declares a field `running_total` with expression `SUM(amount) OVER (ORDER BY order_date)` beside a field `amount`

@@ -122,8 +122,9 @@ def _check_column(column: exp.Column, *, name: str, scope: DocumentScope) -> Non
 
 
 def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
-    """Refuse a model-scoped metric SLayer authors that breaks a naming or reference rule; ``True`` when it reads
-    another model-scoped metric by name (SLayer-only, so it is stored in a ``SLAYER`` entry)."""
+    """Refuse a model-scoped metric SLayer authors that breaks a naming or reference rule; ``True`` when Ossie does not
+    define it (it reads another model-scoped metric by name, or an aggregate reads several datasets or filters on
+    another), so it is stored in a ``SLAYER`` entry."""
     _check_name(name, scope=scope)
     tree, problem = parse_ossie_sql(text, _OSSIE_SQL)
     if tree is None:
@@ -138,14 +139,16 @@ def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
             continue
         _check_column(column, name=name, scope=scope)
         reads_metric = reads_metric or (not column.table and column.name.casefold() in scope.model_metrics)
-    for aggregate in tree.find_all(exp.AggFunc):
-        if is_agg_call(aggregate) or _aggregated(aggregate):
-            continue
-        homes = {c.table.casefold() for c in aggregate.find_all(exp.Column) if c.table}
-        if len(homes) != 1:
-            raise ModelMetricReferenceError(metric=name, reference=aggregate.sql(),
-                                            reason="each aggregate of a model-scoped metric reads exactly one dataset")
-    return reads_metric
+    return reads_metric or any(_beyond_ossie(aggregate) for aggregate in tree.find_all(exp.AggFunc)
+                               if not is_agg_call(aggregate) and not _aggregated(aggregate))
+
+
+def _beyond_ossie(aggregate: exp.Expr) -> bool:
+    """Whether an aggregate reads several datasets, or filters on a dataset it does not read."""
+    homes = {c.table.casefold() for c in aggregate.find_all(exp.Column) if c.table}
+    filtered = ({c.table.casefold() for c in aggregate.parent.expression.find_all(exp.Column) if c.table}
+                if isinstance(aggregate.parent, exp.Filter) else set())
+    return len(homes) > 1 or bool(filtered - homes)
 
 
 def metric_cycle(dependencies: dict[str, set[str]]) -> None:
