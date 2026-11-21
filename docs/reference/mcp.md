@@ -138,7 +138,7 @@ A [semantic model](../concepts/semantic-models.md) is an Ossie document holding 
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](../concepts/time.md#whole_periods_only) |
 | `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any metric reference in `metrics` / `filter` / `order`. |
-| `to_many_handling` | str | Optional — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-dataset-metrics): omitted (per-cell value over the distinct associated rows, broadcasting with a warning where association is unsupported), `associate` (the same, refusing the unsupported), `broadcast` (repeat and warn), or `error` (refuse). A query-object field. |
+| `to_many_handling` | str | Optional — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-dataset-metrics): omitted or `associate` (per-cell value over the distinct associated rows) or `error` (refuse); `broadcast` is deprecated, removed in 3.0 — give each aggregate `partition_by=` instead. A query-object field. |
 | `variables` | dict | Per-stage `{var}` values, scoped to this stage; overridden by the top-level `variables` arg (see precedence above). |
 | `name` | string | List form only — names a stage so sibling stages can reference it via `population` (every non-final stage must be named). |
 
@@ -219,7 +219,7 @@ SLayer's conceptual help is not a tool: it ships as a predefined set of **help m
 | `memory:help.aggregations` | Every aggregation, expressions and booleans, empty-input values, result names, `partition_by`, `window`, nesting |
 | `memory:help.transforms` | Every transform, the time axis, ranking, limits |
 | `memory:help.time` | Time points, `date_range` and look-back, time buckets |
-| `memory:help.relationships` | Dotted paths, choosing the root, joined aggregates (broadcast vs associate), patterns such as anti-joins |
+| `memory:help.relationships` | Dotted paths, choosing the root, joined aggregates (association, `partition_by=[]` totals), patterns such as anti-joins |
 | `memory:help.queries` | Query shapes, stages and their column names, raw rows, functions, variables, debugging |
 
 ## Typical Agent Workflows

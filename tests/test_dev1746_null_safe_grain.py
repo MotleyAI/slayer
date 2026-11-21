@@ -440,7 +440,7 @@ class TestSharedGrainJoinBackBuilder:
         left = grain_alias_field(alias="orders.status", table="_base")
         right = grain_alias_field(alias="orders.status", table="_cm_x")
         cond = build_grain_joinback_condition(
-            pairs=[(left, right)], dialect=strategy,
+            pairs=[(left, None, right, None)], dialect=strategy,
         )
         assert cond is not None
         rendered = cond.sql(dialect=strategy.sqlglot_name)
@@ -455,8 +455,8 @@ class TestSharedGrainJoinBackBuilder:
         strategy = get_dialect(dialect)
         left = grain_alias_field(alias="orders.customers.status", table="_base")
         cond = build_grain_joinback_condition(
-            pairs=[(left, grain_alias_field(
-                alias="orders.customers.status", table="_cm_x"))],
+            pairs=[(left, None, grain_alias_field(
+                alias="orders.customers.status", table="_cm_x"), None)],
             dialect=strategy,
         )
         assert cond is not None
@@ -498,10 +498,10 @@ class TestSharedGrainJoinBackBuilder:
     def test_composite_grain_ands_every_pair(self) -> None:
         strategy = get_dialect("postgres")
         pairs = [
-            (grain_alias_field(alias="a", table="_base"),
-             grain_alias_field(alias="a", table="_cm_x")),
-            (grain_alias_field(alias="b", table="_base"),
-             grain_alias_field(alias="b", table="_cm_x")),
+            (grain_alias_field(alias="a", table="_base"), None,
+             grain_alias_field(alias="a", table="_cm_x"), None),
+            (grain_alias_field(alias="b", table="_base"), None,
+             grain_alias_field(alias="b", table="_cm_x"), None),
         ]
         cond = build_grain_joinback_condition(pairs=pairs, dialect=strategy)
         assert cond is not None
@@ -516,7 +516,7 @@ class TestSharedGrainJoinBackBuilder:
         left = exp.cast(exp.column("x", table="_base"), "DATE")
         right = exp.column("y", table="_cm_x")
         cond = build_grain_joinback_condition(
-            pairs=[(left, right)], dialect=strategy,
+            pairs=[(left, None, right, None)], dialect=strategy,
         )
         assert cond is not None
         rendered = cond.sql(dialect="postgres")

@@ -18,6 +18,7 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
+from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
@@ -297,23 +298,23 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             return None
 
     def build_date_trunc(
-        self,
-        col_expr: Expression,
-        granularity: TimeGranularity,
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """Anchor both weeks explicitly: BigQuery's bare ``WEEK`` is Sunday-based.
-
-        ``exp.Anonymous`` because sqlglot drops the weekday modifier from ``exp.DateTrunc``.
-        """
+        """``DATE_TRUNC`` keeps its input's type: a DATE is promoted to DATETIME for a sub-day bucket. Both weeks
+        anchor explicitly (bare ``WEEK`` is Sunday-based); ``exp.Anonymous`` because sqlglot drops the weekday
+        modifier from ``exp.DateTrunc``."""
+        if bucket_type(operand, granularity) is not operand or (
+                operand is DataType.DATETIME and not isinstance(col_expr, (exp.Column, exp.Cast))):
+            source = self.promote_to_timestamp(col_expr)
+        elif not isinstance(col_expr, (exp.Column, exp.Cast)):
+            source = exp.Cast(this=col_expr, to=exp.DataType.build("DATE"))
+        else:
+            source = col_expr
         weekday = _WEEK_ANCHORS.get(granularity)
         if weekday is None:
-            return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity,
-            )
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = self.promote_to_timestamp(col_expr)
+            return exp.DateTrunc(this=source, unit=exp.Literal.string(granularity.value))
         week = exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
-        return exp.Anonymous(this="DATE_TRUNC", expressions=[col_expr, week])
+        return exp.Anonymous(this="DATE_TRUNC", expressions=[source, week])
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Unnest(
@@ -390,10 +391,6 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             start = exp.Cast(this=start.copy(), to=exp.DataType.build("DATE"))
             end = exp.Cast(this=end.copy(), to=exp.DataType.build("DATE"))
         return exp.Anonymous(this="DATE_DIFF", expressions=[end.copy(), start.copy(), _date_part_unit(unit)])
-
-    def bucket_comparand(self, bucket: Expression) -> Expression:
-        """A bucket is DATE, DATETIME or TIMESTAMP, and none of them compare with another."""
-        return self.promote_to_timestamp(bucket)
 
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,

@@ -31,13 +31,13 @@ Each aggregation runs over its own dataset's rows exactly once, whatever the roo
 a dimension it cannot be attributed to (an order's status for customer credit),
 `to_many_handling` decides:
 
-- omitted (default): each row gets the aggregate over the entities associated with
-  it (the credit of the customers having orders in that status), with an
-  `associated` warning; `window=` and `first`/`last` repeat the total instead, with
-  a `broadcast` warning naming why;
-- `associate`: the same, but refuses `window=` and `first`/`last`;
-- `broadcast`: the total repeats on every row, with a warning;
+- omitted (default) or `associate`: each row gets the aggregate over the entities
+  associated with it (the credit of the customers having orders in that status), with
+  an `associated` warning;
 - `error`: the query is refused.
+
+To repeat the total on every row instead, give the aggregate a coarser grain:
+`sum(customers.credit, partition_by=[])`.
 
 ## Patterns
 

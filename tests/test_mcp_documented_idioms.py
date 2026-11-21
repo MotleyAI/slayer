@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from typing import Any, AsyncIterator
 
 import pytest
@@ -199,16 +200,18 @@ async def test_share_of_group_and_of_grand_total(engine: SlayerQueryEngine) -> N
     }
 
 
-async def test_cross_model_aggregate_broadcasts_under_broadcast(engine: SlayerQueryEngine) -> None:
-    with pytest.warns(BroadcastGrainWarning):
+async def test_cross_model_aggregate_total_repeats_with_empty_partition(engine: SlayerQueryEngine) -> None:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         resp = await _run(engine, {
-            "population": "orders", "dimensions": ["orders.status"], "to_many_handling": "broadcast",
-            "metrics": [{"metric": fx.CROSS_DATASET, "alias": "credit"}],
+            "population": "orders", "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(customers.credit, partition_by=[])", "alias": "credit"}],
         })
     assert {k: fx.value(r, ".credit") for k, r in fx.rows_by(resp, key=".status").items()} == {
         "paid": 1500, "open": 1500,
     }
-    assert "broadcast" in _kinds(resp)
+    assert _kinds(resp).isdisjoint({"broadcast", "associated", "deprecated_input"})
+    assert not [w for w in caught if issubclass(w.category, BroadcastGrainWarning)]
 
 
 @pytest.mark.parametrize("mode", [{}, {"to_many_handling": "associate"}], ids=["default", "associate"])

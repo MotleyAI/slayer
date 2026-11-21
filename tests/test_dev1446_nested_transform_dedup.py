@@ -108,7 +108,7 @@ async def test_dev1446_change_filter_keeps_correct_rows(engine: Tuple[SlayerQuer
     resp = await eng.execute(_query())
     assert resp.columns == ["orders.created_at", "revenue"]
     assert [dict(r) for r in resp.data] == [
-        {"orders.created_at": "2024-03-01", "revenue": 9.0}
+        {"orders.created_at": "2024-03-01 00:00:00", "revenue": 9.0}
     ]
 
 

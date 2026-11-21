@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-import sqlglot
+from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import MissingDriverError
@@ -23,8 +23,8 @@ from slayer.sql.dialects.snowflake import (
 def test_snowflake_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY uses the generic shift over Snowflake's Monday ``DATE_TRUNC('week', ...)``."""
     d = SnowflakeDialect()
-    col = sqlglot.parse_one("ordered_at", dialect="snowflake")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    col = exp.column("ordered_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.DATETIME)
     up = out.sql(dialect="snowflake").upper()
     assert "DATE_TRUNC('WEEK'" in up
     assert "DATEADD(DAY, 1, ORDERED_AT)" in up

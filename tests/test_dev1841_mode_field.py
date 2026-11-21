@@ -30,7 +30,7 @@ class TestModeField:
         with pytest.raises(ValueError) as ei:
             _q(to_many_handling="partition")
         msg = str(ei.value)
-        assert "broadcast" in msg
+        assert "broadcast" not in msg
         assert "associate" in msg
         assert "error" in msg
 

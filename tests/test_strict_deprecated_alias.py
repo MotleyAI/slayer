@@ -80,7 +80,7 @@ class TestPythonConversion:
         with recorded() as caught:
             query = _q(strict=value, to_many_handling=explicit)
         assert query.to_many_handling == explicit
-        assert len(deprecations(caught)) == 1
+        assert len([w for w in deprecations(caught) if payload_of(w).old == "strict"]) == 1
 
     @pytest.mark.parametrize("version", FRESH_VERSIONS)
     def test_current_or_malformed_version_is_fresh(self, version: Any) -> None:

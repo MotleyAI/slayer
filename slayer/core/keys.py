@@ -56,7 +56,7 @@ from slayer.core.enums import (
     kind_of,
 )
 from slayer.core.format import NumberFormat
-from slayer.core.granularity import CustomGranularity, Granularity
+from slayer.core.granularity import CustomGranularity, Granularity, bucket_type
 from slayer.core.time_points import parse_temporal_value
 
 
@@ -1426,21 +1426,31 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
         t = field_type(key)
         return t if t in TEMPORAL_TYPES else None
     if isinstance(key, TimeTruncKey):
-        return temporal_type(key.source, field_type=field_type)
-    if isinstance(key, LiteralKey):
-        key = key.value
-    if isinstance(key, datetime):
-        return DataType.DATETIME
-    if isinstance(key, date):
-        return DataType.DATE
-    if isinstance(key, AggregateKey):
-        from_source = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
-        return temporal_type(key.source, field_type=field_type) if from_source else None
+        source = temporal_type(key.source, field_type=field_type)
+        return None if source is None else bucket_type(source, key.granularity)
+    if isinstance(key, (LiteralKey, date)):
+        return _literal_temporal_type(key.value if isinstance(key, LiteralKey) else key)
+    if isinstance(key, (AggregateKey, TransformKey)):
+        return _derived_temporal_type(key, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         return _scalar_temporal_type(key, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type if key.data_type in TEMPORAL_TYPES else None
     return None
+
+
+def _derived_temporal_type(key: AggregateKey | TransformKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
+    """An aggregate's or transform's type when it keeps its input's (``max``, ``lag``, …), else ``None``."""
+    if isinstance(key, AggregateKey):
+        keeps = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
+        return temporal_type(key.source, field_type=field_type) if keeps else None
+    return temporal_type(key.input, field_type=field_type) if key.op in _VALUE_PRESERVING_TRANSFORMS else None
+
+
+def _literal_temporal_type(value: object) -> Optional[DataType]:
+    if isinstance(value, datetime):
+        return DataType.DATETIME
+    return DataType.DATE if isinstance(value, date) else None
 
 
 _CLOCK_TYPES: Mapping[str, DataType] = MappingProxyType({
@@ -1667,6 +1677,50 @@ def numeric_boolean_positions(key: object, *, field_type: FieldTypeFn) -> Frozen
         return frozenset({0}) if numbers and boolean_valued(key.field, field_type=field_type) else frozenset()
     if isinstance(key, ScalarCallKey):
         return _scalar_numeric_booleans(key, field_type=field_type)
+    return frozenset()
+
+
+_TEMPORAL_PAIR_OPS = frozenset({"==", "=", "!=", "<>", "<", "<=", ">", ">=", "is distinct from", "is not distinct from"})
+
+
+def _date_beside_timestamp(types: Sequence[Optional[DataType]]) -> Optional[int]:
+    """The DATE's position among two types that are a DATE and a timestamp, else ``None``."""
+    kinds = [kind_of(t) for t in types]
+    if len(kinds) != 2 or set(kinds) != {TypeKind.DATE, TypeKind.TIMESTAMP}:
+        return None
+    return kinds.index(TypeKind.DATE)
+
+
+def temporal_pair(key: object, *, field_type: FieldTypeFn) -> Optional[Tuple[DataType, DataType]]:
+    """The operand types of a comparison between two non-literal temporal values, else ``None``."""
+    if not isinstance(key, ArithmeticKey) or key.op.lower() not in _TEMPORAL_PAIR_OPS or len(key.operands) != 2:
+        return None
+    if any(isinstance(o, LiteralKey) for o in key.operands):
+        return None
+    left, right = (temporal_type(o, field_type=field_type) for o in key.operands)
+    return None if left is None or right is None else (left, right)
+
+
+def mixed_nullif(key: object, *, field_type: FieldTypeFn) -> Optional[int]:
+    """The DATE argument's position of a ``nullif`` comparing a DATE with a timestamp, else ``None``."""
+    if not isinstance(key, ScalarCallKey) or key.name != "nullif" or len(key.args) != 2:
+        return None
+    return _date_beside_timestamp([temporal_type(a, field_type=field_type) for a in key.args])
+
+
+def date_promotion_positions(key: object, *, field_type: FieldTypeFn) -> FrozenSet[int]:
+    """Child positions of ``key`` holding a DATE read as its midnight timestamp: a comparison's DATE beside a
+    timestamp, and a timestamp-typed conditional's DATE value arguments."""
+    pair = temporal_pair(key, field_type=field_type)
+    if pair is not None:
+        position = _date_beside_timestamp(pair)
+        return frozenset() if position is None else frozenset({position})
+    if (isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS
+            and kind_of(value_type(key, field_type=field_type)) is TypeKind.TIMESTAMP):
+        return frozenset(
+            i for i in value_arg_positions(key.name, len(key.args))
+            if temporal_type(key.args[i], field_type=field_type) is DataType.DATE
+        )
     return frozenset()
 
 

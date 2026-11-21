@@ -16,7 +16,9 @@ from slayer.core.deprecation import deprecated_input
 from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER, BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.errors import AmbiguousReferenceError
 from slayer.core.names import match_name, spelled_name
-from slayer.core.query import QueryDimension, QueryMetric, QueryRefinement, SlayerQuery, TimeDimension, declared_aliases
+from slayer.core.query import (
+    QueryDimension, QueryMetric, QueryRefinement, SlayerQuery, TimeDimension, broadcast_already_warned, declared_aliases,
+)
 from slayer.core.models import SlayerDataset
 from slayer.core.syntax import (
     AggCall, DottedRef, NamedArg, Ref, ScalarCall, StarSource, keyword_spelling, reference_spans, walk_references,
@@ -282,7 +284,8 @@ def _live_aliases(*sources: Any) -> List[str]:
 
 def _rebuilt(entity: Any, data: Dict[str, Any]) -> Any:
     """``entity``'s class validated over ``data``, keeping ``entity``'s recorded deprecations."""
-    rebuilt = type(entity).model_validate(data)
+    with broadcast_already_warned():
+        rebuilt = type(entity).model_validate(data)
     rebuilt._deprecated_inputs = entity._deprecated_inputs
     return rebuilt
 

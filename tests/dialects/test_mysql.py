@@ -122,8 +122,8 @@ def test_mysql_build_covar_2arg_excludes_null_pairs() -> None:
 
 def test_mysql_build_date_trunc_emits_date_trunc() -> None:
     d = MysqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="mysql")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH)
+    col = exp.column("created_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME)
     # sqlglot translates DATE_TRUNC for MySQL; we just need to confirm
     # the AST builds via DateTrunc, not a hand-rolled STRFTIME path
     assert isinstance(out, (exp.DateTrunc, exp.Func))
@@ -136,15 +136,15 @@ def test_mysql_build_date_trunc_emits_date_trunc() -> None:
 ])
 def test_mysql_build_date_trunc_sub_day_keeps_time(granularity: TimeGranularity, fmt: str) -> None:
     """Sub-day buckets keep the time of day (sqlglot alone collapses them to ``DATE(t)``)."""
-    out = MysqlDialect().build_date_trunc(exp.column("ts"), granularity)
+    out = MysqlDialect().build_date_trunc(col_expr=exp.column("ts"), granularity=granularity, operand=DataType.DATETIME)
     assert out.sql(dialect="mysql") == f"CAST(DATE_FORMAT(ts, '{fmt}') AS DATETIME)"
 
 
 def test_mysql_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY shifts MySQL's Monday-week truncation by +1d / -1d."""
     d = MysqlDialect()
-    col = sqlglot.parse_one("ordered_at", dialect="mysql")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    col = exp.column("ordered_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.DATETIME)
     up = out.sql(dialect="mysql").upper()
     assert "DATE_ADD(ORDERED_AT, INTERVAL 1 DAY)" in up
     assert "INTERVAL -1 DAY)" in up
