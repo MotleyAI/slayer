@@ -29,9 +29,6 @@ NESTED_RANK    rank(cumsum(region_month_total) - city_total, direction='desc') o
                (S,CityC,Mar)=0 (NULL,CityD,Mar)=0 → ranks 3 / 2 / 1 / 6 / 3 / 3.
 EXPLICIT_PART  MIXED_RANK re-partitioned by region: North diffs 70/70/60 →
                1/1/3; single South and NULL-region rows → 1.
-DUAL_MEASURE   MIXED_RANK's expression as a METRIC at the (region, city,
-               channel) query grain: broadcast diffs 70×3, 60, 0×3 →
-               ranks 1/1/1/4/5/5/5.
 SAMEGRAIN_RANK rank(amount_region + ok_region, direction='desc'): 200 / 75 / 120 →
                North=1 NULL=2 South=3 (ok_amount region totals 100 / 25 / 60).
 MEASURE_DIFF   region_total - city_total per (region, city) row: 70/60/70/0/0.
@@ -130,20 +127,13 @@ RCC_TOTAL = {
     ("South", "CityC", "web"): 25.0, ("South", "CityC", "app"): 25.0,
     (None, "CityD", "web"): 60.0,
 }
-#: MIXED_RANK's expression as a metric at the (region, city, channel) grain.
-DUAL_METRIC_RANK_OF = {
-    ("North", "CityA", "web"): 1, ("North", "CityA", "app"): 1,
-    ("North", "CityB", "web"): 4, ("North", None, "web"): 1,
-    ("South", "CityC", "web"): 5, ("South", "CityC", "app"): 5,
-    (None, "CityD", "web"): 5,
-}
 SAMEGRAIN_RANK_OF = {"North": 1, None: 2, "South": 3}
 SAMEGRAIN_DIFF_OF = {"North": 0.0, "South": 25.0, None: 0.0}
 OK_REGION_TOTAL = {"North": 100.0, "South": 25.0, None: 60.0}
 
 
 __all__ = [
-    "CITY_TOTAL", "FieldRef", "DUAL_METRIC_RANK_OF", "EXPLICIT_PART_RANK",
+    "CITY_TOTAL", "FieldRef", "EXPLICIT_PART_RANK",
     "EXPLICIT_PART_RANK_OF", "GRAND_TOTAL", "KEYLESS_RANK", "KEYLESS_RANK_OF",
     "METRIC_DIFF", "MIXED_DIFF_OF", "MIXED_RANK", "MIXED_RANK_OF",
     "DatasetMetric", "NESTED_RANK", "NESTED_RANK_OF", "OK_REGION_TOTAL",

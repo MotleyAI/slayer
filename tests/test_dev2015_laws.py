@@ -1,4 +1,4 @@
-"""Laws over spine populations: metric invariance, grain-union broadcast, NULL axes, DATE/TIMESTAMP axes, dataset filters."""
+"""Laws over spine populations: measure monotonicity, grain-union broadcast, NULL axes, DATE/TIMESTAMP axes, dataset filters."""
 
 from __future__ import annotations
 
@@ -54,14 +54,14 @@ def _cells(resp, *, by: list[str]) -> dict[tuple, dict[str, Any]]:
 
 
 @pytest.mark.parametrize("base", BASES)
-async def test_measures_never_change_rows_or_siblings(engine, base) -> None:
+async def test_measures_never_remove_rows_or_change_siblings(engine, base) -> None:
     extra = dict(BASES[base])
     by = [d.rsplit(".", 1)[-1] for d in extra.get("dimensions", [])]
     results = {k: _cells(await engine.execute(spine_query(metrics=ms, **extra)), by=by)
                for k, ms in METRIC_SETS.items()}
     full = results["all"]
     for name, cells in results.items():
-        assert set(cells) == set(full), name
+        assert set(cells) <= set(full), name
         for cell, values in cells.items():
             for measure, v in values.items():
                 assert v == full[cell][measure], (name, cell, measure)

@@ -9,7 +9,7 @@ A transform SHALL accept a partitioned aggregate as its input when used as a mea
 
 #### Scenario: Ranking result rows by an attached total
 - WHEN a query selects the measure `rank(sum(revenue, partition_by=region), direction='desc')`
-- THEN the regions are ranked by their totals and each row carries its region's rank: `rank(sum(amount, partition_by=region))` over the `sales` fixture by `[region, city]` reads ranks 1 to 5 over the five regions, never ranks over the city rows
+- THEN the regions are ranked by their totals and each row carries its region's rank: `rank(sum(amount, partition_by=region))` over the `sales` fixture by `[region, city]` reads ranks 1 to 4 over the four regions with a total, Void's all-NULL total ranking NULL, never ranks over the city rows
 
 #### Scenario: Change over a partitioned aggregate executes
 - WHEN a query selects `change(sum(amount, partition_by=region))` or `change_pct(sum(amount, partition_by=region))` over a month time dimension
@@ -84,3 +84,26 @@ Every explicit partition key of a partitioned aggregate consumed in a combined p
 #### Scenario: An aggregate equal to a whole computed dimension is that dimension's value
 - WHEN a query over dimensions `[region, x]` declares `x` = `sum(amount, partition_by=[city, region])` and consumes `sum(amount, partition_by=[city, region])` as a measure, as an order target, or in the measure-typed filter `sum(amount, partition_by=[city, region]) < sum(amount)`
 - THEN the query executes with each position reading `x`, while the same consumers beside a dimension that only bands that aggregate still fail with the partition-key error naming `city`
+
+### Requirement: Cross-model partitioned aggregates nest inside transforms
+A transform whose input contains a cross-model `partition_by=` aggregate SHALL compile:
+the inner aggregate is computed in its own producer exactly as when consumed directly, and
+the transform consumes the attached value like any local partitioned input. This includes
+ranked inners (`first`/`last`) and holds in measure, filter, and order positions.
+
+#### Scenario: Transform over a cross-model partitioned sum executes
+- **WHEN** a query selects `rank(sum(customers.spend, partition_by=region), direction='desc')` with `region` among the query dimensions, and another selects `cumsum(sum(customers.spend, partition_by=region))` over a month time dimension
+- **THEN** the rank orders the regions by their cross-model totals, correct by hand-computed executed values on SQLite and DuckDB; the `cumsum` fails with the typed time-axis error whose remedy adds the time key to `partition_by`, in measure, filter and order positions alike, as in dimension position
+
+#### Scenario: Transform over a cross-model ranked partitioned aggregate executes
+- **WHEN** a query selects `change(last(customers.spend, partition_by=region))` over a month
+  time dimension with `region` among the query dimensions
+- **THEN** each row carries the period-over-period difference of its region's last value,
+  correct by executed values
+
+#### Scenario: Nested producer plan shape is pinned
+- **WHEN** two consumers (for example a measure and a filter) share one cross-model
+  partitioned inner aggregate under transforms
+- **THEN** the plan contains exactly one producer for that aggregate, attached in the
+  combined phase on its complete partition grain, and the emitted SQL contains one producer
+  relation for it — no duplicate producers and no incomplete attach key

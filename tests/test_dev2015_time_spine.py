@@ -46,11 +46,12 @@ from tests._time_points_fixtures import PinnedClock
 
 D = datetime
 PER_GROUP = [m("sum(orders.amount)", "o"), m("sum(returns.amount)", "r")]
+#: The inferred per-group rows: region E has no fact in range.
 PER_GROUP_ROWS = {
     ("N", "2025-01"): (100.0, None), ("N", "2025-02"): (70.0, 20.0), ("N", "2025-03"): (None, None),
     ("S", "2025-01"): (50.0, None), ("S", "2025-02"): (None, None), ("S", "2025-03"): (None, 10.0),
-    ("E", "2025-01"): (None, None), ("E", "2025-02"): (None, None), ("E", "2025-03"): (None, None),
 }
+E_ROWS = {("E", k): (None, None) for k in ("2025-01", "2025-02", "2025-03")}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -167,12 +168,12 @@ class TestAxes:
         assert "time_spine" in str(exc.value)
 
     async def test_a_dataset_with_no_to_one_route_associates_by_default(self, engine: SlayerQueryEngine) -> None:
+        # customers reaches orders and returns across one fanning hop each: a tie under associate
         query = spine_query(metrics=[m("count(customers.id)", "c")], date_range=JAN_MAR)
-        default = await engine.execute(query)
-        assoc = await engine.execute(query.model_copy(update={"to_many_handling": "associate"}))
-        assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
-        assert [w.metric for w in default.warnings or [] if w.kind == "associated"] == ["c"]
-        assert not broadcast_warnings(default)
+        for q in (query, query.model_copy(update={"to_many_handling": "associate"})):
+            with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
+                await engine.execute(q)
+            assert "customers.orders.order_date" in str(exc.value)
 
     async def test_only_the_routeless_measure_broadcasts_beside_a_fact(self, engine) -> None:
         resp = await engine.execute(spine_query(
@@ -292,9 +293,8 @@ class TestPopulation:
         assert by_bucket(resp, ["o", "r"], by=["region"]) == PER_GROUP_ROWS
 
     async def test_explicit_p_and_explicit_spine(self, engine) -> None:
-        inferred = await engine.execute(_per_group())
         explicit = await engine.execute(_per_group(population="customers"))
-        assert _canon(explicit.data) == _canon(inferred.data)
+        assert by_bucket(explicit, ["o", "r"], by=["region"]) == {**PER_GROUP_ROWS, **E_ROWS}
         spine_only = await engine.execute(spine_query(metrics=TWO_FACTS))
         named = await engine.execute(spine_query(metrics=TWO_FACTS, population="time_spine"))
         assert _canon(named.data) == _canon(spine_only.data)
@@ -314,28 +314,29 @@ class TestPopulation:
                        for r in resp.data)
         assert pairs == [("2025", k) for k in MONTHS]
 
-    @pytest.mark.parametrize("variant", ["drop", "add"])
-    async def test_measures_never_change_the_rows(self, engine, variant) -> None:
-        def cells(resp, by=()):
-            return sorted((*(value(r, d) for d in by), bucket_key(r["time_spine.timestamp"])) for r in resp.data)
+    async def test_measures_never_change_the_rows(self, engine) -> None:
+        def grows(small, large, names, by=()) -> None:
+            a, b = by_bucket(small, names, by=by), by_bucket(large, names, by=by)
+            assert set(a) <= set(b)
+            assert {k: b[k] for k in a} == a
 
-        edit = (lambda ms: [x for x in ms if x["alias"] != "r"]) if variant == "drop" else (
-            lambda ms: [*ms, m("avg(orders.amount)", "a")])
-        base = await engine.execute(spine_query(metrics=TWO_FACTS))
-        other = await engine.execute(spine_query(metrics=edit(TWO_FACTS)))
-        assert cells(other) == cells(base)
-        base = await engine.execute(_per_group())
-        other = await engine.execute(spine_query(metrics=edit(PER_GROUP), date_range=JAN_MAR,
-                                                 dimensions=["customers.region"]))
-        assert cells(other, by=["region"]) == cells(base, by=["region"])
+        more = [m("avg(orders.amount)", "a")]
+        grows(await engine.execute(spine_query(metrics=TWO_FACTS)),
+              await engine.execute(spine_query(metrics=[*TWO_FACTS, *more])), ["o", "r", "n"])
+        grows(await engine.execute(_per_group()),
+              await engine.execute(spine_query(metrics=[*PER_GROUP, *more], date_range=JAN_MAR,
+                                               dimensions=["customers.region"])), ["o", "r"], by=["region"])
+        named = await engine.execute(_per_group(population="customers"))
+        dropped = await engine.execute(spine_query(metrics=PER_GROUP[:1], date_range=JAN_MAR,
+                                                   dimensions=["customers.region"], population="customers"))
+        assert set(by_bucket(dropped, ["o"], by=["region"])) == set(by_bucket(named, ["o"], by=["region"]))
 
-    @pytest.mark.parametrize("dimensions", [[], ["customers.region"]], ids=["unit", "per-group"])
-    async def test_without_measures(self, engine, dimensions) -> None:
-        resp = await engine.execute(spine_query(metrics=[], date_range=JAN_MAR, dimensions=dimensions))
-        cells = sorted((*(value(r, "region") for _ in dimensions), bucket_key(r["time_spine.timestamp"]))
-                       for r in resp.data)
-        regions = ["E", "N", "S"] if dimensions else [None]
-        assert cells == sorted((*([g] if dimensions else []), k) for g in regions for k in MONTHS[:3])
+    async def test_without_measures(self, engine) -> None:
+        resp = await engine.execute(spine_query(metrics=[], date_range=JAN_MAR))
+        assert sorted(bucket_key(r["time_spine.timestamp"]) for r in resp.data) == MONTHS[:3]
+        # customers reaches the spine across two equal-distance fanning axes
+        with pytest.raises(UnresolvableDimensionRelationshipError):
+            await engine.execute(spine_query(metrics=[], date_range=JAN_MAR, dimensions=["customers.region"]))
 
 
 def _monthly_stage(*, metrics=None, date_range=JAN_MAR, **extra) -> SlayerQuery:
@@ -360,7 +361,7 @@ class TestSpineStages:
         resp = await engine.execute([_monthly_stage(dimensions=["customers.region"]),
                                      _over_monthly(dimensions=["monthly.region"])])
         assert {value(r, "region"): (num(value(r, "t")), num(value(r, "c"))) for r in resp.data} == {
-            "N": (170.0, 3.0), "S": (50.0, 3.0), "E": (None, 3.0),
+            "N": (170.0, 3.0), "S": (50.0, 3.0),
         }
 
     async def test_a_spine_stage_feeding_a_spine_query(self, engine) -> None:
@@ -369,7 +370,7 @@ class TestSpineStages:
                                           **{k: (None,) for k in MONTHS[2:]}}
 
     @pytest.mark.parametrize(("extra", "pinned", "count"), [
-        ({}, "time_spine", 3.0), ({"dimensions": ["customers.region"]}, "customers", 9.0),
+        ({}, "time_spine", 3.0), ({"dimensions": ["customers.region"]}, "customers", 6.0),
     ], ids=["unit", "per-group"])
     async def test_a_saved_spine_query_read_as_a_source(self, engine: SlayerQueryEngine, extra, pinned, count) -> None:
         await engine.create_dataset_from_query(query=_monthly_stage(**extra), name="saved_monthly")

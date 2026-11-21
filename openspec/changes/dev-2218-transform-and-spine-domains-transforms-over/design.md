@@ -68,6 +68,8 @@ semantics Axioms 2.3, 3.3, 4, 6, 8, 9, 10, 11 (11.3 and new 11.6 edited), 12, 14
 24. Position twins: the same nested / mixed-grain transform projected, filter-only and order-only read identical values; hidden transforms supply no rows; filters never change surviving values. (codex)
 25. Model filters and RLS apply before route association and tuple extraction (Axiom 3.3). (codex)
 26. `row_sources` = supplying homes ∪ each concrete anchor component used for extension, canonical, sorted, `["unit"]` only when the unit supplies. (codex)
+27. A time-ordered transform whose operand grain lacks the query's active time bucket fails with the typed time-axis error in every position (Axiom 11.3), as it already does in dimension and parameter positions. (user)
+28. A NULL time bucket is adjacent to no bucket in every time-ordered transform and on every dialect (Axiom 11.3, as `consecutive_periods` already specifies); collapsing picks skip it. (user, issue comment)
 
 ## Risks / Trade-offs
 

@@ -61,7 +61,7 @@ class TestSharedInnerProducerShape:
         planned = plan_query(query=q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filter=[f"{CM_PART_TIER} > 100"],
-            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")]),
+            metrics=[QueryMetric(metric=f"rank({CM_PART_TIER}, direction='desc')", alias="c")]),
             bundle=_bundle36())
         attaches = [a for a in planned.regroup_attach_plans
                     if a.producer_root_dataset == "customers"]
@@ -91,7 +91,7 @@ class TestSharedInnerProducerShape:
         sql = await gen(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filter=[f"{CM_PART_TIER} > 100"],
-            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")]))
+            metrics=[QueryMetric(metric=f"rank({CM_PART_TIER}, direction='desc')", alias="c")]))
         assert len(set(re.findall(r"_cm_\w+", sql))) == 1, sql
 
 
