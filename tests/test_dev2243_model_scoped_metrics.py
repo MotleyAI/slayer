@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 import yaml
 
-from slayer.core.errors import UnknownMetricError
+from slayer.core.errors import NoRowSourceError, UnknownMetricError
 from slayer.core.models import DatasetMetric
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.mcp.server import create_mcp_server
@@ -231,6 +231,14 @@ async def test_neither_alias_nor_metric(sales: SlayerQueryEngine) -> None:
         await sales.execute({"metrics": ["nope"]})
     assert "'nope'" in str(info.value)
     assert "qualify" in str(info.value).lower()
+
+
+@pytest.mark.parametrize("entry", ["now_metric", "now()", "1"])
+async def test_a_root_less_metric_reading_no_dataset_is_refused(shop: SlayerQueryEngine, entry: str) -> None:
+    """Ossie e14_measure_grain_no_dataset: a typed refusal naming the metric."""
+    await store_document(shop.storage, sales_with(lambda doc: doc["metrics"].append(metric("now_metric", "NOW()"))))
+    with pytest.raises(NoRowSourceError, match=re.escape(repr(entry))):
+        await shop.execute({"metrics": [entry]}, dry_run=True)
 
 
 async def test_a_bare_field_name_suggests_its_qualified_spelling(shop: SlayerQueryEngine) -> None:

@@ -717,6 +717,19 @@ class UnqualifiedRowCountError(SlayerError, ValueError):
         ))
 
 
+class NoRowSourceError(SlayerError, ValueError):
+    """A query without a population or dimensions whose entries read no dataset: it has no rows."""
+
+    def __init__(self, *, metrics: list[str]) -> None:
+        self.metrics = metrics
+        named = f"metrics {', '.join(repr(m) for m in metrics)} read" if metrics else "query reads"
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"The {named} no dataset, so the query has no rows.",
+            suggestion="Read a dataset's field in a metric, or name the query's population.",
+        ))
+
+
 class RefinementConflictError(SlayerError):
     """A saved-query refinement gives an entry of the saved final stage a different value."""
 

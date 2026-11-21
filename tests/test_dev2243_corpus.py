@@ -117,7 +117,8 @@ def _aggregated(node: exp.Expr) -> bool:
 
 
 def _model_scoped_rejection(tree: exp.Expr, *, metric_names: set[str]) -> str | None:
-    """Why Ossie rejects a model-scoped metric at query time (wide_table §5.2; qualified references), else None."""
+    """Why a model-scoped metric loads unevaluable (decision 35: an unqualified or unaggregated field read), else
+    None; an aggregate reading several datasets evaluates as it does in a query."""
     for column in tree.find_all(exp.Column):
         if not column.table and column.name.casefold() in DATE_PARTS:
             continue
@@ -128,16 +129,22 @@ def _model_scoped_rejection(tree: exp.Expr, *, metric_names: set[str]) -> str | 
             return "unaggregated field"
         elif column.name.casefold() not in metric_names:
             return "unqualified field"
-    for aggregate in tree.find_all(exp.AggFunc):
-        if _is_agg_call(aggregate) or _aggregated(aggregate):
-            continue
-        homes = {c.table for c in aggregate.find_all(exp.Column) if c.table}
-        if len(homes) != 1:
-            return "aggregate grain"
-        if isinstance(aggregate.parent, exp.Filter) and {
-                c.table for c in aggregate.parent.expression.find_all(exp.Column) if c.table} - homes:
-            return "aggregate grain"
     return None
+
+
+#: (document, metric) → the typed error its query raises: Ossie-schema-valid metrics no query can evaluate.
+REFUSED: dict[tuple[str, str], str] = {
+    ("harvested/216f1c025746.yaml", "revenue"): "UnknownReferenceError",
+    ("harvested/738601d2a838.yaml", "revenue"): "UnknownReferenceError",
+    ("harvested/ddeb8527e638.yaml", "revenue"): "UnknownReferenceError",
+    ("harvested/58a8515b964f.yaml", "revenue"): "UnknownFunctionError",
+    ("harvested/3cdbe43998c6.yaml", "now_metric"): "NoRowSourceError",
+    ("harvested/41093682a932.yaml", "revenue"): "NoRowSourceError",
+    ("harvested/c82499fbddd2.yaml", "revenue"): "NoRowSourceError",
+    ("harvested/fad5e6f81b85.yaml", "revenue"): "NoRowSourceError",
+    ("compliance/wide_table/retail/retail_model.ossie.yaml", "order_less_return"): "UnsafeRelationshipInputError",
+    ("compliance/wide_table/retail/retail_model.ossie.yaml", "row_count"): "UnqualifiedRowCountError",
+}
 
 
 def expected_outcomes(data: dict[str, Any]) -> dict[str, str]:
@@ -224,9 +231,10 @@ async def test_stores_and_loads_natively(path: Path, tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
 async def test_every_metric_binds_and_compiles(path: Path, tmp_path: Path) -> None:
-    """Every metric compiles to SQL; one SLayer cannot evaluate yet (or Ossie rejects) raises a typed error naming it."""
+    """Every metric compiles to SQL; an unevaluable one raises a typed error naming it, a ``REFUSED`` one its error."""
     text, data = _load(path)
-    expected = expected_outcomes(data)
+    doc_id = path.relative_to(ROOT).as_posix()
+    expected = expected_outcomes(data) | {m: f"refused: {e}" for (d, m), e in REFUSED.items() if d == doc_id}
     async with _env("yaml", tmp_path) as (storage, engine):
         await _store(storage, text=text, data=data)
         actual: dict[str, str] = {}
@@ -237,7 +245,8 @@ async def test_every_metric_binds_and_compiles(path: Path, tmp_path: Path) -> No
                 name = reference.rsplit(".", 1)[-1]
                 actual[reference] = "unevaluable" if re.search(re.escape(name), str(exc)) else f"unnamed: {exc}"
             except Exception as exc:  # noqa: BLE001 — reported per metric
-                actual[reference] = f"{type(exc).__name__}: {exc}"
+                refused = f"refused: {type(exc).__name__}"
+                actual[reference] = refused if expected.get(reference) == refused else f"{refused}: {exc}"
             else:
                 actual[reference] = "compiled" if response.sql else "no SQL"
         assert actual == expected
