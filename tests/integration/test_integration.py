@@ -528,7 +528,7 @@ async def test_consecutive_periods_comparison_is_filterable(integration_env):
     response = await engine.execute(query)
 
     assert response.row_count == 2
-    assert [r["orders.created_at"] for r in response.data] == ["2025-02-01", "2025-03-01"]
+    assert [r["orders.created_at"] for r in response.data] == ["2025-02-01 00:00:00", "2025-03-01 00:00:00"]
 
 
 async def test_arithmetic_expression(integration_env):
@@ -2106,16 +2106,16 @@ async def test_filtered_last_picks_correct_row(integration_env: SlayerQueryEngin
     # March: the globally latest row is Order 6 (pending) — its masked value is
     # NULL; the older completed Order 5 (300.0) is not reached (a WHERE belongs
     # in the query).
-    mar = rows_by_month["2025-03-01"]
+    mar = rows_by_month["2025-03-01 00:00:00"]
     assert mar["orders.completed_latest_last"] is None
     assert mar["orders.latest_amount_last"] == pytest.approx(25.0)  # unfiltered picks Order 6
 
     # January: latest is Order 2 (completed, 200.0) — passes filter
-    jan = rows_by_month["2025-01-01"]
+    jan = rows_by_month["2025-01-01 00:00:00"]
     assert jan["orders.completed_latest_last"] == pytest.approx(200.0)
 
     # February: no completed orders — should be NULL
-    feb = rows_by_month["2025-02-01"]
+    feb = rows_by_month["2025-02-01 00:00:00"]
     assert feb["orders.completed_latest_last"] is None
 
 

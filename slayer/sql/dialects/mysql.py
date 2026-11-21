@@ -22,6 +22,7 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, NUMERIC_DATATYPES, TimeGranularity
+from slayer.core.granularity import bucket_type
 from slayer.core.errors import ReadOnlyConnectionError, UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
@@ -335,13 +336,19 @@ class MysqlDialect(SqlDialect):
             exp.EQ(this=exp.var("cte_max_recursion_depth"), expression=exp.Literal.number(size + 1)),
         ])]))
 
-    def build_date_trunc(self, col_expr: Expression, granularity: TimeGranularity) -> Expression:
-        """Sub-day units via ``DATE_FORMAT``: sqlglot renders them all as ``DATE(t)``."""
+    def build_date_trunc(
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
+    ) -> Expression:
+        """Sub-day units via ``DATE_FORMAT`` (sqlglot renders them all as ``DATE(t)``); a TIMESTAMP bucket is a
+        ``DATETIME`` (a coarser truncation returns a DATE)."""
         fmt = _SUB_DAY_TRUNC_FORMATS.get(granularity)
-        if fmt is None:
-            return super().build_date_trunc(col_expr=col_expr, granularity=granularity)
-        formatted = exp.Anonymous(this="DATE_FORMAT", expressions=[col_expr.copy(), exp.Literal.string(fmt)])
-        return exp.Cast(this=formatted, to=exp.DataType.build("DATETIME"))
+        if fmt is not None:
+            formatted = exp.Anonymous(this="DATE_FORMAT", expressions=[col_expr.copy(), exp.Literal.string(fmt)])
+            return exp.Cast(this=formatted, to=exp.DataType.build("DATETIME"))
+        trunc = super().build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
+        if bucket_type(operand, granularity) is DataType.DATE:
+            return trunc
+        return exp.Cast(this=trunc, to=exp.DataType.build("DATETIME"))
 
     def _date_part(self, part: DatePart, expr: Expression) -> Expression:
         """Named functions: ``WEEK(x, 3)`` is ISO, ``WEEKDAY`` counts from Monday=0."""

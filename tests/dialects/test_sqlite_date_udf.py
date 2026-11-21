@@ -1,10 +1,11 @@
-"""The SQLite ``slayer_date_add(ts, n, unit)`` UDF: calendar clamping, shapes, and NULL on bad input."""
+"""SQLite date UDFs: `slayer_date_add` (calendar clamping, shapes, NULL on bad input) and `slayer_timestamp_text`."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
 import pytest
+from sqlglot import exp
 
 from slayer.sql.dialects.sqlite import SqliteDialect, register_sqlite_udfs
 from slayer.storage.sqlite_conn import open_connection
@@ -72,3 +73,31 @@ def test_registered_by_the_dialect_hook() -> None:
     with open_connection(":memory:") as fresh:
         SqliteDialect().register_udfs(fresh)
         assert _add(fresh, "2024-01-31", 1, "month") == "2024-02-29"
+
+
+def _text(conn, value):
+    return conn.execute("SELECT slayer_timestamp_text(?)", (value,)).fetchone()[0]
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("2025-03-01", "2025-03-01 00:00:00.000000"),
+    ("2025-03-01T10:00", "2025-03-01 10:00:00.000000"),
+    ("2025-03-01 10:00:00.25", "2025-03-01 10:00:00.250000"),
+    ("2025-03-01T10:00:00.123456", "2025-03-01 10:00:00.123456"),
+    ("garbage", None),
+    (None, None),
+])
+def test_timestamp_text_is_canonical(conn, value, expected) -> None:
+    assert _text(conn, value) == expected
+
+
+def test_timestamp_text_keeps_microseconds(conn) -> None:
+    assert _text(conn, "2025-03-01 10:00:00.123100") != _text(conn, "2025-03-01T10:00:00.123200")
+
+
+def test_temporal_comparands_compare_to_the_microsecond(conn) -> None:
+    left, right = SqliteDialect().build_temporal_comparands(exp.Literal.string("a"), exp.Literal.string("b"))
+    sql = f"SELECT {exp.EQ(this=left, expression=right).sql(dialect='sqlite')}"
+    pairs = [("2025-03-01 10:00:00.123100", "2025-03-01T10:00:00.123200"), ("2025-03-01", "2025-03-01T00:00:00.000")]
+    got = [conn.execute(sql.replace("'a'", "?").replace("'b'", "?"), pair).fetchone()[0] for pair in pairs]
+    assert got == [0, 1]

@@ -185,7 +185,7 @@ class TestRankedAndWindowedResolveByMode:
         kw, measure, _, _ = RANKED_WINDOWED[shape]
         resp = await engine.execute(_q("broadcast", metrics=[measure], **kw))
         (w,) = broadcast_warnings(resp)
-        assert w.hint == DICE_SLICE_HINT
+        assert w.hint.endswith(DICE_SLICE_HINT)
 
     @pytest.mark.parametrize("shape", RANKED_WINDOWED)
     async def test_error_mode_refuses(self, engine, shape) -> None:

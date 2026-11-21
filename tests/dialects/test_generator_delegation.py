@@ -500,27 +500,27 @@ class TestTsqlDialect:
     # --- date trunc ---
 
     def test_build_date_trunc_month_emits_datetrunc(self, gen: SQLGenerator) -> None:
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_date_trunc(col, TimeGranularity.MONTH).sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._dialect.build_bucket(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME).sql(dialect="tsql")
         assert "DATETRUNC" in sql.upper()
         assert "MONTH" in sql.upper()
 
     def test_build_date_trunc_year(self, gen: SQLGenerator) -> None:
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_date_trunc(col, TimeGranularity.YEAR).sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._dialect.build_bucket(col_expr=col, granularity=TimeGranularity.YEAR, operand=DataType.DATETIME).sql(dialect="tsql")
         assert "DATETRUNC" in sql.upper()
         assert "YEAR" in sql.upper()
 
     def test_build_date_trunc_day(self, gen: SQLGenerator) -> None:
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_date_trunc(col, TimeGranularity.DAY).sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._dialect.build_bucket(col_expr=col, granularity=TimeGranularity.DAY, operand=DataType.DATETIME).sql(dialect="tsql")
         assert "DATETRUNC" in sql.upper()
         assert "DAY" in sql.upper()
 
     def test_build_date_trunc_week_uses_iso_week(self, gen: SQLGenerator) -> None:
         """Week truncation must use ISO_WEEK for Monday-start (@@DATEFIRST-independent)."""
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_date_trunc(col, TimeGranularity.WEEK).sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._dialect.build_bucket(col_expr=col, granularity=TimeGranularity.WEEK, operand=DataType.DATETIME).sql(dialect="tsql")
         assert "ISO_WEEK" in sql.upper(), (
             f"T-SQL week truncation must use ISO_WEEK (not WEEK) to be "
             f"locale-independent. Got: {sql}"
@@ -531,15 +531,15 @@ class TestTsqlDialect:
         )
 
     def test_build_date_trunc_quarter(self, gen: SQLGenerator) -> None:
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_date_trunc(col, TimeGranularity.QUARTER).sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._dialect.build_bucket(col_expr=col, granularity=TimeGranularity.QUARTER, operand=DataType.DATETIME).sql(dialect="tsql")
         assert "DATETRUNC" in sql.upper()
         assert "QUARTER" in sql.upper()
 
     def test_build_date_trunc_no_date_trunc_function(self, gen: SQLGenerator) -> None:
         """T-SQL uses DATETRUNC (no underscore), not DATE_TRUNC."""
-        col = sqlglot.parse_one("created_at", dialect="tsql")
-        sql = gen._build_date_trunc(col, TimeGranularity.MONTH).sql(dialect="tsql")
+        col = exp.column("created_at")
+        sql = gen._dialect.build_bucket(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME).sql(dialect="tsql")
         assert "DATE_TRUNC" not in sql.upper(), f"T-SQL should use DATETRUNC, got: {sql}"
 
     # --- time offset ---

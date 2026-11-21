@@ -94,6 +94,13 @@ from tests.integration._dev2015_server import (
     server_statements,
     with_granularities,
 )
+from tests._dev2018_fixtures import (
+    check_bucket_matrix,
+    check_mixed,
+    server_datasets as logical_type_datasets,
+    server_statements as logical_type_statements,
+    with_granularities as logical_type_granularities,
+)
 from tests._dev2046_fixtures import (
     FLAG_TOTALS,
     GT15_TOTALS,
@@ -1524,6 +1531,37 @@ def _sqlserver_spine_storage(sqlserver_container, tmp_path_factory):
 class TestSQLServerTimeSpine:
     async def test_scenarios(self, _sqlserver_spine_storage) -> None:
         await check_all(SlayerQueryEngine(storage=_sqlserver_spine_storage), data_source="ms", ts_data_source="ms_ts")
+
+
+# ---------------------------------------------------------------------------
+# One logical bucket type; a DATE meeting a TIMESTAMP reads as midnight
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _sqlserver_logical_types_storage(sqlserver_container, tmp_path_factory):
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in logical_type_statements("tsql"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_logical_types")))
+        base = _ds_config(sqlserver_container, db_name)
+        run_sync(storage.save_datasource(logical_type_granularities(base, name="ms_lt")))
+        for model in logical_type_datasets(data_source="ms_lt"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.mark.integration
+class TestSQLServerLogicalTypes:
+    async def test_bucket_matrix(self, _sqlserver_logical_types_storage) -> None:
+        await check_bucket_matrix(SlayerQueryEngine(storage=_sqlserver_logical_types_storage), backend="tsql", data_source="ms_lt")
+
+    async def test_mixed_date_timestamp(self, _sqlserver_logical_types_storage) -> None:
+        await check_mixed(SlayerQueryEngine(storage=_sqlserver_logical_types_storage), backend="tsql", data_source="ms_lt")
 
 
 # ---------------------------------------------------------------------------

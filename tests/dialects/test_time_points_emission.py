@@ -17,7 +17,7 @@ from tests._time_points_fixtures import PinnedClock, customers_dataset, ev_datas
 
 TIER1 = ["sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "snowflake", "bigquery"]
 TYPED = [d for d in TIER1 if d not in ("sqlite", "bigquery")]
-STRFTIME = "STRFTIME('%Y-%m-%d %H:%M:%f', "
+CANONICAL = "SLAYER_TIMESTAMP_TEXT("
 
 
 async def _sql(
@@ -43,7 +43,7 @@ def _literal(dialect: str, value: date) -> str:
 
 
 def _flat(sql: str) -> str:
-    return re.sub(r"\s+", " ", sql)
+    return re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", re.sub(r"\s+", " ", sql)))
 
 
 @pytest.mark.parametrize("dialect", TIER1)
@@ -85,7 +85,7 @@ async def test_granularity_call_non_literal_comparison_truncates_both_sides(dial
     sql = _flat(await _sql(dialect, filters=["date_trunc('month', ev.ts) = date_trunc('month', ev.shipped_at)"], granularity="day"))
     d = get_dialect(dialect)
     for col in ("ts", "shipped_at"):
-        trunc = d.build_date_trunc(exp.column(col, table="ev"), TimeGranularity.MONTH).sql(dialect=d.sqlglot_name)
+        trunc = d.build_date_trunc(col_expr=exp.column(col, table="ev"), granularity=TimeGranularity.MONTH, operand=DataType.DATETIME).sql(dialect=d.sqlglot_name)
         assert _flat(trunc) in sql, (col, sql)
 
 
@@ -117,7 +117,7 @@ async def test_sqlite_midnight_half_open_bounds_stay_plain_text() -> None:
     assert re.search(r"\bts\s*>=\s*'2025-01-01'", sql), sql
     assert re.search(r"\bts\s*<\s*'2025-04-01'", sql), sql
     assert re.search(r"\bts\s*<\s*'2025-03-01'", sql), sql
-    assert "STRFTIME('%Y-%m-%d %H:%M:%f', '2025-" not in sql, sql
+    assert CANONICAL not in sql, sql
 
 
 @pytest.mark.parametrize(("filt", "op", "value"), [
@@ -129,5 +129,5 @@ async def test_sqlite_midnight_half_open_bounds_stay_plain_text() -> None:
 ], ids=["sub-day", "literal-left", "relative", "inclusive-instant", "instant-equality"])
 async def test_sqlite_other_comparisons_normalise_both_sides(filt, op, value) -> None:
     sql = _flat(await _sql("sqlite", filters=[filt]))
-    pattern = re.escape(STRFTIME) + r"[^()]*\bts\)\s*" + re.escape(op) + r"\s*" + re.escape(f"{STRFTIME}'{value}')")
+    pattern = re.escape(CANONICAL) + r"[^()]*\bts\)\s*" + re.escape(op) + r"\s*" + re.escape(f"'{value}.000000'")
     assert re.search(pattern, sql), sql

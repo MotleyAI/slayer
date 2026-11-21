@@ -14,8 +14,12 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
+import pytest
+from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
 
+from slayer.api.server import create_app
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.deprecation import DeprecatedInputFutureWarning
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
@@ -105,3 +109,21 @@ def rows(data: list[dict[str, Any]]) -> list[tuple]:
 
 def dumped(payload: BaseModel) -> dict[str, Any]:
     return payload.model_dump(mode="json")
+
+
+def http_client(engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> SlayerClient:
+    """A remote ``SlayerClient`` whose sync and async transports post to an in-process app."""
+    server = TestClient(create_app(storage=engine.storage))
+
+    def via_app(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:
+        resp = server.request(method, path, json=json, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def via_app_async(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:  # NOSONAR(S7503) — matches the awaited transport
+        return via_app(method=method, path=path, json=json, params=params)
+
+    client = SlayerClient(url="http://testserver")
+    monkeypatch.setattr(client, "_request_sync", via_app)
+    monkeypatch.setattr(client, "_request", via_app_async)
+    return client

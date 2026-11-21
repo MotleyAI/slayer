@@ -88,6 +88,14 @@ DICE_SLICE_HINT = (
 )
 
 
+def broadcast_hint(*, call: str, partition_by: list[str]) -> str:
+    """A broadcast warning's hint: the ``partition_by=`` giving ``call`` the same values, then ``DICE_SLICE_HINT``."""
+    return (
+        f"{call} with partition_by=[{', '.join(partition_by)}] returns the same values without a warning; "
+        f"{DICE_SLICE_HINT}"
+    )
+
+
 class BroadcastGrainWarningPayload(SlayerWarning):
     """A cross-dataset aggregate whose implicit grain lost query dimensions to broadcasting; ``metric`` names the metric, ``dimensions`` lists each broadcast dimension and its reason."""
 
@@ -95,6 +103,8 @@ class BroadcastGrainWarningPayload(SlayerWarning):
     metric: str
     location: str
     dimensions: list[BroadcastDimension]
+    #: The dimensions the aggregate attributes: its ``partition_by=`` returning the same values without a warning.
+    partition_by: list[str] = Field(default_factory=list)
     hint: str = DICE_SLICE_HINT
 
     def human_message(self) -> str:
