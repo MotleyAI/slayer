@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from slayer.core import slayer_extension as ext
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
 from slayer.core.ossie_expression import OSIExpression
 from slayer.core.query import SlayerQuery
@@ -60,8 +61,14 @@ def read_entry(extensions: list[Any] | None, *, kind: str, entity: str, ossie: A
     return Entry(payload, matched=ext.matches(payload, ossie=ossie))
 
 
+def _dialect_only(sql: str, *, target: str) -> ExpressionObject:
+    """A version-1 or -2 payload's field ``sql``: native text of the datasource's dialect."""
+    return ExpressionObject(dialects=[DialectEntry(dialect=target, expression=sql)])
+
+
 def apply_field_entry(field: DatasetField, entry: Entry | None, *, notes: list[ExtensionNote],
-                      label: str) -> DatasetField:
+                      label: str, target: str) -> DatasetField:
+    """``target`` (the datasource's Ossie dialect token) tags an older payload's field ``sql``."""
     if entry is None:
         return field
     content: ext.FieldContent = entry.payload.field
@@ -71,6 +78,8 @@ def apply_field_entry(field: DatasetField, entry: Entry | None, *, notes: list[E
                        if (v := getattr(content, k)) is not None})
         if content.expression is not None:
             update["expression"] = content.expression
+        elif content.sql is not None:
+            update["expression"] = _dialect_only(content.sql, target=target)
         if content.datatype is not None:
             update["datatype"] = content.datatype
     elif any(getattr(content, k) is not None for k in ("expression", "filter", "granularity", "allowed_aggregations")):
@@ -79,7 +88,9 @@ def apply_field_entry(field: DatasetField, entry: Entry | None, *, notes: list[E
     return field.model_copy(update=update)
 
 
-def apply_dataset_entry(dataset: SlayerDataset, entry: Entry | None, *, notes: list[ExtensionNote]) -> SlayerDataset:
+def apply_dataset_entry(dataset: SlayerDataset, entry: Entry | None, *, notes: list[ExtensionNote],
+                        target: str) -> SlayerDataset:
+    """``target`` (the datasource's Ossie dialect token) tags an older payload's SLayer-only field ``sql``."""
     if entry is None:
         return dataset
     payload: ext.DatasetPayload = entry.payload
@@ -105,6 +116,8 @@ def apply_dataset_entry(dataset: SlayerDataset, entry: Entry | None, *, notes: l
                 f"SLayer-only field {extra.name!r} collides with a declared name; ignored")))
             continue
         taken.add(extra.name.casefold())
+        if (sql := payload.legacy_sql.get(extra.name)) is not None:
+            extra = extra.model_copy(update={"expression": _dialect_only(sql, target=target)})
         fields.append(extra)
     update["fields"] = fields
     update["metrics"] = [*dataset.metrics, *payload.metrics]

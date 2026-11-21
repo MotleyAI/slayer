@@ -158,7 +158,7 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: l
     label = f"field {field.name!r} of {dataset!r}"
     entry = read_entry(field.nonportable_extensions, kind="field", entity=field.name,
                        ossie=entry_digest(field.expression), label=label, notes=notes)
-    return apply_field_entry(built, entry, notes=notes, label=label)
+    return apply_field_entry(built, entry, notes=notes, label=label, target=target)
 
 
 def _metric(metric: Any, *, target: str, windowed_fields: set[str]) -> DatasetMetric:
@@ -203,7 +203,7 @@ def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: st
     entry = read_entry(dataset.nonportable_extensions, kind="dataset", entity=dataset.name,
                        ossie=source_digest(dataset.source, reader=reader), label=f"dataset {dataset.name!r}",
                        notes=notes)
-    built = apply_dataset_entry(built, entry, notes=notes)
+    built = apply_dataset_entry(built, entry, notes=notes, target=target)
     built.extension_notes = notes
     return built
 
