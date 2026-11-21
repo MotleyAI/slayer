@@ -1978,32 +1978,6 @@
                 }
             }
         ],
-        "./slayer/sql/render/joins.py": [
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 30,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 46,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 18,
-                    "endColumn": 28,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./slayer/sql/render/order_terms.py": [
             {
                 "code": "reportPrivateImportUsage",
@@ -2484,22 +2458,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 25,
                     "endColumn": 30,
                     "lineCount": 1
@@ -2580,41 +2538,9 @@
                     "endColumn": 30,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
             }
         ],
         "./tests/dialects/test_duckdb.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -2684,54 +2610,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 36,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 30,
                     "endColumn": 35,
                     "lineCount": 1
@@ -2746,57 +2624,9 @@
                     "endColumn": 28,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
             }
         ],
         "./tests/dialects/test_postgres.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -2862,57 +2692,7 @@
                 }
             }
         ],
-        "./tests/dialects/test_snowflake.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/dialects/test_sqlite.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 11,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -2957,38 +2737,6 @@
             }
         ],
         "./tests/dialects/test_tsql.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {

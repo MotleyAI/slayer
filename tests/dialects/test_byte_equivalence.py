@@ -159,33 +159,33 @@ _TRUNC_QUERY = SlayerQuery(
         (
             "postgres",
             'SELECT\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at) AS "orders.created_at",\n'
+            '  DATE_TRUNC(\'MONTH\', CAST(orders.created_at AS TIMESTAMP)) AS "orders.created_at",\n'
             '  CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at)\n'
+            '  DATE_TRUNC(\'MONTH\', CAST(orders.created_at AS TIMESTAMP))\n'
             'ORDER BY\n'
             '  "orders.created_at" ASC',
         ),
         (
             "sqlite",
             'SELECT\n'
-            '  STRFTIME(\'%Y-%m-01\', orders.created_at) AS "orders.created_at",\n'
+            '  STRFTIME(\'%Y-%m-01 00:00:00\', orders.created_at) AS "orders.created_at",\n'
             '  CAST(SUM(orders.amount) AS REAL) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  STRFTIME(\'%Y-%m-01\', orders.created_at)\n'
+            '  STRFTIME(\'%Y-%m-01 00:00:00\', orders.created_at)\n'
             'ORDER BY\n'
             '  "orders.created_at" ASC NULLS LAST',
         ),
         (
             "duckdb",
             'SELECT\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at) AS "orders.created_at",\n'
+            '  DATE_TRUNC(\'MONTH\', CAST(orders.created_at AS TIMESTAMP)) AS "orders.created_at",\n'
             '  CAST(SUM(orders.amount) AS DOUBLE) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at)\n'
+            '  DATE_TRUNC(\'MONTH\', CAST(orders.created_at AS TIMESTAMP))\n'
             'ORDER BY\n'
             '  "orders.created_at" ASC',
         ),
@@ -194,22 +194,28 @@ _TRUNC_QUERY = SlayerQuery(
             # now emits the canonical lowercase ClickHouse form.
             "clickhouse",
             'SELECT\n'
-            '  dateTrunc(\'MONTH\', orders.created_at) AS "orders.created_at",\n'
+            '  toDateTime64(dateTrunc(\'MONTH\', toDateTime64(orders.created_at, 6)), 6) AS "orders.created_at",\n'
             '  CAST(SUM(orders.amount) AS Nullable(Float64)) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  dateTrunc(\'MONTH\', orders.created_at)\n'
+            '  toDateTime64(dateTrunc(\'MONTH\', toDateTime64(orders.created_at, 6)), 6)\n'
             'ORDER BY\n'
-            '  dateTrunc(\'MONTH\', orders.created_at) ASC',
+            '  toDateTime64(dateTrunc(\'MONTH\', toDateTime64(orders.created_at, 6)), 6) ASC',
         ),
         (
             "mysql",
             "SELECT\n"
-            "  STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e') AS `orders.created_at`,\n"
+            "  CAST(STR_TO_DATE(\n"
+            "    CONCAT(YEAR(CAST(orders.created_at AS DATETIME)), ' ', MONTH(CAST(orders.created_at AS DATETIME)), ' 1'),\n"
+            "    '%Y %c %e'\n"
+            "  ) AS DATETIME) AS `orders.created_at`,\n"
             "  CAST(SUM(orders.amount) AS DOUBLE) AS `orders.revenue_sum`\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"
-            "  STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e')\n"
+            "  CAST(STR_TO_DATE(\n"
+            "    CONCAT(YEAR(CAST(orders.created_at AS DATETIME)), ' ', MONTH(CAST(orders.created_at AS DATETIME)), ' 1'),\n"
+            "    '%Y %c %e'\n"
+            "  ) AS DATETIME)\n"
             'ORDER BY\n'
             "  CASE WHEN `orders.created_at` IS NULL THEN 1 ELSE 0 END ASC,\n"
             "  `orders.created_at` ASC",
@@ -481,7 +487,7 @@ async def test_byte_equivalence_time_shift_sqlite(orders_dataset: SlayerDataset)
     # The join-back offsets the base's (already truncated) bucket start.
     assert """SLAYER_DATE_ADD(base."orders.created_at", -1, 'month')""" in sql
     assert "INTERVAL" not in sql
-    assert "STRFTIME('%Y-%m-01'" in sql
+    assert "STRFTIME('%Y-%m-01 00:00:00'" in sql
 
 
 async def test_byte_equivalence_time_shift_tsql(orders_dataset: SlayerDataset) -> None:
