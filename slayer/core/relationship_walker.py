@@ -147,6 +147,11 @@ def _observe(targets: Iterable[str], *, strict: bool) -> None:
         sink[name] = sink.get(name, False) or strict
 
 
+def observe_read(name: str) -> None:
+    """Record ``name`` as read by a reference anchored at it (no hop walked to reach it)."""
+    _observe([name], strict=True)
+
+
 def canonical_token(edge: OrientedRelationship) -> str:
     """A hop's canonical spelling: the edge name, else the target's spelling."""
     return edge.name or edge.target_spelling or edge.to

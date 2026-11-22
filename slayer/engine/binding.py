@@ -70,6 +70,7 @@ from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
 from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.relationship_walker import (
     canonical_token,
+    observe_read,
     resolve_hop,
     resolved_terminal,
     aggregation_owner,
@@ -914,6 +915,7 @@ def _anchored_saved_metric(
         return None
     datasets = {**bundle.datasets_by_name, host.name: host}
     anchor = _anchor_of(parts, scope=scope, bundle=bundle, quoted=quoted)
+    observe_read(anchor.name)
     try:
         walked = walk_terminal(root=anchor, path=parts[1:-1], datasets_by_name=datasets, quoted=quoted[1:-1])
     except SlayerError:
@@ -1539,6 +1541,7 @@ def _anchored_grain_key(
     if len(anchors) != 1 or any(not isinstance(n, DottedRef) for n in walk_parsed_refs(parsed)):
         return None
     (anchor,) = anchors.values()
+    observe_read(anchor.name)
     bound = _bind(parsed, scope=DatasetScope(population=anchor, anchored=True), bundle=bundle.rerooted(anchor),
                   in_filter=False)
     return compose_frame(bound, frame=anchor.name, host_path=lambda: (anchor_token(anchor.name),))
@@ -1702,6 +1705,7 @@ def _source_anchors(
                              datasets_by_name=bundle.datasets_by_name)
         if anchor is None or is_spine(anchor):
             return None
+        observe_read(anchor.name)
         found.append(anchor)
     return found or None
 

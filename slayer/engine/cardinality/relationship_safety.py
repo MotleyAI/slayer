@@ -6,7 +6,7 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar, cast
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -27,6 +27,7 @@ from slayer.core.relationship_walker import (
 )
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET
 from slayer.core.keys import (
+    is_framed_path,
     is_ranked,
     SLOT_COMPOSITE_KINDS,
     AggregateKey,
@@ -630,8 +631,16 @@ def grain_member_attributable(
     references must be — judged on its dependency closure so a derived
     fanning reference is unattributable; every nested aggregate must be too."""
     saw = False
-    for r in walk_value_keys(key):
-        if isinstance(r, AggregateKey):
+    for r in _grain_nodes(key):
+        if isinstance(r, AggregateKey) and is_framed_path(source_anchor_path(r.source)):
+            # Read from its own frame, an attached aggregate stands for its grain members (Axiom 2.3).
+            saw = True
+            if not all(grain_member_attributable(
+                key=p, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+                bundle=bundle, host_dataset=host_dataset, host_name=host_name,
+            ) for p in r.partition_keys or ()):
+                return False
+        elif isinstance(r, AggregateKey):
             saw = True
             if not attributable_from_root(
                 host_path=source_anchor_path(r.source), target_path=target_path,
@@ -647,6 +656,15 @@ def grain_member_attributable(
             ):
                 return False
     return saw
+
+
+def _grain_nodes(key: ValueKey) -> Iterator[ValueKey]:
+    """``key``'s nodes, a framed aggregate's interior skipped (it is read from its own frame)."""
+    yield key
+    if isinstance(key, AggregateKey) and is_framed_path(source_anchor_path(key.source)):
+        return
+    for c in key.children():
+        yield from _grain_nodes(c)
 
 
 def _grain_leaf_name(key: ValueKey) -> Optional[str]:
