@@ -112,6 +112,8 @@ jobs:
           python-version: "3.11"
 
       - name: Upgrade sqlglot to the newest allowed
+        env:
+          POETRY_INSTALLER_ONLY_BINARY: ":all:"
         run: |
           poetry run pip install --upgrade --only-binary :all: "sqlglot[c]"
           poetry run python -c "import sqlglot; print('sqlglot', sqlglot.__version__)"

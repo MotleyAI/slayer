@@ -9,6 +9,7 @@ import http.client
 import json
 import os
 import subprocess
+import tempfile
 import types
 import urllib.error
 from collections.abc import Callable
@@ -559,6 +560,58 @@ def test_vendor_refuses_a_checkout_with_uncommitted_managed_changes(monkeypatch:
     assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
     assert seen == []
     assert _tree(corpus) == before
+
+
+def test_vendor_refuses_a_checkout_with_a_staged_deletion(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    _git(checkout, "rm", "-q", "examples/shop.yaml")
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    seen = _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert seen == []
+    assert _tree(corpus) == before
+
+
+def test_vendor_copies_head_blobs_through_line_ending_conversion(monkeypatch: pytest.MonkeyPatch,
+                                                                 tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    _git(checkout, "config", "core.autocrlf", "true")
+    for path in CHECKOUT_FILES:
+        (checkout / path).unlink()
+    subprocess.run(["git", "checkout", "--", "."], cwd=checkout, check=True, capture_output=True)
+    assert (checkout / "core-spec" / "spec.yaml").read_bytes() == b"spec: 1\r\n"
+    corpus = _corpus(tmp_path / "corpus", listed={})
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    tree = _tree(corpus)
+    assert {p: tree.get(p) for p in CHECKOUT_FILES} == CHECKOUT_FILES
+
+
+def test_a_failed_rollback_saves_the_backups_and_says_so(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                         capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    real_mkdtemp = tempfile.mkdtemp
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda *args, **kwargs: str(saved)
+                        if kwargs.get("prefix") == "ossie-vendor-backup-" else real_mkdtemp(*args, **kwargs))
+    _fake_harvest(monkeypatch)
+    real = Path.write_bytes
+
+    def failing(self: Path, data: bytes) -> int:
+        if self.is_relative_to(corpus) and (data == CHECKOUT_FILES["validation/validate.py"] or data == b"old\n"):
+            raise OSError("disk full")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", failing)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    err = capsys.readouterr().err
+    assert "NOT fully rolled back" in err
+    assert "examples/shop.yaml" in err
+    assert str(saved) in err
+    assert (saved / "examples" / "shop.yaml").read_bytes() == b"old\n"
 
 
 def test_vendor_refuses_a_destination_link_escaping_the_corpus(monkeypatch: pytest.MonkeyPatch,

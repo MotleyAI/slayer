@@ -81,6 +81,7 @@ REPEATED = r"\bsource\b"
 BAD_TEXTS = [
     pytest.param(flat(REPEATED_KEY), REPEATED, id="repeated-key"),
     *[pytest.param(flat(malformed(tagged)), needle, id=f"malformed-{tag}") for tag, (tagged, needle) in MALFORMED.items()],
+    pytest.param(flat(malformed("a\x00b")), "#x0000", id="nul-character"),
 ]
 BAD_LEGACY = [
     pytest.param(legacy(REPEATED_KEY), REPEATED, id="repeated-key"),

@@ -1236,16 +1236,21 @@ class StorageBackend(ABC):
         specs = [metric_spec(m) for m in metrics or []]
         current = decompose(text=text, name=name, data_source=data_source, ds_type=ds_type)
         members = [*current.datasets, *moved]
-        others = [m.name for m in await self.list_model_scoped_metrics(data_source) if m.semantic_model != name]
+        other_metrics = [m for m in await self.list_model_scoped_metrics(data_source) if m.semantic_model != name]
+        others = [m.name for m in other_metrics]
         kept = [m.name for m in current.metrics if m.name.casefold() not in {
             n.casefold() for n in [*(remove_metrics or []), *(s["name"] for s in specs)]}]
+        kept_metrics = [m for m in current.metrics if m.name in kept]
         scope = DocumentScope(
             fields={d.name.casefold(): {f.name.casefold() for f in d.fields} for d in members},
             dataset_metrics={d.name.casefold(): {m.name.casefold() for m in d.metrics} for d in members},
             datasource_datasets={n.casefold() for ds, n in await self._list_all_dataset_identities() if ds == data_source},
             model_metrics={n.casefold() for n in [*others, *kept, *(s["name"] for s in specs)]},
-            unevaluable=unevaluable_targets(current.metrics, datasets=members),
-            metric_graph=metric_graph([m for m in current.metrics if m.name in kept]),
+            # Chain warnings may run through a metric this edit replaces; the graph re-derives the live ones.
+            unevaluable=unevaluable_targets(
+                [*other_metrics, *(m for m in kept_metrics if m.name.casefold() not in current.chained)],
+                datasets=members),
+            metric_graph=metric_graph([*other_metrics, *kept_metrics]),
         )
         written = [MetricSpec(s, slayer_only=check_model_metric(name=s["name"], text=MetricSpec(s, slayer_only=False).text,
                                                                 scope=scope)) for s in specs]

@@ -445,18 +445,23 @@ def _windowed_call(call: exp.Expr) -> bool:
     return isinstance(node.parent, exp.Window) and node.arg_key == "this"
 
 
+def _aggregate_name(call: exp.AggFunc | exp.Anonymous) -> str | None:
+    """The aggregate function ``call`` names; ``None`` for ``AGG`` or a call that is no aggregate."""
+    if is_agg_call(call):
+        return None
+    if isinstance(call, exp.Anonymous):
+        name = call.name.upper()
+        return name if name in _AGGREGATES_UNKNOWN_TO_SQLGLOT else None
+    return call.sql_name()
+
+
 def unwindowed_aggregates(tree: exp.Expr) -> list[str]:
     """The aggregate functions ``tree`` calls without ``OVER``, each once in order; ``AGG`` and subqueries excluded."""
     names: list[str] = []
     for call in tree.find_all(exp.AggFunc, exp.Anonymous, bfs=False):
-        if is_agg_call(call):
+        name = _aggregate_name(call)
+        if name is None:
             continue
-        if isinstance(call, exp.Anonymous):
-            name = call.name.upper()
-            if name not in _AGGREGATES_UNKNOWN_TO_SQLGLOT:
-                continue
-        else:
-            name = call.sql_name()
         query = call.find_ancestor(exp.Select)
         if (query is not None and not (query is tree and _bare_projection(tree))) or _windowed_call(call):
             continue

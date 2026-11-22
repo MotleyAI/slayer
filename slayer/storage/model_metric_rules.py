@@ -42,9 +42,9 @@ class DocumentScope(BaseModel):
     datasource_datasets: set[str]
     #: Every model-scoped metric name of the datasource, this edit's included.
     model_metrics: set[str]
-    #: This document's entities SLayer cannot evaluate (``d.m`` or a metric name): spelling and warning.
+    #: Entities SLayer cannot evaluate (this document's ``d.m``, or a datasource metric name): spelling and warning.
     unevaluable: dict[str, tuple[str, str]] = {}
-    #: This document's kept model-scoped metrics: spelling and what each reads.
+    #: The datasource's model-scoped metrics this edit keeps: spelling and what each reads.
     metric_graph: dict[str, tuple[str, set[str]]] = {}
 
 

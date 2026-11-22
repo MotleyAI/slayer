@@ -21,7 +21,7 @@ from tests._dev2243_fixtures import DS, STORAGES, document_engine, error, import
 from tests._dev2277_fixtures import DS as SEED_DS
 from tests._dev2277_fixtures import orders_dataset, seed_datasets, seed_engine
 from tests._dev2394_fixtures import (
-    MEASURE_REASON, RPC_SM, mcp_reply, source_measures_text, stored_text, with_relationship_named_source,
+    MEASURE_REASON, RPC_OK, RPC_SM, mcp_reply, source_measures_text, stored_text, with_relationship_named_source,
 )
 
 SOURCE_MEASURES = source_measures_text()
@@ -209,3 +209,41 @@ async def test_an_unrelated_document_edit_keeps_the_chain() -> None:
     assert _metric_entry(after, dataset=None, name="revenue_per_customer") == \
         _metric_entry(before, dataset=None, name="revenue_per_customer")
     assert yaml.safe_load(after)["nonportable_extensions"] == yaml.safe_load(before)["nonportable_extensions"]
+
+
+async def test_a_copied_warned_metric_with_a_new_source_measure_is_refused() -> None:
+    async with document_engine(documents=(SOURCE_MEASURES,)) as engine:
+        before = await stored_text(engine)
+        orders = await engine.storage.get_dataset("orders", data_source=DS)
+        assert orders is not None
+        metrics = [m.model_copy(update={"expression": "AGG(source.refunds)"}) if m.name == "revenue_total" else m
+                   for m in orders.metrics]
+        edited = orders.model_copy(update={"metrics": metrics})
+        with pytest.raises(error("UnevaluableEntityError"), match=MEASURE_REASON):
+            await engine.save_dataset(edited)
+        after = await stored_text(engine)
+    assert after == before
+
+
+async def test_a_metric_over_another_documents_warned_metric_is_refused_at_save() -> None:
+    sales = yaml.safe_load(SOURCE_MEASURES)
+    people = next(d for d in sales["datasets"] if d["name"] == "customers")
+    other = yaml.safe_dump({"version": sales["version"], "name": "other", "datasets": [{**people, "name": "people"}]},
+                           sort_keys=False)
+    async with document_engine(documents=(SOURCE_MEASURES, other)) as engine:
+        reply = await mcp_reply(engine.storage, "edit_semantic_model", name="other", data_source=DS,
+                                metrics=[metric("copied_rpc", "revenue_per_customer * 2")])
+        texts = await engine.storage.get_semantic_model_text("other", DS)
+    assert "UnevaluableEntityError" in reply, reply
+    assert reply.index("revenue_per_customer") < reply.index("orders.revenue_total"), reply
+    assert texts == other
+
+
+async def test_fixing_a_warned_metric_lets_the_same_edit_read_it() -> None:
+    # The fix clears both the direct read and the chain through the kept ``doubled``.
+    async with document_engine(documents=(SOURCE_MEASURES,)) as engine:
+        reply = await mcp_reply(engine.storage, "edit_semantic_model", name="sales", data_source=DS, metrics=[
+            metric("revenue_per_customer", RPC_OK), metric("tripled", "doubled + revenue_per_customer")])
+        assert "Error" not in reply, reply
+        resp = await engine.execute({"metrics": ["tripled"]})
+    assert [float(r["tripled"]) for r in resp.data] == [487.5]

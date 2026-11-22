@@ -51,6 +51,8 @@ class Decomposition(BaseModel):
     datasets: list[SlayerDataset]
     metrics: list[ModelScopedMetric]
     notes: list[ExtensionNote] = []
+    #: Case-folded metrics warned only for reading an unevaluable entity through another.
+    chained: set[str] = set()
 
 
 def checked_document(*, text: str, name: str) -> SemanticModelDocument:
@@ -265,9 +267,9 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
         metrics += [ModelScopedMetric(name=m.name, semantic_model=doc.name, data_source=data_source,
                                       expression=m.expression, description=m.description, datatype=m.datatype)
                     for m in entry.payload.metrics]
-    warn_unevaluable_dependents(metrics, datasets=list(datasets.values()))
+    chained = warn_unevaluable_dependents(metrics, datasets=list(datasets.values()))
     return Decomposition(name=doc.name, data_source=data_source, datasets=list(datasets.values()), metrics=metrics,
-                         notes=notes)
+                         notes=notes, chained=chained)
 
 
 def decompose(*, text: str, name: str, data_source: str, ds_type: str | None) -> Decomposition:
@@ -359,10 +361,12 @@ def chain_warning(chain: list[str], warning: str) -> str:
     return f"reads {' → '.join(chain)}, which {warning}"
 
 
-def warn_unevaluable_dependents(metrics: list[ModelScopedMetric], *, datasets: list[SlayerDataset]) -> None:
-    """Warn each model-scoped metric reaching an entity SLayer cannot evaluate, naming the chain."""
+def warn_unevaluable_dependents(metrics: list[ModelScopedMetric], *, datasets: list[SlayerDataset]) -> set[str]:
+    """Warn each model-scoped metric reaching an entity SLayer cannot evaluate, naming the chain; the warned names,
+    case-folded."""
     targets = unevaluable_targets(metrics, datasets=datasets)
     graph = metric_graph(metrics)
+    warned: set[str] = set()
     for metric in metrics:
         if metric.load_warning is not None:
             continue
@@ -370,6 +374,8 @@ def warn_unevaluable_dependents(metrics: list[ModelScopedMetric], *, datasets: l
                                   graph=graph)
         if found is not None:
             metric.load_warning = chain_warning(*found)
+            warned.add(metric.name.casefold())
+    return warned
 
 
 def expression_datasets(expression: Expression) -> tuple[set[str], set[str]]:

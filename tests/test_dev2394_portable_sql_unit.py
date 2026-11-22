@@ -26,6 +26,7 @@ def test_interval_arithmetic_is_respelled(written: str, stored: str) -> None:
     "x + INTERVAL '1 day' * 2",
     "x + INTERVAL '1 fortnight'",
     "x +",
+    "x + INTERVAL '1 day' +",
 ])
 def test_text_without_a_provable_respelling_is_kept(text: str) -> None:
     assert portable_sql(text) == text

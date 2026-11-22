@@ -635,7 +635,7 @@ def check_evaluated_metrics(
     datasets = {**reachable, dataset.name: dataset}
     for metric in dataset.metrics:
         text = portable_text(metric.expression)
-        if metric.load_warning is not None or text is None or _unchanged_warned(metric, stored=stored):
+        if text is None or _unchanged_warned(metric, stored=stored):
             continue
         if reads_source_measure(text):
             raise UnevaluableEntityError(entity=f"Metric {metric.name!r}", reason=SOURCE_MEASURE_REASON)

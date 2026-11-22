@@ -42,6 +42,7 @@ HARVEST_TESTS = ("validation/test_validate.py", "validation/tests")
 COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits?per_page=1"
 TIMEOUT = 60.0
 HARVEST_TIMEOUT = 1800
+_YAML_FILES = "*.yaml"
 
 EXIT_SAME, EXIT_DRIFT, EXIT_FETCH, EXIT_HARVEST, EXIT_VENDOR = 0, 1, 2, 3, 4
 
@@ -173,12 +174,12 @@ def harvest(*, checkout: Path, out: Path) -> int:
             print(f"Upstream's validator tests did not pass (pytest exit {run.returncode}):\n{run.stderr[-4000:]}",
                   file=sys.stderr)
             return EXIT_HARVEST
-        texts = {path.name: path.read_text(encoding="utf-8") for path in sorted(staged.glob("*.yaml"))}
+        texts = {path.name: path.read_text(encoding="utf-8") for path in sorted(staged.glob(_YAML_FILES))}
     if not texts:
         print("The harvest captured no accepted document.", file=sys.stderr)
         return EXIT_HARVEST
     out.mkdir(parents=True, exist_ok=True)
-    for stale in out.glob("*.yaml"):
+    for stale in out.glob(_YAML_FILES):
         stale.unlink()
     for name, text in texts.items():
         (out / name).write_text(text, encoding="utf-8")
@@ -188,6 +189,10 @@ def harvest(*, checkout: Path, out: Path) -> int:
 
 class VendorRefused(Exception):
     """A re-vendor input that would read or write outside its roots."""
+
+
+class RollbackFailed(Exception):
+    """A failed swap that could not restore every path it touched."""
 
 
 def blob_sha(data: bytes) -> str:
@@ -213,18 +218,44 @@ def _inside(root: Path, relative: str) -> Path:
     return target
 
 
+def _head_blobs(checkout: Path) -> dict[str, str]:
+    """Each managed path at the checkout's HEAD and its blob sha; refused when one is not a regular file."""
+    out: dict[str, str] = {}
+    for entry in filter(None, _git(checkout, "ls-tree", "-r", "-z", "HEAD").split("\0")):
+        meta, path = entry.split("\t", 1)
+        mode, _, sha = meta.split()
+        if _is_managed(path):
+            if mode not in ("100644", "100755"):
+                raise VendorRefused(f"{path!r} is not a regular file at HEAD")
+            out[path] = sha
+    return out
+
+
+def _blob_bytes(checkout: Path, shas: list[str]) -> list[bytes]:
+    data = subprocess.run(["git", "cat-file", "--batch"], cwd=checkout, input="".join(f"{s}\n" for s in shas).encode(),
+                          check=True, capture_output=True).stdout
+    out, pos = [], 0
+    for _ in shas:
+        header_end = data.index(b"\n", pos)
+        start = header_end + 1
+        end = start + int(data[pos:header_end].split()[2])
+        out.append(data[start:end])
+        pos = end + 1
+    return out
+
+
 def _managed_snapshot(checkout: Path) -> dict[str, bytes]:
-    """Every managed file tracked at the checkout's HEAD, read through the work tree; refused when one differs from
-    HEAD."""
-    tracked = [p for p in _git(checkout, "ls-files", "-z").split("\0") if p and _is_managed(p)]
-    missing = sorted(set(MANAGED_FILES) - set(tracked))
+    """Every managed file at the checkout's HEAD, read from its blobs; refused when the work tree differs from HEAD."""
+    blobs = _head_blobs(checkout)
+    missing = sorted(set(MANAGED_FILES) - set(blobs))
     if missing:
         raise VendorRefused(f"the checkout lacks managed file(s): {', '.join(missing)}")
-    dirty = [line[3:] for line in _git(checkout, "status", "--porcelain", "--untracked-files=no", "--", *tracked)
-             .splitlines()]
+    dirty = [line[3:] for line in _git(checkout, "status", "--porcelain", "--untracked-files=no", "--",
+                                       *MANAGED_FILES, *MANAGED_DIRS).splitlines()]
     if dirty:
         raise VendorRefused(f"managed file(s) differ from HEAD: {', '.join(dirty)}")
-    return {path: _inside(checkout, path).read_bytes() for path in sorted(tracked)}
+    paths = sorted(blobs)
+    return dict(zip(paths, _blob_bytes(checkout, [blobs[p] for p in paths]), strict=True))
 
 
 def _previous_listing(out: Path) -> list[str]:
@@ -255,15 +286,39 @@ def _swap_in(*, out: Path, writes: dict[str, bytes], deletes: list[str]) -> None
         for path, data in writes.items():
             (out / path).parent.mkdir(parents=True, exist_ok=True)
             (out / path).write_bytes(data)
-    except OSError:
-        for path in touched:
+    except OSError as exc:
+        unrestored = _restore(out=out, touched=touched, backup=backup)
+        if unrestored:
+            raise RollbackFailed(f"{exc}; not restored: {', '.join(unrestored)}; "
+                                 f"{_save_backups(unrestored, backup=backup)}") from exc
+        raise
+
+
+def _restore(*, out: Path, touched: list[str], backup: dict[str, bytes]) -> list[str]:
+    """Put every touched path back as ``backup`` holds it; the paths that could not be."""
+    failed = []
+    for path in touched:
+        try:
             if path in backup:
                 (out / path).parent.mkdir(parents=True, exist_ok=True)
                 (out / path).write_bytes(backup[path])
             else:
                 (out / path).unlink(missing_ok=True)
                 _prune_empty_parents(out / path, root=out)
-        raise
+        except OSError:
+            failed.append(path)
+    return failed
+
+
+def _save_backups(paths: list[str], *, backup: dict[str, bytes]) -> str:
+    try:
+        saved = Path(tempfile.mkdtemp(prefix="ossie-vendor-backup-"))
+        for path in [p for p in paths if p in backup]:
+            (saved / path).parent.mkdir(parents=True, exist_ok=True)
+            (saved / path).write_bytes(backup[path])
+    except OSError as exc:
+        return f"their previous bytes could not be saved ({exc}); restore them from version control"
+    return f"their previous bytes are saved under {saved}"
 
 
 def _prune_empty_parents(target: Path, *, root: Path) -> None:
@@ -290,8 +345,8 @@ def vendor(*, checkout: Path, out: Path) -> int:
         code = harvest(checkout=checkout, out=staged_harvest)
         if code != EXIT_SAME:
             return code
-        documents = {f"{HARVESTED.name}/{d.name}": d.read_bytes() for d in sorted(staged_harvest.glob("*.yaml"))}
-    stale = [f"{HARVESTED.name}/{d.name}" for d in (out / HARVESTED.name).glob("*.yaml")]
+        documents = {f"{HARVESTED.name}/{d.name}": d.read_bytes() for d in sorted(staged_harvest.glob(_YAML_FILES))}
+    stale = [f"{HARVESTED.name}/{d.name}" for d in (out / HARVESTED.name).glob(_YAML_FILES)]
     writes = {**files, **documents,
               PROVENANCE.name: _provenance_text(commit=commit, committed=committed, files=files).encode("utf-8")}
     deletes = [p for p in [*removed, *stale] if p not in writes]
@@ -301,6 +356,9 @@ def vendor(*, checkout: Path, out: Path) -> int:
         _swap_in(out=out, writes=writes, deletes=deletes)
     except VendorRefused as exc:
         print(f"Re-vendor refused: {exc}", file=sys.stderr)
+        return EXIT_VENDOR
+    except RollbackFailed as exc:
+        print(f"Re-vendor failed and was NOT fully rolled back: {exc}", file=sys.stderr)
         return EXIT_VENDOR
     except OSError as exc:
         print(f"Re-vendor failed and was rolled back: {exc}", file=sys.stderr)

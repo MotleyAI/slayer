@@ -20,6 +20,7 @@ __all__ = ["edit_text", "parse_document_text", "plain", "without_vendor"]
 
 _MERGE = "tag:yaml.org,2002:merge"
 _VALUE = "tag:yaml.org,2002:value"
+_IN_MAPPING = "while constructing a mapping"
 
 
 class _DocumentLoader(yaml.SafeLoader):
@@ -63,13 +64,13 @@ class _DocumentLoader(yaml.SafeLoader):
             self.flatten_mapping(value)
             return list(value.value)
         if not isinstance(value, yaml.SequenceNode):
-            raise ConstructorError("while constructing a mapping", node.start_mark,
+            raise ConstructorError(_IN_MAPPING, node.start_mark,
                                    f"expected a mapping or list of mappings for merging, but found {value.tag}",
                                    value.start_mark)
         out: list[tuple[yaml.Node, yaml.Node]] = []
         for sub in reversed(value.value):
             if not isinstance(sub, yaml.MappingNode):
-                raise ConstructorError("while constructing a mapping", node.start_mark,
+                raise ConstructorError(_IN_MAPPING, node.start_mark,
                                        f"expected a mapping for merging, but found {sub.tag}", sub.start_mark)
             self.flatten_mapping(sub)
             out += sub.value
@@ -86,31 +87,30 @@ class _DocumentLoader(yaml.SafeLoader):
             return
         seen: set[Any] = set()
         for key_node, value_node in node.value:
-            if key_node.tag == _MERGE:
-                self._check_unique_keys(value_node, visited)
-                continue
-            key = (self.construct_scalar(key_node) if key_node.tag == _VALUE
-                   else self.construct_object(key_node, deep=True) if isinstance(key_node, yaml.ScalarNode) else None)
-            if not isinstance(key_node, yaml.ScalarNode) or not isinstance(key, Hashable):
-                raise ConstructorError("while constructing a mapping", node.start_mark, "found an unhashable key",
-                                       key_node.start_mark)
-            if key in seen:
-                raise ConstructorError("while constructing a mapping", node.start_mark,
-                                       f"found duplicate key {key!r}", key_node.start_mark)
-            seen.add(key)
+            if key_node.tag != _MERGE:
+                key = self._key(key_node, mapping=node)
+                if key in seen:
+                    raise ConstructorError(_IN_MAPPING, node.start_mark, f"found duplicate key {key!r}",
+                                           key_node.start_mark)
+                seen.add(key)
             self._check_unique_keys(value_node, visited)
+
+    def _key(self, key_node: yaml.Node, *, mapping: yaml.MappingNode) -> Hashable:
+        if isinstance(key_node, yaml.ScalarNode):
+            key = self.construct_scalar(key_node) if key_node.tag == _VALUE else self.construct_object(key_node,
+                                                                                                         deep=True)
+            if isinstance(key, Hashable):
+                return key
+        raise ConstructorError(_IN_MAPPING, mapping.start_mark, "found an unhashable key", key_node.start_mark)
 
 
 def parse_document_text(text: str) -> Any:
     """A document's YAML or JSON text as data; raises ``ValueError`` when it does not parse, repeats a key within one
     mapping or holds a scalar its tag cannot build."""
-    loader = _DocumentLoader(text)
     try:
-        return loader.get_single_data()
+        return _DocumentLoader(text).get_single_data()
     except yaml.YAMLError as exc:
         raise ValueError(f"the document is not valid YAML or JSON: {exc}") from exc
-    finally:
-        loader.dispose()
 
 
 def without_vendor(node: Any, vendor: str) -> Any:

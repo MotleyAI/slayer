@@ -32,10 +32,11 @@ class _Unsupported(Exception):
 
 def _unit(word: str) -> str:
     low = word.lower()
-    unit = low if low in _UNITS else low[:-1] if low.endswith("s") and low[:-1] in _UNITS else None
-    if unit is None:
-        raise _Unsupported(word)
-    return unit
+    if low in _UNITS:
+        return low
+    if low.endswith("s") and low[:-1] in _UNITS:
+        return low[:-1]
+    raise _Unsupported(word)
 
 
 class _Rewriter:
@@ -105,7 +106,10 @@ class _Rewriter:
                 spans.append((start, i))
                 start = i + 1
             i += 1
-        return [*spans, (start, hi)]
+        spans.append((start, hi))
+        if any(a >= b for a, b in spans):
+            raise _Unsupported("an empty operand")
+        return spans
 
     def _interval(self, lo: int, hi: int) -> tuple[int, str] | None:
         """``(count, unit)`` when tokens ``[lo, hi)`` are one interval literal."""
