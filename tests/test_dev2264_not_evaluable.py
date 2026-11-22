@@ -8,11 +8,15 @@ from typing import Any
 
 import pytest
 
+from slayer.core import slayer_extension as ext
+from slayer.core.enums import DataType
 from slayer.core.errors import UnevaluableEntityError
 from slayer.core.models import DatasourceConfig
+from slayer.core.ossie_expression import OSIExpression
 from slayer.core.syntax import MAX_NESTING, parse_expr
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import SearchService
+from slayer.sql.ossie_dialects import expression_digest
 from tests._dev2243_fixtures import (
     DS, dataset, document_engine, document_text, error, field, importer_module, make_storage, metric, relationship,
 )
@@ -243,3 +247,33 @@ def test_parentheses_inside_literals_do_not_count_towards_the_limit() -> None:
     deep = "'" + "(" * 100 + "'"
     outer = MAX_NESTING - 1  # concat( is the last level
     assert parse_expr("(" * outer + f"concat(status, {deep})" + ")" * outer) is not None
+
+
+def restored_field(*, core_sql: str, expression: str) -> dict[str, Any]:
+    """Field ``x`` written as ``core_sql``, with a matching ``SLAYER`` entry restoring ``expression``."""
+    payload = ext.FieldPayload(entity="x", field=ext.FieldContent(expression=expression, datatype=DataType.INTEGER))
+    entry = ext.encode(payload, ossie=expression_digest(OSIExpression(sql=core_sql)))
+    return {**form("x", sql=core_sql), "nonportable_extensions": [entry]}
+
+
+async def test_a_restored_field_is_judged_by_the_expression_it_restores() -> None:
+    async with document_engine(documents=(orders_doc(restored_field(core_sql=SUBQUERY, expression="amount")),)) as engine:
+        assert await field_warning(engine, "x") is None
+        rows = (await engine.execute({"population": "orders", "dimensions": ["orders.x", "orders.amount"]})).data
+        assert rows
+        assert [float(r["orders.x"]) for r in rows] == [float(r["orders.amount"]) for r in rows]
+
+
+async def test_a_restored_unparseable_field_loads_not_evaluable() -> None:
+    async with document_engine(documents=(orders_doc(restored_field(core_sql="amount", expression=SUBQUERY)),)) as engine:
+        assert await field_warning(engine, "x")
+        with pytest.raises(error("UnevaluableEntityError"), match="x"):
+            await engine.execute({"population": "orders", "dimensions": ["orders.x"]})
+
+
+async def test_a_restored_field_drops_the_window_warning_of_its_document_form() -> None:
+    windowed = restored_field(core_sql="SUM(amount) OVER ()", expression="amount")
+    async with document_engine(documents=(orders_doc(windowed),)) as engine:
+        assert await field_warning(engine, "x") is None
+        rows = (await engine.execute({"population": "orders", "dimensions": ["orders.x", "orders.amount"]})).data
+        assert [float(r["orders.x"]) for r in rows] == [float(r["orders.amount"]) for r in rows]

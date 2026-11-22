@@ -166,19 +166,20 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: l
     expression, problem = _runnable(field.expression, target=target)
     if expression == field.name:
         expression = None  # reads the column named like the field
-    warning = WINDOW_WARNING if _windowed(field.expression) else problem or _unparseable_field(
-        expression, target=target, owner=f"Field {field.name!r}")
     built = DatasetField(
         name=field.name, expression=expression,
         datatype=_OSSIE_TYPES[field.datatype] if field.datatype else None,
         primary_key=field.name in primary, unique=field.name in unique,
-        label=field.label, description=field.description, load_warning=warning,
+        label=field.label, description=field.description,
     )
     label = f"field {field.name!r} of {dataset!r}"
     entry = read_entry(field.nonportable_extensions, kind="field", entity=field.name,
                        ossie=entry_digest(field.expression), label=label, notes=notes)
     built = apply_field_entry(built, entry, notes=notes, label=label, target=target)
-    return built.model_copy(update={"meta": with_ossie_meta(built.meta, field)})
+    # A restored expression replaces the document form, so only its own readability counts.
+    warning = None if built.expression != expression else WINDOW_WARNING if _windowed(field.expression) else problem
+    warning = warning or _unparseable_field(built.expression, target=target, owner=f"Field {field.name!r}")
+    return built.model_copy(update={"meta": with_ossie_meta(built.meta, field), "load_warning": warning})
 
 
 def with_ossie_meta(meta: dict[str, Any] | None, entity: Any) -> dict[str, Any] | None:
