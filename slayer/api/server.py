@@ -13,7 +13,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr, ValidationError, model_validator,
+)
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from slayer import usage_reporting
@@ -23,6 +25,7 @@ from slayer.core.errors import (
     AmbiguousDatasetError,
     MemoryNotFoundError,
     SchemaDriftError,
+    UnknownKeyError,
 )
 from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerDataset
@@ -114,6 +117,14 @@ class QueryRequest(BaseModel):
 
 
 _RUN_BY_NAME_FIELDS = frozenset({"name", "variables", "dry_run", "explain", "refine"})
+
+
+def _refuses_unknown_key(exc: ValueError) -> bool:
+    """Whether ``exc`` is, or is a validation error raised by, an unknown-key refusal."""
+    if isinstance(exc, UnknownKeyError):
+        return True
+    return isinstance(exc, ValidationError) and any(
+        isinstance((err.get("ctx") or {}).get("error"), UnknownKeyError) for err in exc.errors())
 
 
 def _dumped(warnings: list[SlayerWarning]) -> list[dict[str, Any]]:
@@ -449,7 +460,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             400: {"description": "Invalid query payload (e.g. missing population/name, mutually exclusive fields, validation error)."},
             422: {
                 "description": (
-                    "Schema drift detected on datasets the query read — it "
+                    "A query object carries a key it does not read (the detail names it), or schema "
+                    "drift was detected on datasets the query read — it "
                     "could not run against the live schema. Body shape: "
                     "``{\"error\": \"schema_drift\", \"datasets\": [...], "
                     "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
@@ -565,8 +577,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 },
             )
         except ValueError as e:
-            # SlayerError subclasses ValueError; both map to 400.
-            raise HTTPException(status_code=400, detail=str(e))
+            # SlayerError subclasses ValueError; an unknown key is a malformed body (422), the rest 400.
+            raise HTTPException(status_code=422 if _refuses_unknown_key(e) else 400, detail=str(e))
 
     @app.get("/datasets")
     async def list_datasets(

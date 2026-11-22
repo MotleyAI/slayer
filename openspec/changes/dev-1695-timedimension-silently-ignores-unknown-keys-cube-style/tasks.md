@@ -6,19 +6,19 @@
 
 ## 2. Unknown-key path
 
-- [ ] 2.1 Add camelCase heal to spelling conversion in `slayer/core/vocabulary.py`, matched against each object's full accepted-spelling map and run before pre-2.0 conversion, with conflicts on the final canonical key raising `SpellingConflictError` (design 8); verify the heal and conflict scenarios pass
-- [ ] 2.2 Replace `_refuse_unknown_entry_keys`' hard-coded tuples with one refusal derived from the model: accepted = model fields, listed = advertised input-schema properties (design 9); apply it to all seven objects after conversion, keeping `extra="forbid"`; add the `compareDateRange` hint and keep the `name` hint; verify the refusal, internal-key round-trip and Cube-key scenarios pass
-- [ ] 2.3 Verify stored-query behaviour (heal + canonical dump; per-document load failure) through the storage load paths, including migrated documents; verify the stored-query scenario passes
+- [x] 2.1 Add camelCase heal to spelling conversion in `slayer/core/vocabulary.py`, matched against each object's full accepted-spelling map and run before pre-2.0 conversion, with conflicts on the final canonical key raising `SpellingConflictError` (design 8); verify the heal and conflict scenarios pass
+- [x] 2.2 Replace `_refuse_unknown_entry_keys`' hard-coded tuples with one refusal derived from the model: accepted = model fields, listed = advertised input-schema properties (design 9); apply it to all seven objects after conversion, keeping `extra="forbid"`; add the `compareDateRange` hint and keep the `name` hint; verify the refusal, internal-key round-trip and Cube-key scenarios pass
+- [x] 2.3 Verify stored-query behaviour (heal + canonical dump; per-document load failure) through the storage load paths, including migrated documents; verify the stored-query scenario passes
 
 ## 3. Assignment
 
-- [ ] 3.1 Add the atomic-assignment mixin (snapshot `__dict__` + fields-set, restore on `ValidationError`) and `validate_assignment=True` on all seven objects (design 10); verify the assignment scenarios and the law test pass
+- [x] 3.1 Add the atomic-assignment mixin (snapshot `__dict__` + fields-set, restore on `ValidationError`) and `validate_assignment=True` on all seven objects (design 10); verify the assignment scenarios and the law test pass
 
 ## 4. Architecture and docs
 
-- [ ] 4.1 Add principle 8 to `architecture/python.core.arc42.md` §3 with the exact approved wording in design decision 4; verify `poetry run la-arch-check` passes
-- [ ] 4.2 Update `docs/concepts/queries.md` (unknown keys refused, camelCase accepted), `docs/concepts/datasets.md:629` (forward-tolerance wording) and `docs/upgrading/2.0.md` (unknown query keys refused; assignments validated; stored `dateRange` now filters; stored junk keys stop that query loading); verify by reading the rendered sections
+- [x] 4.1 Add principle 8 to `architecture/python.core.arc42.md` §3 with the exact approved wording in design decision 4; verify `poetry run la-arch-check` passes
+- [x] 4.2 Update `docs/concepts/queries.md` (unknown keys refused, camelCase accepted), `docs/concepts/datasets.md:629` (forward-tolerance wording) and `docs/upgrading/2.0.md` (unknown query keys refused; assignments validated; stored `dateRange` now filters; stored junk keys stop that query loading); verify by reading the rendered sections
 
 ## 5. Gates
 
-- [ ] 5.1 Run the local test scope (`la-affected-tests --base main` plus the storage, REST and MCP query tests), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `poetry run la-arch-check` and `npx -y likec4@1.47.0 validate architecture`; verify all pass
+- [x] 5.1 Run the local test scope (`la-affected-tests --base main` plus the storage, REST and MCP query tests), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `poetry run la-arch-check` and `npx -y likec4@1.47.0 validate architecture`; verify all pass

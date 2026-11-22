@@ -149,8 +149,9 @@ class TestEachModel:
 
     def test_a_stray_key_is_refused_naming_it_and_listing_the_advertised_keys(self, name: str) -> None:
         model = model_of(name)
+        payload = {**minimal(name), STRAY: 1}
         with pytest.raises((ValidationError, ValueError)) as info:
-            model.model_validate({**minimal(name), STRAY: 1})
+            model.model_validate(payload)
         err, _ = refusal(info.value)
         assert err.key == STRAY
         assert STRAY in str(err)

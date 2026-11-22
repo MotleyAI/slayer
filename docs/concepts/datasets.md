@@ -628,7 +628,7 @@ Every persisted SLayer entity (`SlayerDataset`, `SlayerQuery`, `DatasourceConfig
 - **On save**, SLayer always writes the current schema version.
 - **On load**, an older `version` triggers a chain of pure dict→dict converters before Pydantic validation. Hand-edited and older files keep working as the schema evolves.
 - **Round-tripping** an older file (load → save) upgrades it on disk to the current schema.
-- **Forward tolerance.** A file with a higher `version` than this SLayer knows about loads on a best-effort basis. For `SlayerDataset` and `DatasourceConfig`, unknown fields are ignored. `SlayerQuery` v3 sets `extra="forbid"`, so any unknown field on a future-version query raises a `ValidationError` rather than being silently dropped — this catches typos but means a future schema's new fields will not load on an older SLayer.
+- **Forward tolerance.** A file with a higher `version` than this SLayer knows about loads on a best-effort basis. A stored dataset drops unknown keys with an `unknown_stored_key` warning, and `DatasourceConfig` ignores them. A stored query refuses an unknown key on itself or any entry with an `UnknownKeyError` (that query fails to load; the rest of the store loads), so a future schema's new query fields will not load on an older SLayer.
 
 The v2→v3 converter drops the legacy `dry_run` / `explain` fields from `SlayerQuery` — they were execution-mode flags that had no business being persisted; pass them as kwargs to `engine.execute(query, dry_run=..., explain=...)` instead. Each migrated query emits one `logger.warning` and one `DeprecationWarning` on first load.
 

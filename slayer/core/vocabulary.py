@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import re
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -22,12 +23,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AGGREGATION_KEYS", "COVERAGE_KEYS", "DATASET_KEYS", "DIMENSION_EXPRESSION_KEYS", "ENTITY_KINDS", "EXTENSION_KEYS",
-    "FIELD_KEYS", "FIELD_REF_KEYS", "METRIC_KEYS", "ORDER_ITEM_KEYS", "QUERY_KEYS",
+    "FIELD_KEYS", "FIELD_REF_KEYS", "METRIC_KEYS", "ORDER_ITEM_KEYS", "QUERY_KEYS", "QUERY_METRIC_KEYS",
     "RECOMMENDATION_KEYS", "REFINEMENT_KEYS", "RELATIONSHIP_KEYS", "RESPONSE_ATTRIBUTE_KEYS", "SOURCE_ORIGIN_KEYS",
     "TIME_DIMENSION_KEYS", "WARNING_KEYS",
-    "SpellingConflictError", "Spellings", "aggregation", "attribute_used", "bridge_renamed_hooks", "converted_document",
-    "converted_input", "current_spellings", "dataset", "deprecated_spelling", "dimension_entry", "extension", "field",
-    "method_twin", "metric", "name_twins", "one_document", "order_item", "query", "query_metric", "refinement",
+    "SpellingConflictError", "Spellings", "aggregation", "attribute_used", "bridge_renamed_hooks", "camel_healed",
+    "converted_document", "converted_input", "current_spellings", "dataset", "deprecated_spelling", "dimension_entry",
+    "extension", "extension_keys", "field", "input_object", "method_twin", "metric", "name_twins", "one_document", "order_item", "query",
+    "query_metric", "refinement",
     "relationship", "renamed_arguments", "renamed_input", "renamed_name", "respelled_token", "same_ignoring_deprecations",
     "stored_dataset", "stored_query", "time_dimension",
 ]
@@ -41,6 +43,7 @@ EXTENSION_KEYS = {"source_name": "dataset", "measures": "metrics", "joins": "rel
 QUERY_KEYS = {"source_model": "population", "measures": "metrics", "fields": "metrics", "filters": "filter"}
 REFINEMENT_KEYS = {"measures": "metrics", "filters": "filter"}
 DIMENSION_EXPRESSION_KEYS = {"expression": "field", "name": "alias"}
+QUERY_METRIC_KEYS = {"formula": "metric", "name": "alias", "type": "datatype"}
 TIME_DIMENSION_KEYS = {"dimension": "field", "column": "field"}
 ORDER_ITEM_KEYS = {"column": "field", "raw_formula": "raw_expression"}
 FIELD_REF_KEYS = {"model": "dataset"}
@@ -68,6 +71,7 @@ WARNING_KEYS: dict[str, dict[str, str]] = {
 
 _T = TypeVar("_T")
 _F = TypeVar("_F", bound=Callable[..., Any])
+_M = TypeVar("_M", bound=type[BaseModel])
 
 
 def _deprecation(old: str, new: str) -> DeprecatedInputWarning:
@@ -269,6 +273,49 @@ def converted_input(data: Any, handler: Callable[[Any], _T], convert: Callable[[
         return out
 
 
+#: Each query input object's pre-2.0 key table, by kind.
+_INPUT_RENAMES: dict[str, Mapping[str, str]] = {
+    "query": QUERY_KEYS, "refinement": REFINEMENT_KEYS, "dimension": DIMENSION_EXPRESSION_KEYS,
+    "metric": QUERY_METRIC_KEYS, "time_dimension": TIME_DIMENSION_KEYS, "order_item": ORDER_ITEM_KEYS,
+    "extension": EXTENSION_KEYS,
+}
+#: Each query input object's fields, by kind, registered by its model (``input_object``).
+_INPUT_FIELDS: dict[str, frozenset[str]] = {}
+_CAMEL = re.compile(r"[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+")
+
+
+def input_object(kind: str) -> Callable[[_M], _M]:
+    """Register a query input model's fields as the keys a camelCase key of ``kind`` heals to."""
+    def register(model: _M) -> _M:
+        _INPUT_FIELDS[kind] = frozenset(model.model_fields)
+        return model
+
+    return register
+
+
+def _snake(key: str) -> str:
+    return re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", key).lower() if _CAMEL.fullmatch(key) else key
+
+
+def camel_healed(data: dict[str, Any], kind: str) -> dict[str, Any]:
+    """``data`` with each camelCase key whose snake_case form ``kind`` accepts spelled that way; two keys reaching one
+    canonical key are refused."""
+    renames = _INPUT_RENAMES[kind]
+    accepted = _INPUT_FIELDS.get(kind, frozenset()) | renames.keys()
+    healed = {k: s for k in data if (s := _snake(k)) != k and s in accepted}
+    if not healed:
+        return data
+    written: dict[str, str] = {}
+    for key in data:
+        spelled = healed.get(key, key)
+        final = renames.get(spelled, spelled)
+        prior = written.setdefault(final, key)
+        if prior != key and (key in healed or prior in healed):
+            old, new = (key, prior) if key in healed else (prior, key)
+            raise SpellingConflictError(old=old, new=new, spelling="camelCase spelling")
+    return {healed.get(k, k): v for k, v in data.items()}
+
+
 def extension_dataset(extension: Any) -> Any:
     """A raw extension's target, spelled ``dataset`` or (pre-2.0) ``source_name``; ``None`` when neither."""
     if not isinstance(extension, dict):
@@ -397,7 +444,10 @@ def _entry_form(item: dict[str, Any], table: Mapping[str, str], spellings: Spell
 
 def query_metric(item: Any, spellings: Spellings) -> Any:
     """A query metric entry in the Ossie form; the pre-release ``{expression, name}`` is left to be refused."""
-    if not isinstance(item, dict) or "expression" in item:
+    if not isinstance(item, dict):
+        return item
+    item = camel_healed(item, "metric")
+    if "expression" in item:
         return item
     item = _entry_form(item, {"formula": "metric", "name": "alias"}, spellings)
     return _datatype(spellings.rename(item, {"type": "datatype"}), "datatype", spellings)
@@ -408,6 +458,7 @@ def dimension_entry(item: Any, spellings: Spellings) -> Any:
     ``alias``; the pre-release ``{name, dataset}`` is left to be refused."""
     if not isinstance(item, dict):
         return item
+    item = camel_healed(item, "dimension")
     if "field" in item:
         for old in ("expression", "model"):
             if old in item:
@@ -436,24 +487,33 @@ def _field_text(data: Any, table: Mapping[str, str], spellings: Spellings, *, la
     return data
 
 
+def _healed(data: Any, kind: str) -> Any:
+    return camel_healed(data, kind) if isinstance(data, dict) else data
+
+
 def time_dimension(data: Any, spellings: Spellings) -> Any:
-    return _field_text(data, TIME_DIMENSION_KEYS, spellings, labelled=True)
+    return _field_text(_healed(data, "time_dimension"), TIME_DIMENSION_KEYS, spellings, labelled=True)
 
 
 def order_item(data: Any, spellings: Spellings) -> Any:
-    return _field_text(data, ORDER_ITEM_KEYS, spellings, labelled=False)
+    return _field_text(_healed(data, "order_item"), ORDER_ITEM_KEYS, spellings, labelled=False)
+
+
+def extension_keys(data: Any, spellings: Spellings) -> Any:
+    """An extension's own keys in the Ossie vocabulary (its members convert on their own)."""
+    return _renamed(_healed(data, "extension"), EXTENSION_KEYS, spellings)
 
 
 def extension(data: Any, spellings: Spellings) -> Any:
     if not isinstance(data, dict):
         return data
-    data = spellings.rename(data, EXTENSION_KEYS)
+    data = extension_keys(data, spellings)
     data = _members(data, "metrics", lambda m: metric(m, spellings))
     return _members(data, "relationships", lambda r: relationship(r, spellings))
 
 
 def _query(data: dict[str, Any], spellings: Spellings) -> dict[str, Any]:
-    data = spellings.rename(data, QUERY_KEYS)
+    data = spellings.rename(camel_healed(data, "query"), QUERY_KEYS)
     data = _members(data, "metrics", lambda m: query_metric(m, spellings))
     data = _members(data, "dimensions", lambda d: dimension_entry(d, spellings))
     data = _members(data, "time_dimensions", lambda t: time_dimension(t, spellings))
@@ -473,7 +533,7 @@ def refinement(data: Any, spellings: Spellings) -> Any:
     """A query refinement in the Ossie vocabulary."""
     if not isinstance(data, dict):
         return data
-    data = spellings.rename(data, REFINEMENT_KEYS)
+    data = spellings.rename(camel_healed(data, "refinement"), REFINEMENT_KEYS)
     data = _members(data, "metrics", lambda m: query_metric(m, spellings))
     data = _members(data, "dimensions", lambda d: dimension_entry(d, spellings))
     data = _members(data, "time_dimensions", lambda t: time_dimension(t, spellings))

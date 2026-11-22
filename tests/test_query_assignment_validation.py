@@ -33,7 +33,7 @@ def ranged_td() -> TimeDimension:
 INVALID_ASSIGNMENTS: dict[str, tuple[Callable[[], BaseModel], str, Any]] = {
     "SlayerQuery": (lambda: SlayerQuery.model_validate({**BASE, "limit": 5}), "limit", "abc"),
     "QueryRefinement": (lambda: QueryRefinement.model_validate({"limit": 5}), "limit", "abc"),
-    "QueryDimension": (lambda: QueryDimension.model_validate({"field": "orders.status"}), "alias", "not a name"),
+    "QueryDimension": (lambda: QueryDimension.model_validate({"field": "orders.status"}), "alias", "a.b"),
     "QueryMetric": (lambda: QueryMetric.model_validate({"metric": "count(orders.*)"}), "metric", 5),
     "TimeDimension": (ranged_td, "granularity", 5),
     "OrderItem": (lambda: OrderItem.model_validate({"field": "orders.status"}), "direction", "sideways"),

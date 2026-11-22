@@ -186,8 +186,9 @@ class TestUnknownKeys:
     @pytest.mark.parametrize("location", sorted(QUERY_LOCATIONS))
     def test_a_query_refuses_a_stray_key_at_its_location(self, location: str) -> None:
         payload, expected_loc, model = QUERY_LOCATIONS[location]
+        payload = copy.deepcopy(payload)
         with pytest.raises((ValidationError, UnknownKeyError)) as info:
-            SlayerQuery.model_validate(copy.deepcopy(payload))
+            SlayerQuery.model_validate(payload)
         err, loc = refusal(info.value)
         assert err.key == STRAY
         assert loc == expected_loc
@@ -196,8 +197,9 @@ class TestUnknownKeys:
     @pytest.mark.parametrize("location", sorted(REFINEMENT_LOCATIONS))
     def test_a_refinement_refuses_a_stray_key_at_its_location(self, location: str) -> None:
         payload, expected_loc, model = REFINEMENT_LOCATIONS[location]
+        payload = copy.deepcopy(payload)
         with pytest.raises((ValidationError, UnknownKeyError)) as info:
-            QueryRefinement.model_validate(copy.deepcopy(payload))
+            QueryRefinement.model_validate(payload)
         err, loc = refusal(info.value)
         assert err.key == STRAY
         assert loc == expected_loc
@@ -245,11 +247,11 @@ class TestUnknownKeySurfaces:
         storage = await shop_with_saved(tmp_path)
         payload, expected_loc, model = ALL_LOCATIONS[location]
         client = SlayerClient(storage=storage)
+        payload = copy.deepcopy(payload)
+        call = (client.query(SAVED, refine=payload) if location in REFINEMENT_LOCATIONS
+                else client.query(payload))
         with pytest.raises((ValidationError, UnknownKeyError)) as info:
-            if location in REFINEMENT_LOCATIONS:
-                await client.query(SAVED, refine=copy.deepcopy(payload))
-            else:
-                await client.query(copy.deepcopy(payload))
+            await call
         err, loc = refusal(info.value)
         assert err.key == STRAY
         assert has_suffix(loc, expected_loc), loc
@@ -270,8 +272,9 @@ def extension_with_stray(part: str) -> dict[str, Any]:
 class TestDatasetSidePartsKeepTheDatasetRules:
     @pytest.mark.parametrize("part", sorted(EXTENSION_PARTS))
     def test_a_fresh_stray_key_is_refused(self, part: str) -> None:
+        payload = {**BASE, "extensions": [extension_with_stray(part)]}
         with pytest.raises((ValidationError, UnknownKeyError)) as info:
-            SlayerQuery.model_validate({**BASE, "extensions": [extension_with_stray(part)]})
+            SlayerQuery.model_validate(payload)
         err, loc = refusal(info.value)
         assert err.key == STRAY
         assert loc == ("extensions", 0, part, 0)

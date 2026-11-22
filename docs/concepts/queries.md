@@ -21,6 +21,8 @@ A `SlayerQuery` specifies what data to retrieve from a dataset.
 | `whole_periods_only` | bool | No | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](time.md#whole_periods_only) |
 | `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-dataset-metrics). Omitted (the default) or `associate`: per-cell value over the distinct associated rows; or `error` (refuse). Semi-join-pushed filters are always applied and never error. |
 
+A key a query, refinement or entry does not read is refused with an `UnknownKeyError` naming it, its location and the keys that object takes; a camelCase spelling of a key it takes (`timeDimensions`, `dateRange`) is read as the snake_case key.
+
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
 A query carries no tenant scoping of its own. To force every query through an engine to one tenant's rows — joins and sub-queries included — configure a policy at engine construction; see [Row-Level Security](row-level-security.md).
@@ -195,7 +197,7 @@ A downstream stage of a multi-stage query may declare a time dimension on any DA
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are dataset granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
-`date_range` is one time point (`"2025-Q1"`, `"last month"`) or a `[lower, upper]` pair with either bound `null`, read with the [time-point semantics](time.md#date_range) — a date-only bound there covers its whole day.
+`date_range` is one time point (`"2025-Q1"`, `"last month"`) or a `[lower, upper]` pair with either bound `null`, read with the [time-point semantics](time.md#date_range) — a date-only bound there covers its whole day. Cube's `dateRange` reads as `date_range`; its `compareDateRange` is refused — compare periods with `change`, `change_pct` or `time_shift`.
 
 ## OrderItem
 
