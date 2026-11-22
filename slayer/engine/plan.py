@@ -141,10 +141,10 @@ def _stage_scope_and_bundle_unframed(
     named = {n: s for n, s in stage_schemas.items() if (n in reads or n in bundle.query_backed) and n != src}
     if isinstance(src, str) and src in stage_schemas:
         # A sibling population is read as the dataset its schema defines.
-        source = dataset_from_stage_schema(
+        source = query_host(dataset_from_stage_schema(
             name=src, schema=stage_schemas[src], data_source=data_source,
             saved=bundle.query_backed.get(src),
-        )
+        ), query=query)
     else:
         assert stage_dataset is not None
         source = stage_dataset
@@ -280,6 +280,9 @@ class _StagePlanner:
         name = query.population_name or ""
         # The statement's own stages read datasets as bound; a spliced stage rebinds them under its layers.
         source = self.bundle.datasets_by_name.get(name) if variables is None else self.bundle.unbound_dataset(name)
+        if source is not None:
+            # A cells query is a spine query of its own, or none: its host's spine factor follows it.
+            source = query_host(source.as_population_factor(False) if source.population_spine else source, query=query)
         if source is not None and variables is not None:
             source = substitute_dataset_sql_surfaces(
                 dataset=source, variables={**(source.query_variables or {}), **variables},

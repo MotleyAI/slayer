@@ -220,12 +220,14 @@ def shortest_routes(
 
 def _successors(
     graph: _Graph, *, node: str, route: Route, root: str, hop_filter: HopFilter, admit: Callable[[str], bool],
+    admit_edge: Callable[[OrientedRelationship], bool] | None = None,
 ) -> Iterator[tuple[str, Route]]:
-    """``route`` extended by each filtered addressable hop off ``node`` into a dataset ``admit`` accepts."""
+    """``route`` extended by each filtered addressable hop off ``node`` (that ``admit_edge`` admits) into a dataset
+    ``admit`` accepts."""
     if not graph.passes(node, root=root):
         return
     for hop in graph.hops(node, hop_filter):
-        if admit(hop.edge.to):
+        if admit(hop.edge.to) and (admit_edge is None or admit_edge(hop.edge)):
             yield hop.edge.to, _extend(route, hop)
 
 
@@ -240,8 +242,9 @@ def shortest_route(
 def routes(
     *, root: SlayerDataset, target: str, datasets_by_name: dict[str, SlayerDataset],
     hop_filter: HopFilter = HopFilter.ALL, cap: int = 2, shortest_only: bool = False,
+    admit_edge: Callable[[OrientedRelationship], bool] | None = None,
 ) -> list[Route]:
-    """Up to ``cap`` simple routes ``root → target`` in tie-break order (best-first)."""
+    """Up to ``cap`` simple routes ``root → target`` in tie-break order (best-first), over edges ``admit_edge`` admits."""
     graph = _Graph({**datasets_by_name, root.name: root})
     if target not in graph.datasets:
         return []
@@ -260,7 +263,7 @@ def routes(
             continue
         visited = {root.name, *(e.to for e in route.edges)}
         for nxt, ext in _successors(graph, node=node, route=route, root=root.name, hop_filter=hop_filter,
-                                    admit=lambda n: n not in visited and n in relevant):
+                                    admit=lambda n: n not in visited and n in relevant, admit_edge=admit_edge):
             heapq.heappush(heap, (ext.rank(), next(tie), ext, nxt))
     return out
 

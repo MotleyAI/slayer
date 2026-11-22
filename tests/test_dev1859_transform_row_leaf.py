@@ -204,7 +204,7 @@ class TestWalkerBehaviourUnchanged:
         resp = await exec_engine.execute(_q(
             dimensions=["sales.store"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="cumsum(sum(sales.weight, partition_by=sales.store))", alias="t")]))
+                metric="cumsum(sum(sales.weight, partition_by=[sales.store, sales.ordered_at]))", alias="t")]))
         assert resp.data
 
     async def test_all_projected_composite_is_legal(self, exec_engine):

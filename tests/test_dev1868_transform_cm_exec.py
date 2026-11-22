@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.errors import TimeAxisError
 from slayer.core.query import QueryMetric
 
 from tests._dev1836_fixtures import (
@@ -16,9 +17,10 @@ from tests._dev1836_fixtures import (
 from tests._dev1868_fixtures import (
     CHANGE_LAST_BY_REGION_MONTH,
     CM_PART_TIER,
-    CUMSUM_PART_BY_TIER_MONTH,
     LAST_REGION,
     LAST_SPEND_BY_REGION,
+    RANK_PART_BY_TIER,
+    TIER_MONTHS,
     keyed_by_month,
 )
 
@@ -32,20 +34,25 @@ async def exec_engine(request):
         yield engine
 
 
-class TestCumsumOverCrossModelPartitioned:
-    async def test_accumulates_the_per_tier_totals(self, exec_engine) -> None:
+RANK = f"rank({CM_PART_TIER}, direction='desc')"
+
+
+class TestTransformOverCrossModelPartitioned:
+    async def test_ranks_the_per_tier_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")],
+            metrics=[QueryMetric(metric=RANK, alias="r")],
         ))
         by = keyed_by_month(resp, TIER)
-        assert set(by) == set(CUMSUM_PART_BY_TIER_MONTH)
-        for key, expected in CUMSUM_PART_BY_TIER_MONTH.items():
-            cell = by[key]["c"]
-            if expected is None:
-                assert cell is None
-            else:
-                assert float(cell) == pytest.approx(expected)
+        assert set(by) == TIER_MONTHS
+        for (tier, _month), row in by.items():
+            assert row["r"] == RANK_PART_BY_TIER[tier]
+
+    async def test_cumsum_without_the_time_key_fails(self, exec_engine) -> None:
+        query = q(dimensions=["customers.tier"], time_dimensions=month_td(),
+                  metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")])
+        with pytest.raises(TimeAxisError):
+            await exec_engine.execute(query)
 
 
 class TestChangeOverCrossModelRanked:
@@ -72,30 +79,23 @@ class TestChangeOverCrossModelRanked:
 
 class TestTransformFilterAndOrderPositions:
     async def test_transform_in_filter_position(self, exec_engine) -> None:
-        resp = await exec_engine.execute(q(
-            dimensions=["customers.tier"], time_dimensions=month_td(),
-            filter=[f"cumsum({CM_PART_TIER}) > 200"],
-            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
-        ))
-        by = keyed_by_month(resp, TIER)
-        # Only gold's running total clears 200, from February on.
-        assert set(by) == {("gold", "2024-02"), ("gold", "2024-03")}
-        for key in by:
-            assert float(by[key]["s"]) == pytest.approx(5.0)
+        base = dict(dimensions=["customers.tier"], time_dimensions=month_td(),
+                    metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")])
+        plain = keyed_by_month(await exec_engine.execute(q(**base)), TIER)
+        by = keyed_by_month(await exec_engine.execute(q(**base, filter=[f"{RANK} = 1"])), TIER)
+        assert set(by) == {k for k in TIER_MONTHS if k[0] == "gold"}
+        for key, row in by.items():
+            assert row["s"] == plain[key]["s"]
 
     async def test_transform_as_order_target(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filter=["customers.tier is not null"],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
-            order=[{"field": f"cumsum({CM_PART_TIER})", "direction": "desc"}],
+            order=[{"field": RANK, "direction": "asc"}],
         ))
-        by = keyed_by_month(resp, TIER)
-        # Sorted by the hidden running total: 480, 320, 160, 150, 40.
-        assert list(by) == [
-            ("gold", "2024-03"), ("gold", "2024-02"), ("gold", "2024-01"),
-            ("silver", "2024-02"), ("bronze", "2024-03"),
-        ]
+        # Sorted by the hidden tier rank: gold, silver, bronze.
+        assert [r[TIER] for r in resp.data] == ["gold", "gold", "gold", "silver", "bronze"]
 
 
 class TestSharedInnerAcrossConsumers:
@@ -103,11 +103,9 @@ class TestSharedInnerAcrossConsumers:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filter=[f"{CM_PART_TIER} > 100"],
-            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")],
+            metrics=[QueryMetric(metric=RANK, alias="r")],
         ))
         by = keyed_by_month(resp, TIER)
-        expected = {k: v for k, v in CUMSUM_PART_BY_TIER_MONTH.items()
-                    if k[0] in ("gold", "silver")}  # per-tier totals > 100
-        assert set(by) == set(expected)
-        for key, value in expected.items():
-            assert float(by[key]["c"]) == pytest.approx(value)
+        assert set(by) == {k for k in TIER_MONTHS if k[0] in ("gold", "silver")}  # per-tier totals > 100
+        for (tier, _month), row in by.items():
+            assert row["r"] == RANK_PART_BY_TIER[tier]

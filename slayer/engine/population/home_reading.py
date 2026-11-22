@@ -53,14 +53,14 @@ def home_frame(
 
 def _read_leaf(
     r: FieldKey | FieldSqlKey, *, home: SlayerDataset, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
-    frame: Optional[Frame] = None,
+    frame: Optional[Frame] = None, fanning: bool = False,
 ) -> Optional[ValueKey]:
     """``r`` read from ``home``: its anchor reached by the home's own route, one anchored at the aggregation's
     ``frame`` read back along the source's path; ``None`` when the home reaches it by no relationship path (an
     ambiguous route raises)."""
     if r.anchor is None and r.path[:1] == (TIME_SPINE_DATASET,):
         # Anchored at the spine: each home reaches it by its own nearest axis (Axiom 15).
-        route = _spine_route(home, datasets_by_name=datasets_by_name, leaf=field_leaf(r))
+        route = _spine_route(home, datasets_by_name=datasets_by_name, leaf=field_leaf(r), fanning=fanning)
         return None if route is None else r.model_copy(update={"path": (*route, *r.path[1:])})
     spelling = anchored_spelling(r, reader=host)
     anchor = host if spelling[0] == host.name else datasets_by_name.get(spelling[0])
@@ -69,7 +69,7 @@ def _read_leaf(
     if anchor.name == home.name:
         return r.model_copy(update={"path": spelling[1:], "anchor": None})
     if is_spine(anchor):
-        route = _spine_route(home, datasets_by_name=datasets_by_name, leaf=field_leaf(r))
+        route = _spine_route(home, datasets_by_name=datasets_by_name, leaf=field_leaf(r), fanning=fanning)
         return None if route is None else r.model_copy(update={"path": (*route, *spelling[1:]), "anchor": None})
     if frame is not None and anchor.name == frame[0].name:
         # Anchored at the source's own frame: read back along the source's written path to the frame, then forward;
@@ -114,15 +114,18 @@ def reads_the_spine(key: ValueKey, *, host: SlayerDataset) -> bool:
         r.path[:1] == (TIME_SPINE_DATASET,) or (r.anchor is None and is_spine(host))) for r in outside_aggregates(key))
 
 
-def _spine_route(home: SlayerDataset, *, datasets_by_name: Dict[str, SlayerDataset], leaf: str) -> Optional[Tuple[str, ...]]:
-    """``home``'s route to the spine; equal-length routes fail spelled from the spine."""
+def _spine_route(
+    home: SlayerDataset, *, datasets_by_name: Dict[str, SlayerDataset], leaf: str, fanning: bool = False,
+) -> Optional[Tuple[str, ...]]:
+    """``home``'s route to the spine (across its nearest fanning axis when ``fanning``); equal-length routes fail
+    spelled from the spine."""
     try:
         hops = [e for e in neighbors(dataset=home, datasets_by_name=datasets_by_name)
                 if e.to == TIME_SPINE_DATASET and e.product is None]
         if len(hops) > 1:  # parallel hops to the spine are refused
             raise AmbiguousRelationshipPathError(source_dataset=home.name, target_dataset=TIME_SPINE_DATASET,
                                                  candidates=hops, token=TIME_SPINE_DATASET)
-        return home_spine_route(root_dataset=home, datasets_by_name=datasets_by_name)
+        return home_spine_route(root_dataset=home, datasets_by_name=datasets_by_name, fanning=fanning)
     except UnresolvableDimensionRelationshipError:
         spine = datasets_by_name.get(TIME_SPINE_DATASET)
         if spine is not None:
@@ -160,7 +163,7 @@ def _aggregate_at_home(
 
 def home_read(
     key: _KeyT, *, home: SlayerDataset, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
-    frame: Optional[Frame] = None,
+    frame: Optional[Frame] = None, fanning: bool = False,
 ) -> Optional[_KeyT]:
     """``key``, as the population ``host`` reads it, read from ``home``: each reference routed from the home by its
     anchored spelling (queries/references), an aggregate read from its own frame; ``None`` when the home reaches a
@@ -172,7 +175,7 @@ def home_read(
         if isinstance(r, AggregateKey):
             mapping[r] = _aggregate_at_home(r, home=home, host=host, datasets_by_name=datasets_by_name)
         elif isinstance(r, (FieldKey, FieldSqlKey)):
-            read = _read_leaf(r, home=home, host=host, datasets_by_name=datasets_by_name, frame=frame)
+            read = _read_leaf(r, home=home, host=host, datasets_by_name=datasets_by_name, frame=frame, fanning=fanning)
             if read is None:
                 return None
             mapping[r] = read

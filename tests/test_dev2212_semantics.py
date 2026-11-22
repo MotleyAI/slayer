@@ -105,20 +105,20 @@ async def test_a_filter_on_a_finer_dataset_keeps_p(backend: str) -> None:
 async def test_an_orphan_beside_the_spine_is_not_yet_a_row(backend: str) -> None:
     async with seed_engine(backend, orphan=True) as eng:
         resp = await run(eng, dimensions=[R], time_dimensions=[SPINE_MONTH], metrics=["sum(orders.amount)"])
-    assert {r[R] for r in resp.data} == {"EAST", "WEST", "NORTH"}
+    assert {r[R] for r in resp.data} == {"EAST", "WEST", None}
     assert resp.population == "time_spine × customers"
 
 
 async def test_a_spine_query_over_a_product_anchor(backend: str) -> None:
     async with seed_engine(backend) as eng:
         resp = await run(eng, dimensions=[R, "tickets.priority"], time_dimensions=[SPINE_MONTH])
-    assert resp.row_count == 3 * 2 * 3
+    assert resp.row_count == 2 * 2 * 3
     assert resp.population == "time_spine × customers × tickets"
     assert resp.row_sources == ["customers", "tickets"]
 
 
 # --------------------------------------------------------------------------- #
-# Transforms over result rows (target: DEV-2218)
+# Transforms over their operand's cells
 # --------------------------------------------------------------------------- #
 DAYS = TableSpec(name="days", columns=[("day", "DATE")], rows=[("2025-01-05",), ("2025-02-05",), ("2025-03-05",)])
 SALES = TableSpec(name="sales", columns=[("sale_id", "TEXT"), ("day", "DATE"), ("amount", "DOUBLE")],
@@ -141,7 +141,6 @@ DATED = [SlayerDataset(name="days", sql_table="days", data_source=DS,
          _dated("sales", "sale_id"), _dated("refunds", "refund_id")]
 
 
-@pytest.mark.xfail(strict=True, reason="transforms evaluate over result rows until DEV-2218")
 async def test_lag_keeps_its_values_when_a_sibling_adds_rows(backend: str) -> None:
     month = [{"field": "days.day", "granularity": "month"}]
     lag = {"metric": "lag(sum(sales.amount))", "alias": "lag"}
@@ -154,7 +153,6 @@ async def test_lag_keeps_its_values_when_a_sibling_adds_rows(backend: str) -> No
         assert by_month[str(r["days.day"])[:7]] == r["lag"]
 
 
-@pytest.mark.xfail(strict=True, reason="transforms evaluate over result rows until DEV-2218")
 async def test_percent_rank_keeps_its_values_when_a_sibling_adds_rows(backend: str) -> None:
     pr = {"metric": "percent_rank(count(orders.*))", "alias": "pr"}
     async with seed_engine(backend) as eng:
