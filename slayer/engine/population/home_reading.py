@@ -20,9 +20,9 @@ from slayer.core.keys import (
     substitute_value_keys,
     token_anchor,
 )
-from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.core.errors import AmbiguousRelationshipPathError, UnresolvableDimensionRelationshipError
 from slayer.core.models import SlayerDataset
-from slayer.core.relationship_walker import follow, reverse_token
+from slayer.core.relationship_walker import follow, neighbors, reverse_token
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.cardinality.relationship_safety import home_spine_route
 from slayer.engine.population.anchors import anchor_route
@@ -117,6 +117,11 @@ def reads_the_spine(key: ValueKey, *, host: SlayerDataset) -> bool:
 def _spine_route(home: SlayerDataset, *, datasets_by_name: Dict[str, SlayerDataset], leaf: str) -> Optional[Tuple[str, ...]]:
     """``home``'s route to the spine; equal-length routes fail spelled from the spine."""
     try:
+        hops = [e for e in neighbors(dataset=home, datasets_by_name=datasets_by_name)
+                if e.to == TIME_SPINE_DATASET and e.product is None]
+        if len(hops) > 1:  # parallel hops to the spine are refused
+            raise AmbiguousRelationshipPathError(source_dataset=home.name, target_dataset=TIME_SPINE_DATASET,
+                                                 candidates=hops, token=TIME_SPINE_DATASET)
         return home_spine_route(root_dataset=home, datasets_by_name=datasets_by_name)
     except UnresolvableDimensionRelationshipError:
         spine = datasets_by_name.get(TIME_SPINE_DATASET)
