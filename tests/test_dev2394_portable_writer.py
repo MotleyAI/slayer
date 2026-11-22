@@ -227,8 +227,9 @@ async def test_a_cross_dataset_metric_exports_its_interval_as_dateadd(tmp_path: 
     ratio = slayer_metric("recent_per_customer", "sum(amount) filter (where ordered_on > DATE '2026-01-01' "
                                                  "+ INTERVAL '10 days') / count_distinct(customers.id)")
     query = {"metrics": [{"metric": "orders.recent_per_customer", "alias": "v"}]}
-    config = DatasourceConfig(name=EXPORT_DS, type="duckdb", database=str(tmp_path / "export.duckdb"))
-    with contextlib.closing(duckdb.connect(config.database)) as con:
+    database = str(tmp_path / "export.duckdb")
+    config = DatasourceConfig(name=EXPORT_DS, type="duckdb", database=database)
+    with contextlib.closing(duckdb.connect(database)) as con:
         for statement in EXPORT_DDL:
             con.execute(statement)
     async with owned_query_engine(storage=make_storage("yaml", tmp_path / "a"), datasources=[config]) as engine:

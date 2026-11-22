@@ -11,29 +11,29 @@
 
 ## 2. Re-vendor
 
-- [ ] 2.1 Implement `scripts/ossie_schema_drift.py --vendor <checkout> [--out DIR]` with the managed file set (today's set + core-spec text + `compliance/expressions/*.txt`); verify task 1.1 passes.
-- [ ] 2.2 Run `--vendor` on a fresh clone of apache/ossie `main`; verify provenance names the commit, the corpus test runs on the new snapshot, and only `harvested/0c27bf637ef2.yaml` and the new tests fail before task 3. Any other new failure the snapshot surfaces is raised with the owner before continuing.
+- [x] 2.1 Implement `scripts/ossie_schema_drift.py --vendor <checkout> [--out DIR]` with the managed file set (today's set + core-spec text + `compliance/expressions/*.txt`); verify task 1.1 passes.
+- [x] 2.2 Run `--vendor` on a fresh clone of apache/ossie `main`; verify provenance names the commit, the corpus test runs on the new snapshot, and only `harvested/0c27bf637ef2.yaml` and the new tests fail before task 3. Any other new failure the snapshot surfaces is raised with the owner before continuing.
 
 ## 3. Validity and parsing
 
-- [ ] 3.1 One shared `AGG` iterator + predicate covering both sqlglot shapes; replace every enumeration and predicate use (`core/ossie_validity.py`, `storage/semantic_models.py`, `storage/model_metric_rules.py`, `osi/exporter.py`, any other caller found by LSP); verify task 1.3 passes.
-- [ ] 3.2 Native validity: dataset-scoped `AGG(source.measure)` rules, field-expression wording, `3719487` construct rejections, `d4dca4e` field-aggregate rejection; verify tasks 1.2 and 1.4 pass.
-- [ ] 3.3 One document-text parser (duplicate keys, constructor errors, merge precedence) used by `storage/semantic_models.py`, `storage/base.py`, `osi/importer.py` (incl. the legacy re-parse) and `osi/exporter.py`; verify task 1.5 passes.
+- [x] 3.1 One shared `AGG` iterator + predicate covering both sqlglot shapes; replace every enumeration and predicate use (`core/ossie_validity.py`, `storage/semantic_models.py`, `storage/model_metric_rules.py`, `osi/exporter.py`, any other caller found by LSP); verify task 1.3 passes.
+- [x] 3.2 Native validity: dataset-scoped `AGG(source.measure)` rules, field-expression wording, `3719487` construct rejections, `d4dca4e` field-aggregate rejection; verify tasks 1.2 and 1.4 pass.
+- [x] 3.3 One document-text parser (duplicate keys, constructor errors, merge precedence) used by `storage/semantic_models.py`, `storage/base.py`, `osi/importer.py` (incl. the legacy re-parse) and `osi/exporter.py`; verify task 1.5 passes.
 
 ## 4. Load, save, import
 
-- [ ] 4.1 Load warning for dataset metrics calling `AGG(source.…)`, transitive and cycle-safe propagation through model-scoped metrics, typed query error with the chain; verify task 1.6's load and query cases pass.
-- [ ] 4.2 Save-time refusal for SLayer-authored `AGG(source.x)` dataset metrics (always the source reading); unchanged warned entities survive document saves; verify task 1.6's save cases pass.
-- [ ] 4.3 `import-osi` reports source-measure metrics as not evaluable yet; verify task 1.6's import case passes.
+- [x] 4.1 Load warning for dataset metrics calling `AGG(source.…)`, transitive and cycle-safe propagation through model-scoped metrics, typed query error with the chain; verify task 1.6's load and query cases pass.
+- [x] 4.2 Save-time refusal for SLayer-authored `AGG(source.x)` dataset metrics (always the source reading); unchanged warned entities survive document saves; verify task 1.6's save cases pass.
+- [x] 4.3 `import-osi` reports source-measure metrics as not evaluable yet; verify task 1.6's import case passes.
 
 ## 5. Portable SQL writer
 
-- [ ] 5.1 Inventory every path writing `OSSIE_SQL_2026` (dataset tools, `edit_semantic_model`, model-metric saves, import upgrade, exporter) and route them through one canonical writer that respells `INTERVAL` as `DATEADD`; verify task 1.7 passes.
-- [ ] 5.2 Apply the approved engine principle 8 wording (design.md decision 8) to `architecture/python.engine.arc42.md`; verify `poetry run la-arch-check` passes.
+- [x] 5.1 Inventory every path writing `OSSIE_SQL_2026` (dataset tools, `edit_semantic_model`, model-metric saves, import upgrade, exporter) and route them through one canonical writer that respells `INTERVAL` as `DATEADD`; verify task 1.7 passes.
+- [x] 5.2 Apply the approved engine principle 8 wording (design.md decision 8) to `architecture/python.engine.arc42.md`; verify `poetry run la-arch-check` passes.
 
 ## 6. Docs
 
-- [ ] 6.1 Ossie pages and the model-scoped-metrics page state where `AGG(…)` is allowed (`AGG(dataset.metric)` in model-scoped metrics; `AGG(source.measure)` in dataset-scoped metrics, accepted but not evaluable yet); `docs/concepts/references.md` notes stored `INTERVAL` is written as `DATEADD`; agent help text on `AGG` placement (`slayer/memories/help_content/`) updated; verify every touched page is in the `zensical.toml` nav.
+- [x] 6.1 Ossie pages and the model-scoped-metrics page state where `AGG(…)` is allowed (`AGG(dataset.metric)` in model-scoped metrics; `AGG(source.measure)` in dataset-scoped metrics, accepted but not evaluable yet); `docs/concepts/references.md` notes stored `INTERVAL` is written as `DATEADD`; agent help text on `AGG` placement (`slayer/memories/help_content/`) updated; verify every touched page is in the `zensical.toml` nav.
 
 ## 7. Gates
 

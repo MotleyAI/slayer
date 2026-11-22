@@ -31,13 +31,15 @@ from slayer.core.errors import (
     DerivedFieldCircularError,
     DerivedFieldFanningError,
     DatasetFilterCycleError,
+    UnevaluableEntityError,
     UnreachableDefinitionError,
     UnresolvableDimensionRelationshipError,
 )
 from slayer.core.field_expression import portable_text
+from slayer.core.ossie_validity import SOURCE_MEASURE_REASON, reads_source_measure
 from slayer.core.relationship_search import unreachable_target
 from slayer.core.relationship_walker import OrientedRelationship, provably_to_one, walk, walk_miss, walk_terminal
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.deprecation import outside_stacklevel
 from slayer.core.syntax import DottedRef, Ref, drop_root_hop, parse_template, walk_parsed
 from slayer.engine.elaborate_env import validate_dataset_filter
@@ -624,20 +626,30 @@ def _filter_cycle(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]
 
 def check_evaluated_metrics(
     *, dataset: SlayerDataset, reachable: dict[str, SlayerDataset], model_metrics: AbstractSet[str] = frozenset(),
+    stored: SlayerDataset | None = None,
 ) -> None:
     """Refuse a metric of ``dataset`` whose ``AGG(…)`` is malformed or reads a field or one of the datasource's
-    ``model_metrics`` (``AggArgumentError``, ``AggFilterError``); an argument whose path misses is left to query time."""
+    ``model_metrics`` (``AggArgumentError``, ``AggFilterError``), or evaluates a source measure
+    (``UnevaluableEntityError``); an argument whose path misses is left to query time, and a metric unchanged from a
+    warned ``stored`` one passes."""
     datasets = {**reachable, dataset.name: dataset}
     for metric in dataset.metrics:
         text = portable_text(metric.expression)
-        if metric.load_warning is not None or text is None:
+        if metric.load_warning is not None or text is None or _unchanged_warned(metric, stored=stored):
             continue
+        if reads_source_measure(text):
+            raise UnevaluableEntityError(entity=f"Metric {metric.name!r}", reason=SOURCE_MEASURE_REASON)
         for node in walk_parsed(parse_template(text)):
             if not isinstance(node, (Ref, DottedRef)) or not node.evaluated:
                 continue
             parts = (node.name,) if isinstance(node, Ref) else node.parts
             _check_agg_argument(parts, metric_name=metric.name, dataset=dataset, datasets=datasets,
                                 model_metrics=model_metrics)
+
+
+def _unchanged_warned(metric: DatasetMetric, *, stored: SlayerDataset | None) -> bool:
+    old = stored.get_metric(metric.name) if stored is not None else None
+    return old is not None and old.load_warning is not None and old.expression == metric.expression
 
 
 def _check_agg_argument(

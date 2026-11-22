@@ -19,10 +19,10 @@ from slayer.core.errors import (
 )
 from slayer.core.field_expression import Expression, ExpressionObject, portable_text
 from slayer.core.keys import RESERVED_SCALAR_NAMES
-from slayer.core.ossie_validity import columns, is_agg_call, parse_ossie_sql
+from slayer.core.ossie_validity import agg_calls, columns, is_agg_call, parse_ossie_sql
 from slayer.core.models import SlayerDataset
 from slayer.core.semantic_model import ModelScopedMetric
-from slayer.storage.semantic_models import WINDOW_WARNING
+from slayer.storage.semantic_models import WINDOW_WARNING, chain_warning, unevaluable_chain
 
 __all__ = ["DocumentScope", "check_model_metric", "metric_cycle", "metric_references", "visible_model_metrics",
            "warn_broken_model_metrics"]
@@ -42,6 +42,10 @@ class DocumentScope(BaseModel):
     datasource_datasets: set[str]
     #: Every model-scoped metric name of the datasource, this edit's included.
     model_metrics: set[str]
+    #: This document's entities SLayer cannot evaluate (``d.m`` or a metric name): spelling and warning.
+    unevaluable: dict[str, tuple[str, str]] = {}
+    #: This document's kept model-scoped metrics: spelling and what each reads.
+    metric_graph: dict[str, tuple[str, set[str]]] = {}
 
 
 def _aggregated(node: exp.Expr) -> bool:
@@ -72,10 +76,9 @@ def _check_name(name: str, *, scope: DocumentScope) -> None:
         raise ModelMetricNameError(name=name, reason="a dataset of the datasource has that name")
 
 
-def _check_agg(call: exp.Anonymous, *, text: str, scope: DocumentScope) -> None:
+def _check_agg(call: exp.Expr, args: list[exp.Expr], *, text: str, scope: DocumentScope) -> None:
     if isinstance(call.parent, exp.Filter):
         raise AggFilterError(expression=text)
-    args = call.expressions
     arg = args[0] if len(args) == 1 else None
     if not isinstance(arg, exp.Column):
         raise AggArgumentError(expression=text, reason="its argument is not a single dataset.metric reference")
@@ -131,8 +134,12 @@ def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
         raise ModelMetricReferenceError(metric=name, reference=text, reason=f"it does not parse ({problem})")
     if tree.find(exp.Window) is not None:
         raise UnevaluableEntityError(entity=f"Metric {name!r}", reason=WINDOW_WARNING)
-    for call in [n for n in tree.find_all(exp.Anonymous) if is_agg_call(n)]:
-        _check_agg(call, text=text, scope=scope)
+    for call, args in agg_calls(tree):
+        _check_agg(call, args, text=text, scope=scope)
+    reads = {(f"{c.table}.{c.name}" if c.table else c.name).casefold() for c in tree.find_all(exp.Column)}
+    found = unevaluable_chain(reads - {name.casefold()}, targets=scope.unevaluable, graph=scope.metric_graph)
+    if found is not None:
+        raise UnevaluableEntityError(entity=f"Metric {name!r}", reason=chain_warning(*found))
     reads_metric = False
     for column in columns(tree, _OSSIE_SQL):
         if _inside_agg(column):

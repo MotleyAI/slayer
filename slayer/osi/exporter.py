@@ -11,14 +11,13 @@ from collections.abc import Iterator
 from typing import Any, Literal, cast
 
 import sqlglot
-import yaml
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.core.document_text import edit_text, without_vendor
-from slayer.core.errors import AmbiguousReferenceError, SlayerError
+from slayer.core.document_text import edit_text, parse_document_text, without_vendor
+from slayer.core.errors import AmbiguousReferenceError, OssieDocumentInvalidError, SlayerError
 from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
 from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
@@ -60,6 +59,7 @@ from slayer.sql.ossie_dialects import PORTABLE_READER, expression_digest, ossie_
 from slayer.osi.models import OSSIE_DATATYPES, TEMPORAL_DATATYPES, explicit_description
 from slayer.osi.yaml_writer import dump_yaml
 from slayer.core.ossie_expression import OSIExpression
+from slayer.core.portable_sql import portable_sql
 from slayer.sql.field_expansion import expand_field_definition_parts_sync, expand_derived_refs_sync
 from slayer.sql.root_scope import root_scope_field_ids
 from slayer.sql.dialects import dialect_for_ds_type
@@ -461,7 +461,7 @@ class _Exporter:
         others = [{"dialect": e.dialect, "expression": e.expression} for e in (
             stored.expression.dialects or [] if isinstance(stored.expression, ExpressionObject) else [])
             if token(e.dialect) not in (self.token, OSSIE_SQL)]
-        out: dict[str, Any] = {"sql": portable} if portable is not None else {}
+        out: dict[str, Any] = {"sql": portable_sql(portable)} if portable is not None else {}
         if portable is None or own or stored.sql is not None:
             others.append({"dialect": self.token, "expression": native})
         if others:
@@ -886,7 +886,7 @@ class _Exporter:
         tree = (self._with_agg(metric) if metric.scope == "model" else None) or metric.tree
         text = tree.sql(dialect=PORTABLE_READER if metric.portable else self.target)
         expression: dict[str, Any] = (
-            {"sql": text} if metric.portable else {"dialects": [{"dialect": self.token, "expression": text}]})
+            {"sql": portable_sql(text)} if metric.portable else {"dialects": [{"dialect": self.token, "expression": text}]})
         entity: dict[str, Any] = {"name": metric.name, "expression": expression}
         description = explicit_description(slayer_metric.description, meta.get("osi_ai_context"))
         if description:
@@ -1051,6 +1051,13 @@ async def _stored_documents(*, storage: Any, datasource: str) -> list[tuple[str,
     return documents
 
 
+def _parsed_document(name: str, text: str) -> Any:
+    try:
+        return parse_document_text(text)
+    except ValueError as exc:
+        raise OssieDocumentInvalidError(name=name, reasons=[str(exc)]) from exc
+
+
 async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: list[str] | None = None,
                      extensions: bool = True) -> OsiExportResult:
     """Export ``datasource``'s datasets (or the ``datasets`` subset) as an Ossie document and its report."""
@@ -1066,12 +1073,12 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
     virtual = await _expanded_query_backed(engine=engine, stored=stored, selected=selected)
     resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
     documents = await _stored_documents(storage=storage, datasource=datasource)
-    parsed = [yaml.safe_load(text) for _, text in documents]
+    parsed = [_parsed_document(name, text) for name, text in documents]
     members = {d["name"] for doc in parsed for d in doc["datasets"]}
     if datasets is None and len(documents) == 1 and members == set(stored):
         text = documents[0][1] if extensions else edit_text(documents[0][1],
                                                             lambda data: without_vendor(data, ext.VENDOR))
-        return OsiExportResult(document=yaml.safe_load(text), text=text, warnings=[])
+        return OsiExportResult(document=parse_document_text(text), text=text, warnings=[])
     result = _Exporter(config=config, datasets=stored, selected=selected, virtual=virtual, extensions=extensions,
                        resolved=resolved, documents=parsed).run()
     result.text = dump_yaml(result.document)
