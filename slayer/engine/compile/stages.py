@@ -2441,7 +2441,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
                     alias=alias, root_name=root_name, active_td_name=None, attributable=False,
                 )
             assert active_td is not None and td_home is not None  # the checker raised otherwise
-            window_td_key = cast(TimeTruncKey, dict(safe_pairs).get(active_td) or _rerooted(td_home))
+            window_td_key = cast(TimeTruncKey, dict(safe_pairs).get(active_td) or td_home)
     else:
         # BROADCAST / ERROR ARM: an unattributable explicit key is a hard error.
         if product_associate:

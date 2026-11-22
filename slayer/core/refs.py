@@ -203,9 +203,9 @@ def _partition_key_display(key: Any) -> str:
     if isinstance(key, (TimeTruncKey, ListSetKey)):
         key = key.source
     if isinstance(key, FieldKey):
-        parts = [*key.path, key.leaf]
+        parts = [*map(display_token, key.path), key.leaf]
     elif isinstance(key, FieldSqlKey):
-        parts = [*key.path, key.field_name]
+        parts = [*map(display_token, key.path), key.field_name]
     else:
         parts = [legacy_key_str(key)]
     return _NON_IDENT_RE.sub("_", "_".join(parts)).strip("_")
@@ -381,7 +381,7 @@ def agg_kwarg_canonical_str(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, (FieldKey, FieldSqlKey)):
-        return ".".join((*value.path, value.leaf if isinstance(value, FieldKey) else value.field_name))
+        return ".".join((*map(display_token, value.path), value.leaf if isinstance(value, FieldKey) else value.field_name))
     if isinstance(value, AggregateKey):
         return _agg_key_canonical_str(value)
     if isinstance(value, TransformKey):
