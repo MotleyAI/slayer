@@ -1,9 +1,9 @@
 ## 1. Tests (pr-tests stage)
 
-- [ ] 1.1 Write `tests/test_law_dataset_objects_validate_assignment.py` per design decision 9 (reachable-model walk from `SlayerDataset` / `DatasourceConfig` stopping at query-side models; frozen or `validate_assignment` + mixin; wrong-typed assignment raises and leaves the object unchanged; minimal-payload table failing on a missing entry; test-only model pinning the candidate commit); verify it fails on `main` for every non-frozen reachable model
-- [ ] 1.2 Write tests for every scenario in `specs/compatibility/ossie-vocabulary/spec.md`, including the `_from_sql` cases of design decision 5 (dict, prebuilt instance, post-construction `sql` assignment) and the `edit_model` rollback of decision 6; verify each fails on `main` for the right reason (refusal missing, not a fixture error)
-- [ ] 1.3 Write tests for every scenario in `specs/models/save-validation/spec.md` on YAML and SQLite storage, asserting the backend write is never called on refusal; verify each refusal scenario fails on `main` and the runtime-only scenario passes
-- [ ] 1.4 Ask the user's approval, naming each file and change, to align `tests/test_ossie_vocabulary_python_names.py:486` (`dataset.columns` case) and `:538` (they assign a field list dropping a relationship's key field); then align them
+- [x] 1.1 Write `tests/test_law_dataset_objects_validate_assignment.py` per design decision 9 (reachable-model walk from `SlayerDataset` / `DatasourceConfig` stopping at query-side models; frozen or `validate_assignment` + mixin; wrong-typed assignment raises and leaves the object unchanged; minimal-payload table failing on a missing entry; test-only model pinning the candidate commit); verify it fails on `main` for every non-frozen reachable model
+- [x] 1.2 Write tests for every scenario in `specs/compatibility/ossie-vocabulary/spec.md`, including the `_from_sql` cases of design decision 5 (dict, prebuilt instance, post-construction `sql` assignment) and the `edit_model` rollback of decision 6; verify each fails on `main` for the right reason (refusal missing, not a fixture error)
+- [x] 1.3 Write tests for every scenario in `specs/models/save-validation/spec.md` on YAML and SQLite storage, asserting the backend write is never called on refusal; verify each refusal scenario fails on `main` and the runtime-only scenario passes
+- [x] 1.4 Ask the user's approval, naming each file and change, to align `tests/test_ossie_vocabulary_python_names.py:486` (`dataset.columns` case) and `:538` (they assign a field list dropping a relationship's key field); then align them
 
 ## 2. Atomic assignment
 
