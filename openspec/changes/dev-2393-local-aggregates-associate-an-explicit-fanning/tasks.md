@@ -23,5 +23,5 @@
 
 ## 3. Close-out
 
-- [ ] 3.1 PR body lists DEV-2393 and DEV-1941 as closing references. Verify in the PR description.
+- [x] 3.1 PR body lists DEV-2393 and DEV-1941 as closing references. Verify in the PR description.
 - [ ] 3.2 After archive, propose (owner approval) retitling the two scenarios whose titles a MODIFIED delta cannot rename: `queries/partitioned-aggregates` "Attached parameter whose own partition key fans from its own home fails closed" and `queries/transforms` "Partition key across a fanning hop stays a typed error". Their bodies already state the per-mode behaviour. Verify `openspec validate --specs --strict` passes after the edit.
