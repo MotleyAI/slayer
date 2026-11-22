@@ -810,12 +810,12 @@ class StorageBackend(ABC):
         """Patch document ``document``: dataset ``name`` becomes ``mutate(current)`` (``None`` removes it), read and
         written as one serialized step."""
         datasource = await self.get_datasource(data_source)
-        ds_type = datasource.type if datasource is not None else None
+        ds_type, granularities = (datasource.type, datasource.granularities) if datasource is not None else (None, [])
         reader = dialect_for_ds_type(ds_type).sqlglot_name
 
         def patch(text: str) -> str:
             current = decompose(text=text, name=document, data_source=data_source, ds_type=ds_type,
-                                granularities=datasource.granularities if datasource is not None else [])
+                                granularities=granularities)
             old = next((d for d in current.datasets if d.name.casefold() == name.casefold()), None)
             new = mutate(old)
             base = (new._read_as if new is not None and new._read_as is not None else None) or old
