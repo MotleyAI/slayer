@@ -7,12 +7,15 @@ from typing import Dict, Iterator, Optional, Tuple, TypeVar
 
 from slayer.core.keys import (
     AggregateKey,
+    anchor_token,
     FieldKey,
     FieldSqlKey,
+    Grain,
     ValueKey,
     field_leaf,
     framed_aggregate,
     is_framed_path,
+    reroot_value_key,
     source_leaf_paths,
     substitute_value_keys,
     token_anchor,
@@ -83,6 +86,26 @@ def outside_aggregates(key: ValueKey) -> Iterator[ValueKey]:
             yield from outside_aggregates(c)
 
 
+def _aggregate_at_home(
+    agg: AggregateKey, *, home: SlayerDataset, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> AggregateKey:
+    """An aggregate the population reads, as ``home`` reads it: its interior from its own frame (no anchor hop when
+    that frame is the home), its grain from the home."""
+    leaf_paths = source_leaf_paths(agg.source)
+    framed = any(is_framed_path(p) for p in leaf_paths)
+    own_frame = anchor_token(home.name)
+    if framed and own_frame in {p[0] for p in leaf_paths if p}:
+        interior = reroot_value_key(agg.model_copy(update={"partition_keys": None}), target_path=(own_frame,))
+    elif leaf_paths and not framed and host.name != home.name:
+        interior = framed_aggregate(agg, frame=host.name)
+    else:
+        interior = agg
+    if agg.partition_keys is None:
+        return interior
+    grain = (home_read(p, home=home, host=host, datasets_by_name=datasets_by_name) or p for p in agg.partition_keys)
+    return interior.model_copy(update={"partition_keys": Grain.of(grain)})
+
+
 def home_read(
     key: _KeyT, *, home: SlayerDataset, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
     frame: Optional[Frame] = None,
@@ -95,8 +118,7 @@ def home_read(
         if r in mapping:
             continue
         if isinstance(r, AggregateKey):
-            if not any(is_framed_path(p) for p in source_leaf_paths(r.source)) and source_leaf_paths(r.source):
-                mapping[r] = framed_aggregate(r, frame=host.name)
+            mapping[r] = _aggregate_at_home(r, home=home, host=host, datasets_by_name=datasets_by_name)
         elif isinstance(r, (FieldKey, FieldSqlKey)):
             read = _read_leaf(r, home=home, host=host, datasets_by_name=datasets_by_name, frame=frame)
             if read is None:
