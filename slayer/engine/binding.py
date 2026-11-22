@@ -17,7 +17,9 @@ from typing import Any, Callable, Dict, Final, List, Mapping, Optional, Tuple, T
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
+    AggArgumentError,
     AmbiguousRelationshipPathError,
+    UnevaluableEntityError,
     ScalarArgumentError,
     ScalarOperandTypeError,
     AggregationArgumentError,
@@ -555,6 +557,8 @@ def _bind_leaf(
         return _bare_star(scope=scope)
     if not isinstance(parsed, (Ref, DottedRef)):
         return None
+    if parsed.evaluated:
+        return _bind_evaluated(parsed, scope=scope, bundle=bundle, metric_ctx=metric_ctx)
     try:
         if isinstance(parsed, Ref):
             return _resolve_ref(
@@ -567,6 +571,22 @@ def _bind_leaf(
         )
     except UnknownReferenceError as e:
         raise _with_hint(e, hint=_QUOTE_HINT.format(name=e.name)) if parsed.quoted else e
+
+
+def _bind_evaluated(
+    parsed: Ref | DottedRef,
+    *,
+    scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+    metric_ctx: Optional[MetricResolutionCtx],
+) -> ValueKey:
+    """``AGG(ref)``: the dataset metric ``ref`` names, bound as the reference itself; anything else is refused."""
+    plain = parsed.model_copy(update={"evaluated": False})
+    key = _bind_leaf(plain, scope=scope, bundle=bundle, alias_map=None, metric_ctx=metric_ctx)
+    if key is None or isinstance(key, (FieldKey, FieldSqlKey)):
+        raise AggArgumentError(expression=canonical_metric_text(parsed),
+                               reason=f"{canonical_metric_text(plain)!r} is a field")
+    return key
 
 
 def _bind_cmp(
@@ -807,6 +827,7 @@ def _resolve_ref(
     # A ``__``-bearing name is not special: it resolves like any other name.
     col = resolve_generated_field(dataset=dataset, name=name, quoted=quoted)
     if col is not None:
+        _check_evaluable(col, dataset=dataset)
         if col.needs_expansion:
             return FieldSqlKey(path=(), dataset=dataset.name, field_name=col.name)
         return FieldKey(path=(), leaf=col.name)
@@ -824,6 +845,13 @@ def _resolve_ref(
         scope_summary=f"{_dataset_label(dataset, bundle=bundle)} fields: {[c.name for c in dataset.fields]}",
         suggestion=_name_suggestion(name=name, dataset=dataset),
     )
+
+
+def _check_evaluable(entity: "DatasetField | DatasetMetric", *, dataset: SlayerDataset) -> None:
+    """Refuse reading a document entity SLayer loads but cannot evaluate yet."""
+    if entity.load_warning is not None:
+        kind = "Field" if isinstance(entity, DatasetField) else "Metric"
+        raise UnevaluableEntityError(entity=f"{kind} '{dataset.spelling}.{entity.name}'", reason=entity.load_warning)
 
 
 def _visible_datasets(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> List[SlayerDataset]:
@@ -1227,6 +1255,7 @@ def _resolve_terminal_leaf(
     → saved metric (re-anchored into host coords) → unresolved error."""
     col = resolve_generated_field(dataset=current, name=leaf, quoted=quoted)
     if col is not None:
+        _check_evaluable(col, dataset=current)
         if col.needs_expansion:
             # Derived / filtered field on a joined dataset — path is part of the
             # key so the cross-dataset planner can route via the relationship graph.
@@ -1318,6 +1347,7 @@ def _resolve_saved_metric(
     is the host→terminal relationship path (``()`` for bare/local); a cross-dataset
     metric binds against the target then prepends ``host_path``. Raises the
     ineligible-position error when ``metric_ctx`` is None."""
+    _check_evaluable(metric, dataset=terminal_dataset)
     if metric_ctx is None:
         raise _ineligible_saved_metric_error(
             ref_text=ref_text, dataset_name=terminal_dataset.spelling,
@@ -2080,7 +2110,9 @@ def _field_agg_refusal(*, col: DatasetField, fields, agg: str, custom: bool) -> 
             return None
         return (f"field {leaf!r} restricts allowed_aggregations to "
                 f"{sorted(col.allowed_aggregations)}; got {agg!r}.")
-    # Dataset-custom aggregations are exempt from the type-default gate.
+    # Dataset-custom aggregations, and fields of a type still unknown, are exempt from the type-default gate.
+    if col.datatype is None:
+        return None
     allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.datatype, frozenset())
     if custom or agg in allowed:
         return None

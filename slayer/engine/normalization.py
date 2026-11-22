@@ -68,12 +68,12 @@ class NormalizationResult(BaseModel):
 
 
 def _bare_name(expression: str, *, root: str) -> Optional[str]:
-    """The field-or-metric name ``expression`` is when it is a lone reference, else ``None``."""
+    """The field-or-metric name ``expression`` is when it is a lone reference (not ``AGG(…)``), else ``None``."""
     try:
         node = root_relative(parse_expr(expression), root)
     except ValueError:
         return None
-    return node.name if isinstance(node, Ref) else None
+    return node.name if isinstance(node, Ref) and not node.evaluated else None
 
 
 def _apply_misplaced_metric(

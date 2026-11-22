@@ -285,7 +285,7 @@ slayer validate-datasets --datasource jaffle_shop --force-clean --yes
 | `--cardinality` | off | Also profile each relationship's arity from the data. Full-scans both sides of every relationship, so it is opt-in. |
 | `--persist-cardinality` | off | Write the detected `cardinality` back onto each matching relationship (identified by target dataset + key pairs). Implies `--cardinality`. |
 | `--format` | `text` | `text`, or `json` for one `{"drift": [...], "join_safety": [...], "cardinality": {...}}` document. Cannot be combined with `--force-clean`. |
-| `--force-clean` | off | After printing the diff, prompt to apply each delete. Destructive; opt-in only. |
+| `--force-clean` | off | After printing the diff, prompt to apply each delete and write each [untyped](../concepts/schema-drift.md#untyped-findings) semantic-model field's live type into its document. Destructive; opt-in only. |
 | `-y` / `--yes` | off | With `--force-clean`, skip the confirmation prompt. |
 
 Without a cardinality flag the output is the drift diff, plus a `Join safety` section whenever unproven-relationship findings exist. With one, the report gains labelled `Schema drift` and `Join cardinality` sections (with `Join safety` between them), and any `--force-clean` apply happens *before* profiling, so it reads the repaired datasets.
@@ -362,23 +362,37 @@ slayer import-cube ./cube_project/model --datasource my_postgres --report ./repo
 
 ### `slayer import-osi`
 
-Import OSI (Open Semantic Interchange) configs into SLayer. See [Importing OSI configs](../osi/osi_import.md).
+Store Ossie (OSI) semantic-model documents natively, as written. See [Importing Ossie documents](../osi/osi_import.md).
 
 ```bash
 slayer import-osi ./osi_configs --datasource my_postgres
-slayer import-osi ./model.yaml --datasource my_postgres --dialect SNOWFLAKE
+slayer import-osi ./model.yaml --datasource my_postgres
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `osi_path` | Yes | Path to an OSI file or directory (`.yaml`/`.yml`/`.json`) |
-| `--datasource` | Yes | SLayer datasource name (must be reachable — column types come from live introspection) |
-| `--dialect` | No | OSI expression dialect to read (default `ANSI_SQL`); falls back to another SQL dialect when the requested one is absent |
+| `osi_path` | Yes | Path to an Ossie document or a directory of them (`.yaml`/`.yml`/`.json`) |
+| `--datasource` | Yes | Configured SLayer datasource the documents belong to; it must be reachable only to upgrade a legacy `semantic_model` wrapper document |
 | `--storage` | No | Storage path |
+
+Prints each stored semantic model and the import report. Exits 1 when any file is refused, after storing the others.
+
+### `slayer ossie-roundtrip`
+
+Import one Ossie document into scratch storage and export it again; your storage is never opened. Exits non-zero with the import's reasons when the document is refused.
+
+```bash
+slayer ossie-roundtrip model.ossie.yaml returned.ossie.yaml
+```
+
+| Argument | Required | Description |
+|------|----------|-------------|
+| `input` | Yes | The Ossie document to import |
+| `output` | Yes | Where to write the export; JSON when it ends in `.json`, YAML otherwise |
 
 ### `slayer export-osi`
 
-Export a datasource's datasets as an Ossie (OSI) document. See [Exporting to OSI](../osi/osi_export.md).
+Export a datasource as one Ossie (OSI) document: its semantic models merged with its standalone datasets, or a single semantic model's stored text unchanged. See [Exporting to OSI](../osi/osi_export.md).
 
 ```bash
 slayer export-osi --datasource my_postgres --out shop.osi.yaml
@@ -403,6 +417,26 @@ slayer datasets show orders
 slayer datasets create dataset.yaml
 slayer datasets delete orders
 ```
+
+A dataset of a semantic model is edited and deleted inside its document.
+
+### `slayer semantic-models`
+
+List, show and delete [semantic models](../concepts/semantic-models.md).
+
+```bash
+slayer semantic-models list --datasource shop
+slayer semantic-models show sales --datasource shop
+slayer semantic-models delete sales --datasource shop --yes
+```
+
+| Subcommand | Description |
+|------|-------------|
+| `list [--datasource X]` | One line per document: `<datasource>.<name>: <datasets>` |
+| `show <name> [--datasource X]` | Print the document's stored text |
+| `delete <name> [--datasource X] [--yes]` | Delete the document and its datasets, after a confirmation prompt that `--yes` skips |
+
+`--datasource` is needed for `show` and `delete` when the name exists in several datasources. An unknown document fails with an `Error:` line and exit code 1.
 
 ### `slayer datasources`
 

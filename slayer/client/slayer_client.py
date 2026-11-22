@@ -15,6 +15,7 @@ from typing import (
 )
 from urllib.parse import quote
 
+import yaml
 from typing_extensions import deprecated
 
 from slayer.async_utils import run_sync
@@ -71,6 +72,9 @@ Refinement = QueryRefinement | Mapping[str, Any] | None
 Variables = Mapping[str, Any] | None
 
 
+def _semantic_model_path(*, data_source: str, name: str) -> str:
+    return f"/semantic-models/{quote(data_source, safe='')}/{quote(name, safe='')}"
+
 class SlayerClient:
     """Async-first client for the SLayer REST API, or direct local mode.
 
@@ -125,6 +129,17 @@ class SlayerClient:
             )
             resp.raise_for_status()
             return resp.json()
+
+    async def _request_or_none(self, *, method: str, path: str) -> Any | None:
+        """``_request``, ``None`` when the server answers 404."""
+        if httpx is None:
+            return await self._request(method=method, path=path)
+        try:
+            return await self._request(method=method, path=path)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
 
     def _request_sync(
         self,
@@ -354,6 +369,68 @@ class SlayerClient:
             path="/datasources/priority",
             json={"priority": list(priority)},
         )
+
+    # ----- Semantic models -----
+
+    async def list_semantic_models(self, data_source: str | None = None) -> list[dict[str, str]]:
+        """Every stored semantic model as ``{data_source, name}``."""
+        if self._storage is not None:
+            return [{"data_source": ds, "name": n}
+                    for ds, n in await self._storage.list_semantic_models(data_source=data_source)]
+        params = {"data_source": data_source} if data_source else None
+        return await self._request(method="GET", path="/semantic-models", params=params)
+
+    async def get_semantic_model(self, name: str, *, data_source: str) -> str | None:
+        """A semantic model's text as stored; ``None`` when absent."""
+        if self._storage is not None:
+            return await self._storage.get_semantic_model_text(name, data_source=data_source)
+        found = await self._request_or_none(method="GET", path=_semantic_model_path(data_source=data_source, name=name))
+        return found["text"] if found is not None else None
+
+    async def create_semantic_model(
+        self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
+        datasets: list[str] | None = None,
+    ) -> None:
+        """Create a semantic model from Ossie ``content``, or from standalone ``datasets`` moved into it."""
+        if self._storage is not None:
+            await self._storage.create_semantic_model(data_source=data_source, name=name, content=content,
+                                                      datasets=datasets)
+            return
+        await self._request(method="POST", path="/semantic-models", json={
+            "data_source": data_source, "name": name, "content": content, "datasets": datasets})
+
+    async def replace_semantic_model(self, name: str, *, data_source: str, content: str | dict[str, Any]) -> None:
+        """Replace a semantic model's text."""
+        if self._storage is not None:
+            text = content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False)
+            await self._storage.save_semantic_model_text(data_source=data_source, name=name, text=text)
+            return
+        await self._request(method="PUT", path=_semantic_model_path(data_source=data_source, name=name), json={"content": content})
+
+    async def delete_semantic_model(self, name: str, *, data_source: str) -> bool:
+        """Delete a semantic model and its datasets; ``False`` when absent."""
+        if self._storage is not None:
+            return await self._storage.delete_semantic_model(name, data_source=data_source)
+        return await self._request_or_none(method="DELETE", path=_semantic_model_path(data_source=data_source, name=name)) is not None
+
+    def list_semantic_models_sync(self, data_source: str | None = None) -> list[dict[str, str]]:
+        return self._run_sync(self.list_semantic_models(data_source=data_source))
+
+    def get_semantic_model_sync(self, name: str, *, data_source: str) -> str | None:
+        return self._run_sync(self.get_semantic_model(name, data_source=data_source))
+
+    def create_semantic_model_sync(
+        self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
+        datasets: list[str] | None = None,
+    ) -> None:
+        self._run_sync(self.create_semantic_model(data_source=data_source, name=name, content=content,
+                                                  datasets=datasets))
+
+    def replace_semantic_model_sync(self, name: str, *, data_source: str, content: str | dict[str, Any]) -> None:
+        self._run_sync(self.replace_semantic_model(name, data_source=data_source, content=content))
+
+    def delete_semantic_model_sync(self, name: str, *, data_source: str) -> bool:
+        return self._run_sync(self.delete_semantic_model(name, data_source=data_source))
 
     # ----- Memory API -----
 

@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
+import yaml
 from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import FastAPI, HTTPException, Response
@@ -185,6 +186,14 @@ class IngestRequest(BaseModel):
             all_schemas=self.all_schemas,
         )
         return self
+
+
+class SemanticModelRequest(BaseModel):
+    """Body for ``POST /semantic-models`` (content, or standalone ``datasets`` to move in) and ``PUT``."""
+    data_source: str | None = None
+    name: str | None = None
+    content: str | dict[str, Any] | None = None
+    datasets: list[str] | None = None
 
 
 class ValidateDatasetsRequest(BaseModel):
@@ -673,6 +682,45 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+        return {"status": "deleted", "name": name}
+
+    @app.get("/semantic-models")
+    async def list_semantic_models(data_source: str | None = None) -> list[dict[str, str]]:
+        return [{"data_source": ds, "name": n} for ds, n in await storage.list_semantic_models(data_source=data_source)]
+
+    @app.get("/semantic-models/{data_source}/{name}", responses={404: {"description": "Semantic model not found."}})
+    async def get_semantic_model(data_source: str, name: str) -> dict[str, str]:
+        text = await storage.get_semantic_model_text(name, data_source=data_source)
+        if text is None:
+            raise HTTPException(status_code=404, detail=f"Semantic model '{data_source}.{name}' not found")
+        return {"data_source": data_source, "name": name, "text": text}
+
+    @app.post("/semantic-models", responses={400: {"description": "The document was refused."}})
+    async def create_semantic_model(body: SemanticModelRequest) -> dict[str, Any]:
+        if body.data_source is None:
+            raise HTTPException(status_code=400, detail="data_source is required")
+        try:
+            await storage.create_semantic_model(data_source=body.data_source, name=body.name, content=body.content,
+                                                datasets=body.datasets)
+        except ValueError as e:  # SlayerError is a ValueError subclass
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "created"}
+
+    @app.put("/semantic-models/{data_source}/{name}", responses={400: {"description": "The document was refused."}})
+    async def replace_semantic_model(data_source: str, name: str, body: SemanticModelRequest) -> dict[str, Any]:
+        if body.content is None:
+            raise HTTPException(status_code=400, detail="content is required")
+        text = body.content if isinstance(body.content, str) else yaml.safe_dump(body.content, sort_keys=False)
+        try:
+            await storage.save_semantic_model_text(data_source=data_source, name=name, text=text)
+        except ValueError as e:  # SlayerError is a ValueError subclass
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "replaced", "name": name}
+
+    @app.delete("/semantic-models/{data_source}/{name}", responses={404: {"description": "Semantic model not found."}})
+    async def delete_semantic_model(data_source: str, name: str) -> dict[str, Any]:
+        if not await storage.delete_semantic_model(name, data_source=data_source):
+            raise HTTPException(status_code=404, detail=f"Semantic model '{data_source}.{name}' not found")
         return {"status": "deleted", "name": name}
 
     @app.get("/datasources/priority")

@@ -11,7 +11,7 @@ from typing import Any, Iterator, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.errors import UnrelatedDatasetError, UnresolvableDimensionRelationshipError
+from slayer.core.errors import NoRowSourceError, UnrelatedDatasetError, UnresolvableDimensionRelationshipError
 from slayer.core.field_expression import portable_text
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import (
@@ -379,7 +379,7 @@ def _unit_plan(query: SlayerQuery, *, anchor: DimensionAnchor,
     population = host or first_metric_anchor(query)
     if population is None:
         anchor.required()
-        raise ValueError("a query with no dimensions, metrics or filters has no rows")
+        raise NoRowSourceError(metrics=[m.alias or m.metric for m in query.metrics or []])
     return RowPlan(population=population, supply=RowSupply(unit=True), row_sources=(UNIT,))
 
 

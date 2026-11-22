@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Sequence
 
 from slayer.core.models import SlayerDataset
 from slayer.embeddings import client as embedding_client
@@ -333,6 +334,14 @@ class EmbeddingRetriever(Retriever):
             text=pair.text,
         )
         return await self._apply_pending([pending])
+
+    async def refresh_documents(self, documents: Sequence[tuple[str, str, str]]) -> list[str]:
+        """Refresh semantic models and model-scoped metrics, as ``(canonical, kind, text)``."""
+        if not documents or not await embedding_client.is_available_async():
+            return []
+        return await self._apply_pending([
+            _PendingRefresh(canonical_id=canonical, entity_kind=kind, text=text)  # type: ignore[arg-type]
+            for canonical, kind, text in documents])
 
     async def refresh_dataset_subtree(self, dataset: SlayerDataset) -> list[str]:
         """Refresh the dataset doc + every visible field + named metrics

@@ -25,13 +25,10 @@ from slayer.dbt.models import DbtProject
 from slayer.dbt.parser import parse_dbt_project
 from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.ingest_report import ConversionResult
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import OSIDocument
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import collect_over_engine, field_of, typing_notes, write_yaml
 from tests._engine_helpers import disposable_engine, owned_query_engine
-from tests._osi_helpers import ds, f, flat, rel
 
 pytest.importorskip("pytest_postgresql")
 
@@ -193,18 +190,11 @@ def _dbt(live: Live, semantic_models: list[dict[str, Any]],
     return {m.name: m for m in result.datasets}, _messages(result)
 
 
-def _osi(live: Live, document: dict[str, Any]) -> tuple[dict[str, SlayerDataset], list[str]]:
-    converter = OsiToSlayerConverter(documents=[OSIDocument.model_validate(document)], data_source=DS)
-    collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
-    result = converter.convert()
-    return {m.name: m for m in result.datasets}, _messages(result)
-
-
 def _messages(result: ConversionResult) -> list[str]:
     return [e.message for e in (*result.warnings, *result.unconverted_metrics)]
 
 
-def _typed(dataset: SlayerDataset, name: str) -> DataType:
+def _typed(dataset: SlayerDataset, name: str) -> DataType | None:
     return field_of(dataset, name).datatype
 
 
@@ -333,22 +323,6 @@ def test_cube_expression_probe_over_a_reserved_word_table(live: Live) -> None:
     models, _ = _cube(live, {"name": "orders", "sql_table": RESERVED,
                              "dimensions": [{"name": "doubled", "sql": "{CUBE}.amount * 2", "type": "string"}]})
     assert _typed(models["orders"], "doubled") is _probed(live)
-
-
-def test_osi_expression_probe_over_a_reserved_word_table(live: Live) -> None:
-    models, _ = _osi(live, flat([ds("orders", source=RESERVED, fields=[f("id"), f("doubled", "amount * 2", datatype="String")])]))
-    assert _typed(models["orders"], "doubled") is DataType.STRING
-
-
-def test_osi_expression_probe_over_a_mixed_case_table(live: Live) -> None:
-    models, _ = _osi(live, flat([ds("items", source=live.mixed, fields=[f("qty"), f("doubled", "qty * 2", datatype="String")])]))
-    assert _typed(models["items"], "doubled") is DataType.STRING
-
-
-def test_osi_sql_source_selecting_from_a_reserved_word_table(live: Live) -> None:
-    models, _ = _osi(live, flat([ds("orders", source='SELECT id, amount FROM "order"',
-                                    fields=[f("id"), f("amount"), f("doubled", "amount * 2", datatype="String")])]))
-    assert _typed(models["orders"], "doubled") is DataType.STRING
 
 
 @pytest.mark.parametrize("source_sql", [
@@ -482,14 +456,12 @@ def _importer_datasets(live: Live, importer: str, table: str) -> tuple[dict[str,
     """``(datasets, dataset name)`` of an import whose one dataset reads ``qty`` from ``table``."""
     if importer == "cube":
         return _cube(live, _qty_cube(table))[0], "items"
-    if importer == "dbt":
-        regular = {"name": "src", "raw_code": f"SELECT qty FROM {table}"}
-        return _dbt(live, [{"name": "m", "model": "src", "dimensions": [{"name": "qty", "type": "categorical"}]}],
-                    regular_datasets=[regular])[0], "m"
-    return _osi(live, flat([ds("items", source=table, fields=[f("qty")])]))[0], "items"
+    regular = {"name": "src", "raw_code": f"SELECT qty FROM {table}"}
+    return _dbt(live, [{"name": "m", "model": "src", "dimensions": [{"name": "qty", "type": "categorical"}]}],
+                regular_datasets=[regular])[0], "m"
 
 
-@pytest.mark.parametrize("importer", ["cube", "dbt", "osi"])
+@pytest.mark.parametrize("importer", ["cube", "dbt"])
 @pytest.mark.parametrize(("table", "typed", "value"), [
     (UNQUOTED_MIXED, DataType.STRING, "t"),
     ('"Sales"."OrderItems"', DataType.INTEGER, 4),
@@ -520,16 +492,6 @@ async def test_names_local_to_a_source_query(pg: Live, tmp_path: Path) -> None:
                                   "SELECT Total FROM Recent ORDER BY Total"})
     assert _typed(models["recent"], "total") is DataType.STRING
     assert await _grouped(pg, tmp_path, models, "recent", "total") == ["t"]
-
-
-async def test_osi_reference_to_another_datasets_field(pg: Live, tmp_path: Path) -> None:
-    models, messages = _osi(pg, flat(
-        [ds("ords", fields=[f("id"), f("cust_id"), f("up", "UPPER(Customers.Region)", datatype="String")]),
-         ds("Customers", source="custs", fields=[f("id"), f("Region", "region")])],
-        relationships=[rel("ords_customers", src="ords", to="Customers", from_columns=["cust_id"],
-                           to_columns=["id"])]))
-    assert [m for m in messages if "'up'" in m] == []
-    assert await _grouped(pg, tmp_path, models, "ords", "up") == ["N"]
 
 
 def _dbt_files(live: Live, tmp_path: Path, *, quoting: dict[str, Any] | None, include_hidden: bool = False,

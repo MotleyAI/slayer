@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core import errors as core_errors
 from slayer.core import relationship_search
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.relationship_search import (
@@ -133,7 +134,7 @@ class TestAddressability:
         assert sorted(h.name for h in hops if h.name) == ["billing", "shipping"]
         assert unaddressable_pairs(datasets_by_name=models) == []
 
-    def test_edge_name_shadowing_a_model_makes_the_bare_edge_unaddressable(self) -> None:
+    def test_edge_name_shadowing_a_model_is_an_ambiguous_hop(self) -> None:
         models = _by(
             _m("mid", relationships=[_to("leaf"), _to("other", src="fk2", name="leaf")]),
             _m("leaf"),
@@ -141,9 +142,13 @@ class TestAddressability:
         )
         route = shortest_route(root=models["mid"], target="leaf", datasets_by_name=models)
         assert route is None
-        assert _tok(shortest_route(root=models["mid"], target="other", datasets_by_name=models)) == ("leaf",)
+        # "leaf" names the edge into other and the unnamed edge's target: ambiguous.
+        with pytest.raises(getattr(core_errors, "AmbiguousHopError")) as ei:
+            resolve_hop(current=models["mid"], token="leaf", datasets_by_name=models)
+        assert isinstance(ei.value, core_errors.AmbiguousReferenceError)
+        assert "leaf" in str(ei.value)
         pairs = unaddressable_pairs(datasets_by_name=models)
-        assert [{p.source_dataset, p.to} for p in pairs] == [{"mid", "leaf"}]
+        assert {"mid", "leaf"} in [{p.source_dataset, p.to} for p in pairs]
 
     def test_stage_spelling_shadowing_a_model(self) -> None:
         stage = _m("__stage_1", relationships=[_to("orders", cardinality=M2O)]).with_spelling("customers")

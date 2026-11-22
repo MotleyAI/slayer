@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Hashable, Iterable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -14,6 +15,9 @@ from slayer.core.errors import (
     MemoryNotFoundError,
     UnknownRelationshipTargetError,
 )
+from slayer.core.document_text import edit_text
+from slayer.core.field_expression import Expression
+from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
@@ -21,7 +25,12 @@ from slayer.engine.dataset_reads import Identity, datasets_read_by, placeholder
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX, Memory
 from slayer.storage.base import StorageBackend, _find_case_colliding_id, check_relationship_target_spellings
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
+from slayer.storage.document_mapping import as_expression, document_payload, with_document_payload
+from slayer.storage.model_metric_rules import metric_references, visible_model_metrics
+from slayer.storage.semantic_model_edits import metric_spec
+from slayer.storage.semantic_models import parse_document_text
 
+_SEMANTIC_MODEL = "semantic model"
 
 def can_access(dataset: SlayerDataset, *, tags: Iterable[str]) -> bool:
     """Untagged, or sharing a tag with the caller."""
@@ -34,6 +43,78 @@ def entity_dataset(entity: str) -> Identity | None:
         return None
     parts = entity.split(".")
     return (parts[0], parts[1]) if len(parts) >= 2 else None
+
+
+def _fold(name: Any) -> str:
+    return str(name).casefold()
+
+
+def _entities(content: str | dict[str, Any] | None) -> dict[str, Any]:
+    doc = parse_document_text(content) if isinstance(content, str) else content
+    return doc if isinstance(doc, dict) else {}
+
+
+def _declared_names(entities: dict[str, Any]) -> list[Any]:
+    core = [e.get("name") for key in ("datasets", "metrics") for e in entities.get(key) or [] if isinstance(e, dict)]
+    return [*core, *(m.name for m in document_payload(entities).metrics)]
+
+
+class _HiddenEntities(BaseModel):
+    """One datasource's datasets and model-scoped metrics a caller cannot access, case-folded."""
+
+    datasets: set[str]
+    metrics: set[str]
+
+    def hides(self, key: str, entity: dict[str, Any]) -> bool:
+        if key == "relationships":
+            return _touches(entity, hidden=self)
+        return _fold(entity.get("name")) in (self.datasets if key == "datasets" else self.metrics)
+
+    def held_by(self, text: str) -> bool:
+        doc = _entities(text)
+        return any(self.hides(key, e) for key in _ENTITY_KEYS for e in doc.get(key) or []) or any(
+            _fold(m.name) in self.metrics for m in document_payload(doc).metrics)
+
+
+_ENTITY_KEYS = ("datasets", "relationships", "metrics")
+
+
+def _touches(relationship: dict[str, Any], *, hidden: _HiddenEntities) -> bool:
+    return bool({_fold(relationship.get("from")), _fold(relationship.get("to"))} & hidden.datasets)
+
+
+def _without_hidden(doc: dict[str, Any], *, hidden: _HiddenEntities) -> dict[str, Any]:
+    out = dict(doc)
+    for key in _ENTITY_KEYS:
+        if key in doc:
+            out[key] = [e for e in doc[key] or [] if not hidden.hides(key, e)]
+    payload = document_payload(doc)
+    visible = [m for m in payload.metrics if _fold(m.name) not in hidden.metrics]
+    if len(visible) != len(payload.metrics):
+        with_document_payload(out, payload.model_copy(update={"metrics": visible}))
+    return out
+
+
+def _reinserted(items: list[Any], *, hidden: list[tuple[int, Any]]) -> list[Any]:
+    merged = list(items)
+    for index, item in hidden:
+        merged.insert(min(index, len(merged)), item)
+    return merged
+
+
+def _with_hidden(doc: dict[str, Any], *, full: dict[str, Any], hidden: _HiddenEntities) -> dict[str, Any]:
+    """``doc`` with ``full``'s hidden entities put back at their stored positions."""
+    out = dict(doc)
+    for key in _ENTITY_KEYS:
+        kept = [(i, e) for i, e in enumerate(full.get(key) or []) if hidden.hides(key, e)]
+        if kept:
+            out[key] = _reinserted(doc.get(key) or [], hidden=kept)
+    kept_metrics = [(i, m) for i, m in enumerate(document_payload(full).metrics) if _fold(m.name) in hidden.metrics]
+    if kept_metrics:
+        payload = document_payload(out)
+        with_document_payload(out, payload.model_copy(update={
+            "metrics": _reinserted(payload.metrics, hidden=kept_metrics)}))
+    return out
 
 
 class _Withheld(BaseModel):
@@ -91,6 +172,8 @@ def _visible_identities(
 
 class AccessFilteredStorage(StorageBackend):
     """``backend`` as a caller with ``tags`` sees it; ``bypass=True`` sees and writes everything."""
+
+    _delegates_documents = True
 
     def __init__(self, backend: StorageBackend, *, tags: Iterable[str], bypass: bool) -> None:
         self._inner = backend
@@ -178,6 +261,124 @@ class AccessFilteredStorage(StorageBackend):
         if self._bypass:
             return await self._inner._list_all_dataset_identities()
         return list((await self._view()).identities)
+
+    # ---- semantic-model documents: hidden entities read as absent, writes keep them --
+
+    async def _hidden_entities(self, data_source: str) -> _HiddenEntities:
+        view = await self._view()
+        datasets = {n.casefold() for ds, n in view.hidden if ds == data_source}
+        metrics = await self._inner.list_model_scoped_metrics(data_source)
+        visible = {m.name.casefold() for m in visible_model_metrics(metrics, hidden_datasets=datasets)}
+        return _HiddenEntities(datasets=datasets, metrics={m.name.casefold() for m in metrics} - visible)
+
+    async def _refuse_hidden_names(self, *, data_source: str, document: str, datasets: Iterable[Any] = (),
+                                   metrics: Iterable[dict[str, Any]] = (), relationships: Iterable[dict[str, Any]] = (),
+                                   names: Iterable[Any] = (), expressions: Iterable[Expression] = ()) -> None:
+        """Refuse a write naming or reading an entity the caller cannot access."""
+        hidden = await self._hidden_entities(data_source)
+        metrics = list(metrics)
+        read = {_fold(d) for d in datasets}
+        read |= {_fold(r.get(end)) for r in relationships for end in ("from", "to")}
+        named = {_fold(n) for n in names} | {_fold(m.get("name")) for m in metrics}
+        for expression in [*expressions, *(as_expression(metric_spec(m)["expression"]) for m in metrics)]:
+            read_datasets, read_metrics = metric_references(expression)
+            read |= read_datasets
+            named |= read_metrics
+        if read & hidden.datasets or named & (hidden.datasets | hidden.metrics):
+            raise HiddenContentConflictError(kind=_SEMANTIC_MODEL, name=document)
+
+    async def _refuse_hidden_in_document(self, *, data_source: str, document: str, entities: dict[str, Any],
+                                         datasets: Iterable[Any] = ()) -> None:
+        """Refuse a whole document that names or reads, in any metric, an entity the caller cannot access."""
+        await self._refuse_hidden_names(
+            data_source=data_source, document=document, datasets=datasets, names=_declared_names(entities),
+            relationships=entities.get("relationships") or [],
+            metrics=[m for m in entities.get("metrics") or [] if isinstance(m, dict)],
+            expressions=[m.expression for m in document_payload(entities).metrics])
+
+    async def _stored_document(self, name: str, data_source: str | None) -> tuple[str, str, str] | None:
+        target = await self._inner._resolve_document(name, data_source)
+        text = await self._inner.get_semantic_model_text(target[1], data_source=target[0]) if target else None
+        return (target[0], target[1], text) if target and text is not None else None
+
+    async def list_semantic_models(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        return await self._inner.list_semantic_models(data_source=data_source)
+
+    async def get_semantic_model_text(self, name: str, data_source: str | None = None) -> str | None:
+        if self._bypass:
+            return await self._inner.get_semantic_model_text(name, data_source=data_source)
+        stored = await self._stored_document(name, data_source)
+        if stored is None:
+            return None
+        ds, _, text = stored
+        hidden = await self._hidden_entities(ds)
+        return edit_text(text, lambda doc: _without_hidden(doc, hidden=hidden)) if hidden.held_by(text) else text
+
+    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str) -> None:
+        if not self._bypass:
+            entities = _entities(text)
+            await self._refuse_hidden_in_document(data_source=data_source, document=name, entities=entities)
+            stored =await self._stored_document(name, data_source)
+            hidden = await self._hidden_entities(data_source)
+            if stored is not None and hidden.held_by(stored[2]):
+                full = _entities(stored[2])
+                text = edit_text(stored[2], lambda _doc: _with_hidden(entities, full=full, hidden=hidden))
+        await self._inner.save_semantic_model_text(data_source=data_source, name=name, text=text)
+
+    async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
+        if not self._bypass:
+            stored = await self._stored_document(name, data_source)
+            if stored is None:
+                return False
+            if (await self._hidden_entities(stored[0])).held_by(stored[2]):
+                raise HiddenContentConflictError(kind=_SEMANTIC_MODEL, name=stored[1])
+        return await self._inner.delete_semantic_model(name, data_source=data_source)
+
+    async def semantic_model_owner(self, name: str, data_source: str) -> str | None:
+        if not self._bypass and name.casefold() in (await self._hidden_entities(data_source)).datasets:
+            return None
+        return await self._inner.semantic_model_owner(name, data_source=data_source)
+
+    async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
+        if not self._bypass and dataset.name.casefold() in (await self._hidden_entities(dataset.data_source)).datasets:
+            raise HiddenContentConflictError(kind="dataset", name=dataset.name)
+        await self._inner.save_dataset_extensions(dataset)
+
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
+        if not self._bypass:
+            await self._refuse_hidden_in_document(data_source=data_source, document=name, entities=_entities(text),
+                                                  datasets=replacing)
+        await self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing)
+
+    async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
+                                    datasets: list[str] | None = None) -> None:
+        if not self._bypass:
+            entities = _entities(content)
+            await self._refuse_hidden_in_document(data_source=data_source, document=str(name or entities.get("name")),
+                                                  entities=entities, datasets=datasets or [])
+        await self._inner.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets)
+
+    async def edit_semantic_model(self, name: str, *, data_source: str, **edits: Any) -> None:
+        if not self._bypass:
+            stored = await self._stored_document(name, data_source)
+            hidden = await self._hidden_entities(data_source)
+            relationships = edits.get("relationships") or []
+            hidden_relationships = {_fold(r.get("name")) for r in _entities(stored[2] if stored else None).get(
+                "relationships") or [] if _touches(r, hidden=hidden)}
+            touched = [*(edits.get("remove_relationships") or []), *(r.get("name") for r in relationships)]
+            if {_fold(n) for n in touched} & hidden_relationships:
+                raise HiddenContentConflictError(kind=_SEMANTIC_MODEL, name=name)
+            await self._refuse_hidden_names(data_source=data_source, document=name, relationships=relationships,
+                                            datasets=edits.get("add_datasets") or [], metrics=edits.get("metrics") or [],
+                                            names=edits.get("remove_metrics") or [])
+        await self._inner.edit_semantic_model(name, data_source=data_source, **edits)
+
+    async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
+        metrics = await self._inner.list_model_scoped_metrics(data_source)
+        if self._bypass:
+            return metrics
+        view = await self._view()
+        return visible_model_metrics(metrics, hidden_datasets={n.casefold() for ds, n in view.hidden if ds == data_source})
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         if self._bypass:

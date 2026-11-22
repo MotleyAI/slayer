@@ -69,8 +69,8 @@ def test_count_distinct_counts_as_count_distinct() -> None:
     assert _features("count(DISTINCT x)")[0] == Counter({"count_distinct": 1})
 
 
-def test_array_length_stays_custom() -> None:
-    found = query_features({"population": "m", "metrics": ["array_length(m.tags)"]})
+def test_an_unknown_call_stays_custom() -> None:
+    found = query_features({"population": "m", "metrics": ["array_size(m.tags)"]})
     assert Counter(found.aggregations) == Counter({"custom": 1})
     assert found.functions == []
 

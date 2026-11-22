@@ -767,11 +767,17 @@ class _SemiJoinOps:
         col: Callable[[str, str, bool], exp.Column],  # (table, name, quoted)
         table: Callable[[Any, bool], Tuple[Expression, str]],  # pyright: ignore[reportPrivateImportUsage] — sqlglot exports it
         attached: Set[Tuple[str, ...]],
+        computed: Callable[[str, str], Expression],  # (table, a computed key's expression)
     ) -> None:
         self.alias = alias
         self.col = col
         self.table = table
         self.attached = attached
+        self.computed = computed
+
+    def key(self, *, table: str, name: str, quoted: bool, computed: Optional[str]) -> Expression:
+        """One side's key read from ``table``: its column, or a computed key's expression."""
+        return self.col(table, name, quoted) if computed is None else self.computed(table, computed)
 
     def is_attached(self, hop: SemiJoinHop) -> bool:
         return tuple(hop.node_path) in self.attached
@@ -780,9 +786,10 @@ class _SemiJoinOps:
         """``parent_name`` maps a parent key and its quoting to the spine column projecting it."""
         alias = self.alias(tuple(hop.node_path))
         return [
-            exp.EQ(this=self.col(parent, parent_name(pc, pq) if parent_name else pc, pq),
-                   expression=self.col(alias, hc, hq))
-            for (pc, hc), (pq, hq) in zip(hop.join_pairs, _hop_quoting(hop))
+            exp.EQ(this=(self.col(parent, parent_name(pc, pq), pq) if parent_name
+                         else self.key(table=parent, name=pc, quoted=pq, computed=pk)),
+                   expression=self.key(table=alias, name=hc, quoted=hq, computed=hk))
+            for (pc, hc), (pq, hq), (pk, hk) in zip(hop.join_pairs, _hop_quoting(hop), _hop_computed(hop))
         ]
 
     def join(self, *, inner: exp.Select, hop: SemiJoinHop, eqs: List[Any]) -> exp.Select:
@@ -798,6 +805,11 @@ def _hop_quoting(hop: SemiJoinHop) -> List[Tuple[bool, bool]]:
     return list(hop.quoted) or [(False, False)] * len(hop.join_pairs)
 
 
+def _hop_computed(hop: SemiJoinHop) -> List[Tuple[Optional[str], Optional[str]]]:
+    """Per key pair, each side's computed-key expression (``None``: a column)."""
+    return list(hop.computed) or [(None, None)] * len(hop.join_pairs)
+
+
 def _spine_projection(*, ops: _SemiJoinOps, hops: Sequence[SemiJoinHop]):
     """The spine's distinct outer correlation columns: ``{(parent, col, quoted): name}``
     and their projection list; a column's alias is quoted as its key is."""
@@ -809,11 +821,12 @@ def _spine_projection(*, ops: _SemiJoinOps, hops: Sequence[SemiJoinHop]):
         parent_path = tuple(hop.node_path[:-1])
         parent = ops.alias(parent_path)
         prefix = f"{parent}__" if parent_path else ""
-        for (parent_col, _hop_col), (quoted, _) in zip(hop.join_pairs, _hop_quoting(hop)):
+        for (parent_col, _hop_col), (quoted, _), (computed, _) in zip(
+                hop.join_pairs, _hop_quoting(hop), _hop_computed(hop)):
             if (parent, parent_col, quoted) in spine_cols:
                 continue
             spine_cols[(parent, parent_col, quoted)] = prefix + parent_col
-            projection.append(exp.alias_(ops.col(parent, parent_col, quoted),
+            projection.append(exp.alias_(ops.key(table=parent, name=parent_col, quoted=quoted, computed=computed),
                                          key_identifier(prefix + parent_col, quoted=quoted)))
     return spine_cols, projection
 
@@ -4882,9 +4895,19 @@ class SQLGenerator:
 
     def _join_key(self, *, field: DatasetField, alias: str) -> Expression:
         # Table qualifiers are internal aliases.
+        if not field.is_base:
+            return self._computed_key(text=field.definition_sql or field.name, alias=alias)
         key = exp.Column(this=key_identifier(field.physical_name, quoted=field.physical_quoted),
                          table=exp.to_identifier(alias))
         return self._dialect.read_column(key, zoned=self._dialect.is_zoned_db_type(field.db_type))
+
+    def _computed_key(self, *, text: str, alias: str) -> Expression:
+        """A computed relationship key: its expression over ``alias``'s source columns."""
+        key = self._parse(text)
+        for column in key.find_all(exp.Column):
+            if not column.table:
+                column.set("table", exp.to_identifier(alias))
+        return key
 
     def _hop_join(
         self, *, edge: OrientedRelationship, prev_dataset: SlayerDataset, next_dataset: SlayerDataset, current_alias: str,
@@ -5871,8 +5894,7 @@ class SQLGenerator:
             hops.append(SemiJoinHop(
                 to=target.name, node_path=path, declared_left=declared_left,
                 null_extended=declared_left, lateral=edge.lateral if lateral else None,
-                join_pairs=tuple((s.physical_name, t.physical_name) for s, t in keys),
-                quoted=tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
+                **SemiJoinHop.key_args(keys),
             ))
         node_datasets = {(): dataset, **{p: chain[-1][1] for p, chain in chains.items()}}
 
@@ -5894,6 +5916,7 @@ class SQLGenerator:
                 this=key_identifier(name, quoted=quoted), table=exp.to_identifier(table_alias)),
             table=table,
             attached={tuple(h.node_path) for h in hops if len(h.node_path) == 1},
+            computed=lambda table_alias, text: self._computed_key(text=text, alias=table_alias),
         )
         inner = _semi_join_spine(ops=ops, hops=hops, inner=exp.select(exp.Literal.number(1)))
         return exp.Exists(this=inner.where(predicate))
@@ -6547,6 +6570,7 @@ class SQLGenerator:
                 tuple(h.node_path) for h in rest
                 if tuple(h.node_path[:-1]) not in in_group
             },
+            computed=lambda table, text: self._computed_key(text=text, alias=table),
         )
         inner = exp.select(exp.Literal.number(1))
         if any(h.null_extended for h in rest if ops.is_attached(h)):

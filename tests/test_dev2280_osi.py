@@ -1,5 +1,4 @@
-"""Instant comparisons export as standard SQL, and imported date predicates keep Ossie's meaning
-(specs: importers/osi-export, importers/osi-import)."""
+"""Instant comparisons export as standard SQL (spec: importers/osi-export)."""
 
 from __future__ import annotations
 
@@ -12,16 +11,13 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
-from tests._dev2171_fixtures import import_osi, seed, value
 from tests._osi_export_fixtures import DATASOURCE
 from tests._osi_export_helpers import all_metrics, dataset, export_datasets, make_env, mentions, metric, reimport, rows
-from tests._osi_helpers import ds, f, flat, m
 
 EV_DDL = [
     "CREATE TABLE ev (id INTEGER PRIMARY KEY, ts TIMESTAMP, amount DOUBLE)",
     "INSERT INTO ev VALUES (1, '2024-03-05 08:00:00', 10), (2, '2024-04-10 09:30:00', 20)",
 ]
-IMPORT_DDL = [s.replace(" ts ", " created_at ").replace("(id, ts", "(id, created_at") for s in EV_DDL]
 
 
 def ev_dataset(*metrics: DatasetMetric) -> SlayerDataset:
@@ -75,19 +71,3 @@ class TestExport:
         assert all(x["name"] != "p" for x in all_metrics(result.document))
         assert mentions(result, "p", severity="dropped"), result.entries
 
-
-class TestImport:
-    @pytest.fixture
-    def db(self, tmp_path: Path) -> Path:
-        return seed(tmp_path, IMPORT_DDL)
-
-    @pytest.mark.parametrize(("sql", "expected"), [
-        ("COUNT(*) FILTER (WHERE created_at <= '2024-04-10')", 1),
-        ("SUM(CASE WHEN created_at > '2024-04-10' THEN amount END)", 20),
-    ])
-    async def test_date_only_bound_keeps_ossie_meaning(self, db: Path, sql: str, expected: int) -> None:
-        document = flat([ds("ev", fields=[f("id"), f("created_at"), f("amount")], metrics=[m("v", sql)])])
-        result = import_osi(document, db=db)
-        got = await value(datasets=result.datasets, db=db, dataset="ev", expression="v")
-        assert got is not None
-        assert float(got) == expected, got

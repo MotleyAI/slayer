@@ -24,7 +24,7 @@ HELP_ID_PREFIX = "help."
 #: and inspect(compact=True). Keyed by the topic key (``NN_`` prefix stripped).
 _DESCRIPTIONS: dict[str, str] = {
     "intro": "Start here: what {{product}} is, the judgment calls queries require, and the deep-dive topics.",
-    "datasets": "Read before creating or editing a dataset: fields, saved metrics, custom aggregations, relationships, filters, query-backed datasets, result keys.",
+    "datasets": "Read before creating or editing a dataset: fields, saved metrics, custom aggregations, semantic models and model-scoped metrics, relationships, filters, query-backed datasets, result keys.",
     "workflow": "Read before building a non-trivial query: method, filter literals, verifying a result, error decoder, connecting databases.",
     "aggregations": "Read when a metric needs an aggregation beyond sum/count, partition_by, a trailing window, nesting, or empty-input semantics.",
     "transforms": "Read when a metric needs a running total, period-over-period change, time shift, lag/lead, ranking, or a streak.",

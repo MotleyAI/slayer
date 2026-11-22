@@ -1,0 +1,64 @@
+version: 0.3.0.dev0
+name: sales
+nonportable_extensions:
+- vendor_name: ACME
+  data:
+    at: model
+- vendor_name: OTHER
+  data:
+    at: other
+datasets:
+- name: orders
+  source: db.orders
+  nonportable_extensions:
+  - vendor_name: ACME
+    data:
+      at: dataset
+  - vendor_name: ACME
+    data:
+      at: dataset
+  fields:
+  - name: customer_id
+    expression:
+      sql: customer_id
+  - name: amount
+    expression:
+      sql: amount
+    nonportable_extensions:
+    - vendor_name: ACME
+      data:
+        at: field
+  metrics:
+  - name: order_total
+    expression:
+      sql: SUM(amount)
+    nonportable_extensions:
+    - vendor_name: ACME
+      data:
+        at: dataset metric
+- name: customers
+  source: db.customers
+  fields:
+  - name: id
+    expression:
+      sql: id
+relationships:
+- name: orders_to_customers
+  from: orders
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - id
+  nonportable_extensions:
+  - vendor_name: ACME
+    data:
+      at: relationship
+metrics:
+- name: total
+  expression:
+    sql: SUM(orders.amount)
+  nonportable_extensions:
+  - vendor_name: ACME
+    data:
+      at: metric

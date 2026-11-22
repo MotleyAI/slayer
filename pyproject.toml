@@ -37,6 +37,8 @@ pyparsing = ">=3.1"
 python-dateutil = ">=2.8"
 typing-extensions = ">=4.5"
 pyyaml = ">=6.0"
+# Round-trip YAML: a semantic-model document keeps its comments and layout through edits.
+ruamel-yaml = ">=0.19.1"
 fastapi = ">=0.100"
 uvicorn = ">=0.20"
 httpx = {version = ">=0.24", optional = true}
@@ -145,11 +147,10 @@ living-architecture = "0.12.0"
 jsonschema = "^4.23"
 filelock = ">=3.12,<4"
 pg8000 = "^1.31.6"
-ruamel-yaml = "^0.19.1"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--ignore=tests/perf"
+addopts = "--ignore=tests/perf --ignore=tests/fixtures/ossie_corpus"
 markers = [
     "integration: marks tests as integration tests (require a real database)",
     "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
@@ -176,7 +177,7 @@ typeCheckingMode = "basic"
 pythonVersion = "3.11"
 reportDeprecated = "error"
 include = ["slayer", "tests"]
-exclude = ["slayer/flight/_flight_sql_pb2.py", "tests/fixtures/upgrade/*/generate.py"]
+exclude = ["slayer/flight/_flight_sql_pb2.py", "tests/fixtures/upgrade/*/generate.py", "tests/fixtures/ossie_corpus"]
 
 [tool.ruff]
 target-version = "py311"
