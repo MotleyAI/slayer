@@ -67,13 +67,13 @@ async def test_a_product_anchor_is_reported_by_its_parts(backend: str) -> None:
     assert len(resp.data) == 6
 
 
-@pytest.mark.parametrize("population, inferred", [(None, True), ("customers", False)])
-async def test_spine_population_reported(backend: str, population, inferred: bool) -> None:
+@pytest.mark.parametrize("population, inferred, sources", [(None, True, ["orders"]), ("customers", False, ["customers"])])
+async def test_spine_population_reported(backend: str, population, inferred: bool, sources: list[str]) -> None:
     async with seed_engine(backend) as eng:
         resp = await run(eng, **({"population": population} if population else {}), dimensions=[R],
                          time_dimensions=[SPINE_MONTH], metrics=["sum(orders.amount)"])
     assert (resp.population, resp.population_inferred, resp.row_sources) == (
-        "time_spine × customers", inferred, ["customers"])
+        "time_spine × customers", inferred, sources)
 
 
 # --------------------------------------------------------------------------- #

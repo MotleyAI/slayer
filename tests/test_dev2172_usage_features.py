@@ -55,7 +55,7 @@ METRIC_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
     ("count(*) FILTER (WHERE z > 0)", ["count"], [], [], ["aggregate_filter"]),
     ("sum(x) FILTER (WHERE lower(y) = 'a')", ["sum"], [], ["lower"], ["aggregate_filter"]),
     ("count(DISTINCT x)", ["count_distinct"], [], [], []),
-    ("array_length(tags)", ["custom"], [], [], []),
+    ("array_size(tags)", ["custom"], [], [], []),
     ("dsum(amount)", ["custom"], [], [], []),
     ("sum(orders.amount)", ["sum"], [], [], []),
     ("time_shift(sum(amount), -1)", ["sum"], ["time_shift"], [], []),

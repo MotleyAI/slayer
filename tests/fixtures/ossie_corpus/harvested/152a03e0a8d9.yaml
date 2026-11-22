@@ -1,0 +1,34 @@
+version: 0.3.0.dev0
+name: m
+datasets:
+- name: orders
+  source: db.s.orders
+  fields:
+  - name: customer_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: customer_id
+  - name: product_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: product_id
+  - name: variant_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: variant_id
+relationships: []
+metrics:
+- name: revenue
+  expression:
+    dialects:
+    - dialect: ANSI_SQL
+      expression: amt > -1
+    - dialect: SNOWFLAKE
+      expression: amt > -1.0
+    - dialect: DATABRICKS
+      expression: amt > -(1)
+    - dialect: BIGQUERY
+      expression: -1 < amt

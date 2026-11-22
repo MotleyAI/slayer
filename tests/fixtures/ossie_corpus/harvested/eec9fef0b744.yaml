@@ -1,0 +1,12 @@
+version: 0.3.0.dev0
+name: m
+datasets:
+- name: orders
+  source: db.s.orders
+  fields:
+  - name: half_amount
+    expression:
+      dialects:
+      - dialect: OSSIE_SQL_2026
+        expression: amount * 0.5
+relationships: []

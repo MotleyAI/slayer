@@ -113,7 +113,7 @@ warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT wa
   through `orders` used to report
 
 ### Requirement: Unsafe aggregate inputs fail closed
-An aggregate whose inputs — positional args, keyword args (including aggregation-parameter fragments and the aggregation definition's non-overridden defaults), or measure-level column filter references — cross a join hop that is not provably many-to-one from the aggregate's root SHALL fail with a clear error in all three modes, whatever the aggregate's root: target-rooted, host-rooted, and local aggregates alike. An input's dependencies are its *dependency closure*: its own join path plus every join path the definition of any derived column it names crosses, recursively through chains of derived columns, whether the reference is bare or path-bearing — a derived column whose definition crosses a fanning hop is an unsafe input exactly as a structural reference across that hop is. An input whose derived-column definition cannot be analyzed for join dependencies SHALL fail closed with a typed error naming the aggregate and the column — never be treated as crossing nothing. Multiplying a host-side operand through a fanning join is ambiguous and MUST never silently compute over multiplied rows. The rule applies per input role: a *filter reference* or *argument* crossing an unproven hop fails closed, whatever the aggregate's root. A crossing *source* stays legal only where the aggregate is evaluated over the join result at host grain — a host-grain wrap (an ORDER BY sort key over an unprojected joined column) consumes the target's values per matched row and keeps its established values; a definition default's references local to its owner ride with the source. A target-rooted cross-model producer re-roots its source to the target; a source that then reads through an unproven hop fans the aggregate and fails closed like any other crossing input. An attached (aggregate- or transform-valued) input is opaque to this rule: its own inputs are judged by its own producer at its own home, never by the enclosing aggregate. When an explicit column argument is the violation, the error SHALL name that argument and the hop it crosses, taking precedence over the closure's hop-only message — a derived argument included, judged by its closure. The *ranking key* of a `first`/`last` aggregation is an input under this rule whichever way it is chosen: the explicit positional argument, else the producer's first temporal row dimension, else the time dimension's raw column, else the model's `default_time_dimension` — a key whose dependency closure crosses a hop that is not provably many-to-one from the producer's root SHALL fail closed in every mode, naming the column and the hop, for host-rooted, target-rooted and `window=` producers alike, and a key whose derived definition cannot be analyzed SHALL fail closed naming the column; a ranked producer's grain dimensions resolve per `to_many_handling` like any aggregate's (per `queries/attribution-modes`) — only the ordering key is refused in every mode.
+An aggregate whose inputs — positional args, keyword args (including aggregation-parameter fragments and the aggregation definition's non-overridden defaults), or measure-level column filter references — cross a join hop that is not provably many-to-one from the aggregate's root SHALL fail with a clear error in all three modes, whatever the aggregate's root: target-rooted, host-rooted, and local aggregates alike. An input's dependencies are its *dependency closure*: its own join path plus every join path the definition of any derived column it names crosses, recursively through chains of derived columns, whether the reference is bare or path-bearing — a derived column whose definition crosses a fanning hop is an unsafe input exactly as a structural reference across that hop is. An input whose derived-column definition cannot be analyzed for join dependencies SHALL fail closed with a typed error naming the aggregate and the column — never be treated as crossing nothing. Multiplying a host-side operand through a fanning join is ambiguous and MUST never silently compute over multiplied rows. The rule applies per input role: a *filter reference* or *argument* crossing an unproven hop fails closed, whatever the aggregate's root. A crossing *source* stays legal only where the aggregate is evaluated over the join result at host grain — a host-grain wrap (an ORDER BY sort key over an unprojected joined column) consumes the target's values per matched row and keeps its established values; a definition default's references local to its owner ride with the source. A target-rooted cross-model producer re-roots its source to the target; a source that then reads through an unproven hop fans the aggregate and fails closed like any other crossing input. An attached (aggregate- or transform-valued) input is opaque to this rule: its own inputs are judged by its own producer at its own home, never by the enclosing aggregate. When an explicit column argument is the violation, the error SHALL name that argument and the hop it crosses, taking precedence over the closure's hop-only message — a derived argument included, judged by its closure. The *ranking key* of a `first`/`last` aggregation is an input under this rule whichever way it is chosen: the explicit positional argument, else the default per `aggregations/functional-form` › Default ranking key — a key whose dependency closure crosses a hop that is not provably many-to-one from the producer's root SHALL fail closed in every mode, naming the column and the hop, for host-rooted, target-rooted and `window=` producers alike, and a key whose derived definition cannot be analyzed SHALL fail closed naming the column; a ranked producer's grain dimensions resolve per `to_many_handling` like any aggregate's (per `queries/attribution-modes`) — only the ordering key is refused in every mode.
 
 #### Scenario: Aggregate reading through an unproven join errors
 - WHEN an aggregate's column filter references a column across a join with unproven arity from the aggregate's root
@@ -192,7 +192,7 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 - THEN the query fails at plan time with the typed unanalyzable-dependency error naming the aggregate and the column — never a plan that ranks by it
 
 #### Scenario: Safe ranking keys keep executing
-- WHEN the resolved ranking key is a local column (the model default, or a filter-only temporal column with no default), a derived column over a provably to-one hop (`cust_signup` = `customers.signup_at` with `customers.id` a primary key), or — for `last(amount, window='30d')` on a `created_at` time dimension — the bucket's raw column while the model default crosses the unproven hop
+- WHEN the resolved ranking key is a local column (the model default), a derived column over a provably to-one hop (`cust_signup` = `customers.signup_at` with `customers.id` a primary key), or — for `last(amount, window='30d')` on a `created_at` time dimension — the bucket's raw column while the model default crosses the unproven hop
 - THEN each query executes with its established value (the proven-hop case joins `customers` and picks the row with the latest signup; the windowed case never joins `line_items`), and the derived key renders as its plain expansion with no added CAST in both the plain and the windowed ranked CTE
 
 ### Requirement: Explicit grain and window on cross-model aggregates
@@ -630,9 +630,11 @@ built-in count — and every custom aggregation SHALL have the empty value NULL;
 formula-less declaration of a built-in name keeps the built-in's empty value; the
 declaration consulted is the one on the aggregation's owning model. The empty value
 SHALL hold in every position (measure, composite, measure filter, order key, dimension,
-aggregation source, transform operand), in every `to_many_handling` mode, and for
-windowed aggregates. A transform cell with no value (e.g. a `time_shift` whose prior
-bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
+aggregation source, and a transform operand's cells within the transform's domain), in
+every `to_many_handling` mode, and for windowed aggregates. A transform cell outside its
+operand's domain (`queries/transforms` › Transforms evaluate over their operand's domain),
+or with no value (e.g. a `time_shift` whose prior bucket is absent), SHALL stay NULL, and
+no population cell SHALL be fabricated.
 
 #### Scenario: Single-hop count of a childless parent is 0
 - **WHEN** a query rooted at `customers` groups by `name` and selects `count(orders.id)`,
@@ -648,7 +650,8 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 #### Scenario: Inferred population
 - **WHEN** a query without `population` has `dimensions=[customers.name]` and selects
   `count(orders.id)`
-- **THEN** the population is `customers` and the childless customer's cell holds 0
+- **THEN** the population is `customers` and the childless customer has no row (no
+  measure's home rows reach it); with `"population": "customers"` named, its cell holds 0
 
 #### Scenario: Multi-hop count
 - **WHEN** a query rooted at `regions` groups by `name` and selects
@@ -688,8 +691,9 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 - **WHEN** a query rooted at `customers` with a time dimension selects
   `cumsum(count(orders.id))`, `change(count(orders.id))` and
   `time_shift(count(orders.id), -1)`
-- **THEN** a cell whose count operand has no home rows contributes 0 to the transform,
-  and a cell whose shifted prior bucket is absent from the result holds NULL
+- **THEN** `cumsum` reads NULL in a cell whose count has no home rows and accumulates the
+  counts of the cells that have them; `change` and `time_shift` consume the count's 0
+  there; a cell whose shifted prior bucket is absent from the result holds NULL
 
 #### Scenario: Custom formula override stays NULL, formula-less declaration keeps 0
 - **WHEN** the owning model declares an aggregation named `count` with its own `expression`

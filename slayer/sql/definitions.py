@@ -19,7 +19,10 @@ __all__ = ["check_forms", "check_metric_forms", "qualified_siblings", "sibling_n
 
 
 def check_metric_forms(dataset: SlayerDataset, *, ds_type: str | None) -> None:
-    """Refuse a metric carrying an entry for the datasource's own dialect: a metric runs only its portable ``sql``."""
+    """Refuse a metric carrying an entry for the datasource's own dialect: a metric runs only its portable ``sql``.
+    A document dataset's entries are Ossie's to carry."""
+    if dataset.semantic_model is not None:
+        return
     token = ossie_token(ds_type)
     for metric in dataset.metrics:
         if dialect_entries(metric.expression, token):

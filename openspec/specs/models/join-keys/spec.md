@@ -7,7 +7,7 @@ Defines the spelling contract of a join's key columns: how `from_columns` / `to_
 
 ### Requirement: Join keys name model columns
 
-Each entry of a join's `from_columns` and `to_columns` SHALL name a column of the model on its side by that column's `name` — never by its physical spelling — and SHALL obey the column-name rules (no `.` or `:`, no reserved prefix). Each named column MUST be a physical reader (`models/field-expressions`): the form it runs is its own name or a single identifier (optionally double-quoted), and it carries no `filter`. A model whose join names an undeclared, expression-valued, or filtered source-side column SHALL be rejected when the model is constructed, with an error naming the model, the join target, the column and the remedy; the same check SHALL apply to joins added by a query-level model extension. A join whose target-side key is not a declared base column of the target model SHALL be rejected at save time with a typed error, and model validation SHALL report such a join on an already-stored model with the remedy.
+Each entry of a join's `from_columns` and `to_columns` SHALL name a column of the model on its side by that column's `name` — never by its physical spelling — and SHALL obey the column-name rules (no `.` or `:`, no reserved prefix). Each named column MUST be a declared field without a `filter` whose expression reads only its own dataset's source columns: a physical reader (`models/field-expressions`), or a computed field, as Ossie allows relationship keys to name any declared field. A model whose join names an undeclared or filtered source-side column, or a source-side column whose expression reads another dataset, SHALL be rejected when the model is constructed, with an error naming the model, the join target, the column and the remedy; the same check SHALL apply to joins added by a query-level model extension. A join whose target-side key is not such a field of the target model SHALL be rejected at save time with a typed error, and model validation SHALL report such a join on an already-stored model with the remedy.
 
 #### Scenario: A renamed source key is written by its column name
 
@@ -21,8 +21,13 @@ Each entry of a join's `from_columns` and `to_columns` SHALL name a column of th
 
 #### Scenario: An expression source key is rejected at construction
 
-- **WHEN** a model's join names a source-side column whose `expression` is not a single identifier (`CAST(id AS INT)`)
-- **THEN** construction fails with an error naming the column and the remedy to key on a base column
+- **WHEN** a model's join names a source-side column whose `expression` reads a field of another dataset (`customers.region_id`)
+- **THEN** construction fails with an error naming the column and the remedy to key on a field of the model's own source
+
+#### Scenario: A computed source key joins on its expression
+
+- **WHEN** a model declares `DatasetField(name="customer_key", expression="CAST(cust_fk AS INT)")` and a join with `from_columns: ["customer_key"]` to the target's `id`
+- **THEN** the model saves, and a query crossing the join executes with the ON clause comparing `CAST(cust_fk AS INT)` to the target key, returning the hand-computed values
 
 #### Scenario: A filtered source key is rejected at construction
 
@@ -36,7 +41,7 @@ Each entry of a join's `from_columns` and `to_columns` SHALL name a column of th
 
 #### Scenario: An expression target key is rejected at save time
 
-- **WHEN** a model is saved whose join names a target-side column whose `expression` is not a single identifier on the target model
+- **WHEN** a model is saved whose join names a target-side column whose `expression` reads another dataset on the target model
 - **THEN** the save fails with a typed join-key error naming the target model, the column and the remedy
 
 #### Scenario: Model validation reports an undeclared target key
@@ -51,7 +56,7 @@ Each entry of a join's `from_columns` and `to_columns` SHALL name a column of th
 
 ### Requirement: The physical spelling is applied once, at emission
 
-Join-graph reasoning — provable arity, grain determination, the entity and foreign-key seeds, the association kernel's entity keys — SHALL compare key fields, grain members and unique-key sets by field `name`. The physical spelling (the source column a physical reader reads, unquoted, else the field's `name`; `models/field-expressions` › A physical reader is a bare source column without a filter) SHALL be applied only where a key becomes SQL: the join ON clause, the semi-join correlation spine, and cardinality profiling. A mixed-case physical identifier SHALL be quoted exactly as any other emitted column identifier of the dialect. Emission SHALL fail closed with a typed error rather than emit an identifier for a key it cannot resolve to a declared physical reader.
+Join-graph reasoning — provable arity, grain determination, the entity and foreign-key seeds, the association kernel's entity keys — SHALL compare key fields, grain members and unique-key sets by field `name`. The physical spelling (the source column a physical reader reads, unquoted, else the field's `name`; `models/field-expressions` › A physical reader is a bare source column without a filter) SHALL be applied only where a key becomes SQL: the join ON clause, the semi-join correlation spine, and cardinality profiling; a computed key SHALL be emitted at those same places as its expression over its own dataset's source. A mixed-case physical identifier SHALL be quoted exactly as any other emitted column identifier of the dialect. Emission SHALL fail closed with a typed error rather than emit SQL for a key it cannot resolve to a declared field of its own dataset.
 
 #### Scenario: A renamed source foreign key executes
 
@@ -88,9 +93,14 @@ Join-graph reasoning — provable arity, grain determination, the entity and for
 - **WHEN** a join key's physical spelling is mixed-case (`expression: '"CustPK"'`)
 - **THEN** the ON clause, the semi-join spine and the cardinality-profiling SQL all quote it, per the dialect's quoting of any other emitted column
 
+#### Scenario: A computed key correlates a pushed-down restriction
+
+- **WHEN** a row filter restricts the population across a hop keyed on a computed field, so the restriction is pushed as a correlated semi-join
+- **THEN** the spine correlates on the computed key's expression and the query returns the correctly restricted population
+
 #### Scenario: An unresolvable target key fails closed at emission
 
-- **WHEN** a stored dataset's relationship names a target-side field that is not a declared physical reader and a query crosses that relationship
+- **WHEN** a stored dataset's relationship names a target-side field that is not a declared field of the target and a query crosses that relationship
 - **THEN** planning fails with the typed join-key error, and no SQL is generated
 
 ### Requirement: Stored physical spellings are canonicalised on load

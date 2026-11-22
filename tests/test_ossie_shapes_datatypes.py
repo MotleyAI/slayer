@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from sqlalchemy.dialects import oracle, postgresql
 
 from slayer.core.enums import DataType, type_display
@@ -29,7 +30,7 @@ from tests._ossie_vocabulary_fixtures import customers_doc, orders_doc, shop_sto
 from tests._osi_export_helpers import dataset as osi_dataset
 from tests._osi_export_helpers import export_datasets, make_env
 from tests._osi_export_helpers import field as osi_field
-from tests._osi_helpers import by_name, cols, convert, documents, ds, f, flat, seed_db
+from tests._osi_helpers import DATASOURCE, cols, ds, f, flat, seed_db
 
 OSSIE_NAMES = ["String", "Integer", "Decimal", "Float", "Boolean", "Date", "Time", "DateTime", "DateTimeTz", "Opaque",
                "Array"]
@@ -98,12 +99,12 @@ class TestConversion:
     ])
     def test_a_one_to_one_value_converts(self, old: str, new: str) -> None:
         field, olds = converted({"name": "x", "datatype": old})
-        assert field.datatype.value == new
+        assert str(field.datatype) == new
         assert len([o for o in olds if old in o]) == 1
 
     def test_a_list_type_converts(self) -> None:
         field, _ = converted({"name": "x", "datatype": "ARRAY", "element_type": "DOUBLE"})
-        assert (field.datatype.value, field.element_type and field.element_type.value) == ("Array", "Float")
+        assert (str(field.datatype), field.element_type and field.element_type.value) == ("Array", "Float")
 
     @pytest.mark.parametrize(("old", "db_type", "new"), [
         ("DOUBLE", "NUMERIC(18, 2)", "Decimal"), ("DOUBLE", "DECIMAL", "Decimal"), ("DOUBLE", "DOUBLE PRECISION", "Float"),
@@ -113,7 +114,7 @@ class TestConversion:
     ])
     def test_a_split_value_converts_by_database_type(self, old: str, db_type: str | None, new: str) -> None:
         field, olds = converted({"name": "x", "datatype": old, **({"db_type": db_type} if db_type else {})})
-        assert field.datatype.value == new
+        assert str(field.datatype) == new
         assert len([o for o in olds if old in o]) == 1
 
     def test_the_scenario_dataset_converts_with_one_deprecation_per_value(self) -> None:
@@ -125,7 +126,7 @@ class TestConversion:
             "metrics": [{"name": "latest", "expression": "max(at)", "datatype": "TIMESTAMP"}]}
         with recorded() as caught:
             dataset = SlayerDataset.model_validate(doc)
-        assert [f.datatype.value for f in dataset.fields[1:]] == ["Decimal", "DateTimeTz", "Float"]
+        assert [str(f.datatype) for f in dataset.fields[1:]] == ["Decimal", "DateTimeTz", "Float"]
         assert dataset.metrics[0].datatype is not None
         assert dataset.metrics[0].datatype.value == "DateTime"
         olds = [payload_of(w).old for w in deprecations(caught)]
@@ -136,8 +137,8 @@ class TestConversion:
     def test_case_matters(self) -> None:
         exact, exact_olds = converted({"name": "x", "datatype": "Time"})
         lower, lower_olds = converted({"name": "x", "datatype": "time"})
-        assert (exact.datatype.value, exact_olds) == ("Time", [])
-        assert lower.datatype.value == "DateTime"
+        assert (str(exact.datatype), exact_olds) == ("Time", [])
+        assert str(lower.datatype) == "DateTime"
         assert len([o for o in lower_olds if "time" in o]) == 1
 
     def test_ossie_values_convert_nothing(self) -> None:
@@ -172,13 +173,18 @@ class TestKeptAsWritten:
         assert [(osi_field(exported, n) or {}).get("datatype") for n in ("amount", "at", "tod")] == [
             "Decimal", "DateTimeTz", "Time"]
 
-    def test_the_importer_keeps_an_ossie_type_as_written(self, tmp_path: Path) -> None:
+    async def test_the_importer_keeps_an_ossie_type_as_written(self, tmp_path: Path) -> None:
         db = seed_db(directory=tmp_path)
         doc = flat([ds("orders", fields=[f("order_id", "o_orderkey"), f("price", "o_totalprice", datatype="Decimal"),
                                          f("label", "UPPER(status)", datatype="String")])])
-        orders = by_name(convert(db=db, docs=documents(doc)))["orders"]
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await storage.save_datasource(DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db)))
+        await storage.save_semantic_model_text(data_source=DATASOURCE, name=doc["name"],
+                                               text=yaml.safe_dump(doc, sort_keys=False))
+        orders = await storage.get_dataset("orders", data_source=DATASOURCE)
+        assert orders is not None
         price, label = cols(orders)["price"], cols(orders)["label"]
-        assert (price.datatype.value, label.datatype.value) == ("Decimal", "String")
+        assert (str(price.datatype), str(label.datatype)) == ("Decimal", "String")
         assert "osi_datatype" not in (price.meta or {})
 
 
@@ -210,7 +216,7 @@ async def test_ingestion_assigns_the_finer_type(tmp_path: Path) -> None:
         con.close()
     async with owned_query_engine(storage=YAMLStorage(base_dir=str(tmp_path / "store"))) as engine:
         [dataset] = await engine.ingest(DatasourceConfig(name="d", type="duckdb", database=path))
-    types = {f.name: f.datatype.value for f in dataset.fields}
+    types = {f.name: str(f.datatype) for f in dataset.fields}
     assert types == {"id": "Integer", "price": "Decimal", "ratio": "Float", "at": "DateTimeTz", "ts": "DateTime",
                      "d": "Date"}
 

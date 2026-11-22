@@ -169,8 +169,7 @@ class TestFirstLastPartition:
 
 class TestTransformOverPartitioned:
     async def test_cumsum_of_region_month_totals(self, exec_engine) -> None:
-        # cumsum at the query grain over the attached (region, month) totals,
-        # partitioned by the non-time dims (region, city).
+        # cumsum over the operand's (region, month) cells, broadcast onto each city row.
         resp = await exec_engine.execute(q(
             dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
@@ -181,8 +180,8 @@ class TestTransformOverPartitioned:
         rows = _rcm_rows(resp)
         expected = {
             ("North", "CityA", "2024-01"): 30.0,
-            ("North", "CityB", "2024-02"): 70.0,
-            ("North", None, "2024-02"): 70.0,
+            ("North", "CityB", "2024-02"): 100.0,
+            ("North", None, "2024-02"): 100.0,
             ("South", "CityC", "2024-01"): 25.0,
             ("South", "CityC", "2024-03"): 50.0,
             (None, "CityD", "2024-03"): 60.0,
@@ -192,8 +191,7 @@ class TestTransformOverPartitioned:
             assert float(rows[key]["c"]) == pytest.approx(value)
 
     async def test_rank_rows_by_attached_region_total(self, exec_engine) -> None:
-        # As a METRIC the rank evaluates at query grain: the five (region,
-        # city) rows rank by their attached region totals 100/100/100/60/50.
+        # The region cells rank by their totals 100/60/50, broadcast onto their cities.
         resp = await exec_engine.execute(q(
             dimensions=["orders.region", "orders.city"],
             metrics=[QueryMetric(
@@ -204,7 +202,7 @@ class TestTransformOverPartitioned:
         got = {key: int(r["r"]) for key, r in by.items()}
         assert got == {
             ("North", "CityA"): 1, ("North", "CityB"): 1, ("North", None): 1,
-            (None, "CityD"): 4, ("South", "CityC"): 5,
+            (None, "CityD"): 2, ("South", "CityC"): 3,
         }
 
 

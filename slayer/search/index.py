@@ -178,6 +178,7 @@ def build_in_memory_corpus(
     datasets: list[SlayerDataset],
     datasources: list[str],
     datasource_descriptions: dict[str, str | None] | None = None,
+    extra_pairs: list[tuple[str, str, str, str | None]] | None = None,
 ) -> Corpus:
     """Build the index AND the parallel canonical lookup maps in one walk.
 
@@ -208,7 +209,7 @@ def build_in_memory_corpus(
         visible_datasets=visible_datasets,
         datasources=datasources,
         datasource_descriptions=datasource_descriptions,
-    )
+    ) + list(extra_pairs or [])
     canonical_to_text: dict[str, str] = {}
     canonical_to_kind: dict[str, str] = {}
     canonical_to_description: dict[str, str | None] = {}

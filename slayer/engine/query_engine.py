@@ -93,7 +93,7 @@ from slayer.engine.population.inference import (
     spine_factor_out,
 )
 from slayer.engine.population.row_supply import (
-    RowPlan, anchored_rows, plan_rows, refuse_product_split, stored_rows,
+    RowPlan, anchored_rows, plan_rows, plan_spine_rows, refuse_product_split, stored_rows,
 )
 from slayer.core.time_points import host_clock
 from slayer.core.names import name_taken
@@ -146,6 +146,7 @@ from slayer.engine.cache import (
 )
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
 from slayer.engine.legacy_references import Conversions, anchor_names, convert_refinement, qualified_input
+from slayer.engine.model_scoped import expand_model_scoped, model_scope
 from slayer.engine.population.anchors import anchor_route, unknown_metric, unqualified_count
 from slayer.core.names import qualified_reference
 from slayer.core.keys import AggregateKey, CastKey, FieldKey, FieldSqlKey, ListSetKey, TimeTruncKey, ValueKey
@@ -162,6 +163,7 @@ from slayer.live_schema import ingestion, schema_drift
 from slayer.engine.dataset_reads import narrowing_datasets
 from slayer.live_schema.schema_scope import IngestScopeArgs
 from slayer.live_schema.type_refinement import live_table_location
+from slayer.engine.unknown_types import UnknownTypes
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
@@ -970,6 +972,10 @@ class SlayerQueryEngine:
         self._drift_snapshots = schema_drift.LiveSnapshotCache()
         # Live source-column types a portable definition's undeclared columns read, by table.
         self._source_column_types: dict[tuple, dict[str, DataType]] = {}
+        self._unknown_types = UnknownTypes()
+
+    async def _resolve_unknown_types(self, dataset: SlayerDataset) -> SlayerDataset:
+        return await self._unknown_types.resolve(dataset, storage=self.storage, client_for=self.client_for)
 
     async def _live_column_types(self, *, datasource: DatasourceConfig, dataset: SlayerDataset) -> dict[str, DataType]:
         """``dataset``'s live source columns and their types, when a definition needs them; empty when unknown."""
@@ -1481,6 +1487,8 @@ class SlayerQueryEngine:
         localized, respelled_spine = await self._respell_spine(
             queries=localized, stage_names={d.name for d in stage_displays.values()}, data_source=prefer_data_source,
         )
+        scope = await model_scope(self.storage, localized, data_source=prefer_data_source)
+        localized = [expand_model_scoped(q, scope=scope) for q in localized]
         query = localized[-1]
         named_queries = {q.name: q for q in localized[:-1] if q.name}
         # Infer the population of any rootless stage (main + each named
@@ -1513,6 +1521,7 @@ class SlayerQueryEngine:
             stage_displays=stage_displays,
             splice_chain=splice_chain,
             now=self._clock(),
+            resolve_types=self._resolve_unknown_types,
             failures=failures,
             respelled_spine=respelled_spine,
         )
@@ -1801,10 +1810,12 @@ class SlayerQueryEngine:
     async def _spine_population_of(
         self, *, query: SlayerQuery, free: SlayerQuery, data_source: Optional[str], sibling_stage_names: Set[str],
     ) -> "_StageInference":
-        """A spine-reading ``query`` planned from its pinned or inferred population."""
+        """A spine-reading ``query`` planned from its pinned or inferred population; an inferred pin of the spine itself
+        anchors nothing, so its anchor is inferred as unpinned."""
+        spine_pin = query.population_inferred and query.population_name == TIME_SPINE_DATASET
         choice = (
             PopulationChoice(datasets=(query.population_name or "",), data_source=data_source or "")
-            if query.population is not None else
+            if query.population is not None and not spine_pin else
             await infer_spine_population(query=free, storage=self.storage, data_source=data_source,
                                          sibling_stage_names=sibling_stage_names)
         )
@@ -1814,16 +1825,18 @@ class SlayerQueryEngine:
             data_source_p = await spine_datasource(queries=[query], storage=self.storage, data_source=data_source,
                                                    sibling_stage_names=sibling_stage_names)
         product = len(choice.datasets) > 1
-        if product and data_source_p is not None:
-            loaded, _unloaded = await self.storage.load_datasets(data_source=data_source_p)
+        loaded, _unloaded = await self.storage.load_datasets(data_source=data_source_p) \
+            if data_source_p is not None else ([], [])
+        datasets_by_name = {m.name: m for m in loaded}
+        if product:
             refuse_product_split(spine_factor_out(free).model_copy(update={"metrics": free.metrics}),
-                                 anchor_datasets=choice.datasets,
-                                 datasets_by_name={m.name: m for m in loaded})
+                                 anchor_datasets=choice.datasets, datasets_by_name=datasets_by_name)
+        anchor = DimensionAnchor(datasets=() if p == TIME_SPINE_DATASET else tuple(choice.datasets))
+        plan = plan_spine_rows(free, anchor=anchor, datasets_by_name=datasets_by_name)
         return _StageInference(
-            query=query.model_copy(update={"population": p, "population_inferred": True}),
-            data_source=data_source_p, reported=choice.display,
-            supply=RowSupply(product=product, anchor=None if product or p == TIME_SPINE_DATASET else p),
-            row_sources=sorted(choice.datasets) if p != TIME_SPINE_DATASET else [], pin=None if product else p,
+            query=query.model_copy(update={"population": plan.population, "population_inferred": True}),
+            data_source=data_source_p, reported=choice.display, supply=plan.supply,
+            row_sources=list(plan.row_sources), pin=None if product else p,
         )
 
     async def _anchored_rows(
@@ -2315,7 +2328,7 @@ class SlayerQueryEngine:
 
     async def _validate_read_set(
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
-        findings_out: "Optional[List[schema_drift.RetypeFinding]]" = None,
+        findings_out: "Optional[List[schema_drift.RetypeFinding | schema_drift.UntypedFinding]]" = None,
     ) -> "List[schema_drift.ToDeleteEntry]":
         """Drift entries for the read persisted datasets of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_dataset_identities()
@@ -2346,7 +2359,7 @@ class SlayerQueryEngine:
         """Raise ``SchemaDriftError`` if ``err`` is attributable to drift touching what the
         statement reads; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            found: List[schema_drift.RetypeFinding] = []
+            found: List[schema_drift.RetypeFinding | schema_drift.UntypedFinding] = []
             entries = await self._validate_read_set(
                 datasource=datasource, read_set=read_set, findings_out=found,
             )
@@ -2382,7 +2395,7 @@ class SlayerQueryEngine:
             if c.allowed_aggregations is not None:
                 allowed = list(c.allowed_aggregations)
             else:
-                allowed = sorted(DEFAULT_AGGREGATIONS_BY_TYPE.get(c.datatype, frozenset()))
+                allowed = sorted(DEFAULT_AGGREGATIONS_BY_TYPE.get(c.datatype, frozenset()) if c.datatype else ())
             if not allowed:
                 continue
             agg = "max" if "max" in allowed else allowed[0]
@@ -2414,6 +2427,7 @@ class SlayerQueryEngine:
             runtime_variables={},
             named_queries={},
             now=self._clock(),
+            resolve_types=self._resolve_unknown_types,
         )
         dialect = self._dialect_for_type(datasource.type)
         bundle = await self._resolved_bundle(bundle.model_copy(update={
@@ -2724,10 +2738,19 @@ class SlayerQueryEngine:
         determination items. A feasible ``root_hint`` overrides the auto-pick; an
         infeasible one falls back with a warning, a malformed one raises.
         """
+        scope = await model_scope(self.storage, [], data_source=data_source)
+        scoped = {raw: m for raw in dict.fromkeys(i.strip() for i in items)
+                  if raw and (m := scope.bare(raw, aliases=())) is not None}
         resolved, base_warnings = await self._recommend_resolve_items(
-            items=items, data_source=data_source
+            items=[i for i in items if i.strip() not in scoped], data_source=data_source
         )
         ds = resolved[0].data_source
+        if any(m.data_source != ds for m in scoped.values()):
+            raise ValueError(
+                f"items span multiple datasources {sorted({ds, *(m.data_source for m in scoped.values())})}; "
+                f"pass items from a single datasource (optionally set data_source=...)."
+            )
+        scoped_paths = [ItemPath(input_item=raw, path=m.name, attachment=True) for raw, m in scoped.items()]
         datasets = await _all_datasets_in_datasource(self.storage, ds)
         datasets_by_name = {m.name: m for m in datasets}
         all_names = sorted(datasets_by_name)
@@ -2823,7 +2846,7 @@ class SlayerQueryEngine:
             ]
             return PopulationRecommendation(
                 data_source=ds, population=root, reachable=True,
-                item_paths=item_paths, warnings=warnings, message=message,
+                item_paths=[*item_paths, *scoped_paths], warnings=warnings, message=message,
             )
 
         force_include = {hint_dataset} if hint_dataset is not None else None
@@ -2936,6 +2959,21 @@ class SlayerQueryEngine:
     ) -> bool:
         """Delete a persisted dataset by name. Returns True if the dataset existed."""
         return await self.storage.delete_dataset(dataset_name, data_source=data_source)
+
+    async def apply_untyped_findings(self, findings: "Sequence[schema_drift.UntypedFinding]") -> List[str]:
+        """Write each untyped finding's live type into its document field; returns one message per failed write."""
+        errors: List[str] = []
+        for finding in findings:
+            try:
+                dataset = await self.storage.get_dataset(finding.dataset_name, data_source=finding.data_source)
+                if dataset is None:
+                    raise LookupError(f"dataset {finding.dataset_name!r} is gone")
+                await self.storage.save_dataset(dataset.model_copy(update={"fields": [
+                    f.model_copy(update={"datatype": finding.live_type, "element_type": finding.live_element_type})
+                    if f.name == finding.field else f for f in dataset.fields]}))
+            except Exception as exc:  # noqa: BLE001 — one failed write never stops the others
+                errors.append(f"{finding.dataset_name}.{finding.field}: {exc}")
+        return errors
 
     async def apply_drift_deletes(
         self,
@@ -3117,12 +3155,12 @@ class SlayerQueryEngine:
 
         src_side = await self._side_stats(
             client=client, table=dataset.sql_table,
-            key_cols=_physical_keys(dataset=dataset, keys=src_cols), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=dataset, keys=src_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         tgt_side = await self._side_stats(
             client=client, table=target.sql_table,
-            key_cols=_physical_keys(dataset=target, keys=tgt_cols), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=target, keys=tgt_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         # 0 == 0 reads as observed_unique, so an empty side would falsely detect
@@ -3171,7 +3209,7 @@ class SlayerQueryEngine:
         """(row-count, distinct-count) profiling statements reading the table and keys as SLayer reads them; NULL key
         rows excluded from both."""
         tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
-        cols = [exp.column(c) for c in key_cols]
+        cols = [exp.column(c) if isinstance(c, exp.Identifier) else c for c in key_cols]
         predicate = None
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
@@ -3182,7 +3220,8 @@ class SlayerQueryEngine:
         count_star = exp.func("COUNT", exp.Star()).as_("c")
         rows_q = exp.select(count_star).from_(tbl.copy()).where(predicate)
         inner = (
-            exp.select(*[c.copy() for c in cols])
+            exp.select(*[c.copy() if isinstance(c, exp.Column) else exp.alias_(c.copy(), f"k{i}")
+                         for i, c in enumerate(cols)])
             .from_(tbl.copy())
             .where(predicate.copy())
             .distinct()
@@ -3264,7 +3303,7 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         datasets, unloadable = await self.storage.load_datasets(data_source=data_source)
-        retypes: List[schema_drift.RetypeFinding] = []
+        retypes: List[schema_drift.RetypeFinding | schema_drift.UntypedFinding] = []
         entries = await schema_drift.validate_datasource(
             datasource=ds, datasets=datasets, client=self.client_for(ds), findings_out=retypes,
         )
@@ -3848,20 +3887,25 @@ def _detection_skip_reason(
             if err is not None:
                 return (
                     f"{str(err).splitlines()[0]}; cardinality profiling "
-                    f"supports declared base-field keys only"
+                    f"supports keys over each dataset's own source only"
                 )
     return None
 
 
-def _physical_keys(*, dataset: SlayerDataset, keys: List[str]) -> List[exp.Identifier]:
+def _key_reads(*, dataset: SlayerDataset, keys: List[str], dialect: str) -> List[Expr]:
+    """Each key as SLayer reads it from the dataset's table: its column, or a computed key's expression."""
     by_name = {c.name: c for c in dataset.fields}
-    return [key_identifier(by_name[k].physical_name, quoted=by_name[k].physical_quoted) for k in keys]
+    return [
+        exp.column(key_identifier(f.physical_name, quoted=f.physical_quoted)) if f.is_base
+        else exp.maybe_parse(f.definition_sql or f.name, dialect=dialect)
+        for f in (by_name[k] for k in keys)
+    ]
 
 
 def _validate_relationship_keys(
     *, dataset: SlayerDataset, loaded: Dict[str, Optional[SlayerDataset]],
 ) -> None:
-    """Every relationship's keys name declared base fields on both sides (source re-checked for a populated query-backed dataset)."""
+    """Every relationship's keys name valid key fields on both sides (source re-checked for a populated query-backed dataset)."""
     _check_relationship_keys(dataset_name=dataset.name, fields=dataset.fields, relationships=dataset.relationships)
     for relationship in dataset.relationships:
         target = loaded.get(relationship.to)

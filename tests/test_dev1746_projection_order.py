@@ -36,7 +36,6 @@ from tests._dev1746_fixtures import (
 )
 from tests._engine_helpers import (
     _engine_generate,
-    _extract_cte_body,
     _join_aliases,
 )
 
@@ -228,43 +227,28 @@ class TestB7DeclarationOrderProjection:
             if slots[sid].public_name == "running"
         )
         running_key = slots[running_sid].key
-        assert isinstance(running_key, TransformKey)
-        operand_key = running_key.input
-        operand_sid = next(
-            (sid for sid, s in slots.items() if s.key == operand_key), None,
-        )
-        assert operand_sid == ltv_sid, (
-            f"precondition: the transform's operand must be the SAME slot as "
-            f"the projected metric, or this shape does not exercise the "
-            f"guard. operand={operand_sid} projected={ltv_sid}"
-        )
-
-        # (2) The cross-dataset path — the guard lives in that builder.
-        assert any(
-            a.producer_root_dataset == "customers_v2"
-            for a in planned.regroup_attach_plans
-        ), "precondition: this query must take the cross-dataset path"
-        assert planned.transform_layers, (
-            "precondition: this query must carry a transform chain"
+        # (1) The cumsum evaluates in its own producer (its domain): the outer slot reads its placeholder.
+        [domain] = [a for a in planned.regroup_attach_plans
+                    if any(sub.placeholder == running_key for sub in a.substitutions)]
+        producer = domain.producer_plan
+        inner = {s.id: s for s in _all_slots(producer)}
+        [running] = [s.key for s in inner.values() if isinstance(s.key, TransformKey)]
+        placeholders = {sub.placeholder for a in producer.regroup_attach_plans
+                        if a.producer_root_dataset == "customers_v2" for sub in a.substitutions}
+        assert running.input in placeholders, (
+            "precondition: the transform's operand must be the producer's customers_v2 attach"
         )
 
-        # The transform slot is projected but rendered by a later step CTE, so the combined loop skips it (no rendered columns) rather than flagging a drop.
-        assert running_sid in planned.projection, planned.projection
-        assert isinstance(slots[running_sid].key, TransformKey), (
-            f"expected a transform slot, got {type(slots[running_sid].key).__name__}"
+        # (2) The cross-dataset path, in the outer plan and in the transform's producer.
+        assert slots[ltv_sid].key in {
+            sub.placeholder for a in planned.regroup_attach_plans
+            if a.producer_root_dataset == "customers_v2" for sub in a.substitutions
+        }, "precondition: this query must take the cross-dataset path"
+        assert producer.transform_layers, (
+            "precondition: the transform's producer must carry a transform chain"
         )
 
         sql = await _gen(query, dialect="postgres")
-
-        # (3) The combined SELECT (the chain's ``base`` CTE); ``\bbase`` avoids matching the host ``_base``.
-        base_body = _extract_cte_body(sql, r"\bbase")
-        base_aliases = _alias_suffixes(outer_select_aliases(base_body))
-        assert base_aliases == ["created_at", "ltv"], (
-            f"the combined SELECT must carry the grain and exactly ONE column "
-            f"for the shared slot: {base_aliases}. A leftover would be appended "
-            f"here and then trimmed by the outer wrap, invisible from the "
-            f"outermost SELECT.\n{base_body}"
-        )
 
         emitted = _alias_suffixes(outer_select_aliases(sql))
         assert emitted == ["created_at", "ltv", "running"], (

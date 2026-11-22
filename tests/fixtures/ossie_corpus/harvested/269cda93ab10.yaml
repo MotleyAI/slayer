@@ -1,0 +1,54 @@
+version: 0.3.0.dev0
+name: m
+datasets:
+- name: orders
+  source: db.s.orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: o_orderkey
+  - name: customer_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: o_custkey
+  - name: total_usd
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: total_cents / 100.0
+- name: customers
+  source: db.s.customers
+  primary_key:
+  - id
+  unique_keys:
+  - - email
+  fields:
+  - name: id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: c_custkey
+  - name: email
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: c_email
+relationships:
+- name: orders_to_customers
+  from: orders
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - id
+metrics:
+- name: total_revenue
+  expression:
+    dialects:
+    - dialect: ANSI_SQL
+      expression: SUM(total_usd)

@@ -34,6 +34,21 @@ each other (cycles raise). `aggregations` defines custom aggregation functions
 (`{value}` placeholder plus params) callable like built-ins:
 `trimmed_mean(orders.score, lo=10, hi=90)`.
 
+## Semantic models and model-scoped metrics
+
+A semantic model is an Ossie document of one datasource: its datasets, the relationships
+between them and its own top-level metrics. Its datasets query like any other. A
+model-scoped metric belongs to the document, not to one dataset, so a query names it bare:
+`{"metrics": ["revenue_per_customer"]}`. Its definition qualifies every reference and
+reaches a dataset metric only through `AGG(dataset.metric)`:
+`AGG(orders.total_revenue) / COUNT(DISTINCT customers.customer_id)` is 650 of revenue over
+4 customers, one row of 162.5 without dimensions. Each aggregate in it runs over its own
+dataset's rows. A query alias of the same name shadows it. `AGG` takes a single dataset
+metric: `AGG` of a field, of a model-scoped metric, of any other expression or with a
+`FILTER` clause is refused. Create and change documents with `create_semantic_model` /
+`edit_semantic_model`; `inspect(reference="revenue_per_customer", entity_type="metric")`
+shows one.
+
 ## Relationships
 
 Declare each edge once — relationships are symmetric: a declared relationship traverses in both
