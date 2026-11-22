@@ -28,7 +28,6 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1839_fixtures import (
     CITY_TOTAL,
-    DUAL_METRIC_RANK_OF,
     EXPLICIT_PART_RANK,
     EXPLICIT_PART_RANK_OF,
     KEYLESS_RANK,
@@ -289,8 +288,7 @@ class TestDualRole:
     async def test_same_expression_as_dimension_and_measure(
         self, exec_backend,
     ) -> None:
-        # The channel dimension makes the query grain strictly finer than the
-        # union, so the two roles produce visibly different rank vectors.
+        # Both roles rank the (region, city) union cells, though channel makes the query grain finer.
         dialect, engine = exec_backend
         query = q(
             dimensions=[
@@ -309,6 +307,6 @@ class TestDualRole:
         for key, r in by.items():
             region, city, _channel = key
             assert int(r["rr"]) == MIXED_RANK_OF[(region, city)], f"{key}"
-            assert int(r["rm"]) == DUAL_METRIC_RANK_OF[key], f"{key}"
+            assert int(r["rm"]) == MIXED_RANK_OF[(region, city)], f"{key}"
             assert float(r["s"]) == pytest.approx(RCC_TOTAL[key]), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
