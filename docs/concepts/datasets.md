@@ -553,7 +553,7 @@ Rules:
     With `variables={"regions": ["US","CA"]}` this renders `... WHERE 1=1 AND (region IN ('US', 'CA'))`; with no `regions` supplied it renders `... WHERE 1=1 AND (1=1)`. A block must contain at least one `{var}`; blocks do not nest; a block collapses even on a **zero-variable** call (unlike bare placeholders, which are left literal when no variable is in play at all). Optional blocks are rejected in every Mode-B expression.
 - **`inspect` shows the literal template** (`{floor}`), not a rendered value. A `Variables:` line lists the dataset's placeholders classified **required** (bare, no default — omitting it raises) vs **optional** (inside a block, or carrying a `query_variables` default). The classification is derived from the SQL, not stored, so it can never drift from the template.
 
-**Scope:** substitution applies to the query's **direct population**, each stage's own population, and every stage of a query-backed source (spliced into the statement); relationship-target and cross-dataset-target datasets are not yet substituted, so a `{var}` there is left untouched (and surfaces as an error on the stray placeholder).
+**Scope:** every dataset a query reads (its population, a joined dataset, an aggregate's own dataset, each stage of a query-backed source) binds its `{var}` with its own `query_variables` defaults, overridden by the query's variables and runtime variables; another dataset's defaults never reach it.
 
 **Saved metric expressions** (`DatasetMetric.expression`) on those same datasets take variables too, bound as literals like any Mode-B expression and with no optional blocks, and inspection lists their placeholders as required unless defaulted.
 

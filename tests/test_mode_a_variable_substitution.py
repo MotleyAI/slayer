@@ -708,11 +708,8 @@ class TestCrossModelConsistency:
 # ---------------------------------------------------------------------------
 
 class TestDeferredScope:
-    async def test_join_target_var_not_substituted(self) -> None:
-        """A {var} in a RELATIONSHIP-TARGET dataset's DatasetField.sql is NOT substituted:
-        the enclosing query's variable does
-        not reach it, so the stray {var} surfaces an error rather than being
-        silently filled. Stable boundary pin (holds before AND after)."""
+    async def test_join_target_var_substituted(self) -> None:
+        """A {var} in a relationship-target dataset's field SQL binds the query's variable."""
         customers = SlayerDataset(
             name="customers",
             sql_table="customers",
@@ -720,7 +717,6 @@ class TestDeferredScope:
             fields=[
                 DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="name", expression="name", datatype=DataType.STRING),
-                # relationship-target DatasetField.sql var — not substituted → unsupported
                 DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="id * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
@@ -760,14 +756,8 @@ class TestDeferredScope:
                 "metrics": [{"metric": "sum(customers.scaled)"}],
                 "variables": {"mult": 2},
             })
-            # The failure must be about the stray, unsubstituted {mult}: it is
-            # emitted as a bare `mult` column ref, so the DB errors with
-            # "no such column: customers.mult" (a DB error, NOT a substitution
-            # ValueError — precisely because the relationship-target var was not
-            # substituted). The \bmult\b word boundary keeps an unrelated error
-            # mentioning "multiple"/"multi-stage" from satisfying the pin.
-            with pytest.raises(Exception, match=r"\bmult\b"):
-                await engine.execute(q)
+            resp = await engine.execute(q)
+            assert resp.data[0]["customers.scaled_sum"] == pytest.approx(6.0)
         finally:
             tmp.cleanup()
 

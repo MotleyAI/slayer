@@ -277,7 +277,9 @@ class _StagePlanner:
     def _plan_cells(self, query: SlayerQuery, *, variables: Optional[Dict[str, Any]]) -> PlannedQuery:
         """The cells ``query``'s population supplies; a product anchor's dimensions read across ``×``."""
         base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
-        source = self.bundle.datasets_by_name.get(query.population_name or "")
+        name = query.population_name or ""
+        # The statement's own stages read datasets as bound; a spliced stage rebinds them under its layers.
+        source = self.bundle.datasets_by_name.get(name) if variables is None else self.bundle.unbound_dataset(name)
         if source is not None and variables is not None:
             source = substitute_dataset_sql_surfaces(
                 dataset=source, variables={**(source.query_variables or {}), **variables},
@@ -517,7 +519,7 @@ class _StagePlanner:
         """A spliced stage's own source dataset; ``None`` when it reads a sibling."""
         if source_name_if_sibling(spec=spec, sibling_names=set(self.state.schemas)) is not None:
             return None
-        base = self.bundle.datasets_by_name.get(spec) if isinstance(spec, str) else None
+        base = self.bundle.unbound_dataset(spec) if isinstance(spec, str) else None
         if base is None or base.source_queries:
             raise ValueError(f"Dataset {spec!r} not found")
         return base

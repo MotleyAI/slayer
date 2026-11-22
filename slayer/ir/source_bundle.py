@@ -98,6 +98,10 @@ class ResolvedSourceBundle(BaseModel):
     # Per-named-stage source dataset (sibling-sourced stages omitted).
     stage_source_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
     query_variables: Dict[str, Any] = Field(default_factory=dict)
+    # The query's own variable layers (outer, stage, runtime), without any dataset's defaults.
+    variable_layers: Dict[str, Any] = Field(default_factory=dict)
+    # Each dataset as stored, before its Mode-A surfaces were bound; a spliced stage rebinds under its own layers.
+    unbound_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
     dialect: str  # sqlglot dialect the query renders in
     # The datasource's type: picks its own dialect where several share a sqlglot name (MariaDB / MySQL).
@@ -167,6 +171,10 @@ class ResolvedSourceBundle(BaseModel):
         return self.model_copy(
             update={"population": new_source, "referenced_datasets": refs},
         )
+
+    def unbound_dataset(self, name: str) -> Optional[SlayerDataset]:
+        """``name`` as stored, before the statement bound its variables."""
+        return self.unbound_datasets.get(name) or self.datasets_by_name.get(name)
 
     @property
     def datasets_by_name(self) -> Dict[str, SlayerDataset]:

@@ -476,6 +476,33 @@ def _substitute_dataset_sql_surfaces(
     return substitute_dataset_sql_surfaces(dataset=dataset, variables=variables, bind_mode_a=partial(bind_mode_a, dialect=dialect))
 
 
+def _bind_dataset_variables(bundle: ResolvedSourceBundle, *, dialect: SqlDialect) -> ResolvedSourceBundle:
+    """``bundle`` with every stored dataset's ``{var}`` bound under its own defaults and the query's layers; rendered
+    and query-backed datasets are skipped. A block-bearing dataset always runs, so its ``{? ?}`` collapse."""
+    unbound: Dict[str, SlayerDataset] = {}
+
+    def bound(dataset: SlayerDataset) -> SlayerDataset:
+        if dataset.source_dataset_origin is not None or dataset.source_queries:
+            return dataset
+        out = _substitute_dataset_sql_surfaces(
+            dataset=dataset, variables={**(dataset.query_variables or {}), **bundle.variable_layers}, dialect=dialect,
+        )
+        if out is not dataset:
+            unbound.setdefault(dataset.name, dataset)
+        return out
+
+    population = bundle.population
+    bound_population = None if population is None else bound(population)
+    referenced = [
+        bound_population if bound_population is not None and m.name == bound_population.name else bound(m)
+        for m in bundle.referenced_datasets
+    ]
+    return bundle.model_copy(update={
+        "population": bound_population, "referenced_datasets": referenced,
+        "unbound_datasets": {**bundle.unbound_datasets, **unbound},
+    })
+
+
 def _render_probe_dataset(dataset: SlayerDataset, *, dialect: SqlDialect) -> SlayerDataset:
     """Substitute a template dataset's own ``query_variables`` defaults for type-probing (raises on
     an undefaulted Mode-A variable); metrics are dropped, since the probe reads fields only."""
@@ -1538,28 +1565,10 @@ class SlayerQueryEngine:
         dialect = self._dialect_for_type(datasource.type)
         bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
 
-        # Substitute {var} into the direct source dataset's Mode-A surfaces before
-        # anything parses them; the substituted copy replaces the dataset as both
-        # ``population`` and its ``referenced_datasets`` entry. Rendered virtual
-        # datasets are skipped. Called unconditionally: a no-op for a variable-free,
-        # block-free dataset, but a block-bearing dataset must run so its ``{? ?}``
-        # collapse to ``(1=1)`` even on a zero-variable call.
-        if dataset.source_dataset_origin is None and not dataset.source_queries:
-            substituted = _substitute_dataset_sql_surfaces(
-                dataset=dataset,
-                variables=bundle.query_variables,
-                dialect=dialect_for_ds_type(datasource.type),
-            )
-            bundle = bundle.model_copy(
-                update={
-                    "population": substituted,
-                    "referenced_datasets": [
-                        substituted if m.name == dataset.name else m
-                        for m in bundle.referenced_datasets
-                    ],
-                }
-            )
-            dataset = substituted
+        # Every dataset the statement reads binds its Mode-A surfaces before anything parses them.
+        bundle = _bind_dataset_variables(bundle, dialect=dialect_for_ds_type(datasource.type))
+        dataset = bundle.population
+        assert dataset is not None
 
         # Slack-normalization: rewrite slack-but-unambiguous input (func-style
         # aggs, misplaced metrics) to canonical form, each stage against its
