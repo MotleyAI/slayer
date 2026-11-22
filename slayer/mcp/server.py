@@ -1114,6 +1114,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # Query-backed: the cached fields are cleared here and refreshed by engine.save_dataset.
             dataset.assign(source_queries=[SlayerQuery.model_validate(q) for q in source_queries],
                            sql_table=None, sql=None, fields=[])
+            dataset_level_change = True
             changes.append(f"set source_queries ({len(source_queries)} stage(s))")
         if query_variables is not _UNSET:
             dataset.query_variables = query_variables or {}

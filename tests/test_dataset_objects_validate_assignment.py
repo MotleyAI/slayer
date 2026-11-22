@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasetField, DatasetRelationship, DatasourceConfig, SlayerDataset
+import slayer.mcp.server as mcp_server
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.base import StorageBackend
 
@@ -166,6 +167,25 @@ class TestEditSourceSwitch:
         reply = await _edit(storage, dataset_name="people", sql_table="customers")
         stored = await _stored(storage, "people")
         assert (stored.sql, stored.sql_table, stored.source_queries) == (None, "customers", None), reply
+
+    async def test_a_switch_to_source_queries_refreshes_the_whole_dataset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        storage = await shop_engine_store(tmp_path)
+        people = {"name": "people", "sql_table": "customers", "data_source": DS,
+                  "fields": [{"name": "id", "datatype": "Integer", "primary_key": True},
+                             {"name": "region", "datatype": "String"}]}
+        await storage.save_dataset(SlayerDataset.model_validate(people))
+        refreshes: list[dict[str, Any]] = []
+
+        async def record(**kwargs: Any) -> list[str]:
+            refreshes.append(kwargs)
+            return []
+
+        monkeypatch.setattr(mcp_server, "handle_edit_refresh", record)
+        stages = [{"population": "customers", "dimensions": ["customers.region"]}]
+        reply = await _edit(storage, dataset_name="people", source_queries=stages)
+        assert [r["dataset_level_change"] for r in refreshes] == [True], reply
 
     async def test_a_switch_the_final_state_refuses_leaves_the_dataset_unchanged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
