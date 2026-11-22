@@ -161,13 +161,20 @@ class CompositeFacilities(BaseModel):
     value_alias_by_sql: Optional[Dict[str, str]] = None
 
 
+_ALIAS_SLOTTED_KINDS: Tuple[type, ...] = (
+    FieldKey, FieldSqlKey, TimeTruncKey, AggregateKey, TransformKey,
+)
+
+
 class AliasFacilities(BaseModel):
     """The aliases an earlier scope projected; its presence makes every available slot read by
-    its slot and switches the five slotted kinds to ALIAS-EXCLUSIVE resolution (an absent slot
+    its slot and switches ``slotted_kinds`` to ALIAS-EXCLUSIVE resolution (an absent slot
     RAISES). ``table_by_slot_id`` carries the qualifier."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    #: Key kinds resolved only by slot; any other kind renders over its (slotted) parts.
+    slotted_kinds: Tuple[type, ...] = _ALIAS_SLOTTED_KINDS
     slot_id_by_key: Dict[Any, str] = Field(default_factory=dict)
     available_alias_by_slot_id: Dict[str, str] = Field(default_factory=dict)
     table_by_slot_id: Dict[str, str] = Field(default_factory=dict)
@@ -247,11 +254,6 @@ def _render_via_alias(key: ValueKey, ctx: RenderContext) -> Expression:
     if table:
         return exp.Column(this=col_ident, table=exp.to_identifier(table))
     return exp.Column(this=col_ident)
-
-
-_ALIAS_SLOTTED_KINDS: Tuple[type, ...] = (
-    FieldKey, FieldSqlKey, TimeTruncKey, AggregateKey, TransformKey,
-)
 
 
 def _slot_available(key: ValueKey, facilities: AliasFacilities) -> bool:
@@ -366,7 +368,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     """Render ``key`` to sqlglot AST in ``ctx``."""
     # ALIAS mode: any available slot reads by its slot; an unavailable slotted kind RAISES.
     if ctx.aliases is not None and (
-        _slot_available(key, ctx.aliases) or isinstance(key, _ALIAS_SLOTTED_KINDS)
+        _slot_available(key, ctx.aliases) or isinstance(key, ctx.aliases.slotted_kinds)
     ):
         return _render_via_alias(key, ctx)
     # Aggregate internals render through their builder's own scope, never here.
@@ -407,7 +409,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, TimeTruncKey):
         source = (
             _require_scope(ctx, key).resolve(key.source, consumer=ctx.consumer)
-            if isinstance(key.source, (FieldKey, FieldSqlKey))
+            if ctx.aliases is None and isinstance(key.source, (FieldKey, FieldSqlKey))
             else render_value_key(key=key.source, ctx=ctx)
         )
         # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.

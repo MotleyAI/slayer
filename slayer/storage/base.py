@@ -814,7 +814,8 @@ class StorageBackend(ABC):
         reader = dialect_for_ds_type(ds_type).sqlglot_name
 
         def patch(text: str) -> str:
-            current = decompose(text=text, name=document, data_source=data_source, ds_type=ds_type)
+            current = decompose(text=text, name=document, data_source=data_source, ds_type=ds_type,
+                                granularities=datasource.granularities if datasource is not None else [])
             old = next((d for d in current.datasets if d.name.casefold() == name.casefold()), None)
             new = mutate(old)
             base = (new._read_as if new is not None and new._read_as is not None else None) or old
@@ -1052,7 +1053,8 @@ class StorageBackend(ABC):
         standalone = [n for ds, n in await self._standalone_identities() if ds == data_source]
         datasource = await self.get_datasource(data_source)
         return build_index(data_source=data_source, documents=documents, standalone=standalone,
-                           ds_type=datasource.type if datasource is not None else None)
+                           ds_type=datasource.type if datasource is not None else None,
+                           granularities=datasource.granularities if datasource is not None else [])
 
     async def _document_dataset(self, name: str, *, data_source: str | None) -> SlayerDataset | None:
         """The document dataset ``name`` (case-insensitive), ``None`` when no document declares it; raises
@@ -1134,7 +1136,8 @@ class StorageBackend(ABC):
         checked_document(text=text, name=name)
         datasource = await self.get_datasource(data_source)
         decomposed = decompose(text=text, name=name, data_source=data_source,
-                               ds_type=datasource.type if datasource is not None else None)
+                               ds_type=datasource.type if datasource is not None else None,
+                               granularities=datasource.granularities if datasource is not None else [])
         wanted = {n.casefold() for n in names}
         return [d.model_copy(deep=True, update={"semantic_model": None})
                 for d in decomposed.datasets if d.name.casefold() in wanted]
@@ -1155,7 +1158,8 @@ class StorageBackend(ABC):
         for other, text in others:
             with contextlib.suppress(Exception):
                 index = build_index(data_source=data_source, documents=[(other, text)], standalone=[],
-                                    ds_type=datasource.type if datasource else None)
+                                    ds_type=datasource.type if datasource else None,
+                                    granularities=datasource.granularities if datasource else [])
                 taken.update({k: f"dataset {d.name!r} of semantic model {other!r}" for k, d in index.datasets.items()})
                 other_metrics.update({k: f"metric {m.name!r} of semantic model {other!r}"
                                       for k, m in index.metrics.items()})
@@ -1222,7 +1226,8 @@ class StorageBackend(ABC):
         ds_type = datasource.type if datasource is not None else None
         reader = dialect_for_ds_type(ds_type).sqlglot_name
         specs = [metric_spec(m) for m in metrics or []]
-        current = decompose(text=text, name=name, data_source=data_source, ds_type=ds_type)
+        current = decompose(text=text, name=name, data_source=data_source, ds_type=ds_type,
+                            granularities=datasource.granularities if datasource is not None else [])
         members = [*current.datasets, *moved]
         others = [m.name for m in await self.list_model_scoped_metrics(data_source) if m.semantic_model != name]
         kept = [m.name for m in current.metrics if m.name.casefold() not in {

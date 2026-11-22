@@ -24,9 +24,11 @@ def test_sunday_week_uses_dateadd(operand: DataType) -> None:
     text = _render(OssieDialect().build_date_trunc(
         col_expr=exp.column("x"), granularity=TimeGranularity.WEEK_SUNDAY, operand=operand))
     tree = sqlglot.parse_one(text, read=_PORTABLE)
-    assert tree.find(exp.Interval) is None and "INTERVAL" not in text.upper(), text
+    assert tree.find(exp.Interval) is None, text
+    assert "INTERVAL" not in text.upper(), text
     adds = list(tree.find_all(exp.DateAdd))
-    assert len(adds) == 2 and all(a.text("unit").upper() == "DAY" for a in adds), text
+    assert len(adds) == 2, text
+    assert all(a.text("unit").upper() == "DAY" for a in adds), text
 
 
 @pytest.mark.parametrize(("unit", "part"), [
@@ -43,4 +45,5 @@ def test_date_add_keeps_a_date_a_date() -> None:
     text = _render(OssieDialect().build_date_add(
         expr=exp.column("x"), count=exp.Literal.number(1), unit=TimeGranularity.DAY, operand=DataType.DATE))
     tree = sqlglot.parse_one(text, read=_PORTABLE)
-    assert isinstance(tree, exp.Cast) and tree.to.this == exp.DataType.Type.DATE, text
+    assert isinstance(tree, exp.Cast), text
+    assert tree.to.this == exp.DataType.Type.DATE, text

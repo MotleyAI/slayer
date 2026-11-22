@@ -174,7 +174,8 @@ def _assert_typed(unit: str, kind: type, value: Any) -> None:
         assert type(value) is date, (unit, value)
         assert value == (_LATEST if unit == "day" else _LATEST.replace(day=1)), (unit, value)
     else:
-        assert isinstance(value, datetime) and value.tzinfo is None, (unit, value)
+        assert isinstance(value, datetime), (unit, value)
+        assert value.tzinfo is None, (unit, value)
         assert value == datetime(2026, 3, 2), (unit, value)
 
 
@@ -212,7 +213,8 @@ async def test_sunday_week(tmp_path: Path, dialect: str, extensions: bool) -> No
     tree = _tree(text)
     assert [t.text("unit").upper() for t in tree.find_all(exp.TimestampTrunc, exp.DateTrunc)] == ["WEEK"], text
     adds = list(tree.find_all(exp.DateAdd))
-    assert len(adds) == 2 and all(a.text("unit").upper() == "DAY" for a in adds), text
+    assert len(adds) == 2, text
+    assert all(a.text("unit").upper() == "DAY" for a in adds), text
     _no_interval(text)
     await _assert_round_trip(env, document, "weeks")
 
@@ -225,7 +227,8 @@ async def test_date_addition(tmp_path: Path, dialect: str, extensions: bool) -> 
                                     extensions=extensions)
     text = _sql(metric(dataset(document, "orders"), "next_day"))
     [add] = list(_tree(text).find_all(exp.DateAdd))
-    assert add.text("unit").upper() == "DAY" and add.expression.name == "1", text
+    assert add.text("unit").upper() == "DAY", text
+    assert add.expression.name == "1", text
     assert "DATEADD(DAY, 1," in text.upper()
     _no_interval(text)
     await _assert_round_trip(env, document, "next_day")
@@ -255,17 +258,15 @@ def _fiscal_orders() -> SlayerDataset:
     return orders(metrics=[slayer_metric("fiscal_years", _FISCAL_FORMULA)])
 
 
-@pytest.mark.parametrize("extensions", [True, False])
-async def test_custom_granularity_on_duckdb(tmp_path: Path, extensions: bool) -> None:
+async def test_custom_granularity_on_duckdb(tmp_path: Path) -> None:
     env = await _fiscal_env(tmp_path, "duckdb")
-    document = (await export_datasets(env, customers(), _fiscal_orders(), extensions=extensions)).document
-    entity = metric(dataset(document, "orders"), "fiscal_years")
-    assert entity is not None
-    assert "sql" not in entity["expression"]
-    [entry] = entity["expression"]["dialects"]
-    assert entry["dialect"] == "DUCKDB"
+    result = await export_datasets(env, customers(), _fiscal_orders())
+    assert metric(dataset(result.document, "orders"), "fiscal_years") is None
+    assert carries(dataset(result.document, "orders"), _FISCAL_FORMULA)
+    [entry] = mentions(result, "fiscal_years", category="extension_only")
+    assert "does not bind" not in entry.message, entry.message
     assert await _value(env, "orders", "fiscal_years", grouped=False) == [("None", 2.0)]
-    await _assert_round_trip(env, document, "fiscal_years")
+    await _assert_round_trip(env, result.document, "fiscal_years")
 
 
 async def test_custom_granularity_on_sqlite(tmp_path: Path) -> None:

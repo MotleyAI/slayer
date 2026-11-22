@@ -6,7 +6,7 @@ The Ossie exporter refuses every measure whose formula contains a time bucket (`
 
 - A time bucket inside a measure exports in the metric's Ossie SQL: `DATE_TRUNC('<UNIT>', CAST(x AS TIMESTAMP))` for every built-in unit, wrapped in `CAST(… AS DATE)` for a day-or-coarser bucket of a DATE, so it keeps its logical type on any engine.
 - `week_sunday` exports as portable Ossie SQL through `DATEADD`; `date_add` in a measure now exports as Ossie `DATEADD` instead of `INTERVAL` arithmetic.
-- A measure containing a custom-granularity bucket exports as a datasource-dialect entry when that rendering uses only the database's own functions; otherwise (SQLite, whose rendering calls a function SLayer registers) it stays SLayer-only with a report entry.
+- A measure containing a custom-granularity bucket exports as a datasource-dialect entry only when SLayer reads that rendering back and it calls none of SLayer's registered functions; otherwise it stays SLayer-only with a report entry (every built-in dialect's rendering is refused today).
 - The exporter binds measures with the datasource's custom granularities (today such measures fail to bind).
 - Mode B's `date_part` accepts a bare part word (`DATE_PART(MONTH, x)`), as `EXTRACT` does, so SLayer reads its own exported extraction.
 - `date_diff` is out of scope (DEV-2282, which settles Ossie `DATEDIFF`'s meaning).

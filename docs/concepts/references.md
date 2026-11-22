@@ -278,7 +278,7 @@ case-insensitively):
 | `date_trunc(unit, ts)` | DATE for a day-or-coarser bucket of a DATE, else TIMESTAMP | any granularity, the datasource's custom ones included |
 | `current_date()` / `now()` | DATE / TIMESTAMP | — |
 
-`extract(part from ts)` and `year(ts)`, `quarter(ts)`, `month(ts)`, `week(ts)` (the ISO week number), `day(ts)`, `hour(ts)`, `minute(ts)` and `second(ts)` mean `date_part('part', ts)`, and the aliases `isodow` / `day_of_week`, `doy` / `dayofyear` / `day_of_year`, `isoyear` / `iso_year`, `isoweek` / `iso_week` / `weekofyear` and `dayofmonth` / `day_of_month` work both as one-argument functions (`isodow(ts)`) and as parts, while `dow`, `dayofweek` and `weekday` are rejected because databases number weekdays differently.
+`extract(part from ts)` and `year(ts)`, `quarter(ts)`, `month(ts)`, `week(ts)` (the ISO week number), `day(ts)`, `hour(ts)`, `minute(ts)` and `second(ts)` mean `date_part('part', ts)`, and the aliases `isodow` / `day_of_week`, `doy` / `dayofyear` / `day_of_year`, `isoyear` / `iso_year`, `isoweek` / `iso_week` / `weekofyear` and `dayofmonth` / `day_of_month` work both as one-argument functions (`isodow(ts)`) and as parts, while `dow`, `dayofweek` and `weekday` are rejected because databases number weekdays differently. As in `extract`, `date_part`'s part may be written as a bare word: `date_part(MONTH, ts)` means `date_part('month', ts)`.
 
 ```json
 {

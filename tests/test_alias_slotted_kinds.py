@@ -18,8 +18,9 @@ def _ctx(aliases: AliasFacilities) -> RenderContext:
     return RenderContext(dialect=SqlDialect(), aliases=aliases, field_type=lambda _key: DataType.DATETIME)
 
 
-def _leaf_slots(**extra: object) -> AliasFacilities:
-    return AliasFacilities(slot_id_by_key={_LEAF: "s0"}, value_by_slot_id={"s0": exp.column("ordered_at")}, **extra)
+def _leaf_slots(*, slotted_kinds: tuple[type, ...] = _ALIAS_SLOTTED_KINDS) -> AliasFacilities:
+    return AliasFacilities(slotted_kinds=slotted_kinds, slot_id_by_key={_LEAF: "s0"},
+                           value_by_slot_id={"s0": exp.column("ordered_at")})
 
 
 def test_default_slotted_kinds_are_the_five() -> None:
@@ -27,8 +28,9 @@ def test_default_slotted_kinds_are_the_five() -> None:
 
 
 def test_unslotted_bucket_raises_under_the_default() -> None:
+    ctx = _ctx(_leaf_slots())
     with pytest.raises(RenderContextMissingFacilityError):
-        render_value_key(key=_BUCKET, ctx=_ctx(_leaf_slots()))
+        render_value_key(key=_BUCKET, ctx=ctx)
 
 
 def test_bucket_renders_over_slotted_leaves() -> None:
@@ -37,6 +39,6 @@ def test_bucket_renders_over_slotted_leaves() -> None:
 
 
 def test_unslotted_leaf_still_raises_with_leaf_only_kinds() -> None:
-    aliases = AliasFacilities(slotted_kinds=(FieldKey, FieldSqlKey))
+    ctx = _ctx(AliasFacilities(slotted_kinds=(FieldKey, FieldSqlKey)))
     with pytest.raises(RenderContextMissingFacilityError):
-        render_value_key(key=_BUCKET, ctx=_ctx(aliases))
+        render_value_key(key=_BUCKET, ctx=ctx)

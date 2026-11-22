@@ -24,5 +24,6 @@ def test_binds_a_custom_granularity_bucket() -> None:
 
 def test_unknown_granularity_without_definitions() -> None:
     home = orders()
+    datasets = [home, customers()]
     with pytest.raises(UnknownGranularityError):
-        bind_dataset_expression(_FORMULA, dataset=home, datasets=[home, customers()], dialect="duckdb")
+        bind_dataset_expression(_FORMULA, dataset=home, datasets=datasets, dialect="duckdb")
