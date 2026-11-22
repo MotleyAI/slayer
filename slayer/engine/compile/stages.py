@@ -2767,29 +2767,41 @@ def _check_param_partition_keys(*, agg: AggregateKey, alias: str, context: "_Pro
         if home is None or crosses_product_hop(host=host, path=target_path, datasets_by_name=bundle.datasets_by_name):
             continue
         home = bundle.factor_free(home)
-        with_host = {**bundle.datasets_by_name, host.name: host}
-        anchors = context.prebound.reference_anchors
-        routing = _home_routing(
-            list(value.partition_keys), anchors=anchors, host_dataset=host, target_path=target_path,
-            root_dataset=home, datasets_by_name=with_host,
-            source_anchor=_source_anchor(value, anchors=anchors, host_dataset=host, datasets_by_name=with_host),
-        )
-        unattributable = []
-        for pk in _regroup_partition_order(value.partition_keys):
-            pk_home = substitute_value_keys(pk, routing) if routing else pk
-            if shared_relationship_key_reroot(
-                key=pk, target_path=target_path, host_dataset=host, datasets_by_name=bundle.datasets_by_name,
-            ) is None and not grain_member_attributable(
-                key=pk_home, target_path=target_path, root_dataset=home, datasets_by_name=bundle.datasets_by_name,
-                bundle=bundle, host_dataset=host, host_name=host.name,
-            ):
-                unattributable.append((context.dim_display(pk), key_broadcast_reason(
-                    key=pk_home, target_path=target_path, root_dataset=home, datasets_by_name=with_host,
-                    bundle=bundle, host_dataset=host, host_name=host.name,
-                )))
         check_partition_keys_attributable(
-            alias=alias, root_name=home.name, explicit=True, unattributable=unattributable,
+            alias=alias, root_name=home.name, explicit=True,
+            unattributable=_unattributable_param_keys(
+                value, partition_keys=value.partition_keys, target_path=target_path, home=home, context=context,
+            ),
         )
+
+
+def _unattributable_param_keys(
+    value: AggregateKey, *, partition_keys: Grain, target_path: Tuple[str, ...], home: SlayerDataset,
+    context: "_ProducerSynthesisContext",
+) -> List[Tuple[str, str]]:
+    """``(display, reason)`` for each of ``value``'s explicit partition keys its home cannot attribute."""
+    host, bundle = context.host_dataset, context.bundle
+    with_host = {**bundle.datasets_by_name, host.name: host}
+    anchors = context.prebound.reference_anchors
+    routing = _home_routing(
+        list(partition_keys), anchors=anchors, host_dataset=host, target_path=target_path,
+        root_dataset=home, datasets_by_name=with_host,
+        source_anchor=_source_anchor(value, anchors=anchors, host_dataset=host, datasets_by_name=with_host),
+    )
+    unattributable = []
+    for pk in _regroup_partition_order(partition_keys):
+        pk_home = substitute_value_keys(pk, routing) if routing else pk
+        if shared_relationship_key_reroot(
+            key=pk, target_path=target_path, host_dataset=host, datasets_by_name=bundle.datasets_by_name,
+        ) is None and not grain_member_attributable(
+            key=pk_home, target_path=target_path, root_dataset=home, datasets_by_name=bundle.datasets_by_name,
+            bundle=bundle, host_dataset=host, host_name=host.name,
+        ):
+            unattributable.append((context.dim_display(pk), key_broadcast_reason(
+                key=pk_home, target_path=target_path, root_dataset=home, datasets_by_name=with_host,
+                bundle=bundle, host_dataset=host, host_name=host.name,
+            )))
+    return unattributable
 
 
 def _check_attached_params_determined(

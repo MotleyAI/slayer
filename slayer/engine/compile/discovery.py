@@ -260,19 +260,24 @@ class _Walker:
             self.emit(k, "combined", "shifted",
                       series=False if self.transforms.spine else _series_mode(k.input, to_original={}))
         kind = combined_kind(k, homes=self.homes)
-        associates = self.local_broadcasts(k)
         admitted = kind is not None and self.classes.combined_admits(n, position=position, root=root)
-        if admitted and not associates:
-            if kind == "local":
-                self.emit(k, "combined", "local_producer", names=names)
-            else:
-                self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
-        if associates:
+        if self.local_broadcasts(k):
             # A partitioned one is consumed combined only where admitted, like its local twin.
             if kind is None or admitted:
                 self.emit(k, "combined", "target_rooted", names=names)
-        elif _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
+            return
+        if admitted:
+            self._emit_admitted_combined(k, local=kind == "local", names=names, declared=declared)
+        if _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
             self.emit(k, "combined", "local_producer", names=names)
+
+    def _emit_admitted_combined(
+        self, k: ValueKey, *, local: bool, names: Tuple[str, ...], declared: Optional[DataType],
+    ) -> None:
+        if local:
+            self.emit(k, "combined", "local_producer", names=names)
+        else:
+            self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
 
     def inline_row_attach_roots(self) -> None:
         """Emit each row-attach root no producer disposition routes, with its inputs."""
