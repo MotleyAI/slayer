@@ -1,8 +1,8 @@
 ## 1. Tests (pr-tests stage)
 
-- [ ] 1.1 Write `tests/test_law_query_input_refuses_unknown_keys.py` per design decision 12 (reachable-model walk stopping at dataset-side models; forbid, validate_assignment, stray key → `UnknownKeyError` naming it, camelCase heal where eligible, pinned multi-word-key inventory, minimal-payload table that fails on a missing entry); verify it fails on `main` for `TimeDimension` and for the bare-`extra_forbidden` objects
-- [ ] 1.2 Write tests for every scenario in `specs/compatibility/ossie-vocabulary/spec.md` and `specs/queries/time-dimensions/spec.md`, covering the entry paths of design decision 13 (dict, already-built instance, assignment incl. unchanged-after-failure state, refinement merge, storage round-trip incl. a migrated document, REST 422, MCP, Python client); verify each fails on `main` for the right reason
-- [ ] 1.3 Ask the user's approval, naming each file and change, to align `tests/test_dev2102_extensions_ir.py:100,109` and `tests/test_dev1922_source_model_union.py:148-158` (they pin `extra_forbidden`); then align them
+- [x] 1.1 Write `tests/test_law_query_input_refuses_unknown_keys.py` per design decision 12 (reachable-model walk stopping at dataset-side models; forbid, validate_assignment, stray key → `UnknownKeyError` naming it, camelCase heal where eligible, pinned multi-word-key inventory, minimal-payload table that fails on a missing entry); verify it fails on `main` for `TimeDimension` and for the bare-`extra_forbidden` objects
+- [x] 1.2 Write tests for every scenario in `specs/compatibility/ossie-vocabulary/spec.md` and `specs/queries/time-dimensions/spec.md`, covering the entry paths of design decision 13 (dict, already-built instance, assignment incl. unchanged-after-failure state, refinement merge, storage round-trip incl. a migrated document, REST 422, MCP, Python client); verify each fails on `main` for the right reason
+- [x] 1.3 Ask the user's approval, naming each file and change, to align `tests/test_dev2102_extensions_ir.py:100,109` and `tests/test_dev1922_source_model_union.py:148-158` (they pin `extra_forbidden`); then align them
 
 ## 2. Unknown-key path
 
