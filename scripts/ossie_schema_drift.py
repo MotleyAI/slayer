@@ -9,7 +9,8 @@ upstream accepts to DIR (default: the corpus `harvested/`). Exit 0 = harvested, 
 
 `--vendor <checkout> [--out DIR]` re-vendors the corpus (default DIR: the corpus) from an apache/ossie checkout: copies
 every managed file byte for byte, harvests, then swaps the snapshot in and writes the provenance last. Exit 0 =
-vendored, 3 = the harvest failed, 4 = refused (a path escaping the checkout or the corpus, a missing managed file).
+vendored, 3 = the harvest failed, 4 = refused (a path escaping the checkout or the corpus, a missing or uncommitted
+managed file) or a write failed (rolled back).
 """
 
 import argparse
@@ -213,11 +214,16 @@ def _inside(root: Path, relative: str) -> Path:
 
 
 def _managed_snapshot(checkout: Path) -> dict[str, bytes]:
-    """Every managed file tracked at the checkout's HEAD, read through the work tree."""
+    """Every managed file tracked at the checkout's HEAD, read through the work tree; refused when one differs from
+    HEAD."""
     tracked = [p for p in _git(checkout, "ls-files", "-z").split("\0") if p and _is_managed(p)]
     missing = sorted(set(MANAGED_FILES) - set(tracked))
     if missing:
         raise VendorRefused(f"the checkout lacks managed file(s): {', '.join(missing)}")
+    dirty = [line[3:] for line in _git(checkout, "status", "--porcelain", "--untracked-files=no", "--", *tracked)
+             .splitlines()]
+    if dirty:
+        raise VendorRefused(f"managed file(s) differ from HEAD: {', '.join(dirty)}")
     return {path: _inside(checkout, path).read_bytes() for path in sorted(tracked)}
 
 
@@ -237,24 +243,29 @@ def _provenance_text(*, commit: str, committed: str, files: dict[str, bytes]) ->
     return PROVENANCE_HEADER + yaml.safe_dump(body, sort_keys=False, width=1000)
 
 
-def _swap_in(*, out: Path, files: dict[str, bytes], staged_harvest: Path, removed: list[str]) -> None:
-    for path in removed:
-        target = out / path
-        target.unlink(missing_ok=True)
-        for parent in target.parents:
-            if parent == out or not parent.is_dir() or any(parent.iterdir()):
-                break
-            parent.rmdir()
-    for path, data in files.items():
-        target = out / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-    harvested = out / HARVESTED.name
-    harvested.mkdir(parents=True, exist_ok=True)
-    for stale in harvested.glob("*.yaml"):
-        stale.unlink()
-    for document in sorted(staged_harvest.glob("*.yaml")):
-        shutil.copyfile(document, harvested / document.name)
+def _swap_in(*, out: Path, writes: dict[str, bytes], deletes: list[str]) -> None:
+    """Delete ``deletes`` and write ``writes`` (in order) under ``out``; any failure restores every touched path."""
+    touched = [*deletes, *writes]
+    backup = {path: (out / path).read_bytes() for path in touched if (out / path).is_file()}
+    try:
+        for path in deletes:
+            target = out / path
+            target.unlink(missing_ok=True)
+            for parent in target.parents:
+                if parent == out or not parent.is_dir() or any(parent.iterdir()):
+                    break
+                parent.rmdir()
+        for path, data in writes.items():
+            (out / path).parent.mkdir(parents=True, exist_ok=True)
+            (out / path).write_bytes(data)
+    except OSError:
+        for path in touched:
+            if path in backup:
+                (out / path).parent.mkdir(parents=True, exist_ok=True)
+                (out / path).write_bytes(backup[path])
+            else:
+                (out / path).unlink(missing_ok=True)
+        raise
 
 
 def vendor(*, checkout: Path, out: Path) -> int:
@@ -264,6 +275,8 @@ def vendor(*, checkout: Path, out: Path) -> int:
         removed = [path for path in _previous_listing(out) if path not in files]
         commit = _git(checkout, "rev-parse", "HEAD").strip()
         committed = _git(checkout, "log", "-1", "--format=%cI", "HEAD").strip()[:10]
+        for path in [*files, PROVENANCE.name, HARVESTED.name]:
+            _inside(out, path)
     except (VendorRefused, OSError, subprocess.CalledProcessError) as exc:
         print(f"Re-vendor refused: {exc}", file=sys.stderr)
         return EXIT_VENDOR
@@ -272,9 +285,15 @@ def vendor(*, checkout: Path, out: Path) -> int:
         code = harvest(checkout=checkout, out=staged_harvest)
         if code != EXIT_SAME:
             return code
-        _swap_in(out=out, files=files, staged_harvest=staged_harvest, removed=removed)
-    (out / PROVENANCE.name).write_text(_provenance_text(commit=commit, committed=committed, files=files),
-                                       encoding="utf-8")
+        documents = {f"{HARVESTED.name}/{d.name}": d.read_bytes() for d in sorted(staged_harvest.glob("*.yaml"))}
+    stale = [f"{HARVESTED.name}/{d.name}" for d in (out / HARVESTED.name).glob("*.yaml")]
+    writes = {**files, **documents,
+              PROVENANCE.name: _provenance_text(commit=commit, committed=committed, files=files).encode("utf-8")}
+    try:
+        _swap_in(out=out, writes=writes, deletes=[p for p in [*removed, *stale] if p not in writes])
+    except OSError as exc:
+        print(f"Re-vendor failed and was rolled back: {exc}", file=sys.stderr)
+        return EXIT_VENDOR
     print(f"Vendored {len(files)} file(s) from {REPO}@{commit} into {out}.")
     return EXIT_SAME
 

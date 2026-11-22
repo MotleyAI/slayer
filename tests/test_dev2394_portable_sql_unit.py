@@ -1,15 +1,12 @@
-"""The canonical portable-SQL writer's edge cases, and the re-vendor refusal of a checkout missing a managed file."""
+"""The canonical portable-SQL writer's edge cases."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from scripts import ossie_schema_drift as drift_check
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.portable_sql import portable_entity_expression, portable_expression, portable_sql
-from tests.test_ossie_schema_drift import CHECKOUT_FILES, _checkout, _corpus, _fake_harvest, _tree, _vendor
+from slayer.osi import exporter
 
 
 @pytest.mark.parametrize(("written", "stored"), [
@@ -51,12 +48,12 @@ def test_an_unchanged_expression_object_is_returned_as_is() -> None:
     assert portable_expression(expression) is expression
 
 
-def test_vendor_refuses_a_checkout_missing_a_managed_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    files = {p: d for p, d in CHECKOUT_FILES.items() if p != "core-spec/spec.md"}
-    checkout = _checkout(tmp_path / "ossie", files)
-    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
-    before = _tree(corpus)
-    seen = _fake_harvest(monkeypatch)
-    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
-    assert seen == []
-    assert _tree(corpus) == before
+
+@pytest.mark.parametrize(("text", "exported"), [
+    ("x + INTERVAL '1 day'", "DATEADD(day, 1, x)"),
+    ("x + INTERVAL '1 day' * 2", None),
+    ("x IN ()", None),
+    (None, None),
+])
+def test_export_emits_portable_sql_only_when_it_is_valid(text: str | None, exported: str | None) -> None:
+    assert exporter._valid_portable(text) == exported

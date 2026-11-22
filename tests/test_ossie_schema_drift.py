@@ -539,6 +539,57 @@ def test_vendor_refuses_a_checkout_link_escaping_the_checkout(monkeypatch: pytes
     assert _tree(corpus) == before
 
 
+def test_vendor_refuses_a_checkout_missing_a_managed_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", {p: d for p, d in CHECKOUT_FILES.items() if p != "core-spec/spec.md"})
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    seen = _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert seen == []
+    assert _tree(corpus) == before
+
+
+def test_vendor_refuses_a_checkout_with_uncommitted_managed_changes(monkeypatch: pytest.MonkeyPatch,
+                                                                     tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    (checkout / "examples" / "shop.yaml").write_bytes(b"edited\n")
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    seen = _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert seen == []
+    assert _tree(corpus) == before
+
+
+def test_vendor_refuses_a_destination_link_escaping_the_corpus(monkeypatch: pytest.MonkeyPatch,
+                                                              tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={})
+    (corpus / "examples").symlink_to(elsewhere, target_is_directory=True)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_failed_write_rolls_the_corpus_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/gone.yaml": b"gone\n", "examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    _fake_harvest(monkeypatch)
+    real = Path.write_bytes
+
+    def failing(self: Path, data: bytes) -> int:
+        if self.name == "validate.py" and data == CHECKOUT_FILES["validation/validate.py"]:
+            raise OSError("disk full")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", failing)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert _tree(corpus) == before
+
+
 def test_the_corpus_vendors_the_spec_text_and_expression_fixtures() -> None:
     assert {*SPEC_TEXT, *EXPRESSION_FIXTURES} <= set(PROVENANCE["files"])
 
