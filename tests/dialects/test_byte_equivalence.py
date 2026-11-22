@@ -524,12 +524,16 @@ _CUMSUM_QUERY = SlayerQuery(
     "dialect,expected_window",
     [
         # Postgres / SQLite quote with ANSI double quotes.
-        ("postgres", 'SUM("orders.revenue_sum") OVER (ORDER BY "orders.created_at")'),
-        ("sqlite", 'SUM("orders.revenue_sum") OVER (ORDER BY "orders.created_at")'),
+        # A NULL time bucket is a series of its own (semantics Axiom 11.3).
+        ("postgres", 'SUM("orders.revenue_sum") OVER (\n      PARTITION BY CASE WHEN "orders.created_at" IS NULL '
+                     'THEN 1 ELSE 0 END\n      ORDER BY "orders.created_at"\n    )'),
+        ("sqlite", 'SUM("orders.revenue_sum") OVER (\n      PARTITION BY CASE WHEN "orders.created_at" IS NULL '
+                   'THEN 1 ELSE 0 END\n      ORDER BY "orders.created_at"\n    )'),
         # T-SQL quotes with brackets AND mangles the
         # dotted aliases to underscore form so the ORDER BY resolver
         # can match the SELECT alias.
-        ("tsql", "SUM([orders___revenue_sum]) OVER (ORDER BY [orders___created_at])"),
+        ("tsql", "SUM([orders___revenue_sum]) OVER (\n      PARTITION BY CASE WHEN [orders___created_at] IS NULL "
+                 "THEN 1 ELSE 0 END\n      ORDER BY [orders___created_at]\n    )"),
     ],
 )
 async def test_byte_equivalence_cumsum_window_emission(

@@ -9,7 +9,8 @@ from typing import List, Optional, Tuple
 from slayer.core.enums import UNIT_MONTHS, UNIT_SECONDS, TimeGranularity
 from slayer.core.granularity import Granularity, granularity_parts, nests_into, resolve_granularity
 from slayer.core.keys import (
-    AggregateKey, ArithmeticKey, FieldKey, FieldSqlKey, LiteralKey, TimeTruncKey, ValueKey, source_anchor_path, split_top_level_and,
+    AggregateKey, ArithmeticKey, FieldKey, FieldSqlKey, LiteralKey, TimeTruncKey, TransformKey, ValueKey, source_anchor_path,
+    split_top_level_and,
     field_leaf, walk_value_keys,
 )
 from slayer.core.models import SlayerDataset
@@ -47,6 +48,14 @@ def spine_field(dataset: Optional[SlayerDataset]) -> Optional[FieldKey]:
 
 def _mentions(key: ValueKey, spine: FieldKey) -> bool:
     return any(k == spine for k in walk_value_keys(key))
+
+
+def _reads_spine(key: ValueKey, spine: FieldKey) -> bool:
+    """``spine`` occurs in ``key`` other than as a transform's axis (the query's active bucket)."""
+    if key == spine:
+        return True
+    children = [key.input, *key.partition_keys] if isinstance(key, TransformKey) else key.children()
+    return any(_reads_spine(c, spine) for c in children)
 
 
 def _bare(key: ValueKey, spine: FieldKey) -> bool:
@@ -168,7 +177,7 @@ def _spine_bounds(
                 assert isinstance(conjunct, ArithmeticKey)
                 kind, value = _bound(conjunct, spine)
                 (lowers if kind == "lower" else uppers).append(value)
-            elif _mentions(conjunct, spine):
+            elif _reads_spine(conjunct, spine):
                 check_spine_filter(offender=text or key_display(conjunct))
             agg = _spine_aggregate(conjunct, spine=spine, host=host, bundle=bundle)
             check_spine_aggregation(offender=key_display(agg) if agg is not None else None)

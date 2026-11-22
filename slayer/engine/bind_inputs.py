@@ -824,6 +824,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     check_dimension_temporal_axis(
         declared_metrics, bound_filters=bound_filters, order_specs=order_specs,
+        query_grain=_query_grain, active_bucket=active_td_key,
     )
 
     # Lower a collapsing transform constituent (first/last, D4c) to an exact
@@ -850,6 +851,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         offset=query.offset,
         distinct_dimension_values=query.distinct_dimension_values,
         mode_policy=ModePolicy.resolve(query.to_many_handling),
+        ranking_candidates=tuple(dm.bound.value_key for dm in declared_metrics[:n_dims + n_tds]),
         granularity_conflicts=granularity_conflicts,
         whole_list_reads=list_reads,
         date_only_notices=notices,

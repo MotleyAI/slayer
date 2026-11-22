@@ -338,10 +338,8 @@ filters, or order entries the query contains. In a query naming `population`, ad
 removing a projected measure SHALL NOT change the row set or any other column's values. In a
 query omitting it with at least one measure, adding a measure SHALL NOT remove a row or change any value in an existing
 row, a row it adds carrying each other measure's value on its own grain there (its empty value
-where it has no cell). A transform over result rows
-(the rank family, `lag`, `lead`, cumulative and collapsing transforms) is exempt from the previous
-sentence and from the single-measure-split guarantee below until transforms evaluate over their
-operand's own cells (DEV-2218). A measure-typed
+where it has no cell). Transforms obey both guarantees: each evaluates over its operand's own
+cells (`queries/transforms` › Transforms evaluate over their operand's domain). A measure-typed
 filter masks result cells without changing any surviving cell's values; ORDER BY and LIMIT
 select and order rows without changing any cell's values. A multi-measure query SHALL
 return, cell by cell, the same values as its single-measure splits in each split's rows, and
@@ -391,6 +389,11 @@ contains it fail.
 - **WHEN** a selected composite is reused by a measure-typed filter, and by an order-only
   composite, and the queries are rendered for PostgreSQL and T-SQL
 - **THEN** the generated SQL matches recorded golden baselines
+
+#### Scenario: A transform keeps its values when a sibling adds rows
+- **WHEN** a query without `population` grouping by `customers.region` selects
+  `percent_rank(count(orders.*))`, and again with `returns.total_returns` added
+- **THEN** EAST 1 and WEST 0 keep their values in both runs, and the added NORTH row carries NULL
 
 ### Requirement: Loud degradation
 Whenever partition semantics is unavailable — an implicit attribution-loss broadcast,
@@ -1198,16 +1201,17 @@ make an aggregation supply rows.
 ### Requirement: Row laws of inferred queries
 Before measure-typed filters, `order` and `limit`, every query omitting `population` SHALL obey:
 **measure monotonicity** — adding a measure to a query with at least one measure never removes a
-row and never changes a value in an existing row (transforms over result rows excepted until
-DEV-2218); **home-row preservation** —
+row and never changes a value in an existing row, transforms included; **home-row preservation** —
 every home row of a full-grain aggregate surviving the filters lands in a row, exactly one when
 the home determines the dimensions and the data respects declared cardinality; **filter
-non-expansion** — adding a field filter never adds a row and never changes a result key; and the
+non-expansion** — adding a field filter never adds a row and never changes a result key, except
+the value of a computed dimension read from an aggregate over the filtered rows; and the
 **unit** — a query with measures and no dimensions returns exactly one row. Filter non-expansion
 and the unit SHALL hold for a query naming `population` too.
 
 #### Scenario: Monotonicity over generated queries
-- **WHEN** the law harness generates root-less queries and adds a measure to each
+- **WHEN** the law harness generates root-less queries, transforms among their measures, and adds a
+  measure to each
 - **THEN** every row of the smaller query is a row of the larger one with the same values
 
 #### Scenario: Home rows are preserved
@@ -1217,7 +1221,8 @@ and the unit SHALL hold for a query naming `population` too.
 
 #### Scenario: Filters never expand
 - **WHEN** the law harness adds a field filter to generated queries, with and without `population`
-- **THEN** the filtered result's keys are a subset of the unfiltered result's keys
+- **THEN** the filtered result's keys are a subset of the unfiltered result's keys, apart from the
+  value of a computed dimension read from an aggregate over the filtered rows
 
 #### Scenario: The unit
 - **WHEN** a query with measures and no dimensions runs, with and without `population`, with and
