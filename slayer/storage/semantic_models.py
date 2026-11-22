@@ -176,8 +176,9 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: l
     entry = read_entry(field.nonportable_extensions, kind="field", entity=field.name,
                        ossie=entry_digest(field.expression), label=label, notes=notes)
     built = apply_field_entry(built, entry, notes=notes, label=label, target=target)
-    # A restored expression replaces the document form, so only its own readability counts.
-    warning = None if built.expression != expression else WINDOW_WARNING if _windowed(field.expression) else problem
+    warning = None  # a restored expression replaces the document form, so only its own readability counts
+    if built.expression == expression:
+        warning = WINDOW_WARNING if _windowed(field.expression) else problem
     warning = warning or _unparseable_field(built.expression, target=target, owner=f"Field {field.name!r}")
     return built.model_copy(update={"meta": with_ossie_meta(built.meta, field), "load_warning": warning})
 
