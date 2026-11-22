@@ -573,6 +573,18 @@ def test_vendor_refuses_a_destination_link_escaping_the_corpus(monkeypatch: pyte
     assert list(elsewhere.iterdir()) == []
 
 
+def test_vendor_refuses_a_harvested_link_escaping_the_corpus(monkeypatch: pytest.MonkeyPatch,
+                                                             tmp_path: Path) -> None:
+    outside = tmp_path / "outside.yaml"
+    outside.write_bytes(b"precious\n")
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={})
+    (corpus / "harvested" / "abc123def456.yaml").symlink_to(outside)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert outside.read_bytes() == b"precious\n"
+
+
 def test_a_failed_write_rolls_the_corpus_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
     corpus = _corpus(tmp_path / "corpus", listed={"examples/gone.yaml": b"gone\n", "examples/shop.yaml": b"old\n"})
@@ -588,6 +600,7 @@ def test_a_failed_write_rolls_the_corpus_back(monkeypatch: pytest.MonkeyPatch, t
     monkeypatch.setattr(Path, "write_bytes", failing)
     assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
     assert _tree(corpus) == before
+    assert not (corpus / "core-spec").exists()
 
 
 def test_the_corpus_vendors_the_spec_text_and_expression_fixtures() -> None:

@@ -251,10 +251,7 @@ def _swap_in(*, out: Path, writes: dict[str, bytes], deletes: list[str]) -> None
         for path in deletes:
             target = out / path
             target.unlink(missing_ok=True)
-            for parent in target.parents:
-                if parent == out or not parent.is_dir() or any(parent.iterdir()):
-                    break
-                parent.rmdir()
+            _prune_empty_parents(target, root=out)
         for path, data in writes.items():
             (out / path).parent.mkdir(parents=True, exist_ok=True)
             (out / path).write_bytes(data)
@@ -265,7 +262,15 @@ def _swap_in(*, out: Path, writes: dict[str, bytes], deletes: list[str]) -> None
                 (out / path).write_bytes(backup[path])
             else:
                 (out / path).unlink(missing_ok=True)
+                _prune_empty_parents(out / path, root=out)
         raise
+
+
+def _prune_empty_parents(target: Path, *, root: Path) -> None:
+    for parent in target.parents:
+        if parent == root or not parent.is_dir() or any(parent.iterdir()):
+            return
+        parent.rmdir()
 
 
 def vendor(*, checkout: Path, out: Path) -> int:
@@ -289,8 +294,14 @@ def vendor(*, checkout: Path, out: Path) -> int:
     stale = [f"{HARVESTED.name}/{d.name}" for d in (out / HARVESTED.name).glob("*.yaml")]
     writes = {**files, **documents,
               PROVENANCE.name: _provenance_text(commit=commit, committed=committed, files=files).encode("utf-8")}
+    deletes = [p for p in [*removed, *stale] if p not in writes]
     try:
-        _swap_in(out=out, writes=writes, deletes=[p for p in [*removed, *stale] if p not in writes])
+        for path in [*writes, *deletes]:
+            _inside(out, path)
+        _swap_in(out=out, writes=writes, deletes=deletes)
+    except VendorRefused as exc:
+        print(f"Re-vendor refused: {exc}", file=sys.stderr)
+        return EXIT_VENDOR
     except OSError as exc:
         print(f"Re-vendor failed and was rolled back: {exc}", file=sys.stderr)
         return EXIT_VENDOR
