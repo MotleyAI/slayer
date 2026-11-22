@@ -1801,10 +1801,12 @@ class SlayerQueryEngine:
     async def _spine_population_of(
         self, *, query: SlayerQuery, free: SlayerQuery, data_source: Optional[str], sibling_stage_names: Set[str],
     ) -> "_StageInference":
-        """A spine-reading ``query`` planned from its pinned or inferred population."""
+        """A spine-reading ``query`` planned from its pinned or inferred population; an inferred pin of the spine itself
+        anchors nothing, so its anchor is inferred as unpinned."""
+        spine_pin = query.population_inferred and query.population_name == TIME_SPINE_DATASET
         choice = (
             PopulationChoice(datasets=(query.population_name or "",), data_source=data_source or "")
-            if query.population is not None else
+            if query.population is not None and not spine_pin else
             await infer_spine_population(query=free, storage=self.storage, data_source=data_source,
                                          sibling_stage_names=sibling_stage_names)
         )

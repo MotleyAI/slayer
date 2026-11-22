@@ -290,6 +290,18 @@ class TestSpineStages:
         resp = await engine.execute([stage, _over("monthly", dimensions=["monthly.region"])])
         assert _totals(resp) == {"N": (170.0, 3.0), "S": (50.0, 3.0)}
 
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_spine_pinned_with_the_marker_infers_its_anchor(self, backend: str) -> None:
+        def query(**extra: Any) -> SlayerQuery:
+            return spine_query(metrics=[m("sum(orders.amount, partition_by=[])", "o")], date_range=JAN_MAR,
+                               dimensions=["customers.region"], **extra)
+
+        async with spine_engine(backend, datasets=spine_datasets(signed_up_at=True)) as eng:
+            unpinned = await eng.execute(query())
+            pinned = await eng.execute(query(population="time_spine", population_inferred=True))
+        assert by_bucket(pinned, ["o"], by=["region"]) == by_bucket(unpinned, ["o"], by=["region"])
+        assert {k[0] for k in by_bucket(pinned, ["o"], by=["region"])} == {"S"}
+
     async def test_a_stage_naming_p_keeps_the_grid(self, engine) -> None:
         stage = _monthly_stage(dimensions=["customers.region"], population="customers")
         resp = await engine.execute([stage, _over("monthly", dimensions=["monthly.region"])])
