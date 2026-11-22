@@ -7,7 +7,7 @@ host-style on its own root."""
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, cast
+from typing import Optional, Sequence, cast
 
 from slayer.core.keys import (
     is_ranked,
@@ -22,17 +22,13 @@ from slayer.core.keys import (
 from slayer.core.relationship_walker import dataset_field_type
 from slayer.core.models import SlayerDataset
 from slayer.engine.reference_closure import field_default_key
-from slayer.ir.planned import (
-    SlotId,
-    ValueSlot,
-)
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = [
     "explicit_ranking_key",
-    "ordered_row_keys",
     "resolve_ranking_time_key",
 ]
+
 
 def explicit_ranking_key(key: AggregateKey) -> Optional[ValueKey]:
     """The explicit ranking key (the first positional, a row-level expression), or ``None``."""
@@ -103,27 +99,4 @@ def resolve_ranking_time_key(
         "dataset's default_time_dimension); none is resolvable for "
         f"dataset {root_dataset.name!r}."
     )
-
-
-def ordered_row_keys(
-    *, row_slots: Sequence[ValueSlot], public_projection: Sequence[SlotId],
-) -> List[ValueKey]:
-    """Row-dimension keys in base-SELECT render order (publicly projected first,
-    then the rest); the ranking precedence is order-sensitive."""
-    by_id = {s.id: s for s in row_slots}
-    seen: set = set()
-    ordered: List[ValueKey] = []
-    for sid in public_projection:
-        slot = by_id.get(sid)
-        if slot is not None and sid not in seen:
-            seen.add(sid)
-            ordered.append(slot.key)
-    for slot in row_slots:
-        if slot.id not in seen:
-            seen.add(slot.id)
-            ordered.append(slot.key)
-    return ordered
-
-
-
 

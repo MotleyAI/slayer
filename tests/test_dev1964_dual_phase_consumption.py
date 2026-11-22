@@ -396,6 +396,7 @@ def _grain_names(keys) -> dict:
         pks=Grain(keys=frozenset(keys)),
         aggs=[AggregateKey(source=FieldKey(leaf="amount"), agg="sum")],
         dataset=models[0], bundle=_bundle(), inherited=[], n_date_range=0, mode_policy=ModePolicy(),
+        ranking_candidates=(),
     )
     dims = [dm for dm in prebound.declared_metrics if dm.is_dimension]
     return {dm.bound.value_key: dm.public_name for dm in dims}
