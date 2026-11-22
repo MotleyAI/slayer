@@ -3134,7 +3134,10 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         constituents.extend(c for c in operand_constituents(g) if c not in constituents)
     carrier_grain = union_grain | Grain.of([*row_outer, *field_params])
     grain_placeholders: Dict[ValueKey, ValueKey] = (
-        {g: registry.placeholder_for(g) for g in _regroup_partition_order(carrier_grain)} if union_grain else {})
+        {g: registry.placeholder_for(g) for g in _regroup_partition_order(carrier_grain)}
+        if union_grain and not _cells_are_the_carrier(
+            carrier_grain=carrier_grain, union_grain=union_grain, constituents=constituents, context=context)
+        else {})
     # The carrier: one producer at the union grain carrying every constituent
     # (coarser constituents broadcast within it).
     constituent_placeholders: Dict[ValueKey, ValueKey] = {
@@ -3468,6 +3471,32 @@ def _grain_anchor(grain: Grain, *, context: _ProducerSynthesisContext) -> Slayer
     return found
 
 
+def _operand_constituent_grain(c: ValueKey, *, context: _ProducerSynthesisContext) -> Grain:
+    return constituent_grain(c=c, projected_dim_keys=context.projected_dim_keys,
+                             projected_td_keys=context.projected_td_keys, active_bucket=context.prebound.main_time_key)
+
+
+def _cells_are_the_carrier(
+    *, carrier_grain: Grain, union_grain: Grain, constituents: Sequence[ValueKey], context: _ProducerSynthesisContext,
+) -> bool:
+    """Every constituent groups the host's own rows at exactly the operand's grain, unfiltered: its groups are the
+    operand's cells, so the carrier needs no row supply of its own."""
+    return carrier_grain == union_grain and all(
+        _operand_constituent_grain(c, context=context) == union_grain and _reads_host_rows(c, context=context)
+        for c in constituents)
+
+
+def _reads_host_rows(c: ValueKey, *, context: _ProducerSynthesisContext) -> bool:
+    """``c`` derives from the host's own rows alone, none dropped by an aggregate filter."""
+    if isinstance(c, TransformKey) or (isinstance(c, AggregateKey) and is_reaggregation_key(c)):
+        inner = operand_constituents(c.input if isinstance(c, TransformKey) else c.source)
+        return bool(inner) and all(_reads_host_rows(i, context=context) for i in inner)
+    if not isinstance(c, AggregateKey) or c.filter is not None or _constituent_home_path(c, context=context):
+        return False
+    home = _constituent_home(c, context=context)
+    return home is not None and home.name == context.host_dataset.name
+
+
 def _operand_supply(
     *, carrier_grain: Grain, union_grain: Grain, names: Mapping[ValueKey, str], constituents: Sequence[ValueKey],
     context: _ProducerSynthesisContext, inherited: Sequence[BoundFilter],
@@ -3477,10 +3506,7 @@ def _operand_supply(
     constituents' cells, else its grain's dimension anchor's cells agreeing with every constituent's."""
     keys = _regroup_partition_order(carrier_grain)
 
-    def grain_of(c: ValueKey) -> Grain:
-        return constituent_grain(c=c, projected_dim_keys=context.projected_dim_keys,
-                                 projected_td_keys=context.projected_td_keys,
-                                 active_bucket=context.prebound.main_time_key)
+    grain_of = functools.partial(_operand_constituent_grain, context=context)
 
     cells = functools.partial(_operand_cells, names=names, context=context, inherited=inherited,
                     producer_registry=producer_registry)

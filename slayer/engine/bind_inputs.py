@@ -1725,15 +1725,15 @@ def _snap_whole_periods(
             grans = grans_by_field.setdefault(td_key.source, [])
             if td_key.granularity not in grans:
                 grans.append(td_key.granularity)
-    # Two spellings of one column are one column to the population that reads them.
-    grans_by_column: Dict[ValueKey, List[Granularity]] = {}
+    # Two spellings of one field are one field to the population that reads them.
+    grans_by_read: Dict[ValueKey, List[Granularity]] = {}
     for field, grans in grans_by_field.items():
-        column = field.model_copy(update={"anchor": None}) if isinstance(field, (FieldKey, FieldSqlKey)) else field
-        merged = grans_by_column.setdefault(column, [])
+        read = field.model_copy(update={"anchor": None}) if isinstance(field, (FieldKey, FieldSqlKey)) else field
+        merged = grans_by_read.setdefault(read, [])
         merged.extend(g for g in grans if g not in merged)
     conflicts = [
         GranularityConflict(field=dotted_key_display(field), granularities=(a, b))
-        for field, grans in grans_by_column.items()
+        for field, grans in grans_by_read.items()
         for i, a in enumerate(grans) for b in grans[i + 1:]
         if not (nests_into(a, b) or nests_into(b, a))
     ]
