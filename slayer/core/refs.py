@@ -11,6 +11,7 @@ from typing import Any, Callable, cast
 from slayer.core.enums import GRANULARITY_NAMES
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
+    display_token,
     MIRRORED_TIME_POINT_OP,
     OPTIONAL_KEY_FIELDS,
     AggregateKey,
@@ -283,11 +284,11 @@ def _fragment_display(key: SqlFragmentKey) -> str:
 
 def _leaf_display(key: ValueKey) -> str | None:
     if isinstance(key, FieldKey):
-        return ".".join((*key.path, key.leaf))
+        return ".".join((*map(display_token, key.path), key.leaf))
     if isinstance(key, FieldSqlKey):
-        return ".".join((*key.path, key.field_name))
+        return ".".join((*map(display_token, key.path), key.field_name))
     if isinstance(key, StarKey):
-        return ".".join((*key.path, "*"))
+        return ".".join((*map(display_token, key.path), "*"))
     if isinstance(key, LiteralKey):
         return _scalar_display(key.value)
     return None

@@ -83,17 +83,15 @@ from slayer.engine.population.inference import (
     DimensionAnchor,
     PopulationChoice,
     ambiguity_resolved_path,
-    declared_head_spellings,
     determined_path,
     infer_rows,
     infer_spine_population,
     item_blockers,
-    metric_anchor_names,
     spine_datasource,
     spine_factor_out,
 )
 from slayer.engine.population.row_supply import (
-    RowPlan, anchored_rows, plan_rows, refuse_product_split, stored_rows,
+    plan_rows, refuse_product_split, stored_rows,
 )
 from slayer.core.time_points import host_clock
 from slayer.core.names import name_taken
@@ -856,8 +854,6 @@ class _StageInference(BaseModel):
     row_sources: List[str] = PydanticField(default_factory=list)
     # The anchor a save pins as the stage's population.
     pin: Optional[str] = None
-    # A named population planned from a metric's home (its rows stay the population's).
-    anchored: bool = False
 
 
 class _Inference(BaseModel):
@@ -1755,7 +1751,7 @@ class SlayerQueryEngine:
         row_sources = [stage_displays[s].name if s in stage_displays else s for s in main.row_sources]
         return _Inference(
             query=main.query, named_queries=rewritten, population=population,
-            population_inferred=main.supply is not None and not main.anchored, data_source=inferred_data_source,
+            population_inferred=main.supply is not None, data_source=inferred_data_source,
             row_sources=row_sources, supplies=supplies, pins=pins,
         )
 
@@ -1793,17 +1789,6 @@ class SlayerQueryEngine:
                 sibling_stage_names=sibling_stage_names,
             )
         name = query.population_name
-        routed = None
-        if spine_ds is None:
-            spelled = await declared_head_spellings(query, storage=self.storage, data_source=data_source,
-                                                    siblings=sibling_stage_names)
-            routed = await self._anchored_rows(spelled, data_source=data_source)
-        if routed is not None:
-            plan, routed_ds = routed
-            return _StageInference(
-                query=query.model_copy(update={"population": plan.population}), data_source=routed_ds,
-                reported=name, supply=plan.supply, row_sources=list(plan.row_sources), anchored=True,
-            )
         return _StageInference(query=query, data_source=spine_ds, reported=name,
                                row_sources=[name] if name is not None else [])
 
@@ -1834,22 +1819,6 @@ class SlayerQueryEngine:
             supply=RowSupply(product=product, anchor=None if product or p == TIME_SPINE_DATASET else p),
             row_sources=sorted(choice.datasets) if p != TIME_SPINE_DATASET else [], pin=None if product else p,
         )
-
-    async def _anchored_rows(
-        self, query: SlayerQuery, *, data_source: Optional[str],
-    ) -> Optional[Tuple[RowPlan, str]]:
-        """A named population's row plan and its datasource when it cannot route to a metric's home (else ``None``)."""
-        population = query.population_name
-        if population is None or not query.metrics or is_spine_query(query):
-            return None
-        if metric_anchor_names(query.model_copy(update={"population": None})) <= {population}:
-            return None
-        dataset = await self.storage.get_dataset(population, data_source=data_source)
-        if dataset is None or not dataset.data_source:
-            return None
-        loaded, _unloaded = await self.storage.load_datasets(data_source=dataset.data_source)
-        plan = anchored_rows(query, datasets_by_name={m.name: m for m in loaded})
-        return (plan, dataset.data_source) if plan is not None else None
 
     async def _spine_list_datasource(self, *, queries: List[SlayerQuery], stage_names: Set[str]) -> Optional[str]:
         """The one datasource every dataset a spine-reading query list names lives in, if there is one."""

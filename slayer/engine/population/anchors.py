@@ -3,7 +3,7 @@ its only to-one path, else its only route (``queries/references``). Pure over a 
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, InstanceOf
@@ -15,6 +15,7 @@ from slayer.core.errors import (
     UnqualifiedRowCountError,
     UnresolvableDimensionRelationshipError,
 )
+from slayer.core.keys import anchor_token
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name, spelled_name
 from slayer.core.relationship_search import HopFilter, blocking_pairs, routes
@@ -30,6 +31,8 @@ __all__ = [
     "edge_first_refusal",
     "explicit_spellings",
     "find_anchor",
+    "source_frame",
+    "to_one_route",
     "unknown_dataset",
     "unknown_metric",
     "unqualified_count",
@@ -208,9 +211,55 @@ def unqualified_count(dataset: Optional[str] = None) -> UnqualifiedRowCountError
     ))
 
 
+def _determines(dataset: SlayerDataset, anchor: SlayerDataset, *, universe: dict[str, SlayerDataset]) -> bool:
+    """``dataset`` reaches ``anchor`` by exactly one path of provably to-one hops (Axiom 1)."""
+    return dataset.name == anchor.name or len(routes(
+        root=dataset, target=anchor.name, datasets_by_name=universe, hop_filter=HopFilter.TO_ONE, cap=2,
+    )) == 1
+
+
+def to_one_route(
+    dataset: SlayerDataset, anchor: SlayerDataset, *, datasets_by_name: Mapping[str, SlayerDataset],
+) -> Tuple[str, ...]:
+    """The canonical tokens of ``dataset``'s only to-one path to ``anchor`` (``()`` when they are one)."""
+    if dataset.name == anchor.name:
+        return ()
+    found = routes(root=dataset, target=anchor.name, datasets_by_name=dict(datasets_by_name),
+                   hop_filter=HopFilter.TO_ONE, cap=2)
+    return tuple(found[0].tokens) if len(found) == 1 else ()
+
+
+def source_frame(
+    anchors: Sequence[SlayerDataset], *, datasets_by_name: Mapping[str, SlayerDataset],
+    spell: Callable[[SlayerDataset], str],
+) -> Optional[SlayerDataset]:
+    """The dataset an aggregation source anchored at ``anchors`` is read from (semantics Axiom 2.6): their one
+    anchor, else the smallest dataset determining each over provably to-one hops. Tied candidates raise the ambiguity
+    naming each one's spelling of the source (``spell``), sorted by canonical name; ``None`` when none determines them
+    all (input safety then refuses the source)."""
+    distinct = list({a.name: a for a in anchors}.values())
+    if len(distinct) == 1:
+        return distinct[0]
+    universe = {n: d for n, d in datasets_by_name.items() if not is_spine(d) and d.list_of is None}
+    candidates = [d for d in universe.values() if all(_determines(d, a, universe=universe) for a in distinct)]
+    minimal = [d for d in candidates
+               if not any(e.name != d.name and _determines(d, e, universe=universe) for e in candidates)]
+    if len(minimal) == 1:
+        return minimal[0]
+    if not minimal:
+        return None
+    spellings = [spell(d) for d in sorted(minimal, key=lambda d: d.name.casefold())]
+    raise UnresolvableDimensionRelationshipError(
+        reference=spellings[0], root_dataset=", ".join(a.spelling for a in distinct),
+        reason=f"its references are anchored at {', '.join(repr(a.spelling) for a in distinct)}, and more than one "
+        f"smallest dataset determines them all; read it from one: {', '.join(repr(s) for s in spellings)}.",
+        suggested_path=spellings[0],
+    )
+
+
 class AnchoredSpelling(BaseModel):
-    """A reference's identity up to its leaf: its anchor and canonical route (``parts``), and the canonical path from
-    the reading dataset to the same place (``reach``)."""
+    """A reference's identity up to its leaf: its anchor and canonical route (``parts``), and its path as an
+    aggregation read from its anchor holds it (``reach``)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -222,13 +271,18 @@ def anchored_spelling(
     parts: Sequence[str], *, quoted: Sequence[bool], reader: SlayerDataset,
     datasets_by_name: Mapping[str, SlayerDataset],
 ) -> Optional[AnchoredSpelling]:
-    """The identity of the reference ``parts`` (leaf excluded) read from ``reader``; ``None`` when it does not resolve."""
+    """The identity of the reference ``parts`` (leaf excluded) read from ``reader``, never through its route to the
+    anchor; ``None`` when it does not resolve."""
     try:
         anchor = find_anchor(parts[0], quoted=bool(quoted) and quoted[0], reader=reader,
                              datasets_by_name=datasets_by_name)
         if anchor is None:
             return None
-        reached = anchor_route(reader=reader, anchor=anchor, datasets_by_name=datasets_by_name, rest=parts[1:])
+        route: Tuple[str, ...] = ()
+        if is_spine(anchor):
+            route = anchor_route(reader=reader, anchor=anchor, datasets_by_name=datasets_by_name, rest=parts[1:]).route
+        elif anchor.name != reader.name:
+            route = (anchor_token(anchor.name),)
         walked = walk_terminal(root=anchor, path=list(parts[1:-1]),
                                datasets_by_name={**datasets_by_name, reader.name: reader},
                                quoted=list(quoted[1:-1]))
@@ -236,4 +290,4 @@ def anchored_spelling(
         return None
     if walked is None:
         return None
-    return AnchoredSpelling(parts=(anchor.spelling, *walked[1]), reach=(*reached.route, *walked[1]))
+    return AnchoredSpelling(parts=(anchor.spelling, *walked[1]), reach=(*route, *walked[1]))

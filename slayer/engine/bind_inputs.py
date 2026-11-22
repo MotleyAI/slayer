@@ -1074,11 +1074,14 @@ def _resolve_anchored_saved_metric_ref(
     anchor = find_anchor(parts[0], quoted=quoted[0], reader=host, datasets_by_name=datasets)
     if anchor is None:
         return None
+    *rest, leaf = parts[1:]
     try:
         reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=datasets, rest=parts[1:])
     except UnresolvableDimensionRelationshipError:
-        return None  # binding reports the ambiguity
-    *rest, leaf = parts[1:]
+        # A saved metric binds from its declaring dataset: the reader's route never decides it.
+        walked = _walk_dotted(source_dataset=anchor, hops=rest, bundle=bundle) if rest else (anchor, ())
+        mm = walked[0].get_metric(leaf) if walked is not None else None
+        return (walked[0], mm, ".".join(parts)) if walked is not None and mm is not None else None
     hops = [*reached.route, *rest]
     walked = _walk_dotted(source_dataset=host, hops=hops, bundle=bundle) if hops else (host, ())
     if walked is None:

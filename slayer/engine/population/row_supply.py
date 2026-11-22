@@ -28,7 +28,6 @@ from slayer.engine.population.inference import (
     _query_dimension_refs,
     _walk_terminal_dataset,
     determination_items,
-    metric_anchor_names,
     probe_item,
 )
 from slayer.ir.source_bundle import RowSupply, RowSupplyBranch
@@ -279,49 +278,6 @@ def first_metric_anchor(query: SlayerQuery) -> Optional[str]:
             elif isinstance(node, DottedRef):
                 return node.parts[0]
     return None
-
-
-def _routes(*, reader: SlayerDataset, home: str, datasets_by_name: dict[str, SlayerDataset]) -> bool:
-    """Whether ``reader`` reaches ``home`` unambiguously (or meets it as a product)."""
-    target = datasets_by_name.get(home)
-    if target is None or home == reader.name:
-        return True
-    try:
-        anchor_route(reader=reader, anchor=target, datasets_by_name=datasets_by_name)
-    except UnresolvableDimensionRelationshipError:
-        return False
-    return True
-
-
-def _require_route(*, reader: SlayerDataset, home: str, datasets_by_name: dict[str, SlayerDataset]) -> None:
-    """Raise the typed ambiguity error when ``reader`` has no unambiguous route to ``home``."""
-    target = datasets_by_name.get(home)
-    if target is not None and home != reader.name:
-        anchor_route(reader=reader, anchor=target, datasets_by_name=datasets_by_name)
-
-
-def anchored_rows(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[RowPlan]:
-    """A named population that cannot route to a metric's home: the stage is planned from that home, its rows the
-    population's cells (the population's reading of the home never decides a value, Axiom 6); else ``None``.
-    DEV-2388 removes it: aggregations bind from their own anchor."""
-    population = query.population_name
-    reader = datasets_by_name.get(population or "")
-    has_dims = bool(query.dimensions or query.time_dimensions)
-    if reader is None or population is None or not query.metrics or not query.distinct_dimension_values \
-            or not has_dims:
-        return None
-    free = query.model_copy(update={"population": None})
-    unroutable = sorted(a for a in metric_anchor_names(free)
-                        if a in datasets_by_name and not _routes(reader=reader, home=a, datasets_by_name=datasets_by_name))
-    if not unroutable:
-        return None
-    filters = _field_filters(free, datasets_by_name=datasets_by_name)
-    for f in filters:
-        for r in _all_filter_refs(f, root=None)[0]:
-            _require_route(reader=reader, home=r.split(".")[0], datasets_by_name=datasets_by_name)
-    cells = _cells(free, population=population, filters=filters)
-    return RowPlan(population=unroutable[0], supply=RowSupply(branches=(RowSupplyBranch(cells=cells),), anchor=population),
-                   row_sources=(population,), reported=population)
 
 
 def _connected(*, home: str, target: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> bool:
