@@ -72,6 +72,8 @@ arc42 edit.
    a two-stage query whose stages have different temporal dimensions; an executed
    `time_shift` test; candidate-order tests (a non-temporal dimension before a
    temporal computed one; a bucket skipped for its source).
+10. **A column read only by a filter is no candidate**: the precedence lists the query's
+    dimensions, never its filters. (user)
 
 ## Risks / Trade-offs
 

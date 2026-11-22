@@ -80,5 +80,5 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 - THEN the query fails at plan time with the typed unanalyzable-dependency error naming the aggregate and the column — never a plan that ranks by it
 
 #### Scenario: Safe ranking keys keep executing
-- WHEN the resolved ranking key is a local column (the model default, or a filter-only temporal column with no default), a derived column over a provably to-one hop (`cust_signup` = `customers.signup_at` with `customers.id` a primary key), or — for `last(amount, window='30d')` on a `created_at` time dimension — the bucket's raw column while the model default crosses the unproven hop
+- WHEN the resolved ranking key is a local column (the model default), a derived column over a provably to-one hop (`cust_signup` = `customers.signup_at` with `customers.id` a primary key), or — for `last(amount, window='30d')` on a `created_at` time dimension — the bucket's raw column while the model default crosses the unproven hop
 - THEN each query executes with its established value (the proven-hop case joins `customers` and picks the row with the latest signup; the windowed case never joins `line_items`), and the derived key renders as its plain expansion with no added CAST in both the plain and the windowed ranked CTE

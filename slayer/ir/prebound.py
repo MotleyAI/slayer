@@ -27,7 +27,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from slayer.core.relationship_walker import resolved_terminal
-from slayer.core.keys import TimeTruncKey
+from slayer.core.keys import TimeTruncKey, ValueKey
 from slayer.core.models import SlayerDataset
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.ir.bound import BoundFilter, DeclaredMetric, GranularityConflict, OrderSpec, WholeListRead
@@ -115,6 +115,9 @@ class PreboundQuery(BaseModel):
     # How aggregates resolve query dimensions unattributable from their root;
     # threaded onto nested producer prebounds so every plan resolves alike.
     mode_policy: ModePolicy = ModePolicy()
+    # The user query's dimension then time-dimension keys, in this plan's coordinates: a ranked
+    # aggregate's default-key candidates, threaded unchanged onto every producer prebound.
+    ranking_candidates: Tuple[ValueKey, ...] = ()
     granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
     whole_list_reads: List[WholeListRead] = Field(default_factory=list)
     date_only_notices: List[DateOnlyMidnightWarning] = Field(default_factory=list)
