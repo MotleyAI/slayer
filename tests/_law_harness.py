@@ -451,10 +451,13 @@ ROOTLESS_DIMS: dict[str, list[str]] = {
     "status": ["orders.status"],
     "region_status": ["customers.region", "orders.status"],
     "unit": [],
+    "region_month": ["customers.region"],
 }
+#: The month time dimension of the families that carry one.
+ROOTLESS_TIME = {"region_month": [{"field": "orders.ordered_at", "granularity": "month"}]}
 #: The population naming each family's anchored twin.
 ROOTLESS_POPULATION = {"region": "customers", "region_segment": "customers", "status": "orders",
-                       "region_status": "orders", "unit": "customers"}
+                       "region_status": "orders", "unit": "customers", "region_month": "orders"}
 ROOTLESS_METRICS = {
     "rev": "sum(orders.amount)",
     "ret": "sum(returns.amount)",
@@ -464,11 +467,20 @@ ROOTLESS_METRICS = {
     "part": "sum(orders.amount, partition_by=[customers.region])",
     "maxret": "max(returns.amount)",
     "ratio": "sum(orders.amount) / count(customers.*)",
+    "lag": "lag(sum(orders.amount))",
+    "prank": "percent_rank(count(orders.*))",
+    "ntile": "ntile(count(orders.*), n=2)",
+    "rank": "rank(sum(orders.amount), direction='desc')",
+    "cumsum": "cumsum(sum(orders.amount))",
+    "last": "last(sum(orders.amount))",
 }
 #: Each metric's value in a cell it lacks (Axiom 4).
 ROOTLESS_EMPTY = {"vis": 0, "tix": 0, "cust": 0}
 #: A metric that needs a dimension among the query's.
 ROOTLESS_REQUIRES = {"part": "customers.region"}
+#: Time-ordered transforms: they need a family with a time dimension.
+ROOTLESS_TIMED = frozenset({"lag", "cumsum", "last"})
+ROOTLESS_TRANSFORMS = ("lag", "prank", "ntile", "rank", "cumsum", "last")
 ROOTLESS_FILTERS = {
     "f0": None,
     "fa": "orders.amount > 60",
@@ -476,7 +488,7 @@ ROOTLESS_FILTERS = {
     "fr": "returns.amount > 20",
     "fz": "1 = 0",
 }
-N_ROOTLESS = 24
+N_ROOTLESS = 36
 ROOTLESS_DUCKDB_STRIDE = 4
 
 
@@ -492,12 +504,23 @@ class RootlessShape(BaseModel):
     def dims(self) -> list[str]:
         return ROOTLESS_DIMS[self.family]
 
+    @property
+    def time_dimensions(self) -> list[dict[str, str]]:
+        return ROOTLESS_TIME.get(self.family, [])
+
+    @property
+    def keys(self) -> list[str]:
+        """The result keys of a row: dimensions, then time dimensions."""
+        return [*self.dims, *(td["field"] for td in self.time_dimensions)]
+
     def __str__(self) -> str:
-        return f"{self.shape_id}(dims={self.dims}, metrics={list(self.metric_keys)}, filter={self.filter!r})"
+        return f"{self.shape_id}(dims={self.keys}, metrics={list(self.metric_keys)}, filter={self.filter!r})"
 
 
 def _rootless_allowed(family: str, key: str) -> bool:
     need = ROOTLESS_REQUIRES.get(key)
+    if key in ROOTLESS_TIMED and family not in ROOTLESS_TIME:
+        return False
     return need is None or need in ROOTLESS_DIMS[family]
 
 
@@ -510,8 +533,11 @@ def sample_rootless_shapes() -> Tuple[RootlessShape, ...]:
         cores.append((family, ("rev",), ftags[i % len(ftags)]))
         cores.append((family, ("rev", "ret", "vis"), ftags[(i + 1) % len(ftags)]))
     for i, key in enumerate(ROOTLESS_METRICS):
-        family = "region" if key in ROOTLESS_REQUIRES else families[i % len(families)]
+        family = next(f for j in range(len(families))
+                      if _rootless_allowed(f := families[(i + j) % len(families)], key))
         cores.append((family, (key, "rev" if key == "ret" else "ret"), ftags[i % len(ftags)]))
+    for key in ROOTLESS_TRANSFORMS:  # unfiltered beside a sibling that adds rows
+        cores.append(("region_month" if key in ROOTLESS_TIMED else "region", (key, "ret"), "f0"))
     while len(cores) < N_ROOTLESS:
         family = rng.choice(families)
         pool = [k for k in ROOTLESS_METRICS if _rootless_allowed(family, k)]
@@ -549,6 +575,8 @@ def rootless_query(shape: RootlessShape, *, keys: Optional[Sequence[str]] = None
         "dimensions": shape.dims,
         "metrics": [{"metric": ROOTLESS_METRICS[k], "alias": f"m_{k}"} for k in (keys or shape.metric_keys)],
     }
+    if shape.time_dimensions:
+        body["time_dimensions"] = shape.time_dimensions
     if chosen:
         body["filter"] = [chosen]
     if population:
@@ -558,7 +586,7 @@ def rootless_query(shape: RootlessShape, *, keys: Optional[Sequence[str]] = None
 
 def rootless_rows(resp, *, shape: RootlessShape) -> dict[tuple, dict]:
     """Rows keyed by the shape's dimension tuple; a repeated key is a grain violation."""
-    out = {tuple(canon(r[d]) for d in shape.dims): r for r in resp.data}
+    out = {tuple(canon(r[d]) for d in shape.keys): r for r in resp.data}
     law_assert(len(out) == len(resp.data), law="grain guarantee",
                detail=f"duplicate rows for one key ({len(resp.data)} rows, {len(out)} keys)", shape=shape)
     return out
@@ -577,6 +605,7 @@ __all__ = [
     "pair_params", "q", "raw_rows", "sample_pairs", "sample_shapes",
     "values_equal",
     "N_ROOTLESS", "ROOTLESS_DIMS", "ROOTLESS_EMPTY", "ROOTLESS_FILTERS", "ROOTLESS_METRICS",
-    "ROOTLESS_POPULATION", "ROOTLESS_SHAPES", "RootlessShape", "rootless_params", "rootless_query",
+    "ROOTLESS_POPULATION", "ROOTLESS_SHAPES", "ROOTLESS_TIME", "ROOTLESS_TIMED", "RootlessShape",
+    "rootless_params", "rootless_query",
     "rootless_rows", "sample_rootless_shapes",
 ]

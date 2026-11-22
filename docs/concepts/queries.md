@@ -601,7 +601,7 @@ Omit `population` and the rows are the **row supply**:
 - A metric whose aggregates don't reach every dimension (`partition_by=`, an [unrelated dataset](#cross-dataset-metrics)) supplies the rows of the **dimension anchor** that agree with it.
 - With no metrics, the rows are the dimension anchor's: the smallest dataset that determines every dimension along to-one paths, read from the dimensions only, never from filters or metrics. Dimension groups no relationship path connects take the product of their anchors.
 - With no dimensions there is exactly one row, even when a filter matches nothing.
-- Filters restrict every home's rows (and the anchor's) before anything is counted. They never pick where rows come from, so adding a filter never adds a row or changes a result key.
+- Filters restrict every home's rows (and the anchor's) before anything is counted. They never pick where rows come from, so adding a filter never adds a row or changes a result key — except a computed dimension read from an aggregate over the filtered rows.
 
 <!-- doc-check: not-a-query -->
 ```json
@@ -614,7 +614,7 @@ The response carries `population` (the dimension anchor; `a × b` for a product;
 
 A query that needs the dimension anchor fails closed with a `PopulationInferenceError` naming the candidates when several minimal candidates tie, connected dimension groups have no single determining dataset, a dimension's path is ambiguous, or the referenced datasets don't belong to exactly one datasource.
 
-A time dimension on `time_spine.timestamp` makes the population `time_spine × P`, P the anchor of the remaining dimensions — see [Time spine](time.md#time-spine).
+A time dimension on `time_spine.timestamp` makes the population `time_spine × P`: P named, else the row supply of the remaining dimensions, every bucket for each of its tuples — see [Time spine](time.md#time-spine).
 
 Saving a query-backed dataset writes each inferred stage's dimension anchor as its `population`, marked `population_inferred: true`: the anchor can no longer move, and the rows stay inferred. `population_inferred` without `population` is refused.
 

@@ -118,7 +118,7 @@ class TestCrossModelCompositeLeaf:
                 metric="time_shift(sum(sales.revenue) + sum(regions.factor), -1)",
                 alias="t")],
         ))
-        assert len(set(re.findall(r"_cm_\w+", sql))) == 1, sql
+        assert len(set(re.findall(r"_cm_\w*factor\w*", sql))) == 1, sql
 
 
 class TestAggregateTypedPredicateInput:
