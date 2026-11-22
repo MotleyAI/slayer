@@ -37,5 +37,5 @@
 
 ## 7. Gates
 
-- [ ] 7.1 Local test scope green (`la-affected-tests --base main` plus the corpus, oracle, grader and drift tests); `poetry run ruff check slayer/ tests/`, `la-typecheck` ratchet, `poetry run la-arch-check`, `npx -y likec4@1.47.0 validate architecture` green.
-- [ ] 7.2 Manual dispatch of `ossie-corpus-weekly.yml` on this branch is green.
+- [x] 7.1 Local test scope green (`la-affected-tests --base main` plus the corpus, oracle, grader and drift tests); `poetry run ruff check slayer/ tests/`, `la-typecheck` ratchet, `poetry run la-arch-check`, `npx -y likec4@1.47.0 validate architecture` green.
+- [x] 7.2 Manual dispatch of `ossie-corpus-weekly.yml` on this branch is green.
