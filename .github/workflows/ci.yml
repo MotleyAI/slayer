@@ -101,6 +101,26 @@ jobs:
           path: ${{ runner.temp }}/shard-durations.json
           retention-days: 14
 
+  # The lock pins a sqlglot that parses AGG(...) as a generic call; the newest parses it as exp.Agg.
+  sqlglot-latest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
+
+      - name: Upgrade sqlglot to the newest allowed
+        run: |
+          poetry run pip install --upgrade --only-binary :all: "sqlglot[c]"
+          poetry run python -c "import sqlglot; print('sqlglot', sqlglot.__version__)"
+
+      - name: Run the AGG-shape and validity tests
+        run: >-
+          poetry run pytest tests/test_dev2394_agg_shapes.py tests/test_dev2394_validity.py
+          -m "not integration" --timeout=120 -n logical
+
   integration-tests:
     runs-on: ubuntu-latest
     strategy:

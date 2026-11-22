@@ -4,7 +4,7 @@ See proposal.md (Why). Facts that shape the approach:
 
 - Vendored corpus: apache/ossie `94cf86bd` (2026-11-20). Upstream since: `3719487` (portable-construct rejections), `1b1ebb6`
   (`AGG(source.measure)`), `0f579ad` (validator sqlglot guard), `448612e` (`.ost` query scripts, scott gains `pet`/`bonus`), `83d39d6`
-  (loader merge precedence on PyYAML 6.0.4). On a fresh checkout only `harvested/0c27bf637ef2.yaml` fails (6 tests); the new
+  (loader merge precedence on PyYAML 6.0.4), `d4dca4e` (aggregates without `OVER` refused in field expressions). On a fresh checkout only `harvested/0c27bf637ef2.yaml` fails (6 tests); the new
   `harvested/9e8e4d46686b.yaml` and the new scott already pass.
 - Ossie rules (core-spec/spec.md, Metric Scoping): rule 7 allows `AGG(source.measure)` when the source is a measure relation; rule 8
   makes it a derived measure; rule 9: validation checks only the form, and a consumer generating SQL against the source MUST reject
@@ -63,7 +63,8 @@ Principles that apply: system P4 (SQL as AST), P11 (fail at save time); core P5 
    already get. (default; system P11 and the DEV-2243 precedent)
 10. **Inside a dataset metric, `AGG(source.x)` is always the source-measure reading**, even if a relationship path or dataset is named
     `source`. (default; Ossie name resolution, consistent with `source.column`)
-11. **The native check mirrors upstream's `3719487` construct rejections and its message texts.** (default; Ossie decides)
+11. **The native check mirrors upstream's `3719487` construct rejections, its `d4dca4e` field-aggregate rejection and their
+    message texts.** (default; Ossie decides)
 12. **The vendored set gains the core-spec text and `compliance/expressions/*.txt`**, with parity tests. (default; brief item 1, and
     a test for `3719487`)
 13. **No upgrade path for stored documents with portable `INTERVAL`** — none exist outside the unreleased 2.0 line. (default)
@@ -75,7 +76,8 @@ Principles that apply: system P4 (SQL as AST), P11 (fail at save time); core P5 
     stable afterwards. (codex)
 16. **Every portable-SQL write path is inventoried and routed through the canonical writer**, with tests per path (field, dataset
     metric, model metric, imported legacy document, export). (codex)
-17. **Parity tests run natively without `uv`** (every `valid.txt` line accepted, every `invalid.txt` line rejected except
+17. **Parity tests run natively without `uv`** (every `valid.txt` line passes the expression syntax check, every `invalid.txt`
+    line fails it, except
     upstream-deferred `SELECT a FROM t`, pinned as accepted), plus a rule 7–9 context matrix (field rejection, dataset acceptance,
     model acceptance, field named `source`, `FILTER`, superseded portable entry, vendor-dialect exemption); the upstream `uv` comparison
     stays as an extra check. (codex)

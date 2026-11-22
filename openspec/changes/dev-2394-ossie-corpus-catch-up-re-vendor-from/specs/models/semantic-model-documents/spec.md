@@ -68,7 +68,8 @@ SLayer's validity check SHALL report a document invalid exactly when the vendore
 - In a dataset-scoped `OSSIE_SQL_2026` metric, `AGG` SHALL be valid only as `AGG(source.measure)`: a single column argument qualified by `source` in any case, with no further qualifier, no `*`, a non-empty name and no `FILTER` clause, in a dataset that declares no field named `source`. Any other `AGG` call there SHALL be an error stating that `AGG` in a dataset-scoped metric takes a single `source.measure` reference; a `FILTER` clause and a field named `source` SHALL each be an error stating that cause.
 - `AGG` in a field expression SHALL be an error stating that `AGG` is allowed only in metrics, as `AGG(dataset.metric)` in a model-scoped metric and `AGG(source.measure)` in a dataset-scoped metric.
 - In `OSSIE_SQL_2026` (the top-level `sql`, or an `OSSIE_SQL_2026` entry it does not supersede), `INTERVAL`, an `IN` list with no value, an alias (`a b`), and `DISTINCT` without an argument SHALL each be an error; other dialects SHALL be unaffected.
-- Every line of the vendored `compliance/expressions/valid.txt`, used as a field's `sql`, SHALL be valid, and every line of `invalid.txt` SHALL be invalid, except a construct upstream's validator still accepts (a top-level `SELECT`), which SHALL be accepted as upstream accepts it.
+- In an `OSSIE_SQL_2026` field expression, an aggregate call without an `OVER` clause SHALL be an error naming each such function once, in order, and stating that a field expression is scalar. An aggregate in a window's `PARTITION BY` or `ORDER BY`, or in the windowed call's argument, counts as having no `OVER` clause. `AGG` stays with the `AGG` rule, and a call inside a subquery is not checked. Other dialects SHALL be unaffected.
+- Every line of the vendored `compliance/expressions/valid.txt` SHALL pass the syntax check of an `OSSIE_SQL_2026` expression, and every line of `invalid.txt` SHALL fail it, except a construct upstream's validator still accepts (a top-level `SELECT`), which SHALL be accepted as upstream accepts it.
 
 #### Scenario: A source-measure call is accepted
 - **WHEN** a dataset-scoped metric's `sql` is `COALESCE(AGG(source.revenue), 0) - AGG(source.refunds)`
@@ -89,6 +90,10 @@ SLayer's validity check SHALL report a document invalid exactly when the vendore
 #### Scenario: Portable INTERVAL is refused
 - **WHEN** a field has `sql: order_date + INTERVAL '7 days'`
 - **THEN** the document is invalid with an error stating that `INTERVAL` is not part of `OSSIE_SQL_2026`
+
+#### Scenario: An aggregate in a field is refused
+- **WHEN** a field `revenue` has `sql: SUM(amount)`, and separately `sql: amount / SUM(amount) OVER ()`
+- **THEN** the first document is invalid with an error stating that `revenue` calls SUM without an OVER clause in a field expression, and the second is valid
 
 #### Scenario: Both sqlglot shapes of AGG are checked
 - **WHEN** the same document with a model-scoped metric `AGG(nope)` is checked with `AGG` parsed as a generic function call and as sqlglot's dedicated `AGG` node

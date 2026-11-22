@@ -12,7 +12,8 @@ SLayer must keep agreeing with upstream's validator.
   is re-vendored from current upstream `main` with it.
 - The native validity check mirrors upstream `validate.py`: `AGG(source.measure)` is accepted in dataset-scoped `OSSIE_SQL_2026`
   metrics and every other `AGG` form there is refused with upstream's message; `INTERVAL`, an empty `IN ()` list, an alias and
-  argument-less `DISTINCT` are refused in `OSSIE_SQL_2026`. **BREAKING** (2.0 line): a document using those constructs in portable
+  argument-less `DISTINCT` are refused in `OSSIE_SQL_2026`, and so is an aggregate without `OVER` in a portable field expression
+  (upstream `d4dca4e`). **BREAKING** (2.0 line): a document using those constructs in portable
   `sql` no longer loads.
 - A document repeating a YAML mapping key, or holding a malformed scalar, is invalid with a typed reason. **BREAKING** (2.0 line).
 - `AGG` is recognised in both sqlglot AST shapes (`exp.Anonymous` before 30.19, `exp.Agg` from 30.19) by one shared iterator, so
