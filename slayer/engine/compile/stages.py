@@ -30,7 +30,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType
-from slayer.core.errors import AmbiguousRelationshipPathError
+from slayer.core.errors import AmbiguousRelationshipPathError, UnresolvableDimensionRelationshipError
 from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.time_spine import is_spine
 from slayer.core.models import DatasetField, EmptyValue, SlayerDataset, aggregation_definition, empty_value
@@ -2277,17 +2277,20 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     # reason; attributability/filter routing keep the host-free map unchanged.
     datasets_with_host = {**datasets_by_name, host_dataset.name: host_dataset}
     # The home reads its grain and the filters restricting it by its own routes (queries/references).
-    home_routing = _home_routing(
-        [*requested, *prebound.ranking_candidates, *(bf.value_key for bf, _t in base_filters_with_text),
-         *((prebound.main_time_key,) if prebound.main_time_key is not None else ())],
+    route_home = functools.partial(
+        _home_routing,
         anchors=prebound.reference_anchors, host_dataset=host_dataset, target_path=target_path,
         root_dataset=root_dataset, datasets_by_name=datasets_with_host,
         source_anchor=_source_anchor(agg, anchors=prebound.reference_anchors, host_dataset=host_dataset,
                                      datasets_by_name=datasets_with_host),
     )
+    home_routing = route_home(
+        [*requested, *(bf.value_key for bf, _t in base_filters_with_text),
+         *((prebound.main_time_key,) if prebound.main_time_key is not None else ())],
+    )
 
-    def routed(key: _KeyT) -> _KeyT:
-        return substitute_value_keys(key, home_routing) if home_routing else key
+    def routed(key: _KeyT, routing: Dict[ValueKey, ValueKey] = home_routing) -> _KeyT:
+        return substitute_value_keys(key, routing) if routing else key
 
     base_filters_with_text = [
         *((substitute_in_bound_filter(bf, home_routing) if home_routing else bf, t) for bf, t in base_filters_with_text),
@@ -2297,7 +2300,9 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     ]
     home = root_dataset
 
-    def home_determined(g: ValueKey) -> Tuple[Optional[ValueKey], bool]:
+    def home_determined(
+        g: ValueKey, routing: Dict[ValueKey, ValueKey] = home_routing,
+    ) -> Tuple[Optional[ValueKey], bool]:
         """``g`` in the home's coordinates when the home determines it (``None`` else), and whether by a shared key."""
         shared = shared_relationship_key_reroot(
             key=g, target_path=target_path, host_dataset=host_dataset,
@@ -2306,7 +2311,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         if shared is not None:
             # The join-key identity needs no join in the producer.
             return shared, True
-        g_home = routed(g)
+        g_home = routed(g, routing)
         if not grain_member_attributable(
             key=g_home, target_path=target_path, root_dataset=home,
             datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_dataset,
@@ -2336,9 +2341,18 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         if not by_shared_key:
             check_axis_rebucket(host_key=g, rerooted=rerooted, host=host_dataset, root=root_dataset, bundle=bundle)
         safe_pairs.append((g, rerooted))
+    def candidate_determined(c: ValueKey) -> Optional[ValueKey]:
+        """A default ranking-key candidate in the home's coordinates; ``None`` when the home does not determine it,
+        an ambiguous route included."""
+        try:
+            routing = {**home_routing, **route_home([c])}
+        except UnresolvableDimensionRelationshipError:
+            return None
+        return home_determined(c, routing)[0]
+
     # The query's dimensions the home determines, in its coordinates and order: its default ranking-key candidates.
     ranking_candidates = list(prebound.ranking_candidates) if not target_path else [
-        rr for c in prebound.ranking_candidates if (rr := home_determined(c)[0]) is not None
+        rr for c in prebound.ranking_candidates if (rr := candidate_determined(c)) is not None
     ]
 
     # One rooting law (Axiom 2.5): re-anchor into the home's coordinates once, a

@@ -6,8 +6,9 @@ from typing import Any, Optional
 
 import pytest
 
+from slayer.core.enums import DataType
 from slayer.core.errors import UnsafeRelationshipInputError
-from slayer.core.models import SlayerDataset
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerResponse
 from tests._dev2119_fixtures import BACKENDS, EFF, bucket, by_bucket, column, dev2119_datasets, engine_for, m, num, q, td
@@ -137,6 +138,37 @@ class TestCrossModelProducers:
             metrics=[m("last(customers.spend, partition_by=customers.region)")],
         ), customers_default="signup_ts")
         assert _values_by(resp, "customers.region") == {"North": {300.0}, "South": {None}}
+
+
+def _bridged_datasets() -> list[SlayerDataset]:
+    """``customers`` reaches ``orders`` by two routes (directly and via ``shipments``); ``orders`` reaches
+    ``customers`` by one to-one path."""
+    shipments = SlayerDataset(
+        name="shipments", sql_table="shipments", data_source="test",
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="order_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+                       DatasetRelationship(to="orders", from_columns=["order_id"], to_columns=["id"])],
+    )
+    return [*_datasets(customers_default="signup_ts"), shipments]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize(("formula", "expected"), [
+    ("sum(customers.spend, partition_by=customers.region)", {"North": {400.0}, "South": {200.0}}),
+    ("last(customers.spend, customers.updated_at, partition_by=customers.region)",
+     {"North": {100.0}, "South": {200.0}}),
+    ("last(customers.spend, partition_by=customers.region)", {"North": {300.0}, "South": {None}}),
+])
+async def test_query_dimension_the_home_reaches_ambiguously_is_skipped(
+    backend: str, formula: str, expected: dict[str, set],
+) -> None:
+    query = q(dimensions=["customers.region", "orders.created_at"],
+              metrics=[m("sum(orders.amount)", "a"), m(formula)])
+    async with engine_for(backend, datasets=_bridged_datasets()) as engine:
+        resp = await engine.execute(query)
+    assert _values_by(resp, "customers.region") == expected
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
