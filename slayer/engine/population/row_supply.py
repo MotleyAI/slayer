@@ -396,8 +396,9 @@ def plan_rows(
     if not sources.needs_anchor and len(sources.homes) == 1:
         return RowPlan(population=sources.homes[0], supply=RowSupply(anchor=_single(anchor.datasets)), row_sources=row_sources,
                        reported=anchor.display)
-    # A supplying home hosts the stage: a re-aggregation's carrier is built over the host's rows.
-    population = (sources.homes or anchor_datasets or (first_metric_anchor(query),))[0]
+    # The host is only the binder's scope, which no value or refusal depends on: the dimension anchor, else a
+    # full-grain home.
+    population = _single(anchor.datasets) or (sources.homes or anchor_datasets or (first_metric_anchor(query),))[0]
     if population is None:
         anchor.required()
         raise ValueError("an inferred query with metrics names no dataset")

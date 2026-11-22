@@ -853,30 +853,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         granularity_conflicts=granularity_conflicts,
         whole_list_reads=list_reads,
         date_only_notices=notices,
-        reference_anchors=_reference_anchors(query, scope=scope, bundle=bundle),
     )
-
-
-def _reference_anchors(
-    query: SlayerQuery, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
-) -> Dict[Tuple[str, ...], Tuple[str, ...]]:
-    """Each dimension, filter and metric reference's canonical path from the host → its anchor and canonical route."""
-    if not is_anchored(scope):
-        return {}
-    texts = [
-        *(d.field for d in query.dimensions or []), *(td.field for td in query.time_dimensions or []),
-        *(f for f in query.filter_conditions if isinstance(f, str)), *(m.metric for m in query.metrics or []),
-    ]
-    out: Dict[Tuple[str, ...], Tuple[str, ...]] = {}
-    for text in texts:
-        try:
-            parsed = parse_bound_expr(text, query.bound_variables)
-        except SlayerError:
-            continue
-        for node, _agg in walk_references(parsed):
-            if isinstance(node, DottedRef) and (spelling := _reference_spelling(node, scope=scope, bundle=bundle)):
-                out.setdefault(spelling.reach, spelling.parts)
-    return out
 
 
 # Helpers
@@ -1141,7 +1118,8 @@ def _reject_computed_dim_name_collision(
     *, name: str, query: SlayerQuery, scope: DatasetScope, ref: Optional[FieldRef] = None,
 ) -> None:
     dataset_collision = None
-    if scope.population is not None:
+    # An inferred stage's host is only its binder's scope: no refusal depends on it.
+    if scope.population is not None and not query.population_inferred:
         dataset = scope.population
         names_itself = ref is not None and ref.name == name and ref.dataset in (dataset.name, dataset.spelling)
         if not names_itself and (dataset.get_field(name) is not None or dataset.get_metric(name) is not None):

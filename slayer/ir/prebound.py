@@ -22,7 +22,7 @@ instead of quietly.
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -118,9 +118,6 @@ class PreboundQuery(BaseModel):
     granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
     whole_list_reads: List[WholeListRead] = Field(default_factory=list)
     date_only_notices: List[DateOnlyMidnightWarning] = Field(default_factory=list)
-    # Each dimension / filter / metric reference's canonical path from the host → its anchor and canonical route after it,
-    # so a producer re-routes the reference from its home (queries/references).
-    reference_anchors: Dict[Tuple[str, ...], Tuple[str, ...]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _filter_texts_are_parallel(self) -> "PreboundQuery":
