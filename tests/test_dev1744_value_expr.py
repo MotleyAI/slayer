@@ -45,6 +45,7 @@ from slayer.core.keys import (
     SCALAR_PASSTHROUGH,
     AggregateKey,
     ArithmeticKey,
+    CastKey,
     FieldKey,
     FieldSqlKey,
     InKey,
@@ -473,7 +474,7 @@ class TestRendersEveryKeyKind:
             source=FieldKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
-        assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', orders.created_at)"
+        assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', CAST(orders.created_at AS TIMESTAMP))"
 
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "tsql", "bigquery"])
     def test_time_trunc_goes_through_the_dialect_strategy(self, dialect) -> None:
@@ -1362,6 +1363,8 @@ def _mutation_cases():
     """
     col = FieldKey(leaf="amount")
     other = FieldKey(leaf="label")
+    ts = FieldKey(leaf="created_at")
+    other_ts = CastKey(source=other, type_text="TIMESTAMP", data_type=DataType.DATETIME)
     return [
         ("ColumnKey.leaf", col, other),
         ("ColumnKey.path", col, FieldKey(path=("customers",), leaf="amount")),
@@ -1372,13 +1375,13 @@ def _mutation_cases():
         ),
         (
             "TimeTruncKey.granularity",
-            TimeTruncKey(source=col, granularity=TimeGranularity.MONTH),
-            TimeTruncKey(source=col, granularity=TimeGranularity.YEAR),
+            TimeTruncKey(source=ts, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(source=ts, granularity=TimeGranularity.YEAR),
         ),
         (
             "TimeTruncKey.source",
-            TimeTruncKey(source=col, granularity=TimeGranularity.MONTH),
-            TimeTruncKey(source=other, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(source=ts, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(source=other_ts, granularity=TimeGranularity.MONTH),
         ),
         ("StarKey.path", StarKey(), StarKey(path=("customers",))),
         (

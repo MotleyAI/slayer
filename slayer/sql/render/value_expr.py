@@ -57,9 +57,13 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     data_type_target,
     group_is_operands,
     group_unary_operand,
+    coerced_parts,
+    date_typed_comparison,
     iif_case_chain,
     list_keyed,
-    numeric_parts,
+    mixed_nullif,
+    render_bucket,
+    render_mixed_nullif,
     render_arithmetic,
     render_array_literal,
     render_cast,
@@ -407,23 +411,25 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             else render_value_key(key=key.source, ctx=ctx)
         )
         # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
-        return ctx.dialect.build_bucket(col_expr=source, granularity=key.granularity)
+        return render_bucket(key=key, source=source, dialect=ctx.dialect, field_type=_known_field_types(ctx))
 
     if isinstance(key, ArithmeticKey):
         comparison = temporal_comparison(key)
         if comparison is not None:
-            op, operand, value = comparison
+            op, operand, value, midnight = date_typed_comparison(comparison, field_type=_known_field_types(ctx))
             rendered = render_value_key(key=operand, ctx=ctx)
+            if midnight:
+                rendered = ctx.dialect.promote_to_timestamp(rendered)
             if ctx.filters is not None and ctx.filters.paren_comparison_operands:
                 rendered = _paren_if_binary(rendered)
             return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)
         rendered = list_keyed(
             key.operands, [render_value_key(key=o, ctx=ctx) for o in key.operands], dialect=ctx.dialect,
         )
+        operands = coerced_parts(key=key, parts=rendered, field_type=_known_field_types(ctx), dialect=ctx.dialect)
         if key.op in NULL_SAFE_COMPARISON_OPS:
-            return render_null_safe(op=key.op, operands=rendered, dialect=ctx.dialect)
+            return render_null_safe(op=key.op, operands=operands, dialect=ctx.dialect)
         op = key.op.lower()
-        operands = numeric_parts(key=key, parts=rendered, field_type=_known_field_types(ctx))
         if (
             ctx.filters is not None
             and ctx.filters.paren_comparison_operands
@@ -439,12 +445,15 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             return _render_iif_case(key=key, ctx=ctx)
         # ANY key routes as a key (the tail raise owns unsupported kinds); only
         # true scalars render as literals.
-        args = numeric_parts(key=key, field_type=_known_field_types(ctx), parts=[
+        args = coerced_parts(key=key, field_type=_known_field_types(ctx), dialect=ctx.dialect, parts=[
             render_value_key(key=a, ctx=ctx)
             if isinstance(a, _FrozenKey)
             else _literal(a, dialect=ctx.dialect)
             for a in key.args
         ])
+        date_position = mixed_nullif(key, field_type=_known_field_types(ctx))
+        if date_position is not None:
+            return render_mixed_nullif(args=args, date_position=date_position, dialect=ctx.dialect)
         if key.name in DATE_FUNCTIONS:
             return render_date_call(
                 key=key, args=args, dialect=ctx.dialect, field_type=_field_types(ctx, key),
@@ -454,10 +463,13 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
                                  field_element=ctx.scope.field_element if ctx.scope is not None else None)
 
     if isinstance(key, InKey):
-        (column,) = numeric_parts(
+        (column,) = coerced_parts(
             key=key, parts=[render_value_key(key=key.field, ctx=ctx)], field_type=_known_field_types(ctx),
+            dialect=ctx.dialect,
         )
-        return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
+        return render_in_predicate(
+            key=key, column=column, dialect=ctx.dialect, field_type=_known_field_types(ctx),
+        )
 
     if isinstance(key, CastKey):
         return render_cast(
@@ -505,7 +517,7 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
             if isinstance(a, _FrozenKey) else _literal(a, dialect=ctx.dialect)
         )
 
-    return iif_case_chain(key=key, part=_part, field_type=_known_field_types(ctx))
+    return iif_case_chain(key=key, part=_part, field_type=_known_field_types(ctx), dialect=ctx.dialect)
 
 
 def _known_field_types(ctx: RenderContext) -> FieldTypeFn:

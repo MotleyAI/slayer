@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Container, Iterable
+from collections.abc import Callable, Container, Generator, Iterable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, TypeVar
 
 from pydantic import (
@@ -123,6 +125,58 @@ def _convert_strict(data: dict[str, Any]) -> tuple[dict[str, Any], DeprecatedInp
     else:
         new = 'to_many_handling: "error"'
     return without_strict(data), deprecated_input("strict", new, removal="3.0")
+
+
+BROADCAST = "broadcast"
+_broadcast_warned: ContextVar[bool] = ContextVar("slayer_broadcast_warned", default=False)
+
+
+def _broadcast_deprecation(*, emit: bool) -> DeprecatedInputWarning:
+    """The deprecated ``"broadcast"`` mode's deprecation; its ``FutureWarning`` only when ``emit``."""
+    return deprecated_input(
+        'to_many_handling: "broadcast"', "an explicit `partition_by=` on each aggregate", removal="3.0", emit=emit,
+    )
+
+
+def warn_fresh_broadcast(mode: str | None) -> None:
+    """Fresh input's ``"broadcast"`` mode: one ``FutureWarning``, none in a stored document or once already warned."""
+    if mode == BROADCAST and not in_stored_document() and not _broadcast_warned.get():
+        _broadcast_deprecation(emit=True)
+
+
+@contextmanager
+def broadcast_already_warned() -> Generator[None]:
+    """Input rebuilt within the block was already warned about ``"broadcast"``."""
+    token = _broadcast_warned.set(True)
+    try:
+        yield
+    finally:
+        _broadcast_warned.reset(token)
+
+
+_MODES = (BROADCAST, "associate", "error")
+
+
+def _check_mode(value: Any) -> Any:
+    if value is not None and value not in _MODES:
+        raise ValueError(f"to_many_handling must be 'associate' or 'error', got {value!r}")
+    return value
+
+
+def _offered_modes(schema: dict[str, Any]) -> None:
+    """The published enum leaves out the deprecated ``"broadcast"``."""
+    for option in schema.get("anyOf", [schema]):
+        if "enum" in option:
+            option["enum"] = [m for m in option["enum"] if m != BROADCAST]
+
+
+ManyHandling = Annotated[Literal["broadcast", "associate", "error"] | None, BeforeValidator(_check_mode)]
+
+
+def broadcast_deprecations(stages: Iterable[SlayerQuery]) -> list[DeprecatedInputWarning]:
+    """One deprecation per stage whose mode is ``"broadcast"``, as a run or save reports it."""
+    return [_broadcast_deprecation(emit=False) for stage in stages if stage.to_many_handling == BROADCAST]
+
 
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_]\w*)\}|\{([^}]*)\}", re.ASCII)
 
@@ -1514,7 +1568,8 @@ class SlayerQuery(BaseModel):
         description=(
             'Values to return: expression strings or {"metric": ..., "alias": ...} (alias sets the '
             "result key). Every field, metric and row count names its dataset first: orders.amount, "
-            "orders.revenue (a saved metric), count(orders.*); a bare name is an alias of this query. "
+            "orders.revenue (a saved metric), count(orders.*); a bare name is an alias of this query, else a "
+            "model-scoped metric of a semantic model. AGG(orders.revenue) evaluates the dataset metric. "
             "The engine joins the datasets. Expressions combine aggregations with arithmetic, also "
             "across datasets: rooted at customers, sum(orders.amount) / count(customers.*) divides "
             "the orders' total by the number of customers.\n"
@@ -1545,7 +1600,7 @@ class SlayerQuery(BaseModel):
             "over that dataset's own rows, each customer once. Sliced by a dimension it cannot "
             "be attributed to (an order's status), each group aggregates the distinct customers "
             "reaching it, with an associated warning (groups may overlap); "
-            "to_many_handling='broadcast' repeats the total instead. Rooted at customers, "
+            "sum(customers.credit, partition_by=[]) repeats the total on every group instead. Rooted at customers, "
             "sum(orders.amount) and sum(returns.amount) in one query are each computed over their "
             "own rows: several child datasets never fan out or double count. A child row without a "
             "parent (an order with no customer) has NULL parent fields: it counts in the NULL "
@@ -1591,6 +1646,8 @@ class SlayerQuery(BaseModel):
             query = handler(data)
             if is_dict:
                 query._deprecated_inputs = (*payloads, *spellings.report())
+                if not stored:
+                    warn_fresh_broadcast(query.to_many_handling)
         return query
 
     @model_serializer(mode="wrap")
@@ -1742,16 +1799,15 @@ class SlayerQuery(BaseModel):
     )
 
     # Filters keep EXISTS pushdown in every mode.
-    to_many_handling: Literal["broadcast", "associate", "error"] | None = Field(
+    to_many_handling: ManyHandling = Field(
         default=None,
+        json_schema_extra=_offered_modes,
         description=(
             "What happens when an aggregation is sliced by a dimension not "
-            "attributable to it. Omitted (default): aggregate per cell over the "
-            "distinct associated rows, e.g. per list element tags.value, falling "
-            "back to broadcast with a warning where association is unsupported "
-            "(window=, first/last) | associate (the same, but refuse what it cannot "
-            "associate) | broadcast (repeat the value across the cells, with a "
-            "warning) | error (refuse)."
+            "attributable to it. Omitted (default) or associate: aggregate per cell "
+            "over the distinct associated rows, e.g. per list element tags.value | "
+            "error (refuse). To repeat a value across the cells, give the aggregate "
+            "partition_by= with the dimensions it is attributable to."
         ),
     )
 
@@ -1925,7 +1981,7 @@ class QueryRefinement(BaseModel):
     main_time_dimension: str | None = _refinement_field("main_time_dimension")
     whole_periods_only: bool | None = _refinement_field("whole_periods_only")
     distinct_dimension_values: bool | None = _refinement_field("distinct_dimension_values")
-    to_many_handling: Literal["broadcast", "associate", "error"] | None = _refinement_field("to_many_handling")
+    to_many_handling: ManyHandling = _refinement_field("to_many_handling")
 
     _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
 
@@ -1951,6 +2007,7 @@ class QueryRefinement(BaseModel):
             refinement = handler(data)
             if is_dict:
                 refinement._deprecated_inputs = (*((payload,) if payload is not None else ()), *spellings.report())
+                warn_fresh_broadcast(refinement.to_many_handling)
         return refinement
 
     @property

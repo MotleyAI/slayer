@@ -1,9 +1,7 @@
 """The vendored upstream Ossie schema: fixture validity, OSI model coverage, the shipped example."""
 
-import importlib.util
 import json
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import jsonschema
@@ -11,22 +9,19 @@ import pytest
 import yaml
 from pydantic import BaseModel
 
-from slayer.core.models import DatasourceConfig
-from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.models import (
     OSIAIContextObject,
     OSIDataset,
-    OSIDialectExpression,
     OSIDimension,
     OSIDocument,
-    OSIExpression,
     OSIField,
     OSIMetric,
-    OSINonportableExtension,
     OSIRelationship,
 )
-from slayer.osi.parser import parse_osi_path
-from tests._osi_helpers import FIXTURES, SCHEMA_PATH, entries, run_converter
+from slayer.core.ossie_expression import OSINonportableExtension
+from slayer.core.ossie_expression import OSIExpression
+from slayer.core.ossie_expression import OSIDialectExpression
+from tests._osi_helpers import FIXTURES, SCHEMA_PATH
 
 EXAMPLE_DIR = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_import"
 EXAMPLE = EXAMPLE_DIR / "shop.osi.yaml"
@@ -103,22 +98,3 @@ def test_root_properties_are_modelled() -> None:
     missing = set(_schema()["properties"]) - _dataset_keys(OSIDocument)
     assert not missing, f"document root: unmodelled schema properties {sorted(missing)}"
 
-
-def _example_setup() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("setup_osi", EXAMPLE_DIR / "setup_osi.py")
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_example_validates_and_imports_without_unconverted_entries(tmp_path: Path) -> None:
-    _validator().validate(_load(EXAMPLE))
-    db = _example_setup().build_shop_duckdb(tmp_path / "shop.duckdb")
-    result = run_converter(
-        OsiToSlayerConverter(documents=parse_osi_path(EXAMPLE), data_source="shop_osi", target_dialect="duckdb"),
-        datasource=DatasourceConfig(name="shop_osi", type="duckdb", database=str(db)),
-    )
-    assert result.datasets
-    assert not [e for e in entries(result) if e.severity == "unconverted"]

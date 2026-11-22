@@ -567,7 +567,7 @@ class UnrecognizedStrictValueError(SlayerError):
         self.value = value
         super().__init__(
             f"Unrecognized strict value {value!r}; strict is deprecated, use "
-            f"to_many_handling='error' (one of broadcast|associate|error) instead."
+            f"to_many_handling='error' (one of associate|error) instead."
         )
 
     def __reduce__(self) -> tuple[type, tuple[Any]]:
@@ -717,6 +717,19 @@ class UnqualifiedRowCountError(SlayerError, ValueError):
         ))
 
 
+class NoRowSourceError(SlayerError, ValueError):
+    """A query without a population or dimensions whose entries read no dataset: it has no rows."""
+
+    def __init__(self, *, metrics: list[str]) -> None:
+        self.metrics = metrics
+        named = f"metrics {', '.join(repr(m) for m in metrics)} read" if metrics else "query reads"
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"The {named} no dataset, so the query has no rows.",
+            suggestion="Read a dataset's field in a metric, or name the query's population.",
+        ))
+
+
 class RefinementConflictError(SlayerError):
     """A saved-query refinement gives an entry of the saved final stage a different value."""
 
@@ -776,6 +789,32 @@ class AmbiguousReferenceError(SlayerError, ValueError):
             summary=f"Reference {name!r} has multiple candidates.",
             extras=[("candidates", repr(self.candidates))],
             suggestion=suggestion,
+        ))
+
+
+class AmbiguousHopError(AmbiguousReferenceError):
+    """A hop segment names an edge of its dataset and the target of a different edge of it."""
+
+    def __init__(self, *, dataset: str, segment: str, edge: str, other_edge: str) -> None:
+        self.dataset = dataset
+        self.segment = segment
+        super().__init__(
+            name=f"{dataset}.{segment}",
+            candidates=[f"edge {edge!r}", f"edge {other_edge!r} (into {segment!r})"],
+            suggestion=f"spell the hop into {segment!r} by its edge name {other_edge!r}",
+        )
+
+
+class SelfRelationshipTraversalError(SlayerError, ValueError):
+    """A reference spells a hop over a self-relationship."""
+
+    def __init__(self, *, dataset: str, relationship: str) -> None:
+        self.dataset = dataset
+        self.relationship = relationship
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{dataset}.{relationship} is a self-relationship of {dataset!r}; "
+                    f"self-relationships are not traversable.",
         ))
 
 
@@ -1116,6 +1155,30 @@ class ReservedFunctionNameError(SlayerError, ValueError):
         )
 
 
+class AggArgumentError(SlayerError, ValueError):
+    """``AGG(…)`` whose argument is not one reference to a dataset metric."""
+
+    def __init__(self, *, expression: str, reason: str | None = None) -> None:
+        self.expression = expression
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{expression}: AGG takes a dataset metric{f' — {reason}' if reason else ''}.",
+            suggestion="Write AGG(<dataset>.<metric>), e.g. AGG(orders.total_revenue).",
+        ))
+
+
+class AggFilterError(SlayerError, ValueError):
+    """``AGG(…)`` with a ``FILTER (WHERE …)`` clause."""
+
+    def __init__(self, *, expression: str) -> None:
+        self.expression = expression
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{expression}: AGG takes no FILTER clause.",
+            suggestion="Define a dataset metric with the filter and evaluate that.",
+        ))
+
+
 class CaseCollisionError(SlayerError, ValueError):
     """A save would introduce names that differ only in case into one namespace."""
 
@@ -1338,6 +1401,92 @@ class StoredDocumentLoadError(SlayerError, ValueError):
 
     def __reduce__(self):
         return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
+
+
+class OssieDocumentInvalidError(SlayerError):
+    """A semantic-model document that is not a valid Ossie ``0.3.0.dev0`` document; ``reasons`` lists every reason."""
+
+    def __init__(self, *, name: str, reasons: Sequence[str]) -> None:
+        self.name = name
+        self.reasons = list(reasons)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Semantic model {name!r} is not a valid Ossie document:\n"
+                    + "\n".join(f"  - {r}" for r in self.reasons),
+        ))
+
+
+class NamespaceCollisionError(SlayerError):
+    """A name a datasource already uses: datasets and model-scoped metrics are unique per datasource, in any case."""
+
+    def __init__(self, *, name: str, owner: str, existing: str, data_source: str) -> None:
+        self.name = name
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{name!r} in {owner} collides with {existing} in datasource {data_source!r}; dataset and "
+                    "model-scoped metric names are unique per datasource (case-insensitively).",
+            suggestion="Rename one of them.",
+        ))
+
+
+class SemanticModelsUnsupportedError(SlayerError):
+    """A storage backend that does not implement the semantic-model hooks."""
+
+    def __init__(self, *, backend: str) -> None:
+        self.backend = backend
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Storage backend {backend} does not support semantic-model documents.",
+            suggestion="Implement its semantic-model storage hooks, or use YAML or SQLite storage.",
+        ))
+
+
+class UnqualifiedModelMetricReferenceError(SlayerError, ValueError):
+    """A model-scoped metric SLayer authors reads a field by a bare name."""
+
+    def __init__(self, *, metric: str, reference: str) -> None:
+        self.metric = metric
+        self.reference = reference
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Model-scoped metric {metric!r} reads the bare name {reference!r}: a model-scoped metric has no "
+                    "home dataset, so every field it reads must be qualified.",
+            suggestion=f"Write it qualified, as '<dataset>.{reference}'.",
+        ))
+
+
+class ModelMetricReferenceError(SlayerError, ValueError):
+    """A model-scoped metric SLayer authors breaks a reference rule."""
+
+    def __init__(self, *, metric: str, reference: str, reason: str) -> None:
+        self.metric = metric
+        self.reference = reference
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Model-scoped metric {metric!r} cannot read {reference!r}: {reason}.",
+            suggestion="Aggregate qualified fields of this semantic model's datasets, evaluate a dataset metric with "
+                       "AGG(<dataset>.<metric>), or name another model-scoped metric.",
+        ))
+
+
+class ModelMetricNameError(SlayerError, ValueError):
+    """A model-scoped metric SLayer authors takes a name it may not."""
+
+    def __init__(self, *, name: str, reason: str) -> None:
+        self.name = name
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=f"Model-scoped metric name {name!r} is refused: {reason}.",
+            suggestion="Choose another name.",
+        ))
+
+
+class UnevaluableEntityError(SlayerError):
+    """A document entity SLayer loads but cannot evaluate yet, read by a query."""
+
+    def __init__(self, *, entity: str, reason: str) -> None:
+        self.entity = entity
+        self.reason = reason
+        super().__init__(_format_error_message(cls_name=type(self).__name__, summary=f"{entity} {reason}."))
 
 
 class HiddenContentConflictError(SlayerError):

@@ -422,7 +422,7 @@ class TestSqliteProbe:
         model = SlayerDataset(name="t", sql_table="t", data_source="s", fields=[
             _pk(), DatasetField(name="code", datatype=DataType.INTEGER), DatasetField(name="amt", datatype=DataType.INTEGER),
             DatasetField(name="amount", expression='"amt"', datatype=DataType.INTEGER)])
-        findings: list[schema_drift.RetypeFinding] = []
+        findings: list[schema_drift.RetypeFinding | schema_drift.UntypedFinding] = []
         client = SlayerSQLClient(datasource=ds)
         try:
             await schema_drift.validate_datasource(datasource=ds, datasets=[model], client=client,
@@ -435,7 +435,9 @@ class TestSqliteProbe:
         for f in findings:
             _assert_remedy_agrees(f.model_dump(mode="json"))
         # ``code`` is a bucket conflict over a live TEXT column, not a probe verdict.
-        assert {f.field: f.remedy_kind for f in findings} == {
+        retypes = [f for f in findings if isinstance(f, schema_drift.RetypeFinding)]
+        assert retypes == findings
+        assert {f.field: f.remedy_kind for f in retypes} == {
             "amount": "reingest", "amt": "reingest", "code": "set_type"}
 
 

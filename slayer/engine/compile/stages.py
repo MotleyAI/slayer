@@ -1471,8 +1471,7 @@ def _register_hop(
 ) -> None:
     nodes.setdefault(node_path, SemiJoinHop(
         to=target_dataset,
-        join_pairs=tuple((s.physical_name, t.physical_name) for s, t in keys),
-        quoted=tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
+        **SemiJoinHop.key_args(keys),
         node_path=node_path,
         declared_left=declared_left,
         lateral=lateral,
@@ -2134,6 +2133,31 @@ def _query_dim_display(prebound: PreboundQuery, key: ValueKey) -> str:
 _KeyT = TypeVar("_KeyT", bound=ValueKey)
 
 
+def _query_spelling(key: ValueKey, *, context: _ProducerSynthesisContext) -> str:
+    """``key`` in canonical form, each reference spelled from its query anchor, a time bucket by its field."""
+    if isinstance(key, TimeTruncKey):
+        key = key.source
+    datasets = {**context.datasets_by_name, context.host_dataset.name: context.host_dataset}
+    mapping: Dict[ValueKey, ValueKey] = {}
+    for r in walk_value_keys(key):
+        if isinstance(r, (FieldKey, FieldSqlKey, StarKey)) and r not in mapping:
+            parts = context.prebound.reference_anchors.get(
+                _canonical_path(r.path, root=context.host_dataset, datasets_by_name=datasets))
+            if parts is not None:
+                mapping[r] = r.model_copy(update={"path": parts})
+    return key_display(substitute_value_keys(key, mapping) if mapping else key)
+
+
+def _broadcast_replacement(
+    agg: AggregateKey, attributable: Iterable[ValueKey], *, context: _ProducerSynthesisContext,
+) -> Dict[str, Any]:
+    """A broadcast attach's call and the ``partition_by=`` returning its values."""
+    return {
+        "broadcast_call": _query_spelling(agg, context=context),
+        "broadcast_partition_by": list(dict.fromkeys(_query_spelling(g, context=context) for g in attributable)),
+    }
+
+
 class _UnattributableDim(NamedTuple):
     """A requested grain dimension not attributable from the aggregate's root: its host key, query name, broadcast
     reason and its key routed from the home."""
@@ -2584,6 +2608,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         semi_join_metric=alias,
         broadcast_metric=alias if broadcast else None,
         broadcast_dimensions=broadcast,
+        **(_broadcast_replacement(agg, [g for g, _ in safe_pairs], context=context) if broadcast else {}),
         associated_metric=associated_metric,
         associated_dimensions=associated_dimensions,
         association_restricted_filter_texts=restricted_texts,
@@ -3229,6 +3254,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         producer_root_dataset=host_dataset.name,
         broadcast_metric=alias if broadcast_dims else None,
         broadcast_dimensions=broadcast_dims,
+        **(_broadcast_replacement(root, attributable, context=context) if broadcast_dims else {}),
         associated_metric=alias if associate_dims else None,
         associated_dimensions=[context.dim_display(g) for g in associate_dims],
         degenerate_metric=alias if degenerate else None,

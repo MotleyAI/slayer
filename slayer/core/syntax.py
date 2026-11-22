@@ -38,6 +38,8 @@ from slayer.core.enums import (
     normalize_aggregation_name,
 )
 from slayer.core.errors import (
+    AggArgumentError,
+    AggFilterError,
     CallArgumentError,
     ColonSpellingError,
     GranularityCallError,
@@ -67,6 +69,8 @@ class Ref(_BaseNode):
     name: str
     # Written double-quoted; not part of identity.
     quoted: bool = False
+    # Written as ``AGG(…)``: must name a dataset metric; not part of identity.
+    evaluated: bool = False
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Ref) and self.name == other.name
@@ -81,6 +85,8 @@ class DottedRef(_BaseNode):
     quoted: bool = False
     # Per segment, whether it was double-quoted (empty: none); not part of identity.
     quoted_parts: Tuple[bool, ...] = ()
+    # Written as ``AGG(…)``: must name a dataset metric; not part of identity.
+    evaluated: bool = False
 
     def quoted_at(self, i: int) -> bool:
         return 0 <= i < len(self.quoted_parts) and self.quoted_parts[i]
@@ -250,7 +256,10 @@ _LITERAL_VALUES = "variables supply literal values"
 _OPTIONAL_BLOCKS = (
     "Optional blocks '{? ... ?}' are supported only on raw-SQL dataset surfaces, not in Mode-B expressions."
 )
-_DISTINCT_ONLY = "DISTINCT is supported only as count(distinct x), i.e. count_distinct(x)"
+_DISTINCT_ONLY = ("DISTINCT is supported only as count(distinct x), i.e. count_distinct(x), and as array_agg(distinct x), "
+                  "i.e. collect(x)")
+#: Calls taking a leading DISTINCT, and the aggregation each spells.
+_DISTINCT_CALLS = {"count": "count_distinct", "array_agg": "collect"}
 
 
 class _Problem(ValueError):
@@ -691,9 +700,10 @@ def _dispatch_pending(call: _PendingCall) -> Any:
     args, kwargs, distinct = _split_args(call.items, call=name)
     if distinct:
         values = [a for a in args if not isinstance(a, NamedArg)]
-        if name.lower() != "count" or len(words) > 1 or len(values) != 1 or isinstance(args[0], (StarSource, NamedArg)):
+        if (name.lower() not in _DISTINCT_CALLS or len(words) > 1 or len(values) != 1
+                or isinstance(args[0], (StarSource, NamedArg))):
             raise _Problem(f"{_DISTINCT_ONLY}.")
-        name = "count_distinct"
+        name = _DISTINCT_CALLS[name.lower()]
     if len(words) > 1:
         return _method_call(
             path=tuple(w.name for w in words[:-1]), name=name, args=args, kwargs=kwargs, span=(call.start, call.end),
@@ -947,12 +957,42 @@ def _reject_over(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
 
 
 _OVER = (_kw("over") + pp.FollowedBy(LPAR)).set_parse_action(_reject_over)
-_PRIMARY = _ATOM + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE) | _OVER))
+
+
+class _WithinGroup:
+    """A parsed ``WITHIN GROUP (ORDER BY x)``: the ordered value of an ordered-set aggregate."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
+_WITHIN_GROUP = _on(
+    pp.Suppress(_kw("within")) + pp.Suppress(_kw("group")) + LPAR + pp.Suppress(_kw("order")) + pp.Suppress(_kw("by"))
+    + _need(expr, "WITHIN GROUP (ORDER BY …) needs a value.") + pp.Optional(pp.Suppress(_kw("asc")))
+    + _need(RPAR, "WITHIN GROUP (ORDER BY <value>) is missing its ')'."),
+    lambda toks: _WithinGroup(value=toks[0]),
+)
+_PRIMARY = _ATOM + pp.Optional(_WITHIN_GROUP) + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE) | _OVER))
+
+
+def _ordered_set(call: Any, within: _WithinGroup) -> AggCall:
+    """SQL ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` as ``percentile(x, p=p)``."""
+    if not isinstance(call, _PendingCall) or len(call.words) > 1 or call.words[0].name.lower() != "percentile_cont":
+        raise _Problem("WITHIN GROUP (ORDER BY …) applies only to PERCENTILE_CONT(p).")
+    args, _, distinct = _split_args(call.items, call="percentile_cont")
+    if distinct or len(args) != 1 or isinstance(args[0], NamedArg):
+        raise _Problem("PERCENTILE_CONT takes one fraction: PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x).")
+    return AggCall(source=within.value, agg="percentile", args=(NamedArg(name="p", value=args[0]),))
 
 
 def _primary_node(toks: List[Any]) -> Any:
-    node = _resolve(toks[0])
-    for clause in toks[1]:
+    clauses = toks[-1]
+    node = _ordered_set(toks[0], toks[1]) if len(toks) == 3 else _resolve(toks[0])
+    for clause in clauses:
+        if isinstance(node, (Ref, DottedRef)) and node.evaluated:
+            raise AggFilterError(expression=_STATE.text)
         if not isinstance(node, AggCall):
             raise _Problem("FILTER (WHERE …) applies only to an aggregation, e.g. sum(x) FILTER (WHERE c).")
         if node.filter is not None:
@@ -1145,7 +1185,10 @@ _IN_LIST = ((LPAR + _PLACEHOLDER_ATOM + RPAR)
             | _fail("the right-hand side of in / not in must be a literal list, e.g. status in ('a', 'b')."))
 
 _CMP_SUFFIX = (
-    _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
+    # SQL ``v = ANY(list)`` is list membership.
+    _suffix(_sym(r"==|=", "comparison") + pp.Suppress(_kw("any")) + LPAR + _concat_level + RPAR,
+            lambda left, t: ScalarCall(name="contains", args=(t[1], left)))
+    | _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
             lambda left, t: Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "="))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("distinct")) + pp.Suppress(_kw("from")) + _concat_level,
               lambda left, t: Cmp(op="is not distinct from" if t[0] else "is distinct from", left=left, right=t[1]))
@@ -1899,10 +1942,12 @@ def _onto_path(node: Any, *, path: Tuple[str, ...], memo: Optional[Dict[int, Any
 def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -> Any:
     unquoted = (False,) * len(path)
     if isinstance(node, Ref):
-        return DottedRef(parts=(*path, node.name), quoted=node.quoted, quoted_parts=(*unquoted, node.quoted))
+        return DottedRef(parts=(*path, node.name), quoted=node.quoted, quoted_parts=(*unquoted, node.quoted),
+                         evaluated=node.evaluated)
     if isinstance(node, DottedRef):
         own = tuple(node.quoted_at(i) for i in range(len(node.parts)))
-        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted, quoted_parts=(*unquoted, *own))
+        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted, quoted_parts=(*unquoted, *own),
+                         evaluated=node.evaluated)
     if isinstance(node, StarSource):
         return DottedRef(parts=(*path, "*"))
     if isinstance(node, ScalarCall):
@@ -2081,6 +2126,10 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], original: str,
 ) -> ParsedExpr:
     # ``agg`` stores the RAW token; ``first``/``last`` dispatch at bind by the operand's type.
+    if func_name.lower() in RESERVED_NAMES:
+        if kwargs or len(args) != 1 or not isinstance(args[0], (Ref, DottedRef)) or args[0].evaluated:
+            raise AggArgumentError(expression=original)
+        return args[0].model_copy(update={"evaluated": True})
     canonical_agg = normalize_aggregation_name(func_name)
     if canonical_agg in BUILTIN_AGGREGATIONS:
         if not args:
@@ -2230,9 +2279,44 @@ def _json_key_list(name: str):
     return build
 
 
+def _ossie_unit(node: Any) -> Any:
+    """Ossie's bare date unit word (``DATEDIFF(day, …)``) as SLayer's unit literal."""
+    if isinstance(node, Ref) and not node.quoted and node.name.lower() in _UNIT_WORDS:
+        return Literal(value=node.name.lower())
+    return node
+
+
+def _datediff(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``DATEDIFF(unit, start, end)`` as ``date_diff``."""
+    if len(args) != 3:
+        raise _Problem("DATEDIFF takes (unit, start, end).")
+    return _dispatch_call("date_diff", args=(_ossie_unit(args[0]), *args[1:]), kwargs=(), original=_STATE.text)
+
+
+def _dateadd(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``DATEADD(unit, n, ts)`` as ``date_add(ts, n, unit)``."""
+    if len(args) != 3:
+        raise _Problem("DATEADD takes (unit, amount, timestamp).")
+    return _dispatch_call("date_add", args=(args[2], args[1], _ossie_unit(args[0])), kwargs=(), original=_STATE.text)
+
+
+def _current_timestamp(args: Tuple[Any, ...]) -> ParsedExpr:
+    """SQL ``CURRENT_TIMESTAMP()`` as ``now()``."""
+    if args:
+        raise _Problem("CURRENT_TIMESTAMP takes no arguments.")
+    return _dispatch_call("now", args=(), kwargs=(), original=_STATE.text)
+
+
 # Spellings collapsed into one library node (engine P2); each name is reserved (``SCALAR_SPELLINGS``).
 _SPELLINGS: Dict[str, Callable[[Tuple[Any, ...]], ParsedExpr]] = {
+    "datediff": _datediff,
+    "dateadd": _dateadd,
+    "current_timestamp": lambda args: _current_timestamp(args),
     "strpos": lambda args: ScalarCall(name="instr", args=args),
+    "iff": lambda args: ScalarCall(name="iif", args=args),
+    "cardinality": lambda args: ScalarCall(name="length", args=args),
+    "array_length": lambda args: ScalarCall(name="length", args=args),
+    "array_contains": lambda args: ScalarCall(name="contains", args=args),
     "date_trunc": _date_trunc,
     "json_extract": _json_alias("json_extract"),
     "json_extract_scalar": _json_alias("json_extract_scalar"),
@@ -2428,7 +2512,7 @@ def _root_relative(node: Any, *, root: str, memo: Dict[int, Any]) -> Any:
             if parts == ("*",):
                 memo[id(node)] = StarSource()
             elif len(parts) == 1:
-                memo[id(node)] = Ref(name=parts[0], quoted=quoted_parts[0])
+                memo[id(node)] = Ref(name=parts[0], quoted=quoted_parts[0], evaluated=node.evaluated)
             else:
                 memo[id(node)] = node.model_copy(update={
                     "parts": parts, "quoted_parts": quoted_parts, "quoted": any(quoted_parts),
@@ -2648,10 +2732,10 @@ def legacy_result_name_seed(parsed: Any) -> str:
 
 
 def _render(parsed: Any, *, legacy: bool) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
-    if isinstance(parsed, Ref):
-        return _identifier_text(parsed.name)
-    if isinstance(parsed, DottedRef):
-        return ".".join(p if p == "*" else _identifier_text(p) for p in parsed.parts)
+    if isinstance(parsed, (Ref, DottedRef)):
+        text = _identifier_text(parsed.name) if isinstance(parsed, Ref) else ".".join(
+            p if p == "*" else _identifier_text(p) for p in parsed.parts)
+        return f"AGG({text})" if parsed.evaluated else text
     if isinstance(parsed, StarSource):
         return "*"
     if isinstance(parsed, Literal):

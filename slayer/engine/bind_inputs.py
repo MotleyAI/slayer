@@ -1431,7 +1431,8 @@ def _relative_to(parsed: ParsedExpr, *, spellings: List[Tuple[DottedRef, Anchore
         rest = (*spelling.parts[len(prefix):], ref.parts[-1])
         if rest == ("*",):
             return StarSource()
-        return Ref(name=rest[0]) if len(rest) == 1 else DottedRef(parts=rest)
+        return Ref(name=rest[0], evaluated=ref.evaluated) if len(rest) == 1 else DottedRef(
+            parts=rest, evaluated=ref.evaluated)
 
     return map_refs(parsed, rebased)
 

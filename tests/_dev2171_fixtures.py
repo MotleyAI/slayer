@@ -26,8 +26,6 @@ from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import OSIDocument
 from slayer.database.client import SlayerSQLClient, SqlClient
 from slayer.database import engine_factory
 from slayer.sql.dialects import dialect_for_sa_backend
@@ -122,17 +120,6 @@ def import_dbt(semantic_models: Iterable[dict[str, Any]], *, regular_datasets: I
     if db is None:
         return DbtToSlayerConverter(project=project, data_source=DS, target_dialect=target_dialect).convert()
     converter = DbtToSlayerConverter(project=project, data_source=DS, target_dialect=target_dialect or "duckdb")
-    collect_over_db(lambda client: converter.collect_metadata(client=client), db=db)
-    return converter.convert()
-
-
-def import_osi(*documents: dict[str, Any], db: Path, target_dialect: str = "duckdb") -> ConversionResult:
-    """Convert current-spec OSI document mappings against ``db``."""
-    return convert_osi([OSIDocument.model_validate(d) for d in documents], db=db, target_dialect=target_dialect)
-
-
-def convert_osi(docs: list[OSIDocument], *, db: Path, target_dialect: str = "duckdb") -> ConversionResult:
-    converter = OsiToSlayerConverter(documents=docs, data_source=DS, target_dialect=target_dialect)
     collect_over_db(lambda client: converter.collect_metadata(client=client), db=db)
     return converter.convert()
 

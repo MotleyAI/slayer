@@ -1,10 +1,11 @@
-"""Re-ingest reconciles FK edges datasource-wide, converges from partial saves, guards the edge namespace."""
+"""Re-ingest reconciles FK edges datasource-wide, converges from partial saves, lets a dataset share an edge's name."""
 
 from __future__ import annotations
 
 import pytest
 
 from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.relationship_walker import resolve_hop
 
 from tests._dev2073_fixtures import (
     BILLING_SHIPPING,
@@ -143,8 +144,8 @@ class TestReingestConvergesFromAPartialSave:
                 assert await _snapshot(lv) == expected, failing_index
 
 
-class TestEdgeNamesAndModelNamesShareANamespace:
-    async def test_new_table_named_like_a_stored_edge_is_skipped(self) -> None:
+class TestEdgeNamesMayEqualDatasetNames:
+    async def test_new_table_named_like_a_stored_edge_is_ingested(self) -> None:
         async with live(CHAIN) as lv:
             await lv.ingest()
             orders = await lv.dataset("orders")
@@ -154,13 +155,15 @@ class TestEdgeNamesAndModelNamesShareANamespace:
 
             result = await lv.ingest()
 
-            assert await lv.storage.get_dataset("returns", data_source=DS) is None
-            skipped = [s for s in result.skipped if s.table_name == "returns"]
-            assert len(skipped) == 1
-            assert "returns" in skipped[0].reason
-            assert "orders" in skipped[0].reason
+            assert result.errors == []
+            assert await lv.storage.get_dataset("returns", data_source=DS) is not None
+            assert [s for s in result.skipped if s.table_name == "returns"] == []
+            by_name = await lv.datasets()
+            hop = resolve_hop(current=by_name["orders"], token="returns", datasets_by_name=by_name)
+            assert hop is not None
+            assert (hop.name, hop.to) == ("returns", "customers")
 
-    async def test_saving_a_model_named_like_a_stored_edge_is_rejected(self) -> None:
+    async def test_saving_a_dataset_named_like_a_stored_edge_saves(self) -> None:
         async with live(CHAIN) as lv:
             await lv.ingest()
             orders = await lv.dataset("orders")
@@ -171,7 +174,9 @@ class TestEdgeNamesAndModelNamesShareANamespace:
                 name="returns", data_source=DS, sql_table="returns",
                 fields=[DatasetField(name="id", primary_key=True)],
             )
-            with pytest.raises(ValueError, match="returns") as exc:
-                await lv.storage.save_dataset(returns)
-            assert "orders" in str(exc.value)
-            assert await lv.storage.get_dataset("returns", data_source=DS) is None
+            await lv.storage.save_dataset(returns)
+            assert await lv.storage.get_dataset("returns", data_source=DS) is not None
+            by_name = await lv.datasets()
+            hop = resolve_hop(current=by_name["orders"], token="returns", datasets_by_name=by_name)
+            assert hop is not None
+            assert (hop.name, hop.to) == ("returns", "customers")

@@ -14,6 +14,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import yaml
 from pydantic import BaseModel, Field
 
 from slayer.core.errors import AmbiguousDatasetError, EntityResolutionError
@@ -34,6 +35,8 @@ from slayer.search.cypher_naive import parse_naive_label_filter as _parse_naive_
 from slayer.search.index import Corpus, build_in_memory_corpus
 from slayer.search.render import (
     collect_dataset_entity_pairs,
+    render_model_scoped_metric_text,
+    render_semantic_model_text,
     compact_description_from_learning,
     render_field_text,
     render_datasource_pair,
@@ -717,6 +720,7 @@ class SearchService:
                 datasets=all_datasets,
                 datasources=datasources,
                 datasource_descriptions=datasource_descriptions,
+                extra_pairs=await self._document_pairs(datasource),
             )
 
         if candidate_ids is not None:
@@ -939,11 +943,22 @@ class SearchService:
         datasets: list[SlayerDataset],
         description: str | None = None,
     ) -> list[str]:
-        return await self._fan_out_with_isolation(
+        documents = [(canonical, kind, text) for canonical, kind, text, _ in await self._document_pairs(name)]
+        warnings = await self._fan_out_with_isolation(
             hook_name="refresh_datasource",
             invoke=lambda r: r.refresh_datasource(
                 name=name, datasets=datasets, description=description,
             ),
+        )
+        return warnings + await self._fan_out_with_isolation(
+            hook_name="refresh_documents", invoke=lambda r: r.refresh_documents(documents),
+        )
+
+    async def refresh_documents(self, data_source: str) -> list[str]:
+        """Refresh ``data_source``'s semantic models and model-scoped metrics in every retriever."""
+        documents = [(canonical, kind, text) for canonical, kind, text, _ in await self._document_pairs(data_source)]
+        return await self._fan_out_with_isolation(
+            hook_name="refresh_documents", invoke=lambda r: r.refresh_documents(documents),
         )
 
     async def _fan_out_with_isolation(
@@ -1098,6 +1113,7 @@ class SearchService:
             )
         )
         canonicals.update(_collect_memory_canonicals(all_memories))
+        canonicals.update(pair[0] for pair in await self._document_pairs(datasource))
         return canonicals
 
     async def _collect_datasource_canonicals(
@@ -1178,6 +1194,24 @@ class SearchService:
                     f"example_query {_MEMORY_PREFIX}{memory_id}: attached "
                     f"query has stale references ({exc}); re-save to clean."
                 )
+        return out
+
+    async def _document_pairs(self, datasource: str | None) -> list[tuple[str, str, str, str | None]]:
+        """``(canonical, kind, text, description)`` of each stored document and model-scoped metric (of
+        ``datasource`` when given)."""
+        out: list[tuple[str, str, str, str | None]] = []
+        documents = await self._storage.list_semantic_models(data_source=datasource)
+        for ds in sorted({ds for ds, _ in documents}):
+            for _, name in [d for d in documents if d[0] == ds]:
+                text = await self._storage.get_semantic_model_text(name, data_source=ds)
+                document = yaml.safe_load(text) if text else {}
+                document = document if isinstance(document, dict) else {}
+                out.append((f"{ds}.{name}", "semantic_model",
+                            render_semantic_model_text(data_source=ds, name=name, document=document),
+                            document.get("description")))
+            for metric in await self._storage.list_model_scoped_metrics(ds):
+                out.append((f"{ds}.{metric.name}", "metric", render_model_scoped_metric_text(metric=metric),
+                            metric.description))
         return out
 
     async def _collect_index_corpus(

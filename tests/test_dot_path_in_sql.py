@@ -42,7 +42,7 @@ def _orders_with_customers_relationship(**overrides) -> SlayerDataset:
         ],
     )
     fields.update(overrides)
-    return SlayerDataset(**fields)
+    return SlayerDataset.model_validate(fields)
 
 
 def _customers() -> SlayerDataset:

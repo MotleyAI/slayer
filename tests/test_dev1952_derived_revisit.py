@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import (
     AmbiguousRelationshipPathError,
@@ -183,11 +184,8 @@ def _chain() -> dict[str, SlayerDataset]:
 
 
 def _self_relationship_dataset() -> SlayerDataset:
-    """A dataset carrying a named ``parent`` self-relationship edge, built via
-    ``model_construct`` to bypass ``SlayerDataset._reject_self_relationships`` — a real
-    self-relationship is rejected at construction, so save/query paths never see one;
-    this exercises the walker's first-hop revisit guard in isolation."""
-    return SlayerDataset.model_construct(
+    """A dataset carrying a named ``parent`` self-relationship edge."""
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
@@ -219,10 +217,9 @@ class TestWalkerRaisesOnRevisit:
 
     def test_self_join_first_hop_raises(self) -> None:
         model = _self_relationship_dataset()
-        with pytest.raises(CircularRelationshipPathError) as ei:
+        with pytest.raises(getattr(core_errors, "SelfRelationshipTraversalError"),
+                           match="(?i)self-relationships are not traversable"):
             walk(root=model, path=("parent",), datasets_by_name={"customers": model})
-        assert ei.value.hop == "parent"
-        assert ei.value.revisited == "customers"
 
     def test_terminal_model_catches_revisit_to_none(self) -> None:
         models = _chain()

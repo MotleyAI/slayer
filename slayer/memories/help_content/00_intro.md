@@ -22,7 +22,8 @@ aggregates of joined datasets and aggregates of aggregates. The syntax is on the
 3. **Count rows with `count(<dataset>.*)`** (`count(orders.*)`), never by counting a primary-key field.
 4. **Start every reference at its dataset and never write joins yourself.**
    `orders.amount`, `orders.revenue` (a saved metric), `customers.regions.name`: the
-   engine routes each to the population. A bare name is an alias of the query.
+   engine routes each to the population. A bare name is an alias of the query, else a
+   model-scoped metric of a semantic model (`memory:help.datasets`).
 
 ## Deep dives
 
@@ -38,5 +39,5 @@ Read several at once with
   anti-joins.
 - `memory:help.queries` — query shapes, stages, raw rows, variables, debugging.
 - `memory:help.workflow` — method, filter literals, verifying a result, error decoder.
-- `memory:help.datasets` — authoring datasets: fields, saved metrics, relationships, filters,
-  query-backed datasets.
+- `memory:help.datasets` — authoring datasets: fields, saved metrics, semantic models and
+  model-scoped metrics, relationships, filters, query-backed datasets.

@@ -184,11 +184,12 @@ def physical_column_sql(*, sql: str | None, name: str) -> str:
     return (unquoted_identifier(sql) if sql is not None else None) or name
 
 
-def check_element_type(*, name: str, data_type: DataType, element_type: DataType | None) -> None:
+def check_element_type(*, name: str, data_type: DataType | None, element_type: DataType | None) -> None:
     """``element_type`` is rejected off a list and is never itself a list (the dataset requires it on one)."""
     if data_type is not DataType.ARRAY and element_type is not None:
+        shown = data_type.value if data_type is not None else "unknown"
         raise ValueError(
-            f"DatasetField {name!r} declares element_type {element_type.value} but its type is {data_type.value}; "
+            f"DatasetField {name!r} declares element_type {element_type.value} but its type is {shown}; "
             f"only an Array field has an element_type."
         )
     if element_type is DataType.ARRAY:
@@ -253,6 +254,19 @@ _STATEMENT_WORDS = frozenset({
 })
 
 
+_NAME_TOKENS = frozenset({TokenType.VAR, TokenType.IDENTIFIER})
+
+
+def reads_own_source_only(text: str) -> bool:
+    """Whether SQL ``text`` reads no ``qualifier.name`` reference (only its own source's columns); unreadable is no."""
+    try:
+        tokens = Tokenizer().tokenize(text)
+    except (SqlglotError, ValueError):
+        return False
+    return not any(a.token_type in _NAME_TOKENS and b.token_type is TokenType.DOT
+                   for a, b in zip(tokens, tokens[1:]))
+
+
 def _check_one_expression(*, field: str, sql: str) -> None:
     """Refuse a statement, or several, as ``sql``; text the generic tokenizer cannot read is left to the dialect."""
     try:
@@ -283,11 +297,11 @@ class DatasetField(DatasetPart):
         default=None,
         description="Deprecated: use expression. Kept only until the datasource's dialect is known.",
     )
-    datatype: DataType = Field(
+    datatype: DataType | None = Field(
         default=DataType.STRING,
         description=(
             "String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, DateTimeTz, Opaque (stored and shown, "
-            "never operated on), or Array (a list)."
+            "never operated on), or Array (a list). Unset (null) only on a semantic-model document's undeclared type."
         ),
     )
     element_type: DataType | None = Field(
@@ -326,6 +340,7 @@ class DatasetField(DatasetPart):
     allowed_aggregations: list[str] | None = None
     filter: str | None = None  # Desugars to CASE WHEN (filter) THEN (value) END in every position
     meta: dict[str, Any] | None = None
+    load_warning: str | None = Field(default=None, exclude=True)  # runtime: why a document entity cannot run yet
     sampled: str | None = None  # cached sample-value snapshot
     sampled_values: list[str] | None = None  # structured top-N
     distinct_count: int | None = None  # true cardinality at profile time
@@ -428,8 +443,9 @@ class DatasetField(DatasetPart):
 
     @model_validator(mode="after")
     def _validate_granularity_temporal(self) -> "DatasetField":
-        # A bucket only makes sense on a temporal field (like filter/aggregations, fail at construction).
-        if self.granularity is not None and self.datatype not in TEMPORAL_DATATYPES:
+        # A bucket only makes sense on a temporal field (like filter/aggregations, fail at construction); an unknown
+        # type defers the check to query time.
+        if self.granularity is not None and self.datatype is not None and self.datatype not in TEMPORAL_DATATYPES:
             raise ValueError(
                 f"DatasetField {self.name!r} declares granularity "
                 f"'{self.granularity}' but its type is {self.datatype.value}; "
@@ -458,6 +474,17 @@ class DatasetField(DatasetPart):
     def is_physical_reader(self) -> bool:
         """A base field without a ``filter``: relationship keys, drift and live typing read it as its source column."""
         return self.is_base and self.filter is None
+
+    @property
+    def reads_own_source(self) -> bool:
+        """Whether every form of the definition reads only its own dataset's source columns."""
+        texts = [self.definition_sql] if self.definition_known else self.native_texts
+        return all(t is None or reads_own_source_only(t) for t in texts)
+
+    @property
+    def key_name(self) -> str:
+        """A relationship key's emitted name: a base field's physical column, else its own name."""
+        return self.physical_name if self.is_base else self.name
 
     @property
     def physical_name(self) -> str:
@@ -492,13 +519,13 @@ class DatasetField(DatasetPart):
 
     @property
     @deprecated("type is deprecated; use datatype", category=None)
-    def type(self) -> DataType:
+    def type(self) -> DataType | None:
         attribute_used(self, old="type", new="datatype")
         return self.datatype
 
     @type.setter
     @deprecated("type is deprecated; use datatype", category=None)
-    def type(self, value: DataType) -> None:
+    def type(self, value: DataType | None) -> None:
         attribute_used(self, old="type", new="datatype")
         self.datatype = value
 
@@ -533,6 +560,8 @@ def list_operations_hint(field: DatasetField) -> str:
 
 def field_type_text(field: DatasetField) -> str:
     """``Array<String> (list: …)`` for a list field, else its type."""
+    if field.datatype is None:
+        return "unknown (resolved from the live column at query time)"
     if field.datatype is not DataType.ARRAY:
         return str(field.datatype)
     return f"{type_display(field.datatype, field.element_type)} ({list_operations_hint(field)})"
@@ -578,6 +607,8 @@ def _check_allowed_aggregation(
     if agg_name in custom_agg_names and agg_name not in BUILTIN_AGGREGATIONS:
         # Custom aggregations bypass type-default eligibility; the expression decides.
         return
+    if field.datatype is None:
+        return  # an unknown type defers the check to query time
     allowed_for_type = DEFAULT_AGGREGATIONS_BY_TYPE.get(field.datatype, frozenset())
     if agg_name not in allowed_for_type:
         raise ValueError(
@@ -653,6 +684,7 @@ class DatasetMetric(MetricBase, DatasetPart):
     description: str | None = None
     datatype: DataType | None = None
     meta: dict[str, Any] | None = None
+    load_warning: str | None = Field(default=None, exclude=True)  # runtime: why a document entity cannot run yet
 
     @model_validator(mode="wrap")
     @classmethod
@@ -666,6 +698,8 @@ class DatasetMetric(MetricBase, DatasetPart):
 
     @model_validator(mode="after")
     def _reject_raw_window_function(self) -> "DatasetMetric":
+        if self.load_warning is not None:
+            return self
         text = portable_text(self.expression)
         if text is None:
             carried = ", ".join(dialect_tokens(self.expression)) or "none"
@@ -676,9 +710,12 @@ class DatasetMetric(MetricBase, DatasetPart):
 
     @property
     def text(self) -> str:
-        """The metric's evaluated (portable) expression."""
+        """The metric's evaluated (portable) expression; an unevaluable one's first dialect entry."""
         text = portable_text(self.expression)
-        assert text is not None  # validated
+        if text is None:
+            assert self.load_warning is not None  # validated
+            entries = self.expression.dialects if isinstance(self.expression, ExpressionObject) else None
+            return next((e.expression for e in entries or []), "")
         return text
 
     # Expressions may contain ``__`` (flattened virtual-dataset relationship paths); typos are
@@ -919,6 +956,14 @@ def _coerce_source_queries(v: Any) -> Any:
     return result
 
 
+class ExtensionNote(BaseModel):
+    """Why a ``SLAYER`` extension entry on a document entity was not applied, or applied only in part."""
+
+    kind: str
+    entity: str
+    message: str
+
+
 class SourceDatasetOrigin(BaseModel):
     """In-memory lineage breadcrumb for virtual stage datasets: a linked list of
     upstream names so outer-stage dotted-ref lookup can strip prefixes.
@@ -1084,7 +1129,7 @@ class DatasetRelationship(DatasetPart):
 def relationship_key_error(
     *, dataset: str, target: str, key: str, side: str, fields: list[DatasetField],
 ) -> RelationshipKeyError | None:
-    """Why ``key`` is not a declared base field of ``side`` (whose ``fields`` are given)."""
+    """Why ``key`` is not an unfiltered declared field of ``side`` reading only its source (``fields`` given)."""
     head = f"relationship {dataset} → {target} key {key!r}"
     col = next((c for c in fields if c.name == key), None)
     if col is None:
@@ -1094,21 +1139,22 @@ def relationship_key_error(
                 else f"declare DatasetField(name={key!r}) on '{side}' (expression= its source column if renamed)")
         return RelationshipKeyError(summary=f"{head} is not a declared field of '{side}'",
                             suggestion=hint)
-    if not col.is_base:
+    if not col.is_base and not col.reads_own_source:
         return RelationshipKeyError(
-            summary=f"{head} is an expression field of '{side}' (expression={col.definition_sql!r})",
-            suggestion="key the relationship on a base field: expression unset or a single source column",
+            summary=f"{head} is an expression field of '{side}' reading beyond its source "
+                    f"(expression={col.definition_sql!r})",
+            suggestion=f"key the relationship on a field of '{side}' over its own source columns",
         )
     if col.filter is not None:
         return RelationshipKeyError(
             summary=f"{head} carries a filter on '{side}'",
-            suggestion="key the relationship on an unfiltered base field",
+            suggestion="key the relationship on an unfiltered field",
         )
     return None
 
 
 def _check_relationship_keys(*, dataset_name: str, fields: list[DatasetField], relationships: list[DatasetRelationship]) -> None:
-    """Every relationship's source-side key names a declared, unfiltered base field."""
+    """Every relationship's source-side key names a declared, unfiltered field over the dataset's own source."""
     for relationship in relationships:
         for src, _ in relationship.column_pairs:
             err = relationship_key_error(dataset=dataset_name, target=relationship.to, key=src,
@@ -1252,7 +1298,13 @@ class SlayerDataset(DatasetPart):
     meta: dict[str, Any] | None = None
     # In-memory breadcrumb for virtual stage datasets; ``exclude=True`` keeps it unpersisted.
     source_dataset_origin: SourceDatasetOrigin | None = Field(default=None, exclude=True)
+    #: Runtime only: the semantic-model document declaring this dataset (``None`` for a standalone dataset).
+    semantic_model: str | None = Field(default=None, exclude=True)
+    #: Runtime only: why a ``SLAYER`` extension entry of its document was not applied on load.
+    extension_notes: list[ExtensionNote] = Field(default_factory=list, exclude=True)
     # Runtime-only (never persisted): a query stage's user spelling in relationship paths.
+    # Runtime-only: a document dataset as it was read, the base a save merges its changes from.
+    _read_as: "SlayerDataset | None" = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor
     _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
     # Runtime-only: this dataset is the P factor of a ``time_spine × P`` population.
     _population_spine: bool = PrivateAttr(default=False)
@@ -1302,20 +1354,6 @@ class SlayerDataset(DatasetPart):
         return self
 
     @model_validator(mode="after")
-    def _reject_self_relationships(self) -> "SlayerDataset":
-        """Relationships resolve by target-dataset name, so a self-relationship is unaddressable."""
-        if any(j.to == self.name for j in self.relationships):
-            raise ValueError(
-                f"Dataset '{self.name}': relationship to '{self.name}' is the "
-                f"dataset itself. Self-relationships are not supported — dotted "
-                f"references resolve by dataset name, so a self-relationship can never "
-                f"be addressed from a query. Define the second role as a "
-                f"separate dataset over the same table (or a view) and declare a "
-                f"relationship to that."
-            )
-        return self
-
-    @model_validator(mode="after")
     def _validate_list_element_types(self) -> "SlayerDataset":
         """A list field needs an ``element_type``; an sql-mode dataset's undeclared one is ``UNKNOWN``."""
         for c in self.fields:
@@ -1334,7 +1372,7 @@ class SlayerDataset(DatasetPart):
         for c in self.fields:
             if c.allowed_aggregations is None:
                 continue
-            if c.datatype.is_opaque:
+            if c.datatype is not None and c.datatype.is_opaque:
                 db_type_note = f" (db_type={c.db_type!r})" if c.db_type else ""
                 raise ValueError(
                     f"DatasetField '{c.name}'{db_type_note}: allowed_aggregations "

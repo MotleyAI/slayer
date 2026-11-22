@@ -139,7 +139,7 @@ class TestSpineOperands:
         assert q.filter == ["time_spine.timestamp >= '2024-01-25'", ORDERS_LT, SPINE_LT]
         resp = await run(storage, q)
         by_day = {r["time_spine.timestamp"]: r["rev"] for r in resp.data}
-        assert by_day.get("2024-01-31") == pytest.approx(JAN_31_ORDER[-1]), resp.data
+        assert by_day.get("2024-01-31 00:00:00") == pytest.approx(JAN_31_ORDER[-1]), resp.data
 
     async def test_spine_spelt_in_another_case(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         body = stage("TIME_SPINE.timestamp <= '2024-01-31'", "Time_Spine.TIMESTAMP > '2024-01-31'")
@@ -366,7 +366,7 @@ def stored(*extra: dict, stages: frozenset[str] = frozenset()) -> StoredDatasets
     return StoredDatasets(data_source=DS, datasets={d["name"]: d for d in docs}, stages=stages)
 
 
-SPINE_TYPE = spine_dataset(data_source=DS).fields[0].datatype.value
+SPINE_TYPE = str(spine_dataset(data_source=DS).fields[0].datatype)
 
 
 class TestStoredModels:
@@ -387,7 +387,7 @@ class TestStoredModels:
         host = stored().host(TIME_SPINE_DATASET)
         assert host is not None
         expected = spine_dataset(data_source=DS).fields
-        assert [(c["name"], c["type"]) for c in host["columns"]] == [(c.name, c.datatype.value) for c in expected]
+        assert [(c["name"], c["type"]) for c in host["columns"]] == [(c.name, str(c.datatype)) for c in expected]
 
     def test_exact_stored_spelling_wins(self) -> None:
         variant = model_doc("Time_Spine", [{"name": "timestamp", "type": "TEXT"}])

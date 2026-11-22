@@ -109,16 +109,19 @@ async def test_consecutive_periods_over_date_column(
     assert [got[d[:width]] for d in dates] == [1, 2, 1, 2]
 
 
-@pytest.mark.parametrize("dim", ["ev.d", "ev.d_expr", "ev.ts"])  # DATE, DATETIME and TIMESTAMP buckets
-@pytest.mark.parametrize("formula,comparison", [
-    ("consecutive_periods(sum(ev.v) > 0)",
-     "CAST(`_cp_prev_x` AS DATETIME) = DATETIME_ADD(CAST(`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH)"),
-    ("time_shift(sum(ev.v), -1, 'month')",
-     "DATETIME_ADD(CAST(base.`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH) "
-     "IS NOT DISTINCT FROM CAST(shifted_x.`{dim}` AS DATETIME)"),
+@pytest.mark.parametrize("dim,moved", [
+    ("ev.d", "DATE_ADD({alias}, INTERVAL -1 MONTH)"),
+    ("ev.d_expr", "DATE_ADD({alias}, INTERVAL -1 MONTH)"),
+    ("ev.ts", "DATETIME_ADD(CAST({alias} AS DATETIME), INTERVAL -1 MONTH)"),
 ])
-async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str, comparison: str) -> None:
-    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as DATETIME.
+@pytest.mark.parametrize("formula,comparison", [
+    ("consecutive_periods(sum(ev.v) > 0)", "`_cp_prev_x` = {moved}"),
+    ("time_shift(sum(ev.v), -1, 'month')", "{moved_base} IS NOT DISTINCT FROM shifted_x.`{leaf}`"),
+])
+async def test_bigquery_bucket_comparisons_keep_the_bucket_type(
+    dim: str, moved: str, formula: str, comparison: str,
+) -> None:
+    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; a bucket meets its neighbour in its own type.
     model = _ev_dataset()
     model.fields.append(DatasetField(name="d_expr", expression=ExpressionObject(dialects=[DialectEntry(dialect="BIGQUERY", expression="DATE(ts)")]), datatype=DataType.DATE))
     sql = await _engine_generate(query=SlayerQuery.model_validate({
@@ -126,4 +129,8 @@ async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str,
         "time_dimensions": [{"field": dim, "granularity": "month"}],
         "metrics": [{"metric": formula, "alias": "x"}],
     }), dataset=model, dialect="bigquery", validate=False)
-    assert comparison.format(dim=dim.split(".")[-1]) in sql
+    leaf = dim.split(".")[-1]
+    expected = comparison.format(
+        leaf=leaf, moved=moved.format(alias=f"`ev___{leaf}`"), moved_base=moved.format(alias=f"base.`ev___{leaf}`"),
+    )
+    assert expected in " ".join(sql.split()), sql
