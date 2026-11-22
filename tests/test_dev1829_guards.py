@@ -61,7 +61,7 @@ class TestDeferredMeasureShapesStillRaise:
         q = _q(
             dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="cumsum(sum(orders.amount, partition_by=orders.region))",
+                metric="cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at]))",
             )],
         )
         assert "__regroup__" not in await gen(q)

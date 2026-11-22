@@ -52,7 +52,7 @@ def _render_ntile(n) -> str:
         slots_by_id={"s_in": in_slot, "s_nt": nt_slot},
         slot_id_by_key={input_key: "s_in", nt_key: "s_nt"},
         available_alias_by_slot_id={"s_in": "revenue"},
-        planned_query=SimpleNamespace(projection=[]),
+        planned_query=SimpleNamespace(projection=[], grain=[]),
     ).sql(dialect="postgres")
 
 

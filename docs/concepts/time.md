@@ -105,7 +105,11 @@ Every datasource has a built-in, never-stored dataset `time_spine` with one fiel
  "metrics": ["sum(orders.amount)", "sum(returns.amount)"]}
 ```
 
-The population is `time_spine × P` (P the population of the remaining dimensions, or `population`); the spine needs a lower frame bound (the upper defaults to the current bucket), a filter on it must be a frame bound, it has no countable rows (no aggregation over it, no raw-rows query), a dataset reaches it by its nearest axis over to-one hops (equal-length routes are a typed error), and wrap a metric in `coalesce(..., 0)` to fill empty buckets.
+The population is `time_spine × P`; the spine needs a lower frame bound (the upper defaults to the current bucket), a filter on it must be a frame bound, it has no countable rows (no aggregation over it, no raw-rows query), and wrap a metric in `coalesce(..., 0)` to fill empty buckets.
+
+Without `population`, the rows are every bucket in range × the union of each measure's tuples of the other dimensions that have rows inside the frame — the dimension anchor's in-frame tuples with no measures, the buckets alone with no other dimensions. The spine bounds restrict every dataset like a field filter, so a group whose facts all lie outside the range is no row; name `population` (`"population": "customers"`) to keep every group in every bucket. A trailing window or `time_shift` still reads rows before the lower bound.
+
+A dataset reaches the spine by its nearest axis over to-one hops; one with none reaches it by association across its nearest **fanning axis** — `count(customers.*)` by spine month counts the customers with an order that month (the `associated` warning). Equal-length routes, or two fanning axes at the same distance, are a typed error naming each route (`customers.orders.order_date`, `customers.returns.return_date`); the remedy is a time dimension on one of those fields instead of the spine. A dataset with no route to any axis meets every bucket.
 
 A stage of a multi-stage query, or a saved query, can be a spine query too; later stages then see one row per bucket.
 
