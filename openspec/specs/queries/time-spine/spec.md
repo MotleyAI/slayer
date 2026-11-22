@@ -60,7 +60,7 @@ A dataset's axis SHALL be its declared `default_time_dimension`, else its only c
 
 ### Requirement: Spine routes are nearest-axis and the spine is never crossed
 
-A dataset SHALL reach the spine by its nearest axis along a chain of provably to-one, executable hops (spelled per the binding walker's rules, including named parallel edges); the shortest such route SHALL win, and two or more distinct shortest routes SHALL fail with a typed ambiguous-route error naming each canonical route. The error SHALL be raised only by a query that needs that dataset's spine route. A join path MAY begin at the spine (as the population) or end at it, but SHALL NEVER pass through it: no route between two other datasets uses a spine edge. Routing that involves no spine edge SHALL be unchanged.
+A dataset SHALL reach the spine by its nearest axis along a chain of provably to-one, executable hops (spelled per the binding walker's rules, including named parallel edges); the shortest such route SHALL win, and two or more distinct shortest routes SHALL fail with a typed ambiguous-route error naming each canonical route. A dataset with no such route SHALL reach the spine by association across its nearest fanning axis: the shortest executable route that crosses at least one fanning or unproven hop and ends at a dataset with an axis, never passing through the spine. In each bucket its aggregations SHALL run over its distinct rows associated with an axis row in that bucket and inside the spine bounds — rows hidden by a model filter or a row-level-security policy associating nothing — and the response SHALL carry the `associated` warning; under `to_many_handling: "broadcast"` its measures SHALL broadcast with the `broadcast` warning, and under `"error"` the query SHALL fail, both as before. Two or more distinct nearest fanning axes SHALL fail with the typed ambiguous-route error naming each route spelled as that fact's time column (e.g. `customers.orders.order_date`), with the remedy of querying one of them as a time dimension. A dataset with no route to any axis SHALL be associated with every bucket, as before. Each error SHALL be raised only by a query that needs that dataset's spine route. A join path MAY begin at the spine (as the population) or end at it, but SHALL NEVER pass through it: no route between two other datasets uses a spine edge. Routing that involves no spine edge SHALL be unchanged.
 
 #### Scenario: A dataset without its own axis reaches the spine through its parent
 
@@ -82,9 +82,25 @@ A dataset SHALL reach the spine by its nearest axis along a chain of provably to
 - **WHEN** a query rooted at `orders` grouped by `orders.order_date` month selects `sum(returns.amount)`
 - **THEN** it resolves through `customers` per `to_many_handling` (associated by default, broadcast with a warning under `broadcast`), never through `time_spine`
 
+#### Scenario: Active customers per month through a fanning axis
+- **WHEN** a datasource's `customers` (C1 EAST, C2 EAST, C3 WEST, C4 NORTH) has no temporal column and `orders` (C1 2025-01-10, C1 2025-02-10, C2 2025-01-20, C3 2025-02-20) is its only dated child, and a query groups by the spine month over Jan–Mar and selects `count(customers.*)`, then again also grouping by `customers.region`
+- **THEN** the counts are Jan 2, Feb 2, Mar 0 with the `associated` warning, and by region EAST (2, 1, 0) and WEST (0, 1, 0), with no NORTH row
+
+#### Scenario: A model filter on the axis dataset limits the association
+- **WHEN** that `orders` dataset declares the filter `status = 'completed'` (keeping the January orders of C1 and C2)
+- **THEN** the counts are Jan 2, Feb 0, Mar 0
+
+#### Scenario: Equal-distance fanning axes fail loudly
+- **WHEN** a spine-month query on the scenario datasource, whose `customers` reaches both `orders` and `returns` across one fanning hop, selects `count(customers.id)`, once with measures and once as a dimension-only query by `customers.region`
+- **THEN** each fails with the typed ambiguous-route error naming `customers.orders.order_date` and `customers.returns.return_date` and the remedy of a time dimension on one of them; with `to_many_handling: "broadcast"` the measure query broadcasts 3 per month as before, and grouping by month of `customers.orders.order_date` instead reads Jan 2 and Feb 1
+
+#### Scenario: A to-one axis beats a fanning axis
+- **WHEN** `customers` gains a sole temporal column `signed_up_at` and a spine-month query over Jan–Jun selects `count(customers.id)`
+- **THEN** customers attribute by their signup month exactly — Jan 1, Apr 1, else 0 — with no `associated` warning
+
 ### Requirement: A spine query's population is the spine times P
 
-A query with one or more time dimensions on `time_spine.timestamp` SHALL have population `time_spine × P`, where P is the model named by `population`, else the dimension anchor of its other dimensions and time dimensions (`queries/population` › Dimension-determined default; field filters restrict P by association and never choose it), or the one-row unit when there are no other dimensions (`population: time_spine` also denotes the unit). The result SHALL have one row per combination of a spine bucket in range and a distinct value combination of P's dimensions among P's filtered rows; adding or removing a measure SHALL never change this row set, and a query omitting `population` SHALL keep this row set rather than its row supply. This SHALL hold for every query of a query list alike: the main query and each named stage.
+A query with one or more time dimensions on `time_spine.timestamp` SHALL have population `time_spine × P`, with one row per combination of a spine bucket in range and a tuple of P. When the query names `population` without `population_inferred: true`, P SHALL be that model's distinct value combinations of the other dimensions among its filtered rows, and adding or removing a measure SHALL never change the row set. Otherwise P SHALL be the row supply of the other dimensions and time dimensions (`queries/population`): the union of each top-level measure's non-time tuples that have a cell in a visible bucket — so a group whose facts all lie outside the spine bounds is no row, and a home row whose dimension path is broken lands in the NULL tuple — the dimension anchor's tuples restricted by the spine bounds when there are no measures, and the one-row unit when there are no other dimensions; adding a measure SHALL never remove a row or change a value in an existing row. `population: time_spine` denotes the unit. The population SHALL be reported as `time_spine × P` for a named P and `time_spine × A` otherwise, A the dimension anchor of the other dimensions, and `row_sources` SHALL list the supplying homes and every anchor component used to extend coarser cells. This SHALL hold for every query of a query list alike: the main query and each named stage.
 
 #### Scenario: Every month in range, both facts on one axis
 
@@ -94,12 +110,12 @@ A query with one or more time dimensions on `time_spine.timestamp` SHALL have po
 #### Scenario: Per-group grid
 
 - **WHEN** the query groups by `customers.region` and the spine month with `date_range: ["2025-01-01", "2025-03-31"]` and selects `sum(orders.amount)` and `sum(returns.amount)`
-- **THEN** there are 9 rows (regions N, S, E × Jan–Mar): N Jan (100, NULL), N Feb (70, 20), N Mar (NULL, NULL), S Jan (50, NULL), S Feb (NULL, NULL), S Mar (NULL, 10), and E NULL in every month
+- **THEN** there are 6 rows (regions N, S × Jan–Mar): N Jan (100, NULL), N Feb (70, 20), N Mar (NULL, NULL), S Jan (50, NULL), S Feb (NULL, NULL), S Mar (NULL, 10); region E, with no fact in range, is no row, the population is reported `time_spine × customers` and `row_sources` is `["orders", "returns"]`
 
 #### Scenario: Explicit P and explicit spine
 
 - **WHEN** the per-group query names `population: customers`, and the two-fact query names `population: time_spine`
-- **THEN** each returns exactly the rows of its inferred twin
+- **THEN** the first returns 9 rows (regions N, S, E × Jan–Mar): the inferred twin's rows plus E with NULL in every month; the second returns exactly the rows of its inferred twin
 
 #### Scenario: Two spine time dimensions
 
@@ -108,8 +124,8 @@ A query with one or more time dimensions on `time_spine.timestamp` SHALL have po
 
 #### Scenario: Measures never change the rows
 
-- **WHEN** `sum(returns.amount)` is removed from, or `avg(orders.amount)` added to, any spine query above
-- **THEN** the row set is unchanged
+- **WHEN** `avg(orders.amount)` is added to any spine query above, `sum(returns.amount)` is removed from the per-group query naming `population: customers`, and `sum(returns.amount)` is added to a per-group query over Mar–Jun selecting only `sum(orders.amount)`
+- **THEN** no row is removed and no existing value changes, the named-population query keeps its rows, and the Mar–Jun query grows from no rows to regions N and S × Mar–Jun, its `sum(orders.amount)` NULL throughout
 
 #### Scenario: A spine stage keeps every bucket
 
@@ -119,7 +135,7 @@ A query with one or more time dimensions on `time_spine.timestamp` SHALL have po
 #### Scenario: A per-group spine stage
 
 - **WHEN** the stage `monthly` also groups by `customers.region`, and the main query over it groups by `region` and selects `sum(o)` and `count(*)`
-- **THEN** the rows are N (170, 3), S (50, 3), E (NULL, 3)
+- **THEN** the rows are N (170, 3) and S (50, 3)
 
 #### Scenario: A spine stage feeding a spine query
 
@@ -128,15 +144,31 @@ A query with one or more time dimensions on `time_spine.timestamp` SHALL have po
 
 #### Scenario: A filter on a finer dataset keeps P
 - **WHEN** the per-group query omits `population` and adds the filter `orders.amount > 60`
-- **THEN** P stays `customers`, restricted to customers with such an order, and the population is reported `time_spine × customers`
+- **THEN** the rows are N Jan (100, NULL), N Feb (70, 20) and N Mar (NULL, NULL) — the returns restricted by association to customers with such an order — and the population is reported `time_spine × customers`
 
 #### Scenario: An orphan beside the spine is not yet a row
 - **WHEN** the per-group query omits `population` and an order references no customer
-- **THEN** no NULL-region row appears: the spine query keeps `time_spine × customers`
+- **THEN** a NULL-region row appears for each month, carrying that order's amount in its month, and the population is reported `time_spine × customers`
+
+#### Scenario: Tuples come from rows inside the frame
+- **WHEN** the per-group query uses `date_range: ["2025-02-01", "2025-03-31"]` and selects only `sum(orders.amount)`, once without `population` and once with `population: customers`
+- **THEN** the first returns N Feb 70 and N Mar NULL — S's only order lies before the frame — and the second returns regions N, S and E × Feb–Mar
+
+#### Scenario: A windowed measure supplies the groups its window reaches
+- **WHEN** the per-group query over Feb–Mar selects only `sum(orders.amount, window='2m')`
+- **THEN** the rows are N Feb 170, N Mar 70, S Feb 50 and S Mar NULL: S's January order lands in February's window
+
+#### Scenario: A dimension-only spine query over an axis-bearing anchor
+- **WHEN** a spine query over Feb–Mar groups by `orders.id` with no measures, once without `population` and once with `population: orders`
+- **THEN** the first returns order 3 in February and March only, and the second returns orders 1, 2 and 3 in both months
+
+#### Scenario: A pinned inferred spine stage keeps inferred rows
+- **WHEN** the per-group spine stage is saved and loaded, carrying `population: customers` with `population_inferred: true`, and a legacy saved stage carries `population: customers` without the marker
+- **THEN** the first returns the inferred per-group rows (N and S) and the second the 9-row grid
 
 ### Requirement: Spine bounds decide which buckets exist
 
-A spine query SHALL bound `time_spine.timestamp` from below with a frame bound (a `date_range` or a conjunctive comparison of the spine column against a time point); without one it SHALL fail with a typed error whose remedy names adding a lower bound. Without a stated upper bound the query SHALL be bounded by the period containing now, at the finest granularity among its spine time dimensions — the `this <granularity>` time point, read from the engine clock. A bucket SHALL exist iff its interval overlaps the bounded interval. Spine bounds SHALL restrict each fact's rows through its axis (a fact row counts only if its axis instant satisfies them) and SHALL remain frame bounds: trailing windows and `time_shift` read rows before the lower bound.
+A spine query SHALL bound `time_spine.timestamp` from below with a frame bound (a `date_range` or a conjunctive comparison of the spine column against a time point); without one it SHALL fail with a typed error whose remedy names adding a lower bound. Without a stated upper bound the query SHALL be bounded by the period containing now, at the finest granularity among its spine time dimensions — the `this <granularity>` time point, read from the engine clock. A bucket SHALL exist iff its interval overlaps the bounded interval. Spine bounds SHALL restrict the rows of every home and of the dimension anchor like a field filter: through an axis reached over to-one hops a row counts only if its axis instant satisfies them, through a fanning axis by association, and a dataset with no route to any axis is not restricted. They SHALL decide which non-time tuples a query omitting `population` has (`A spine query's population is the spine times P`), and SHALL remain frame bounds: trailing windows and `time_shift` read rows before the lower bound.
 
 #### Scenario: No lower bound
 
@@ -175,7 +207,7 @@ A spine query SHALL bound `time_spine.timestamp` from below with a frame bound (
 
 ### Requirement: Filters on a spine query follow the existing dispositions
 
-A field-typed filter that does not reference the spine column SHALL restrict P's rows (and so P's value combinations) and SHALL reach each measure's home by the existing filter rules (to-one inline, association otherwise, per `to_many_handling`); it SHALL NEVER remove a spine bucket. A filter on the spine column that is not a frame bound SHALL fail with a typed error naming the filter and suggesting the fact's own time column.
+A field-typed filter that does not reference the spine column SHALL restrict each measure's home, the dimension anchor and a named P by the existing filter rules (to-one inline, association otherwise, per `to_many_handling`), and so the tuples they supply, never changing a surviving cell's values beyond that restriction; it SHALL NEVER remove a spine bucket. A filter on the spine column that is not a frame bound SHALL fail with a typed error naming the filter and suggesting the fact's own time column.
 
 #### Scenario: A fact filter keeps every month
 
@@ -185,7 +217,7 @@ A field-typed filter that does not reference the spine column SHALL restrict P's
 #### Scenario: A filter on P keeps every month
 
 - **WHEN** the per-group query adds the filter `customers.region = 'N'`
-- **THEN** only region N rows are returned, one per month Jan–Mar, with the N values of the per-group scenario
+- **THEN** each contributing measure's rows are restricted to region N's customers: only region N rows are returned, one per month Jan–Mar, with the N values of the per-group scenario
 
 #### Scenario: Non-bound spine filter
 
@@ -213,7 +245,7 @@ An aggregation whose home is `time_spine` (any aggregation over `time_spine.time
 
 ### Requirement: Transforms and windows see the dense series
 
-Over a spine population every bucket in range SHALL be a row of each partition, so time-ordered transforms and trailing windows evaluate at empty buckets like any other.
+Over the spine, a transform's domain SHALL hold every bucket in range for each of its operand's non-time tuples that has a cell in a visible bucket (`queries/transforms` › Transforms evaluate over their operand's domain), and a trailing window SHALL evaluate at every bucket in range, so time-ordered transforms and trailing windows evaluate at empty buckets like any other; a tuple only a sibling measure supplies SHALL NOT change a transform's values.
 
 #### Scenario: Transforms over a filled series
 
@@ -224,6 +256,10 @@ Over a spine population every bucket in range SHALL be a row of each partition, 
 
 - **WHEN** the query selects `coalesce(sum(orders.amount), 0)` and `cumsum(coalesce(sum(orders.amount), 0))`
 - **THEN** the empty months read 0 and the running total is 150, 220, 220, 220, 220, 220
+
+#### Scenario: Per-group running totals ignore a sibling's tuples
+- **WHEN** the per-group query over Feb–Mar selects `cumsum(sum(orders.amount))`, once alone and once with `sum(returns.amount)` added
+- **THEN** N reads 70, 70 in both runs, and the S rows the returns add read NULL
 
 ### Requirement: Re-bucketing through the spine is typed
 
