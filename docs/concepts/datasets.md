@@ -446,7 +446,7 @@ filters:
   - "status <> 'test'"
 ```
 
-They apply wherever the dataset's rows are read — as a query's source, a relationship target, a cross-dataset aggregate or inside another dataset's filter — before any join, so a LEFT join with no passing match reads as NULL and an INNER join drops the row.
+They apply wherever the dataset's rows are read — as a query's source, a relationship target, a cross-dataset aggregate or inside another dataset's filter — before any join, so a LEFT join with no passing match reads as NULL and an INNER join drops the row. As a query's population they decide only its rows: a metric of another dataset is narrowed only where that dataset reads the filtered one along its own paths.
 
 These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`; a bare name reads a source column and a path reads a field (`orders.status`, `customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `DatasetMetric.expression`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
 
