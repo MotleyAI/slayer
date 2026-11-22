@@ -5,7 +5,7 @@
 - [x] 1.3 Renderer regression: under default `AliasFacilities`, an unslotted bucket still raises `RenderContextMissingFacilityError`; with leaf-only slotted kinds it renders over the slotted leaves. Verify: the second half fails today.
 - [x] 1.4 SQLite registry test: every function a fresh SLayer SQLite connection registers is in the dialect's registry of SLayer-registered functions (compare against the names actually registered on the connection). Verify: fails today (no registry).
 - [x] 1.5 Binding test: `bind_dataset_expression` with `granularities=` binds `date_trunc('fiscal_year', ordered_on)`; without it the call still raises `UnknownGranularityError`. Verify: fails today (no keyword).
-- [ ] 1.6 Grammar test for the `queries/date-functions` scenario "Bare part word", plus a bare non-part word (`status`) still refused. Verify: fails today.
+- [x] 1.6 Grammar test for the `queries/date-functions` scenario "Bare part word", plus a bare non-part word (`status`) still refused. Verify: fails today.
 
 ## 2. Renderer and dialects
 

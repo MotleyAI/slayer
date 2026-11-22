@@ -97,17 +97,21 @@ async def test_day_or_coarser_bucket_of_a_date(tmp_path: Path) -> None:
     assert same_sql(text, "MAX(CAST(DATE_TRUNC('MONTH', CAST(ordered_on AS TIMESTAMP)) AS DATE))"), text
 
 
+@_EXTENSIONS
+@pytest.mark.parametrize("dialect", _DIALECTS)
 @pytest.mark.parametrize("unit", [*_SUB_DAY, *_DAY_OR_COARSER])
 @pytest.mark.parametrize("column", ["ordered_at", "ordered_on"])
-async def test_every_built_in_unit(tmp_path: Path, unit: str, column: str) -> None:
-    env = await make_env(tmp_path)
-    document = await _export_orders(env, slayer_metric("m", f"max(date_trunc('{unit}', {column}))"))
+async def test_every_built_in_unit(tmp_path: Path, unit: str, column: str, dialect: str, extensions: bool) -> None:
+    env = await make_env(tmp_path, dialect=dialect)
+    document = await _export_orders(env, slayer_metric("m", f"max(date_trunc('{unit}', {column}))"),
+                                    extensions=extensions)
     text = _sql(metric(dataset(document, "orders"), "m"))
     bucket = f"DATE_TRUNC('{unit.upper()}', CAST({column} AS TIMESTAMP))"
     if column == "ordered_on" and unit in _DAY_OR_COARSER:
         bucket = f"CAST({bucket} AS DATE)"
     assert same_sql(text, f"MAX({bucket})"), text
     _no_interval(text)
+    await _assert_round_trip(env, document, "m")
 
 
 @_EXTENSIONS
@@ -132,8 +136,9 @@ async def test_bucket_under_filter_and_inside_a_scalar_call(tmp_path: Path, dial
 _PER_CUSTOMER = "count_distinct(date_trunc('month', ordered_at)) / count_distinct(customers.id)"
 
 
-async def test_bucket_in_a_model_scoped_metric(tmp_path: Path) -> None:
-    env = await make_env(tmp_path)
+@pytest.mark.parametrize("dialect", _DIALECTS)
+async def test_bucket_in_a_model_scoped_metric(tmp_path: Path, dialect: str) -> None:
+    env = await make_env(tmp_path, dialect=dialect)
     document = await _export_orders(env, slayer_metric("months_per_customer", _PER_CUSTOMER))
     text = _sql(metric(document, "months_per_customer"))
     assert same_sql(text, "COUNT(DISTINCT DATE_TRUNC('MONTH', CAST(orders.ordered_at AS TIMESTAMP))) "
@@ -141,8 +146,9 @@ async def test_bucket_in_a_model_scoped_metric(tmp_path: Path) -> None:
     await _assert_round_trip(env, document, "months_per_customer")
 
 
-async def test_bucket_in_a_model_scoped_metric_without_extensions(tmp_path: Path) -> None:
-    env = await make_env(tmp_path)
+@pytest.mark.parametrize("dialect", _DIALECTS)
+async def test_bucket_in_a_model_scoped_metric_without_extensions(tmp_path: Path, dialect: str) -> None:
+    env = await make_env(tmp_path, dialect=dialect)
     document = await _export_orders(env, slayer_metric("months_per_customer", _PER_CUSTOMER), extensions=False)
     imported, _ = await reimport(env, document)
     # Re-imported, it is the document's model-scoped metric, answering by bare name.
