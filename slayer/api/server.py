@@ -460,12 +460,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             400: {"description": "Invalid query payload (e.g. missing population/name, mutually exclusive fields, validation error)."},
             422: {
                 "description": (
-                    "A query object carries a key it does not read (the detail names it), or schema "
-                    "drift was detected on datasets the query read — it "
-                    "could not run against the live schema. Body shape: "
-                    "``{\"error\": \"schema_drift\", \"datasets\": [...], "
-                    "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
-                    "Run validate_datasets for the same datasource to inspect."
+                    "A query object carries a key it does not read: ``{\"detail\": str}`` or, when "
+                    "caught while parsing the body, ``{\"detail\": [validation error]}``; either names "
+                    "the key. Or schema drift was detected on datasets the query read: "
+                    "``{\"detail\": {\"error\": \"schema_drift\", \"datasets\": [...], "
+                    "\"to_delete\": [ToDeleteEntry], \"original\": str|null}}``; "
+                    "run validate_datasets for the same datasource to inspect."
                 ),
             },
         },
@@ -518,7 +518,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 # A rootless query (no name, no population) is valid —
                 # the engine infers the population. The query must still project
                 # something, which SlayerQuery validation enforces downstream.
-                payload = request.model_dump(exclude_none=True)
+                # Extras keep their nulls so SlayerQuery refuses a ``"typo": null`` key.
+                payload = {**request.model_dump(exclude_none=True), **(request.model_extra or {})}
                 # ``variables`` is consumed at execute() level, not part of
                 # SlayerQuery's filter-substitution variables (those merge
                 # automatically via the kwarg path).

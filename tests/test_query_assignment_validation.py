@@ -86,6 +86,30 @@ class TestValidAssignments:
         assert isinstance(td.granularity, TimeGranularity)
         assert td.granularity is TimeGranularity.WEEK
 
+    def test_an_expression_assigned_to_an_order_field_is_captured_like_construction(self) -> None:
+        item = OrderItem.model_validate({"field": "orders.status"})
+        item.field = "count(orders.*)"
+        assert item.raw_expression == OrderItem.model_validate({"field": "count(orders.*)"}).raw_expression
+        assert item.ref is None
+
+    def test_a_reference_assigned_after_an_expression_drops_the_stale_capture(self) -> None:
+        item = OrderItem.model_validate({"field": "count(orders.*)"})
+        item.field = "orders.status"
+        assert item.raw_expression is None
+        assert item.ref is not None
+        assert item.ref.full_name == "orders.status"
+
+    def test_a_failed_order_field_assignment_keeps_the_old_capture(self) -> None:
+        item = OrderItem.model_validate({"field": "count(orders.*)"})
+        before = snapshot(item)
+        with pytest.raises(ValidationError):
+            item.field = 5  # pyright: ignore[reportAttributeAccessIssue]  # deliberate mistyped value
+        assert snapshot(item) == before
+
+    def test_an_explicit_raw_expression_at_construction_is_kept(self) -> None:
+        item = OrderItem.model_validate({"field": "total", "raw_expression": "sum(orders.amount)"})
+        assert item.raw_expression == "sum(orders.amount)"
+
     async def test_a_new_granularity_and_one_sided_range_apply_and_run(self, tmp_path: Path) -> None:
         td = ranged_td()
         td.granularity = "week"

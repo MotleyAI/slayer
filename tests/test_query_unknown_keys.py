@@ -135,11 +135,14 @@ class TestCamelCaseKeys:
 
     def test_a_built_entry_inside_camel_case_input_is_kept(self) -> None:
         built = TimeDimension.model_validate({**TD, "date_range": RANGE})
-        before = (built.model_dump(mode="json"), set(built.model_fields_set))
+        def state(td: TimeDimension) -> tuple[dict[str, Any], set[str]]:
+            return td.model_dump(mode="json"), set(td.model_fields_set)
+
+        before = state(built)
         query = SlayerQuery.model_validate({**BASE, "timeDimensions": [built]})
         [kept] = query.time_dimensions or []
-        assert (kept.model_dump(mode="json"), set(kept.model_fields_set)) == before
-        assert (built.model_dump(mode="json"), set(built.model_fields_set)) == before
+        assert state(kept) == before
+        assert state(built) == before
 
     async def test_a_camel_case_pre_2_0_key_converts_on_with_its_one_deprecation(self, tmp_path: Path) -> None:
         storage = await shop_with_saved(tmp_path)
@@ -216,6 +219,12 @@ class TestUnknownKeys:
             TimeDimension.model_validate(payload)
         assert refusal(info.value)[0].key == 1
 
+    def test_a_none_key_is_refused_with_the_typed_error(self) -> None:
+        payload: dict[Any, Any] = {**TD, None: "x"}
+        with pytest.raises((ValidationError, UnknownKeyError)) as info:
+            TimeDimension.model_validate(payload)
+        assert refusal(info.value)[0].key is None
+
     def test_an_unrelated_camel_case_key_stays_unknown(self) -> None:
         with pytest.raises((ValidationError, UnknownKeyError)) as info:
             TimeDimension.model_validate({**TD, "sortOrder": "asc"})
@@ -235,6 +244,12 @@ class TestUnknownKeySurfaces:
         resp = TestClient(create_app(storage=storage)).post("/query", json=self._rest_body(location))
         assert resp.status_code == 422, resp.text
         assert_names_key_and_location(resp.text, expected_loc, model)
+
+    async def test_rest_refuses_a_null_valued_root_key(self, tmp_path: Path) -> None:
+        storage = await shop_with_saved(tmp_path)
+        resp = TestClient(create_app(storage=storage)).post("/query", json={**BASE, STRAY: None})
+        assert resp.status_code == 422, resp.text
+        assert_names_key_and_location(resp.text, (), SlayerQuery)
 
     @pytest.mark.parametrize("location", sorted(ALL_LOCATIONS))
     async def test_mcp_refuses_naming_the_key(self, location: str, tmp_path: Path) -> None:

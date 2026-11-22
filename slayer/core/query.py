@@ -751,11 +751,14 @@ class QueryInput(BaseModel):
     def _refuse_unknown_keys(cls, data: Any) -> Any:
         """Runs after every subclass conversion, on what remains."""
         if isinstance(data, dict):
-            unknown = next((k for k in data if k not in cls.model_fields), None)
-            if unknown is not None:
-                keys = cls._HINTS.get(unknown) or f"{cls._WHAT} takes {_advertised_keys(cls)}"
-                raise UnknownKeyError(key=unknown, path=unknown, keys=keys)
+            unknown = [k for k in data if k not in cls.model_fields]
+            if unknown:
+                keys = cls._HINTS.get(unknown[0]) or f"{cls._WHAT} takes {_advertised_keys(cls)}"
+                raise UnknownKeyError(key=unknown[0], path=unknown[0], keys=keys)
         return data
+
+    def _before_assign(self, name: str) -> None:
+        """Clear state derived from field ``name`` so the assignment's validation derives it afresh."""
 
     def __setattr__(self, name: str, value: Any) -> None:
         if name not in type(self).model_fields:
@@ -763,6 +766,7 @@ class QueryInput(BaseModel):
             return
         state = (dict(self.__dict__), set(self.__pydantic_fields_set__), dict(self.__pydantic_private__ or {}))
         try:
+            self._before_assign(name)
             super().__setattr__(name, value)
         except Exception:
             object.__setattr__(self, "__dict__", state[0])
@@ -1086,11 +1090,15 @@ class OrderItem(QueryInput):
     @classmethod
     def _capture_raw_expression(cls, data: Any) -> Any:
         """An expression ``field`` is also the item's ``raw_expression``."""
-        if isinstance(data, dict) and isinstance(field := data.get("field"), str) and "raw_expression" not in data:
+        if isinstance(data, dict) and isinstance(field := data.get("field"), str) and data.get("raw_expression") is None:
             candidate = _order_expression_candidate(field)
             if candidate is not None:
                 data = {**data, "raw_expression": candidate}
         return data
+
+    def _before_assign(self, name: str) -> None:
+        if name == "field":
+            object.__setattr__(self, "raw_expression", None)
 
     @model_validator(mode="after")
     def _check_reference(self) -> "OrderItem":
