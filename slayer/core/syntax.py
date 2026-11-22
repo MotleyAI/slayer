@@ -2423,7 +2423,7 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
 
 def _bare_part(arg: Any, *, words: Tuple[str, ...]) -> bool:
     """Whether ``arg`` is an unquoted word naming a date part (or its alias), as ``EXTRACT`` takes it."""
-    if not isinstance(arg, Ref) or arg.quoted:
+    if not isinstance(arg, Ref) or arg.quoted or arg.evaluated:
         return False
     word = arg.name.lower()
     return word in words or word in DATE_PART_ALIASES or word in AMBIGUOUS_WEEKDAY_NAMES

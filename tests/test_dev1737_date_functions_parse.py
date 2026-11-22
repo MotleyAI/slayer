@@ -143,6 +143,10 @@ class TestBarePartWord:
         with pytest.raises(ValueError, match="day_of_week"):
             _bind(expr)
 
+    def test_evaluated_ref_is_not_a_bare_part(self) -> None:
+        with pytest.raises(ValueError, match="string literal"):
+            _bind("date_part(AGG(month), created_at) = 1")
+
 
 class TestClockCalls:
     @pytest.mark.parametrize("text,name", [

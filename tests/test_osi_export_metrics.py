@@ -150,6 +150,14 @@ async def test_approximate_distinct_count_is_dialect_only(env) -> None:
     assert "approx_count_distinct" in entry["expression"].lower()
 
 
+async def test_dialect_only_metric_over_another_model_lands_on_that_model(env) -> None:
+    model = orders(metrics=[slayer_metric("approx_segments", "count_distinct_approx(customers.segment)")])
+    result = await export_datasets(env, customers(), model)
+    entries = [d for m in dataset(result.document, "customers").get("metrics") or []
+               for d in m["expression"].get("dialects") or []]
+    assert any("approx_count_distinct" in d["expression"].lower() for d in entries)
+
+
 async def test_custom_aggregation_inlined(env) -> None:
     model = orders(metrics=[slayer_metric("trimmed", "trimmed_sum(amount)")])
     model.aggregations = [Aggregation(name="trimmed_sum", expression="SUM(CASE WHEN {value} < 15 THEN {value} END)")]

@@ -729,17 +729,18 @@ class _Exporter:
         except Exception as exc:  # noqa: BLE001 — anything the shared renderer refuses stays SLayer-only
             raise _Refused(f"does not render as standard SQL ({exc})", _RESTORE) from exc
         if not portable:
-            self._check_dialect_entry(ds, tree)
+            self._check_dialect_entry(self.graph[readers[0]] if scoped else ds.graph, tree)
         return _Metric(home=ds.dataset.name, metric=metric, scope="dataset" if scoped else "model",
                        dataset=readers[0], tree=tree, portable=portable)
 
-    def _check_dialect_entry(self, ds: _Dataset, tree: exp.Expr) -> None:
-        """Refuse a dialect entry SLayer cannot read back, or that calls SLayer's own registered functions."""
+    def _check_dialect_entry(self, receiver: SlayerDataset, tree: exp.Expr) -> None:
+        """Refuse a dialect entry SLayer cannot read back on ``receiver``, or that calls SLayer's own registered
+        functions."""
         registered = sorted(_calls(tree) & self.dialect.slayer_registered_functions)
         if registered:
             raise _Refused(f"renders on {self.token} only through SLayer's own functions {registered}", _RESTORE)
         try:
-            bind_dataset_expression(tree.sql(dialect=self.target), dataset=ds.graph, datasets=list(self.graph.values()),
+            bind_dataset_expression(tree.sql(dialect=self.target), dataset=receiver, datasets=list(self.graph.values()),
                                     dialect=self.target, granularities=self.granularities)
         except Exception as exc:  # noqa: BLE001 — any failure means load could not read the entry
             raise _Refused(f"renders on {self.token} only as SQL SLayer cannot read back "
