@@ -234,12 +234,11 @@ class TestSafeKeysExecute:
         ))
         assert resp.data == [{"l": LAST_AMOUNT, "f": FIRST_AMOUNT}]
 
-    async def test_filter_only_temporal_column_without_default(self, tmp_path) -> None:
+    async def test_filter_only_temporal_column_is_no_ranking_key(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path))
-        resp = await engine.execute(orders_q(
-            filter=["orders.created_at > '2023-01-01'"], metrics=[metric("last(orders.amount)")],
-        ))
-        assert resp.data == [{"l": LAST_AMOUNT}]
+        query = orders_q(filter=["orders.created_at > '2023-01-01'"], metrics=[metric("last(orders.amount)")])
+        with pytest.raises(ValueError, match=r"ranking time field"):
+            await engine.execute(query)
 
     async def test_derived_default_over_proven_hop(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="cust_signup")
