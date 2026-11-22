@@ -102,7 +102,7 @@ def seed_sqlite(datasets: list[SlayerDataset], db_path: str, *, seed: int = 2024
             cols = _physical_columns(m)
             if not cols:
                 continue
-            coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.datatype, "TEXT")}' for c in cols)
+            coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.datatype, "TEXT") if c.datatype else "TEXT"}' for c in cols)
             con.execute(f'CREATE TABLE "{m.sql_table}" ({coldefs})')
             colnames = {c.name for c in cols}
             # FK columns: source-side join cols sample from the target's target-col values.

@@ -336,7 +336,7 @@ def _orders(**kw) -> SlayerDataset:
         ],
     )
     base.update(kw)
-    return SlayerDataset(**base)
+    return SlayerDataset.model_validate(base)
 
 
 def _customers(**kw) -> SlayerDataset:
@@ -352,7 +352,7 @@ def _customers(**kw) -> SlayerDataset:
         ],
     )
     base.update(kw)
-    return SlayerDataset(**base)
+    return SlayerDataset.model_validate(base)
 
 
 def _regions() -> SlayerDataset:

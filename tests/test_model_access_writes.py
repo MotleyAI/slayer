@@ -136,16 +136,6 @@ def _new_dataset_named_hr(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
                        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
 
 
-def _edge_named_like_hidden_dataset(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
-    return fin.model_copy(update={"relationships": [DatasetRelationship(to="pub", name="hr", from_columns=["staff_id"], to_columns=["id"])]})
-
-
-def _new_dataset_with_edge_named_like_hidden_dataset(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
-    return SlayerDataset(name="pub_edge", sql_table="pub_items", data_source=DS,
-                       fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
-                       relationships=[DatasetRelationship(to="pub", name="hr", from_columns=["id"], to_columns=["id"])])
-
-
 def _edge_named_like_pruned_edge(_: SlayerDataset, pub_link: SlayerDataset) -> SlayerDataset:
     return pub_link.model_copy(update={"relationships": [DatasetRelationship(to="fin", name=PRUNED_EDGE, from_columns=["id"], to_columns=["id"])]})
 
@@ -161,11 +151,9 @@ def _key_field(fin: SlayerDataset, **update) -> SlayerDataset:
 
 CONFLICTS: dict[str, tuple[Callable[[SlayerDataset, SlayerDataset], SlayerDataset], str | None, str]] = {
     "hidden-model-name": (_new_dataset_named_hr, "hr", "hr"),
-    "edge-named-like-hidden-model": (_edge_named_like_hidden_dataset, "hr", "fin"),
-    "new-model-edge-named-like-hidden-model": (_new_dataset_with_edge_named_like_hidden_dataset, "hr", "pub_edge"),
     "edge-named-like-pruned-edge": (_edge_named_like_pruned_edge, None, "pub_link"),
     "removed-key-column": (_without_key_field, None, "fin"),
-    "expression-key-column": (lambda fin, _: _key_field(fin, expression="id + 0"), None, "fin"),
+    "field-reading-key-column": (lambda fin, _: _key_field(fin, expression="fin.id"), None, "fin"),
     "filtered-key-column": (lambda fin, _: _key_field(fin, filter="staff_id > 0"), None, "fin"),
 }
 

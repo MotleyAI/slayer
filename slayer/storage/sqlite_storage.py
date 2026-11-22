@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 import sqlite3
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
 from typing import Any
 
 from sqlglot import exp
@@ -21,6 +21,7 @@ from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import (
+    DATASOURCE_NAME,
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
@@ -155,6 +156,14 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS semantic_models (
+                    data_source TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    PRIMARY KEY (data_source, name)
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -225,6 +234,59 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 (data_source, name),
             )
             return cursor.rowcount > 0
+
+    def _save_semantic_model_sync(self, data_source: str, name: str, text: str) -> None:
+        with transaction(self.db_path) as conn:
+            conn.execute("INSERT OR REPLACE INTO semantic_models (data_source, name, text) VALUES (?, ?, ?)",
+                         (data_source, name, text))
+
+    def _get_semantic_model_sync(self, data_source: str, name: str) -> str | None:
+        with transaction(self.db_path) as conn:
+            row = conn.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?",
+                               (data_source, name)).fetchone()
+        return row[0] if row else None
+
+    def _list_semantic_models_sync(self) -> list[tuple[str, str]]:
+        with transaction(self.db_path) as conn:
+            rows = conn.execute("SELECT data_source, name FROM semantic_models ORDER BY data_source, name").fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def _delete_semantic_model_sync(self, data_source: str, name: str) -> bool:
+        with transaction(self.db_path) as conn:
+            return conn.execute("DELETE FROM semantic_models WHERE data_source = ? AND name = ?",
+                                (data_source, name)).rowcount > 0
+
+    def _patch_semantic_model_sync(self, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+        with open_connection(self.db_path, isolation_level=None) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?",
+                                   (data_source, name)).fetchone()
+                if row is None:
+                    raise ValueError(f"semantic model {name!r} of datasource {data_source!r} not found")
+                text = patch(row[0])
+                conn.execute("UPDATE semantic_models SET text = ? WHERE data_source = ? AND name = ?",
+                             (text, data_source, name))
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        return text
+
+    async def _save_semantic_model_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        await asyncio.to_thread(self._save_semantic_model_sync, data_source, name, text)
+
+    async def _get_semantic_model_text_impl(self, *, data_source: str, name: str) -> str | None:
+        return await asyncio.to_thread(self._get_semantic_model_sync, data_source, name)
+
+    async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
+        return await asyncio.to_thread(self._list_semantic_models_sync)
+
+    async def _delete_semantic_model_row(self, *, data_source: str, name: str) -> bool:
+        return await asyncio.to_thread(self._delete_semantic_model_sync, data_source, name)
+
+    async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+        return await asyncio.to_thread(self._patch_semantic_model_sync, data_source, name, patch)
 
     def _save_datasource_sync(self, datasource: DatasourceConfig) -> None:
         data = json.dumps(without_none(datasource.model_dump(mode="json")))
@@ -423,7 +485,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         # SQLite lookup is parameterised so injection isn't the risk —
         # validation here keeps the public ABC contract uniform across
         # backends.
-        _validate_path_component(name, kind="datasource name")
+        _validate_path_component(name, kind=DATASOURCE_NAME)
         raw = await asyncio.to_thread(self._get_datasource_sync, name)
         if raw is None:
             return None

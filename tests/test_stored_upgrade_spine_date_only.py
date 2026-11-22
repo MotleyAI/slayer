@@ -366,7 +366,7 @@ def stored(*extra: dict, stages: frozenset[str] = frozenset()) -> StoredDatasets
     return StoredDatasets(data_source=DS, datasets={d["name"]: d for d in docs}, stages=stages)
 
 
-SPINE_TYPE = spine_dataset(data_source=DS).fields[0].datatype.value
+SPINE_TYPE = str(spine_dataset(data_source=DS).fields[0].datatype)
 
 
 class TestStoredModels:
@@ -387,7 +387,7 @@ class TestStoredModels:
         host = stored().host(TIME_SPINE_DATASET)
         assert host is not None
         expected = spine_dataset(data_source=DS).fields
-        assert [(c["name"], c["type"]) for c in host["columns"]] == [(c.name, c.datatype.value) for c in expected]
+        assert [(c["name"], c["type"]) for c in host["columns"]] == [(c.name, str(c.datatype)) for c in expected]
 
     def test_exact_stored_spelling_wins(self) -> None:
         variant = model_doc("Time_Spine", [{"name": "timestamp", "type": "TEXT"}])

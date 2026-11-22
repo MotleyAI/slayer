@@ -107,8 +107,7 @@ class TestTransformInDimension:
         assert got == {"top": pytest.approx(100.0), "rest": pytest.approx(110.0)}
 
     async def test_context_grain_dimension_vs_measure(self, exec_engine) -> None:
-        # Dimension context ranks the three regions (1/2/3); metric context
-        # ranks the five result rows by their attached totals (1/1/1/4/5).
+        # Both contexts rank the three regions (1/2/3), each row carrying its region's rank.
         as_dim = await exec_engine.execute(q(
             dimensions=["orders.region", "orders.city", {"field": RANK_DIM, "alias": "rr"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
@@ -122,7 +121,7 @@ class TestTransformInDimension:
             metrics=[QueryMetric(metric=RANK_DIM, alias="rr")],
         ))
         measure_ranks = sorted(int(r["rr"]) for r in as_measure.data)
-        assert measure_ranks == [1, 1, 1, 4, 5]
+        assert measure_ranks == [1, 1, 1, 2, 3]
 
 
 class TestFirstLastInDimension:

@@ -6,7 +6,9 @@ from datetime import datetime
 
 import functools
 from enum import Enum, IntEnum
-from typing import AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypedDict, Union, cast,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,7 +28,7 @@ from slayer.core.keys import (
     _FrozenKey,
     walk_value_keys,
 )
-from slayer.core.models import EmptyValue, SlayerDataset
+from slayer.core.models import DatasetField, EmptyValue, SlayerDataset
 from slayer.core.scope import StageSchema, StaleSpelling
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
@@ -49,6 +51,7 @@ __all__ = [
     "PlainProducerKernel",
     "PlannedQuery",
     "PlannedRowBranch",
+    "PlannedDomain",
     "PlannedRowSupply",
     "ProducerKernel",
     "RankedGrainMember",
@@ -258,6 +261,14 @@ class EmptyBaseGrainPlan(BaseModel):
     host_gated: bool = False
 
 
+class KeyArgs(TypedDict):
+    """``SemiJoinHop``'s key fields, as ``SemiJoinHop.key_args`` builds them."""
+
+    join_pairs: Tuple[Tuple[str, str], ...]
+    quoted: Tuple[Tuple[bool, bool], ...]
+    computed: Tuple[Tuple[Optional[str], Optional[str]], ...]
+
+
 class SemiJoinHop(BaseModel):
     """One node of a semi-join correlation tree, joined from its parent node (the
     producer root for a first hop) on oriented PHYSICAL ``join_pairs`` (parent_col, hop_col).
@@ -269,6 +280,8 @@ class SemiJoinHop(BaseModel):
     join_pairs: Tuple[Tuple[str, str], ...]
     #: Per pair, whether each key's stored SQL quotes its physical name (``DatasetField.physical_quoted``).
     quoted: Tuple[Tuple[bool, bool], ...] = ()
+    #: Per pair, each computed key's expression over its own source (``None``: a physical key).
+    computed: Tuple[Tuple[Optional[str], Optional[str]], ...] = ()
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
     #: analysis's input (a declared-INNER hop is never null-extended).
@@ -282,6 +295,19 @@ class SemiJoinHop(BaseModel):
     @property
     def node_id(self) -> str:
         return "/".join(self.node_path)
+
+    @staticmethod
+    def key_args(keys: Sequence[Tuple[DatasetField, DatasetField]]) -> KeyArgs:
+        """``join_pairs``, ``quoted`` and ``computed`` of oriented key field pairs."""
+        return {
+            "join_pairs": tuple((s.key_name, t.key_name) for s, t in keys),
+            "quoted": tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
+            "computed": tuple((_computed_text(s), _computed_text(t)) for s, t in keys),
+        }
+
+
+def _computed_text(field: DatasetField) -> Optional[str]:
+    return None if field.is_base else field.definition_sql or field.name
 
 
 class SemiJoinFilter(BaseModel):
@@ -462,6 +488,8 @@ class RegroupAttachPlan(BaseModel):
     degenerate_metric: Optional[str] = None
     degenerate_operand_grain: List[str] = Field(default_factory=list)
     degenerate_outer_grain: List[str] = Field(default_factory=list)
+    #: Producer grain slots the attach does not join on: a collapsing pick is constant along them (Axiom 11.3b).
+    collapsed: List[SlotId] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _shift_fields_only_on_shifted(self) -> "RegroupAttachPlan":
@@ -528,6 +556,8 @@ class PlannedQuery(BaseModel):
     mode_policy: ModePolicy = ModePolicy()
     # An inferred stage's rows when several sources supply them: the union of the branches' cells.
     row_supply: Optional["PlannedRowSupply"] = None
+    # A transform producer's rows when an attached constituent supplies cells (semantics Axiom 11.6).
+    domain: Optional["PlannedDomain"] = None
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
@@ -755,6 +785,17 @@ class PlannedRowSupply(BaseModel):
     """The rows of an inferred stage: the null-safe union of its branches' cells (semantics 12.4)."""
 
     branches: List[PlannedRowBranch]
+
+
+class PlannedDomain(BaseModel):
+    """A transform producer's rows: the null-safe union of its supplying constituents' cells (Axiom 11.6)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    #: The host's own grouped rows supply cells.
+    host: bool = False
+    #: Each supplying combined attach, by one of its placeholders.
+    placeholders: List[ValueKey] = Field(default_factory=list)
 
 
 # ``producer_plan`` forward-references ``PlannedQuery``.

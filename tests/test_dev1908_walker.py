@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import RelationshipCardinality
-from slayer.core.errors import AmbiguousRelationshipPathError, CircularRelationshipPathError
+from slayer.core.errors import AmbiguousHopError, AmbiguousRelationshipPathError, CircularRelationshipPathError
 from slayer.core.relationship_walker import walk, walk_cancelling
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 
@@ -102,14 +102,11 @@ class TestEdgeNames:
         assert walk_cancelling(root=M["orders"], owner_path=OWNER_PATH,
                                tokens=("loop",), datasets_by_name=M) is None
 
-    def test_precedence_edge_name_wins_over_the_path_model(self):
-        # `customers` is BOTH an edge name (regions → plans) and a visited dataset.
-        # The edge name wins: it hops to plans, it does not cancel to ("billing_customer",).
+    def test_an_edge_name_that_is_another_edges_target_is_ambiguous(self):
+        # `customers` names regions' edge into plans and is the target of regions' edge into customers.
         M = _edge_name_collision()
-        result = walk_cancelling(root=M["orders"], owner_path=OWNER_PATH,
-                                 tokens=("customers",), datasets_by_name=M)
-        assert result == ("billing_customer", "regions", "customers")
-        assert result != ("billing_customer",)
+        with pytest.raises(AmbiguousHopError):
+            walk_cancelling(root=M["orders"], owner_path=OWNER_PATH, tokens=("customers",), datasets_by_name=M)
 
 
 class TestMissAndAmbiguity:

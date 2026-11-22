@@ -435,6 +435,8 @@ class TestEmission:
         assert window.null_flag, sql
         assert window.null_guarded, sql
         assert window.partition_sql == []
+        # ntile breaks ties by the cell, so a tile never depends on the plan.
+        assert len(window.tie_sql) == (1 if fn == "NTILE" else 0), sql
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_partition_keys_precede_the_null_flag(self, dialect):

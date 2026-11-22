@@ -43,7 +43,7 @@ ColumnTypes = Mapping[str, DataType]
 def _column_type(dataset: SlayerDataset, *, column: str, live: ColumnTypes) -> DataType:
     """A source column's type: its physical reader's declared type, else its live type, else ``Opaque``."""
     reader = next((c for c in dataset.fields if c.is_physical_reader and c.physical_name == column), None)
-    if reader is not None:
+    if reader is not None and reader.datatype is not None:
         return reader.datatype
     found = live.get(column)
     if found is None:
@@ -53,8 +53,12 @@ def _column_type(dataset: SlayerDataset, *, column: str, live: ColumnTypes) -> D
 
 def _reader(dataset: SlayerDataset, *, name: str, column: str, quoted: bool, live: ColumnTypes) -> DatasetField:
     spelled = f'"{column}"' if quoted else column
+    datatype = _column_type(dataset, column=column, live=live)
+    declared = next((c for c in dataset.fields if c.is_physical_reader and c.physical_name == column), None)
+    element = (declared.element_type if declared is not None else None) or DataType.OPAQUE
     return DatasetField.model_construct(
-        name=name, expression=spelled, hidden=True, datatype=_column_type(dataset, column=column, live=live),
+        name=name, expression=spelled, hidden=True, datatype=datatype,
+        element_type=element if datatype is DataType.ARRAY else None,
     ).with_native(spelled)
 
 
@@ -142,7 +146,7 @@ class _Translation:
         if len(node.parts) == 2 and _is_source_qualifier(node.parts[0], dataset=self.dataset):
             return self.reader_ref(node.parts[1], quoted=node.quoted_at(1))
         if len(node.parts) == 2 and node.parts[0] == self.dataset.name:
-            return Ref(name=node.parts[1], quoted=node.quoted_at(1))
+            return Ref(name=node.parts[1], quoted=node.quoted_at(1), evaluated=node.evaluated)
         return None
 
     def column(self, ref: FieldKey | FieldSqlKey) -> SqlExpression:
@@ -183,7 +187,7 @@ def _resolved_field(
     field: DatasetField, *, dataset: SlayerDataset, datasets: Sequence[SlayerDataset], ds_type: str | None,
     live: ColumnTypes,
 ) -> DatasetField:
-    if field.resolved:
+    if field.resolved or field.load_warning is not None:
         return field
     if field.expression is None:
         return field.with_native(None)

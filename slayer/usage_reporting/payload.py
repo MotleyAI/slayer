@@ -18,7 +18,8 @@ UsageKey = Literal[
     # CLI leaf commands
     "cli:serve", "cli:flight-serve", "cli:pg-serve", "cli:mcp", "cli:query", "cli:ingest",
     "cli:validate-datasets", "cli:recommend-population",
-    "cli:import-dbt", "cli:import-cube", "cli:import-osi", "cli:export-osi",
+    "cli:import-dbt", "cli:import-cube", "cli:import-osi", "cli:export-osi", "cli:ossie-roundtrip",
+    "cli:semantic-models.list", "cli:semantic-models.show", "cli:semantic-models.delete",
     "cli:datasets.list", "cli:datasets.show", "cli:datasets.create", "cli:datasets.delete",
     "cli:datasources.list", "cli:datasources.show", "cli:datasources.create",
     "cli:datasources.delete", "cli:datasources.test",
@@ -32,12 +33,13 @@ UsageKey = Literal[
     "mcp:get_datasource_priority", "mcp:ingest_datasource", "mcp:inspect",
     "mcp:list_datasources", "mcp:datasets_summary", "mcp:query",
     "mcp:recommend_population", "mcp:save_memory", "mcp:search", "mcp:set_datasource_priority",
-    "mcp:validate_datasets", "mcp:other",
+    "mcp:validate_datasets", "mcp:create_semantic_model", "mcp:edit_semantic_model", "mcp:delete_semantic_model",
+    "mcp:other",
     # REST route templates
     "rest:/datasources", "rest:/datasources/priority", "rest:/datasources/{name}", "rest:/health",
     "rest:/ingest", "rest:/inspect", "rest:/memories", "rest:/memories/{memory_id}", "rest:/datasets",
     "rest:/datasets/{name}", "rest:/query", "rest:/recommend-population", "rest:/search",
-    "rest:/validate-datasets", "rest:other",
+    "rest:/validate-datasets", "rest:/semantic-models", "rest:/semantic-models/{data_source}/{name}", "rest:other",
     # wire protocols
     "flight:query", "flight:probe", "pg:query", "pg:probe",
 ]

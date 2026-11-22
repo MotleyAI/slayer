@@ -29,7 +29,7 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import DataType, RelationshipCardinality, JoinType
+from slayer.core.enums import AXIS_COLLAPSING_TRANSFORMS, DataType, RelationshipCardinality, JoinType
 from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.core.keys import SLOT_COMPOSITE_KINDS, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.time_spine import is_spine
@@ -107,7 +107,7 @@ from slayer.engine.elaborate_env import (
 )
 from slayer.engine.elaborate import elaborate_synthesized
 from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMetric, OrderSpec, bound_filter_from_key, row_restriction_from_key
-from slayer.engine.compile.discovery import RootDisposition, discover_roots, row_attach_inputs
+from slayer.engine.compile.discovery import RootDisposition, TransformRouting, discover_roots, row_attach_inputs
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate, AggregateHomes
 from slayer.engine.population.anchors import anchor_route, find_anchor
@@ -123,6 +123,7 @@ from slayer.ir.planned import (
     MaskTyping,
     OrderEntry,
     PickedParam,
+    PlannedDomain,
     PlannedQuery,
     RankedProducerKernel,
     RegroupAttachPlan,
@@ -1280,6 +1281,7 @@ def _plan_shifted_attaches(
             carried_attaches=carried_attaches,
             reserved_placeholders=frozenset(to_original),
             kernel_answer=_kernel_answer(decision),
+            domain_of=key,
         )
         answer_ids = list(producer_plan.projection)[len(ordered_pks):]
         answer_slot = _regroup_answer_slot_id(
@@ -1471,8 +1473,7 @@ def _register_hop(
 ) -> None:
     nodes.setdefault(node_path, SemiJoinHop(
         to=target_dataset,
-        join_pairs=tuple((s.physical_name, t.physical_name) for s, t in keys),
-        quoted=tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
+        **SemiJoinHop.key_args(keys),
         node_path=node_path,
         declared_left=declared_left,
         lateral=lateral,
@@ -1955,6 +1956,8 @@ class ProducerContext(BaseModel):
     kernel_answer: Optional[AggregateKey] = None
     #: Placeholders it reads from an attach riding alongside it, each to its original key.
     placeholder_originals: Mapping[ValueKey, ValueKey] = Field(default_factory=dict)
+    #: The transform whose domain this producer's rows are (semantics Axiom 11.6).
+    domain_of: Optional[TransformKey] = None
 
 
 def _materialised(
@@ -3577,6 +3580,9 @@ def _local_regroup_groups(
         # A crossing-input root needs its OWN producer, else another aggregate's crossed relationships fan its rows.
         if ident is None and isinstance(agg, AggregateKey) and crossing(agg):
             ident = ("crossing", _partition_free_identity(agg))
+        # A transform's rows are its own domain (Axiom 11.6).
+        if isinstance(agg, TransformKey):
+            ident = ("transform", agg)
         gkey = (grain, ident, agg.filter if restricts_own_rows(agg) else None)
         groups.setdefault(gkey, []).append(agg)
         meta[gkey] = (grain, windowed)
@@ -3599,6 +3605,8 @@ class _LocalRegroupContext(BaseModel):
     mapping: Dict[ValueKey, ValueKey]
     inherited: List[Any]
     n_inherited_date: int
+    #: Each re-aggregation placeholder's original: a transform producer computes its own.
+    reagg_originals: Dict[ValueKey, ValueKey] = Field(default_factory=dict)
 
 
 def _group_row_restriction(
@@ -3652,28 +3660,37 @@ def _assert_local_regroup_safe(
     )
 
 
+def _collapsed_axis(root: ValueKey, *, phase: str, ordered_pks: Sequence[ValueKey]) -> List[ValueKey]:
+    """A measure-position collapsing transform's axis: its pick attaches on the grain without it (Axiom 11.3b)."""
+    if phase != "combined" or not isinstance(root, TransformKey) or root.op not in AXIS_COLLAPSING_TRANSFORMS:
+        return []
+    axis = root.time_key
+    return [axis] if axis is not None and axis in ordered_pks else []
+
+
 def _local_regroup_join_pairs(
     *, producer_plan: PlannedQuery, ordered_pks: Sequence[ValueKey],
-    mapping: Mapping[ValueKey, ValueKey],
+    mapping: Mapping[ValueKey, ValueKey], collapsed: Sequence[ValueKey] = (),
 ) -> List[Tuple[ValueKey, Any]]:
     """Each grain key joined to its producer slot — by structural identity, else by
     projection position; a host-side key embedding another attach's aggregate
-    renders via that attach's placeholder."""
-    grain_ids = list(producer_plan.projection)[:len(ordered_pks)]
-
-    def _slot(i: int, pk: ValueKey):
-        found = next((s.id for s in producer_plan.row_slots if s.key == pk), None)
-        return grain_ids[i] if found is None else found
-
+    renders via that attach's placeholder. A ``collapsed`` key is not joined on."""
     join_pairs = [
-        (substitute_value_keys(pk, mapping), _slot(i, pk))
-        for i, pk in enumerate(ordered_pks)
+        (substitute_value_keys(pk, mapping), _grain_slot(producer_plan, ordered_pks=ordered_pks, pk=pk))
+        for pk in ordered_pks if pk not in collapsed
     ]
     _assert_attach_covers_producer_grain(
-        joined_slot_ids={slot_id for _, slot_id in join_pairs},
+        joined_slot_ids={slot_id for _, slot_id in join_pairs}
+        | {_grain_slot(producer_plan, ordered_pks=ordered_pks, pk=k) for k in collapsed},
         producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan),
     )
     return join_pairs
+
+
+def _grain_slot(producer_plan: PlannedQuery, *, ordered_pks: Sequence[ValueKey], pk: ValueKey) -> SlotId:
+    """``pk``'s producer slot: by structural identity, else by projection position."""
+    found = next((s.id for s in producer_plan.row_slots if s.key == pk), None)
+    return producer_plan.projection[list(ordered_pks).index(pk)] if found is None else found
 
 
 def _local_regroup_kernel(
@@ -3721,6 +3738,30 @@ def _with_population_endpoints(
     })}
 
 
+def _anchor_witness(root: ValueKey, *, ctx: "_LocalRegroupContext") -> Optional[AggregateKey]:
+    """An aggregate-free transform's domain is the dimension anchor's cells (Axiom 11.6): those of ``count(<anchor>.*)``
+    when the anchor is not the host."""
+    supply, host = ctx.bundle.row_supply, ctx.producer_dataset
+    if (
+        not isinstance(root, TransformKey) or any(isinstance(k, AggregateKey) for k in walk_value_keys(root))
+        or supply is None or supply.anchor is None or host is None or supply.anchor == host.name
+    ):
+        return None
+    anchor = ctx.bundle.datasets_by_name.get(supply.anchor)
+    if anchor is None:
+        return None
+    route = anchor_route(reader=host, anchor=anchor, datasets_by_name=ctx.bundle.datasets_by_name)
+    return None if route.unrelated else AggregateKey(source=StarKey(path=route.route), agg="count")
+
+
+def _producer_window_td(
+    prebound: PreboundQuery, *, windowed: bool, root: ValueKey, pks: Grain,
+) -> Optional[TimeTruncKey]:
+    """A windowed producer's active bucket; a transform producer keeps it too when its grain holds it."""
+    td = prebound.main_time_key
+    return td if windowed or (isinstance(root, TransformKey) and td in pks) else None
+
+
 def _synthesize_local_regroup(
     *, ctx: "_LocalRegroupContext", phase: Literal["row", "combined"], pks: Grain,
     windowed: bool, aggs: List[ValueKey], order_fn: Callable[[Grain], List[ValueKey]],
@@ -3731,10 +3772,13 @@ def _synthesize_local_regroup(
     producer_dataset, mapping = ctx.producer_dataset, ctx.mapping
     inherited, n_inherited_date = ctx.inherited, ctx.n_inherited_date
     pks = _prune_functionally_determined_grain(pks)
+    # A transform producer evaluates its operand whole, re-aggregations included.
+    own = {a: substitute_value_keys(a, ctx.reagg_originals) if isinstance(a, TransformKey) else a for a in aggs}
     # A row-restricted group shares one condition: the producer aggregates the unfiltered keys over its rows.
     condition, unfiltered = _group_row_restriction(aggs)
     if condition is not None:
         inherited = [*inherited, row_restriction_from_key(condition)]
+    unfiltered = {**{a: own[a] for a in aggs if own[a] != a}, **unfiltered}
     producer_alias = {unfiltered.get(k, k): v for k, v in alias_map.items()}
     producer_aggs, canonical_of = _canonical_producer_aggs([unfiltered.get(a, a) for a in aggs])
     canonical_of = {a: canonical_of[unfiltered.get(a, a)] for a in aggs}
@@ -3747,9 +3791,10 @@ def _synthesize_local_regroup(
             alias_map={j: producer_alias[a] for j, a in judged.items() if a in producer_alias},
             display=functools.partial(_query_dim_display, prebound),
         )
+    witness = _anchor_witness(aggs[0], ctx=ctx)
     producer_prebound, ordered_pks = _regroup_producer_prebound(
-        pks=pks, aggs=producer_aggs, dataset=producer_dataset, bundle=bundle,
-        inherited=inherited, n_date_range=n_inherited_date,
+        pks=pks, aggs=[*producer_aggs, *([witness] if witness is not None else [])], dataset=producer_dataset,
+        bundle=bundle, inherited=inherited, n_date_range=n_inherited_date,
         partition_order=order_fn, public_alias_by_agg=producer_alias,
         explicit_types={
             unfiltered.get(dm.bound.value_key, dm.bound.value_key): dm.datatype
@@ -3757,10 +3802,11 @@ def _synthesize_local_regroup(
             if phase == "combined" and dm.type_is_explicit and dm.datatype is not None
         },
         grain_name_by_key=grain_names,
-        window_td_key=prebound.main_time_key if windowed else None,
+        window_td_key=_producer_window_td(prebound, windowed=windowed, root=aggs[0], pks=pks),
         mode_policy=prebound.mode_policy,
     )
     decision = _kernel_decision(answer=producer_aggs[0], windowed=windowed)
+    answer = own[aggs[0]]
     producer_plan = compile_synthesized(
         prebound=producer_prebound,
         source_dataset=ctx.producer_source_dataset,
@@ -3770,6 +3816,7 @@ def _synthesize_local_regroup(
         producer_registry=ctx.producer_registry,
         population=ctx.population,
         kernel_answer=_kernel_answer(decision),
+        domain_of=answer if isinstance(answer, TransformKey) else None,
     )
     # A union-grain producer MAY carry nested attaches at any depth; the
     # complete-grain assert is the admission rule.
@@ -3794,8 +3841,9 @@ def _synthesize_local_regroup(
         )
         for agg in aggs
     ]
+    axis = _collapsed_axis(aggs[0], phase=phase, ordered_pks=ordered_pks)
     join_pairs = _local_regroup_join_pairs(
-        producer_plan=producer_plan, ordered_pks=ordered_pks, mapping=mapping,
+        producer_plan=producer_plan, ordered_pks=ordered_pks, mapping=mapping, collapsed=axis,
     )
     attach_kwargs = _local_regroup_kernel(
         decision, producer_plan=producer_plan, bundle=bundle,
@@ -3823,6 +3871,7 @@ def _synthesize_local_regroup(
              if isinstance(a, AggregateKey) and a in alias_map]
             if producer_plan.semi_join_filters else []
         ),
+        collapsed=[_grain_slot(producer_plan, ordered_pks=ordered_pks, pk=k) for k in axis],
         **attach_kwargs,
     )
 
@@ -3837,7 +3886,7 @@ def _rewrite_regrouped_prebound(
     dimension value's own substitution."""
     metric_dims = position_classes(
         prebound.declared_metrics, n_grain=prebound.n_dims + prebound.n_time_dimensions,
-    ).dim_keys_for("metric")
+    ).dim_keys
     dim_values: Dict[ValueKey, ValueKey] = {}
     for d in metric_dims:
         sub = substitute_value_keys(d, mapping)
@@ -3990,6 +4039,7 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
         producer_source_dataset=producer_source_dataset, producer_registry=producer_registry,
         population=population, producer_dataset=producer_dataset, mapping=mapping,
         inherited=inherited, n_inherited_date=n_inherited_date,
+        reagg_originals={ph: orig for orig, ph in reagg_mapping.items()},
     )
     phases: List[Tuple[
         Literal["row", "combined"], List[ValueKey], Callable[[Grain], List[ValueKey]],
@@ -4127,6 +4177,7 @@ def compile_synthesized(
     reserved_placeholders: AbstractSet[ValueKey] = frozenset(),
     kernel_answer: Optional[AggregateKey] = None,
     placeholder_originals: Optional[Mapping[ValueKey, ValueKey]] = None,
+    domain_of: Optional[TransformKey] = None,
 ) -> PlannedQuery:
     """Elaborate a compiler-synthesized producer — its aggregates' homes relative to
     its OWN root (D3) — and compile it. ``carried_attaches`` are outer attaches whose
@@ -4143,6 +4194,7 @@ def compile_synthesized(
         reserved_placeholders=frozenset(reserved_placeholders),
         kernel_answer=kernel_answer,
         placeholder_originals=dict(placeholder_originals or {}),
+        domain_of=domain_of,
     )
     routed = _route_producer(
         env, context=context,
@@ -4182,6 +4234,8 @@ class _Routed(BaseModel):
     homes: AggregateHomes
     #: Placeholders read from an attach outside ``attaches``, each to its original key.
     placeholder_originals: Mapping[ValueKey, ValueKey] = Field(default_factory=dict)
+    #: The transform whose domain this producer's rows are.
+    domain_of: Optional[TransformKey] = None
 
 
 def _shift_candidates(dispositions: Sequence[RootDisposition]) -> FrozenSet[ValueKey]:
@@ -4199,8 +4253,14 @@ def _route_top_level(
         prebound=prebound, filter_typings=filter_typings, scope=scope, bundle=bundle,
     ))
     stripped, homes = _strip_redundant_partitions(env)
+    supply = bundle.row_supply
     dispositions = discover_roots(
         stripped, filter_typings=filter_typings, scope=scope, bundle=bundle, homes=homes,
+        transforms=TransformRouting(
+            route=spine_field(scope.population) is None,
+            rows_are_host_cells=supply is None or not supply.branches,
+            spine=spine_field(scope.population) is not None,
+        ),
     )
     routed_prebound, attaches = _plan_regroups(
         prebound=stripped, filter_typings=filter_typings,
@@ -4229,6 +4289,9 @@ def _route_producer(
     prebound, scope, bundle = env.prebound, env.scope, env.bundle
     dispositions = discover_roots(
         prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle, homes=env.homes,
+        transforms=TransformRouting(answers=frozenset(
+            dm.bound.value_key for dm in prebound.declared_metrics if not dm.is_dimension
+        ), spine=spine_field(scope.population) is not None),
     )
     routed_prebound, attaches = _plan_regroups(
         prebound=prebound, filter_typings=list(env.filter_typings),
@@ -4249,6 +4312,7 @@ def _route_producer(
         kernel_answer=context.kernel_answer,
         homes=_carried_homes(env.homes, before=prebound, after=routed_prebound),
         placeholder_originals=context.placeholder_originals,
+        domain_of=context.domain_of,
     )
 
 
@@ -4340,7 +4404,7 @@ def _producer_nesting_rule(
     }
 
     def nests(root: ValueKey, phase: str) -> bool:
-        if phase == "row":
+        if phase == "row" or (isinstance(root, TransformKey) and root not in answers):
             return True
         grain = constituent_grain(
             c=root, projected_dim_keys=projected_dim_keys,
@@ -4706,6 +4770,12 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         grain=grain,
     )
 
+    if spine_factor is not None:
+        # Over the spine every time_shift reads its shifted producer (its series evaluated over the moved bounds).
+        combined_slots = [
+            s.model_copy(update={"series": False})
+            if isinstance(s.key, TransformKey) and s.key.op == "time_shift" else s for s in combined_slots
+        ]
     _assert_no_inline_kernel_aggregates(
         slots=[*agg_slots, *combined_slots], kernel_answer=routed.kernel_answer,
         attaches=regroup_attach_plans,
@@ -4734,8 +4804,30 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         semi_join_filters=pop_semi_join_groups,
         spine=spine_factor,
         mode_policy=prebound.mode_policy,
+        domain=_plan_domain(
+            attaches=regroup_attach_plans, agg_slots=agg_slots, grain=grain,
+            # A shifted producer looks its operand up for every host cell too (the re-aggregation regime).
+            host=routed.domain_of not in {dm.bound.value_key for dm in typed_prebound.declared_metrics},
+        ) if routed.domain_of is not None else None,
     )
     return planned
+
+
+def _plan_domain(
+    *, attaches: Sequence[RegroupAttachPlan], agg_slots: Sequence[ValueSlot], grain: Optional[List[SlotId]],
+    host: bool = False,
+) -> Optional[PlannedDomain]:
+    """A transform producer's rows when an attached constituent supplies cells: the union of each full-grain
+    constituent's cells, the host's own when it computes an aggregate (Axiom 11.6); ``None`` when its rows are
+    its host's cells."""
+    supplying = [
+        a.substitutions[0].placeholder for a in attaches
+        if a.attach_phase == "combined" and a.substitutions and a.unrelated_dataset is None
+        and not a.broadcast_dimensions and not a.collapsed and len(a.join_pairs) == len(grain or ())
+    ]
+    if not grain or not supplying:
+        return None
+    return PlannedDomain(host=host or bool(agg_slots), placeholders=supplying)
 
 
 
@@ -4757,13 +4849,15 @@ def _assert_no_inline_kernel_aggregates(
 
 
 def _isolated_composites(*, slots: list, isolated: AbstractSet[SlotId], registry) -> set[SlotId]:
-    """Composites built only from isolated aggregates and literals: they too leave ``_base`` empty."""
+    """Composites and transforms built only from isolated aggregates and literals: they too leave ``_base`` empty."""
     def composed(key: ValueKey) -> bool:
         if isinstance(key, LiteralKey) or registry.find_by_key(key) in isolated:
             return True
+        if isinstance(key, TransformKey):
+            return composed(key.input)
         return isinstance(key, SLOT_COMPOSITE_KINDS) and all(composed(c) for c in key.children())
 
-    return {s.id for s in slots if isinstance(s.key, SLOT_COMPOSITE_KINDS) and composed(s.key)}
+    return {s.id for s in slots if isinstance(s.key, (*SLOT_COMPOSITE_KINDS, TransformKey)) and composed(s.key)}
 
 
 def _host_membership(

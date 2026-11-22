@@ -824,6 +824,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     check_dimension_temporal_axis(
         declared_metrics, bound_filters=bound_filters, order_specs=order_specs,
+        query_grain=_query_grain, active_bucket=active_td_key,
     )
 
     # Lower a collapsing transform constituent (first/last, D4c) to an exact
@@ -1431,7 +1432,8 @@ def _relative_to(parsed: ParsedExpr, *, spellings: List[Tuple[DottedRef, Anchore
         rest = (*spelling.parts[len(prefix):], ref.parts[-1])
         if rest == ("*",):
             return StarSource()
-        return Ref(name=rest[0]) if len(rest) == 1 else DottedRef(parts=rest)
+        return Ref(name=rest[0], evaluated=ref.evaluated) if len(rest) == 1 else DottedRef(
+            parts=rest, evaluated=ref.evaluated)
 
     return map_refs(parsed, rebased)
 

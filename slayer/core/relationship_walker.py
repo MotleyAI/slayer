@@ -28,7 +28,7 @@ from typing import Dict, Generator, Iterable, Literal, Optional, Sequence
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType, invert_cardinality
-from slayer.core.errors import AmbiguousRelationshipPathError, CircularRelationshipPathError
+from slayer.core.errors import AmbiguousHopError, AmbiguousRelationshipPathError, CircularRelationshipPathError, SelfRelationshipTraversalError
 from slayer.core.keys import FieldElementFn, FieldKey, FieldSqlKey, FieldTypeFn, ValueKey, source_anchor_path
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset, is_key_set_unique, relationship_key_error
 from slayer.core.names import match_name
@@ -408,6 +408,8 @@ def edges_between(*, source: SlayerDataset, target: SlayerDataset) -> list[Orien
     surface as a length-≥2 list for the caller to reject.
     """
     out: list[OrientedRelationship] = []
+    if source.name == target.name:
+        return out  # a self-relationship takes no part in paths
     spellings = {m.name: m.explicit_spelling for m in (source, target)}
     if source.population_spine and is_spine(target):
         out.append(_product_edge(source))
@@ -470,8 +472,9 @@ def neighbors(
     out = _virtual_spine_edges(dataset=dataset, datasets_by_name=datasets_by_name)
     out.extend(_list_edges(dataset=dataset, datasets_by_name=datasets_by_name))
     for j in spine_relationships(dataset, datasets_by_name=datasets_by_name):
-        out.append(_orient(relationship=j, declaring=dataset.name, from_dataset=dataset.name,
-                           spellings=spellings))
+        if j.to != dataset.name:
+            out.append(_orient(relationship=j, declaring=dataset.name, from_dataset=dataset.name,
+                               spellings=spellings))
     for other in datasets_by_name.values():
         if other.name == dataset.name:
             continue
@@ -500,10 +503,12 @@ def resolve_hop(
     A token matches an incident edge's ``name`` first, then a query stage's
     spelling, else the opposite-endpoint dataset name. Returns ``None`` when nothing matches (the caller raises its own
     reference error) and raises :class:`AmbiguousRelationshipPathError` when two or more
-    edges qualify.
+    edges qualify, :class:`AmbiguousHopError` when it names an edge and another edge's target.
     """
-    candidates = matching_edges(neighbors(dataset=current, datasets_by_name=datasets_by_name), token, quoted=quoted)
+    incident = neighbors(dataset=current, datasets_by_name=datasets_by_name)
+    candidates = matching_edges(incident, token, quoted=quoted)
     if not candidates:
+        _refuse_self_hop(current=current, token=token, quoted=quoted)
         candidates = _unrelated_hops(current=current, token=token, datasets_by_name=datasets_by_name, quoted=quoted)
     if not candidates:
         return None
@@ -514,8 +519,34 @@ def resolve_hop(
             candidates=candidates,
             token=token,
         )
+    _refuse_edge_target_clash(current=current, edge=candidates[0], incident=incident, token=token, quoted=quoted)
     _observe([candidates[0].to], strict=True)
     return candidates[0]
+
+
+def _refuse_edge_target_clash(
+    *, current: SlayerDataset, edge: OrientedRelationship, incident: list[OrientedRelationship], token: str,
+    quoted: bool,
+) -> None:
+    """Raise when ``token`` names ``edge`` by its edge name and is also the target dataset of an incident edge into
+    another dataset."""
+    if edge.name is None or match_name(name=token, declared=[edge.name], quoted=quoted) is None:
+        return
+    other = next((e for e in incident if e.to != edge.to and e.lateral is None and not is_product_edge(e)
+                  and match_name(name=token, declared=[e.target_spelling or e.to], quoted=quoted) is not None), None)
+    if other is not None:
+        raise AmbiguousHopError(dataset=current.spelling, segment=token, edge=edge.name,
+                                other_edge=canonical_token(other))
+
+
+def _refuse_self_hop(*, current: SlayerDataset, token: str, quoted: bool) -> None:
+    """Raise when ``token`` spells a hop over one of ``current``'s self-relationships."""
+    spellings = {current.name: current.explicit_spelling}
+    loops = [_orient(relationship=j, declaring=current.name, from_dataset=current.name, spellings=spellings)
+             for j in current.relationships if j.to == current.name]
+    found = matching_edges(loops, token, quoted=quoted)
+    if found:
+        raise SelfRelationshipTraversalError(dataset=current.spelling, relationship=token)
 
 
 def _unrelated_hops(
@@ -664,8 +695,8 @@ def _incident_named(
 ) -> OrientedRelationship | None:
     """The incident edge of ``current`` whose declared ``name`` is ``token``, or
     ``None``. Raises :class:`AmbiguousRelationshipPathError` when two share the name."""
-    named = [e for e in neighbors(dataset=current, datasets_by_name=datasets_by_name)
-             if e.name == token]
+    incident = neighbors(dataset=current, datasets_by_name=datasets_by_name)
+    named = [e for e in incident if e.name == token]
     if not named:
         return None
     if len(named) > 1:
@@ -673,6 +704,7 @@ def _incident_named(
             source_dataset=current.name, target_dataset=named[0].to,
             candidates=named, token=token,
         )
+    _refuse_edge_target_clash(current=current, edge=named[0], incident=incident, token=token, quoted=False)
     _observe([named[0].to], strict=True)
     return named[0]
 

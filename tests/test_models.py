@@ -8,6 +8,7 @@ from sqlglot import exp
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
@@ -24,6 +25,7 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
+from slayer.core.relationship_walker import walk
 from slayer.sql.dialects import SqliteDialect
 from slayer.sql.mode_a_variables import bind_mode_a
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -722,26 +724,24 @@ class TestSourceModeExclusivity:
             SlayerDataset(name="orders", source_queries=[], data_source="ds")
 
 
-class TestSelfJoinRejected:
-    """A relationship targeting the dataset itself is unaddressable (relationships resolve by
-    target-dataset name) and must fail loudly at construction."""
+class TestSelfRelationshipAccepted:
+    """A self-relationship is accepted at construction; spelling its hop is refused."""
 
-    def test_self_join_raises_informative_error(self) -> None:
+    def test_self_relationship_constructs_and_its_hop_is_refused(self) -> None:
         columns = [
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="manager_id", datatype=DataType.INTEGER),
         ]
-        joins = [DatasetRelationship(to="staff",
+        joins = [DatasetRelationship(to="staff", name="manager",
                            from_columns=["manager_id"], to_columns=["id"])]
-        with pytest.raises(ValueError, match="[Ss]elf-relationship") as ei:
-            SlayerDataset(
-                name="staff", data_source="ds", sql_table="staff",
-                fields=columns, relationships=joins,
-            )
-        message = str(ei.value)
-        assert "staff" in message
-        # The remedy is named, not just the ban.
-        assert "separate dataset" in message
+        staff = SlayerDataset(
+            name="staff", data_source="ds", sql_table="staff",
+            fields=columns, relationships=joins,
+        )
+        assert staff.relationships[0].to == "staff"
+        with pytest.raises(getattr(core_errors, "SelfRelationshipTraversalError"),
+                           match="(?i)self-relationships are not traversable"):
+            walk(root=staff, path=("manager",), datasets_by_name={"staff": staff})
 
     def test_distinct_target_still_accepted(self) -> None:
         m = SlayerDataset(

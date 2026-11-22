@@ -208,7 +208,7 @@ principles every layer obeys.
     - **11.3 Time-ordered.** The axis is the query's active time bucket and must be in
       the operand grain; otherwise the transform fails with the `partition_by=` remedy.
       Steps along the axis are calendar steps: a bucket absent from the series is a gap,
-      never a neighbour; `lag` / `lead` alone step over present rows.
+      never a neighbour; `lag` / `lead` alone step over the domain's cells (11.6).
       **11.3a Preserving** (`cumsum`, `lag`, `lead`, `time_shift`, `change`,
       `change_pct`, `consecutive_periods`): one value per operand cell, result grain =
       operand grain. **11.3b Collapsing** (`first`, `last`): one value per partition,
@@ -220,11 +220,13 @@ principles every layer obeys.
       in dimension position every inner must be explicitly grained (Axiom 9 residue).
     - **11.5 Recursion.** A nested transform is an inner of the enclosing one; its
       result grain joins the enclosing operand's union like any grained inner.
+    - **11.6 Domain.** A transform evaluates over its operand's **domain**: its inner aggregates' cells at the operand grain (Axiom 6), `A`'s cells when it has none, never the query's rows; over the spine, the domain's non-time tuples × every in-frame bucket. A cell outside the domain takes NULL (Axiom 10).
     [enforced: test:tests/test_dev1871_terms.py]
     [enforced: test:tests/test_dev1832_transform_source.py]
     [enforced: test:tests/test_dev1946_transform_parameter.py]
     [enforced: test:tests/test_dev1953_partition_membership.py]
     [enforced: test:tests/test_consecutive_periods_calendar.py]
+    [enforced: test:tests/test_dev2218_transform_domain.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw rows are 12.5; spec: `queries/semantics` › Grain guarantee)
@@ -284,15 +286,11 @@ principles every layer obeys.
     A query-declared INNER join `J` is the field filter `matched(r.J)` — some row is reached along `r.J`, `r` the route from each dataset the filter restricts to `J`'s declaring dataset — and never changes how `J` is traversed. [enforced: test:tests/test_dev2102_query_inner_joins.py]
 15. **Time spine**: the spine is the dataset of all instants, keyed by its
     instant. A dataset's axis — its declared default time column, else its
-    sole one — joins it to-one; an expression is never an axis, so a spine
-    dimension over one is a type error; a dataset reaches the spine by its nearest
-    axis on a to-one chain, equal distances failing loudly, and a path may
-    begin or end at the spine but never cross it. The spine has no countable
-    rows. A query with spine dimensions has population `spine × P`, P named,
-    else inferred per Axiom 12 from its other dimensions [target: DEV-2218],
-    and must bound the spine from below.
+    sole one — joins it to-one; an expression is never an axis, so a spine dimension over one is a type error; a dataset reaches the spine by its nearest axis on a to-one chain, else by association (Axiom 8) across its nearest **fanning axis** (one reached across a fanning hop), equal distances failing loudly, and a path may begin or end at the spine but never cross it. The spine has no countable rows. A query with spine dimensions has population `spine × P`, P named, else inferred per Axiom 12 from its other dimensions; its spine bounds are field filters (Axiom 14), and it must bound the spine from below.
     [enforced: test:tests/test_dev2015_time_spine.py]
     [enforced: test:tests/test_dev2119_time_spine.py]
+    [enforced: test:tests/test_dev2218_spine_rows.py]
+    [enforced: test:tests/test_dev2218_fanning_axis.py]
 
 ## 3. Laws
 
@@ -307,14 +305,13 @@ enforced test ids as its instances land.
    [enforced: test:tests/test_law_broadcast_coherence.py]
 3. **Compositionality**: a term's value in a cell depends only on the term, the
    cell, the row-level filters, and the mode — never on sibling terms, which in
-   an inferred query may add cells (Law 7); transforms over result rows
-   [target: DEV-2218]; sibling-measure independence
+   an inferred query may add cells (Law 7); transforms [enforced: test:tests/test_dev2218_transform_domain.py]; sibling-measure independence
    [enforced: test:tests/test_dev1837_dimension_measure_matrix.py];
    single-measure splits [enforced: test:tests/test_law_split_invariance.py];
    measure-typed filters and order entries. [review]
 4. **Position parity**: the same expression yields the same value as a
    measure, a filter, or an order key — positions differ only in what happens
-   to the value. [review]
+   to the value. [review] [enforced: test:tests/test_dev2218_transform_domain.py]
 5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a groupby on `d` — exact for every aggregation under the default, associate and error; the deprecated broadcast mode trades it away and warns.
    [enforced: test:tests/test_law_dice_slice.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
@@ -329,7 +326,7 @@ enforced test ids as its instances land.
    values; to an inferred one with a measure (**measure monotonicity**) it never removes a row
    or changes a value in an existing row, a new row carrying each other
    measure's value on its own grain there (its empty value where it has no
-   cell); transforms [target: DEV-2218].
+   cell); transforms [enforced: test:tests/test_dev2218_transform_domain.py].
    [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
    [enforced: test:tests/test_law_measure_monotonicity.py]
 8. **Home-row preservation**: in an inferred query every home row of a
@@ -338,7 +335,8 @@ enforced test ids as its instances land.
    cardinality (Ossie S1).
    [enforced: test:tests/test_law_home_row_preservation.py]
 9. **Filter non-expansion**: adding a field filter never adds a row or changes a
-   result key (Ossie S6).
+   result key, except the value of a computed dimension read from an aggregate over
+   the filtered rows (Ossie S6).
    [enforced: test:tests/test_law_filter_non_expansion.py]
 10. **Unit**: a query with measures and no dimensions returns exactly one row
     (Ossie §3.6). [enforced: test:tests/test_law_unit.py]
@@ -376,7 +374,7 @@ All code, old and new, MUST obey these.
      refuses it with a typed error; a base-class default is never another
      dialect's SQL. [enforced: test:tests/test_dev2169_dialect_library_support.py]
    - **2.3** A query carries no Mode A: Mode A is written only in a stored model's definition, and a value a query supplies enters it only as a literal. [enforced: test:tests/test_dev2021_queries_carry_no_mode_a.py]
-3. **Logical names, physical once**: inside a **row definition** — a field's `expression` or `filter`, a dataset's `filters` — a bare name is a source column and a path from the dataset (`d.f`) a field; inside a metric's `expression` a bare name is a field; in both, `source.x` is a source column unless a field is named `source`. Every other reference — query fields, relationship keys, unique-key sets — names a field. A source column's spelling is applied once, where a reference becomes SQL or meets the live schema, and is never the key two references are matched on. [enforced: test:tests/test_dev1902_join_key_spelling.py] [enforced: test:tests/test_dev2175_definition_names.py]
+3. **Logical names, physical once**: inside a **row definition** — a field's `expression` or `filter`, a dataset's `filters` — a bare name is a source column and a path from the dataset (`d.f`) a field; inside a dataset metric's `expression` a bare name is a field; in both, `source.x` is a source column unless a field is named `source`. A model-scoped metric's `expression` reads like a query: `d.f` is a field anchored at dataset `d`, and a bare name a metric. Every other reference — query fields, relationship keys, unique-key sets — names a field. A source column's spelling is applied once, where a reference becomes SQL or meets the live schema, and is never the key two references are matched on. [enforced: test:tests/test_dev1902_join_key_spelling.py] [enforced: test:tests/test_dev2175_definition_names.py] [enforced: test:tests/test_dev2243_model_scoped_metrics.py]
 4. **Ossie superset**: every input valid under the Ossie core specification is valid here and means what Ossie says it means. An extension may give meaning to input that Ossie leaves undefined or declares invalid, and never changes the result of an Ossie-valid input. [target: DEV-2372]
 
 ## 5. Notes

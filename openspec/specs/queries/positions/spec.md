@@ -114,7 +114,7 @@ Every declared measure SHALL be typed at query grain: each row-level reference o
 - **THEN** the query executes and each row's measure equals its `quantity` plus 1
 
 ### Requirement: A dimension value reads the dimension's grouped value in every position
-A sub-expression of a measure, an order target or a filter that is equal to an entire query dimension — a plain, joined or stage column, or a computed dimension's whole expression, including a partitioned aggregate, a re-aggregation or a transform — SHALL evaluate as that dimension's value in the result cell, in every position and on every supported dialect — except a transform-bearing computed dimension in measure position, which keeps its query-grain evaluation. The same expression SHALL yield the same value as a measure, a measure-typed filter and an order target. A reference inside an aggregation's source, arguments or partition keys SHALL remain a row-level input of that aggregation, never the dimension's grouped value.
+A sub-expression of a measure, an order target or a filter that is equal to an entire query dimension — a plain, joined or stage column, or a computed dimension's whole expression, including a partitioned aggregate, a re-aggregation or a transform — SHALL evaluate as that dimension's value in the result cell, in every position and on every supported dialect, a transform-bearing computed dimension in measure position included. The same expression SHALL yield the same value as a measure, a measure-typed filter and an order target. A reference inside an aggregation's source, arguments or partition keys SHALL remain a row-level input of that aggregation, never the dimension's grouped value.
 
 #### Scenario: A plain dimension combined with an aggregate
 - **WHEN** a `sales` query over dimensions `[quantity]` declares the measure `quantity * count(*)`
@@ -143,6 +143,10 @@ A sub-expression of a measure, an order target or a filter that is equal to an e
 #### Scenario: Measure, filter and order agree on a dimension value
 - **WHEN** a measure-typed filter or an order target uses an expression over a dimension value that also executes as a declared measure in the same query
 - **THEN** the filter keeps exactly the rows where the declared measure's predicate is TRUE and the order sorts by the declared measure's values
+
+#### Scenario: A transform dimension's expression as a measure reads the dimension
+- **WHEN** a query over `[region, city, channel]` declares the computed dimension `mr` = `rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')` and also selects that expression as a measure
+- **THEN** each row's measure equals its `mr`, and the measure alone, without the dimension, reads the same union-grain ranks
 
 ### Requirement: An order column object may carry an expression
 An order entry whose `field` is an object with `name` as its only key, where `name` is not a valid

@@ -26,7 +26,7 @@ from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_sche
 
 
 EntityKind = Literal[
-    "memory", "datasource", "dataset", "field", "metric", "aggregation",
+    "memory", "datasource", "dataset", "field", "metric", "aggregation", "semantic_model",
 ]
 
 
