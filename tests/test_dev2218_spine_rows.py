@@ -8,8 +8,11 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import SlayerDataset
+from slayer.core.enums import DataType
+from slayer.core.errors import UnrelatedDatasetError
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
+from slayer.engine.population.row_supply import stored_rows
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev2015_fixtures import (
@@ -30,7 +33,7 @@ from tests._dev2015_fixtures import (
     spine_tables,
     value,
 )
-from tests._dev2212_fixtures import run, seed_engine
+from tests._dev2212_fixtures import DS, run, seed_datasets, seed_engine
 
 FEB_MAR = ["2025-02-01", "2025-03-31"]
 MAR_JUN = ["2025-03-01", "2025-06-30"]
@@ -301,6 +304,28 @@ class TestSpineStages:
             pinned = await eng.execute(query(population="time_spine", population_inferred=True))
         assert by_bucket(pinned, ["o"], by=["region"]) == by_bucket(unpinned, ["o"], by=["region"])
         assert {k[0] for k in by_bucket(pinned, ["o"], by=["region"])} == {"S"}
+
+    async def test_a_saved_spine_pinned_stage_reads_its_direct_rows(self, engine: SlayerQueryEngine) -> None:
+        stage = _monthly_stage(dimensions=["customers.region"], population="time_spine", population_inferred=True)
+        over = _over("monthly", dimensions=["monthly.region"])
+        direct = await engine.execute([stage, over])
+        await engine.create_dataset_from_query(query=stage, name="monthly")
+        saved = await engine.execute(over)
+        assert _totals(saved) == _totals(direct) == {"N": (170.0, 3.0), "S": (50.0, 3.0)}
+
+    async def test_a_saved_spine_pin_refuses_a_product_split_as_direct_execution_does(self) -> None:
+        weather = SlayerDataset(name="weather", sql_table="weather", data_source=DS,
+                                fields=[DatasetField(name="city", datatype=DataType.STRING, primary_key=True)])
+        datasets = seed_datasets(extra=(weather,))
+        query = SlayerQuery.model_validate({
+            "population": "time_spine", "population_inferred": True, "dimensions": ["customers.region", "weather.city"],
+            "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month", "date_range": JAN_MAR}],
+            "metrics": [m("sum(orders.amount)", "o")]})
+        with pytest.raises(UnrelatedDatasetError):
+            stored_rows(query, datasets_by_name={d.name: d for d in datasets})
+        async with seed_engine("duckdb", datasets=datasets) as eng:
+            with pytest.raises(UnrelatedDatasetError):
+                await eng.execute(query, dry_run=True)
 
     async def test_a_stage_naming_p_keeps_the_grid(self, engine) -> None:
         stage = _monthly_stage(dimensions=["customers.region"], population="customers")

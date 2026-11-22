@@ -31,6 +31,7 @@ from slayer.engine.population.inference import (
     _spine_only_filter,
     _walk_terminal_dataset,
     determination_items,
+    dimension_anchor,
     metric_anchor_names,
     probe_item,
     spine_factor_out,
@@ -399,15 +400,30 @@ def _supply_branches(query: SlayerQuery, *, sources: RowSources, anchor_datasets
     return branches
 
 
+def _inferred_spine_anchor(free: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> DimensionAnchor:
+    """An inferred pin of the spine anchors nothing: the anchor of its other dimensions, required and refused as a
+    product split exactly as for the unpinned query."""
+    factor = spine_factor_out(free)
+    anchor = dimension_anchor(factor, datasets_by_name=datasets_by_name)
+    if factor.dimensions or factor.time_dimensions:
+        datasets = anchor.required()
+        if len(datasets) > 1:
+            refuse_product_split(factor.model_copy(update={"metrics": free.metrics}), anchor_datasets=datasets,
+                                 datasets_by_name=datasets_by_name)
+    return anchor
+
+
 def stored_rows(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[RowPlan]:
     """A stored inferred stage's row plan: from its pinned anchor, or the unit for an unpinned stage with no
     dimensions; ``None`` for an anchored or spine stage (whose rows are its population's)."""
     anchor = query.population_name
     if is_spine_query(query):
-        if not query.population_inferred or anchor not in datasets_by_name:
+        if not query.population_inferred or (anchor not in datasets_by_name and anchor != TIME_SPINE_DATASET):
             return None
         free = query.model_copy(update={"population": None, "population_inferred": False})
-        return plan_spine_rows(free, anchor=DimensionAnchor(datasets=(anchor,)), datasets_by_name=datasets_by_name)
+        dims = (_inferred_spine_anchor(free, datasets_by_name=datasets_by_name)
+                if anchor == TIME_SPINE_DATASET else DimensionAnchor(datasets=(anchor,)))
+        return plan_spine_rows(free, anchor=dims, datasets_by_name=datasets_by_name)
     if anchor is None:
         unit = not (query.dimensions or query.time_dimensions)
         return plan_rows(query, anchor=DimensionAnchor(), datasets_by_name=datasets_by_name) if unit else None
