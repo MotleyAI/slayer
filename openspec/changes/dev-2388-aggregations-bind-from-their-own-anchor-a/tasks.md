@@ -52,4 +52,4 @@
 ## 8. Gates
 
 - [x] 8.1 Re-bless golden SQL only where the join-back, association or carrier shape changed and the executed twin is unchanged. Verify: golden suites green.
-- [ ] 8.2 Local test scope per `/la:pr`, `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors), `poetry run la-arch-check`, `npx likec4 validate`. Verify: all green.
+- [x] 8.2 Local test scope per `/la:pr`, `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors), `poetry run la-arch-check`, `npx likec4 validate`. Verify: all green.

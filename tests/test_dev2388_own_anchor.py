@@ -497,26 +497,30 @@ _TICKETS_SPELLING = "Tickets.customers.discount * Tickets.managers.bonus"
 
 async def test_tied_minimal_datasets_are_refused(multi_anchor) -> None:
     # `Tickets` sorts after `orders` by canonical name, before it by declared case.
+    query = q(population="orders", metrics=[_m("sum(customers.discount * managers.bonus)")])
     with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
-        await run(multi_anchor, population="orders", metrics=[_m("sum(customers.discount * managers.bonus)")])
+        await multi_anchor.execute(query)
     msg = str(ei.value)
-    assert _ORDERS_SPELLING in msg and _TICKETS_SPELLING in msg
+    assert _ORDERS_SPELLING in msg
+    assert _TICKETS_SPELLING in msg
     assert msg.index(_ORDERS_SPELLING) < msg.index(_TICKETS_SPELLING)
     resp = await run(multi_anchor, population="orders", metrics=[_m(f"sum({_ORDERS_SPELLING})")])
     assert table(resp, "v") == rows((50,))
 
 
 async def test_unconnected_anchors_are_refused(multi_anchor) -> None:
+    query = q(metrics=[_m("sum(products.price * widgets.weight)")])
     with pytest.raises(UnsafeRelationshipInputError) as ei:
-        await run(multi_anchor, metrics=[_m("sum(products.price * widgets.weight)")])
+        await multi_anchor.execute(query)
     assert "widgets" in str(ei.value)
 
 
 @pytest.mark.parametrize("population", ["customers", None])
 async def test_an_undefined_union_grain_anchor_fails_closed(multi_anchor, population) -> None:
+    query = q(**({"population": population} if population else {}), metrics=[_m(
+        "count(count(orders.*, partition_by=[customers.name]) * count(tickets.*, partition_by=[managers.manager_id]))")])
     with pytest.raises(PopulationInferenceError):
-        await run(multi_anchor, **({"population": population} if population else {}), metrics=[_m(
-            "count(count(orders.*, partition_by=[customers.name]) * count(tickets.*, partition_by=[managers.manager_id]))")])
+        await multi_anchor.execute(query)
 
 
 # --------------------------------------------------------------------------- #

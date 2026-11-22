@@ -2413,14 +2413,15 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         # rerooted grain member joined back on the host key, and dedup per home
         # entity via the association kernel — a home entity absent from the
         # population still counts in the cells its own path reaches.
-        assert entity is not None
+        assert entity is not None and root_dataset is not None
+        home_root = root_dataset
         agg_rooted = agg_rooted.model_copy(update={"locus": "host"})
         picked_params, entity_keys_root = _association_arm(
             agg=agg, agg_rooted=agg_rooted, alias=alias, entity=entity,
             target_path=target_path, host_dataset=host_dataset,
             datasets_by_name=datasets_by_name, bundle=bundle,
             rooted=lambda value: _rooted_at_home(
-                value, target_path=target_path, root_dataset=root_dataset,
+                value, target_path=target_path, root_dataset=home_root,
                 datasets_by_name=datasets_by_name, host_name=host_dataset.name, read=read,
             ),
         )
@@ -3447,8 +3448,10 @@ def _constituent_home(c: ValueKey, *, context: _ProducerSynthesisContext) -> Opt
     return None if home is None else context.bundle.factor_free(home)
 
 
-def _constituent_home_path(c: AggregateKey, *, context: _ProducerSynthesisContext) -> Tuple[str, ...]:
+def _constituent_home_path(c: ValueKey, *, context: _ProducerSynthesisContext) -> Tuple[str, ...]:
     """A constituent's home path; a normalized one (an ungrained parameter at the outer grain) homes as its source."""
+    if not isinstance(c, AggregateKey):
+        return ()
     found = context.homes.by_key.get(c)
     return found.path if found is not None else source_anchor_path(c.source)
 
