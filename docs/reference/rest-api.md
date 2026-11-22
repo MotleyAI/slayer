@@ -87,6 +87,8 @@ curl -X POST http://localhost:5143/query \
   -d '{"name": "monthly_revenue", "variables": {"region": "US"}}'
 ```
 
+`POST /query?conformance=ossie-l3` runs the body under the strict [Ossie Layer 3 binding](../interfaces/ossie-layer-3.md): the body is the query, beside the wrappers `variables`, `dry_run`, `explain`, `name` and `refine`, and a refusal answers 400 with `detail.code`.
+
 Multi-stage DAG bodies use `{"queries": [...]}` — each stage in the list honours its own `distinct_dimension_values`.
 
 ### Datasets

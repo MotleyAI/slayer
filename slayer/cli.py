@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from slayer import usage_reporting
 from slayer import otel
 from slayer.async_utils import run_sync
+from slayer.core.enums import Conformance
 from slayer.core.deprecation import deprecations_on_one_line
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig, SlayerDataset
@@ -612,6 +613,9 @@ examples:
 
   # Run a saved query by name, refined with an extra dimension
   slayer query monthly_revenue --refine '{"dimensions": ["orders.status"]}'
+
+  # Run an Ossie Layer 3 query under the strict binding
+  slayer query '{"dimensions": ["customers.region"], "metrics": ["orders.total_revenue"]}' --conformance ossie-l3
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -632,6 +636,12 @@ examples:
     )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
     query_parser.add_argument("--explain", action="store_true", help="Run the database's EXPLAIN on the query")
+    query_parser.add_argument(
+        "--conformance",
+        choices=[c.value for c in Conformance],
+        default=Conformance.SLAYER.value,
+        help="slayer (default) or ossie-l3: accept only Ossie Layer 3 queries, with Ossie's error codes and output names",
+    )
     query_parser.add_argument(
         "--refine",
         default=None,
@@ -1882,6 +1892,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         dry_run=bool(args.dry_run),
         explain=bool(args.explain),
         refine=refine,
+        conformance=args.conformance,
     )
     usage_reporting.observe_executed(result)
 

@@ -116,7 +116,9 @@ async def test_a_reversed_to_one_hop_never_makes_ossies_path_ambiguous(tmp_path:
 async def test_ossie_settles_a_tie_between_candidates(tmp_path: Path, conformance: str) -> None:
     """Ossie settles a tie between candidates."""
     async with sql_engine(tmp_path, sql=TRIANGLE_SQL, documents=[TRIANGLE]) as engine:
-        response = await run_as(engine, {"dimensions": ["a.b_id", "c.b_id"]}, conformance)
+        query = {"dimensions": ["a.b_id", "c.b_id"]} if conformance == NATIVE else {
+            "dimensions": ["a.b_id", {"field": "c.b_id", "alias": "c_b_id"}]}
+        response = await run_as(engine, query, conformance)
     assert rows(response) == [("B1", "B2"), ("B2", "B1")]
     if conformance == NATIVE:
         assert response.population == "c"
@@ -152,4 +154,4 @@ async def test_several_anchors_ossie_qualifies_leave_native_rules_in_charge(tmp_
         response = await engine.execute({"dimensions": ["x.v", "y.v"]})
         assert response.population == "x"
         assert rows(response) == [("x1", "y1"), ("x2", "y1")]
-        await strict_error(engine, {"dimensions": ["x.v", "y.v"]}, "E_AMBIGUOUS_PATH")
+        await strict_error(engine, {"dimensions": ["x.v", {"field": "y.v", "alias": "y_v"}]}, "E_AMBIGUOUS_PATH")

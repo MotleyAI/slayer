@@ -60,6 +60,7 @@ from slayer.sql.ossie_dialects import PORTABLE_READER, expression_digest, ossie_
 from slayer.osi.models import OSSIE_DATATYPES, TEMPORAL_DATATYPES, explicit_description
 from slayer.osi.yaml_writer import dump_yaml
 from slayer.core.ossie_expression import OSIExpression
+from slayer.core.ossie_steps import ossie_from
 from slayer.sql.field_expansion import expand_field_definition_parts_sync, expand_derived_refs_sync
 from slayer.sql.root_scope import root_scope_field_ids
 from slayer.sql.dialects import dialect_for_ds_type
@@ -637,16 +638,12 @@ class _Exporter:
     def _relationship_shape(self, relationship: DatasetRelationship, *, forward: _Shape) -> _Shape | None:
         """``forward`` or its reverse, whichever points from the many side; ``None`` when undeterminable."""
         name, target, sources, targets = forward
-        backward = (target, name, targets, sources)
-        if relationship.cardinality in (RelationshipCardinality.MANY_TO_ONE, RelationshipCardinality.ONE_TO_ONE):
-            return forward
-        if relationship.cardinality is RelationshipCardinality.ONE_TO_MANY:
-            return backward
-        if self._is_key(target, targets):
-            return forward
-        if self._is_key(name, sources):
-            return backward
-        return None
+        many = ossie_from(declaring=name, to=target, cardinality=relationship.cardinality, declaring_keys=sources,
+                          to_keys=targets, keyed=lambda ds, keys: self._is_key(ds, list(keys)),
+                          document_from=relationship.document_from)
+        if many is None:
+            return None
+        return forward if many == name else (target, name, targets, sources)
 
     def _bad_keys(self, side: str, other: str, keys: list[str]) -> list[str]:
         ds = self.osi_datasets[side]

@@ -51,7 +51,8 @@ def _document_declaring_one_to_many() -> str:
     keys = {"from_columns": ["customer_id"], "to_columns": ["customer_id"]}
     payload = ext.RelationshipPayload(entity="orders_to_customers", declarations=[ext.RelationshipDeclaration(
         dataset="orders", relationship=DatasetRelationship(
-            to="customers", name="orders_to_customers", cardinality=RelationshipCardinality.ONE_TO_MANY, **keys))])
+            to="customers", name="orders_to_customers", cardinality=RelationshipCardinality.ONE_TO_MANY,
+            from_columns=keys["from_columns"], to_columns=keys["to_columns"]))])
     entry = ext.encode(payload, ossie=ext.relationship_digest(from_dataset="orders", to="customers", **keys))
     rel = {**relationship("orders_to_customers", src="orders", to="customers", **keys),
            "nonportable_extensions": [entry]}

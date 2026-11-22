@@ -130,17 +130,17 @@ class TestDedupInteraction:
 
 
 class TestCollisionFailsClosed:
-    async def test_name_colliding_with_a_column_raises(self) -> None:
-        # ``channel`` is a real field (a legal plain dimension on its own, so
-        # today this query plans fine — the collision guard is what must make it
-        # fail). Naming a computed dimension ``channel`` shadows that field and
-        # must be rejected fail-closed.
+    async def test_name_equal_to_a_field_is_accepted(self) -> None:
+        # ``channel`` is a field of ``orders``; a computed dimension may still take its name (fields are always
+        # qualified, names bare).
         q = _q(
             dimensions=["orders.region", {"field": "lower(orders.city)", "alias": "channel"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         )
-        with pytest.raises(ValueError, match=r"(?i)collid|conflict|already|exists|shadow"):
-            await gen(q)
+        sql = await gen(q)
+        assert 'LOWER(orders.city) AS "channel"' in sql
+        assert 'AS "orders.region"' in sql
+        assert 'AS "rev"' in sql
 
     async def test_name_colliding_with_a_measure_raises(self) -> None:
         # A computed dimension named the same as a query metric must fail closed.

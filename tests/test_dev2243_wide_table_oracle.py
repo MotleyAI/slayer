@@ -108,13 +108,14 @@ def test_every_case_names_a_known_fixture() -> None:
 @pytest.mark.parametrize("case", [_case_param(c) for c in CASES])
 async def test_wide_table_case_under_strict(case: Path, tmp_path: Path) -> None:
     expected = read_expected(case)
+    query = _query(case)
     async with fixture_engine(tmp_path, expected.fixture) as engine:
         if expected.error is not None:
             with pytest.raises(ossie_query_error()) as raised:
-                await engine.execute(_query(case), conformance=STRICT)
+                await engine.execute(query, conformance=STRICT)
             assert raised.value.code == expected.error, raised.value
             return
-        response = await engine.execute(_query(case), conformance=STRICT)
+        response = await engine.execute(query, conformance=STRICT)
     assert response.columns == expected.header
     assert _rows(response.data, expected.header) == Counter(tuple(row) for row in expected.rows)
 

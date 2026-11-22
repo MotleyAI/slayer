@@ -15,13 +15,14 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
-from slayer.core.errors import OssieDocumentInvalidError, StoredDocumentLoadError
+from slayer.core.errors import OssieDocumentInvalidError, OssieErrorCode, StoredDocumentLoadError
 from slayer.core.field_expression import DialectEntry, Expression, ExpressionObject, token
 from slayer.core import slayer_extension as ext
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
 from slayer.core.ossie_validity import columns, is_agg_call, parse_ossie_sql
 from slayer.core.semantic_model import (
-    ModelScopedMetric, OssieDataset, OssieExpression, SemanticModelDocument, ossie_validity_errors,
+    MetricProblem, ModelScopedAnalysis, ModelScopedMetric, OssieDataset, OssieExpression, SemanticModelDocument,
+    ossie_validity_errors,
 )
 from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.ossie_dialects import (
@@ -33,8 +34,8 @@ from slayer.storage.document_extensions import (
     relationship_declarations, relocate_metrics, restore_metrics,
 )
 
-__all__ = ["Decomposition", "DocumentIndex", "build_index", "checked_document", "decompose", "expression_datasets",
-           "parse_document_text"]
+__all__ = ["Decomposition", "DocumentIndex", "analyse_model_scoped", "build_index", "checked_document", "decompose",
+           "expression_datasets", "load_problem", "parse_document_text"]
 
 _OSSIE_TYPES = {t.value: t for t in DataType if t is not DataType.ARRAY}
 WINDOW_WARNING = "uses a window function (OVER), which SLayer cannot evaluate yet"
@@ -246,7 +247,8 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
                            label=f"relationship {rel.name!r}", notes=notes)
         for owner, declared in relationship_declarations(rel, entry, datasets=datasets, default=default, notes=notes):
             datasets[owner].relationships.append(
-                declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)}))
+                declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)}).from_document(
+                    rel.from_dataset))
     restore_metrics(datasets, restored=restored, dialect=reader)
     metrics = []
     for m in doc.metrics or []:
@@ -257,17 +259,19 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
             datatype=_OSSIE_TYPES[m.datatype] if m.datatype else None,
             load_warning=WINDOW_WARNING if _windowed(m.expression) else problem,
         ))
-    names = {m.name.casefold() for m in metrics}
-    for metric in metrics:
-        if metric.load_warning is None:
-            metric.load_warning = model_scoped_problem(metric.expression, metric_names=names)
     notes: list[ExtensionNote] = []
     entry = read_entry(doc.nonportable_extensions, kind="semantic_model", entity=doc.name, ossie=doc.name,
                        label=f"semantic model {doc.name!r}", notes=notes)
+    documented = len(metrics)
     if entry is not None:
         metrics += [ModelScopedMetric(name=m.name, semantic_model=doc.name, data_source=data_source,
                                       expression=m.expression, description=m.description, datatype=m.datatype)
                     for m in entry.payload.metrics]
+    names = {m.name.casefold() for m in metrics}
+    for i, metric in enumerate(metrics):
+        metric.analysis = analyse_model_scoped(metric.expression, metric_names=names)
+        if i < documented and metric.load_warning is None:
+            metric.load_warning = load_problem(metric.analysis)
     return Decomposition(name=doc.name, data_source=data_source, datasets=list(datasets.values()), metrics=metrics,
                          notes=notes)
 
@@ -295,24 +299,69 @@ def _parsed(expression: Expression) -> exp.Expr | None:
     return tree
 
 
-def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> str | None:
-    """Why SLayer cannot evaluate a model-scoped metric (a field read unqualified or outside an aggregate, an aggregate
-    naming no dataset), else ``None``; an aggregate over several datasets evaluates as in a query."""
+def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> ModelScopedAnalysis:
+    """A model-scoped metric's components, bare metric names and problems (``wide_table_semantics.md`` §5.2)."""
     tree = _parsed(expression)
     if tree is None:
-        return None
+        return ModelScopedAnalysis()
+    problems: list[MetricProblem] = []
+    names: dict[str, None] = {}
     for column in columns(tree, OSSIE_SQL):
+        name = column.name.casefold()
         if _aggregated(column):
             if not column.table:
-                return f"reads the unqualified field {column.name!r}; qualify it by its dataset"
+                problems.append(MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN, reason=(
+                    f"reads the unqualified field {column.name!r}; qualify it by its dataset")))
         elif column.table:
-            return f"reads {column.table}.{column.name} outside an aggregate"
-        elif column.name.casefold() not in metric_names:
-            return f"reads the unqualified field {column.name!r}; qualify it by its dataset"
-    for aggregate in tree.find_all(exp.AggFunc):
-        if not _aggregated(aggregate) and not any(c.table for c in aggregate.find_all(exp.Column)):
-            return f"aggregates {aggregate.sql()} over no dataset; name its dataset, as in COUNT(<dataset>.*)"
-    return None
+            problems.append(MetricProblem(code=OssieErrorCode.E_UNAGGREGATED_FINER_GRAIN_REFERENCE,
+                                          reason=f"reads {column.table}.{column.name} outside an aggregate"))
+        elif name in metric_names:
+            names[name] = None
+        else:
+            problems.append(MetricProblem(code=OssieErrorCode.E_UNAGGREGATED_FINER_GRAIN_REFERENCE, reason=(
+                f"reads the unqualified field {column.name!r}; qualify it by its dataset")))
+    homes: dict[str, None] = {}
+    for aggregate in _components(tree):
+        home, problem = _component(aggregate)
+        if problem is not None:
+            problems.append(problem)
+        if home is not None:
+            homes[home] = None
+    if tree.find(exp.Window) is not None:
+        problems.append(MetricProblem(code=OssieErrorCode.E_DEFERRED_WINDOWED_METRIC, reason=WINDOW_WARNING))
+    return ModelScopedAnalysis(homes=list(homes), metrics=list(names), problems=problems)
+
+
+def _components(tree: exp.Expr) -> list[exp.Expr]:
+    """The aggregate calls no other aggregate contains, ``AGG(d.m)`` included."""
+    return [n for n in tree.walk() if (isinstance(n, exp.AggFunc) or is_agg_call(n)) and not _aggregated(n)]
+
+
+def _component(aggregate: exp.Expr) -> tuple[str | None, MetricProblem | None]:
+    """An aggregate call's home dataset, and why Ossie rejects it."""
+    tables = {c.table for c in columns(aggregate, OSSIE_SQL) if c.table}
+    if is_agg_call(aggregate):
+        return (next(iter(tables)) if len(tables) == 1 else None), None
+    if not tables:
+        return None, MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN, reason=(
+            f"aggregates {aggregate.sql()} over no dataset; name its dataset, as in COUNT(<dataset>.*)"))
+    if len({t.casefold() for t in tables}) > 1:
+        return None, MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN, evaluable=True, reason=(
+            f"aggregates {aggregate.sql()} over several datasets ({', '.join(sorted(tables))})"))
+    home = next(iter(tables))
+    clause = aggregate.parent if isinstance(aggregate.parent, exp.Filter) else None
+    others = sorted({c.table for c in columns(clause.expression, OSSIE_SQL) if c.table.casefold() != home.casefold()}
+                    ) if clause is not None and clause.expression is not None else []
+    if others:
+        return home, MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN, evaluable=True, reason=(
+            f"the FILTER of {aggregate.sql()} reads {', '.join(others)}, not its own dataset {home}"))
+    return home, None
+
+
+def load_problem(analysis: ModelScopedAnalysis) -> str | None:
+    """Why SLayer cannot evaluate the analysed metric: its first problem SLayer does not evaluate, a window aside."""
+    return next((p.reason for p in analysis.problems
+                 if not p.evaluable and p.code is not OssieErrorCode.E_DEFERRED_WINDOWED_METRIC), None)
 
 
 def expression_datasets(expression: Expression) -> tuple[set[str], set[str]]:

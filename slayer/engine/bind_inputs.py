@@ -1135,22 +1135,8 @@ def _will_group_by(query: SlayerQuery) -> bool:
     return bool(query.metrics) or query.distinct_dimension_values
 
 
-def _reject_computed_dim_name_collision(
-    *, name: str, query: SlayerQuery, scope: DatasetScope, ref: Optional[FieldRef] = None,
-) -> None:
-    dataset_collision = None
-    if scope.population is not None:
-        dataset = scope.population
-        names_itself = ref is not None and ref.name == name and ref.dataset in (dataset.name, dataset.spelling)
-        if not names_itself and (dataset.get_field(name) is not None or dataset.get_metric(name) is not None):
-            dataset_collision = dataset.name
-    check_computed_dim_name_collision(
-        name=name,
-        dataset_name=dataset_collision,
-        query_metric_collision=any(
-            m.alias == name for m in (query.metrics or [])
-        ),
-    )
+def _reject_computed_dim_name_collision(*, name: str, query: SlayerQuery) -> None:
+    check_computed_dim_name_collision(name=name, query_metric_collision=any(m.alias == name for m in query.metrics or []))
 
 
 def _declared_computed_dimension(
@@ -1162,7 +1148,7 @@ def _declared_computed_dimension(
     dim_alias_map: Optional[Dict[str, ValueKey]] = None,
 ) -> DeclaredMetric:
     name = d.name
-    _reject_computed_dim_name_collision(name=name, query=query, scope=scope, ref=d.ref)
+    _reject_computed_dim_name_collision(name=name, query=query)
     parsed = parse_bound_expr(d.field, query.bound_variables)
     bound = bind_expr(
         parsed=parsed, scope=scope, bundle=bundle, allow_metrics=True,

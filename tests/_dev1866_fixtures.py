@@ -7,7 +7,7 @@ names scope to exactly one datasource:
 * ``ds_chain``  — orders → customers → regions, all edges declared many-to-one.
   ``region`` is a plain field on ``customers`` (the canonical "coarse side").
   Unique-minimal determinations; the only topology seeded with real rows.
-* ``ds_pair``   — ``prof`` ↔ ``acct`` one-to-one; two viable candidates ⇒ tie.
+* ``ds_pair``   — ``prof`` ↔ ``acct`` one-to-one both ways; Ossie qualifies both, so native rules tie.
 * ``ds_fan``    — ``basket`` with two child tables (``basket_items``,
   ``basket_pays``); sibling dims have no to-one determiner ⇒ no viable candidate.
 * ``ds_ambig``  — ``shipment`` with two unnamed edges to ``depot`` ⇒ ambiguous hop.
@@ -120,12 +120,20 @@ def chain_datasets_by_name() -> dict[str, SlayerDataset]:
 
 
 def pair_datasets() -> list[SlayerDataset]:
-    """prof ↔ acct one-to-one — both sides to-one, so two viable candidates tie."""
+    """prof ↔ acct one-to-one, declared both ways: each reaches the other by an Ossie step, so Ossie qualifies both
+    and the two viable one-hop candidates tie."""
     acct = SlayerDataset(
         name="acct", data_source=DS_PAIR, sql_table="acct",
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="prof_id", datatype=DataType.INTEGER, unique=True),
             DatasetField(name="email", datatype=DataType.STRING),
+        ],
+        relationships=[
+            DatasetRelationship(
+                to="prof", name="prof", from_columns=["prof_id"], to_columns=["id"],
+                cardinality=RelationshipCardinality.ONE_TO_ONE,
+            ),
         ],
     )
     prof = SlayerDataset(
@@ -137,7 +145,7 @@ def pair_datasets() -> list[SlayerDataset]:
         ],
         relationships=[
             DatasetRelationship(
-                to="acct", from_columns=["acct_id"], to_columns=["id"],
+                to="acct", name="acct", from_columns=["acct_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.ONE_TO_ONE,
             ),
         ],

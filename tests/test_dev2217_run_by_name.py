@@ -76,7 +76,7 @@ async def test_saved_parts_outside_ossies_shape_are_refused(engine: SlayerQueryE
 
 async def test_a_placeholder_bound_by_the_runs_variables(engine: SlayerQueryEngine) -> None:
     """A placeholder bound by the run's variables."""
-    response = await strict(engine, {"metrics": ["orders.total_revenue"], "filter": "customers.region = {r}"},
+    response = await strict(engine, {"metrics": ["orders.total_revenue"], "filter": "customers.region = '{r}'"},
                             variables={"r": "EAST"})
     assert response.data == [{"total_revenue": 350}]
 

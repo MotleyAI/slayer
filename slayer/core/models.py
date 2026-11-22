@@ -1050,6 +1050,8 @@ class DatasetRelationship(DatasetPart):
     _query_local: bool = PrivateAttr(default=False)
     # Runtime-only: a stage edge inherited on pass-through keys, with the edge it derives from.
     _inherited_from: RelationshipOrigin | None = PrivateAttr(default=None)
+    # Runtime-only: the ``from`` dataset of the semantic-model document relationship it stands for.
+    _document_from: str | None = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -1081,6 +1083,15 @@ class DatasetRelationship(DatasetPart):
     def as_inherited(self, origin: RelationshipOrigin) -> "DatasetRelationship":
         out = self.model_copy()
         out._inherited_from = origin
+        return out
+
+    @property
+    def document_from(self) -> str | None:
+        return self._document_from
+
+    def from_document(self, from_dataset: str) -> "DatasetRelationship":
+        out = self.model_copy()
+        out._document_from = from_dataset
         return out
 
     @field_validator("name")

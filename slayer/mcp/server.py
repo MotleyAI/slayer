@@ -8,7 +8,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from collections.abc import Callable, Sequence
 from inspect import cleandoc
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Discriminator, Field, Tag, ValidationError
 from sqlalchemy.exc import DatabaseError
@@ -16,6 +16,7 @@ from sqlalchemy.exc import DatabaseError
 from slayer import __version__, usage_reporting
 from slayer import otel
 from slayer.usage_reporting.payload import USAGE_KEYS
+from slayer.core.enums import Conformance
 from slayer.core.errors import (
     AmbiguousDatasetError,
     MemoryNotFoundError,
@@ -606,6 +607,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         dry_run: Annotated[bool, Field(description="Return the generated SQL without executing it.")] = False,
         explain: Annotated[bool, Field(description="Run the database's EXPLAIN and return the query plan.")] = False,
         format: Annotated[str, Field(description='"markdown" (default), "json" or "csv".')] = "markdown",
+        conformance: Annotated[Literal["slayer", "ossie-l3"], Field(
+            description='"slayer" (default) or "ossie-l3": accept only Ossie Layer 3 queries, refusing others with '
+                        "Ossie's error codes, and name columns by Ossie's output names.",
+        )] = "slayer",
     ) -> str:
         """ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Describe the result you want (metrics, dimensions, filters, order) and SLayer writes the SQL, including the joins. A single query can:
         - put several grains on one row: a group's share of its total or of the grand total, the region total next to each city;
@@ -631,7 +636,19 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # detectable, then slice response-side. A run-by-name string is
             # opaque (its stored SQL can't take a pushed-down limit) — cap
             # response-side only.
-            exec_query, capped, cap_hint = _apply_mcp_row_cap(query)
+            strict = conformance == Conformance.OSSIE_L3.value
+            # A strict query takes no limit: its rows are capped response-side.
+            exec_query: "str | SlayerQuery | dict | list[SlayerQuery | dict]"
+            if strict:
+                capped, cap_hint = True, _CAP_HINT
+                if isinstance(query, list):
+                    exec_query = [*query]
+                elif isinstance(query, (str, SlayerQuery)):
+                    exec_query = query
+                else:
+                    raise TypeError(f"unexpected query argument {type(query).__name__}")
+            else:
+                exec_query, capped, cap_hint = _apply_mcp_row_cap(query)
             usage_reporting.observe_query(query)
             result = await engine.execute(
                 query=exec_query,
@@ -639,6 +656,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 dry_run=dry_run,
                 explain=explain,
                 refine=refine,
+                conformance=conformance,
             )
             usage_reporting.observe_executed(result)
             if dry_run:

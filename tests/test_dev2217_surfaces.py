@@ -109,16 +109,18 @@ UNREADABLE = {"no_such_part": 1}
 @pytest.mark.parametrize("method", CLIENT_METHODS)
 async def test_unknown_conformance_on_the_embedded_client(tmp_path: Path, method: str) -> None:
     client = SlayerClient(storage=await prepare_store(tmp_path))
+    run = getattr(client, method)
     with pytest.raises(ValueError, match="slayer") as raised:
-        await getattr(client, method)(UNREADABLE, conformance="ossie")
+        await run(UNREADABLE, conformance="ossie")
     assert "ossie-l3" in str(raised.value)
 
 
 @pytest.mark.parametrize("method", CLIENT_METHODS)
 def test_unknown_conformance_on_the_embedded_sync_client(tmp_path: Path, method: str) -> None:
     client = SlayerClient(storage=asyncio.run(prepare_store(tmp_path)))
+    run = getattr(client, f"{method}_sync")
     with pytest.raises(ValueError, match="slayer") as raised:
-        getattr(client, f"{method}_sync")(UNREADABLE, conformance="ossie")
+        run(UNREADABLE, conformance="ossie")
     assert "ossie-l3" in str(raised.value)
 
 
@@ -211,10 +213,11 @@ async def test_unknown_conformance_on_the_remote_client(tmp_path: Path, monkeypa
                                                         method: str) -> None:
     _routed(monkeypatch, create_app(storage=await prepare_store(tmp_path)))
     client = SlayerClient(url="http://testserver")
+    run, run_sync = getattr(client, method), getattr(client, f"{method}_sync")
     with pytest.raises(Exception) as raised:  # noqa: PT011 — refused locally or by the server; never judged
-        await getattr(client, method)(UNREADABLE, conformance="ossie")
+        await run(UNREADABLE, conformance="ossie")
     with pytest.raises(Exception) as raised_sync:  # noqa: PT011
-        await asyncio.to_thread(getattr(client, f"{method}_sync"), UNREADABLE, conformance="ossie")
+        await asyncio.to_thread(run_sync, UNREADABLE, conformance="ossie")
     for exc in (raised.value, raised_sync.value):
         assert not issubclass(type(exc), (TypeError, ossie_query_error()))
 

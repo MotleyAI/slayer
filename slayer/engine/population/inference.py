@@ -1,7 +1,8 @@
 """The dimension anchor (semantics Axiom 12.2).
 
-The anchor of a root-less query is the dataset with the fewest routed relationship hops that
-determines every queried dimension, read from the dimensions only — never filters or metrics.
+The anchor of a root-less query is the anchor Ossie qualifies uniquely, else the dataset with the
+fewest routed relationship hops that determines every queried dimension, read from the dimensions
+only — never filters or metrics.
 An unproven hop counts by association (raw rows excepted); dimension groups no join path
 connects take the product of their anchors. The same determination core backs
 ``recommend_population``.
@@ -23,7 +24,9 @@ from slayer.core.errors import (
     UnresolvableDimensionRelationshipError,
 )
 from slayer.core.names import match_name
-from slayer.core.relationship_search import HopFilter, UnaddressablePair, blocking_pairs, shortest_route, unaddressable_pairs
+from slayer.core.relationship_search import (
+    HopFilter, UnaddressablePair, blocking_pairs, routes, shortest_route, unaddressable_pairs,
+)
 from slayer.core.relationship_walker import canonical_path, provably_to_one, terminal_dataset, walk
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, declared_aliases
@@ -517,6 +520,17 @@ async def _classification_scopes(
     return scopes, ds_by_dataset
 
 
+async def query_datasource(*, storage: StorageBackend, anchors: set[str]) -> str | None:
+    """The single datasource holding every one of ``anchors`` that exists anywhere (``None`` when none does); raises
+    as inference does when several hold them together, or none does."""
+    ds_by_dataset: dict[str, set[str]] = {}
+    for ds, name in await storage._list_all_dataset_identities():
+        ds_by_dataset.setdefault(name, set()).add(ds)
+    if not any(a in ds_by_dataset for a in anchors):
+        return None
+    return _resolve_datasource(ds_by_dataset=ds_by_dataset, data_source=None, anchors=anchors)
+
+
 def _resolve_datasource(
     *, ds_by_dataset: dict[str, set[str]], data_source: str | None, anchors: set[str]
 ) -> str:
@@ -787,12 +801,32 @@ def _components(datasets_by_name: dict[str, SlayerDataset]) -> dict[str, str]:
     return {n: find(n) for n in parent}
 
 
+def _ossie_anchor(items: list[str], *, datasets_by_name: dict[str, SlayerDataset]) -> str | None:
+    """The one dataset of a ``dataset.field`` item reaching every other item's dataset along Ossie steps, if unique."""
+    heads: list[str] = []
+    for item in items:
+        parts = item.split(".")
+        anchor = find_anchor(parts[0], quoted=False, reader=None, datasets_by_name=datasets_by_name)
+        if len(parts) != 2 or anchor is None:
+            return None
+        heads.append(anchor.name)
+    heads = list(dict.fromkeys(heads))
+    qualified = [h for h in heads if all(
+        o == h or routes(root=datasets_by_name[h], target=o, datasets_by_name=datasets_by_name,
+                         hop_filter=HopFilter.OSSIE, cap=1) for o in heads)]
+    return qualified[0] if len(qualified) == 1 else None
+
+
 def _choose_anchor(
     *, items: list[str], candidates: list[str], datasets_by_name: dict[str, SlayerDataset], associate: bool,
 ) -> str:
-    """The unique fewest-hops candidate determining every item, or the reasoned refusal."""
+    """The viable anchor Ossie qualifies uniquely, else the unique fewest-hops candidate determining every item, else
+    the reasoned refusal."""
     verdicts = evaluate_candidates(items=items, candidates=candidates, datasets_by_name=datasets_by_name,
                                    associate=associate)
+    ossie = _ossie_anchor(items, datasets_by_name=datasets_by_name)
+    if ossie is not None and any(v.dataset_name == ossie and v.viable for v in verdicts):
+        return ossie
     winner, tied = select_from_verdicts(verdicts)
     if winner is not None:
         return winner

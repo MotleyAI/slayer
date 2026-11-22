@@ -28,7 +28,10 @@ from pydantic import (
 from slayer.async_utils import run_sync
 from slayer.core import probes
 from slayer.core.deprecation import outside_stacklevel
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, DataType, RelationshipCardinality, TimeGranularity
+from slayer.core.enums import (
+    DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, Conformance, DataType, RelationshipCardinality, TimeGranularity,
+)
+from slayer.core.ossie_conformance import parse_conformance
 from slayer.core.errors import (
     AggregationArgumentError,
     AmbiguousDatasetError,
@@ -147,6 +150,7 @@ from slayer.engine.cache import (
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
 from slayer.engine.legacy_references import Conversions, anchor_names, convert_refinement, qualified_input
 from slayer.engine.model_scoped import expand_model_scoped, model_scope
+from slayer.engine.ossie_l3 import execute_strict
 from slayer.engine.population.anchors import anchor_route, unknown_metric, unqualified_count
 from slayer.core.names import qualified_reference
 from slayer.core.keys import AggregateKey, CastKey, FieldKey, FieldSqlKey, ListSetKey, TimeTruncKey, ValueKey
@@ -1247,7 +1251,11 @@ class SlayerQueryEngine:
         data_source: Optional[str] = None,
         cache: bool = False,
         refine: "QueryRefinement | dict | None" = None,
+        conformance: "Conformance | str" = Conformance.SLAYER,
     ) -> SlayerResponse:
+        if parse_conformance(conformance) is Conformance.OSSIE_L3:
+            return await execute_strict(self, query, variables=variables, dry_run=dry_run, explain=explain,
+                                        data_source=data_source, cache=cache, refine=refine, run=self.execute)
         runtime_kwarg = variables or {}
         deprecations: List[DeprecatedInputWarning] = []
         with collect_legacy_spellings() as legacy, announced_by_caller():
@@ -1330,6 +1338,16 @@ class SlayerQueryEngine:
                 main_query = main_query.model_copy(update={"variables": merged_top})
 
         return main_query, named_queries, prefer_data_source, ()
+
+    async def saved_query_stages(
+        self, name: str, *, refine: "QueryRefinement | dict | None" = None, data_source: Optional[str] = None,
+    ) -> "tuple[List[SlayerQuery], Optional[str]]":
+        """A saved query's stages after ``refine``, its final stage last, and the datasource it runs on."""
+        run = resolve_run_input(name, refine)
+        assert isinstance(run, SavedQueryRun)
+        main, named, pinned, _chain = await self._normalize_by_name(
+            run=run, runtime_kwarg={}, prefer_data_source=data_source, deprecations_out=[])
+        return [*named.values(), main], pinned
 
     async def _normalize_by_name(
         self,
@@ -2550,11 +2568,12 @@ class SlayerQueryEngine:
         data_source: Optional[str] = None,
         cache: bool = False,
         refine: "QueryRefinement | dict | None" = None,
+        conformance: "Conformance | str" = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Synchronous wrapper for execute(), run through ``run_sync``."""
         return self.run_sync(self.execute(
             query, variables=variables, dry_run=dry_run,
-            explain=explain, data_source=data_source, cache=cache, refine=refine,
+            explain=explain, data_source=data_source, cache=cache, refine=refine, conformance=conformance,
         ))
 
     async def _scope_bare_name_to_datasource(

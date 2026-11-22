@@ -155,6 +155,13 @@ def pre_2_0_datatype(value: str, *, db_type: Optional[str] = None) -> DataType |
 
 
 
+class Conformance(StrEnum):
+    """The rules a query runs under: SLayer's own language, or the strict Ossie Layer 3 binding."""
+
+    SLAYER = "slayer"
+    OSSIE_L3 = "ossie-l3"
+
+
 class TimeGranularity(StrEnum):
     SECOND = "second"
     MINUTE = "minute"

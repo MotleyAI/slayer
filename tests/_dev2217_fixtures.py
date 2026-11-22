@@ -41,8 +41,8 @@ CODES = (
 )
 
 
-def ossie_query_error() -> type[Exception]:
-    return getattr(errors, "OssieQueryError")
+def ossie_query_error() -> type[errors.OssieQueryError]:
+    return errors.OssieQueryError
 
 
 def load_sql(sql: str, database: Path) -> None:

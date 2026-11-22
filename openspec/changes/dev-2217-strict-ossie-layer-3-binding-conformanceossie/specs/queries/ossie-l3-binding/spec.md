@@ -181,7 +181,7 @@ A saved query run by name under `ossie-l3` SHALL be judged and answered by these
 Under `ossie-l3` the run's `variables` SHALL substitute the filter's placeholders as literals before the filter is judged; a query-level `variables` part SHALL raise `E_INVALID_QUERY`.
 
 #### Scenario: A placeholder bound by the run's variables
-- **WHEN** `{"metrics": ["orders.total_revenue"], "filter": "customers.region = {r}"}` runs under `ossie-l3` with `variables={"r": "EAST"}`
+- **WHEN** `{"metrics": ["orders.total_revenue"], "filter": "customers.region = '{r}'"}` runs under `ossie-l3` with `variables={"r": "EAST"}`
 - **THEN** it returns 350
 
 ### Requirement: Explain and dry runs judge first

@@ -12,7 +12,7 @@ legacy_arrows: {baseline: 7}
 x-guards: {baseline: 0}
 
 cross_cutting_specs:
-  queries: {touches: [python.core, python.engine, python.sql, python.storage]}
+  queries: {touches: [python.core, python.engine, python.sql, python.storage, python.surfaces]}
   models: {touches: [python.core, python.storage, python.engine, python.live_schema]}
   aggregations: {touches: [python.core, python.engine, python.sql]}
   cli: {touches: [python.surfaces, python.protocols]}

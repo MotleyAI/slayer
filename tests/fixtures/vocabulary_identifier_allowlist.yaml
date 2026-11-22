@@ -23,7 +23,7 @@ carve_outs:
   - {name: JoinKeyError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
   - {name: JoinTargetCaseError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
   - {name: MeasureCycleError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
-  - {name: MeasureNameCollidesWithColumnError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: E_AMBIGUOUS_MEASURE_GRAIN, file: slayer/core/errors.py, reason: "Ossie's own wire name"}
   - {name: MeasureRecursionLimitError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
   - {name: ModelFilterCycleError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
   - {name: ModelFilterError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
@@ -105,6 +105,7 @@ carve_outs:
   - {name: join_type, file: slayer/core/scope.py, reason: "SQL JOIN as an operation"}
   - {name: to_columns, file: slayer/core/scope.py, reason: "Ossie's own wire name"}
   - {name: ModelScopedMetric, file: slayer/core/semantic_model.py, reason: "Ossie's semantic model (the document)"}
+  - {name: ModelScopedAnalysis, file: slayer/core/semantic_model.py, reason: "Ossie's semantic model (the document)"}
   - {name: SemanticModelDocument, file: slayer/core/semantic_model.py, reason: "Ossie's semantic model (the document)"}
   - {name: from_columns, file: slayer/core/semantic_model.py, reason: "Ossie's own wire name"}
   - {name: semantic_model, file: slayer/core/semantic_model.py, reason: "Ossie's semantic model (the document)"}
@@ -639,4 +640,4 @@ carve_outs:
   - {name: visible_model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: warn_broken_model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: column, file: slayer/storage/semantic_models.py, reason: "SQL column in a SQL AST, statement or wire surface"}
-  - {name: model_scoped_problem, file: slayer/storage/semantic_models.py, reason: "Ossie's semantic model (the document)"}
+  - {name: analyse_model_scoped, file: slayer/storage/semantic_models.py, reason: "Ossie's semantic model (the document)"}
