@@ -24,31 +24,32 @@
 
 ## 3. Binding (engine.binding, engine.bind_inputs, core.keys, ir)
 
-- [ ] 3.1 Bottom-up aggregate binding: resolve each aggregation's source anchor (one shared anchor; else the smallest dataset determining every leaf's anchor over provably to-one hops; tie → `UnresolvableDimensionRelationshipError` with sorted explicit spellings; none → input-safety error, raised in the checker per engine P9), then bind source, parameters, defaults, `FILTER`, ranking keys in that anchor's scope. Verify: 1.1 binding cases.
-- [ ] 3.2 Key identity = anchor + canonical route for every query reference; the population's and each home's reach derived from it; retire `prebound.reference_anchors` and `_source_anchor`. Verify: 1.4 identity cases, `test_dev2212_home_routing.py` dimension order both ways, result-key tests unchanged.
-- [ ] 3.3 Home resolution (`population/home.py`) from the anchor, not from host paths; `row_supply._home` agrees (one rule). Verify: `tests/test_dev1832_home.py`, `test_dev1931_default_home.py`, `test_dev1908_default_cancellation.py` green.
+- [x] 3.1 Bottom-up aggregate binding: resolve each aggregation's source anchor (one shared anchor; else the smallest dataset determining every leaf's anchor over provably to-one hops; tie → `UnresolvableDimensionRelationshipError` with sorted explicit spellings; none → input-safety error, raised in the checker per engine P9), then bind source, parameters, defaults, `FILTER`, ranking keys in that anchor's scope. Verify: 1.1 binding cases.
+- [x] 3.2 Key identity = anchor + canonical route for every query reference; the population's and each home's reach derived from it; retire `prebound.reference_anchors` and `_source_anchor`. Verify: 1.4 identity cases, `test_dev2212_home_routing.py` dimension order both ways, result-key tests unchanged.
+- [x] 3.3 Home resolution (`population/home.py`) from the anchor, not from host paths; `row_supply._home` agrees (one rule). Verify: `tests/test_dev1832_home.py`, `test_dev1931_default_home.py`, `test_dev1908_default_cancellation.py` green.
 
 ## 4. Producers (engine.compile)
 
-- [ ] 4.1 `_synthesize_cross_dataset_producer` rooted at the home without `target_path`; grain and filter keys read from the home by their anchored spelling; join-back on grain values only. Verify: 1.1, `tests/test_dev1995_virtual_model.py`, `test_dev1836_producer_execution.py`.
-- [ ] 4.2 Association arm: private home-row identity (PK / per-query row number / parent + element), dedup on (grain, identity), grain-value join-back. Verify: `test_dev1841_association_exec.py`, `test_dev1910_home_rooted_association.py`, `test_dev2216_keyless_association.py`, `test_dev2367_list_elements_across_joins.py`, `test_dev1914_ranked_windowed_association.py`, 1.4 association cases.
-- [ ] 4.3 Per-home filter disposition in anchored queries too; delete `_host_membership`. Verify: 1.3, 1.4 filter cases, `test_dev1840_execution.py`, `test_dev2210_join_target_model_filters.py`.
-- [ ] 4.4 Ranked / windowed / first-last: ordering keys from the anchor, axis from the home; product hops via `crosses_product_hop` re-expressed from the home. Verify: `test_dev1945_ranking_key_safety.py`, `test_dev1914_*`, `test_unrelated_datasets.py`.
+- [x] 4.1 `_synthesize_cross_dataset_producer` rooted at the home without `target_path`; grain and filter keys read from the home by their anchored spelling; join-back on grain values only. Verify: 1.1, `tests/test_dev1995_virtual_model.py`, `test_dev1836_producer_execution.py`.
+- [x] 4.2 Association arm: private home-row identity (PK / per-query row number / parent + element), dedup on (grain, identity), grain-value join-back. Verify: `test_dev1841_association_exec.py`, `test_dev1910_home_rooted_association.py`, `test_dev2216_keyless_association.py`, `test_dev2367_list_elements_across_joins.py`, `test_dev1914_ranked_windowed_association.py`, 1.4 association cases.
+- [x] 4.3 Per-home filter disposition in anchored queries too; delete `_host_membership`. Verify: 1.3, 1.4 filter cases, `test_dev1840_execution.py`, `test_dev2210_join_target_model_filters.py`.
+- [x] 4.4 Ranked / windowed / first-last: ordering keys from the anchor, axis from the home; product hops via `crosses_product_hop` re-expressed from the home. Verify: `test_dev1945_ranking_key_safety.py`, `test_dev1914_*`, `test_unrelated_datasets.py`.
 
 ## 5. Re-aggregation operand
 
-- [ ] 5.1 `_synthesize_reaggregation_producer`: operand rows = the row supply of the inner query (union grain × constituents), coarser constituents broadcast, lacking cells take their empty value; outer aggregate joined on grain values. Verify: 1.2, `test_dev1847_reaggregation_exec.py`, `test_dev1824_partitioned_execution.py`, `test_reagg_outer_grain_attribution.py`.
+- [x] 5.1 `_synthesize_reaggregation_producer`: operand rows = the row supply of the inner query (union grain × constituents), coarser constituents broadcast, lacking cells take their empty value; outer aggregate joined on grain values. Verify: 1.2, `test_dev1847_reaggregation_exec.py`, `test_dev1824_partitioned_execution.py`, `test_reagg_outer_grain_attribution.py`.
 
 ## 6. Population planning (engine.population, query_engine)
 
-- [ ] 6.1 Delete `anchored_rows`, `_anchored_rows`, `_StageInference.anchored` and their callers. Verify: `test_dev2212_home_routing.py` anchored cases (datasource case included) green.
-- [ ] 6.2 `plan_rows`: drop hosting at a supplying home for the carrier; host = the dimension anchor else a full-grain home, binder scope only. Verify: 1.1 metric-order invariance, `test_dev2212_row_supply.py`, law harness files (`test_law_measure_monotonicity.py`, `test_law_home_row_preservation.py`, `test_law_unit.py`, `test_law_population_invariance.py`).
+- [x] 6.1 Delete `anchored_rows`, `_anchored_rows`, `_StageInference.anchored` and their callers. Verify: `test_dev2212_home_routing.py` anchored cases (datasource case included) green.
+- [x] 6.2 `plan_rows`: drop hosting at a supplying home for the carrier; host = the dimension anchor else a full-grain home, binder scope only. Verify: 1.1 metric-order invariance, `test_dev2212_row_supply.py`, law harness files (`test_law_measure_monotonicity.py`, `test_law_home_row_preservation.py`, `test_law_unit.py`, `test_law_population_invariance.py`).
+- [x] 6.3 Bind every dataset's Mode-A variables at one point (decision 34). Verify: `tests/test_dev2392_joined_dataset_variables.py`, the DEV-2392 xfail in `tests/test_dev2212_saved_queries.py` removed, the variable suites green.
 
 ## 7. Docs
 
-- [ ] 7.1 `docs/concepts/queries.md` (population decides rows only), `docs/concepts/references.md` (an aggregation reads from its own anchor; multi-anchor rule), `docs/concepts/datasets.md` › Dataset filters (as the population they decide only the rows), `docs/upgrading/2.0.md` (breaking: restricted populations no longer narrow off-path homes; re-aggregations count their constituents' cells, so a childless parent no longer averages in as 0; multi-anchor ties refused; remedies). Verify: docs guard tests pass; `zensical.toml` nav unchanged (no new page).
+- [x] 7.1 `docs/concepts/queries.md` (population decides rows only), `docs/concepts/references.md` (an aggregation reads from its own anchor; multi-anchor rule), `docs/concepts/datasets.md` › Dataset filters (as the population they decide only the rows), `docs/upgrading/2.0.md` (breaking: restricted populations no longer narrow off-path homes; re-aggregations count their constituents' cells, so a childless parent no longer averages in as 0; multi-anchor ties refused; remedies). Verify: docs guard tests pass; `zensical.toml` nav unchanged (no new page).
 
 ## 8. Gates
 
-- [ ] 8.1 Re-bless golden SQL only where the join-back, association or carrier shape changed and the executed twin is unchanged. Verify: golden suites green.
+- [x] 8.1 Re-bless golden SQL only where the join-back, association or carrier shape changed and the executed twin is unchanged. Verify: golden suites green.
 - [ ] 8.2 Local test scope per `/la:pr`, `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors), `poetry run la-arch-check`, `npx likec4 validate`. Verify: all green.

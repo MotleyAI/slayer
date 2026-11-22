@@ -175,6 +175,11 @@ cross-cutting groups.
     keeps its mode-aware resolution" to an error). Axiom 8 reworded to match (approved separately). (user)
 33. `queries/references` › The directed cycle is announced: its example reads `z.amount` in a filter, a reference the
     population reads; an aggregation's source is no longer routed from the population (decision 6). (user)
+34. DEV-2392 folded in: every dataset a statement reads binds its Mode-A `{var}` with its own `query_variables`
+    defaults under the query's layers (outer, stage, runtime) at one substitution point; another dataset's defaults
+    never reach it, and a spliced stage rebinds its source and cells under its own layers. Hosting an inferred
+    population at its dimension anchor makes joined datasets common, so an unbound `{var}` would silently empty
+    their values. (user)
 
 ## Risks / Trade-offs
 

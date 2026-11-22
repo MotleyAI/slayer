@@ -78,31 +78,31 @@
   "closed/cancel_then_fanning::tsql": "WITH _base AS (\n  SELECT\n    1 AS _placeholder\n), _cm_orders__customers__regions__countries__gdp_wsum_fan_weight_customers_regions_region_events_value AS (\n  SELECT\n    CAST(SUM(regions__countries.gdp * region_events.value) AS FLOAT) AS [regions___countries___gdp_wsum_fan_weight_value_host]\n  FROM region_events AS region_events\n  LEFT JOIN regions AS regions\n    ON region_events.region_id = regions.id\n  LEFT JOIN countries AS regions__countries\n    ON regions.country_id = regions__countries.id\n)\nSELECT\n  _cm_orders__customers__regions__countries__gdp_wsum_fan_weight_customers_regions_region_events_value.[regions___countries___gdp_wsum_fan_weight_value_host] AS [w]\nFROM _base\nCROSS JOIN _cm_orders__customers__regions__countries__gdp_wsum_fan_weight_customers_regions_region_events_value",
   "closed/query_typed_revisit::bigquery": {
     "error": "CircularRelationshipPathError",
-    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'customers': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::duckdb": {
     "error": "CircularRelationshipPathError",
-    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'customers': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::mysql": {
     "error": "CircularRelationshipPathError",
-    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'customers': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::postgres": {
     "error": "CircularRelationshipPathError",
-    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'customers': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::snowflake": {
     "error": "CircularRelationshipPathError",
-    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'customers': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::sqlite": {
     "error": "CircularRelationshipPathError",
-    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'customers': hop 'customers' revisits dataset 'customers'."
   },
   "closed/query_typed_revisit::tsql": {
     "error": "CircularRelationshipPathError",
-    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'orders': hop 'customers' revisits dataset 'customers'."
+    "message": "Circular relationship path detected resolving 'customers.regions.customers.spend' from 'customers': hop 'customers' revisits dataset 'customers'."
   },
   "closed/second_order_nowhere::bigquery": {
     "error": "UnresolvableDimensionRelationshipError",
