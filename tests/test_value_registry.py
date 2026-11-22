@@ -16,7 +16,6 @@ from slayer.core.enums import DataType
 from slayer.core.errors import (
     CanonicalAliasShadowsFieldError,
     DuplicateMetricNameError,
-    MetricNameCollidesWithFieldError,
 )
 from slayer.core.keys import (
     AggregateKey,
@@ -184,18 +183,6 @@ class TestAliasCollisions:
                 key=key,
                 declared_name="rev",
                 public_name="rev",
-                phase=Phase.AGGREGATE,
-            )
-
-    def test_name_collides_with_source_column_raises(self):
-        # A declared name matching a field on the host dataset is rejected.
-        r = ValueRegistry(typing=SHOP_TYPING, source_field_names=frozenset({"amount"}))
-        key = AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum")
-        with pytest.raises(MetricNameCollidesWithFieldError):
-            r.intern(
-                key=key,
-                declared_name="amount",
-                public_name="amount",
                 phase=Phase.AGGREGATE,
             )
 

@@ -344,11 +344,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + 'Define a derived field that extracts a comparable value instead, e.g. sql="payload->>\'status\'" with type TEXT.',
          category="checker", family="regroup-roots", user=True, owner="checker"),
     _row(module=_EE, function="check_computed_dim_name_collision", exc="NameCollisionError",
-         message="The computed dimension name collides with an existing field or metric on dataset …."
-         + AT + "dimension …"
-         + SUGGEST + "Choose a different name.",
-         category="checker", family="names", user=True, owner="checker"),
-    _row(module=_EE, function="check_computed_dim_name_collision", exc="NameCollisionError",
          message="The computed dimension name collides with a query metric of the same name."
          + AT + "dimension …"
          + SUGGEST + "Choose a different name.",
@@ -426,8 +421,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="This metric references row-level …, not available at the query grain (not among the query dimensions).\n  at metric …"
          + SUGGEST + "Add the row-level reference to the query dimensions, or aggregate it.",
          category="checker", family="positions", user=True, owner="checker"),
-    _row(module=_EE, function="check_metric_name_collision", exc="MetricNameCollidesWithFieldError", message="",
-         category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_canonical_alias_shadows_field", exc="CanonicalAliasShadowsFieldError", message="",
          category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_duplicate_metric_name", exc="DuplicateMetricNameError", message="",

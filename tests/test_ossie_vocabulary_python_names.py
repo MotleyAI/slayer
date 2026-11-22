@@ -73,7 +73,6 @@ _ERRORS = {
     "JoinKeyError": "RelationshipKeyError",
     "JoinTargetCaseError": "RelationshipTargetCaseError",
     "MeasureCycleError": "MetricCycleError",
-    "MeasureNameCollidesWithColumnError": "MetricNameCollidesWithFieldError",
     "MeasureRecursionLimitError": "MetricRecursionLimitError",
     "ModelFilterCycleError": "DatasetFilterCycleError",
     "ModelFilterError": "DatasetFilterError",

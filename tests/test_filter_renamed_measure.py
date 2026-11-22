@@ -411,19 +411,15 @@ class TestRemapEdgeCases:
             f"dataset filter shape altered:\nWHERE={where!r}"
         )
 
-    async def test_query_measure_name_collides_with_source_column_raises(
+    async def test_query_metric_name_equal_to_a_source_field_compiles(
         self,
     ) -> None:
-        """Codex F2: ``{"metric": "sum(amount)", "alias": "status"}`` where
-        ``status`` is a source field must raise at enrichment with a clear
-        message — otherwise alias-form filters silently bind to the source
-        field instead of the renamed metric.
-        """
+        """``{"metric": "sum(amount)", "alias": "status"}`` where ``status`` is a source field compiles: fields are
+        always qualified and names bare, so the two never meet."""
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="orders.id")],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="status")],
         )
-        with pytest.raises(ValueError, match=r"matches a source field"):
-            await _generate(query, model)
+        assert await _generate(query, model)

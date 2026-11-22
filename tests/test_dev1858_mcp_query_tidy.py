@@ -27,7 +27,7 @@ RETIRED_ARGS = {
     "order", "limit", "offset", "whole_periods_only", "strict",
     "distinct_dimension_values",
 }
-UNIFIED_ARGS = {"query", "variables", "refine", "show_sql", "dry_run", "explain", "format"}
+UNIFIED_ARGS = {"query", "variables", "refine", "show_sql", "dry_run", "explain", "format", "conformance"}
 
 
 def _is_object_shaped(schema: dict) -> bool:
