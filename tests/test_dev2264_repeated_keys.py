@@ -489,3 +489,67 @@ async def test_a_filtered_write_of_unreadable_content_is_refused(tmp_path: Path,
         await WRITES[write](filtered, text)
     assert names_problem(str(info.value), text=text, verdict=verdict, needle=needle, at=at)
     assert await storage.list_semantic_models(DS) == []
+
+
+async def test_a_batch_inspect_keeps_each_documents_warnings(tmp_path: Path) -> None:
+    storage = await hand_placed("yaml", tmp_path, BAD_DATE)
+    await store_document(storage, SUPPORT)
+    async with owned_query_engine(storage=storage) as engine:
+        sales, support = json.loads(await InspectService(storage=storage, engine=engine).inspect(
+            reference=[f"{DS}.sales", f"{DS}.support"], entity_type="semantic_model", format="json"))
+    assert names_scalar("\n".join(sales["warnings"]), value="2024-02-30", line=line_of(BAD_DATE, "description:"))
+    assert support["warnings"] == []
+
+
+async def test_a_filtered_inspect_names_why_a_document_does_not_load(tmp_path: Path) -> None:
+    storage = await hand_placed("yaml", tmp_path, DUP_SOURCE)
+    filtered = AccessFilteredStorage(storage, tags=[], bypass=False)
+    async with owned_query_engine(storage=storage) as engine:
+        payload = json.loads(await InspectService(storage=filtered, engine=engine).inspect(
+            reference=f"{DS}.sales", entity_type="semantic_model", format="json"))
+    assert names_repeated("\n".join(payload["warnings"]), key="source", line=line_of(DUP_SOURCE, "orders_archive"))
+
+
+async def test_a_filtered_search_survives_an_unreadable_document(tmp_path: Path) -> None:
+    storage = await hand_placed("yaml", tmp_path, DUP_SOURCE)
+    await store_document(storage, SUPPORT)
+    filtered = AccessFilteredStorage(storage, tags=[], bypass=False)
+    async with owned_query_engine(storage=storage) as engine:
+        response = await SearchService(storage=filtered, engine=engine).search(question="returns", datasource=DS,
+                                                                               max_results=50)
+    assert f"{DS}.returns" in {hit.id for hit in response.results}
+
+
+async def test_export_leaves_out_a_document_edited_unreadable_after_it_loaded(tmp_path: Path,
+                                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = make_storage("yaml", tmp_path)
+    await storage.save_datasource(DatasourceConfig(name=DS, type="duckdb", database=str(tmp_path / "absent.duckdb")))
+    await store_document(storage, SALES)
+    await store_document(storage, SUPPORT)
+    read = storage.get_semantic_model_text
+
+    async def edited(name: str, data_source: str | None = None) -> str | None:
+        return DUP_SOURCE if name == "sales" else await read(name, data_source=data_source)
+
+    async with owned_query_engine(storage=storage) as engine:
+        monkeypatch.setattr(storage, "get_semantic_model_text", edited)
+        exported = (await export_osi(engine=engine, datasource=DS, extensions=True)).document
+    assert "returns" in {d["name"] for d in exported["datasets"]}
+
+
+async def test_a_filtered_export_leaves_out_a_document_edited_unreadable_after_it_loaded(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = make_storage("yaml", tmp_path)
+    await storage.save_datasource(DatasourceConfig(name=DS, type="duckdb", database=str(tmp_path / "absent.duckdb")))
+    await store_document(storage, SALES)
+    await store_document(storage, SUPPORT)
+    filtered = AccessFilteredStorage(storage, tags=[], bypass=False)
+    read = storage.get_semantic_model_text
+
+    async def edited(name: str, data_source: str | None = None) -> str | None:
+        return DUP_SOURCE if name == "sales" else await read(name, data_source=data_source)
+
+    async with owned_query_engine(storage=filtered) as engine:
+        monkeypatch.setattr(storage, "get_semantic_model_text", edited)
+        exported = (await export_osi(engine=engine, datasource=DS)).document
+    assert "returns" in {d["name"] for d in exported["datasets"]}

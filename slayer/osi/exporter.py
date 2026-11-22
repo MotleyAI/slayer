@@ -17,7 +17,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.document_text import edit_text, parse_document_text, without_vendor
-from slayer.core.errors import AmbiguousReferenceError, SlayerError
+from slayer.core.errors import AmbiguousReferenceError, OssieDocumentInvalidError, SlayerError, UnreadableDocumentError
 from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
 from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
@@ -1040,15 +1040,18 @@ async def _expanded_query_backed(
     return virtual
 
 
-async def _stored_documents(*, storage: Any, datasource: str, loaded: set[str]) -> list[tuple[str, str]]:
-    """The name and text of each stored semantic-model document named in ``loaded``."""
-    documents: list[tuple[str, str]] = []
+async def _stored_documents(*, storage: Any, datasource: str, loaded: set[str]) -> list[tuple[str, str, Any]]:
+    """The name, text and data of each stored semantic-model document named in ``loaded`` that still reads."""
+    documents: list[tuple[str, str, Any]] = []
     for _, name in await storage.list_semantic_models(datasource):
         if name not in loaded:
             continue
-        text = await storage.get_semantic_model_text(name, data_source=datasource)
-        if text is not None:
-            documents.append((name, text))
+        try:
+            text = await storage.get_semantic_model_text(name, data_source=datasource)
+            if text is not None:
+                documents.append((name, text, parse_document_text(text)))
+        except (UnreadableDocumentError, OssieDocumentInvalidError):  # edited since it loaded
+            continue
     return documents
 
 
@@ -1068,7 +1071,7 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
     resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
     documents = await _stored_documents(storage=storage, datasource=datasource,
                                         loaded={d.semantic_model for d in stored.values() if d.semantic_model})
-    parsed = [parse_document_text(text) for _, text in documents]
+    parsed = [data for _, _, data in documents]
     members = {d["name"] for doc in parsed for d in doc["datasets"]}
     if datasets is None and len(documents) == 1 and members == set(stored):
         text = documents[0][1] if extensions else edit_text(documents[0][1],

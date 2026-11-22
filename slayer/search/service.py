@@ -17,7 +17,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from slayer.core.document_text import parse_document_text
-from slayer.core.errors import AmbiguousDatasetError, EntityResolutionError, UnreadableDocumentError
+from slayer.core.errors import (
+    AmbiguousDatasetError, EntityResolutionError, OssieDocumentInvalidError, UnreadableDocumentError,
+)
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh, refresh_table_backed_dataset_sampled
@@ -1203,10 +1205,10 @@ class SearchService:
         documents = await self._storage.list_semantic_models(data_source=datasource)
         for ds in sorted({ds for ds, _ in documents}):
             for _, name in [d for d in documents if d[0] == ds]:
-                text = await self._storage.get_semantic_model_text(name, data_source=ds)
                 try:
+                    text = await self._storage.get_semantic_model_text(name, data_source=ds)
                     document = parse_document_text(text) if text else {}
-                except UnreadableDocumentError:  # unloadable: indexed by name alone
+                except (UnreadableDocumentError, OssieDocumentInvalidError):  # unloadable: indexed by name alone
                     document = {}
                 document = document if isinstance(document, dict) else {}
                 out.append((f"{ds}.{name}", "semantic_model",

@@ -15,6 +15,7 @@ from slayer.core.errors import (
     AmbiguousDatasetError,
     EntityResolutionError,
     MemoryNotFoundError,
+    OssieDocumentInvalidError,
     UnreadableDocumentError,
 )
 from slayer.core.models import SlayerDataset
@@ -866,12 +867,12 @@ class InspectService:
             what = "no" if not found else "more than one"
             return _OneResult(None, True, f"'{reference}' names {what} semantic model; pass '<datasource>.<name>'.")
         ds, name = found[0]
-        text = await self._storage.get_semantic_model_text(name, data_source=ds) or ""
         try:
+            text = await self._storage.get_semantic_model_text(name, data_source=ds) or ""
             doc = parse_document_text(text) if text else {}
-        except UnreadableDocumentError as exc:
+        except (UnreadableDocumentError, OssieDocumentInvalidError) as exc:
             doc = {}
-            warnings.append(f"Semantic model '{ds}.{name}' does not load: {exc}")
+            warnings = [*warnings, f"Semantic model '{ds}.{name}' does not load: {exc}"]
         doc = doc if isinstance(doc, dict) else {}
         loaded, _ = await self._storage.load_datasets(data_source=ds)
         members = [d for d in loaded if d.semantic_model == name]

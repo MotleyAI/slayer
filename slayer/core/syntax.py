@@ -1344,6 +1344,13 @@ def _parse_tree(text: str) -> Any:
 
 @lru_cache(maxsize=8192)
 def _read(text: str) -> _Reading:
+    try:
+        return _reading(text)
+    except RecursionError:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: it nests too deeply to read.") from None
+
+
+def _reading(text: str) -> _Reading:
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
     with _PARSE_LOCK:

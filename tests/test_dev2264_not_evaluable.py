@@ -3,6 +3,8 @@ parse), plus the superset cases Ossie rejects but upstream ``validate.py`` passe
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -277,3 +279,28 @@ async def test_a_restored_field_drops_the_window_warning_of_its_document_form() 
         assert await field_warning(engine, "x") is None
         rows = (await engine.execute({"population": "orders", "dimensions": ["orders.x", "orders.amount"]})).data
         assert [float(r["orders.x"]) for r in rows] == [float(r["orders.amount"]) for r in rows]
+
+
+LONG_SUM = " + ".join(["amount"] * 1000)
+
+
+@pytest.fixture
+def default_recursion_limit() -> Iterator[None]:
+    """Python's default limit, which an imported library (jedi) may have raised."""
+    before = sys.getrecursionlimit()
+    sys.setrecursionlimit(1000)
+    yield
+    sys.setrecursionlimit(before)
+
+
+@pytest.mark.usefixtures("default_recursion_limit")
+def test_an_expression_too_long_to_walk_is_a_parse_error() -> None:
+    with pytest.raises(ValueError, match="nests too deeply"):
+        parse_expr(LONG_SUM)
+
+
+@pytest.mark.usefixtures("default_recursion_limit")
+async def test_an_expression_too_long_to_walk_loads_not_evaluable() -> None:
+    async with document_engine(documents=(orders_doc(field("flag", LONG_SUM, datatype="Float")),)) as engine:
+        assert await field_warning(engine, "flag")
+        assert await total_amount(engine) == 650.0
