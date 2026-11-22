@@ -1696,8 +1696,11 @@ def _source_anchors(
     """The datasets a query aggregation's row-level source references are anchored at; ``None`` when one is no
     dataset reference (an alias, an unknown name, the spine) or the source reads none."""
     found: List[SlayerDataset] = []
+    # Attached constituents (nested aggregations, transforms) are opaque: only row-level leaves anchor the source.
+    attached = {id(n) for t in walk_parsed(parsed.source) if isinstance(t, (AggCall, TransformCall))
+                for n in walk_parsed(t)}
     for node in walk_parsed_refs(parsed.source):
-        if isinstance(node, AggCall):
+        if isinstance(node, AggCall) or id(node) in attached:
             continue
         if not isinstance(node, DottedRef):
             return None

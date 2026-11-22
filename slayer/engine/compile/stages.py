@@ -34,7 +34,7 @@ from slayer.core.errors import (
     AmbiguousRelationshipPathError, PopulationErrorReason, PopulationInferenceError,
     UnresolvableDimensionRelationshipError,
 )
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, is_reaggregation_key, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, display_token, is_framed_path, is_reaggregation_key, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.names import spelled_name
 from slayer.core.relationship_search import routes
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
@@ -5024,7 +5024,24 @@ def _respellings(
     path = _value_anchor_path(key)
     if not path:
         return _leaf_variants(rest=flat, key=key, upstream=upstream)[1:]
-    prefix = "__".join(path) + "__"
+    head: Tuple[str, ...] = ()
+    if is_framed_path(path):
+        frame = datasets_by_name.get(display_token(path[0]))
+        if frame is None:
+            return ()
+        if flat.startswith(f"{frame.name}__"):
+            # Read from its own frame: the anchor hop spells its dataset, the route follows from there.
+            head, path, root = (frame.name,), path[1:], frame
+            if not path:
+                return tuple(f"{frame.name}__{leaf}" for leaf in _leaf_variants(
+                    rest=flat[len(frame.name) + 2:], key=key, upstream=upstream))[1:]
+        elif root is not None:
+            # Named by the reader's route to the frame (a saved metric's reference).
+            try:
+                path = (*anchor_route(reader=root, anchor=frame, datasets_by_name=datasets_by_name).route, *path[1:])
+            except UnresolvableDimensionRelationshipError:
+                return ()
+    prefix = "__".join((*head, *path)) + "__"
     if root is None or not flat.startswith(prefix):
         return ()
     try:
@@ -5035,8 +5052,7 @@ def _respellings(
         return ()
     named = [i for i, e in enumerate(chain) if e.name is not None]
     paths = [
-        "__".join(chain[i].to if i in subset else tok
-                  for i, tok in enumerate(path))
+        "__".join((*head, *(chain[i].to if i in subset else tok for i, tok in enumerate(path))))
         for r in range(len(named) + 1)
         for subset in itertools.combinations(named, r)
     ]
