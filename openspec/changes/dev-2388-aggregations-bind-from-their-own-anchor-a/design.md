@@ -173,6 +173,8 @@ cross-cutting groups.
     "Partition key across a fanning hop stays a typed error" body aligned (codex). Options: key's anchor (keeps every
     scenario and today's engine behaviour) / aggregate's home (Axiom 8's former literal; flips "Host-safe partition key
     keeps its mode-aware resolution" to an error). Axiom 8 reworded to match (approved separately). (user)
+33. `queries/references` › The directed cycle is announced: its example reads `z.amount` in a filter, a reference the
+    population reads; an aggregation's source is no longer routed from the population (decision 6). (user)
 
 ## Risks / Trade-offs
 

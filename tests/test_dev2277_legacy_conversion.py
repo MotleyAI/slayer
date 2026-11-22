@@ -401,7 +401,8 @@ async def test_a_converted_query_shares_its_twins_cached_result(seed: SlayerQuer
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_the_changed_reference_notice_emits_no_future_warning(backend: str) -> None:
     async with cycle_engine(backend) as eng:
-        resp, caught = await execute_recording(eng, {"population": "x", "metrics": ["sum(z.amount)"]})
+        resp, caught = await execute_recording(eng, {"population": "x", "metrics": ["count(x.*)"],
+                                                     "filter": ["z.amount > 0"]})
     assert future_warnings(caught) == []
     assert len(notices(resp, "z.amount", "x.z.amount")) == 1
 

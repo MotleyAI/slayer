@@ -13,7 +13,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.errors import SlayerError
-from slayer.core.keys import AggregateKey
+from slayer.core.keys import AggregateKey, anchor_token
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
@@ -206,7 +206,7 @@ class TestFanningDefaultHomesLikeItsTwin:
     """α: a default crossing a fanning hop homes at the fanned dataset, like its twin."""
 
     def test_home_path(self) -> None:
-        home = ("customers", "regions", "region_events")
+        home = (anchor_token("customers"), "regions", "region_events")
         assert _home_path("wsum_fan(customers.regions.countries.gdp)") == home
         assert _home_path("wsum_fan(customers.regions.countries.gdp, "
                           "weight=customers.regions.region_events.value)") == home

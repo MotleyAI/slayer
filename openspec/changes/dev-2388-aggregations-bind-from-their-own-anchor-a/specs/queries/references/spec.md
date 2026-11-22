@@ -64,3 +64,15 @@ A query SHALL reach a reference's anchor from its **reading dataset** as follows
 - **WHEN** `orders → customers → regions → managers` and `orders → managers` are many-to-one, and a query with `population: "customers"` measures `sum(customers.orders.amount)` grouped by `customers.regions.managers.name` and `managers.name`, once in each order
 - **THEN** both fail with the same ambiguity error naming the two spellings of `managers` from `orders`, the home: `managers.name` is anchored at `managers`, which `orders` reaches by two to-one paths, whichever dimension is written first
 
+
+### Requirement: A reference whose meaning changed announces it
+
+When a fresh query that names its population reads a dataset-first reference whose anchor is the target of a relationship incident to the population and spelled with that dataset's name, and the path taken is not that relationship, the response SHALL carry one informational structured warning per reference naming the reference, the path taken and the explicit spelling of the relationship's path. It SHALL NOT be a `FutureWarning`, and it is marked for removal in SLayer 3.0 as `compatibility/removal-tripwire` marks a notice.
+
+#### Scenario: The directed cycle is announced
+- **WHEN** `x → y`, `y → z` and `z → x` are many-to-one and a query with `population: "x"` filters `z.amount > 0`
+- **THEN** the response carries the notice naming `z.amount`, the path `x → y → z` and the spelling `x.z.amount`
+
+#### Scenario: An unchanged reference is silent
+- **WHEN** a query with `population: "orders"` selects `customers.region` over the seed schema
+- **THEN** no notice is emitted

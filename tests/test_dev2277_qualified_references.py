@@ -374,7 +374,7 @@ async def test_a_refinement_matches_a_converted_entry(engine: SlayerQueryEngine)
 async def test_the_directed_cycle_is_announced(backend: str) -> None:
     async with cycle_engine(backend) as eng:
         resp, caught = await execute_recording(eng, {"population": "x", "dimensions": ["x.v"],
-                                                     "metrics": ["sum(z.amount)"]})
+                                                     "metrics": ["count(x.*)"], "filter": ["z.amount > 0"]})
     announced = notices(resp, "z.amount", "x.z.amount")
     assert len(announced) == 1
     assert "x → y → z" in announced[0] or "x.y.z" in announced[0]
