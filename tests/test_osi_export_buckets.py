@@ -15,10 +15,9 @@ from slayer.core.models import DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import EXPORT_DDL, PG_DDL, customers, orders, slayer_metric
 from tests._osi_export_helpers import (
-    Env, carries, convert_document, dataset, export_datasets, expression_sql, make_env, mentions, metric, reimport,
+    Env, carries, dataset, export_datasets, expression_sql, make_env, mentions, metric, reimport,
     rows, run_sql, same_sql,
 )
-from tests._osi_helpers import metric_home
 from tests._pg_helpers import pg_database
 
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -145,11 +144,10 @@ async def test_bucket_in_a_model_scoped_metric(tmp_path: Path) -> None:
 async def test_bucket_in_a_model_scoped_metric_without_extensions(tmp_path: Path) -> None:
     env = await make_env(tmp_path)
     document = await _export_orders(env, slayer_metric("months_per_customer", _PER_CUSTOMER), extensions=False)
-    home = metric_home(convert_document(env, document), "months_per_customer").name
     imported, _ = await reimport(env, document)
-    expected = await _value(env, "orders", "months_per_customer", grouped=False)
-    assert [v for _, v in await _value(imported, home, "months_per_customer", grouped=False)] == \
-        [v for _, v in expected]
+    # Re-imported, it is the document's model-scoped metric, answering by bare name.
+    assert await _value(imported, "orders", "months_per_customer", grouped=False) == \
+        await _value(env, "orders", "months_per_customer", grouped=False)
 
 
 # ─────────────────────────────── logical types ──────────────────────────────

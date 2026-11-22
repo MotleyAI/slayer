@@ -2,7 +2,7 @@
 
 ### Requirement: Metrics
 
-A measure SHALL export as an Ossie metric when every aggregate in it reads exactly one model and, for a measure reading several models, each of them is reachable from the measure's model by exactly one join route. Each aggregate SHALL be evaluated over the rows of the one model it reads, which is Ossie's component semantics. A measure whose aggregates all read one model SHALL export as a dataset-scoped metric on that model's dataset, with unqualified field names; any other exportable measure SHALL export as a model-scoped metric with `dataset.field` references. References to other measures SHALL be expanded. Metric expressions SHALL be standard portable SQL (`OSSIE_SQL_2026` in `sql`); an approximate distinct count, which has no portable form, SHALL be written only as a datasource-dialect entry, and so SHALL a measure containing a bucket of a datasource granularity, under "Time buckets in metrics export as standard SQL". Generated metric names SHALL be unique in their scope. An identifier that would be ambiguous under case-insensitive matching SHALL be double-quoted.
+A measure SHALL export as an Ossie metric when every aggregate in it reads exactly one model and, for a measure reading several models, each of them is reachable from the measure's model by exactly one join route. Each aggregate SHALL be evaluated over the rows of the one model it reads, which is Ossie's component semantics. A measure whose aggregates all read one model SHALL export as a dataset-scoped metric on that model's dataset, with unqualified field names, and its references to other measures SHALL be expanded; any other exportable measure SHALL export as a model-scoped metric with `dataset.field` references, and its references to measures SHALL be written as `AGG(dataset.metric)` of the referenced measure's exported dataset metric. A stored model-scoped metric SHALL export as a top-level metric unchanged; one that Ossie does not define (it refers to another model-scoped metric) SHALL travel only in the `SLAYER` extension. Metric expressions SHALL be standard portable SQL (`OSSIE_SQL_2026` in `sql`); an approximate distinct count, which has no portable form, SHALL be written only as a datasource-dialect entry, and so SHALL a measure containing a bucket of a datasource granularity, under "Time buckets in metrics export as standard SQL". Generated metric names SHALL be unique in their scope. An identifier that would be ambiguous under case-insensitive matching SHALL be double-quoted.
 
 #### Scenario: Dataset-scoped metric
 - **WHEN** `orders` has the measure `revenue: sum(amount)`
@@ -19,6 +19,10 @@ A measure SHALL export as an Ossie metric when every aggregate in it reads exact
 #### Scenario: Measure reference expanded
 - **WHEN** `orders` has measures `revenue: sum(amount)`, `n: count(*)` and `aov: revenue / n`
 - **THEN** metric `aov` has `sql: SUM(amount) / COUNT(*)`
+
+#### Scenario: Model-scoped reference to a dataset metric uses AGG
+- **WHEN** `orders` has measures `revenue: sum(amount)` and `revenue_per_customer: revenue / count_distinct(customers.id)`
+- **THEN** the document has a model-scoped metric `AGG(orders.revenue) / COUNT(DISTINCT customers.id)`
 
 #### Scenario: Percentile on SQLite
 - **WHEN** a SQLite datasource's model has the measure `p90: percentile(amount, 0.9)`
