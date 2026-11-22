@@ -15,8 +15,8 @@ from slayer.core.errors import UnrelatedDatasetError, UnresolvableDimensionRelat
 from slayer.core.field_expression import portable_text
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import (
-    AggCall, DottedRef, Literal, NamedArg, Ref, StarSource, TransformCall, UnaryOp, call_keywords, parse_template,
-    respell_bare_names,
+    AggCall, DottedRef, Literal, NamedArg, Ref, StarSource, TransformCall, UnaryOp, Placeholder, call_keywords, parse_expr,
+    parse_template, respell_bare_names,
     walk_parsed_refs,
 )
 from slayer.core.models import SlayerDataset
@@ -97,7 +97,7 @@ def _saved_metric(node: Any, *, owner: Optional[str], datasets_by_name: dict[str
     if text is None:
         return None
     try:
-        return parse_template(text), dataset.name, key
+        return parse_expr(text), dataset.name, key
     except Exception:  # noqa: BLE001 — an unparseable definition is refused where it binds
         return None
 
@@ -470,7 +470,9 @@ def plan_rows(
 # Spine rows (semantics Axiom 15)
 # --------------------------------------------------------------------------- #
 def _literal_text(node: Any) -> Optional[str]:
-    """A literal argument as Mode B text; ``None`` for any other node."""
+    """A literal argument (or a variable placeholder) as Mode B text; ``None`` for any other node."""
+    if isinstance(node, Placeholder):
+        return f"{{{node.name}}}"
     if isinstance(node, UnaryOp) and node.op == "-":
         inner = _literal_text(node.operand)
         return None if inner is None else f"-{inner}"
@@ -611,7 +613,8 @@ def _spine_witnesses(query: SlayerQuery, *, dims: list[str],
     broadcast = query.to_many_handling == "broadcast"
     for metric in query.metrics or []:
         try:
-            tree = parse_template(metric.metric)
+            # Placeholders stay text: each stage's supply binds its own layered variables.
+            tree = parse_expr(metric.metric)
         except Exception:  # noqa: BLE001 — an unparseable metric is refused where it binds
             continue
         found = list(_witnessed(tree, owner=None, shifts=(), datasets_by_name=datasets_by_name))

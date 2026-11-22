@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import UnrelatedDatasetError
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.errors import UnrelatedDatasetError, WindowDurationError
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.population.row_supply import stored_rows
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -202,6 +202,56 @@ async def test_a_producer_form_alone_supplies_its_in_frame_groups(engine, form: 
         assert {k[0] for k in got} == {"N"}
     else:
         assert got == expected
+
+
+@pytest.mark.parametrize(("form", "expr", "variables"), [
+    ("shifted", "time_shift(sum(orders.amount), {p})", {"p": -1}),
+    ("windowed", "sum(orders.amount, window='{w}')", {"w": "2m"}),
+])
+async def test_a_variable_bound_form_supplies_the_groups_of_its_literal_twin(
+    engine, form: str, expr: str, variables: dict,
+) -> None:
+    resp = await engine.execute(_per_group(metrics=[m(expr, "v")], date_range=FEB_MAR, variables=variables))
+    assert {k: v[0] for k, v in by_bucket(resp, ["v"], by=["region"]).items()} == FORMS[form][1]
+
+
+@pytest.mark.parametrize("layer", ["stage", "root", "runtime"])
+async def test_a_sibling_stage_witness_reads_every_variable_layer(engine, layer: str) -> None:
+    stage = _per_group(metrics=[m("time_shift(sum(orders.amount), {p})", "o")], date_range=FEB_MAR, name="monthly",
+                       **({"variables": {"p": -1}} if layer == "stage" else {}))
+    over = SlayerQuery.model_validate({"population": "monthly", "dimensions": ["monthly.region"],
+                                       "metrics": [m("count(monthly.*)", "c")],
+                                       **({"variables": {"p": -1}} if layer == "root" else {})})
+    resp = await engine.execute([stage, over], **({"variables": {"p": -1}} if layer == "runtime" else {}))
+    assert sorted(value(r, "region") for r in resp.data) == ["N", "S"]
+
+
+def _rolling_datasets() -> list[SlayerDataset]:
+    """The spine seed with ``orders.rolling = sum(amount, window='{w}')``."""
+    rolling = DatasetMetric(name="rolling", expression="sum(amount, window='{w}')")
+    return [d.model_copy(update={"metrics": [*d.metrics, rolling]}) if d.name == "orders" else d for d in spine_datasets()]
+
+
+async def test_a_variable_bound_saved_metric_supplies_its_windowed_groups() -> None:
+    async with spine_engine("duckdb", datasets=_rolling_datasets()) as eng:
+        resp = await eng.execute(spine_query(metrics=[m("orders.rolling", "v")], date_range=FEB_MAR,
+                                             dimensions=["orders.customer_id"], variables={"w": "2m"}))
+    # customer 2's only order is in January: February's two-month window still reads it
+    assert {(value(r, "customer_id"), bucket_key(value(r, "timestamp"))): num(value(r, "v")) for r in resp.data} == {
+        (1, "2025-02"): 170.0, (1, "2025-03"): 70.0, (2, "2025-02"): 50.0, (2, "2025-03"): None}
+
+
+@pytest.mark.xfail(strict=True, raises=WindowDurationError,
+                   reason="DEV-2396: a cross-dataset producer binds no {var} into a saved metric")
+async def test_a_saved_metric_variable_binds_in_a_cross_dataset_producer() -> None:
+    query = {"dimensions": ["customers.region"], "time_dimensions": [{"field": "orders.order_date", "granularity": "month"}],
+             "metrics": [m("orders.rolling", "v")], "variables": {"w": "2m"}}
+    async with spine_engine("duckdb", datasets=_rolling_datasets()) as eng:
+        rootless = await eng.execute(SlayerQuery.model_validate(query))
+        rooted = await eng.execute(SlayerQuery.model_validate({**query, "population": "customers"}))
+    assert {(value(r, "region"), str(value(r, "order_date"))[:7]): num(value(r, "v")) for r in rooted.data
+            if value(r, "region") != "E"} == {
+        (value(r, "region"), str(value(r, "order_date"))[:7]): num(value(r, "v")) for r in rootless.data}
 
 
 # ---------------------------------------------------------------------------
