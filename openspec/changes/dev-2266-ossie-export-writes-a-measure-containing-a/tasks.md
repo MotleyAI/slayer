@@ -24,5 +24,5 @@
 
 ## 4. Docs and gates
 
-- [ ] 4.1 `docs/osi/osi_export.md`: one line each on bucket export shape, `week_sunday`/`date_add` as `DATEADD`, the custom-granularity rule with the SQLite exception; `docs/concepts/time.md`: one line that `date_part`'s part may be written bare. Verify: pages render in `zensical.toml` nav (already linked).
+- [x] 4.1 `docs/osi/osi_export.md`: one line each on bucket export shape, `week_sunday`/`date_add` as `DATEADD`, the custom-granularity rule with the SQLite exception; `docs/concepts/references.md`: one line that `date_part`'s part may be written bare. Verify: pages render in `zensical.toml` nav (already linked).
 - [x] 4.2 Local test scope per `/la:pr` (`la-affected-tests --base main` plus the OSI export suites), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`, `npx -y likec4@1.47.0 validate architecture`. Verify: all green.
