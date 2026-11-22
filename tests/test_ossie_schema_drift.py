@@ -8,6 +8,7 @@ import hashlib
 import http.client
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import types
@@ -654,10 +655,14 @@ def test_a_backup_that_cannot_be_removed_is_named(monkeypatch: pytest.MonkeyPatc
     saved = _backup_dir(monkeypatch, tmp_path)
     _fake_harvest(monkeypatch)
 
-    def stuck(path: Any, *args: Any, **kwargs: Any) -> None:
-        raise OSError("busy")
+    real_rmtree = shutil.rmtree
 
-    monkeypatch.setattr(drift_check.shutil, "rmtree", stuck)
+    def stuck(path: Any, *args: Any, **kwargs: Any) -> None:
+        if Path(path) == saved:
+            raise OSError("busy")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", stuck)
     assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
     assert f"Could not remove the corpus backup {saved}" in capsys.readouterr().err
 
