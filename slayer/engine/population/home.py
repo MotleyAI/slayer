@@ -31,6 +31,8 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerDataset
 from slayer.core.refs import key_display
 from slayer.engine.cardinality.relationship_safety import attributable_from_root, key_host_path, safe_reachable
+from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.engine.population.anchors import anchor_route, source_frame
 from slayer.engine.population.home_reading import home_frame, home_read
 from slayer.engine.reference_closure import key_closure
 from slayer.ir.prebound import walk_key_path
@@ -147,8 +149,10 @@ def aggregate_home(
             c=c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket, in_frame=in_frame,
         ))
         seed_paths.extend(cg)
+    meet = _inputs_meet(input_paths, anchor=anchor, host_dataset=host_dataset, datasets_by_name=datasets_by_name,
+                        bundle=bundle)
     candidates = sorted(
-        {anchor, _longest_common_prefix(input_paths), *seed_paths},
+        {anchor, _longest_common_prefix(input_paths), *seed_paths, *((meet,) if meet is not None else ())},
         key=lambda p: (p != anchor, -len(p), p),
     )
     second_order = is_reaggregation_key(agg)
@@ -163,6 +167,28 @@ def aggregate_home(
     return AggregateHome(
         kind="operand_dataset" if second_order else "unresolved", path=_longest_common_prefix(input_paths),
     )
+
+
+def _inputs_meet(
+    input_paths: List[Path], *, anchor: Path, host_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
+) -> Optional[Path]:
+    """The smallest dataset determining every input's dataset (Axiom 2.6), as a path through the aggregation's frame;
+    ``None`` when the inputs share one dataset or none determines them all."""
+    universe = {**datasets_by_name, host_dataset.name: host_dataset}
+    reached = [walk_key_path(dataset=host_dataset, path=p, bundle=bundle) for p in input_paths]
+    terminals = [d for d in reached if d is not None]
+    if len(terminals) != len(reached) or len({d.name for d in terminals}) < 2:
+        return None
+    frame = home_frame(anchor, host=host_dataset, datasets_by_name=universe)
+    try:
+        meet = source_frame(terminals, datasets_by_name=universe, spell=lambda d: d.spelling)
+        if meet is None or frame is None:
+            return None
+        route = anchor_route(reader=frame[0], anchor=meet, datasets_by_name=universe)
+    except UnresolvableDimensionRelationshipError:
+        return None
+    return None if route.unrelated else (*anchor[:len(anchor) - len(frame[1])], *route.route)
 
 
 def _resolved_kind(*, second_order: bool, path: Path) -> HomeKind:

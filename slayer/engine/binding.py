@@ -67,7 +67,7 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
-from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
+from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.relationship_walker import (
     canonical_token,
     observe_read,
@@ -1770,9 +1770,10 @@ def _bind_agg_call(
         parsed, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
         dim_alias_map=dim_alias_map,
     )
-    if isinstance(key, AggregateKey) and frame.name != host.name:
-        return framed_aggregate(key, frame=frame.name)
-    return key
+    if not isinstance(key, AggregateKey):
+        return key
+    key = interior_unanchored(key)
+    return framed_aggregate(key, frame=frame.name) if frame.name != host.name else key
 
 
 def _bind_agg_call_in(

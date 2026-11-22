@@ -347,6 +347,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     grain_dms: List[DeclaredMetric] = []
     for pk in grain_keys:
         d_type = typing.value_type(pk) if typing is not None else None
+
         if dataset is not None:
             d_fmt, d_desc = dimension_key_format_description(dataset=dataset, key=pk)
         else:
@@ -3105,8 +3106,8 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
 
     # The operand (Axiom 2.4): one row per cell of its constituents' row supply at the union grain, carrying the
     # outer grain and every cell-determined parameter as its own columns.
-    field_params = [v for _n, v in reagg_params if not isinstance(v, (AggregateKey, TransformKey))
-                    and any(isinstance(k, (FieldKey, FieldSqlKey)) for k in walk_value_keys(v))]
+    field_params = [k for _n, v in reagg_params if not isinstance(v, (AggregateKey, TransformKey))
+                    for k in outside_aggregates(v) if isinstance(k, (FieldKey, FieldSqlKey))]
     carrier_grain = union_grain | Grain.of([*outer_grain, *field_params])
     grain_placeholders: Dict[ValueKey, ValueKey] = (
         {g: registry.placeholder_for(g) for g in _regroup_partition_order(carrier_grain)} if union_grain else {})
@@ -3161,7 +3162,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     )
     # Each legal parameter is picked once per cell, from its carrier column; level 2 reads it as ``_base._p<i>``.
     reagg_picked_params = [
-        PickedParam(name=_name, key=substitutions.get(_value, _value))
+        PickedParam(name=_name, key=substitute_value_keys(_value, substitutions))
         for _name, _value in reagg_params
     ]
     outer_prebound, ordered_outer = _regroup_producer_prebound(

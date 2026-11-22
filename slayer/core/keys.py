@@ -1349,6 +1349,26 @@ def _framed_leaves(key: _RerootableT, *, token: str) -> _RerootableT:
     return cast(_RerootableT, key.map_children(lambda c: _framed_leaves(c, token=token)))
 
 
+def _unanchored_leaves(key: _RerootableT) -> _RerootableT:
+    """``key``'s row leaves without their anchored spelling (read from one frame, their path is their identity);
+    attached values are opaque."""
+    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)):
+        return key
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        return key if key.anchor is None else cast(_RerootableT, key.model_copy(update={"anchor": None}))
+    return cast(_RerootableT, key.map_children(_unanchored_leaves))
+
+
+def interior_unanchored(key: AggregateKey) -> AggregateKey:
+    """``key`` with its interior's references keyed by their path from its frame alone."""
+    return key.model_copy(update={
+        "source": _unanchored_leaves(key.source),
+        "args": tuple(_unanchored_leaves(a) for a in key.args),
+        "kwargs": tuple((k, _unanchored_leaves(v)) for k, v in key.kwargs),
+        "filter": None if key.filter is None else _unanchored_leaves(key.filter),
+    })
+
+
 def framed_aggregate(key: AggregateKey, *, frame: str) -> AggregateKey:
     """``key`` with its interior (source, parameters, ``FILTER``) read from dataset ``frame`` (semantics Axiom 2.6);
     its grain and nested attached values keep their own coordinates."""
