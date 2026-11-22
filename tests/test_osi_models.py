@@ -3,7 +3,9 @@
 import pytest
 from pydantic import ValidationError
 
-from slayer.osi.models import OSIDataset, OSIDialectExpression, OSIDocument, OSIExpression, OSIField, OSIMetric
+from slayer.osi.models import OSIDataset, OSIDocument, OSIField, OSIMetric
+from slayer.core.ossie_expression import OSIExpression
+from slayer.core.ossie_expression import OSIDialectExpression
 from tests._osi_helpers import ds, f, flat, m
 
 
@@ -59,6 +61,7 @@ def test_flat_document_fields() -> None:
     assert [d.name for d in doc.datasets] == ["orders"]
     assert [x.name for x in doc.metrics or []] == ["total"]
     assert doc.nonportable_extensions is not None
+    assert doc.legacy is False
 
 
 def test_absent_version_is_not_defaulted() -> None:

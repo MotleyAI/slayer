@@ -20,8 +20,6 @@ from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema import ingestion, schema_drift
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import OSIDocument
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._compat_helpers import future_warnings, recorded
 from tests._gateway_harness import (
@@ -41,14 +39,6 @@ ORDERS_PROJECT = DbtProject(
     semantic_models=[], metrics=[],
     regular_models=[DbtRegularModel(name="orders", schema_name="main", alias="orders", description="Orders")],
 )
-ORDERS_OSI = OSIDocument.model_validate({
-    "version": "0.3.0.dev0", "name": "shop",
-    "datasets": [{
-        "name": "orders", "source": "orders",
-        "fields": [{"name": "status", "expression": {"sql": "status"}},
-                   {"name": "big", "expression": {"sql": "amount * 2"}}],
-    }],
-})
 COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 
 
@@ -146,36 +136,27 @@ def test_a_scope_error_fails_before_reading(sqlite_shop: DatasourceConfig, tmp_p
 # --------------------------------------------------------------------------- #
 # Converters
 # --------------------------------------------------------------------------- #
-def _client_converter(kind: str, *, dialect: str | None) -> DbtToSlayerConverter | OsiToSlayerConverter:
-    if kind == "dbt":
-        return DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_datasets=True)
-    return OsiToSlayerConverter(documents=[ORDERS_OSI], data_source=DS_NAME, target_dialect=dialect)
+def _client_converter() -> DbtToSlayerConverter:
+    return DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_datasets=True)
 
-@pytest.mark.parametrize("kind", ["dbt", "osi"])
-def test_a_positional_converter_argument_is_refused(kind: str) -> None:
-    converter, source = (DbtToSlayerConverter, ORDERS_PROJECT) if kind == "dbt" else (OsiToSlayerConverter, [ORDERS_OSI])
+def test_a_positional_converter_argument_is_refused() -> None:
     with recorded(), pytest.raises(TypeError):
-        converter(source, DS_NAME, True)  # pyright: ignore[reportCallIssue, reportArgumentType]
+        DbtToSlayerConverter(ORDERS_PROJECT, DS_NAME, True)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
-@pytest.mark.parametrize("kind", ["dbt", "osi"])
-def test_a_converter_takes_no_sa_engine(kind: str) -> None:
-    converter: Any = DbtToSlayerConverter if kind == "dbt" else OsiToSlayerConverter
-    source = {"project": ORDERS_PROJECT} if kind == "dbt" else {"documents": [ORDERS_OSI]}
+def test_a_converter_takes_no_sa_engine() -> None:
+    converter: Any = DbtToSlayerConverter
     with recorded(), pytest.raises(TypeError):
-        converter(**source, data_source=DS_NAME, sa_engine=None)
+        converter(project=ORDERS_PROJECT, data_source=DS_NAME, sa_engine=None)
 
 
-@pytest.mark.parametrize("kind", ["dbt", "osi"])
-async def test_convert_reads_only_the_collected_metadata(
-    kind: str, sqlite_shop: DatasourceConfig, tmp_path: Path,
-) -> None:
+async def test_convert_reads_only_the_collected_metadata(sqlite_shop: DatasourceConfig, tmp_path: Path) -> None:
     factory = GatewayFactory()
     engine = SlayerQueryEngine(
         storage=await shop_storage(str(tmp_path / "store"), datasource=sqlite_shop), client_factory=factory,
     )
     try:
-        converter = _client_converter(kind, dialect=sqlite_shop.type)
+        converter = _client_converter()
         await converter.collect_metadata(client=engine.client_for(sqlite_shop))
         collected = len(factory.all_calls())
         with no_direct_access(backends=[backend_of(sqlite_shop)]) as guard:
@@ -202,10 +183,9 @@ def test_client_supplied_forms_are_silent(shop: DatasourceConfig, tmp_path: Path
             engine.run_sync(ingestion.ingest_datasource_report_async(shop, client=client))
             engine.run_sync(ingestion.ingest_datasource_idempotent(datasource=shop, storage=engine.storage, client=client))
             engine.run_sync(schema_drift.validate_datasource(datasource=shop, datasets=[orders_dataset()], client=client))
-            for kind in ("dbt", "osi"):
-                converter = _client_converter(kind, dialect=shop.type)
-                engine.run_sync(converter.collect_metadata(client=client))
-                converter.convert()
+            converter = _client_converter()
+            engine.run_sync(converter.collect_metadata(client=client))
+            converter.convert()
     assert future_warnings(caught) == []
 
 

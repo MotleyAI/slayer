@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.errors import SlayerError
+from slayer.core import errors as core_errors
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
@@ -338,5 +338,5 @@ class TestAggRename:
         assert sorted(a.name for a in model.aggregations) == ["agg", "agg_aggregation"]
         assert [m.expression for m in model.metrics] == ["agg(amount)"]
         assert any("agg" in t and "orders" in t for t in texts), texts
-        with pytest.raises(SlayerError, match="(?i)AGG.*reserved"):
+        with pytest.raises(getattr(core_errors, "AggArgumentError"), match="(?i)AGG takes a dataset metric"):
             await run(storage, {"population": "orders", "metrics": ["agg(orders.amount)"]})

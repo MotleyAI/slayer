@@ -38,17 +38,6 @@ from slayer.dbt.models import (
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeCube, CubeDimension, CubeProject
 
-# ── osi ──────────────────────────────────────────────────────────────────────
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import (
-    OSIDataset,
-    OSIDialectExpression,
-    OSIDocument,
-    OSIExpression,
-    OSIField,
-)
-
-# Shared fixtures (calling a ``__``-named builder raises TODAY — the fail signal).
 from tests._engine_helpers import disposable_engine
 from tests._osi_helpers import run_converter
 
@@ -56,7 +45,7 @@ DS = "test"
 
 
 # ---------------------------------------------------------------------------
-# Live-DB fixture (dbt hidden-model import + OSI both introspect a real table)
+# Live-DB fixture (dbt hidden-model import introspects a real table)
 # ---------------------------------------------------------------------------
 
 
@@ -78,16 +67,6 @@ def sqlite_engine(tmp_path: Path) -> Iterator[sa.Engine]:
 
 def _datasource(engine: sa.Engine) -> DatasourceConfig:
     return DatasourceConfig(name=DS, type="sqlite", database=engine.url.database)
-
-
-def _osi_expr(sql: str) -> OSIExpression:
-    return OSIExpression(
-        dialects=[OSIDialectExpression(dialect="ANSI_SQL", expression=sql)]
-    )
-
-
-def _osi_doc(datasets: list[OSIDataset]) -> OSIDocument:
-    return OSIDocument(version="0.3.0.dev0", name="s", datasets=datasets)
 
 
 # ---------------------------------------------------------------------------
@@ -181,36 +160,6 @@ def test_cube_dunder_name_builds_model() -> None:
     names = {m.name for m in result.datasets}
     assert "foo__bar" in names, (
         f"dunder-named cube was dropped as a PARSE_ERROR instead of built: {names}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 4. OSI dataset named ``foo__bar`` is accepted, not skipped as illegal_name
-# ---------------------------------------------------------------------------
-
-
-def test_osi_dunder_dataset_name_is_accepted(sqlite_engine: sa.Engine) -> None:
-    """FAIL-FIRST: an OSI dataset literally named ``foo__bar`` must become a
-    SLayer dataset named ``foo__bar``.
-
-    Today ``_UNSAFE_MODEL_NAME_CHARS`` lists ``"__"``, so ``_legal_model_name``
-    rejects it and ``_build_model`` skips the dataset with an illegal_name
-    warning.
-    """
-    doc = _osi_doc(datasets=[
-        OSIDataset(
-            name="foo__bar",
-            source="orders",
-            fields=[OSIField(name="amount", expression=_osi_expr("amount"))],
-        ),
-    ])
-    result = run_converter(
-        OsiToSlayerConverter(documents=[doc], data_source=DS),
-        datasource=_datasource(sqlite_engine),
-    )
-    names = {m.name for m in result.datasets}
-    assert "foo__bar" in names, (
-        f"dunder-named OSI dataset was skipped as illegal instead of built: {names}"
     )
 
 

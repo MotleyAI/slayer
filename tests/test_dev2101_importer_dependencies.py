@@ -87,7 +87,7 @@ class TestOneParser:
         with pytest.raises(ImportError, match="slayer.core.syntax"):
             importlib.import_module("slayer.core.formula")
 
-    @pytest.mark.parametrize("module", ["slayer.dbt.converter", "slayer.cube.converter", "slayer.osi.converter"])
+    @pytest.mark.parametrize("module", ["slayer.dbt.converter", "slayer.cube.converter"])
     def test_importers_do_not_use_the_legacy_parser(self, module: str) -> None:
         assert not hasattr(importlib.import_module(module), "parse_formula")
 

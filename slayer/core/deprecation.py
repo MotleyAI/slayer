@@ -56,11 +56,12 @@ def outside_stacklevel() -> int:
     return level
 
 
-def deprecated_input(old: str, new: str, *, removal: str) -> payloads.DeprecatedInputWarning:
+def deprecated_input(old: str, new: str, *, removal: str, emit: bool = True) -> payloads.DeprecatedInputWarning:
     """Report converting the input form ``old`` to ``new``: one ``FutureWarning`` at the first line outside SLayer
-    that supplied it, and the payload the caller keeps with the converted input. ``removal`` as in ``warn_deprecated``."""
+    that supplied it (none when ``emit`` is off), and the payload. ``removal`` as in ``warn_deprecated``."""
     payload = payloads.DeprecatedInputWarning(old=old, new=new, removal=removal)
-    warnings.warn(DeprecatedInputFutureWarning(payload), stacklevel=outside_stacklevel())
+    if emit:
+        warnings.warn(DeprecatedInputFutureWarning(payload), stacklevel=outside_stacklevel())
     return payload
 
 

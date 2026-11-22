@@ -109,27 +109,27 @@ semantic_model:
           instructions: "Sum of gross order value."
           synonyms:
             - "gmv"
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(orders.amount)}]}
+        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(amount)}]}
       - name: order_count
         expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(*)}]}
       - name: aov
         description: Average order value
-        expression: {dialects: [{dialect: ANSI_SQL, expression: (SUM(orders.amount)) / (COUNT(*))}]}
+        expression: {dialects: [{dialect: ANSI_SQL, expression: (SUM(amount)) / (COUNT(*))}]}
       - name: revenue_line
         description: Quantity-weighted revenue (materialized operand)
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(orders.quantity * orders.amount)}]}
+        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(quantity * amount)}]}
       - name: cust_reach
         description: Amount per distinct customer (cross-dataset, anchor = orders)
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: SUM(orders.amount) / COUNT(DISTINCT customers.customer_id)
+              expression: SUM(amount) / COUNT(DISTINCT customers.customer_id)
       - name: rev_plus_pop
         description: Amount plus region population (multi-hop orders->customers->regions)
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: SUM(orders.amount) + SUM(regions.population)
+              expression: SUM(amount) + SUM(regions.population)
       - name: bridge_metric
         description: References products + customers only; must anchor on orders (bridge)
         expression:

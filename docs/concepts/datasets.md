@@ -1,6 +1,6 @@
 # Datasets
 
-A dataset is SLayer's view of a database table or an underlying SQL query. It declares the fields, named metric expressions, relationships, and always-applied filters that queries can build on. Datasets are defined as YAML (one file per dataset under `models/<data_source>/`) or created via API/MCP — the two paths produce the same persisted object.
+A dataset is SLayer's view of a database table or an underlying SQL query. It declares the fields, named metric expressions, relationships, and always-applied filters that queries can build on. Datasets are defined as YAML (one file per dataset under `models/<data_source>/`) or created via API/MCP — the two paths produce the same persisted object. A dataset can also be declared in a [semantic model](semantic-models.md), an Ossie document that holds several datasets, their relationships and model-scoped metrics; it then works exactly like a standalone dataset, and the dataset tools edit it inside its document.
 
 A tiny example to anchor what follows:
 
@@ -22,7 +22,7 @@ A query then asks for `sum(orders.revenue)` (aggregate the `revenue` field), `or
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | Yes | Unique dataset name. In the default YAML storage, names differing only by letter case (`Orders` vs `orders`) are rejected at save time (`IdCollisionError`) — they would collide as filenames on macOS / Windows |
+| `name` | string | Yes | Unique dataset name, across standalone datasets and [semantic models](semantic-models.md#one-namespace-per-datasource) of the datasource. In the default YAML storage, names differing only by letter case (`Orders` vs `orders`) are rejected at save time (`IdCollisionError`) — they would collide as filenames on macOS / Windows |
 | `sql_table` | string | One of | A physical database table or view (e.g. `public.orders`) |
 | `sql` | string | these | A SQL subquery to use as the source |
 | `source_queries` | list[SlayerQuery] | three | Saved query stages — makes the dataset **query-backed** |
@@ -77,7 +77,7 @@ A field is the unit of structure on the dataset. The same field entry can serve 
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `expression` | string or object | No | (the source column of the field's name) | The definition: portable SQL as a string (shorthand for `{sql: …}`), or Ossie's `{sql, dialects: [{dialect, expression}]}`. See [Field expressions](#field-expressions) |
 | `sql` | string | No | — | Deprecated spelling of `expression`, converted on load; removed in 3.0 |
-| `datatype` | string | No | `String` | One of the [data types](#data-types), matched by exact case |
+| `datatype` | string | No | `String` | One of the [data types](#data-types), matched by exact case. A semantic-model field that declares none has an [unknown type](semantic-models.md#fields-without-a-datatype), read from the live column at query time |
 | `element_type` | string | With `Array` on a table-backed dataset | `Opaque` on an `sql`-mode dataset's `Array` | A list's element type (any data type but `Array`; `Opaque` for nested lists and records, which support only NULL tests and `count`); rejected on any other type |
 | `db_type` | string | No | — | The raw database type, recorded by ingestion where `datatype` loses information: `Opaque`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps and lists |
 | `primary_key` | bool | No | `false` | A dataset's sole primary key is an identifier, restricted to counting, `min` / `max` and `collect`; members of a composite key are ordinary fields |
@@ -172,7 +172,7 @@ fields:
 - **Which form runs**: the entry for the datasource's own dialect (its type's SQL dialect name, upper-cased: `POSTGRES`, `DUCKDB`, `SQLITE`, …), else the portable `sql`, else an `OSSIE_SQL_2026` entry. Entries for other dialects are kept and never run; a field with two entries for its datasource's dialect, or with no form that runs there, is refused at save.
 - **Portable `sql`** is read by SLayer's Mode B grammar with [Ossie's meaning](expressions.md); a dialect entry reaches the database verbatim.
 - **Names**: inside a field's `expression` or `filter`, and a dataset's `filters`, a bare name or `source.x` reads the dataset's **source column**, and a path from the dataset reads a **field** (`orders.gross`, `customers.region`). So a derived field may take a source column's name (`status: UPPER(status)` upper-cases the physical `status`).
-- **Physical reader**: a field whose running form is one bare source column and which has no `filter`; relationship keys, schema drift and live typing read only these.
+- **Physical reader**: a field whose running form is one bare source column and which has no `filter`; schema drift and live typing read only these.
 - The pre-2.0 `sql` converts to `expression`: one column becomes the shorthand, other text becomes the entry for the datasource's dialect with each sibling it read written as a path, so its results do not change.
 
 ### Derived fields referencing other fields
@@ -197,7 +197,7 @@ relationships:
 
 At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. A same-dataset field is read as `stations.foo_normalized` from `stations`; a multi-hop path is dotted (`B.C.x_derived`).
 
-A derived field whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input, a population filter, or an `error`-mode dimension — declare the [relationship cardinality](#relationship-cardinality) or primary key to prove the hop, or query it under the default (associating) or `broadcast` handling. A derived field whose definition reaches a to-many (or undeclared) target cannot be aggregated as a field of its dataset — aggregate the target field directly (`sum(line_items.qty)`). Where the hop is *provably* fanning (declared `one_to_many`/`many_to_many`), the dataset is rejected at **save time**; an unproven hop saves with a warning and relies on the query-time check above. A definition whose relationship path **revisits** a dataset already on it (a cycle, e.g. `regions.customers.spend` declared on `customers`) is rejected at **save time** as a circular definition — reference the field on the revisited dataset directly, or aggregate on the dataset the hop leaves. A definition crossing an ambiguous hop (two or more edges between the pair and no edge name in the path) is also rejected at **save time** — spell that hop by an edge name.
+A derived field whose definition (recursively) crosses a fanning (not provably to-one) hop fails closed with a typed error when used as an aggregate input or an `error`-mode dimension — declare the [relationship cardinality](#relationship-cardinality) or primary key to prove the hop; as a dimension it may instead be queried under the default (associating) handling. As a population filter it restricts by association in every mode. A derived field whose definition reaches a to-many (or undeclared) target cannot be aggregated as a field of its dataset — aggregate the target field directly (`sum(line_items.qty)`). Where the hop is *provably* fanning (declared `one_to_many`/`many_to_many`), the dataset is rejected at **save time**; an unproven hop saves with a warning and relies on the query-time check above. A definition whose relationship path **revisits** a dataset already on it (a cycle, e.g. `regions.customers.spend` declared on `customers`) is rejected at **save time** as a circular definition — reference the field on the revisited dataset directly, or aggregate on the dataset the hop leaves. A definition crossing an ambiguous hop (two or more edges between the pair and no edge name in the path) is also rejected at **save time** — spell that hop by an edge name.
 
 Names inside a nested scope of a dialect entry (sub-query, `UNION` branch, CTE, `VALUES`) belong to the inner rowset and are kept as written.
 
@@ -280,6 +280,8 @@ Field and metric names share a namespace within a dataset — you can't have a f
 ```
 
 A saved expression produces the same SQL as writing it out longhand. Cycles (`a → b → a`) are rejected during binding. Names shadowing built-in transforms are rejected at dataset construction.
+
+`AGG(m)` evaluates a metric as one aggregate, with the same values as `m`: inside a metric's expression `AGG(aov)` or `AGG(customers.aov)`, in a query `AGG(orders.aov)`. Its argument must be a single metric; `AGG` of a field or any other expression is refused. Metrics of a [semantic model](semantic-models.md#model-scoped-metrics) as a whole, queried by bare name, are model-scoped metrics.
 
 ### Reusing another dataset's saved metric (`customers.aov`)
 
@@ -366,11 +368,11 @@ relationships:
     to_columns: ["id"]
 ```
 
-`from_columns` and `to_columns` are equal-length, non-empty lists: the n-th entries form one key pair, and a composite key lists several in pair order, kept as written in storage, dumps, exports and the generated `ON` condition. Each entry names a physical reader (an `expression` unset or one source column, no `filter`) declared on its side by the field's `name`, and the column it reads is applied when the join is emitted. The pre-2.0 `join_pairs: [["customer_id", "id"]]` still converts, with a deprecation; giving it beside either list is refused.
+`from_columns` and `to_columns` are equal-length, non-empty lists: the n-th entries form one key pair, and a composite key lists several in pair order, kept as written in storage, dumps, exports and the generated `ON` condition. Each entry names a field declared on its side by its `name`, without a `filter`, whose expression reads only its own dataset's source columns: a physical reader (an `expression` unset or one source column), whose column is applied when the join is emitted, or a computed field (`CAST(cust_fk AS INT)`), whose expression is. The pre-2.0 `join_pairs: [["customer_id", "id"]]` still converts, with a deprecation; giving it beside either list is refused.
 
 A relationship's `to` spells its dataset exactly: a save whose target matches a dataset only by case (`customers` for `Customers`), or whose name a stored relationship reaches only by case, fails naming the declared spelling.
 
-Relationships enable **cross-dataset metrics** — querying a metric from a joined dataset alongside the main dataset's data. See [Cross-Dataset Metrics](queries.md#cross-dataset-metrics). During [auto-ingestion](ingestion.md), relationships are generated automatically from foreign keys; multi-hop paths are resolved at query time by walking each intermediate dataset's own relationships. A relationship targeting the dataset itself is rejected at validation — relationships are addressed by dataset name, so define the second role as a separate dataset over the same table (or a view) and declare the relationship to that.
+Relationships enable **cross-dataset metrics** — querying a metric from a joined dataset alongside the main dataset's data. See [Cross-Dataset Metrics](queries.md#cross-dataset-metrics). During [auto-ingestion](ingestion.md), relationships are generated automatically from foreign keys; multi-hop paths are resolved at query time by walking each intermediate dataset's own relationships. A relationship targeting the dataset itself (`employees.manager` from `manager_id` to its own `id`) saves and loads, as Ossie allows, but takes no part in paths: a reference spelling a hop over it (`employees.manager.name`) fails. To query the second role, define it as a separate dataset over the same table (or a view) and declare the relationship to that.
 
 ### Bidirectional traversal
 
@@ -392,7 +394,7 @@ relationships:
     name: shipping_customer
 ```
 
-Now `orders.billing_customer.name` selects the billing customer's name (result key `orders.billing_customer.name`), and from a `customers`-rooted query `sum(customers.billing_customer.amount)` traverses the same edge in reverse. Validation rejects an edge name that collides with a dataset name or another edge name on either endpoint, and warns when unnamed parallel edges are left undisambiguatable.
+Now `orders.billing_customer.name` selects the billing customer's name (result key `orders.billing_customer.name`), and from a `customers`-rooted query `sum(customers.billing_customer.amount)` traverses the same edge in reverse. Validation rejects an edge name that repeats another edge name on either endpoint, and warns when unnamed parallel edges are left undisambiguatable. An edge may be named like a dataset; a path segment that names both an edge of the dataset and the target of a different edge of it is ambiguous and fails, naming both, so spell that hop by the other edge's name.
 
 Revisits are judged per spelling: a derived field or saved metric is resolved from its own dataset, so from `orders`, `orders.customer.last_amount` (with `last_amount` defined on `customers` as `last_order.amount`) joins a second occurrence of `orders`, while typing `orders.customer.last_order.amount` directly is refused as circular.
 
@@ -638,8 +640,10 @@ A stored datasource granularity whose name the library has since reserved is ren
 
 Persisted documents omit unset (`None`) fields, so a store written by this release still reads on the previous one, except for text already in the new grammar and `ARRAY` fields.
 
+A [semantic model](semantic-models.md)'s `version` is Ossie's spec version, never SLayer's; SLayer versions only its `SLAYER` entries, and loading a document never rewrites it.
+
 Migrations are defined in `slayer/storage/migrations.py` and apply at the Pydantic-validation layer, so every storage backend (YAML, SQLite, third-party backends registered via `register_storage`, plus HTTP API, MCP server, and dbt importer) gets them automatically.
 
 ## Keeping datasets in sync with the live schema
 
-When the live database schema changes — a column drops, a type bucket flips, a table goes away — persisted datasets stop being valid. SLayer surfaces this as a first-class concept: `slayer validate-datasets` returns a structured diff, `slayer ingest` is idempotent (additive only), and query-time DBAPI errors get attributed to the right dataset with a `SchemaDriftError`. See [Schema Drift](schema-drift.md) for the full diff / cascade contract and the `--force-clean` apply path.
+When the live database schema changes — a column drops, a type bucket flips, a table goes away — persisted datasets stop being valid. SLayer surfaces this as a first-class concept: `slayer validate-datasets` returns a structured diff (including semantic-model fields that declare no type), `slayer ingest` is idempotent (additive only), and query-time DBAPI errors get attributed to the right dataset with a `SchemaDriftError`. See [Schema Drift](schema-drift.md) for the full diff / cascade contract and the `--force-clean` apply path.

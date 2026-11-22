@@ -12,7 +12,7 @@ from ruamel.yaml import YAML
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
-from slayer.osi import slayer_extension as ext
+from slayer.core import slayer_extension as ext
 from slayer.storage.document_keys import LEGACY_KEYS, dataset_in
 from tests._cli_inprocess import run_cli_in_process
 from tests._osi_export_fixtures import BASIC_METRICS, col, customers, orders, orders_fields, rich_orders
@@ -181,23 +181,10 @@ def _legacy_payload(entity: dict[str, Any]) -> dict[str, Any]:
     return json.loads(entry["data"])
 
 
-def _without_fingerprint(data: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in data.items() if k != "fingerprint"}
-
-
-def _as_version_3(data: dict[str, Any]) -> dict[str, Any]:
-    """A version-2 payload at version 3: a field's bare-identifier ``sql`` becomes its shorthand ``expression``."""
-    out = {**data, "version": 3}
-    if out.get("kind") == "field" and "sql" in (out.get("field") or {}):
-        field = dict(out["field"])
-        field["expression"] = field.pop("sql")
-        out["field"] = field
-    return out
-
-
-async def test_legacy_payloads_reexport_as_version_3(env) -> None:
+async def test_legacy_payloads_reexport_unchanged(env) -> None:
     legacy = yaml.safe_load(LEGACY_FIXTURE.read_text(encoding="utf-8"))
     imported, _ = await reimport(env, legacy)
     document = (await export(imported)).document
-    assert [(e["name"], _without_fingerprint(payload(e))) for e in entities(document)] == [
-        (e["name"], _without_fingerprint(_as_version_3(ext._version_2(_legacy_payload(e))))) for e in entities(legacy)]
+    assert [(e["name"], payload(e)) for e in entities(document)] == [
+        (e["name"], _legacy_payload(e)) for e in entities(legacy)]
+    assert {payload(e)["version"] for e in entities(document)} == {1}

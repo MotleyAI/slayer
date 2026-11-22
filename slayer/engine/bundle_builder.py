@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from slayer.core.errors import AmbiguousReferenceError, DatasetNotFoundError, QueryBackedCycleError
@@ -66,6 +67,7 @@ async def build_resolved_source_bundle(
     now: Optional[datetime] = None,
     failures: Optional[DocumentLoadFailures] = None,
     respelled_spine: frozenset[str] = frozenset(),
+    resolve_types: Optional[Callable[[SlayerDataset], Awaitable[SlayerDataset]]] = None,
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
 
@@ -74,12 +76,13 @@ async def build_resolved_source_bundle(
     outer > source-dataset defaults. Stored query-backed datasets are collected as
     splice placeholders, never as referenced datasets. ``now`` is the execution's
     clock reading (default: the host clock); ``failures`` records skipped unloadable peers;
-    ``respelled_spine`` are the query's spellings of the spine respelled to ``time_spine``.
+    ``respelled_spine`` are the query's spellings of the spine respelled to ``time_spine``; ``resolve_types`` types
+    each read dataset's unknown field types.
     """
     failures = failures or DocumentLoadFailures()
     named_queries = named_queries or {}
     stage_displays = stage_displays or {}
-    storage = cast("StorageBackend", _DatasetReadCache(storage))
+    storage = cast("StorageBackend", _DatasetReadCache(storage, resolve=resolve_types))
     for q in [*named_queries.values(), query]:
         _reject_chain_source(spec=q.population, chain=splice_chain)
 
@@ -472,8 +475,11 @@ async def stored_dataset(
 class _DatasetReadCache:
     """Read-through ``get_dataset`` cache scoped to one bundle build (delegates the rest)."""
 
-    def __init__(self, inner: "StorageBackend") -> None:
+    def __init__(
+        self, inner: "StorageBackend", *, resolve: Optional[Callable[[SlayerDataset], Awaitable[SlayerDataset]]] = None,
+    ) -> None:
         self._inner = inner
+        self._resolve = resolve
         self._datasets: Dict[tuple, Optional[SlayerDataset]] = {}
 
     def __getattr__(self, name: str):
@@ -489,6 +495,8 @@ class _DatasetReadCache:
         key = (name, data_source)
         if key not in self._datasets:
             dataset = await self._inner.get_dataset(name, data_source=data_source)
+            if dataset is not None and self._resolve is not None:
+                dataset = await self._resolve(dataset)
             self._datasets[key] = dataset
             if dataset is not None:
                 # a hint-less read also answers the concrete-datasource key

@@ -67,7 +67,7 @@ def _orders(**overrides) -> SlayerDataset:
         ],
     )
     fields.update(overrides)
-    return SlayerDataset(**fields)
+    return SlayerDataset.model_validate(fields)
 
 
 def _customers(**overrides) -> SlayerDataset:
@@ -81,7 +81,7 @@ def _customers(**overrides) -> SlayerDataset:
         ],
     )
     fields.update(overrides)
-    return SlayerDataset(**fields)
+    return SlayerDataset.model_validate(fields)
 
 
 # ===========================================================================

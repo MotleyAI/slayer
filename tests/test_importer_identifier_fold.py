@@ -1,5 +1,5 @@
 """Importers store physical SQL folded with the datasource's identifier rule, without a database server (spec:
-importers/meaning-preservation, importers/cube-import, importers/osi-import)."""
+importers/meaning-preservation, importers/cube-import)."""
 
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ from slayer.live_schema.ingestion import IntrospectedColumn
 from slayer.importers import column_types
 from slayer.importers.column_types import LiveDatasource
 from slayer.importers.physical import UndecidableIdentifierCaseError
-from slayer.osi import converter as osi_converter
 from slayer.database import engine_factory
 from slayer.sql.dialects import SqliteDialect, get_dialect
 from slayer.sql.dialects.reflection import column_from_sa_type
@@ -37,9 +36,6 @@ from tests._dev2171_fixtures import (
     typing_notes, write_yaml,
 )
 from tests._engine_helpers import _engine_generate, disposable_engine
-from tests._osi_helpers import (
-    by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, running_form, seed_db,
-)
 
 DS = "ds"
 ITEMS = {"name": "items", "sql_table": "Sales.OrderItems",
@@ -349,95 +345,6 @@ def test_configured_but_unreachable_datasource_folds(tmp_path: Path) -> None:
     assert code == 0
     assert stored_dataset(store, "items").sql_table == "sales.orderitems"
     assert typing_notes(i["message"] for i in cube_report_messages(store) if i["severity"] == "info")
-
-
-# ── OSI ───────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def osi_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    disable_type_probe(monkeypatch)
-    return seed_db(directory=tmp_path, statements=[
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, orderamount DOUBLE)", "INSERT INTO orders VALUES (1, 2.5)"])
-
-
-def _osi_sql(db: Path, field: dict[str, Any], *, target: str) -> str | None:
-    result = convert(db=db, docs=documents(flat([ds("orders", fields=[f("id"), field])])), target_dialect=target)
-    return running_form(cols(by_name(result)["orders"]).get(field["name"]), target=target)
-
-
-def test_osi_target_native_kept_verbatim(osi_db: Path) -> None:
-    assert _osi_sql(osi_db, f_dialects("pick", ("SNOWFLAKE", "orderamount::NUMBER(10,2)")),
-                    target="snowflake") == "orderamount::NUMBER(10,2)"
-
-
-def test_osi_target_native_mixed_case_identifier_folded(osi_db: Path) -> None:
-    assert _osi_sql(osi_db, f_dialects("pick", ("SNOWFLAKE", "OrderAmount::NUMBER(10,2)")),
-                    target="snowflake") == "orderamount::NUMBER(10,2)"
-
-
-def test_osi_candidate_read_with_its_dialect_folded_by_the_target(osi_db: Path) -> None:
-    sql = _osi_sql(osi_db, f_dialects("pick", ("BIGQUERY", "OrderAmount * 5")), target="postgres")
-    assert sql is not None
-    assert _columns_read(sql) == {"orderamount"}
-
-
-def test_osi_candidates_differing_in_case(osi_db: Path) -> None:
-    sql = _osi_sql(osi_db, f_dialects("pick", ("SNOWFLAKE", "ORDERAMOUNT * 2"), ("POSTGRES", "OrderAmount * 3")),
-                   target="postgres")
-    assert sql == "orderamount * 3"
-
-
-def test_osi_field_matches_a_live_column_case_insensitively_on_duckdb(osi_db: Path) -> None:
-    assert _osi_sql(osi_db, f("pick", "OrderAmount * 5"), target="duckdb") == "OrderAmount * 5"
-    assert _osi_sql(osi_db, f("bare", "OrderAmount"), target="duckdb") is not None
-
-
-def test_osi_fields_read_the_exact_and_folded_snowflake_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Snowflake columns ``"foo"`` and ``BAR``, as SQLAlchemy reflects them."""
-    reflected = [{"name": quoted_name("foo", True), "type": sa.INTEGER()}, {"name": "bar", "type": sa.INTEGER()}]
-    _reflect_as(monkeypatch, reflected)
-    db = seed_db(directory=tmp_path, dialect="sqlite", statements=["CREATE TABLE t (x INTEGER)"])
-    result = convert(db=db, db_dialect="sqlite", target_dialect="snowflake", docs=documents(flat([
-        ds("t", source="t", fields=[f("foo", '"foo"'), f("exact", '"foo"'), f("upper", "BAR")])])))
-    fields = cols(by_name(result)["t"])
-    assert fields["foo"].definition_sql == '"foo"'
-    assert fields["exact"].definition_sql == '"foo"'
-    assert fields["upper"].definition_sql == "bar"
-
-
-def test_osi_self_qualified_path_reads_the_source_column(osi_db: Path) -> None:
-    result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([
-        ds("Orders", source="orders", fields=[f("id"), f("double", "Orders.OrderAmount * 2")])])))
-    assert "double" in cols(by_name(result)["Orders"])
-    assert not any("double" in w.message or "Orders.OrderAmount" in w.message
-                   for w in (*result.warnings, *result.unconverted_metrics))
-
-
-def test_osi_self_qualified_path_to_a_declared_field_kept_as_written(osi_db: Path) -> None:
-    result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([ds("Orders", source="orders", fields=[
-        f("id"), f("OrderAmount", "orderamount"), f("double", "Orders.OrderAmount * 2")])])))
-    assert cols(by_name(result)["Orders"])["double"].definition_sql == "Orders.OrderAmount * 2"
-
-
-def test_osi_unquoted_self_qualified_path_matches_in_any_case(osi_db: Path) -> None:
-    result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([ds("Orders", source="orders", fields=[
-        f("id"), f("OrderAmount", "orderamount"), f("double", "orders.orderamount * 2")])])))
-    assert "double" in cols(by_name(result)["Orders"])
-
-
-def test_osi_quoted_lowercase_source_introspects_the_exact_schema_and_table(osi_db: Path,
-                                                                           monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[dict[str, Any]] = []
-
-    def record(**kwargs: Any) -> SlayerDataset:
-        seen.append(kwargs)
-        raise RuntimeError("recorded")
-
-    monkeypatch.setattr(osi_converter, "introspect_table_to_dataset", record)
-    convert(db=osi_db, docs=documents(flat([ds("orders", source='"lower_schema"."lower_table"', fields=[f("id")])])),
-            target_dialect="snowflake")
-    (call,) = seen
-    assert call["ref"].qualify(call["table_name"], dialect=get_dialect("snowflake")) == '"lower_schema"."lower_table"'
 
 
 def test_live_source_reflects_a_quoted_lowercase_table_exactly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

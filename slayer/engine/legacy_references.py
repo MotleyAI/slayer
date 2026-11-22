@@ -16,7 +16,9 @@ from slayer.core.deprecation import deprecated_input
 from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER, BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.errors import AmbiguousReferenceError
 from slayer.core.names import match_name, spelled_name
-from slayer.core.query import QueryDimension, QueryMetric, QueryRefinement, SlayerQuery, TimeDimension, declared_aliases
+from slayer.core.query import (
+    QueryDimension, QueryMetric, QueryRefinement, SlayerQuery, TimeDimension, broadcast_already_warned, declared_aliases,
+)
 from slayer.core.models import SlayerDataset
 from slayer.core.syntax import (
     AggCall, DottedRef, NamedArg, Ref, ScalarCall, StarSource, keyword_spelling, reference_spans, walk_references,
@@ -42,6 +44,16 @@ class AnchorNames(BaseModel):
     aggregations: Dict[str, frozenset[str]] = {}
     #: Per folded population name, the names a pre-2.0 dotted first segment read from it: its fields and edges.
     heads: Dict[str, frozenset[str]] = {}
+    #: Model-scoped metric names, which a bare name reads before any conversion.
+    model_metrics: frozenset[str] = frozenset()
+
+    def has_member(self, *, population: str, name: str) -> bool:
+        """Whether ``population`` declares a field or metric ``name`` (unknown population: assumed)."""
+        members = self.members.get(population.casefold())
+        return members is None or name.casefold() in members
+
+    def names_model_metric(self, name: str, *, quoted: bool) -> bool:
+        return _is_alias(name, declared=list(self.model_metrics), quoted=quoted)
 
     def reads_head(self, *, population: str, name: str, quoted: bool) -> bool:
         """Whether a dotted reference starting at ``name`` read from ``population`` before 2.0 (unknown: assumed)."""
@@ -144,7 +156,9 @@ def _converts_reference(node: Any, *, population: str, anchors: AnchorNames, dec
                         edges: List[str]) -> bool:
     """Whether the ``Ref`` or ``DottedRef`` ``node`` was read from ``population``."""
     if isinstance(node, Ref):
-        return not (declared and _is_alias(node.name, declared=declared, quoted=node.quoted))
+        return not ((declared and _is_alias(node.name, declared=declared, quoted=node.quoted))
+                    or anchors.names_model_metric(node.name, quoted=node.quoted)
+                    or not anchors.has_member(population=population, name=node.name))
     head, quoted = node.parts[0], node.quoted_at(0)
     if anchors.anchors(head, quoted=quoted):
         return False
@@ -270,7 +284,8 @@ def _live_aliases(*sources: Any) -> List[str]:
 
 def _rebuilt(entity: Any, data: Dict[str, Any]) -> Any:
     """``entity``'s class validated over ``data``, keeping ``entity``'s recorded deprecations."""
-    rebuilt = type(entity).model_validate(data)
+    with broadcast_already_warned():
+        rebuilt = type(entity).model_validate(data)
     rebuilt._deprecated_inputs = entity._deprecated_inputs
     return rebuilt
 
@@ -318,12 +333,7 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
     stages and the spine."""
     identities = await storage._list_all_dataset_identities()
     stage_names = {q.name for q in queries if q.name}
-    if not data_source:
-        sources = {ds for q in queries if (p := q.population_name) and p not in stage_names
-                   for ds, n in identities if n == _matched(p, identities=identities, data_source=ds)}
-        chosen = sources or {ds for ds, _ in identities}
-    else:
-        chosen = {data_source}
+    chosen = _chosen_data_sources(queries, identities=identities, stage_names=stage_names, data_source=data_source)
     names = {n for ds, n in identities if ds in chosen}
     names |= stage_names | {q.population_name for q in queries if q.population_name}
     names.add(TIME_SPINE_DATASET)
@@ -338,15 +348,39 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
                 members[population.casefold()] = heads[population.casefold()] = frozenset({TIME_SPINE_FIELD})
             continue
         dataset_source, dataset = found
-        members[population.casefold()] = frozenset(
-            n.casefold() for n in [*(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name)])
+        if not dataset.awaits_fields:  # an unexpanded query-backed dataset's members are unknown
+            members[population.casefold()] = _member_names(dataset, queries=queries, population=population)
         aggregations[population.casefold()] = frozenset(a.name.casefold() for a in dataset.aggregations)
         own = [*(f.name for f in dataset.fields), *(r.name for r in dataset.relationships if r.name)]
         if any(not _is_alias(h, declared=[*names, *own], quoted=q) for h, q in dotted):
             # Only an edge declared on a peer is left: reading every peer is the expensive part.
             own += await storage.incident_edge_names(dataset.name, data_source=dataset_source)
         heads[population.casefold()] = frozenset(own)
-    return AnchorNames(names=frozenset(names), members=members, aggregations=aggregations, heads=heads)
+    model_metrics: set[str] = set()
+    for ds in sorted(chosen):
+        model_metrics.update(m.name for m in await storage.list_model_scoped_metrics(ds))
+    return AnchorNames(names=frozenset(names), members=members, aggregations=aggregations, heads=heads,
+                       model_metrics=frozenset(model_metrics))
+
+
+def _chosen_data_sources(
+    queries: Sequence[SlayerQuery], *, identities: Sequence[Tuple[str, str]], stage_names: set[str],
+    data_source: Optional[str],
+) -> set[str]:
+    """``data_source`` when pinned, else those the populations name a dataset in (every one when none does)."""
+    if data_source:
+        return {data_source}
+    sources = {ds for q in queries if (p := q.population_name) and p not in stage_names
+               for ds, n in identities if n == _matched(p, identities=identities, data_source=ds)}
+    return sources or {ds for ds, _ in identities}
+
+
+def _member_names(dataset: SlayerDataset, *, queries: Sequence[SlayerQuery], population: str) -> frozenset[str]:
+    """Casefolded fields and metrics of ``dataset``, plus the metrics ``queries`` extend ``population`` with."""
+    extended = [m.name for q in queries for e in q.extensions or [] if e.dataset.casefold() == population.casefold()
+                for m in e.metrics or [] if m.name]
+    return frozenset(n.casefold() for n in [
+        *(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name), *extended])
 
 
 def _dotted_heads(sources: Sequence[Any]) -> List[Tuple[str, bool]]:

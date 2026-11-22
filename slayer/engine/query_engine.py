@@ -69,6 +69,7 @@ from slayer.core.query import (
     QueryMetric,
     QueryRefinement,
     SlayerQuery,
+    broadcast_deprecations,
     deprecated_inputs_of,
     extract_variable_refs,
     mode_a_texts,
@@ -106,6 +107,7 @@ from slayer.core.warnings import (
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
     BroadcastGrainWarningPayload,
+    broadcast_hint,
     DeprecatedInputWarning,
     LibraryNameShadowWarning,
     NameCollisionWarning,
@@ -144,6 +146,7 @@ from slayer.engine.cache import (
 )
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
 from slayer.engine.legacy_references import Conversions, anchor_names, convert_refinement, qualified_input
+from slayer.engine.model_scoped import expand_model_scoped, model_scope
 from slayer.engine.population.anchors import anchor_route, unknown_metric, unqualified_count
 from slayer.core.names import qualified_reference
 from slayer.core.keys import AggregateKey, CastKey, FieldKey, FieldSqlKey, ListSetKey, TimeTruncKey, ValueKey
@@ -160,6 +163,7 @@ from slayer.live_schema import ingestion, schema_drift
 from slayer.engine.dataset_reads import narrowing_datasets
 from slayer.live_schema.schema_scope import IngestScopeArgs
 from slayer.live_schema.type_refinement import live_table_location
+from slayer.engine.unknown_types import UnknownTypes
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
@@ -511,8 +515,10 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
 def _collect_broadcast_warnings(
     *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[BroadcastGrainWarningPayload]:
-    """One broadcast payload per ``(stage location, metric label)``; dimensions unioned."""
+    """One broadcast payload per ``(stage location, metric label)``; dimensions unioned, the first attach's
+    replacement named."""
     dims_by_key: "dict[tuple[str, str], list[tuple[str, str]]]" = {}
+    replacement_of: "dict[tuple[str, str], tuple[Optional[str], list[str]]]" = {}
     if labels is None:
         labels = _stage_labels(stages=stages, displays=displays)
     for planned, location in zip(planned_list, labels):
@@ -521,18 +527,31 @@ def _collect_broadcast_warnings(
             if not metric:
                 continue
             dims = dims_by_key.setdefault((location, metric), [])
+            replacement_of.setdefault((location, metric), (attach.broadcast_call, attach.broadcast_partition_by))
             seen = {d for d, _ in dims}
             for dim, reason in attach.broadcast_dimensions:
                 if dim not in seen:
                     dims.append((dim, reason))
                     seen.add(dim)
     return [
-        BroadcastGrainWarningPayload(
-            metric=metric, location=location,
-            dimensions=[BroadcastDimension(dimension=d, reason=r) for d, r in dims],
+        _broadcast_payload(
+            metric=metric, location=location, dims=dims, replacement=replacement_of[(location, metric)],
         )
         for (location, metric), dims in dims_by_key.items()
     ]
+
+
+def _broadcast_payload(
+    *, metric: str, location: str, dims: "list[tuple[str, str]]", replacement: "tuple[Optional[str], list[str]]",
+) -> BroadcastGrainWarningPayload:
+    call, partition_by = replacement
+    payload = BroadcastGrainWarningPayload(
+        metric=metric, location=location, partition_by=partition_by,
+        dimensions=[BroadcastDimension(dimension=d, reason=r) for d, r in dims],
+    )
+    if call is not None:
+        payload.hint = broadcast_hint(call=call, partition_by=partition_by)
+    return payload
 
 
 def _collect_associated_warnings(
@@ -953,6 +972,10 @@ class SlayerQueryEngine:
         self._drift_snapshots = schema_drift.LiveSnapshotCache()
         # Live source-column types a portable definition's undeclared columns read, by table.
         self._source_column_types: dict[tuple, dict[str, DataType]] = {}
+        self._unknown_types = UnknownTypes()
+
+    async def _resolve_unknown_types(self, dataset: SlayerDataset) -> SlayerDataset:
+        return await self._unknown_types.resolve(dataset, storage=self.storage, client_for=self.client_for)
 
     async def _live_column_types(self, *, datasource: DatasourceConfig, dataset: SlayerDataset) -> dict[str, DataType]:
         """``dataset``'s live source columns and their types, when a definition needs them; empty when unknown."""
@@ -1234,6 +1257,7 @@ class SlayerQueryEngine:
                 run_input, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source,
                 deprecations_out=deprecations,
             )
+            deprecations.extend(broadcast_deprecations([*named_queries.values(), main_query]))
             response = await self._execute_pipeline(
                 query=main_query,
                 named_queries=named_queries,
@@ -1463,6 +1487,8 @@ class SlayerQueryEngine:
         localized, respelled_spine = await self._respell_spine(
             queries=localized, stage_names={d.name for d in stage_displays.values()}, data_source=prefer_data_source,
         )
+        scope = await model_scope(self.storage, localized, data_source=prefer_data_source)
+        localized = [expand_model_scoped(q, scope=scope) for q in localized]
         query = localized[-1]
         named_queries = {q.name: q for q in localized[:-1] if q.name}
         # Infer the population of any rootless stage (main + each named
@@ -1495,6 +1521,7 @@ class SlayerQueryEngine:
             stage_displays=stage_displays,
             splice_chain=splice_chain,
             now=self._clock(),
+            resolve_types=self._resolve_unknown_types,
             failures=failures,
             respelled_spine=respelled_spine,
         )
@@ -1645,10 +1672,12 @@ class SlayerQueryEngine:
             if (read := bundle.datasets_by_name.get(name)) is not None and (dropped := read.unknown_stored_keys)
         )
         # Stored query-backed datasets the statement reads: their stages' input deprecations.
-        warnings.extend(deprecated_inputs_of(
+        read_stages = [
             stage for name in sorted(reads) if name in bundle.query_backed
             for stage in bundle.query_backed[name].source_queries or []
-        ))
+        ]
+        warnings.extend(deprecated_inputs_of(read_stages))
+        warnings.extend(broadcast_deprecations(read_stages))
         return _Rendered(
             built=built, dialect=dialect, datasource=datasource, bundle=bundle,
             planned_list=planned_list, emitted_list=plans, dataset=dataset, reads=reads, associated=built.associated,
@@ -2295,7 +2324,7 @@ class SlayerQueryEngine:
 
     async def _validate_read_set(
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
-        findings_out: "Optional[List[schema_drift.RetypeFinding]]" = None,
+        findings_out: "Optional[List[schema_drift.RetypeFinding | schema_drift.UntypedFinding]]" = None,
     ) -> "List[schema_drift.ToDeleteEntry]":
         """Drift entries for the read persisted datasets of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_dataset_identities()
@@ -2326,7 +2355,7 @@ class SlayerQueryEngine:
         """Raise ``SchemaDriftError`` if ``err`` is attributable to drift touching what the
         statement reads; else return so the caller re-raises. Attribution errors are swallowed."""
         try:
-            found: List[schema_drift.RetypeFinding] = []
+            found: List[schema_drift.RetypeFinding | schema_drift.UntypedFinding] = []
             entries = await self._validate_read_set(
                 datasource=datasource, read_set=read_set, findings_out=found,
             )
@@ -2362,7 +2391,7 @@ class SlayerQueryEngine:
             if c.allowed_aggregations is not None:
                 allowed = list(c.allowed_aggregations)
             else:
-                allowed = sorted(DEFAULT_AGGREGATIONS_BY_TYPE.get(c.datatype, frozenset()))
+                allowed = sorted(DEFAULT_AGGREGATIONS_BY_TYPE.get(c.datatype, frozenset()) if c.datatype else ())
             if not allowed:
                 continue
             agg = "max" if "max" in allowed else allowed[0]
@@ -2394,6 +2423,7 @@ class SlayerQueryEngine:
             runtime_variables={},
             named_queries={},
             now=self._clock(),
+            resolve_types=self._resolve_unknown_types,
         )
         dialect = self._dialect_for_type(datasource.type)
         bundle = await self._resolved_bundle(bundle.model_copy(update={
@@ -2704,10 +2734,19 @@ class SlayerQueryEngine:
         determination items. A feasible ``root_hint`` overrides the auto-pick; an
         infeasible one falls back with a warning, a malformed one raises.
         """
+        scope = await model_scope(self.storage, [], data_source=data_source)
+        scoped = {raw: m for raw in dict.fromkeys(i.strip() for i in items)
+                  if raw and (m := scope.bare(raw, aliases=())) is not None}
         resolved, base_warnings = await self._recommend_resolve_items(
-            items=items, data_source=data_source
+            items=[i for i in items if i.strip() not in scoped], data_source=data_source
         )
         ds = resolved[0].data_source
+        if any(m.data_source != ds for m in scoped.values()):
+            raise ValueError(
+                f"items span multiple datasources {sorted({ds, *(m.data_source for m in scoped.values())})}; "
+                f"pass items from a single datasource (optionally set data_source=...)."
+            )
+        scoped_paths = [ItemPath(input_item=raw, path=m.name, attachment=True) for raw, m in scoped.items()]
         datasets = await _all_datasets_in_datasource(self.storage, ds)
         datasets_by_name = {m.name: m for m in datasets}
         all_names = sorted(datasets_by_name)
@@ -2803,7 +2842,7 @@ class SlayerQueryEngine:
             ]
             return PopulationRecommendation(
                 data_source=ds, population=root, reachable=True,
-                item_paths=item_paths, warnings=warnings, message=message,
+                item_paths=[*item_paths, *scoped_paths], warnings=warnings, message=message,
             )
 
         force_include = {hint_dataset} if hint_dataset is not None else None
@@ -2916,6 +2955,21 @@ class SlayerQueryEngine:
     ) -> bool:
         """Delete a persisted dataset by name. Returns True if the dataset existed."""
         return await self.storage.delete_dataset(dataset_name, data_source=data_source)
+
+    async def apply_untyped_findings(self, findings: "Sequence[schema_drift.UntypedFinding]") -> List[str]:
+        """Write each untyped finding's live type into its document field; returns one message per failed write."""
+        errors: List[str] = []
+        for finding in findings:
+            try:
+                dataset = await self.storage.get_dataset(finding.dataset_name, data_source=finding.data_source)
+                if dataset is None:
+                    raise LookupError(f"dataset {finding.dataset_name!r} is gone")
+                await self.storage.save_dataset(dataset.model_copy(update={"fields": [
+                    f.model_copy(update={"datatype": finding.live_type, "element_type": finding.live_element_type})
+                    if f.name == finding.field else f for f in dataset.fields]}))
+            except Exception as exc:  # noqa: BLE001 — one failed write never stops the others
+                errors.append(f"{finding.dataset_name}.{finding.field}: {exc}")
+        return errors
 
     async def apply_drift_deletes(
         self,
@@ -3097,12 +3151,12 @@ class SlayerQueryEngine:
 
         src_side = await self._side_stats(
             client=client, table=dataset.sql_table,
-            key_cols=_physical_keys(dataset=dataset, keys=src_cols), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=dataset, keys=src_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         tgt_side = await self._side_stats(
             client=client, table=target.sql_table,
-            key_cols=_physical_keys(dataset=target, keys=tgt_cols), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=target, keys=tgt_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         # 0 == 0 reads as observed_unique, so an empty side would falsely detect
@@ -3151,7 +3205,7 @@ class SlayerQueryEngine:
         """(row-count, distinct-count) profiling statements reading the table and keys as SLayer reads them; NULL key
         rows excluded from both."""
         tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
-        cols = [exp.column(c) for c in key_cols]
+        cols = [exp.column(c) if isinstance(c, exp.Identifier) else c for c in key_cols]
         predicate = None
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
@@ -3162,7 +3216,8 @@ class SlayerQueryEngine:
         count_star = exp.func("COUNT", exp.Star()).as_("c")
         rows_q = exp.select(count_star).from_(tbl.copy()).where(predicate)
         inner = (
-            exp.select(*[c.copy() for c in cols])
+            exp.select(*[c.copy() if isinstance(c, exp.Column) else exp.alias_(c.copy(), f"k{i}")
+                         for i, c in enumerate(cols)])
             .from_(tbl.copy())
             .where(predicate.copy())
             .distinct()
@@ -3244,7 +3299,7 @@ class SlayerQueryEngine:
         if ds is None:
             return []
         datasets, unloadable = await self.storage.load_datasets(data_source=data_source)
-        retypes: List[schema_drift.RetypeFinding] = []
+        retypes: List[schema_drift.RetypeFinding | schema_drift.UntypedFinding] = []
         entries = await schema_drift.validate_datasource(
             datasource=ds, datasets=datasets, client=self.client_for(ds), findings_out=retypes,
         )
@@ -3471,7 +3526,10 @@ class SlayerQueryEngine:
         """Persist a SlayerDataset, each deprecated spelling stored as its twin; query-backed datasets reject cache fields and validate via dry-run.
         The source queries' input deprecations, the spelling deprecations and narrowed-access warnings go to
         ``warnings_out`` when given; without it, narrowed-access warnings are emitted as Python warnings."""
-        deprecated_inputs = deprecated_inputs_of([dataset, *(dataset.source_queries or [])])
+        deprecated_inputs = [
+            *deprecated_inputs_of([dataset, *(dataset.source_queries or [])]),
+            *broadcast_deprecations(dataset.source_queries or []),
+        ]
         dataset, spellings = with_canonical_spellings(dataset)
         if dataset.source_queries:
             stages = await qualified_input(
@@ -3825,20 +3883,25 @@ def _detection_skip_reason(
             if err is not None:
                 return (
                     f"{str(err).splitlines()[0]}; cardinality profiling "
-                    f"supports declared base-field keys only"
+                    f"supports keys over each dataset's own source only"
                 )
     return None
 
 
-def _physical_keys(*, dataset: SlayerDataset, keys: List[str]) -> List[exp.Identifier]:
+def _key_reads(*, dataset: SlayerDataset, keys: List[str], dialect: str) -> List[Expr]:
+    """Each key as SLayer reads it from the dataset's table: its column, or a computed key's expression."""
     by_name = {c.name: c for c in dataset.fields}
-    return [key_identifier(by_name[k].physical_name, quoted=by_name[k].physical_quoted) for k in keys]
+    return [
+        exp.column(key_identifier(f.physical_name, quoted=f.physical_quoted)) if f.is_base
+        else exp.maybe_parse(f.definition_sql or f.name, dialect=dialect)
+        for f in (by_name[k] for k in keys)
+    ]
 
 
 def _validate_relationship_keys(
     *, dataset: SlayerDataset, loaded: Dict[str, Optional[SlayerDataset]],
 ) -> None:
-    """Every relationship's keys name declared base fields on both sides (source re-checked for a populated query-backed dataset)."""
+    """Every relationship's keys name valid key fields on both sides (source re-checked for a populated query-backed dataset)."""
     _check_relationship_keys(dataset_name=dataset.name, fields=dataset.fields, relationships=dataset.relationships)
     for relationship in dataset.relationships:
         target = loaded.get(relationship.to)

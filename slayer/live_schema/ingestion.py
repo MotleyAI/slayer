@@ -1201,20 +1201,22 @@ def _merge_persisted_field_with_probe(
         sqlite_widen_enabled
         and fresh_col is not None
         and persisted_col.datatype is DataType.INTEGER
+        and fresh_col.datatype is not None
         and fresh_col.datatype.kind in (TypeKind.DOUBLE, TypeKind.TEXT)
     ):
         return persisted_col, False
+    widened = fresh_col.datatype
 
-    updates: dict[str, Any] = {"datatype": fresh_col.datatype}
+    updates: dict[str, Any] = {"datatype": widened}
     if _is_auto_default_integer_format(persisted_col.format):
-        updates["format"] = _format_for_widened_type(fresh_col.datatype)
+        updates["format"] = _format_for_widened_type(widened)
     else:
         logger.info(
             "Custom format on %s.%s preserved on SQLite probe widening "
             "(persisted INT -> %s). Review whether the format still applies.",
             dataset_name,
             persisted_col.name,
-            fresh_col.datatype.value,
+            widened.value,
         )
     return persisted_col.model_copy(update=updates), True
 
@@ -1796,18 +1798,6 @@ def _schema_hint_message(other_schemas: list[str]) -> str | None:
     )
 
 
-def _edge_name_collision(*, table_name: str, fresh: SlayerDataset, edge_owner: dict[str, str],
-                         dialect: SqlDialect) -> SkippedTable:
-    return SkippedTable(
-        table_name=_bare_table_name(fresh.sql_table, dialect=dialect) if fresh.sql_table else table_name,
-        kind=fresh.source_kind,
-        reason=(
-            f"dataset name '{table_name}' collides with the edge '{table_name}' declared on "
-            f"dataset '{edge_owner[table_name]}'"
-        ),
-    )
-
-
 def _merge_fresh_tables(
     *,
     fresh_by_name: dict[str, SlayerDataset],
@@ -1817,16 +1807,11 @@ def _merge_fresh_tables(
     default_schema_name: str | None,
     default_objects: set[str] | None,
 ) -> tuple[dict[str, _TableMerge], list[SkippedTable]]:
-    """Merge every fresh dataset into storage's view; a table named like a stored edge is skipped."""
-    edge_owner = {j.name: m.name for m in stored.values() for j in m.relationships if j.name}
+    """Merge every fresh dataset into storage's view."""
     merges: dict[str, _TableMerge] = {}
     skipped: list[SkippedTable] = []
     for table_name, fresh in fresh_by_name.items():
         if table_name in unloadable:
-            continue
-        if table_name not in stored and table_name in edge_owner:
-            skipped.append(_edge_name_collision(table_name=table_name, fresh=fresh, edge_owner=edge_owner,
-                                                dialect=dialect_for_ds_type(datasource.type)))
             continue
         outcome = _merge_one_table(
             table_name=table_name, fresh=fresh, persisted=stored.get(table_name), datasource=datasource,

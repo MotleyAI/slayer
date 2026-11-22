@@ -2396,7 +2396,7 @@ class TestMultiDialectGeneration:
         )
         # sqlglot transpiles ``TIMESTAMP`` → ``DATETIME`` on MySQL / BigQuery, so we don't assert the literal target-type spelling — only that the literal is wrapped in a CAST.
         assert "CAST('2025-12-01' AS" in sql, sql
-        # Bare-column time dim — must NOT be cast.
+        # Bare-column time dim — the dialect's typed bucket.
         sql = await _generate(
             gen,
             SlayerQuery(
@@ -2406,9 +2406,16 @@ class TestMultiDialectGeneration:
             ),
             model,
         )
-        # The time-dim column must not be CAST-wrapped (its DB type is known); a metric-level CAST like CAST(COUNT(*) AS INT) is fine.
-        assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
-        assert "CAST(CREATED_AT" not in sql.upper(), sql
+        d = get_dialect(dialect)
+        bucket = d.build_bucket(
+            col_expr=exp.column("created_at", table="orders"), granularity=TimeGranularity.MONTH,
+            operand=DataType.DATETIME,
+        ).sql(dialect=d.sqlglot_name)
+
+        def flat(text: str) -> str:
+            return _re.sub(r"\(\s+", "(", _re.sub(r"\s+\)", ")", " ".join(text.split())))
+
+        assert flat(bucket) in flat(sql), sql
 
     @pytest.mark.parametrize("dialect", [d for d in ALL_DIALECTS if d != "tsql"])
     async def test_calendar_time_shift(self, dialect: str, orders_dataset: SlayerDataset) -> None:

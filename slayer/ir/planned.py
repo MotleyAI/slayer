@@ -6,7 +6,9 @@ from datetime import datetime
 
 import functools
 from enum import Enum, IntEnum
-from typing import AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypedDict, Union, cast,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,7 +28,7 @@ from slayer.core.keys import (
     _FrozenKey,
     walk_value_keys,
 )
-from slayer.core.models import EmptyValue, SlayerDataset
+from slayer.core.models import DatasetField, EmptyValue, SlayerDataset
 from slayer.core.scope import StageSchema, StaleSpelling
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
@@ -258,6 +260,14 @@ class EmptyBaseGrainPlan(BaseModel):
     host_gated: bool = False
 
 
+class KeyArgs(TypedDict):
+    """``SemiJoinHop``'s key fields, as ``SemiJoinHop.key_args`` builds them."""
+
+    join_pairs: Tuple[Tuple[str, str], ...]
+    quoted: Tuple[Tuple[bool, bool], ...]
+    computed: Tuple[Tuple[Optional[str], Optional[str]], ...]
+
+
 class SemiJoinHop(BaseModel):
     """One node of a semi-join correlation tree, joined from its parent node (the
     producer root for a first hop) on oriented PHYSICAL ``join_pairs`` (parent_col, hop_col).
@@ -269,6 +279,8 @@ class SemiJoinHop(BaseModel):
     join_pairs: Tuple[Tuple[str, str], ...]
     #: Per pair, whether each key's stored SQL quotes its physical name (``DatasetField.physical_quoted``).
     quoted: Tuple[Tuple[bool, bool], ...] = ()
+    #: Per pair, each computed key's expression over its own source (``None``: a physical key).
+    computed: Tuple[Tuple[Optional[str], Optional[str]], ...] = ()
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
     #: analysis's input (a declared-INNER hop is never null-extended).
@@ -282,6 +294,19 @@ class SemiJoinHop(BaseModel):
     @property
     def node_id(self) -> str:
         return "/".join(self.node_path)
+
+    @staticmethod
+    def key_args(keys: Sequence[Tuple[DatasetField, DatasetField]]) -> KeyArgs:
+        """``join_pairs``, ``quoted`` and ``computed`` of oriented key field pairs."""
+        return {
+            "join_pairs": tuple((s.key_name, t.key_name) for s, t in keys),
+            "quoted": tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
+            "computed": tuple((_computed_text(s), _computed_text(t)) for s, t in keys),
+        }
+
+
+def _computed_text(field: DatasetField) -> Optional[str]:
+    return None if field.is_base else field.definition_sql or field.name
 
 
 class SemiJoinFilter(BaseModel):
@@ -430,6 +455,9 @@ class RegroupAttachPlan(BaseModel):
     producer_root_dataset: Optional[str] = None
     broadcast_metric: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
+    # The broadcast aggregate in canonical form (query-spelled references), and the ``partition_by=`` returning its values.
+    broadcast_call: Optional[str] = None
+    broadcast_partition_by: List[str] = Field(default_factory=list)
     # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).

@@ -163,6 +163,7 @@ def _attach(**overrides):
     empty = SimpleNamespace(regroup_attach_plans=[], cross_model_aggregate_plans=[])
     base = dict(
         broadcast_metric=None, broadcast_dimensions=[], producer_plan=empty,
+        broadcast_call=None, broadcast_partition_by=[],
     )
     base.update(overrides)
     return SimpleNamespace(**base)
