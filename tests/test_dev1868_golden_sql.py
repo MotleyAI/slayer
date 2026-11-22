@@ -62,9 +62,9 @@ def _cases() -> dict:
             order=[{"field": LAST_TIER, "direction": "desc"}],
         ),
         # W2 — cross-dataset partitioned inners under transforms.
-        "w2/cumsum_part_tier": _orders(
+        "w2/rank_part_tier": _orders(
             dimensions=["customers.tier"], time_dimensions=_month("orders"),
-            metrics=[{"metric": f"cumsum({CM_PART_TIER})", "alias": "c"}],
+            metrics=[{"metric": f"rank({CM_PART_TIER}, direction='desc')", "alias": "c"}],
         ),
         "w2/change_last_region": _orders(
             dimensions=["customers.regions.name"], time_dimensions=_month("orders"),
@@ -73,7 +73,7 @@ def _cases() -> dict:
         "w2/shared_inner": _orders(
             dimensions=["customers.tier"], time_dimensions=_month("orders"),
             filter=[f"{CM_PART_TIER} > 100"],
-            metrics=[{"metric": f"cumsum({CM_PART_TIER})", "alias": "c"}],
+            metrics=[{"metric": f"rank({CM_PART_TIER}, direction='desc')", "alias": "c"}],
         ),
         # W3 — composite routes (already combined; pinned against regression).
         "w3/scalar_call": _orders(

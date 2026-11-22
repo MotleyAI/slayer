@@ -98,12 +98,12 @@ WINDOWED = [
 ]
 _N = {"sw": [100, 170, 70, None, None, None], "lw": [100, 70, 70, None, None, None], "cw": [0, 1, 1, 1, 1, 1]}
 _S = {"sw": [50, 50, None, None, None, None], "lw": [50, 50, None, None, None, None], "cw": [0, 0, 1, 1, 1, 0]}
-_E = {"sw": [None] * 6, "lw": [None] * 6, "cw": [0] * 6}
 
 
 def _expected(names: list[str]) -> dict[tuple, tuple]:
+    """Region E has no fact in range: no row of the inferred spine population."""
     out = {}
-    for region, cols in (("N", _N), ("S", _S), ("E", _E)):
+    for region, cols in (("N", _N), ("S", _S)):
         cols = {**cols, "pw": cols["sw"]}
         for i, month in enumerate(MONTHS):
             out[(region, month)] = tuple(num(cols[n][i]) for n in names)

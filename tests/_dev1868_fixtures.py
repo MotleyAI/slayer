@@ -43,16 +43,11 @@ AMOUNT_BY_REGION_NAME = {"North": 60.0, "South": 10.0, None: 47.0}
 # --------------------------------------------------------------------------- #
 # W2 — cross-dataset partitioned aggregates nested in transforms.
 # --------------------------------------------------------------------------- #
-#: cumsum(spend:sum(partition_by=tier)) per (tier, order month): the attached
-#: per-tier total (160/150/40) accumulates over each tier's order months.
-CUMSUM_PART_BY_TIER_MONTH = {
-    ("gold", "2024-01"): 160.0,
-    ("gold", "2024-02"): 320.0,
-    ("gold", "2024-03"): 480.0,
-    ("silver", "2024-02"): 150.0,
-    ("bronze", "2024-03"): 40.0,
-    (None, "2024-03"): None,
-}
+#: The (tier, order month) cells of the W2 queries.
+TIER_MONTHS = frozenset({("gold", "2024-01"), ("gold", "2024-02"), ("gold", "2024-03"),
+                         ("silver", "2024-02"), ("bronze", "2024-03"), (None, "2024-03")})
+#: rank(spend:sum(partition_by=tier), direction='desc'): tier totals 160/150/40; the NULL tier's is NULL.
+RANK_PART_BY_TIER = {"gold": 1, "silver": 2, "bronze": 3, None: None}
 #: change(last-by-region) per (regions.name, order month): constant series →
 #: NULL at each region's first month, 0 after.
 CHANGE_LAST_BY_REGION_MONTH = {
