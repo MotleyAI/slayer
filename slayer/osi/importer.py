@@ -11,12 +11,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import BaseModel
 from sqlglot import exp
 
 from slayer.core import slayer_extension as ext
-from slayer.core.document_text import edit_text
+from slayer.core.document_text import edit_text, parse_document_text
+from slayer.core.errors import UnreadableDocumentError
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.ossie_validity import columns, parse_ossie_sql
 from slayer.core.semantic_model import OSSIE_VERSION, ossie_validity_errors
@@ -244,9 +244,9 @@ class _Importer:
     async def _file(self, file: Path) -> None:
         text = file.read_text(encoding="utf-8")  # NOSONAR(S8707) — reading the file the CLI user names is the feature
         try:
-            data = yaml.safe_load(text)
-        except yaml.YAMLError as exc:
-            raise _Refused(f"the file is not valid YAML or JSON: {exc}") from exc
+            data = parse_document_text(text)
+        except UnreadableDocumentError as exc:
+            raise _Refused(*exc.reasons) from exc
         if not isinstance(data, dict) or ("datasets" not in data and "semantic_model" not in data):
             raise _Refused("the file is not a semantic-model document (it holds neither `datasets` nor a legacy "
                            "`semantic_model`); ontology and mapping documents are not imported")
@@ -280,7 +280,7 @@ class _Importer:
         if legacy:
             self.entry("legacy_extensions", "legacy `custom_extensions` entries read as `nonportable_extensions`",
                        document=name)
-        data = yaml.safe_load(text)
+        data = parse_document_text(text)
         boundaries = _boundaries(data)
         if boundaries:
             await self._split(data, boundaries)

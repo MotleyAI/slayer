@@ -32,6 +32,7 @@ from slayer.core.errors import (
     NamespaceCollisionError,
     OssieDocumentInvalidError,
     RelationshipTargetCaseError,
+    UnreadableDocumentError,
     SemanticModelsUnsupportedError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
@@ -122,9 +123,9 @@ from slayer.storage.qualified_references import qualified_stages
 from slayer.storage.document_mapping import as_expression, with_dataset, without_dataset
 from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle, warn_broken_model_metrics
 from slayer.storage.semantic_model_edits import UNSET, MetricSpec, edited_document, metric_spec, with_datasets
-from slayer.core.document_text import edit_text
+from slayer.core.document_text import edit_text, parse_document_text
 from slayer.storage.semantic_models import (
-    DocumentIndex, build_index, checked_document, decompose, expression_datasets, parse_document_text,
+    DocumentIndex, build_index, checked_document, decompose, expression_datasets,
 )
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.live_schema.type_refinement import (
@@ -295,8 +296,11 @@ def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
 
 
 def _document_name(text: str) -> str:
-    """The ``name`` an Ossie document's text declares."""
-    data = yaml.safe_load(text)
+    """The ``name`` an Ossie document's text declares; raises ``OssieDocumentInvalidError`` when it does not read."""
+    try:
+        data = parse_document_text(text)
+    except UnreadableDocumentError as exc:
+        raise OssieDocumentInvalidError(name=exc.name or "(unnamed)", reasons=exc.reasons) from exc
     name = data.get("name") if isinstance(data, dict) else None
     if not isinstance(name, str) or not name:
         raise ValueError("The semantic model's content declares no name; pass one")

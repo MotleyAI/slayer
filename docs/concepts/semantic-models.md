@@ -44,7 +44,7 @@ A document belongs to the datasource it is stored under, since an Ossie document
 
 The document's `name` must equal its storage name. Loading a document never connects to the database and never writes to storage.
 
-Only Ossie's flat `0.3.0.dev0` shape loads. A key Ossie does not define, at any level, makes the document unloadable with an error naming the key; so do an unknown `version`, the legacy `semantic_model` wrapper and the legacy `custom_extensions` key. Upgrade earlier shapes with [`slayer import-osi`](../osi/osi_import.md). An unloadable document does not affect other documents or datasets.
+Only Ossie's flat `0.3.0.dev0` shape loads. A key Ossie does not define, at any level, makes the document unloadable with an error naming the key; so do an unknown `version`, the legacy `semantic_model` wrapper, the legacy `custom_extensions` key, a YAML or JSON mapping key repeated at any depth (repeated `<<` merge directives are allowed), and a scalar YAML cannot build, such as `2024-02-30`, each named with its line; a save or edit of such text is refused. Upgrade earlier shapes with [`slayer import-osi`](../osi/osi_import.md). An unloadable document does not affect other documents or datasets.
 
 ## What a document becomes
 
@@ -120,6 +120,7 @@ Settings Ossie has no place for travel in a `nonportable_extensions` entry with 
 A valid document can hold entities SLayer cannot evaluate yet:
 
 - a window function (`OVER`);
+- an expression SLayer's expression reader cannot parse, such as the subquery `(SELECT 1)`;
 - a model-scoped metric reading a field unqualified or outside an aggregate;
 - a model-scoped aggregate naming no dataset, such as `COUNT(*)`.
 

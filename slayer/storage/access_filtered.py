@@ -15,7 +15,7 @@ from slayer.core.errors import (
     MemoryNotFoundError,
     UnknownRelationshipTargetError,
 )
-from slayer.core.document_text import edit_text
+from slayer.core.document_text import edit_text, parse_document_text
 from slayer.core.field_expression import Expression
 from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.models import DatasourceConfig, SlayerDataset
@@ -28,7 +28,6 @@ from slayer.storage.document_loading import DocumentLoadFailures, Loaded
 from slayer.storage.document_mapping import as_expression, document_payload, with_document_payload
 from slayer.storage.model_metric_rules import metric_references, visible_model_metrics
 from slayer.storage.semantic_model_edits import metric_spec
-from slayer.storage.semantic_models import parse_document_text
 
 _SEMANTIC_MODEL = "semantic model"
 

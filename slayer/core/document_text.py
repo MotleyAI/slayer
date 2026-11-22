@@ -9,11 +9,105 @@ from collections.abc import Callable, MutableMapping, Sequence
 from difflib import SequenceMatcher
 from typing import Any
 
+import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedSeq
 from ruamel.yaml.util import load_yaml_guess_indent
+from yaml.constructor import ConstructorError
 
-__all__ = ["edit_text", "plain", "without_vendor"]
+from slayer.core.errors import UnreadableDocumentError
+
+__all__ = ["edit_text", "parse_document_text", "plain", "without_vendor"]
+
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+_VALUE_TAG = "tag:yaml.org,2002:value"
+
+
+class _Loader(yaml.SafeLoader):
+    """``SafeLoader`` reporting a scalar it cannot build as a ``ConstructorError`` at its line."""
+
+    def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
+        try:
+            return super().construct_object(node, deep)
+        except (ValueError, AttributeError, LookupError) as exc:
+            raise ConstructorError(None, None, f"cannot build {node.value!r} as {node.tag.rsplit(':', 1)[-1]}",
+                                   node.start_mark) from exc
+
+
+def _line(node: yaml.Node) -> int:
+    return node.start_mark.line + 1
+
+
+def _built(loader: _Loader, node: yaml.ScalarNode, reasons: list[str]) -> tuple[bool, Any]:
+    """``node`` built, or ``(False, None)`` with its reason recorded."""
+    try:
+        if node.tag == _VALUE_TAG:
+            return True, loader.construct_scalar(node)
+        return True, loader.construct_object(node)
+    except ConstructorError as exc:
+        reasons.append(f"line {_line(node)}: {exc.problem}")
+        return False, None
+
+
+def _problems(loader: _Loader, node: yaml.Node, *, reasons: list[str], visited: set[int]) -> None:
+    """Every repeated explicit key and unbuildable scalar under ``node``; merge directives may repeat."""
+    if id(node) in visited:
+        return
+    visited.add(id(node))
+    if isinstance(node, yaml.ScalarNode):
+        if node.tag != _MERGE_TAG:
+            _built(loader, node, reasons)
+        return
+    if isinstance(node, yaml.SequenceNode):
+        for child in node.value:
+            _problems(loader, child, reasons=reasons, visited=visited)
+        return
+    seen: dict[Any, int] = {}
+    for key, value in node.value:
+        if key.tag != _MERGE_TAG:
+            if not isinstance(key, yaml.ScalarNode):
+                reasons.append(f"line {_line(key)}: a mapping key must be a scalar")
+            else:
+                visited.add(id(key))
+                ok, built = _built(loader, key, reasons)
+                if ok and built in seen:
+                    reasons.append(f"line {_line(key)}: duplicate key {built!r} (first at line {seen[built]})")
+                elif ok:
+                    seen[built] = _line(key)
+        _problems(loader, value, reasons=reasons, visited=visited)
+
+
+def _declared_name(root: yaml.Node) -> str | None:
+    if not isinstance(root, yaml.MappingNode):
+        return None
+    return next((v.value for k, v in root.value
+                 if isinstance(k, yaml.ScalarNode) and k.value == "name" and isinstance(v, yaml.ScalarNode)), None)
+
+
+def parse_document_text(text: str) -> Any:
+    """A document's YAML or JSON text as data, read as Ossie's loader reads it; raises ``UnreadableDocumentError``
+    listing every repeated key and unbuildable scalar."""
+    try:
+        loader = _Loader(text)
+    except yaml.YAMLError as exc:
+        raise UnreadableDocumentError(reasons=[f"the document is not valid YAML or JSON: {exc}"]) from exc
+    try:
+        try:
+            root = loader.get_single_node()
+        except yaml.YAMLError as exc:
+            raise UnreadableDocumentError(reasons=[f"the document is not valid YAML or JSON: {exc}"]) from exc
+        if root is None:
+            return None
+        reasons: list[str] = []
+        _problems(loader, root, reasons=reasons, visited=set())
+        if not reasons:
+            try:
+                return loader.construct_document(root)
+            except yaml.YAMLError as exc:
+                reasons.append(f"the document is not valid YAML or JSON: {exc}")
+        raise UnreadableDocumentError(reasons=reasons, name=_declared_name(root))
+    finally:
+        loader.dispose()
 
 
 def without_vendor(node: Any, vendor: str) -> Any:
@@ -191,7 +285,9 @@ def _splice(*, ours: str, base: str, theirs: str) -> str:
 
 
 def edit_text(text: str, edit: Callable[[dict[str, Any]], dict[str, Any]]) -> str:
-    """``text`` (YAML or JSON) after ``edit`` maps its plain data to the desired data; unchanged parts keep their text."""
+    """``text`` (YAML or JSON) after ``edit`` maps its plain data to the desired data; unchanged parts keep their text.
+    Raises ``UnreadableDocumentError`` when ``parse_document_text`` refuses ``text``."""
+    parse_document_text(text)
     if _is_json(text):
         data = json.loads(text)
         found = _JSON_INDENT.search(text)

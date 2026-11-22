@@ -9,14 +9,19 @@ from __future__ import annotations
 import functools
 from typing import Any
 
-import yaml
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
+from slayer.core.document_text import parse_document_text
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
-from slayer.core.errors import OssieDocumentInvalidError, StoredDocumentLoadError
-from slayer.core.field_expression import DialectEntry, Expression, ExpressionObject, token
+from slayer.core.errors import (
+    FieldExpressionError, OssieDocumentInvalidError, StoredDocumentLoadError, UnreadableDocumentError,
+)
+from slayer.core.field_expression import (
+    DialectEntry, Expression, ExpressionObject, portable_text, running_form, token,
+)
+from slayer.core.syntax import parse_expr
 from slayer.core import slayer_extension as ext
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
 from slayer.core.ossie_validity import columns, is_agg_call, parse_ossie_sql
@@ -33,8 +38,7 @@ from slayer.storage.document_extensions import (
     relationship_declarations, relocate_metrics, restore_metrics,
 )
 
-__all__ = ["Decomposition", "DocumentIndex", "build_index", "checked_document", "decompose", "expression_datasets",
-           "parse_document_text"]
+__all__ = ["Decomposition", "DocumentIndex", "build_index", "checked_document", "decompose", "expression_datasets"]
 
 _OSSIE_TYPES = {t.value: t for t in DataType if t is not DataType.ARRAY}
 WINDOW_WARNING = "uses a window function (OVER), which SLayer cannot evaluate yet"
@@ -50,20 +54,12 @@ class Decomposition(BaseModel):
     notes: list[ExtensionNote] = []
 
 
-def parse_document_text(text: str) -> Any:
-    """A document's YAML or JSON text as data; raises ``ValueError`` when it does not parse."""
-    try:
-        return yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise ValueError(f"the document is not valid YAML or JSON: {exc}") from exc
-
-
 def checked_document(*, text: str, name: str) -> SemanticModelDocument:
     """``text`` as a valid document named ``name``; raises ``OssieDocumentInvalidError`` with every reason."""
     try:
         data = parse_document_text(text)
-    except ValueError as exc:
-        raise OssieDocumentInvalidError(name=name, reasons=[str(exc)]) from exc
+    except UnreadableDocumentError as exc:
+        raise OssieDocumentInvalidError(name=name, reasons=exc.reasons) from exc
     reasons = ossie_validity_errors(data)
     if not reasons and data["name"] != name:
         reasons = [f"its name {data['name']!r} differs from the name it is stored under ({name!r})"]
@@ -80,6 +76,28 @@ def _windowed(expression: OssieExpression) -> bool:
         if tree is not None and tree.find(exp.Window) is not None:
             return True
     return False
+
+
+def _unparseable(text: str | None) -> str | None:
+    """Why SLayer's expression reader rejects ``text``, else ``None``."""
+    if text is None:
+        return None
+    try:
+        parse_expr(text)
+    except ValueError as exc:
+        return f"is not an expression SLayer can parse: {exc}"
+    return None
+
+
+def _unparseable_field(expression: Expression | None, *, target: str, owner: str) -> str | None:
+    """Why the portable form ``expression`` runs on ``target`` does not parse; ``None`` for a native entry."""
+    if expression is None:
+        return None
+    try:
+        form = running_form(owner=owner, expression=expression, dialect=target)
+    except FieldExpressionError:  # reported when the field is read
+        return None
+    return None if form.native else _unparseable(form.text)
 
 
 def _portable(expression: OssieExpression) -> str | None:
@@ -148,7 +166,8 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: l
     expression, problem = _runnable(field.expression, target=target)
     if expression == field.name:
         expression = None  # reads the column named like the field
-    warning = WINDOW_WARNING if _windowed(field.expression) else problem
+    warning = WINDOW_WARNING if _windowed(field.expression) else problem or _unparseable_field(
+        expression, target=target, owner=f"Field {field.name!r}")
     built = DatasetField(
         name=field.name, expression=expression,
         datatype=_OSSIE_TYPES[field.datatype] if field.datatype else None,
@@ -176,7 +195,7 @@ def with_ossie_meta(meta: dict[str, Any] | None, entity: Any) -> dict[str, Any] 
 
 def _metric(metric: Any, *, target: str, windowed_fields: set[str]) -> DatasetMetric:
     expression, problem = _runnable_metric(metric.expression, target=target)
-    warning = problem
+    warning = problem or _unparseable(portable_text(expression))
     if _windowed(metric.expression):
         warning = WINDOW_WARNING
     elif windowed_fields and _reads(metric.expression, windowed_fields):
@@ -255,7 +274,8 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
             name=m.name, semantic_model=doc.name, data_source=data_source, expression=expression,
             description=m.description, ai_context=m.ai_context,
             datatype=_OSSIE_TYPES[m.datatype] if m.datatype else None,
-            load_warning=WINDOW_WARNING if _windowed(m.expression) else problem,
+            load_warning=WINDOW_WARNING if _windowed(m.expression) else problem or _unparseable(
+                portable_text(expression)),
         ))
     names = {m.name.casefold() for m in metrics}
     for metric in metrics:
