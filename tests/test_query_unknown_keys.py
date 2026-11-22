@@ -210,6 +210,12 @@ class TestUnknownKeys:
             TimeDimension(field="orders.ordered_at", granularity="month", stray=1)  # pyright: ignore[reportCallIssue]  # deliberate stray key
         assert refusal(info.value)[0].key == STRAY
 
+    def test_a_non_string_key_is_refused_with_the_typed_error(self) -> None:
+        payload: dict[Any, Any] = {**TD, 1: "x"}
+        with pytest.raises((ValidationError, UnknownKeyError)) as info:
+            TimeDimension.model_validate(payload)
+        assert refusal(info.value)[0].key == 1
+
     def test_an_unrelated_camel_case_key_stays_unknown(self) -> None:
         with pytest.raises((ValidationError, UnknownKeyError)) as info:
             TimeDimension.model_validate({**TD, "sortOrder": "asc"})

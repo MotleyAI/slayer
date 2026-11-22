@@ -293,8 +293,10 @@ def input_object(kind: str) -> Callable[[_M], _M]:
     return register
 
 
-def _snake(key: str) -> str:
-    return re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", key).lower() if _CAMEL.fullmatch(key) else key
+def _snake(key: Any) -> Any:
+    if not isinstance(key, str) or not _CAMEL.fullmatch(key):
+        return key
+    return re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", key).lower()
 
 
 def camel_healed(data: dict[str, Any], kind: str) -> dict[str, Any]:
