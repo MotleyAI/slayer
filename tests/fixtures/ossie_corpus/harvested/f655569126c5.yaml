@@ -1,0 +1,31 @@
+version: 0.3.0.dev0
+name: m
+datasets:
+- name: customers
+  source: db.s.customers
+  primary_key:
+  - id
+  unique_keys:
+  - - email
+  fields:
+  - name: id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: id
+  - name: email
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: email
+  - name: region
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: region
+  - name: tenant_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: tenant_id
+relationships: []

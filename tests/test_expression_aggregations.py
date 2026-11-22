@@ -85,7 +85,7 @@ def _orders(**overrides) -> SlayerDataset:
         aggregations=[Aggregation(name="my_agg", expression="AVG({value})")],
     )
     fields.update(overrides)
-    return SlayerDataset(**fields)
+    return SlayerDataset.model_validate(fields)
 
 
 def _customers() -> SlayerDataset:

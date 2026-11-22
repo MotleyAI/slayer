@@ -7,17 +7,17 @@ import pytest
 from slayer.core.enums import RelationshipCardinality, JoinType
 from slayer.core.models import DatasourceConfig, DatasetRelationship
 from slayer.ingest_report import ConversionReport, ConversionResult
-from slayer.osi import slayer_extension as ext
+from slayer.sql.ossie_dialects import expression_digest, source_digest
 from slayer.osi.exporter import OsiExportResult
-from slayer.osi.models import OSIExpression
+from slayer.core.ossie_expression import OSIExpression
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_METRICS, col, customers, slayer_metric, monthly_revenue, orders, orders_fields, rich_orders, to_customers,
     visits,
 )
 from tests._osi_export_helpers import (
-    SLAYER, all_metrics, carries, dataset, dataset_names, doc_text, entities, export, export_datasets, field,
-    make_env, mentions, payload, reimport, relationships, slayer_entries, validate,
+    SLAYER, all_metrics, carries, dataset, dataset_names, doc_text, entities, export, export_datasets, export_text,
+    field, make_env, mentions, payload, reimport, relationships, slayer_entries, validate,
 )
 from tests._osi_helpers import ds, f, flat
 
@@ -48,11 +48,11 @@ def test_fingerprint_normalization_is_stable() -> None:
         "sql": "sum(amount) filter (where status = 'completed') / nullif(count(distinct customer_id), 0)",
         "dialects": [{"dialect": "DUCKDB", "expression": "percentile_cont(0.9) within group (order by amount)"}],
     })
-    assert ext.expression_digest(expression) == [
+    assert expression_digest(expression) == [
         "SUM(IFF(status = 'completed', amount, NULL)) / NULLIF(COUNT(DISTINCT customer_id), 0)",
         [["DUCKDB", "QUANTILE_CONT(amount, 0.9 ORDER BY amount)"]],
     ]
-    source = ext.source_digest("select o_orderkey, amount from orders where region = 'US'", reader="duckdb")
+    source = source_digest("select o_orderkey, amount from orders where region = 'US'", reader="duckdb")
     assert source == "SELECT o_orderkey, amount FROM orders WHERE region = 'US'"
 
 
@@ -92,11 +92,13 @@ async def test_foreign_extension_preserved(env) -> None:
     doc = flat([ds("orders", fields=[f("id", "o_orderkey"), f("amount", nonportable_extensions=[acme])],
                    primary_key=["id"])])
     imported, _ = await reimport(env, doc)
-    exported = (await export(imported)).document
+    result = await export(imported)
+    exported = result.document
     amount = field(dataset(exported, "orders"), "amount")
     assert amount is not None
     assert acme in amount["nonportable_extensions"]
-    assert len(slayer_entries(amount)) == 1
+    assert slayer_entries(amount) == []
+    assert export_text(result) == doc_text(doc)
     validate(exported)
 
 

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
+import importlib
 import json
 import math
 from collections.abc import Iterator
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import jsonschema
@@ -19,20 +17,18 @@ import sqlglot
 import yaml
 from pydantic import BaseModel
 
-from slayer.cli import _import_osi_workflow
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.dialects import read, render, select_expression
+from slayer.sql.ossie_dialects import read, render, select_expression
 from slayer.osi.exporter import OsiExportResult, export_osi
-from slayer.osi.models import OSIDocument, OSIExpression
-from slayer.osi.source import parse_source
+from slayer.core.ossie_expression import OSIExpression
+from slayer.sql.ossie_source import parse_source
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine
 from tests._osi_export_fixtures import DATASOURCE, EXPORT_DDL
-from tests._osi_helpers import SCHEMA_PATH, db_url, run_converter, seed_db
+from tests._osi_helpers import SCHEMA_PATH, db_url, seed_db
 
 SLAYER = "SLAYER"
 
@@ -101,29 +97,27 @@ async def export_datasets(env: Env, *datasets: SlayerDataset, extensions: bool =
     return await export(env, datasets=subset, extensions=extensions)
 
 
-async def reimport(env: Env, document: dict[str, Any], *, name: str = "reimported") -> tuple[Env, str]:
-    """Run ``import-osi`` on ``document`` into a fresh store over ``env``'s database; return it and the output."""
+def export_text(source: dict[str, Any] | OsiExportResult) -> str:
+    """The export's exact text when it carries one, else the document dumped."""
+    text = getattr(source, "text", None)
+    if isinstance(text, str):
+        return text
+    return doc_text(source.document if isinstance(source, OsiExportResult) else source)
+
+
+async def reimport(env: Env, document: dict[str, Any] | OsiExportResult, *,
+                   name: str = "reimported") -> tuple[Env, Any]:
+    """Natively import ``document`` into a fresh store over ``env``'s database; return it and the import result."""
     target = await fresh_store(env, name)
     path = target.store.parent / f"{name}.osi.yaml"
-    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
-    args = SimpleNamespace(osi_path=str(path), datasource=env.datasource, dialect=None, storage=str(target.store))
+    path.write_text(export_text(document), encoding="utf-8")
     engine = _engine(target)
-    buffer = io.StringIO()
     try:
-        with contextlib.redirect_stdout(buffer):
-            await _import_osi_workflow(args, engine)
+        result = await importlib.import_module("slayer.osi.importer").import_osi(
+            storage=engine.storage, path=path, data_source=env.datasource, engine=engine)
     finally:
         _close(engine, target)
-    return target, buffer.getvalue()
-
-
-def convert_document(env: Env, document: dict[str, Any]) -> ConversionResult:
-    """The pure importer over ``document`` against ``env``'s database."""
-    return run_converter(
-        OsiToSlayerConverter(documents=[OSIDocument.model_validate(document)], data_source=env.datasource,
-                             target_dialect=env.dialect),
-        datasource=env.config,
-    )
+    return target, result
 
 
 async def stored(env: Env, name: str) -> SlayerDataset:

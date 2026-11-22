@@ -27,11 +27,12 @@ Spec rules pinned by ``tests/test_search_render.py``:
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from typing_extensions import deprecated
 
+from slayer.core.field_expression import Expression, ExpressionObject, portable_text
 from slayer.core.models import (
     Aggregation,
     DatasetField,
@@ -39,6 +40,7 @@ from slayer.core.models import (
     SlayerDataset,
     field_type_text,
 )
+from slayer.core.semantic_model import AIContext, AIContextObject, ModelScopedMetric
 from slayer.core.vocabulary import name_twins
 from slayer.memories.models import Memory
 
@@ -141,6 +143,8 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
     ]
     if dataset.description:
         lines.append(f"Description: {dataset.description}")
+    if ai := meta_ai_context_text(dataset.meta):
+        lines.append(f"AI context: {ai}")
     if dataset.sql_table:
         lines.append(f"sql_table: {dataset.sql_table}")
     if dataset.sql:
@@ -213,6 +217,21 @@ def _definition_lines(field: DatasetField) -> list[str]:
     return lines
 
 
+def _sample_lines(field: DatasetField) -> list[str]:
+    """Sample values: the structured list wins (``[]`` is authoritative), else the legacy ``sampled`` text."""
+    if field.sampled_values is None:
+        # ``sampled`` is a min/max range for numeric/temporal fields, or legacy data.
+        return [f"Sample values: {field.sampled}"] if field.sampled else []
+    if not field.sampled_values:
+        return []
+    # JSON keeps values containing commas unambiguous.
+    lines = ["Sample values: " + json.dumps(field.sampled_values, ensure_ascii=False)]
+    # Overflow signal only when the true cardinality strictly exceeds what we returned.
+    if field.distinct_count is not None and field.distinct_count > len(field.sampled_values):
+        lines.append(f"Distinct count: {field.distinct_count}")
+    return lines
+
+
 def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
     """Field doc: parent qualifier + per-field metadata + cached sample."""
     lines: list[str] = [
@@ -221,6 +240,8 @@ def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
     ]
     if field.description:
         lines.append(f"Description: {field.description}")
+    if ai := meta_ai_context_text(field.meta):
+        lines.append(f"AI context: {ai}")
     if field.label:
         lines.append(f"Label: {field.label}")
     if field.format:
@@ -230,39 +251,11 @@ def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
     lines.extend(_definition_lines(field))
     if field.filter:
         lines.append(f"Filter: {field.filter}")
-    # Prefer the structured ``sampled_values`` list (full top-50)
-    # over the 20-truncated ``sampled`` text. ``is None`` gates the fallback
-    # so an authoritative empty list (``[]``) does not re-surface a stale
-    # ``sampled`` text; an empty list simply skips the line (avoids a bare
-    # ``Sample values: `` trailer in the indexed text).
-    if field.sampled_values is not None:
-        if field.sampled_values:
-            # JSON-encode the list to preserve values that contain commas
-            # (e.g. ``"R$ 1,000–3,000"``) — comma-joining would re-introduce
-            # the exact ambiguity that the structured ``sampled_values`` field
-            # was meant to solve.
-            lines.append(
-                "Sample values: "
-                + json.dumps(field.sampled_values, ensure_ascii=False)
-            )
-            # Overflow signal: render true cardinality on a follow-up line
-            # only when STRICTLY greater than the values we returned. Equal
-            # means we returned the entire set; emitting a hint would be
-            # noise. Gated on ``sampled_values is not None`` so the legacy
-            # ``"... (N distinct)"`` suffix in ``sampled`` text does not get
-            # duplicated by an extra line.
-            if (
-                field.distinct_count is not None
-                and field.distinct_count > len(field.sampled_values)
-            ):
-                lines.append(f"Distinct count: {field.distinct_count}")
-    elif field.sampled:
-        # Fallback for numeric/temporal fields (``sampled`` is a min/max
-        # range, not a list) and legacy data where the
-        # structured field was never populated.
-        lines.append(f"Sample values: {field.sampled}")
+    lines.extend(_sample_lines(field))
     if field.primary_key:
         lines.append("Primary key: yes")
+    if field.load_warning:
+        lines.append(f"Load warning: {field.load_warning}")
     return "\n".join(lines)
 
 
@@ -279,8 +272,65 @@ def render_metric_text(*, dataset: SlayerDataset, metric: DatasetMetric) -> str:
     ]
     if metric.description:
         lines.append(f"Description: {metric.description}")
+    if ai := meta_ai_context_text(metric.meta):
+        lines.append(f"AI context: {ai}")
     if metric.label:
         lines.append(f"Label: {metric.label}")
+    if metric.load_warning:
+        lines.append(f"Load warning: {metric.load_warning}")
+    return "\n".join(lines)
+
+
+def expression_text(expression: Expression | None) -> str:
+    """An Ossie expression as text: its portable SQL, else each dialect's entry."""
+    portable = portable_text(expression)
+    if portable is not None or not isinstance(expression, ExpressionObject):
+        return portable or ""
+    return "; ".join(f"{e.dialect}: {e.expression}" for e in expression.dialects or [])
+
+
+def ai_context_text(ai_context: AIContext | dict[str, Any] | None) -> str:
+    """An Ossie ``ai_context`` (or its raw mapping) as one line."""
+    if isinstance(ai_context, dict):
+        ai_context = AIContextObject.model_validate(ai_context)
+    if ai_context is None or isinstance(ai_context, str):
+        return ai_context or ""
+    parts = [ai_context.instructions or "",
+             *(f"{label}: {', '.join(items)}" for label, items in
+               (("synonyms", ai_context.synonyms), ("examples", ai_context.examples)) if items)]
+    return "; ".join(p for p in parts if p)
+
+
+def meta_ai_context_text(meta: dict[str, Any] | None) -> str:
+    """The Ossie ``ai_context`` a load recorded in ``meta`` as one line; empty when none or malformed."""
+    try:
+        return ai_context_text((meta or {}).get("osi_ai_context"))
+    except ValueError:
+        return ""
+
+
+def render_semantic_model_text(*, data_source: str, name: str, document: dict[str, Any]) -> str:
+    """A semantic-model document: its name, description and ``ai_context``."""
+    lines = [f"Semantic model: {data_source}.{name}"]
+    if document.get("description"):
+        lines.append(f"Description: {document['description']}")
+    if ai := ai_context_text(document.get("ai_context")):
+        lines.append(f"AI context: {ai}")
+    return "\n".join(lines)
+
+
+def render_model_scoped_metric_text(*, metric: ModelScopedMetric) -> str:
+    lines: list[str] = [
+        f"Metric: {metric.name} (model-scoped, semantic model {metric.semantic_model!r} "
+        f"of datasource {metric.data_source!r})",
+        f"Expression: {expression_text(metric.expression)}",
+    ]
+    if metric.description:
+        lines.append(f"Description: {metric.description}")
+    if ai := ai_context_text(metric.ai_context):
+        lines.append(f"AI context: {ai}")
+    if metric.load_warning:
+        lines.append(f"Load warning: {metric.load_warning}")
     return "\n".join(lines)
 
 

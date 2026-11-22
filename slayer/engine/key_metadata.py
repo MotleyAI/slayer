@@ -146,11 +146,31 @@ class SlotTyping:
             return key.data_type
         return value_type(key, field_type=self.field_type, aggregate_type=self.expression_type)
 
+    def _untyped(self, key: object) -> bool:
+        """A field leaf that resolves to a field declaring no type (an untyped document field the probe left unknown)."""
+        if self._population is None:
+            return False
+        try:
+            field = dataset_field(dataset=self._population, datasets_by_name=self._datasets, key=key)
+        except SlayerError:
+            return False
+        return field is not None and field.datatype is None
+
+    def native(self, key: ValueKey) -> bool:
+        """Whether ``key``'s type is the database's own: every field leaf left untyped is a field declaring no type."""
+        if self.value_type(key) is not None:
+            return False
+        unresolved = [k for k in walk_value_keys(key) if isinstance(k, (FieldKey, FieldSqlKey)) and self.field_type(k) is None]
+        return bool(unresolved) and all(self._untyped(k) for k in unresolved)
+
     def type_of(self, key: ValueKey) -> DataType:
-        """``key``'s slot type: a NULL-only value (no field leaf left unresolved) is INT."""
+        """``key``'s slot type: a NULL-only value (no field leaf left unresolved) is INT; a value over untyped fields
+        is ``OPAQUE`` to SLayer, carried with the database's own type (never cast)."""
         found = self.value_type(key)
         if found is not None:
             return found
+        if self.native(key):
+            return DataType.OPAQUE
         leaves = list(walk_value_keys(key))
         unresolved = [k for k in leaves if isinstance(k, (FieldKey, FieldSqlKey)) and self.field_type(k) is None]
         if not unresolved and not any(isinstance(k, SqlFragmentKey) for k in leaves):
@@ -163,7 +183,10 @@ class SlotTyping:
         raise TypeError(f"no type derives for {key!r}: a field it reads does not resolve")
 
     def preserves_native_type(self, key: ValueKey, data_type: DataType) -> bool:
-        """Whether a numeric ``key`` reads a field of an exact-numeric database type (a cast would erase it)."""
+        """Whether a cast would erase ``key``'s database type: a value over untyped fields, or a numeric one reading a
+        field of an exact-numeric database type."""
+        if data_type is DataType.OPAQUE and self.native(key):
+            return True
         if data_type not in (DataType.DECIMAL, DataType.FLOAT) or self._population is None:
             return False
         return any(

@@ -164,6 +164,10 @@ class TestPeerLoadsAreConcurrent:
                 return [("db", name) for name in peers]
 
             load_datasets = StorageBackend.load_datasets
+            _standalone_identities = StorageBackend._standalone_identities
+
+            async def _document_data_sources(self) -> list[str]:
+                return []
 
             async def get_dataset(self, name: str, data_source=None) -> SlayerDataset:
                 self.in_flight += 1

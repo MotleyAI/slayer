@@ -5,11 +5,9 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from pathlib import Path
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
-import sqlalchemy as sa
 
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import PopulationErrorReason, PopulationInferenceError, UnresolvableDimensionRelationshipError
@@ -19,20 +17,9 @@ from slayer.core.time_spine import spine_dataset
 from slayer.engine.population.dimension_routing import route_dotted_target
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import (
-    OSIDataset,
-    OSIDialectExpression,
-    OSIDocument,
-    OSIExpression,
-    OSIField,
-    OSIMetric,
-    OSIRelationship,
-)
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import disposable_engine, seeded_exec_engine
-from tests._osi_helpers import run_converter
+from tests._engine_helpers import seeded_exec_engine
 
 EngineBuilder = Callable[[list[SlayerDataset]], Awaitable[SlayerQueryEngine]]
 
@@ -183,52 +170,6 @@ class TestFacadeCatalog:
         catalog = build_catalog(datasets_by_datasource={DS: [orders, returns, spine_dataset(data_source=DS)]})
         table = next(t for s in catalog.schemas for t in s.tables if t.name == "orders")
         assert not any("returns" in d.name for d in table.dimensions)
-
-
-_OSI_SCHEMA = [
-    "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)",
-    "CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, region_id INTEGER)",
-]
-
-
-@pytest.fixture
-def osi_engine(tmp_path: Path) -> Iterator[sa.Engine]:
-    with disposable_engine(f"sqlite:///{tmp_path}/osi.db") as engine:
-        with engine.connect() as conn:
-            for ddl in _OSI_SCHEMA:
-                conn.execute(sa.text(ddl))
-            conn.commit()
-        yield engine
-
-
-def _expr(sql: str) -> OSIExpression:
-    return OSIExpression(dialects=[OSIDialectExpression.model_validate({"dialect": "ANSI_SQL", "expression": sql})])
-
-
-class TestOsiConversion:
-    def test_unaddressable_pair_in_the_no_join_path_report(self, osi_engine: sa.Engine) -> None:
-        def rel(name: str, src: str, dst: str) -> OSIRelationship:
-            return OSIRelationship.model_validate({"name": name, "from": src, "to": dst,
-                                                   "from_columns": ["customer_id"], "to_columns": ["customer_id"]})
-        doc = OSIDocument(
-            version="0.2.0.dev0", name="s", legacy=True,
-            datasets=[
-                OSIDataset(name="orders", source="orders",
-                           fields=[OSIField(name="amount", expression=_expr("amount"))]),
-                OSIDataset(name="customers", source="customers",
-                           fields=[OSIField(name="region_id", expression=_expr("region_id"))]),
-            ],
-            relationships=[rel("o2c", "orders", "customers"), rel("c2o", "customers", "orders")],
-            metrics=[OSIMetric(name="cross",
-                               expression=_expr("SUM(orders.amount) + SUM(customers.region_id)"))],
-        )
-        result = run_converter(
-            OsiToSlayerConverter(documents=[doc], data_source=DS),
-            datasource=DatasourceConfig(name=DS, type="sqlite", database=osi_engine.url.database),
-        )
-        report = [w for w in result.unconverted_metrics if w.category == "no_join_path"]
-        assert report, result.unconverted_metrics
-        assert any(_names_pair(f"{w.message} {w.suggestion or ''}", a="orders", b="customers") for w in report)
 
 
 class TestPopulationInference:

@@ -8,7 +8,7 @@ and detects query sources. The database is dropped for now via a stubbed
 
 import pytest
 
-from slayer.osi.source import ParsedSource, parse_source, resolve_datasource
+from slayer.sql.ossie_source import ParsedSource, parse_source, resolve_datasource
 from slayer.sql.dialects import get_dialect
 
 

@@ -1,0 +1,61 @@
+datasets:
+- fields:
+  - expression:
+      sql: customer_id
+    name: customer_id
+  - expression:
+      sql: amount
+    name: amount
+    nonportable_extensions:
+    - data:
+        at: field
+      vendor_name: ACME
+  metrics:
+  - expression:
+      sql: SUM(amount)
+    name: order_total
+    nonportable_extensions:
+    - data:
+        at: dataset metric
+      vendor_name: ACME
+  name: orders
+  nonportable_extensions:
+  - data:
+      at: dataset
+    vendor_name: ACME
+  source: db.orders
+- fields:
+  - expression:
+      sql: id
+    name: id
+  name: customers
+  source: db.customers
+metrics:
+- expression:
+    sql: SUM(orders.amount)
+  name: total
+  nonportable_extensions:
+  - data:
+      at: metric
+    vendor_name: ACME
+name: sales
+nonportable_extensions:
+- data:
+    at: model
+  vendor_name: ACME
+- data:
+    at: other
+  vendor_name: OTHER
+relationships:
+- from: orders
+  from_columns:
+  - customer_id
+  name: orders_to_customers
+  nonportable_extensions:
+  - data:
+      to: stores
+    vendor_name: ACME
+  to: customers
+  to_columns:
+  - id
+version: 0.3.0.dev0
