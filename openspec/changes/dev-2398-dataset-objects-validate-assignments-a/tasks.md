@@ -7,24 +7,25 @@
 
 ## 2. Atomic assignment
 
-- [ ] 2.1 Add `slayer/core/assignment.py` with `AtomicAssignment` (candidate commit and `assign`, design decision 4); give every in-scope model the mixin and `validate_assignment=True` (decision 8); verify the law test and the assignment scenarios pass
-- [ ] 2.2 Make the validators pure (design decision 5): sql shorthand on dict input in the wrap validator, `NumberFormat` symbol default in a before validator, element-type default by list-item copy; verify the construction-normalization and post-construction `sql` scenarios pass and `poetry run pytest tests/test_ossie_vocabulary_python_names.py` passes
+- [x] 2.1 Add `slayer/core/assignment.py` with `AtomicAssignment` (candidate commit and `assign`, design decision 4); give every in-scope model the mixin and `validate_assignment=True` (decision 8); verify the law test and the assignment scenarios pass
+- [x] 2.2 Make the validators pure (design decision 5): sql shorthand on dict input in the wrap validator, `NumberFormat` symbol default in a before validator, element-type default by list-item copy; verify the construction-normalization and post-construction `sql` scenarios pass and `poetry run pytest tests/test_ossie_vocabulary_python_names.py` passes
 
 ## 3. Linked edits
 
-- [ ] 3.1 Route `edit_model`'s source switch (`slayer/mcp/server.py:1105-1125`, four attributes) and the deprecated `join_pairs` setter through `assign` (design decision 6); verify the source-switch and `join_pairs` scenarios pass
-- [ ] 3.2 Audit production code for other consecutive writes to attributes a cross-attribute check reads (e.g. grep `\.(sql_table|sql|source_queries|from_columns|to_columns|fields|data_source)\s*=` under `slayer/`); route each through `assign` with a test; record the sites found here; verify the audit list is recorded and each site's test passes
+- [x] 3.1 Route `edit_model`'s source switch (`slayer/mcp/server.py:1105-1125`, four attributes) and the deprecated `join_pairs` setter through `assign` (design decision 6); verify the source-switch and `join_pairs` scenarios pass
+- [x] 3.2 Audit production code for other consecutive writes to attributes a cross-attribute check reads (e.g. grep `\.(sql_table|sql|source_queries|from_columns|to_columns|fields|data_source)\s*=` under `slayer/`); route each through `assign` with a test; record the sites found here; verify the audit list is recorded and each site's test passes
+  - Sites: `slayer/dbt/converter.py` and `slayer/cube/converter.py` (`col.datatype, col.element_type = found`) → `col.assign(...)`. Both type a fresh field whose `element_type` is still unset, so no intermediate state fails today; covered by the existing converter tests. Every other assignment under `slayer/` writes one attribute.
 
 ## 4. Save-time re-validation
 
-- [ ] 4.1 Add the raw-value rebuild check (design decision 7) and call it first in `save_dataset` (when `_validate`), `save_dataset_extensions` and `save_datasource` in `slayer/storage/base.py`; verify the save-validation scenarios pass
+- [x] 4.1 Add the raw-value rebuild check (design decision 7) and call it first in `save_dataset` (when `_validate`), `save_dataset_extensions` and `save_datasource` in `slayer/storage/base.py`; verify the save-validation scenarios pass
 
 ## 5. Architecture, docs, coordination
 
-- [ ] 5.1 Add the approved principle (design decision 2, verbatim, numbered next after `main`'s highest) to `architecture/python.core.arc42.md` §3; verify `poetry run la-arch-check` passes
-- [ ] 5.2 Add a Python API entry to `docs/upgrading/2.0.md` (assignments validated; linked edits via `assign`; saves re-validate; in-place edits caught at save until DEV-2401); verify by reading the rendered section
-- [ ] 5.3 Comment on DEV-1695 naming `slayer/core/assignment.py`, `assign`, and the candidate commit replacing its snapshot/restore; verify the comment is posted
+- [x] 5.1 Add the approved principle (design decision 2, verbatim, numbered next after `main`'s highest) to `architecture/python.core.arc42.md` §3; verify `poetry run la-arch-check` passes
+- [x] 5.2 Add a Python API entry to `docs/upgrading/2.0.md` (assignments validated; linked edits via `assign`; saves re-validate; in-place edits caught at save until DEV-2401); verify by reading the rendered section
+- [x] 5.3 Comment on DEV-1695 naming `slayer/core/assignment.py`, `assign`, and the candidate commit replacing its snapshot/restore; verify the comment is posted
 
 ## 6. Gates
 
-- [ ] 6.1 Run the local test scope (`la-affected-tests --base main` plus storage, MCP and REST dataset/datasource tests), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `poetry run la-arch-check` and `npx -y likec4@1.47.0 validate architecture`; verify all pass
+- [x] 6.1 Run the local test scope (`la-affected-tests --base main` plus storage, MCP and REST dataset/datasource tests), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `poetry run la-arch-check` and `npx -y likec4@1.47.0 validate architecture`; verify all pass

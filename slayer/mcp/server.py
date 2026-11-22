@@ -1103,25 +1103,17 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
 
         if sql_table is not None:
-            dataset.sql_table = sql_table
-            dataset.sql = None
-            dataset.source_queries = None
+            dataset.assign(sql_table=sql_table, sql=None, source_queries=None)
             dataset_level_change = True
             changes.append(f"set sql_table to '{sql_table}'")
         if sql is not None:
-            dataset.sql = sql
-            dataset.sql_table = None
-            dataset.source_queries = None
+            dataset.assign(sql=sql, sql_table=None, source_queries=None)
             dataset_level_change = True
             changes.append(f"set sql to '{sql}'")
         if source_queries is not None:
-            # Switching to query-backed source mode; the cached fields are
-            # refreshed when we save via engine.save_dataset.
-            dataset.source_queries = [SlayerQuery.model_validate(q) for q in source_queries]
-            dataset.sql_table = None
-            dataset.sql = None
-            # Clear the user-managed fields so the cache write succeeds.
-            dataset.fields = []
+            # Query-backed: the cached fields are cleared here and refreshed by engine.save_dataset.
+            dataset.assign(source_queries=[SlayerQuery.model_validate(q) for q in source_queries],
+                           sql_table=None, sql=None, fields=[])
             changes.append(f"set source_queries ({len(source_queries)} stage(s))")
         if query_variables is not _UNSET:
             dataset.query_variables = query_variables or {}

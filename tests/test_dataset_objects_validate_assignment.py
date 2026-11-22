@@ -159,7 +159,8 @@ class TestEditSourceSwitch:
         reply = await _edit(storage, dataset_name="people", source_queries=stages)
         stored = await _stored(storage, "people")
         assert (stored.sql, stored.sql_table) == (None, None), reply
-        assert stored.source_queries is not None and len(stored.source_queries) == 1
+        assert stored.source_queries is not None
+        assert len(stored.source_queries) == 1
         assert [f.name for f in stored.fields] == ["region"]
 
         reply = await _edit(storage, dataset_name="people", sql_table="customers")

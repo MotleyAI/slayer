@@ -96,9 +96,9 @@ def test_a_reachable_model_validates_assignment_atomically(cls: type[BaseModel])
 def test_a_wrong_typed_assignment_raises_and_changes_nothing(cls: type[BaseModel]) -> None:
     payload, attribute = MINIMAL[cls]
     obj = cls.model_validate(payload)
-    before = state(obj)
+    before, wrong = state(obj), object()
     with pytest.raises(ValidationError):
-        setattr(obj, attribute, object())
+        setattr(obj, attribute, wrong)
     assert state(obj) == before
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from slayer.core.assignment import AtomicAssignment
 from slayer.core.errors import FieldExpressionError
 from slayer.core.refs import IDENTIFIER_RE
 
@@ -15,19 +16,19 @@ __all__ = [
 OSSIE_SQL = "OSSIE_SQL_2026"
 
 
-class DialectEntry(BaseModel):
+class DialectEntry(AtomicAssignment):
     """One dialect's text of an expression."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
     dialect: str
     expression: str
 
 
-class ExpressionObject(BaseModel):
+class ExpressionObject(AtomicAssignment):
     """Ossie's expression: portable ``sql``, per-dialect ``dialects`` entries, or both."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
     sql: str | None = None
     dialects: list[DialectEntry] | None = None

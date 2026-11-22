@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Awaitable, Callable, Hashable, Iterable, Set as AbstractSet
 
+from pydantic import BaseModel
 from typing_extensions import deprecated
 
 from slayer.core.deprecation import outside_stacklevel
@@ -477,6 +478,24 @@ def _write_sample_fields(
 _CUSTOM_BUCKET_CALLS_BELOW = {"SlayerModel": 20, "Memory": 9}
 
 
+def _raw_values(value: Any) -> Any:
+    """``value`` with every nested model turned into its raw field values, runtime-only fields included."""
+    if isinstance(value, BaseModel):
+        return {name: _raw_values(value.__dict__.get(name)) for name in type(value).model_fields}
+    if isinstance(value, list):
+        return [_raw_values(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_raw_values(v) for v in value)
+    if isinstance(value, dict):
+        return {k: _raw_values(v) for k, v in value.items()}
+    return value
+
+
+def check_whole(obj: SlayerDataset | DatasourceConfig) -> None:
+    """Refuse ``obj`` unless rebuilding it from its raw values passes every check construction applies."""
+    type(obj).model_validate(_raw_values(obj))
+
+
 def with_canonical_spellings(dataset: SlayerDataset) -> tuple[SlayerDataset, list[DeprecatedSpellingWarning]]:
     """``dataset`` with each deprecated spelling in its Mode-B texts replaced by its twin, and one warning per spelling."""
     found: dict[str, LegacySpan] = {}
@@ -772,6 +791,7 @@ class StorageBackend(ABC):
         deprecated Mode-B spelling stored as its twin and a deprecated field ``sql`` as its datasource's entry. Backends
         must NOT override this."""
         if _validate:
+            check_whole(dataset)
             dataset, _ = with_canonical_spellings(dataset)
             datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
             if datasource is not None and not dataset.source_queries:
@@ -798,6 +818,7 @@ class StorageBackend(ABC):
 
     async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
         """Write a document dataset's SLayer content as ``SLAYER`` entries, leaving its document's Ossie core as it is."""
+        check_whole(dataset)
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
         if owner is None:
             raise ValueError(f"Dataset {dataset.name!r} is not declared by a semantic model")
@@ -2043,7 +2064,8 @@ class StorageBackend(ABC):
     # ---- datasource CRUD ---------------------------------------------------
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
-        """Persist a datasource config (upsert by exact name) once its custom granularities pass the save-time rules. Backends must NOT override this."""
+        """Persist a datasource config (upsert by exact name) once it re-validates and its custom granularities pass the save-time rules. Backends must NOT override this."""
+        check_whole(datasource)
         datasource.check_granularities()
         connection_policy.check_transaction_pooler(datasource)
         await self._save_datasource_impl(datasource)

@@ -66,7 +66,8 @@ def _non_field(ds: SlayerDataset, data: dict[str, Any]) -> None:
 
 def _bogus_aggregation(ds: SlayerDataset, data: dict[str, Any]) -> None:
     amount = ds.get_field("amount")
-    assert amount is not None and amount.allowed_aggregations is not None
+    assert amount is not None
+    assert amount.allowed_aggregations is not None
     amount.allowed_aggregations.append("bogus")
     next(f for f in data["fields"] if f["name"] == "amount")["allowed_aggregations"].append("bogus")
 
@@ -139,7 +140,8 @@ class TestDatasourceChangedInPlace:
         assert refusal(caught.value) == construction_refusal(DatasourceConfig, data)
         assert (writes, rules, policy) == ([], [], [])
         stored = await storage.get_datasource(DS)
-        assert stored is not None and stored.granularities == []
+        assert stored is not None
+        assert stored.granularities == []
 
 
 #: ``sales`` whose ``orders`` carries a dataset metric SLayer cannot evaluate yet (a window function).
@@ -160,7 +162,8 @@ class TestRuntimeOnlyState:
             orders = await storage.get_dataset("orders", data_source=DS)
             assert orders is not None
             running = orders.get_metric("running")
-            assert running is not None and running.load_warning is not None
+            assert running is not None
+            assert running.load_warning is not None
             before = state(orders)
             await storage.save_dataset(orders)
             reloaded = await storage.get_dataset("orders", data_source=DS)
@@ -173,7 +176,8 @@ class TestRuntimeOnlyState:
         async with document_engine(kind=kind, documents=(SALES,)) as engine:
             storage = engine.storage
             customers = await storage.get_dataset("customers", data_source=DS)
-            assert customers is not None and customers.semantic_model == "sales"
+            assert customers is not None
+            assert customers.semantic_model == "sales"
             text = await storage.get_semantic_model_text("sales", data_source=DS)
             before = state(customers)
             await storage.save_dataset(customers)
