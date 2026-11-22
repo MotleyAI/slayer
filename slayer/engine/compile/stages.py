@@ -3418,10 +3418,13 @@ def _operand_cells(
         )):
             return None
         at_home[k] = found
-    filters = _home_filters([(bf, None) for bf in inherited], read=read, host=host)
+    filters, semi_joins = _cross_dataset_inherited_filters(
+        base_filters=_home_filters([(bf, None) for bf in inherited], read=read, host=host), target_path=(),
+        root_dataset=home, datasets_by_name=datasets, host_name=home.name, host_dataset=home, bundle=home_bundle,
+    )
     prebound, _ordered = _regroup_producer_prebound(
         pks=Grain.of(at_home.values()), aggs=[], dataset=home, bundle=home_bundle,
-        inherited=[bf for bf, _t in filters], n_date_range=0,
+        inherited=filters, n_date_range=0,
         grain_name_by_key={v: names[k] for k, v in at_home.items()}, mode_policy=policy,
     )
     plan = compile_synthesized(
@@ -3429,7 +3432,7 @@ def _operand_cells(
         stage_schemas=context.stage_schemas, producer_registry=producer_registry,
         population=NoInheritedPopulation(reason="operand cells read their home's own rows"),
     )
-    return plan.model_copy(update={"stage_bundle": home_bundle})
+    return plan.model_copy(update={"stage_bundle": home_bundle, "semi_join_filters": semi_joins or plan.semi_join_filters})
 
 
 def _constituent_home(c: ValueKey, *, context: _ProducerSynthesisContext) -> Optional[SlayerDataset]:

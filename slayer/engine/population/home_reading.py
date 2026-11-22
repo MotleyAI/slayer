@@ -22,8 +22,9 @@ from slayer.core.keys import (
 )
 from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.models import SlayerDataset
+from slayer.core.relationship_walker import follow, reverse_token
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
-from slayer.engine.cardinality.relationship_safety import home_spine_route, reroot_from_root
+from slayer.engine.cardinality.relationship_safety import home_spine_route
 from slayer.engine.population.anchors import anchor_route
 
 __all__ = ["Frame", "anchored_spelling", "home_frame", "home_read", "outside_aggregates", "product_anchors", "reads_the_spine"]
@@ -71,11 +72,14 @@ def _read_leaf(
         route = _spine_route(home, datasets_by_name=datasets_by_name, leaf=field_leaf(r))
         return None if route is None else r.model_copy(update={"path": (*route, *spelling[1:]), "anchor": None})
     if frame is not None and anchor.name == frame[0].name:
-        # Anchored at the source's own frame: read back along the source's written path.
-        return reroot_from_root(
-            r.model_copy(update={"path": spelling[1:], "anchor": None}), target_path=frame[1], root_dataset=home,
-            datasets_by_name=datasets_by_name, host_name=anchor.name,
-        ).model_copy(update={"anchor": spelling})
+        # Anchored at the source's own frame: read back along the source's written path to the frame, then forward;
+        # a reference at or beyond the home reads the home row itself.
+        home_path, route = frame[1], spelling[1:]
+        if route[:len(home_path)] == home_path:
+            return r.model_copy(update={"path": route[len(home_path):], "anchor": spelling})
+        chain = follow(root=frame[0], path=home_path, datasets_by_name=datasets_by_name) or []
+        back = tuple(reverse_token(e) for e in reversed(chain))
+        return r.model_copy(update={"path": (*back, *route), "anchor": spelling})
     reached = anchor_route(reader=home, anchor=anchor, datasets_by_name=datasets_by_name,
                            rest=(*spelling[1:], field_leaf(r)))
     if reached.unrelated and anchor.name not in home.unrelated_datasets:
