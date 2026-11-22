@@ -12,7 +12,7 @@ from typing import Any, Optional
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import PartitionKeyError, SlayerError
+from slayer.core.errors import ModeASqlParseError, PartitionKeyError, SlayerError
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerResponse
@@ -382,16 +382,15 @@ class TestMixedAndMultiKeyGrains:
         assert_cells(got, SAME_ROW_SPEND_BY_STATUS_MONTH)
         assert ("new", "2023-01") not in got
 
+    # A partition-key list is a set: both spellings bind one aggregate, refused naming its canonically first key.
     @pytest.mark.parametrize("mode", REFUSING)
-    @pytest.mark.parametrize("keys, first, other", [
-        ("orders.status, orders.ordered_at", "orders.status", "orders.ordered_at"),
-        ("orders.ordered_at, orders.status", "orders.ordered_at", "orders.status"),
-    ], ids=["status-first", "time-first"])
-    async def test_one_branch_refusal_names_the_first_declared_key(self, engine, mode, keys, first, other):
+    @pytest.mark.parametrize("keys", ["orders.status, orders.ordered_at", "orders.ordered_at, orders.status"],
+                             ids=["status-first", "time-first"])
+    async def test_one_branch_refusal_names_one_key_deterministically(self, engine, mode, keys):
         msg = await refused(engine, customers_by_status(
             mode, f"sum(customers.spend, partition_by=[{keys}])", time_dimensions=ORDERED_MONTH))
-        assert_refusal(msg, key=first, home="customers")
-        assert other not in msg, msg
+        assert_refusal(msg, key="orders.status", home="customers")
+        assert "orders.ordered_at" not in msg, msg
 
     @pytest.mark.parametrize("mode", ASSOCIATING)
     async def test_keys_on_separate_branches(self, engine, mode):
@@ -401,15 +400,13 @@ class TestMixedAndMultiKeyGrains:
         assert_cells(cells(resp, "orders.status", EVENT_VALUE), SPEND_BY_STATUS_EVENT)
 
     @pytest.mark.parametrize("mode", REFUSING)
-    @pytest.mark.parametrize("keys, first, other", [
-        (f"orders.status, {EVENT_VALUE}", "orders.status", HOP),
-        (f"{EVENT_VALUE}, orders.status", "region_events.value", "orders.status"),
-    ], ids=["status-first", "event-first"])
-    async def test_separate_branch_refusal_names_the_first_declared_key(self, engine, mode, keys, first, other):
+    @pytest.mark.parametrize("keys", [f"orders.status, {EVENT_VALUE}", f"{EVENT_VALUE}, orders.status"],
+                             ids=["status-first", "event-first"])
+    async def test_separate_branch_refusal_names_one_key_deterministically(self, engine, mode, keys):
         msg = await refused(engine, customers_by_status(
             mode, f"sum(customers.spend, partition_by=[{keys}])", dimensions=["orders.status", EVENT_VALUE]))
-        assert_refusal(msg, key=first, home="customers")
-        assert other not in msg, msg
+        assert_refusal(msg, key="orders.status", home="customers")
+        assert HOP not in msg, msg
 
 
 class TestRepresentationParity:
@@ -473,8 +470,9 @@ class TestRepresentationParity:
         assert num(resp.data[0]["rows"]) == num(plain.data[0]["rows"])
 
     async def test_inner_stage_refuses_in_error_mode(self, engine):
+        stages = self._stages("error")
         with pytest.raises(PartitionKeyError) as ei:
-            await engine.execute(self._stages("error"))
+            await engine.execute(stages)
         assert_refusal(str(ei.value), key="orders.status", home="customers")
 
 
@@ -492,12 +490,22 @@ class TestUnanalysableKey:
          "weighted_avg(regions.pop, weight=sum(regions.pop, partition_by=regions.unparseable))", PartitionKeyError),
     ], ids=lambda v: v if isinstance(v, str) and " " not in v and "(" not in v else None)
     async def test_fails_closed_in_every_mode(self, unparse_engine, mode, shape, dims, metric, exc):
+        query = q(mode, "regions", dimensions=dims, metrics=[m(metric)])
         with pytest.raises(exc) as ei:
-            await unparse_engine.execute(q(mode, "regions", dimensions=dims, metrics=[m(metric)]))
+            await unparse_engine.execute(query)
         msg = str(ei.value)
         assert "unparse" in msg, msg
         assert HOP not in msg, msg
         assert_ref_free(msg)
+
+
+class TestUnparseableDimension:
+    async def test_plain_dimension_raises_the_typed_parse_error(self, unparse_engine):
+        query = q(None, "regions", dimensions=["regions.unparseable"], metrics=[m("sum(regions.pop)")])
+        with pytest.raises(ModeASqlParseError) as ei:
+            await unparse_engine.execute(query)
+        assert "regions.unparseable" in str(ei.value), str(ei.value)
+        assert_ref_free(str(ei.value))
 
 
 class TestTransformPartitionKeys:
@@ -632,8 +640,9 @@ class TestAttachedParameterOwnKey:
     @pytest.mark.parametrize("mode", ASSOCIATING)
     @pytest.mark.parametrize("dim", ["orders.status", BAD_POP])
     async def test_undetermined_grain_keeps_the_determination_error(self, engine, mode, dim):
+        query = q(mode, "orders", dimensions=[dim], metrics=[m(OWN_FAN_BADPOP)])
         with pytest.raises(SlayerError) as ei:
-            await engine.execute(q(mode, "orders", dimensions=[dim], metrics=[m(OWN_FAN_BADPOP)]))
+            await engine.execute(query)
         assert not isinstance(ei.value, PartitionKeyError), str(ei.value)
         assert_grain_residue(ei.value, param="weight")
 

@@ -825,6 +825,7 @@ filter is applied, never erroring, in every mode.
 Example: `{"population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(customers.spend)"]}` gives each status the spend of the distinct customers with an order in it.
 To repeat a value across such a dimension instead, give the aggregate `partition_by=` with the dimensions it
 is attributable to: `sum(customers.spend, partition_by=[])` repeats the total on every status.
+An explicit `partition_by=` key the aggregate's home does not determine resolves by the same mode, local or cross-dataset: rooted at `customers` by `orders.status`, `sum(customers.spend, partition_by=orders.status)` gives each status the spend of its distinct customers without a warning, and is a typed error under `error`.
 
 Association serves every aggregate. A dataset without a primary key uses a
 per-query row identity. This includes datasets with a standalone unique field that may

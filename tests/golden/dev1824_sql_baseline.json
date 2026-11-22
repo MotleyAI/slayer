@@ -21,23 +21,23 @@
   },
   "guard/dim_cross_model_source::bigquery": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The cross-dataset aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Declare relationship cardinality or a covering unique key on the target."
+    "message": "PartitionKeyError: The aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; outside association every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Omit to_many_handling (or set 'associate') to compute at that grain over the distinct customers rows, or declare relationship cardinality or a covering unique key on the target."
   },
   "guard/dim_cross_model_source::duckdb": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The cross-dataset aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Declare relationship cardinality or a covering unique key on the target."
+    "message": "PartitionKeyError: The aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; outside association every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Omit to_many_handling (or set 'associate') to compute at that grain over the distinct customers rows, or declare relationship cardinality or a covering unique key on the target."
   },
   "guard/dim_cross_model_source::postgres": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The cross-dataset aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Declare relationship cardinality or a covering unique key on the target."
+    "message": "PartitionKeyError: The aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; outside association every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Omit to_many_handling (or set 'associate') to compute at that grain over the distinct customers rows, or declare relationship cardinality or a covering unique key on the target."
   },
   "guard/dim_cross_model_source::sqlite": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The cross-dataset aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Declare relationship cardinality or a covering unique key on the target."
+    "message": "PartitionKeyError: The aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; outside association every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Omit to_many_handling (or set 'associate') to compute at that grain over the distinct customers rows, or declare relationship cardinality or a covering unique key on the target."
   },
   "guard/dim_cross_model_source::tsql": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The cross-dataset aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Declare relationship cardinality or a covering unique key on the target."
+    "message": "PartitionKeyError: The aggregate declares partition_by=region, which crosses a fanning or unproven relationship hop to orders; outside association every explicit partition key must be attributable from customers.\n  at metric 'customers.spend_sum_partition_by_region'\n  suggestion: Omit to_many_handling (or set 'associate') to compute at that grain over the distinct customers rows, or declare relationship cardinality or a covering unique key on the target."
   },
   "guard/filter_no_common_scope::bigquery": {
     "error": "PositionTypingError",

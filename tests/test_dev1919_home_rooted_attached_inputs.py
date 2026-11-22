@@ -417,7 +417,13 @@ class TestFailClosedEveryMode:
         q = mode_q(mode, dimensions=dims, metrics=[_m(UNDETERMINED_PARAM)])
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
-        assert_grain_residue(ei.value, param="weight")
+        if mode == "error":
+            # The parameter's own unattributable key is refused first outside association.
+            assert isinstance(ei.value, PartitionKeyError), str(ei.value)
+            assert "status" in str(ei.value), str(ei.value)
+            assert "customers" in str(ei.value), str(ei.value)
+        else:
+            assert_grain_residue(ei.value, param="weight")
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_stray_positional_attached_value_refused_at_bind(self, orders_engine, mode):

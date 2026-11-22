@@ -111,7 +111,7 @@ from slayer.engine.elaborate_env import (
     date_only_notices,
 )
 from slayer.engine.population.home import row_expression_crossing
-from slayer.engine.cardinality.relationship_safety import assert_partition_key_attributable
+from slayer.engine.cardinality.relationship_safety import assert_partition_key_analysable
 from slayer.engine.key_metadata import (
     SlotTyping,
     bundle_dialect,
@@ -786,12 +786,10 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         lenient = isinstance(key, AggregateKey) or key in _reagg_operand_keys
         new_pks = []
         for pk in key.partition_keys or ():
-            # A partition key over a relationship must be attributable from the root; a
-            # re-aggregation's outer keys are judged against its operand grain instead.
-            if not is_reaggregation_key(key):
-                assert_partition_key_attributable(
-                    key=key, pk=pk, label=label, scope=scope, bundle=bundle,
-                )
+            # An unattributable aggregate key resolves at the mode gate; a transform's keys
+            # name operand-grain members, a re-aggregation outer's are judged against its operand.
+            if isinstance(key, AggregateKey) and not is_reaggregation_key(key):
+                assert_partition_key_analysable(pk=pk, label=label, scope=scope, bundle=bundle)
             is_query_dim = pk in _dim_key_set or pk in _td_key_set
             bucket = _td_by_source.get(pk)
             check_partition_key_resolves(

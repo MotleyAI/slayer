@@ -20,10 +20,11 @@ from slayer.core.keys import (
     is_row_attach_root,
     restricts_own_rows,
     walk_consumer_positions,
+    walk_value_keys,
     window_kwarg_of,
 )
 from slayer.core.scope import DatasetScope
-from slayer.engine.compile.shift import _series_mode
+from slayer.engine.compile.shift import _series_mode, is_placeholder
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
     combined_kind,
@@ -120,18 +121,20 @@ class _Walker:
             self.out.append(d)
 
     def local_broadcasts(self, k: ValueKey) -> bool:
-        """A local aggregate (plain, ranked or windowed) grouped by a dimension unattributable from the host, or a
-        partitioned windowed one whose window axis is: both go through the mode gate."""
+        """A local aggregate (plain, ranked or windowed) whose grain member — explicit key or query dimension — or
+        partitioned window axis is unattributable from the host goes through the mode gate."""
         host = self.host
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
             or self.homes.target_rooted(k) or k.locus == "host" or self.crossing(k)
+            or any(is_placeholder(r) for r in walk_value_keys(k.source))  # a lowered re-aggregation outer
         ):
             return False
         if k.partition_keys is not None:
-            # Requested grain never broadcasts; only a fanning window axis needs association.
-            return window_kwarg_of(k) is not None and self.active_td is not None \
+            return any(not self._attributable(pk, host=host) for pk in k.partition_keys) or (
+                window_kwarg_of(k) is not None and self.active_td is not None
                 and not self._attributable(self.active_td, host=host)
+            )
         # The population's spine is counted over each home's own axis, never the product.
         return any(
             reads_population_spine(g, host=host) or not self._attributable(g, host=host) for g in self.grain
@@ -156,7 +159,7 @@ class _Walker:
                                 declared=declared)
                 continue
             if is_dimension_transform_root(k) or is_grained_aggregate(k):
-                self.emit(k, "row", _input_routing(k, homes=self.homes))
+                self.emit(k, "row", "target_rooted" if self.local_broadcasts(k) else _input_routing(k, homes=self.homes))
             self.row_attach(k, attach_pk=False)
 
     def row_attach(self, k: ValueKey, *, attach_pk: bool, names: Sequence[str] = ()) -> None:
@@ -195,13 +198,16 @@ class _Walker:
             self.emit(k, "combined", "shifted", series=_series_mode(k.input, to_original={}))
         kind = combined_kind(k, homes=self.homes)
         associates = self.local_broadcasts(k)
-        if kind is not None and not associates and self.classes.combined_admits(n, position=position, root=root):
+        admitted = kind is not None and self.classes.combined_admits(n, position=position, root=root)
+        if admitted and not associates:
             if kind == "local":
                 self.emit(k, "combined", "local_producer", names=names)
             else:
                 self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
         if associates:
-            self.emit(k, "combined", "target_rooted", names=names)
+            # A partitioned one is consumed combined only where admitted, like its local twin.
+            if kind is None or admitted:
+                self.emit(k, "combined", "target_rooted", names=names)
         elif _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
             self.emit(k, "combined", "local_producer", names=names)
 
@@ -214,7 +220,8 @@ class _Walker:
             ns = tuple(names)
             self.emit(root, "combined", "inline", names=ns)
             for d in row_attach_inputs(root, names=ns, homes=self.homes):
-                self.emit(d.root, d.phase, d.routing, names=d.consumer_public_names)
+                routing = "target_rooted" if self.local_broadcasts(d.root) else d.routing
+                self.emit(d.root, d.phase, routing, names=d.consumer_public_names)
 
 
 def discover_roots(

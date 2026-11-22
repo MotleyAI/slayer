@@ -53,9 +53,7 @@ from slayer.engine.reference_closure import (
     definition_refs,
     key_closure,
 )
-from slayer.engine.elaborate_env import check_partition_key_attributable
-from slayer.engine.cardinality.unrelated import crosses_product_hop
-from slayer.ir.prebound import walk_key_path
+from slayer.engine.elaborate_env import check_partition_key_analysable
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import AggregateHomes
 from slayer.engine.cardinality.inference import (
@@ -563,38 +561,18 @@ def broadcast_reason(
     return UNREACHABLE_NO_PATH
 
 
-def assert_partition_key_attributable(
-    *, key: ValueKey, pk: ValueKey, label: str,
-    scope: DatasetScope, bundle: ResolvedSourceBundle,
+def assert_partition_key_analysable(
+    *, pk: ValueKey, label: str, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> None:
-    """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
+    """An aggregate's partition key fails closed in every mode only when its closure is unanalysable; an unattributable one resolves at the mode gate."""
     host_m = scope.population
     if host_m is None:
         return
-    datasets_by_name = bundle.datasets_by_name
-    hp = key_host_path(pk)
-    if crosses_product_hop(host=host_m, path=hp, datasets_by_name=datasets_by_name):
-        return  # a row-level read across a product hop: the checker refuses it (Axiom 3.1)
-    if not hp:
-        # Path-less derived key: a fan from its own host is a mode-invariant safety
-        # error; a host-safe key's cross-dataset-root concern stays the planner's.
-        root, target, host_name = host_m, (), None
-    else:
-        target = source_anchor_path(key.source) if isinstance(key, AggregateKey) else ()
-        root = walk_key_path(dataset=host_m, path=target, bundle=bundle) or host_m
-        host_name = host_m.name if target else None
-    attributable = key_attributable_from_root(
-        key=pk, target_path=target, root_dataset=root,
-        datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_m,
-        host_name=host_name,
-    )
-    reason = None if attributable else key_broadcast_reason(
-        key=pk, target_path=target, root_dataset=root,
-        datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_m,
-        host_name=host_name,
-    )
-    check_partition_key_attributable(
-        label=label, pk=pk, attributable=attributable, reason=reason,
+    check_partition_key_analysable(
+        label=label, pk=pk,
+        analysable=key_closure(
+            key=pk, anchor_dataset=host_m, anchor_relation=host_m.name, bundle=bundle,
+        ) is not None,
     )
 
 

@@ -113,7 +113,7 @@ class TestUnsafeExplicitPartitionKeys:
     ):
         _, engine = exec_backend
         query = q(
-            dimensions=["customers.tier"],
+            dimensions=["customers.tier", "customers.segments.label"],
             metrics=[QueryMetric(
                 metric="sum(customers.spend, partition_by=customers.segments.label)",
                 alias="x",
@@ -131,7 +131,7 @@ class TestUnsafeExplicitPartitionKeys:
         safe but customers → segments is not."""
         _, engine = exec_backend
         query = q(
-            dimensions=["orders.status"],
+            dimensions=["orders.status", "customers.segments.label"],
             metrics=[QueryMetric(
                 metric="sum(orders.amount, partition_by=customers.segments.label)",
                 alias="x",

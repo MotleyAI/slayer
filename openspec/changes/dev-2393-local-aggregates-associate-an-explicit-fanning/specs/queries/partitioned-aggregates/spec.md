@@ -214,7 +214,9 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
   `status` — under any `to_many_handling` mode, by an attributable
   (`customers.tier`) or an unattributable (`status`) dimension
 - **THEN** the query fails with the typed determination error naming the
-  parameter, never wrong values; the plain and association paths refuse alike
+  parameter, never wrong values; the plain and association paths refuse alike; under
+  `broadcast` and `error` a parameter whose own explicit key is unattributable from its
+  own home is first refused by that key's partition-key error
 
 #### Scenario: Positional transform parameter folds onto the declared name
 - **WHEN** a query rooted at `orders` over `[customers.tier]` selects

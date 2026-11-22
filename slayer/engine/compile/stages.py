@@ -89,7 +89,7 @@ from slayer.engine.elaborate_env import (
     position_classes,
     check_stage_flatten_collision,
     check_cross_dataset_inputs_safe,
-    check_cross_dataset_partition_keys_attributable,
+    check_partition_keys_attributable,
     check_cross_dataset_source_resolves,
     check_input_dependencies_analyzable,
     check_local_producer_inputs_safe,
@@ -2269,9 +2269,10 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     alias = public_alias or canonical_aggregate_alias(agg, profile="stage_expression")
     assert alias is not None  # a projected cross-dataset aggregate always names one
 
-    # Requested grain G: explicit partition_by else the query dimensions.
+    # Requested grain G: explicit partition_by (in canonical order, so a refusal names one key) else the query
+    # dimensions.
     if agg.partition_keys is not None:
-        requested = list(agg.partition_keys)
+        requested = _regroup_partition_order(agg.partition_keys)
         explicit = True
     else:
         # A member the rest of the grain determines is redundant to group by: it neither associates nor broadcasts.
@@ -2315,10 +2316,8 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         if shared is not None:
             # The join-key identity needs no join in the producer.
             safe_pairs.append((g, shared))
-        elif grain_member_attributable(
-            key=g_home, target_path=target_path, root_dataset=root_dataset,
-            datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_dataset,
-            host_name=host_dataset.name,
+        elif _grain_member_attributable_from_home(
+            g_home, target_path=target_path, root_dataset=root_dataset, host_dataset=host_dataset, bundle=bundle,
         ):
             rerooted = reroot_from_root(
                 g_home, target_path=target_path, root_dataset=root_dataset,
@@ -2437,7 +2436,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             associated_metric = None if explicit or not unattributable else alias
             associated_dimensions = [] if explicit else [u.name for u in unattributable]
         else:
-            check_cross_dataset_partition_keys_attributable(
+            check_partition_keys_attributable(
                 alias=alias, root_name=root_name, explicit=explicit,
                 unattributable=[(u.name, u.reason) for u in unattributable],
             )
@@ -2486,10 +2485,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         inherited = [*inherited, row_restriction_from_key(condition)]
         agg_rooted = unfiltered[agg_rooted]
     _check_attached_params_determined(
-        agg=agg, alias=alias, target_path=target_path, root_dataset=root_dataset,
-        host_dataset=host_dataset, datasets_by_name=datasets_by_name, bundle=bundle,
-        projected_dim_keys=projected_dim_keys, projected_td_keys=projected_td_keys,
-        active_bucket=prebound.main_time_key,
+        agg=agg, alias=alias, target_path=target_path, root_dataset=root_dataset, context=context,
     )
     numbered: List[SlayerDataset] = []
     if associate and entity is not None:
@@ -2734,18 +2730,67 @@ def _home_determines_grain_member(
     ) is None
 
 
+def _grain_member_attributable_from_home(
+    key: ValueKey, *, target_path: Tuple[str, ...], root_dataset: SlayerDataset, host_dataset: SlayerDataset,
+    bundle: ResolvedSourceBundle,
+) -> bool:
+    return grain_member_attributable(
+        key=key, target_path=target_path, root_dataset=root_dataset, datasets_by_name=bundle.datasets_by_name,
+        bundle=bundle, host_dataset=host_dataset, host_name=host_dataset.name,
+    )
+
+
+def _check_param_partition_keys(*, agg: AggregateKey, alias: str, context: "_ProducerSynthesisContext") -> None:
+    """Outside association a parameter's own unattributable explicit key is refused by its producer's gate,
+    ahead of the enclosing determination rule."""
+    if context.prebound.mode_policy.associates:
+        return
+    host, bundle = context.host_dataset, context.bundle
+    for _name, value in _param_values(agg):
+        if not isinstance(value, AggregateKey) or value.partition_keys is None or value not in context.homes.by_key:
+            continue
+        target_path = context.home_of(value)
+        home = walk_key_path(dataset=host, path=target_path, bundle=bundle)
+        if home is None or crosses_product_hop(host=host, path=target_path, datasets_by_name=bundle.datasets_by_name):
+            continue
+        home = bundle.factor_free(home)
+        with_host = {**bundle.datasets_by_name, host.name: host}
+        anchors = context.prebound.reference_anchors
+        routing = _home_routing(
+            list(value.partition_keys), anchors=anchors, host_dataset=host, target_path=target_path,
+            root_dataset=home, datasets_by_name=with_host,
+            source_anchor=_source_anchor(value, anchors=anchors, host_dataset=host, datasets_by_name=with_host),
+        )
+        unattributable = []
+        for pk in _regroup_partition_order(value.partition_keys):
+            pk_home = substitute_value_keys(pk, routing) if routing else pk
+            if shared_relationship_key_reroot(
+                key=pk, target_path=target_path, host_dataset=host, datasets_by_name=bundle.datasets_by_name,
+            ) is None and not _grain_member_attributable_from_home(
+                pk_home, target_path=target_path, root_dataset=home, host_dataset=host, bundle=bundle,
+            ):
+                unattributable.append((context.dim_display(pk), key_broadcast_reason(
+                    key=pk_home, target_path=target_path, root_dataset=home, datasets_by_name=with_host,
+                    bundle=bundle, host_dataset=host, host_name=host.name,
+                )))
+        check_partition_keys_attributable(
+            alias=alias, root_name=home.name, explicit=True, unattributable=unattributable,
+        )
+
+
 def _check_attached_params_determined(
-    *, agg: AggregateKey, alias: str, target_path: Tuple[str, ...],
-    root_dataset: SlayerDataset, host_dataset: SlayerDataset,
-    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
-    projected_dim_keys: List[ValueKey], projected_td_keys: List[ValueKey],
-    active_bucket: Optional[ValueKey],
+    *, agg: AggregateKey, alias: str, target_path: Tuple[str, ...], root_dataset: SlayerDataset,
+    context: "_ProducerSynthesisContext",
 ) -> None:
     """One home-determination rule, every mode: the home determines every grain
     member of each attached parameter typed at its result grain (Axiom 2.3 / 11.4);
     an ungrained aggregate types at the query grain and is determined by
     construction. A grained transform resolves to its
     result grain first, so this predicate needs no transform arm."""
+    _check_param_partition_keys(agg=agg, alias=alias, context=context)
+    host_dataset, datasets_by_name, bundle = context.host_dataset, context.datasets_by_name, context.bundle
+    projected_dim_keys, projected_td_keys = context.projected_dim_keys, context.projected_td_keys
+    active_bucket = context.prebound.main_time_key
     primary_key = _primary_key_fields(root_dataset)
     grain_display = _grain_display(Grain.of(
         field_default_key(path=target_path, leaf=col, base=root_dataset)
@@ -2770,6 +2815,21 @@ def _check_attached_params_determined(
                 )
                 for member in grain
             ),
+        )
+
+
+def _check_inline_params_determined(
+    *, dispositions: Sequence[RootDisposition], context: "_ProducerSynthesisContext",
+) -> None:
+    """The home-determination rule on the plain path: an inline root's home is the host."""
+    host = context.bundle.factor_free(context.host_dataset)
+    for d in dispositions:
+        if d.routing != "inline" or not isinstance(d.root, AggregateKey):
+            continue
+        _check_attached_params_determined(
+            agg=d.root, target_path=(), root_dataset=host, context=context,
+            alias=(d.consumer_public_names[0] if d.consumer_public_names
+                   else canonical_aggregate_alias(d.root, profile="stage_expression") or d.root.agg),
         )
 
 
@@ -4031,6 +4091,7 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
         stage_schemas=stage_schemas, homes=homes,
         population=population, population_filters=inherited, n_population_date=n_inherited_date,
     )
+    _check_inline_params_determined(dispositions=dispositions, context=synthesis_context)
     cm_phases: List[Tuple[Literal["row", "combined"], List[ValueKey]]] = [
         ("combined", cm_combined), ("row", cm_row),
     ]
