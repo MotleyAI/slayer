@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from typing import Any, NamedTuple
 
+import yaml
+
 from slayer.core.time_spine import TIME_SPINE_DATASET
 from slayer.core.vocabulary import DATASET_KEYS, ENTITY_KINDS, deprecated_spelling, respelled_token
 from slayer.core.errors import (
@@ -37,10 +39,14 @@ from slayer.inspect.dataset_render import (
 )
 from slayer.memories.help_seed import HELP_ID_PREFIX, RENAMED_HELP_IDS
 from slayer.memories.resolver import resolve_entity
+from slayer.core.names import match_name
 from slayer.search.render import (
     collect_dataset_entity_pairs,
     compact_description_from_learning,
     render_memory_text,
+    ai_context_text,
+    expression_text,
+    render_model_scoped_metric_text,
 )
 from slayer.storage.base import StorageBackend
 
@@ -50,7 +56,7 @@ except Exception:  # pragma: no cover - engine import always succeeds in-repo
     SlayerQueryEngine = None  # type: ignore[assignment, misc]
 
 VALID_ENTITY_TYPES = {
-    "datasource", "dataset", "field", "metric", "aggregation", "memory",
+    "datasource", "dataset", "field", "metric", "aggregation", "memory", "semantic_model",
 }
 _VALID_FORMATS = {"markdown", "json"}
 
@@ -75,6 +81,16 @@ class _OneResult(NamedTuple):
     canonical_id: str | None
     is_error: bool
     serialized: str
+
+
+def load_warnings(dataset: SlayerDataset, *, kind: str | None = None, name: str | None = None) -> list[str]:
+    """A dataset's load warnings and unapplied ``SLAYER`` entries; with ``kind`` and ``name``, one entity's."""
+    def wanted(k: str, entity: str) -> bool:
+        return kind is None or (k == kind and entity.casefold() == (name or "").casefold())
+
+    out = [f"{k} {e.name!r}: {e.load_warning}" for k, entities in (("field", dataset.fields), ("metric", dataset.metrics))
+           for e in entities if e.load_warning and wanted(k, e.name)]
+    return out + [n.message for n in dataset.extension_notes if wanted(n.kind, n.entity)]
 
 
 def _warn_line(*, arg: str, entity_type: str) -> str:
@@ -218,6 +234,8 @@ class InspectService:
                 descriptions_max_chars=descriptions_max_chars,
                 warnings=warnings,
             )
+        if entity_type == "semantic_model":
+            return await self._inspect_semantic_model(reference=reference, fmt=fmt, warnings=warnings)
         # field / metric / aggregation
         return await self._inspect_leaf(
             reference=reference, entity_type=entity_type, compact=compact,
@@ -714,6 +732,7 @@ class InspectService:
                 f"Dataset '{canonical}' not found "
                 f"(reference '{reference}')."
             ))
+        warnings = [*warnings, *load_warnings(dataset)]
         if compact:
             # DB-free skeleton; short-circuits the full renderer's DB work.
             saved_queries = saved_queries_index(
@@ -791,6 +810,10 @@ class InspectService:
         descriptions_max_chars: int | None,
         warnings: list[str],
     ) -> _OneResult:
+        if entity_type == "metric" and "." not in reference:
+            scoped = await self._inspect_model_scoped(reference=reference, fmt=fmt, warnings=warnings)
+            if scoped is not None:
+                return scoped
         resolved = await self._resolve_single_canonical(
             reference=reference, warnings=warnings,
         )
@@ -810,9 +833,10 @@ class InspectService:
                 f"(reference '{reference}')."
             ))
 
-        dataset =await self._maybe_refresh_leaf_sample(
+        dataset = await self._maybe_refresh_leaf_sample(
             dataset=dataset, entity_type=entity_type, compact=compact, leaf=leaf,
         )
+        warnings = [*warnings, *load_warnings(dataset, kind=entity_type, name=leaf)]
 
         pairs = collect_dataset_entity_pairs(dataset=dataset, include_hidden=True)
         matches = [
@@ -832,6 +856,62 @@ class InspectService:
             ds_name=ds_name, dataset_name=dataset_name, pairs=pairs,
             match_count=len(matches),
         ))
+
+    async def _inspect_semantic_model(self, *, reference: str, fmt: str, warnings: list[str]) -> _OneResult:
+        """A document: its description, the datasets, relationships and model-scoped metrics the caller sees."""
+        ds_hint, _, name = reference.rpartition(".")
+        found = [(ds, n) for ds, n in await self._storage.list_semantic_models(data_source=ds_hint or None)
+                 if n.casefold() == name.casefold()]
+        if len(found) != 1:
+            what = "no" if not found else "more than one"
+            return _OneResult(None, True, f"'{reference}' names {what} semantic model; pass '<datasource>.<name>'.")
+        ds, name = found[0]
+        text = await self._storage.get_semantic_model_text(name, data_source=ds) or ""
+        doc = yaml.safe_load(text) if text else {}
+        loaded, _ = await self._storage.load_datasets(data_source=ds)
+        members = [d for d in loaded if d.semantic_model == name]
+        metrics = [m for m in await self._storage.list_model_scoped_metrics(ds) if m.semantic_model == name]
+        relationships = [f"{d.name}.{r.name or r.to} → {r.to}" for d in members for r in d.relationships]
+        canonical = f"{ds}.{name}"
+        payload = {
+            "canonical_id": canonical, "entity_type": "semantic_model", "description": doc.get("description"),
+            "ai_context": ai_context_text(doc.get("ai_context")) or None, "datasets": [d.name for d in members],
+            "relationships": relationships,
+            "metrics": [{"name": m.name, "expression": expression_text(m.expression)} for m in metrics],
+            "warnings": warnings,
+        }
+        if fmt == "json":
+            return _OneResult(canonical, False, json.dumps(payload))
+        lines = [f"# Semantic model `{name}` (datasource `{ds}`)"]
+        lines += [v for v in (payload["description"], payload["ai_context"] and f"AI context: {payload['ai_context']}") if v]
+        lines += ["", "Datasets: " + (", ".join(f"`{d}`" for d in payload["datasets"]) or "_(none)_"),
+                  "Relationships: " + (", ".join(f"`{r}`" for r in relationships) or "_(none)_"),
+                  "Model-scoped metrics:" if metrics else "Model-scoped metrics: _(none)_",
+                  *(f"- `{m.name}`: {expression_text(m.expression)}" for m in metrics)]
+        return _OneResult(canonical, False, self._markdown_with_warnings("\n".join(lines), warnings))
+
+    async def _inspect_model_scoped(self, *, reference: str, fmt: str, warnings: list[str]) -> _OneResult | None:
+        """A bare model-scoped metric name, rendered as such; ``None`` when no datasource declares one."""
+        found = []
+        for ds in await self._storage.list_datasources():
+            metrics = await self._storage.list_model_scoped_metrics(ds)
+            name = match_name(name=reference, declared=[m.name for m in metrics], quoted=False)
+            found.extend(m for m in metrics if m.name == name)
+        if not found:
+            return None
+        if len(found) > 1:
+            places = sorted(f"{m.data_source}.{m.semantic_model}" for m in found)
+            return _OneResult(None, True, f"Model-scoped metric '{reference}' is declared in several datasources: "
+                                          f"{places}.")
+        metric = found[0]
+        canonical = f"{metric.data_source}.{metric.name}"
+        text = render_model_scoped_metric_text(metric=metric)
+        if fmt == "json":
+            return _OneResult(canonical, False, json.dumps({
+                "canonical_id": canonical, "entity_type": "metric", "semantic_model": metric.semantic_model,
+                "description": metric.description, "text": text, "warnings": warnings,
+            }))
+        return _OneResult(canonical, False, self._markdown_with_warnings(text, warnings))
 
     async def _maybe_refresh_leaf_sample(
         self,

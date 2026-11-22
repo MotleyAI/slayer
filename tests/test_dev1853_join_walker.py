@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.enums import RelationshipCardinality, JoinType
-from slayer.core.errors import AmbiguousRelationshipPathError, CircularRelationshipPathError
+from slayer.core.errors import AmbiguousHopError, AmbiguousRelationshipPathError, CircularRelationshipPathError
 from slayer.core.relationship_walker import (
     OrientedRelationship,
     edges_between,
@@ -176,15 +176,14 @@ class TestResolveHop:
         assert from_customers.to == "orders"
         assert from_customers.column_pairs == [("id", "billing_customer_id")]
 
-    def test_edge_name_resolves_before_model_name(self) -> None:
+    def test_an_edge_name_that_is_another_edges_target_is_ambiguous(self) -> None:
         a = _dataset("a", ["id", "b_id", "c_id"], [
             DatasetRelationship(to="b", from_columns=["b_id"], to_columns=["id"], name="c"),
             DatasetRelationship(to="c", from_columns=["c_id"], to_columns=["id"]),
         ])
         models = {"a": a, "b": _dataset("b", ["id"]), "c": _dataset("c", ["id"])}
-        edge = resolve_hop(current=models["a"], token="c", datasets_by_name=models)
-        assert edge is not None
-        assert edge.to == "b"
+        with pytest.raises(AmbiguousHopError):
+            resolve_hop(current=models["a"], token="c", datasets_by_name=models)
 
 
 class TestWalk:

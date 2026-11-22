@@ -102,6 +102,22 @@ datasources = client.list_datasources()
 client.create_datasource({"name": "mydb", "type": "postgres", ...})
 ```
 
+### Semantic models
+
+Async methods, each with a `_sync` twin (`list_semantic_models_sync`, …). See [Semantic models](../concepts/semantic-models.md).
+
+```python
+await client.list_semantic_models(data_source="mydb")          # [{"data_source": "mydb", "name": "sales"}]
+text = await client.get_semantic_model("sales", data_source="mydb")  # the stored text; None when absent
+
+# From an Ossie document (YAML/JSON text or a dict; name defaults to its own), or by moving standalone datasets in
+await client.create_semantic_model(data_source="mydb", content=open("sales.yaml").read())
+await client.create_semantic_model(data_source="mydb", name="sales", datasets=["orders", "customers"])
+
+await client.replace_semantic_model("sales", data_source="mydb", content=new_text)
+await client.delete_semantic_model("sales", data_source="mydb")  # deletes its datasets too; False when absent
+```
+
 ### Inspect
 
 `inspect` / `inspect_sync` is a point lookup: the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`dataset` grouped by datasource, or `datasource`); other kinds raise. Subsumes `datasets_summary` / `list_datasources`.

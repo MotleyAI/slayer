@@ -12,3 +12,4 @@ conventions:
   text_ratio_max: 0.15
   exempt:
     - slayer/mcp/server.py
+    - tests/fixtures/ossie_corpus/**  # vendored apache/ossie files, byte-identical to upstream

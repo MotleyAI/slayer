@@ -22,6 +22,6 @@ async def test_ingestion_assigns_the_finer_type(postgresql, tmp_path: Path) -> N
     with pg_database(postgresql.info, statements=statements) as ds:
         async with owned_query_engine(storage=YAMLStorage(base_dir=str(tmp_path / "store"))) as engine:
             [dataset] = await engine.ingest(ds)
-    types = {f.name: f.datatype.value for f in dataset.fields}
+    types = {f.name: str(f.datatype) for f in dataset.fields}
     assert types == {"id": "Integer", "price": "Decimal", "ratio": "Float", "at": "DateTimeTz", "ts": "DateTime",
                      "d": "Date"}

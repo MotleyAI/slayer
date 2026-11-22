@@ -202,9 +202,9 @@ async def test_a_mixed_case_physical_key_is_quoted_in_the_on_clause() -> None:
 
 
 async def test_an_unresolvable_target_key_fails_closed_at_emission() -> None:
-    customers = customers_doc()
-    customers["fields"][0] = fld("id", "id + 0", primary_key=True, datatype="Integer")
-    orders = orders_doc(fld("customer_id", datatype="Integer"), relationships=[to_customers()])
+    # A target key reading another dataset is no field of the target's own source.
+    customers = customers_doc(fld("cust_key", "orders.customer_id", datatype="Integer"))
+    orders = orders_doc(fld("customer_id", datatype="Integer"), relationships=[to_customers(to_columns=["cust_key"])])
     async with engine_with(dialect="duckdb", docs=[customers, orders], validate=False) as (engine, _, _):
         query = _amount_by("customers.name") | {"metrics": [{"metric": "count(orders.*)"}]}
         with pytest.raises(RelationshipKeyError):

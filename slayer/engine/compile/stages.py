@@ -1471,8 +1471,7 @@ def _register_hop(
 ) -> None:
     nodes.setdefault(node_path, SemiJoinHop(
         to=target_dataset,
-        join_pairs=tuple((s.physical_name, t.physical_name) for s, t in keys),
-        quoted=tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
+        **SemiJoinHop.key_args(keys),
         node_path=node_path,
         declared_left=declared_left,
         lateral=lateral,

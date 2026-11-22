@@ -50,7 +50,7 @@ for dataset in datasets:
 
 Storage methods are async: `await` them inside async code, or wrap them with `run_sync` as above.
 
-The free functions `ingest_datasource(ds, client=...)` and `ingest_datasource_report(ds, client=...)` take the client explicitly (`engine.client_for(ds)`), and a dbt / OSI converter reads the database only through `await converter.collect_metadata(client=engine.client_for(ds))` before `convert()`.
+The free functions `ingest_datasource(ds, client=...)` and `ingest_datasource_report(ds, client=...)` take the client explicitly (`engine.client_for(ds)`), and the dbt converter reads the database only through `await converter.collect_metadata(client=engine.client_for(ds))` before `convert()`.
 
 ## Query
 

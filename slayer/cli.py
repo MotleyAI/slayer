@@ -8,6 +8,7 @@ import json
 import os
 import signal
 import sys
+import tempfile
 import threading
 from collections.abc import Callable, Sequence
 from importlib.metadata import PackageNotFoundError, version
@@ -64,14 +65,14 @@ from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     NarrowedAccessFinding,
     RetypeFinding,
+    UntypedFinding,
 )
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
-from slayer.osi.converter import OsiConversionError, OsiConversionResult, OsiToSlayerConverter
 from slayer.osi.exporter import OsiExportError, export_osi
-from slayer.ingest_report import ConversionWarning
-from slayer.osi.parser import parse_osi_path
+from slayer.osi.importer import import_osi
 from slayer.osi.yaml_writer import dump_yaml
+from slayer.storage.yaml_storage import YAMLStorage
 from slayer.pg_facade.cli import add_pg_serve_subparser
 from slayer.pg_facade.server import run_pg_serve
 from slayer.memories.help_seed import seed_help_memories
@@ -866,23 +867,30 @@ examples:
     # ── import-osi ────────────────────────────────────────────────────
     import_osi_parser = subparsers.add_parser(
         "import-osi",
-        help="Import OSI (Open Semantic Interchange) configs into SLayer datasets",
+        help="Store Ossie (OSI) semantic-model documents natively, as written",
         epilog="""\
 examples:
   slayer import-osi ./osi_configs --datasource my_postgres
-  slayer import-osi ./model.yaml --datasource my_pg --dialect SNOWFLAKE
+  slayer import-osi ./model.yaml --datasource my_pg
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    import_osi_parser.add_argument("osi_path", help="Path to an OSI file or directory (YAML/JSON)")
-    import_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource name for the imported datasets")
-    import_osi_parser.add_argument(
-        "--dialect", default=None,
-        help="OSI expression dialect to prefer over every other (default: none). Without it, "
-             "the order is top-level sql, OSSIE_SQL_2026, ANSI_SQL, the datasource's own "
-             "dialect, then any other readable SQL dialect.",
-    )
+    import_osi_parser.add_argument("osi_path", help="Path to an Ossie document or a folder of them (YAML/JSON)")
+    import_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource the documents belong to")
     _add_storage_arg(import_osi_parser)
+
+    # ── ossie-roundtrip ───────────────────────────────────────────────
+    roundtrip_parser = subparsers.add_parser(
+        "ossie-roundtrip",
+        help="Import an Ossie document into scratch storage and export it again (the portability grader's converter)",
+        epilog="""\
+examples:
+  slayer ossie-roundtrip model.ossie.yaml returned.ossie.yaml
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    roundtrip_parser.add_argument("input", help="The Ossie document to import")
+    roundtrip_parser.add_argument("output", help="Where to write the export: JSON when it ends in .json, YAML otherwise")
 
     # ── export-osi ────────────────────────────────────────────────────
     export_osi_parser = subparsers.add_parser(
@@ -931,6 +939,31 @@ examples:
 
     datasets_delete_parser = datasets_subparsers.add_parser("delete", help="Delete a dataset")
     datasets_delete_parser.add_argument("name", help="Dataset name")
+
+    # ── semantic-models ──────────────────────────────────────────────
+    semantic_models_parser = subparsers.add_parser(
+        "semantic-models",
+        help="List, show and delete semantic models (Ossie documents)",
+        epilog="""\
+examples:
+  slayer semantic-models list --datasource shop
+  slayer semantic-models show sales --datasource shop
+  slayer semantic-models delete sales --datasource shop --yes
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    semantic_models_subparsers = semantic_models_parser.add_subparsers(dest="semantic_models_command")
+    semantic_models_list_parser = semantic_models_subparsers.add_parser("list", help="List semantic models")
+    semantic_models_list_parser.add_argument("--datasource", default=None, help="Only this datasource's")
+    semantic_models_show_parser = semantic_models_subparsers.add_parser("show", help="Print a semantic model's text")
+    semantic_models_delete_parser = semantic_models_subparsers.add_parser(
+        "delete", help="Delete a semantic model and its datasets")
+    for sub in (semantic_models_show_parser, semantic_models_delete_parser):
+        sub.add_argument("name", help="Semantic model name")
+        sub.add_argument("--datasource", default=None, help="Its datasource (needed when the name is ambiguous)")
+    semantic_models_delete_parser.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    for sub in (semantic_models_list_parser, semantic_models_show_parser, semantic_models_delete_parser):
+        _add_storage_arg(sub)
 
     # ── datasources ───────────────────────────────────────────────────
     datasources_parser = subparsers.add_parser(
@@ -1445,8 +1478,12 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
         _run_import_osi(args)
     elif args.command == "export-osi":
         _run_export_osi(cast(_ExportOsiArgs, args))
+    elif args.command == "ossie-roundtrip":
+        _run_ossie_roundtrip(args)
     elif args.command == "datasets":
         _run_datasets(args)
+    elif args.command == "semantic-models":
+        _run_semantic_models(args)
     elif args.command == "datasources":
         _run_datasources(args)
     elif args.command == "memory":
@@ -2023,6 +2060,9 @@ def _format_validate_datasets_output(entries: Sequence[DriftReportEntry]) -> str
         if isinstance(entry, RetypeFinding):
             lines.append(f"RE-TYPE: {entry.summary}")
             continue
+        if isinstance(entry, UntypedFinding):
+            lines.append(f"UNTYPED: {entry.summary}")
+            continue
         if entry.tool == "delete_dataset":
             lines.append(
                 f"DELETE DATASET: {entry.dataset_name} (datasource: {entry.data_source})"
@@ -2207,15 +2247,28 @@ def _print_cardinality_section(report) -> None:
 
 async def _apply_force_clean(
     args: argparse.Namespace, engine: SlayerQueryEngine, entries: Sequence[DriftReportEntry],
+    untyped: Sequence[UntypedFinding] = (),
 ) -> None:
-    """Prompt for and apply the drift deletes; exits 1 on residual/errors."""
+    """Prompt for and apply the drift deletes and the untyped fields' types; exits 1 on residual/errors."""
+    changes = [f"{len(entries)} delete(s)"] * bool(entries) + [f"{len(untyped)} type write(s)"] * bool(untyped)
     if not _confirm(
-        f"\nApply {len(entries)} delete(s) to storage?",
+        f"\nApply {' and '.join(changes)} to storage?",
         assume_yes=bool(getattr(args, "yes", False)),
     ):
         print("Aborted; storage unchanged.")
         return
 
+    type_errors = await engine.apply_untyped_findings(untyped)
+    for finding in untyped:
+        print(f"Typed {finding.dataset_name}.{finding.field} as {finding.live_type.value}.")
+    if type_errors:
+        print(f"Type write errors ({len(type_errors)}):")
+        for err in type_errors:
+            print(f"  - {err}")
+        if not entries:
+            sys.exit(1)
+    if not entries:
+        return
     result = await engine.apply_drift_deletes(entries)
     print(f"\nApplied {len(result.applied)} entry/entries.")
     if result.errors:
@@ -2276,8 +2329,9 @@ async def _validate_datasets_workflow(args, engine: SlayerQueryEngine) -> None:
     _print_relationship_safety_section(relationship_safety)
     # Clean first: profiling a dataset we are about to repair is wasted work.
     deletes = [e for e in entries if not isinstance(e, REPORT_ONLY_FINDINGS)]
-    if bool(getattr(args, "force_clean", False)) and deletes:
-        await _apply_force_clean(args, engine, deletes)
+    untyped = [e for e in entries if isinstance(e, UntypedFinding)]
+    if bool(getattr(args, "force_clean", False)) and (deletes or untyped):
+        await _apply_force_clean(args, engine, deletes, untyped)
     report = await _collect_cardinality_report(args, engine)
     if report is not None:
         _print_cardinality_section(report)
@@ -2461,7 +2515,7 @@ def _run_export_osi(args: _ExportOsiArgs):
     if args.out.endswith(".json"):
         text = json.dumps(result.document, indent=2, ensure_ascii=False) + "\n"
     else:
-        text = dump_yaml(result.document)
+        text = result.text or dump_yaml(result.document)
     # The output path is an intended, user-specified CLI location.
     with open(args.out, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
         fh.write(text)
@@ -2471,77 +2525,55 @@ def _run_export_osi(args: _ExportOsiArgs):
         print(result.render_report())
 
 
-async def _restore_query_backed(engine: SlayerQueryEngine, result: OsiConversionResult) -> None:
-    """Save each restored query-backed dataset through the engine, inputs first; a failure keeps the sql-mode dataset."""
-    pending = {dataset.name: dataset for dataset in result.query_backed}
-    while pending:
-        ready = [m for m in pending.values()
-                 if not {q.population for q in m.source_queries or [] if isinstance(q.population, str)} & set(pending)
-                 or len(pending) == 1]
-        for dataset in ready or list(pending.values()):
-            del pending[dataset.name]
-            try:
-                stages = await engine.storage.qualified_stored_queries(
-                    list(dataset.source_queries or []), versions=result.stage_versions.get(dataset.name, []),
-                    data_source=dataset.data_source, document=dataset.name,
-                )
-                await engine.save_dataset(dataset.model_copy(update={"source_queries": stages}))
-            except Exception as exc:  # noqa: BLE001 — per-dataset isolation; reported
-                result.warnings.append(ConversionWarning(
-                    dataset_name=dataset.name, category="extension", severity="info",
-                    message=f"Query-backed dataset {dataset.name!r} does not restore ({exc}); kept as a sql-mode "
-                            f"dataset over its source.",
-                    suggestion="Import every dataset its saved queries read.",
-                ))
-
-
 async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
-    storage = engine.storage
+    if await engine.storage.get_datasource(args.datasource) is None:
+        _fail(f"Datasource '{args.datasource}' not found in {_storage_path(args)}.")
     try:
-        documents = parse_osi_path(args.osi_path)
+        result = await import_osi(storage=engine.storage, path=args.osi_path, data_source=args.datasource,
+                                  engine=engine)
     except FileNotFoundError as exc:
         _fail(str(exc))
-    if not documents:
-        _fail(f"No OSI documents found in {args.osi_path}")
-
-    ds = await storage.get_datasource(args.datasource)
-    if ds is None:
-        storage_path = _storage_path(args)
-        print(
-            f"Datasource '{args.datasource}' not found in {storage_path}; "
-            "a reachable datasource is required (types come from live introspection)."
-        )
+    for name in result.stored:
+        print(f"Stored semantic model: {name}")
+    if result.refused or result.entries:
+        print("\nImport report:")
+        print(result.render_report())
+    print(f"\nDone: {len(result.stored)} stored, {len(result.refused)} refused")
+    if result.refused:
         sys.exit(1)
 
-    converter = OsiToSlayerConverter(
-        documents=documents,
-        data_source=args.datasource,
-        dialect=args.dialect,
-        target_dialect=ds.type,
-    )
+
+def _run_ossie_roundtrip(args) -> None:
+    """Import ``args.input`` into scratch storage, export it to ``args.output``; the user's storage is never opened."""
+    with tempfile.TemporaryDirectory(prefix="slayer-ossie-roundtrip-") as scratch:
+        engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=scratch))
+        try:
+            text = engine.run_sync(_roundtrip(engine, source=args.input, scratch=scratch))
+        finally:
+            engine.close()
+    if args.output.endswith(".json"):
+        text = json.dumps(yaml.safe_load(text), indent=2, ensure_ascii=False) + "\n"
+    # The output path is an intended, user-specified CLI location.
+    with open(args.output, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
+        fh.write(text)
+    print(f"Round-tripped {args.input} to {args.output}")
+
+
+async def _roundtrip(engine: SlayerQueryEngine, *, source: str, scratch: str) -> str:
+    name = "ossie_roundtrip"
+    await engine.storage.save_datasource(DatasourceConfig(name=name, type="duckdb",
+                                                          database=os.path.join(scratch, "scratch.duckdb")))
     try:
-        await converter.collect_metadata(client=engine.client_for(ds))
-        result = converter.convert()
-    except OsiConversionError as exc:
+        result = await import_osi(storage=engine.storage, path=source, data_source=name, engine=engine)
+    except FileNotFoundError as exc:
         _fail(str(exc))
-
-    for dataset in result.datasets:
-        await storage.save_dataset(dataset)
-        print(
-            f"Imported dataset: {dataset.name} "
-            f"({len(dataset.fields)} fields, {len(dataset.metrics)} metrics)"
-        )
-    await _restore_query_backed(engine, result)
-
-    if result.unconverted_metrics or result.warnings:
-        print("\nConversion report:")
-        print(result.render_report())
-
-    unconverted, dropped = result.tally()
-    print(
-        f"\nDone: {len(result.datasets)} datasets, "
-        f"{unconverted} unconverted, {dropped} dropped"
-    )
+    if result.refused or not result.stored:
+        _fail(result.render_report())
+    try:
+        exported = await export_osi(engine=engine, datasource=name)
+    except OsiExportError as exc:
+        _fail(str(exc))
+    return exported.text or dump_yaml(exported.document)
 
 
 def _datasets_list(storage: StorageBackend, args) -> None:
@@ -2595,6 +2627,48 @@ def _run_datasets(args):
     handler = _DATASETS_COMMANDS.get(args.datasets_command)
     if handler is None:
         _fail("usage: slayer datasets {list,show,create,delete}")
+    handler(storage, args)
+
+
+def _semantic_models_list(storage: StorageBackend, args) -> None:
+    found = run_sync(storage.list_semantic_models(data_source=args.datasource))
+    if not found:
+        print("No semantic models found.")
+    for ds, name in found:
+        text = run_sync(storage.get_semantic_model_text(name, data_source=ds))
+        try:
+            data = yaml.safe_load(text or "") or {}
+        except yaml.YAMLError:
+            data = {}
+        datasets = [str(d.get("name")) for d in data.get("datasets") or [] if isinstance(d, dict)]
+        print(f"{ds}.{name}: {', '.join(datasets) or '(no datasets)'}")
+
+
+def _semantic_models_show(storage: StorageBackend, args) -> None:
+    text = run_sync(storage.get_semantic_model_text(args.name, data_source=args.datasource))
+    if text is None:
+        _fail(f"Semantic model '{args.name}' not found.")
+    print(text, end="" if text.endswith("\n") else "\n")
+
+
+def _semantic_models_delete(storage: StorageBackend, args) -> None:
+    if not _confirm(f"Delete semantic model '{args.name}' and its datasets?", assume_yes=args.yes):
+        print("Aborted; storage unchanged.")
+        return
+    if not run_sync(storage.delete_semantic_model(args.name, data_source=args.datasource)):
+        _fail(f"Semantic model '{args.name}' not found.")
+    print(f"Deleted semantic model '{args.name}'.")
+
+
+_SEMANTIC_MODELS_COMMANDS = {"list": _semantic_models_list, "show": _semantic_models_show,
+                             "delete": _semantic_models_delete}
+
+
+def _run_semantic_models(args):
+    storage = _resolve_storage(args)
+    handler = _SEMANTIC_MODELS_COMMANDS.get(args.semantic_models_command)
+    if handler is None:
+        _fail("usage: slayer semantic-models {list,show,delete}")
     handler(storage, args)
 
 

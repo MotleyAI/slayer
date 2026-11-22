@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from collections.abc import Sequence
+
 from pydantic import BaseModel, Field
 
 from slayer.core.models import SlayerDataset
@@ -96,6 +98,12 @@ class Retriever(ABC):
         datasets: list[SlayerDataset],
         description: str | None = None,
     ) -> list[str]:
+        return []
+
+    async def refresh_documents(  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
+        self, documents: Sequence[tuple[str, str, str]],
+    ) -> list[str]:
+        """Refresh semantic models and model-scoped metrics, as ``(canonical, kind, text)``."""
         return []
 
     # ------------------------------------------------------------------

@@ -27,8 +27,6 @@ from slayer.embeddings import client as embedding_client
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import OSIDocument
 from slayer.database import engine_factory
 from slayer.search import graph as search_graph
 from slayer.search.service import SearchService, handle_edit_refresh
@@ -57,15 +55,6 @@ ORDERS_PROJECT = DbtProject(
     semantic_models=[], metrics=[],
     regular_models=[DbtRegularModel(name="orders", schema_name="main", alias="orders", description="Orders")],
 )
-ORDERS_OSI = OSIDocument.model_validate({
-    "version": "0.2.0.dev0", "name": "shop",
-    "datasets": [{
-        "name": "orders", "source": "orders",
-        "fields": [{"name": "status", "expression": {"sql": "status"}},
-                   {"name": "big", "expression": {"sql": "amount * 2"}}],
-    }],
-})
-
 Run = Callable[[SlayerQueryEngine, GatewayFactory | None], Awaitable[Any]]
 
 
@@ -225,22 +214,6 @@ class TestGatewayServesEveryFeature:
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
             converter = DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_datasets=True)
-            await converter.collect_metadata(client=engine.client_for(ds))
-            return _dumps(converter.convert().datasets)
-
-        twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
-        assert twin.attempts == []
-        assert [m["name"] for m in twin.default] == ["orders"]
-        assert twin.gateway == twin.default
-
-    async def test_osi_import_introspecting_a_table(self, tmp_path: Path, shop_db: str) -> None:
-        ds = shop_datasource(shop_db)
-
-        async def build(base: str) -> StorageBackend:
-            return await shop_storage(base, datasource=ds)
-
-        async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
-            converter = OsiToSlayerConverter(documents=[ORDERS_OSI], data_source=DS_NAME, target_dialect="sqlite")
             await converter.collect_metadata(client=engine.client_for(ds))
             return _dumps(converter.convert().datasets)
 
