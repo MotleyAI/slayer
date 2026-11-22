@@ -19,7 +19,7 @@ from slayer.core.syntax import (
 )
 from slayer.core.models import SlayerDataset
 from slayer.core.time_spine import is_spine_query
-from slayer.engine.population.anchors import anchor_route, find_anchor
+from slayer.engine.population.anchors import anchor_route, find_anchor, source_frame
 from slayer.engine.population.inference import (
     DimensionAnchor,
     _OK,
@@ -125,12 +125,27 @@ def _leaf_paths(agg: AggCall, *, owner: Optional[str]) -> tuple[list[tuple[str, 
     return paths, inner
 
 
+def _frame(paths: list[tuple[str, ...]], *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[str]:
+    """The dataset a source whose leaves are anchored apart is read from (semantics Axiom 2.6), else ``None``."""
+    anchors = [datasets_by_name.get(p[0]) for p in paths if p]
+    if len(anchors) != len(paths) or any(a is None for a in anchors) or len({a.name for a in anchors if a}) < 2:
+        return None
+    try:
+        frame = source_frame([a for a in anchors if a is not None], datasets_by_name=datasets_by_name,
+                             spell=lambda d: d.spelling)
+    except UnresolvableDimensionRelationshipError:
+        return None
+    return frame.name if frame is not None else None
+
+
 def _home(agg: AggCall, *, owner: Optional[str], datasets_by_name: dict[str, SlayerDataset]) -> Optional[str]:
-    """The stored dataset ``agg`` is counted over: where its leaves' common path ends (a second-order aggregation's
-    constituents' home)."""
+    """The stored dataset ``agg`` is counted over: where its leaves' common path ends, or the dataset leaves anchored
+    apart are read from (a second-order aggregation's constituents' home)."""
     paths, inner = _leaf_paths(agg, owner=owner)
     if not paths:
         return next((h for c in inner if (h := _home(c, owner=owner, datasets_by_name=datasets_by_name))), None)
+    if owner is None and (frame := _frame(paths, datasets_by_name=datasets_by_name)) is not None:
+        return frame
     common = paths[0]
     for p in paths[1:]:
         i = 0

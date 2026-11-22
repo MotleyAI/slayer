@@ -30,8 +30,11 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType
-from slayer.core.errors import AmbiguousRelationshipPathError, UnresolvableDimensionRelationshipError
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, framed_aggregate, is_framed_path, source_leaf_paths, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.errors import (
+    AmbiguousRelationshipPathError, PopulationErrorReason, PopulationInferenceError,
+    UnresolvableDimensionRelationshipError,
+)
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, framed_aggregate, is_reaggregation_key, is_framed_path, source_leaf_paths, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.names import spelled_name
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.core.models import DatasetField, EmptyValue, SlayerDataset, aggregation_definition, empty_value
@@ -113,7 +116,7 @@ from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMetric, OrderSpec, b
 from slayer.engine.compile.discovery import RootDisposition, discover_roots, row_attach_inputs
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate, AggregateHomes
-from slayer.engine.population.anchors import anchor_route
+from slayer.engine.population.anchors import anchor_route, source_frame
 from slayer.engine.population.filter_reachability import (
     key_has_host_local_ref,
 )
@@ -127,6 +130,8 @@ from slayer.ir.planned import (
     OrderEntry,
     PickedParam,
     PlannedQuery,
+    PlannedRowBranch,
+    PlannedRowSupply,
     RankedProducerKernel,
     RegroupAttachPlan,
     RegroupSubstitution,
@@ -3152,8 +3157,15 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # Degenerate: operand grain equals the outer grain — the identity, warned.
     degenerate = not broadcast_dims and Grain.of(union_grain) == Grain.of(outer_grain)
 
+    # The operand (Axiom 2.4): one row per cell of its constituents' row supply at the union grain, carrying the
+    # outer grain and every cell-determined parameter as its own columns.
+    field_params = [v for _n, v in reagg_params if not isinstance(v, (AggregateKey, TransformKey))
+                    and any(isinstance(k, (FieldKey, FieldSqlKey)) for k in walk_value_keys(v))]
+    carrier_grain = union_grain | Grain.of([*outer_grain, *field_params])
+    grain_placeholders: Dict[ValueKey, ValueKey] = (
+        {g: registry.placeholder_for(g) for g in _regroup_partition_order(carrier_grain)} if union_grain else {})
     # The carrier: one producer at the union grain carrying every constituent
-    # (coarser constituents broadcast within it), row-attached to the population.
+    # (coarser constituents broadcast within it).
     constituent_placeholders: Dict[ValueKey, ValueKey] = {
         c: registry.placeholder_for(c) for c in constituents
     }
@@ -3171,7 +3183,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     else:
         semi_join_names = []
     carrier_attach = _build_carrier_attach(
-        union_grain=union_grain, constituents=constituents,
+        union_grain=carrier_grain if grain_placeholders else union_grain, constituents=constituents,
         constituent_placeholders=constituent_placeholders, host_dataset=host_dataset,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         inherited=inherited, n_date_range=n_date_range,
@@ -3180,40 +3192,37 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         population=population,
         population_semi_join_metrics=semi_join_names,
         mode_policy=policy,
+        grain_placeholders=grain_placeholders,
+        supply=None if not grain_placeholders else lambda names: _operand_supply(
+            carrier_grain=carrier_grain, union_grain=union_grain, names=names, constituents=constituents,
+            context=context, inherited=inherited, producer_registry=producer_registry,
+        ),
     )
 
     # The outer producer: OUTER_AGG over the constituent composite (placeholders),
-    # grouped by the outer grain. Its body renders via the association kernel with
-    # the carrier as the per-cell value; level 2 aggregates over the cells. An
-    # attach-carrying grain key becomes an expression over carrier placeholders.
-    # Substitute the WHOLE root (source AND params) so an aggregate-valued
-    # parameter references its carrier placeholder like the source constituents do.
+    # grouped by the outer grain over the operand's cells (its grain keys read as
+    # the carrier's columns); level 2 aggregates over the cells. Substitute the
+    # WHOLE root (source AND params) so an aggregate-valued parameter references
+    # its carrier placeholder like the source constituents do.
+    substitutions = {**constituent_placeholders, **grain_placeholders}
     original_by_pk: Dict[ValueKey, ValueKey] = {}
     for g in outer_grain:
-        sub = substitute_value_keys(g, constituent_placeholders)
-        original_by_pk[sub] = g
+        original_by_pk[substitute_value_keys(g, substitutions)] = g
     # The settled outer grain rides as the explicit grain, so the outer compile
     # never re-judges it from the host (Axiom 9).
-    outer_agg = substitute_value_keys(root, constituent_placeholders).model_copy(
+    outer_agg = substitute_value_keys(root, substitutions).model_copy(
         update={"partition_keys": Grain.of(original_by_pk)},
     )
-    # Each legal parameter is picked once per cell: an aggregate-valued
-    # one from its carrier placeholder, a field/expression one from the operand
-    # scope; level 2 reads it as ``_base._p<i>``.
+    # Each legal parameter is picked once per cell, from its carrier column; level 2 reads it as ``_base._p<i>``.
     reagg_picked_params = [
-        PickedParam(
-            name=_name,
-            key=(constituent_placeholders[_value]
-                 if isinstance(_value, (AggregateKey, TransformKey)) else _value),
-        )
+        PickedParam(name=_name, key=substitutions.get(_value, _value))
         for _name, _value in reagg_params
     ]
     outer_prebound, ordered_outer = _regroup_producer_prebound(
         pks=Grain.of(original_by_pk), aggs=[outer_agg], dataset=host_dataset, bundle=bundle,
-        # Row filters define the population whose cells the outer aggregate
-        # consumes — without them a NULL-masking composite (coalesce) would
-        # fabricate cells for filtered-out entities.
-        inherited=inherited, n_date_range=n_date_range,
+        # Over the population's rows, row filters define the cells the outer aggregate consumes; over the operand's
+        # own cells, they restricted each constituent's supply already.
+        inherited=[] if grain_placeholders else inherited, n_date_range=0 if grain_placeholders else n_date_range,
         # A clean producer field name (the placeholder-sourced key would leak the
         # reserved __regroup__ prefix into the emitted alias).
         public_alias_by_agg={outer_agg: alias},
@@ -3225,8 +3234,9 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         source_dataset=host_dataset.name,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         producer_registry=producer_registry,
-        population=population,
-        placeholder_originals={ph: c for c, ph in constituent_placeholders.items()},
+        population=NoInheritedPopulation(reason="a re-aggregation reads its operand's cells") if grain_placeholders
+        else population,
+        placeholder_originals={ph: c for c, ph in substitutions.items()},
     )
     # Keep any internal attach the outer plan desugared for an expression
     # grain key; the carrier rides alongside. Entity keys must render inside
@@ -3237,7 +3247,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         for sub in a.substitutions
     }
     entity_keys = [
-        substitute_value_keys(k, internal_map)
+        substitute_value_keys(grain_placeholders.get(k, k), internal_map)
         for k in _regroup_partition_order(union_grain)
     ]
     if internal_map:
@@ -3321,9 +3331,12 @@ def _build_carrier_attach(
     population: "Population",
     mode_policy: ModePolicy,
     population_semi_join_metrics: Optional[List[str]] = None,
+    grain_placeholders: Optional[Mapping[ValueKey, ValueKey]] = None,
+    supply: Optional[Callable[[Mapping[ValueKey, str]], PlannedRowSupply]] = None,
 ) -> RegroupAttachPlan:
     """A row-attach producer at the union grain carrying every constituent (coarser
-    ones broadcast within it) — the carrier / level-1 of the re-aggregation."""
+    ones broadcast within it) — the carrier / level-1 of the re-aggregation. With ``supply``, its rows are that row
+    supply (each grain key named), and its consumer reads them as its own through ``grain_placeholders``."""
     # A windowed inner carries the query's active bucket into its own grain
     # (Axiom 2.3); thread it as the carrier's main time dimension so the nested
     # producer for the windowed inner resolves it. The bucket is
@@ -3375,12 +3388,21 @@ def _build_carrier_attach(
             _producer_grain_slot_ids(carrier_plan) - answer_slot_ids
         ),
     )
+    if supply is not None and grain_placeholders:
+        names = {pk: dm.declared_name for pk, dm in zip(ordered_pks, carrier_prebound.declared_metrics)}
+        carrier_plan = carrier_plan.model_copy(update={"row_supply": supply(names)})
+        substitutions = [*substitutions, *(
+            RegroupSubstitution(placeholder=grain_placeholders[pk], producer_slot_id=sid, original_key=pk,
+                                empty_value=None)
+            for pk, sid in join_pairs if pk in grain_placeholders
+        )]
     return RegroupAttachPlan(
         producer_plan=carrier_plan,
         alias_hint=(_constituent_alias(constituents[0]) if constituents else "carrier"),
         attach_phase="row",
         join_pairs=join_pairs,
         substitutions=substitutions,
+        drives=supply is not None and bool(grain_placeholders),
         partition_display=[_regroup_grain_name(pk) for pk in ordered_pks],
         # Host-rooted like a local row attach (root None), so a structurally
         # identical standalone producer interns to one CTE.
@@ -3393,6 +3415,111 @@ def _build_carrier_attach(
             else []
         ),
     )
+
+
+def _operand_cells(
+    *, home: SlayerDataset, keys: Sequence[ValueKey], names: Mapping[ValueKey, str],
+    context: _ProducerSynthesisContext, inherited: Sequence[BoundFilter],
+    producer_registry: Optional[Dict[Hashable, PlannedQuery]],
+) -> Optional[PlannedQuery]:
+    """``home``'s cells on ``keys`` (each read from the home by its own route, the population's row filters with
+    them), named as the operand names them; ``None`` when the home neither determines nor associates one."""
+    host = context.host_dataset
+    datasets = {**context.datasets_by_name, host.name: host, home.name: home}
+    home_bundle = context.bundle.rerooted(home)
+    policy = context.prebound.mode_policy
+
+    def read(key: ValueKey) -> Optional[ValueKey]:
+        found = home_read(key, home=home, host=host, datasets_by_name=datasets)
+        return None if found is None else lower_axis_hops(found, root_dataset=home, datasets_by_name=datasets)
+
+    at_home: Dict[ValueKey, ValueKey] = {}
+    for k in keys:
+        found = read(k)
+        if found is None or not (policy.associates or grain_member_attributable(
+            key=found, target_path=(), root_dataset=home, datasets_by_name=datasets, bundle=home_bundle,
+            host_dataset=home, host_name=home.name,
+        )):
+            return None
+        at_home[k] = found
+    filters = _home_filters([(bf, None) for bf in inherited], read=read, host=host)
+    prebound, _ordered = _regroup_producer_prebound(
+        pks=Grain.of(at_home.values()), aggs=[], dataset=home, bundle=home_bundle,
+        inherited=[bf for bf, _t in filters], n_date_range=0,
+        grain_name_by_key={v: names[k] for k, v in at_home.items()}, mode_policy=policy,
+    )
+    plan = compile_synthesized(
+        prebound=prebound, source_dataset=home.name, bundle=home_bundle, scope=DatasetScope(population=home),
+        stage_schemas=context.stage_schemas, producer_registry=producer_registry,
+        population=NoInheritedPopulation(reason="operand cells read their home's own rows"),
+    )
+    return plan.model_copy(update={"stage_bundle": home_bundle})
+
+
+def _constituent_home(c: ValueKey, *, context: _ProducerSynthesisContext) -> Optional[SlayerDataset]:
+    """The dataset an operand constituent is counted over; ``None`` for a transform or another operand."""
+    if not isinstance(c, AggregateKey) or is_reaggregation_key(c):
+        return None
+    home = walk_key_path(dataset=context.host_dataset, path=context.home_of(c), bundle=context.bundle)
+    return None if home is None else context.bundle.factor_free(home)
+
+
+def _grain_anchor(grain: Grain, *, context: _ProducerSynthesisContext) -> SlayerDataset:
+    """The dimension anchor of an operand grain no constituent supplies whole (semantics 12.2): the smallest dataset
+    determining each of its references' anchors; an undefined one fails closed."""
+    host = context.host_dataset
+    datasets = {**context.datasets_by_name, host.name: host}
+    anchors = {
+        spelling[0]: datasets[spelling[0]] for k in grain for r in _outside_aggregates(k)
+        if isinstance(r, (FieldKey, FieldSqlKey)) and (spelling := anchored_spelling(r, reader=host))[0] in datasets
+    }
+    try:
+        found = source_frame(list(anchors.values()), datasets_by_name=datasets, spell=lambda d: d.spelling)
+    except UnresolvableDimensionRelationshipError as e:
+        raise PopulationInferenceError(PopulationErrorReason.TIE, detail=str(e)) from None
+    if found is None:
+        raise PopulationInferenceError(PopulationErrorReason.NO_VIABLE_CANDIDATE, candidates=sorted(anchors))
+    return found
+
+
+def _operand_supply(
+    *, carrier_grain: Grain, union_grain: Grain, names: Mapping[ValueKey, str], constituents: Sequence[ValueKey],
+    context: _ProducerSynthesisContext, inherited: Sequence[BoundFilter],
+    producer_registry: Optional[Dict[Hashable, PlannedQuery]],
+) -> PlannedRowSupply:
+    """A second-order aggregation's operand rows (semantics Axiom 2.4, 12.3): the union of its full-grain
+    constituents' cells, else its grain's dimension anchor's cells agreeing with every constituent's."""
+    keys = _regroup_partition_order(carrier_grain)
+
+    def grain_of(c: ValueKey) -> Grain:
+        return constituent_grain(c=c, projected_dim_keys=context.projected_dim_keys,
+                                 projected_td_keys=context.projected_td_keys,
+                                 active_bucket=context.prebound.main_time_key)
+
+    cells = functools.partial(_operand_cells, names=names, context=context, inherited=inherited,
+                    producer_registry=producer_registry)
+    branches: Dict[str, PlannedRowBranch] = {}
+    for c in constituents:
+        home = _constituent_home(c, context=context)
+        if home is None or home.name in branches or grain_of(c) != union_grain:
+            continue
+        found = cells(home=home, keys=keys)
+        if found is not None:
+            branches[home.name] = PlannedRowBranch(cells=found)
+    if branches:
+        return PlannedRowSupply(branches=list(branches.values()))
+    anchor = _grain_anchor(carrier_grain, context=context)
+    anchor_cells = cells(home=anchor, keys=keys)
+    if anchor_cells is None:
+        raise PopulationInferenceError(PopulationErrorReason.NO_VIABLE_CANDIDATE, candidates=[anchor.name])
+    restrict: List[PlannedQuery] = []
+    for c in constituents:
+        home = _constituent_home(c, context=context)
+        grain = [k for k in keys if k in grain_of(c)]
+        found = None if home is None or not grain else cells(home=home, keys=grain)
+        if found is not None:
+            restrict.append(found)
+    return PlannedRowSupply(branches=[PlannedRowBranch(cells=anchor_cells, restrict=restrict)])
 
 
 def _assert_total_routing(prebound: PreboundQuery, *, homes: AggregateHomes) -> None:

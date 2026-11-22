@@ -67,7 +67,7 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
-from slayer.core.keys import FieldTypeFn, compose_frame, framed_aggregate, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
+from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.relationship_walker import (
     canonical_token,
     resolve_hop,
@@ -1525,6 +1525,25 @@ def _grain_bundle(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Resol
     return bundle if scope.grain is None or host is None else bundle.rerooted(host)
 
 
+def _anchored_grain_key(
+    parsed: ParsedExpr, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[ValueKey]:
+    """A grain reference the query's population reaches by no single route, keyed by its anchor alone: only the homes
+    that group by it read it (each by its own route); ``None`` when it names no one anchor."""
+    host = scope.population
+    if not scope.anchored or host is None:
+        return None
+    anchors = {a.name: a for node in walk_parsed_refs(parsed) if isinstance(node, DottedRef)
+               if (a := find_anchor(node.parts[0], quoted=dotted_quoting(node)[0], reader=host,
+                                    datasets_by_name=bundle.datasets_by_name)) is not None}
+    if len(anchors) != 1 or any(not isinstance(n, DottedRef) for n in walk_parsed_refs(parsed)):
+        return None
+    (anchor,) = anchors.values()
+    bound = _bind(parsed, scope=DatasetScope(population=anchor, anchored=True), bundle=bundle.rerooted(anchor),
+                  in_filter=False)
+    return compose_frame(bound, frame=anchor.name, host_path=lambda: (anchor_token(anchor.name),))
+
+
 def _bind_partition_keys(
     value, *,
     scope: DatasetScope,
@@ -1539,7 +1558,12 @@ def _bind_partition_keys(
         if dim_alias_map and isinstance(elem, Ref) and elem.name in dim_alias_map:
             pks.append(dim_alias_map[elem.name])
             continue
-        bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
+        try:
+            bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
+        except UnresolvableDimensionRelationshipError:
+            bound = _anchored_grain_key(elem, scope=scope, bundle=bundle)
+            if bound is None:
+                raise
         # Whether a key is a query dimension is the checker's; an aggregate-bearing one must already be one.
         if _carries_attached_value(bound) and bound not in (dim_alias_map or {}).values():
             raise PartitionKeyError(

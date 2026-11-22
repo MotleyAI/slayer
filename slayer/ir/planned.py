@@ -451,6 +451,8 @@ class RegroupAttachPlan(BaseModel):
     )
     join_pairs: List[Tuple[ValueKey, SlotId]] = Field(default_factory=list)
     substitutions: List[RegroupSubstitution] = Field(default_factory=list)
+    #: A re-aggregation's operand: its consumer reads its rows as its own (every key a substitution), never joins it.
+    drives: bool = False
     partition_display: List[str] = Field(default_factory=list)
     producer_root_dataset: Optional[str] = None
     broadcast_metric: Optional[str] = None

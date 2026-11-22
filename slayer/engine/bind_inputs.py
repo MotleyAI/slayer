@@ -790,7 +790,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             # re-aggregation's outer keys are judged against its operand grain instead.
             if not is_reaggregation_key(key):
                 assert_partition_key_attributable(
-                    key=key, pk=pk, label=label, scope=scope, bundle=bundle,
+                    pk=pk, label=label, scope=scope, bundle=bundle,
                 )
             is_query_dim = pk in _dim_key_set or pk in _td_key_set
             bucket = _td_by_source.get(pk)
