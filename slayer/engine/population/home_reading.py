@@ -3,7 +3,7 @@ anchored spelling, never through the population's route."""
 
 from __future__ import annotations
 
-from typing import Dict, Iterator, Optional, Tuple, TypeVar
+from typing import Dict, Iterable, Iterator, Optional, Tuple, TypeVar
 
 from slayer.core.keys import (
     AggregateKey,
@@ -20,12 +20,13 @@ from slayer.core.keys import (
     substitute_value_keys,
     token_anchor,
 )
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.models import SlayerDataset
-from slayer.core.time_spine import TIME_SPINE_DATASET
+from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.cardinality.relationship_safety import home_spine_route, reroot_from_root
 from slayer.engine.population.anchors import anchor_route
 
-__all__ = ["Frame", "anchored_spelling", "home_frame", "home_read", "outside_aggregates"]
+__all__ = ["Frame", "anchored_spelling", "home_frame", "home_read", "outside_aggregates", "product_anchors"]
 
 _KeyT = TypeVar("_KeyT", bound=ValueKey)
 
@@ -73,9 +74,30 @@ def _read_leaf(
         ).model_copy(update={"anchor": spelling})
     reached = anchor_route(reader=home, anchor=anchor, datasets_by_name=datasets_by_name,
                            rest=(*spelling[1:], field_leaf(r)))
-    if reached.unrelated:
+    if reached.unrelated and anchor.name not in home.unrelated_datasets:
         return None
     return r.model_copy(update={"path": (*reached.route, *spelling[1:]), "anchor": spelling})
+
+
+def product_anchors(
+    keys: Iterable[ValueKey], *, home: SlayerDataset, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> frozenset[str]:
+    """The anchors of ``keys``' references that ``home`` meets only as a product (semantics Axiom 3.1)."""
+    out: set[str] = set()
+    for key in keys:
+        for r in outside_aggregates(key):
+            if not isinstance(r, (FieldKey, FieldSqlKey)):
+                continue
+            spelling = anchored_spelling(r, reader=host)
+            anchor = host if spelling[0] == host.name else datasets_by_name.get(spelling[0])
+            if anchor is None or anchor.name == home.name or is_spine(anchor) or TIME_SPINE_DATASET in spelling:
+                continue
+            try:
+                if anchor_route(reader=home, anchor=anchor, datasets_by_name=datasets_by_name).unrelated:
+                    out.add(anchor.name)
+            except UnresolvableDimensionRelationshipError:
+                continue
+    return frozenset(out)
 
 
 def outside_aggregates(key: ValueKey) -> Iterator[ValueKey]:

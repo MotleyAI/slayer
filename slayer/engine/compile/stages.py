@@ -116,7 +116,9 @@ from slayer.engine.compile.discovery import RootDisposition, discover_roots, row
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate, AggregateHomes
 from slayer.engine.population.anchors import anchor_route, source_frame
-from slayer.engine.population.home_reading import anchored_spelling, home_frame, home_read, outside_aggregates
+from slayer.engine.population.home_reading import (
+    anchored_spelling, home_frame, home_read, outside_aggregates, product_anchors,
+)
 from slayer.engine.population.filter_reachability import (
     key_has_host_local_ref,
 )
@@ -2289,6 +2291,12 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     # Host included so the reverse (fanning) hop resolves for the broadcast
     # reason; attributability/filter routing keep the host-free map unchanged.
     datasets_with_host = {**datasets_by_name, host_dataset.name: host_dataset}
+    # A filter on a dataset the home meets only as a product restricts it as that product (Axiom 3.1).
+    met = product_anchors(
+        [bf.value_key for bf, _t in base_filters_with_text if bf.phase == Phase.ROW],
+        home=root_dataset, host=host_dataset, datasets_by_name=datasets_with_host)
+    if met:
+        root_dataset = root_dataset.with_unrelated(root_dataset.unrelated_datasets | met)
     home = root_dataset
     home_bundle = bundle.rerooted(home)
     home_datasets = {**datasets_with_host, home.name: home}
@@ -2470,6 +2478,9 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         )
 
     # SHARED TAIL: root at the home, compile the producer, attach on the host key.
+    if agg.partition_keys is not None:
+        # Inside its producer an explicit grain is the producer's own: a key it does not group by is constant there.
+        agg_rooted = agg_rooted.model_copy(update={"partition_keys": Grain.of(rr for _g, rr in safe_pairs)})
     condition, unfiltered = _group_row_restriction([agg_rooted])
     if condition is not None:
         inherited = [*inherited, row_restriction_from_key(condition)]
@@ -2483,7 +2494,8 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     numbered: List[SlayerDataset] = []
     if associate and entity is not None:
         root_dataset, numbered = entity.root_dataset, entity.numbered
-    root_bundle = bundle.rerooted(root_dataset, replacing=numbered)
+    stamped = [home] if met and all(d.name != home.name for d in numbered) else []
+    root_bundle = bundle.rerooted(root_dataset, replacing=[*numbered, *stamped])
     root_scope = DatasetScope(population=root_dataset)
     host_by_rerooted = {rr: hk for hk, rr in safe_pairs}
     if window_td_key is not None:
@@ -2518,6 +2530,8 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         producer_plan = producer_plan.model_copy(
             update={"semi_join_filters": semi_joins},
         )
+    if met:
+        producer_plan = producer_plan.model_copy(update={"stage_bundle": root_bundle})
     # An attached parameter row-attached inside the producer: map each picked key
     # through the sub-plan's substitutions so the level-1 pick references the
     # producer's row-attach field, not the raw aggregate.

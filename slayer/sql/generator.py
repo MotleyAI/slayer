@@ -4125,6 +4125,8 @@ class SQLGenerator:
         root_name = getattr(attach, "producer_root_dataset", None)
         if not root_name:
             return bundle
+        # A home stamped with the datasets it meets as a product renders over its own bundle.
+        bundle = attach.producer_plan.stage_bundle or bundle
         root = bundle.get_referenced_dataset(root_name)
         if root is None:
             raise RuntimeError(
