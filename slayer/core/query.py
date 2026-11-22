@@ -17,6 +17,7 @@ from pydantic import (
     ModelWrapValidatorHandler,
     PrivateAttr,
     SerializerFunctionWrapHandler,
+    ValidationInfo,
     field_validator,
     model_serializer,
     model_validator,
@@ -1465,6 +1466,13 @@ def convert_legacy_root_extension(data: dict) -> tuple[dict, DeprecatedInputWarn
     return data, deprecated_input("An extension object in `population`", "`extensions`", removal="3.0")
 
 
+def without_null_version(data: Any) -> Any:
+    """Query input whose null ``version`` reads as omitted; run first on every entry point."""
+    if isinstance(data, dict) and "version" in data and data["version"] is None:
+        return {k: v for k, v in data.items() if k != "version"}
+    return data
+
+
 def prepare_query_input(data: dict) -> tuple[dict, list[DeprecatedInputWarning]]:
     """Fresh query input with its deprecated forms converted (and a versioned payload migrated), with every
     conversion's deprecation."""
@@ -1660,8 +1668,9 @@ class SlayerQuery(QueryInput):
     def _migrate_and_rewrite(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerQuery"]) -> "SlayerQuery":
         # One validator sequences convert → migrate → functional-granularity rewrite.
         payloads: list[DeprecatedInputWarning] = []
+        data = without_null_version(data)
         is_dict = isinstance(data, dict)
-        stored = in_stored_document() or (is_dict and "version" in data)
+        stored =in_stored_document() or (is_dict and "version" in data)
         with converted_document(stored=stored) as (spellings, _):
             if isinstance(data, dict):
                 data = vocabulary.camel_healed(data, "query")
@@ -1692,6 +1701,15 @@ class SlayerQuery(QueryInput):
     def deprecated_inputs(self) -> tuple[DeprecatedInputWarning, ...]:
         """Deprecations of the input forms converted while building this query."""
         return self._deprecated_inputs
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _null_reads_as_default(cls, v: Any, info: ValidationInfo) -> Any:
+        """A null on a setting that cannot be null takes its default (after spelling conflicts are checked)."""
+        if v is None and info.field_name is not None:
+            default = cls.model_fields[info.field_name].get_default(call_default_factory=True)
+            return v if default is None else default
+        return v
 
     @field_validator("name")
     @classmethod

@@ -38,6 +38,7 @@ from slayer.core.query import (
     broadcast_already_warned,
     prepare_query_input,
     warn_fresh_broadcast,
+    without_null_version,
 )
 from slayer.core.vocabulary import deprecated_spelling
 from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
@@ -96,6 +97,7 @@ class QueryRequest(BaseModel):
     @classmethod
     def _prepare_query_input(cls, data: Any, handler: ModelWrapValidatorHandler["QueryRequest"]) -> "QueryRequest":
         payloads: list[DeprecatedInputWarning] = []
+        data = without_null_version(data)
         fresh = isinstance(data, dict) and "version" not in data
         if isinstance(data, dict):
             data, payloads = prepare_query_input(data)
@@ -518,8 +520,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 # A rootless query (no name, no population) is valid —
                 # the engine infers the population. The query must still project
                 # something, which SlayerQuery validation enforces downstream.
-                # Extras keep their nulls so SlayerQuery refuses a ``"typo": null`` key.
-                payload = {**request.model_dump(exclude_none=True), **(request.model_extra or {})}
+                # Exactly the keys sent, nulls included, so SlayerQuery sees every key it must refuse.
+                payload = request.model_dump(exclude_unset=True)
                 # ``variables`` is consumed at execute() level, not part of
                 # SlayerQuery's filter-substitution variables (those merge
                 # automatically via the kwarg path).

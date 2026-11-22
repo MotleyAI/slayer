@@ -16,6 +16,10 @@ A query, a query refinement, and every dimension, metric, time dimension, order 
 - **WHEN** a query carries both `sourceModel` and `population`, and a time dimension carries both `dateRange` and `date_range`
 - **THEN** each is refused with a spelling-conflict error naming both keys
 
+#### Scenario: A null setting reads as its default
+- **WHEN** a query (not a refinement) gives a setting that cannot be null, such as `whole_periods_only` or `distinct_dimension_values`, the value null, through REST, MCP, the Python client or as a Python value
+- **THEN** the setting takes its default, and a key given as null still counts for spelling conflicts, so `"time_dimensions": null` beside `"timeDimensions"` is refused as a spelling conflict on every surface
+
 #### Scenario: An unknown key is refused with what the object takes
 - **WHEN** queries are given an unknown key at the root, on a dimension entry, a metric entry, a time dimension, an order entry, an extension and a refinement, through REST, MCP and the Python client
 - **THEN** each is refused with a typed error naming the key and its location and listing the object's keys, REST answers 422, and no internal key is listed

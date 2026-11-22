@@ -185,6 +185,54 @@ class TestSpellingConflicts:
             assert f"`{key}`" in str(err), str(err)
 
 
+#: SlayerQuery's settings that cannot be null: every optional field with a non-null default.
+NON_NULL_SETTINGS = sorted(name for name, f in SlayerQuery.model_fields.items()
+                           if not f.is_required() and f.get_default(call_default_factory=True) is not None)
+NULL_CONFLICT = {**BASE, "time_dimensions": None, "timeDimensions": [{**TD, "date_range": RANGE}]}
+
+
+class TestNullSettings:
+    def test_the_inventory_holds_the_user_facing_settings(self) -> None:
+        assert {"whole_periods_only", "distinct_dimension_values"} <= set(NON_NULL_SETTINGS)
+
+    @pytest.mark.parametrize("name", NON_NULL_SETTINGS)
+    def test_a_null_setting_takes_its_default(self, name: str) -> None:
+        default = SlayerQuery.model_fields[name].get_default(call_default_factory=True)
+        assert getattr(SlayerQuery.model_validate({**BASE, name: None}), name) == default
+        query = SlayerQuery.model_validate(BASE)
+        setattr(query, name, None)
+        assert getattr(query, name) == default
+
+    def test_a_refinement_still_refuses_a_null_setting(self) -> None:
+        with pytest.raises(ValidationError, match="cannot be null"):
+            QueryRefinement.model_validate({"whole_periods_only": None})
+
+    async def test_rest_and_mcp_read_a_null_setting_as_its_default(self, tmp_path: Path) -> None:
+        storage = await shop_with_saved(tmp_path)
+        body = {**BASE, "whole_periods_only": None, "distinct_dimension_values": None, "version": None}
+        client = TestClient(create_app(storage=storage))
+        nulled, omitted = client.post("/query", json=body), client.post("/query", json=BASE)
+        assert nulled.status_code == 200, nulled.text
+        assert nulled.json()["data"] == omitted.json()["data"]
+        mcp = json.loads(await mcp_text(storage, "query", format="json", query=body))
+        assert mcp["data"] == omitted.json()["data"]
+
+    async def test_a_null_canonical_key_still_conflicts_on_every_surface(self, tmp_path: Path) -> None:
+        payload = copy.deepcopy(NULL_CONFLICT)
+        with recorded(), pytest.raises((ValidationError, SpellingConflictError)) as info:
+            SlayerQuery.model_validate(payload)
+        assert "`timeDimensions`" in str(conflict(info.value))
+        storage = await shop_with_saved(tmp_path)
+        both_set = {**BASE, "time_dimensions": [dict(TD)], "timeDimensions": [dict(TD)]}
+        client = TestClient(create_app(storage=storage))
+        resp, reference = client.post("/query", json=NULL_CONFLICT), client.post("/query", json=both_set)
+        assert resp.status_code == reference.status_code != 200, resp.text
+        assert "`timeDimensions`" in resp.text
+        mcp_payload = copy.deepcopy(NULL_CONFLICT)
+        with pytest.raises(ToolError, match="timeDimensions"):
+            await mcp_text(storage, "query", format="json", query=mcp_payload)
+
+
 class TestUnknownKeys:
     @pytest.mark.parametrize("location", sorted(QUERY_LOCATIONS))
     def test_a_query_refuses_a_stray_key_at_its_location(self, location: str) -> None:
