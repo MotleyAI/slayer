@@ -588,15 +588,85 @@ def test_vendor_copies_head_blobs_through_line_ending_conversion(monkeypatch: py
     assert {p: tree.get(p) for p in CHECKOUT_FILES} == CHECKOUT_FILES
 
 
-def test_a_failed_rollback_saves_the_backups_and_says_so(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-                                                         capsys: pytest.CaptureFixture[str]) -> None:
-    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
-    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+def _backup_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """The directory the re-vendor's backup temp directory is redirected to."""
     saved = tmp_path / "saved"
     saved.mkdir()
     real_mkdtemp = tempfile.mkdtemp
     monkeypatch.setattr(tempfile, "mkdtemp", lambda *args, **kwargs: str(saved)
                         if kwargs.get("prefix") == "ossie-vendor-backup-" else real_mkdtemp(*args, **kwargs))
+    return saved
+
+
+def test_a_successful_vendor_leaves_no_backup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    saved = _backup_dir(monkeypatch, tmp_path)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    assert not saved.exists()
+
+
+def test_a_failed_backup_leaves_the_corpus_untouched(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                     capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    saved = _backup_dir(monkeypatch, tmp_path)
+    _fake_harvest(monkeypatch)
+    real = Path.write_bytes
+
+    def failing(self: Path, data: bytes) -> int:
+        if self.is_relative_to(saved):
+            raise OSError("disk full")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", failing)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert "could not back up the corpus" in capsys.readouterr().err
+    assert _tree(corpus) == before
+    assert not saved.exists()
+
+
+def test_an_uncreatable_backup_directory_leaves_the_corpus_untouched(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                                     capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    real_mkdtemp = tempfile.mkdtemp
+
+    def failing(*args: Any, **kwargs: Any) -> str:
+        if kwargs.get("prefix") == "ossie-vendor-backup-":
+            raise OSError("no space")
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", failing)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert "Re-vendor refused: could not back up the corpus" in capsys.readouterr().err
+    assert _tree(corpus) == before
+
+
+def test_a_backup_that_cannot_be_removed_is_named(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                  capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    saved = _backup_dir(monkeypatch, tmp_path)
+    _fake_harvest(monkeypatch)
+
+    def stuck(path: Any, *args: Any, **kwargs: Any) -> None:
+        raise OSError("busy")
+
+    monkeypatch.setattr(drift_check.shutil, "rmtree", stuck)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    assert f"Could not remove the corpus backup {saved}" in capsys.readouterr().err
+
+
+def test_a_failed_rollback_saves_the_backups_and_says_so(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                         capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    saved = _backup_dir(monkeypatch, tmp_path)
     _fake_harvest(monkeypatch)
     real = Path.write_bytes
 

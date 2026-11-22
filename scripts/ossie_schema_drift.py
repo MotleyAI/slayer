@@ -275,9 +275,11 @@ def _provenance_text(*, commit: str, committed: str, files: dict[str, bytes]) ->
 
 
 def _swap_in(*, out: Path, writes: dict[str, bytes], deletes: list[str]) -> None:
-    """Delete ``deletes`` and write ``writes`` (in order) under ``out``; any failure restores every touched path."""
+    """Delete ``deletes`` and write ``writes`` (in order) under ``out``; any failure restores every touched path. The
+    touched files are first saved to a temp directory, kept only when the restore fails."""
     touched = [*deletes, *writes]
     backup = {path: (out / path).read_bytes() for path in touched if (out / path).is_file()}
+    saved = _save_backups(backup)
     try:
         for path in deletes:
             target = out / path
@@ -289,9 +291,11 @@ def _swap_in(*, out: Path, writes: dict[str, bytes], deletes: list[str]) -> None
     except OSError as exc:
         unrestored = _restore(out=out, touched=touched, backup=backup)
         if unrestored:
-            raise RollbackFailed(f"{exc}; not restored: {', '.join(unrestored)}; "
-                                 f"{_save_backups(unrestored, backup=backup)}") from exc
+            raise RollbackFailed(f"{exc}; not restored: {', '.join(unrestored)}; their previous bytes are saved "
+                                 f"under {saved}") from exc
+        _discard(saved)
         raise
+    _discard(saved)
 
 
 def _restore(*, out: Path, touched: list[str], backup: dict[str, bytes]) -> list[str]:
@@ -310,15 +314,27 @@ def _restore(*, out: Path, touched: list[str], backup: dict[str, bytes]) -> list
     return failed
 
 
-def _save_backups(paths: list[str], *, backup: dict[str, bytes]) -> str:
+def _save_backups(backup: dict[str, bytes]) -> Path:
+    """``backup`` written to a fresh temp directory; refused when that fails, the partial directory removed (or named,
+    when it cannot be)."""
+    saved: Path | None = None
     try:
         saved = Path(tempfile.mkdtemp(prefix="ossie-vendor-backup-"))
-        for path in [p for p in paths if p in backup]:
+        for path, data in backup.items():
             (saved / path).parent.mkdir(parents=True, exist_ok=True)
-            (saved / path).write_bytes(backup[path])
+            (saved / path).write_bytes(data)
     except OSError as exc:
-        return f"their previous bytes could not be saved ({exc}); restore them from version control"
-    return f"their previous bytes are saved under {saved}"
+        if saved is not None:
+            _discard(saved)
+        raise VendorRefused(f"could not back up the corpus before changing it: {exc}") from exc
+    return saved
+
+
+def _discard(saved: Path) -> None:
+    try:
+        shutil.rmtree(saved)
+    except OSError as exc:
+        print(f"Could not remove the corpus backup {saved}: {exc}", file=sys.stderr)
 
 
 def _prune_empty_parents(target: Path, *, root: Path) -> None:
