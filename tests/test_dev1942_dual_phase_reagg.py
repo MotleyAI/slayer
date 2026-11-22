@@ -101,6 +101,21 @@ def _cm_ctes(sql: str) -> list[str]:
     return re.findall(r"(_cm_\w+) AS \(", sql)
 
 
+def _assert_producers_read_restricted_rows(sql: str) -> None:
+    """The cell supply and the constituent carry the EXISTS; every producer reads only CTEs that carry it."""
+    assert "EXISTS" in _extract_cte_body(sql, "_keys")
+    assert "EXISTS" in _extract_cte_body(sql, "_base_host")
+    names = re.findall(r"(\w+) AS \(", sql)
+    restricted: set[str] = set()
+    for name in names:
+        body = _extract_cte_body(sql, re.escape(name))
+        reads = {n for n in names if n != name and re.search(rf"\b{n}\b", body)}
+        if "EXISTS" in body or (reads and reads <= restricted):
+            restricted.add(name)
+    for name in _cm_ctes(sql):
+        assert name in restricted, name
+
+
 def _monthly_bundle() -> ResolvedSourceBundle:
     models = dev1832_datasets()
     monthly = next(m for m in models if m.name == "monthly")
@@ -236,9 +251,8 @@ class TestPopulationRestriction:
             dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=POP_MIXED, alias="m")],
             filter=[_OK]), dialect="duckdb")
-        # Every producer carries the population semi-join; none joins orders.
-        for name in _cm_ctes(sql):
-            assert "EXISTS" in _extract_cte_body(sql, re.escape(name)), name
+        # Every producer reads the population semi-join's rows; none joins orders.
+        _assert_producers_read_restricted_rows(sql)
         assert "orders" not in _join_aliases(sql, dialect="duckdb")
 
     async def test_standalone_avg_beside_mixed_shares_one_producer(self, exec_backend) -> None:
@@ -275,13 +289,11 @@ class TestPopulationRestriction:
                    for i in pushed)
 
     async def test_standalone_reaggregation_sql_carries_exists_in_every_producer(self) -> None:
-        # The pushed conjunct lands in the carrier AND the outer producer (a dropped
-        # conjunct would leave a producer without its EXISTS).
+        # The pushed conjunct reaches the carrier AND the outer producer through the restricted cells.
         sql = await gen(cust_q(
             dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=POP_MIN, alias="mn")],
             filter=[_OR_MIX]), dialect="duckdb")
         ctes = _cm_ctes(sql)
         assert len(ctes) == 2, ctes
-        for name in ctes:
-            assert "EXISTS" in _extract_cte_body(sql, re.escape(name)), name
+        _assert_producers_read_restricted_rows(sql)

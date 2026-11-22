@@ -198,7 +198,7 @@ def _count_top_only(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 
 class TestEverySiteStatesItsPopulation:
-    """The cross-dataset producer re-roots its own filters; every other site inherits."""
+    """The cross-dataset producer, the operand cells and the outer they drive state their own filters; every other site inherits."""
 
     @pytest.fixture
     def populations(self, monkeypatch: pytest.MonkeyPatch) -> list:
@@ -229,7 +229,7 @@ class TestEverySiteStatesItsPopulation:
                      {"InheritedPopulation"}, id="shifted"),
         pytest.param(lambda: plan_query(query=sales_q(
             dimensions=["sales.region"], metrics=[reagg("avg", INNER_CR, name="a")]),
-            bundle=_sales_bundle()), {"InheritedPopulation"},
+            bundle=_sales_bundle()), {"InheritedPopulation", "NoInheritedPopulation"},
             id="reaggregation-outer-and-carrier"),
     ])
     def test_population_kind_per_site(self, populations, plan, expected):
