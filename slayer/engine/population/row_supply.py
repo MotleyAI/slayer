@@ -552,14 +552,18 @@ def _reaches_axis(name: str, *, datasets_by_name: dict[str, SlayerDataset]) -> b
 
 def _anchor_spine_cells(
     query: SlayerQuery, *, free: SlayerQuery, anchor_datasets: tuple[str, ...], filters: list[str],
-    datasets_by_name: dict[str, SlayerDataset],
+    datasets_by_name: dict[str, SlayerDataset], bucketed: bool = True,
 ) -> tuple[SlayerQuery, tuple[SlayerQuery, ...]]:
     """The anchor's cells and the in-frame cells of each component reaching an axis (its rows with a visible bucket);
-    a component reaching none meets every bucket."""
+    a component reaching none meets every bucket. ``bucketed=False`` keeps a single anchor's cells bucket-free, its
+    framing a restriction like a product's components."""
     framing = [d for d in anchor_datasets if _reaches_axis(d, datasets_by_name=datasets_by_name)]
     if len(anchor_datasets) == 1:
         witnesses = [f"count({anchor_datasets[0]}.*)"] if framing else []
-        return _spine_cells(query, population=anchor_datasets[0], witnesses=witnesses, filters=filters), ()
+        in_frame = _spine_cells(query, population=anchor_datasets[0], witnesses=witnesses, filters=filters)
+        if bucketed:
+            return in_frame, ()
+        return _cells(free, population=anchor_datasets[0], filters=filters), (in_frame,) if framing else ()
     refs = _query_dimension_refs(free)
     framed = tuple(
         _spine_cells(query, population=d, witnesses=[f"count({d}.*)"], filters=[],
@@ -569,12 +573,19 @@ def _anchor_spine_cells(
     return _cells(free, population=anchor_datasets[0], filters=filters), framed
 
 
+class _SpineCoarse(BaseModel):
+    """A coarser operand's cells and its witness: positive where the operand has home rows in a visible bucket."""
+
+    cells: CoarseCells
+    witness: str
+
+
 class _SpineWitnesses(BaseModel):
     """Per home, the witnesses of the measures it fully supplies; the coarser cells of the rest; whether any measure
     leaves the anchor to supply the rows whole."""
 
     by_home: dict[str, list[str]] = {}
-    coarse: list[CoarseCells] = []
+    coarse: list[_SpineCoarse] = []
     whole_anchor: bool = False
 
 
@@ -595,7 +606,9 @@ def _spine_witnesses(query: SlayerQuery, *, dims: list[str],
         for op, agg, shifts in full:
             out.by_home.setdefault(op.home, []).append(_witness(op.home, agg=agg, shifts=shifts))
         if not full:
-            out.coarse.extend(CoarseCells(home=op.home, grain=op.grain) for op, _, _ in operands)
+            out.coarse.extend(_SpineCoarse(cells=CoarseCells(home=op.home, grain=op.grain),
+                                           witness=_witness(op.home, agg=agg, shifts=shifts))
+                              for op, agg, shifts in operands)
         out.whole_anchor = out.whole_anchor or not found
     return out
 
@@ -604,12 +617,13 @@ def _anchor_branches(query: SlayerQuery, *, free: SlayerQuery, anchor_datasets: 
                      witnesses: _SpineWitnesses, filters: list[str],
                      datasets_by_name: dict[str, SlayerDataset]) -> list[RowSupplyBranch]:
     """The anchor's in-frame cells: whole for an anchor-supplied measure, and restricted to each coarser measure's
-    cells."""
+    in-frame cells (agreeing on the non-time tuple, never the bucket)."""
     anchor_cells, framed = _anchor_spine_cells(query, free=free, anchor_datasets=anchor_datasets, filters=filters,
-                                               datasets_by_name=datasets_by_name)
+                                               datasets_by_name=datasets_by_name, bucketed=not witnesses.coarse)
     out: list[RowSupplyBranch] = []
     for c in [*([None] if witnesses.whole_anchor else []), *witnesses.coarse]:
-        restrict = (_cells(free, population=c.home, filters=filters, grain=c.grain),) if c and c.grain else ()
+        restrict = (_spine_cells(query, population=c.cells.home, witnesses=[c.witness], filters=filters,
+                                 grain=c.cells.grain),) if c else ()
         out.append(RowSupplyBranch(cells=anchor_cells, restrict=(*framed, *restrict)))
     return out
 

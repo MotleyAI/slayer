@@ -6,7 +6,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
@@ -205,6 +205,20 @@ async def test_a_keyless_home_counts_each_row_once_per_bucket(backend: str) -> N
                          metrics=[{"metric": "sum(notes.amount)", "alias": "s"},
                                   {"metric": "count(notes.*)", "alias": "n"}])
     # C1 has two January orders: its note counts once there
+    assert _monthly(resp, "s") == {"2025-01": 5.0, "2025-02": 11.0, "2025-03": None}
+    assert _monthly(resp, "n") == {"2025-01": 1.0, "2025-02": 2.0, "2025-03": 0.0}
+
+
+@pytest.mark.parametrize("population", [None, "customers"])
+async def test_a_named_population_associates_an_axis_less_home_by_its_fanning_axis(
+    backend: str, population: Optional[str],
+) -> None:
+    tables = [*seed_tables(), NOTES]
+    extra = {"population": population} if population else {}
+    async with seeded_exec_engine(dialect=backend, seed=lambda p: seed_backend(backend, p, tables),
+                                  datasets=seed_datasets(extra=(notes_dataset(),))) as (eng, _):
+        resp = await run(eng, time_dimensions=[SPINE_MONTH], metrics=[{"metric": "sum(notes.amount)", "alias": "s"},
+                                                                       {"metric": "count(notes.*)", "alias": "n"}], **extra)
     assert _monthly(resp, "s") == {"2025-01": 5.0, "2025-02": 11.0, "2025-03": None}
     assert _monthly(resp, "n") == {"2025-01": 1.0, "2025-02": 2.0, "2025-03": 0.0}
 

@@ -87,7 +87,8 @@ and the unit SHALL hold for a query naming `population` too.
 
 #### Scenario: Filters never expand
 - **WHEN** the law harness adds a field filter to generated queries, with and without `population`
-- **THEN** the filtered result's keys are a subset of the unfiltered result's keys
+- **THEN** the filtered result's keys are a subset of the unfiltered result's keys, apart from the
+  value of a computed dimension read from an aggregate over the filtered rows
 
 #### Scenario: The unit
 - **WHEN** a query with measures and no dimensions runs, with and without `population`, with and

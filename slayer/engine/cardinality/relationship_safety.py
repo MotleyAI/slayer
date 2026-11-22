@@ -494,7 +494,7 @@ def _reroot_leaf_via_host(
         return None  # an expression's leaves reroot one by one
     hp = key_host_path(r)
     field = r.source if isinstance(r, TimeTruncKey) else r
-    product = isinstance(r, FieldKey) and _is_product_path(hp, host_name=host_name, datasets_by_name=datasets_by_name)
+    product = isinstance(field, FieldKey) and _is_product_path(hp, host_name=host_name, datasets_by_name=datasets_by_name)
     if _reads_host_spine(field, product=product, host=datasets_by_name.get(host_name), root_dataset=root_dataset):
         moved = _onto_home_spine(r, cast(FieldKey, field), root_dataset=root_dataset,
                                  datasets_by_name=datasets_by_name)

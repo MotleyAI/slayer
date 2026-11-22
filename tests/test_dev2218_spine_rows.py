@@ -14,6 +14,7 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev2015_fixtures import (
     BACKENDS,
+    CUSTOMERS,
     JAN_JUN,
     JAN_MAR,
     MONTHS,
@@ -226,6 +227,32 @@ async def test_an_anchor_supplied_measure_keeps_its_tuples_beside_a_coarse_one(b
     tuples = {(r["customers.id"], r["customers.region"]) for r in alone.data}
     assert tuples == {(2, "S"), (3, "E")}
     assert {(r["customers.id"], r["customers.region"]) for r in both.data} == tuples
+
+
+@pytest.mark.parametrize("grain", ["customers.region", "[]"])
+@pytest.mark.parametrize(("march_order", "expected"), [(False, set()), (True, {(4, "N")})], ids=["out", "in"])
+async def test_a_coarse_measure_restricts_the_anchor_to_its_in_frame_cells(
+    march_order: bool, expected: set, grain: str,
+) -> None:
+    # customer 4 (N) signs up in February; N's other order is in January, outside the frame
+    customers = CUSTOMERS.model_copy(update={"rows": [*CUSTOMERS.rows, (4, "N", "2025-02-10")]})
+    orders = [(1, 1, "2025-01-10", 100.0), (2, 2, "2025-01-20", 50.0), *([(3, 1, "2025-03-05", 70.0)] if march_order else [])]
+    tables = [customers if t.name == "customers" else t for t in spine_tables(orders_rows=orders)]
+    async with spine_engine("duckdb", datasets=spine_datasets(signed_up_at=True), tables=tables) as eng:
+        resp = await eng.execute(spine_query(metrics=[m(f"sum(orders.amount, partition_by={grain})", "o")],
+                                             date_range=FEB_MAR, dimensions=["customers.id", "customers.region"]))
+    assert {(r["customers.id"], r["customers.region"]) for r in resp.data} == expected
+
+
+async def test_a_filtered_out_anchor_row_never_frames_a_coarse_measures_tuple() -> None:
+    # customer 4 (N) signs up in frame but fails the filter; customer 1 (N) passes it but signed up before the frame
+    customers = CUSTOMERS.model_copy(update={"rows": [*CUSTOMERS.rows, (4, "N", "2025-02-10")]})
+    tables = [customers if t.name == "customers" else t for t in spine_tables()]
+    async with spine_engine("duckdb", datasets=spine_datasets(signed_up_at=True), tables=tables) as eng:
+        resp = await eng.execute(spine_query(metrics=[m("sum(orders.amount, partition_by=[])", "o")],
+                                             date_range=FEB_MAR, dimensions=["customers.region"],
+                                             filter=["customers.id = 1"]))
+    assert resp.data == []
 
 
 # ---------------------------------------------------------------------------
