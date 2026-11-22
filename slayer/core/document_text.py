@@ -65,16 +65,22 @@ def _problems(loader: _Loader, node: yaml.Node, *, reasons: list[str], visited: 
     seen: dict[Any, int] = {}
     for key, value in node.value:
         if key.tag != _MERGE_TAG:
-            if not isinstance(key, yaml.ScalarNode):
-                reasons.append(f"line {_line(key)}: a mapping key must be a scalar")
-            else:
-                visited.add(id(key))
-                ok, built = _built(loader, key, reasons)
-                if ok and built in seen:
-                    reasons.append(f"line {_line(key)}: duplicate key {built!r} (first at line {seen[built]})")
-                elif ok:
-                    seen[built] = _line(key)
+            _key_problems(loader, key, seen=seen, reasons=reasons, visited=visited)
         _problems(loader, value, reasons=reasons, visited=visited)
+
+
+def _key_problems(loader: _Loader, key: yaml.Node, *, seen: dict[Any, int], reasons: list[str],
+                  visited: set[int]) -> None:
+    """``key`` unbuildable, non-scalar or already in ``seen`` (its mapping's keys so far)."""
+    if not isinstance(key, yaml.ScalarNode):
+        reasons.append(f"line {_line(key)}: a mapping key must be a scalar")
+        return
+    visited.add(id(key))
+    ok, built = _built(loader, key, reasons)
+    if ok and built in seen:
+        reasons.append(f"line {_line(key)}: duplicate key {built!r} (first at line {seen[built]})")
+    elif ok:
+        seen[built] = _line(key)
 
 
 def _declared_name(root: yaml.Node) -> str | None:
@@ -92,22 +98,19 @@ def parse_document_text(text: str) -> Any:
     except yaml.YAMLError as exc:
         raise UnreadableDocumentError(reasons=[f"the document is not valid YAML or JSON: {exc}"]) from exc
     try:
+        root = loader.get_single_node()
+    except yaml.YAMLError as exc:
+        raise UnreadableDocumentError(reasons=[f"the document is not valid YAML or JSON: {exc}"]) from exc
+    if root is None:
+        return None
+    reasons: list[str] = []
+    _problems(loader, root, reasons=reasons, visited=set())
+    if not reasons:
         try:
-            root = loader.get_single_node()
+            return loader.construct_document(root)
         except yaml.YAMLError as exc:
-            raise UnreadableDocumentError(reasons=[f"the document is not valid YAML or JSON: {exc}"]) from exc
-        if root is None:
-            return None
-        reasons: list[str] = []
-        _problems(loader, root, reasons=reasons, visited=set())
-        if not reasons:
-            try:
-                return loader.construct_document(root)
-            except yaml.YAMLError as exc:
-                reasons.append(f"the document is not valid YAML or JSON: {exc}")
-        raise UnreadableDocumentError(reasons=reasons, name=_declared_name(root))
-    finally:
-        loader.dispose()
+            reasons.append(f"the document is not valid YAML or JSON: {exc}")
+    raise UnreadableDocumentError(reasons=reasons, name=_declared_name(root))
 
 
 def without_vendor(node: Any, vendor: str) -> Any:

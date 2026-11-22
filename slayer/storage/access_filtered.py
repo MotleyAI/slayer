@@ -13,7 +13,9 @@ from slayer.core.errors import (
     AccessTagsEditError,
     HiddenContentConflictError,
     MemoryNotFoundError,
+    OssieDocumentInvalidError,
     UnknownRelationshipTargetError,
+    UnreadableDocumentError,
 )
 from slayer.core.document_text import edit_text, parse_document_text
 from slayer.core.field_expression import Expression
@@ -48,8 +50,12 @@ def _fold(name: Any) -> str:
     return str(name).casefold()
 
 
-def _entities(content: str | dict[str, Any] | None) -> dict[str, Any]:
-    doc = parse_document_text(content) if isinstance(content, str) else content
+def _entities(content: str | dict[str, Any] | None, *, name: str | None) -> dict[str, Any]:
+    """``content`` as data; raises ``OssieDocumentInvalidError`` when its text does not read."""
+    try:
+        doc = parse_document_text(content) if isinstance(content, str) else content
+    except UnreadableDocumentError as exc:
+        raise OssieDocumentInvalidError(name=name or exc.name or "(unnamed)", reasons=exc.reasons) from exc
     return doc if isinstance(doc, dict) else {}
 
 
@@ -69,8 +75,8 @@ class _HiddenEntities(BaseModel):
             return _touches(entity, hidden=self)
         return _fold(entity.get("name")) in (self.datasets if key == "datasets" else self.metrics)
 
-    def held_by(self, text: str) -> bool:
-        doc = _entities(text)
+    def held_by(self, text: str, *, name: str) -> bool:
+        doc = _entities(text, name=name)
         return any(self.hides(key, e) for key in _ENTITY_KEYS for e in doc.get(key) or []) or any(
             _fold(m.name) in self.metrics for m in document_payload(doc).metrics)
 
@@ -309,18 +315,19 @@ class AccessFilteredStorage(StorageBackend):
         stored = await self._stored_document(name, data_source)
         if stored is None:
             return None
-        ds, _, text = stored
+        ds, stored_name, text = stored
         hidden = await self._hidden_entities(ds)
-        return edit_text(text, lambda doc: _without_hidden(doc, hidden=hidden)) if hidden.held_by(text) else text
+        held = hidden.held_by(text, name=stored_name)
+        return edit_text(text, lambda doc: _without_hidden(doc, hidden=hidden)) if held else text
 
     async def save_semantic_model_text(self, *, data_source: str, name: str, text: str) -> None:
         if not self._bypass:
-            entities = _entities(text)
+            entities = _entities(text, name=name)
             await self._refuse_hidden_in_document(data_source=data_source, document=name, entities=entities)
-            stored =await self._stored_document(name, data_source)
+            stored = await self._stored_document(name, data_source)
             hidden = await self._hidden_entities(data_source)
-            if stored is not None and hidden.held_by(stored[2]):
-                full = _entities(stored[2])
+            if stored is not None and hidden.held_by(stored[2], name=stored[1]):
+                full = _entities(stored[2], name=stored[1])
                 text = edit_text(stored[2], lambda _doc: _with_hidden(entities, full=full, hidden=hidden))
         await self._inner.save_semantic_model_text(data_source=data_source, name=name, text=text)
 
@@ -329,7 +336,7 @@ class AccessFilteredStorage(StorageBackend):
             stored = await self._stored_document(name, data_source)
             if stored is None:
                 return False
-            if (await self._hidden_entities(stored[0])).held_by(stored[2]):
+            if (await self._hidden_entities(stored[0])).held_by(stored[2], name=stored[1]):
                 raise HiddenContentConflictError(kind=_SEMANTIC_MODEL, name=stored[1])
         return await self._inner.delete_semantic_model(name, data_source=data_source)
 
@@ -345,14 +352,14 @@ class AccessFilteredStorage(StorageBackend):
 
     async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
         if not self._bypass:
-            await self._refuse_hidden_in_document(data_source=data_source, document=name, entities=_entities(text),
-                                                  datasets=replacing)
+            await self._refuse_hidden_in_document(data_source=data_source, document=name,
+                                                  entities=_entities(text, name=name), datasets=replacing)
         await self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing)
 
     async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
                                     datasets: list[str] | None = None) -> None:
         if not self._bypass:
-            entities = _entities(content)
+            entities = _entities(content, name=name)
             await self._refuse_hidden_in_document(data_source=data_source, document=str(name or entities.get("name")),
                                                   entities=entities, datasets=datasets or [])
         await self._inner.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets)
@@ -362,8 +369,9 @@ class AccessFilteredStorage(StorageBackend):
             stored = await self._stored_document(name, data_source)
             hidden = await self._hidden_entities(data_source)
             relationships = edits.get("relationships") or []
-            hidden_relationships = {_fold(r.get("name")) for r in _entities(stored[2] if stored else None).get(
-                "relationships") or [] if _touches(r, hidden=hidden)}
+            held = _entities(stored[2] if stored else None, name=name)
+            hidden_relationships = {_fold(r.get("name")) for r in held.get("relationships") or []
+                                    if _touches(r, hidden=hidden)}
             touched = [*(edits.get("remove_relationships") or []), *(r.get("name") for r in relationships)]
             if {_fold(n) for n in touched} & hidden_relationships:
                 raise HiddenContentConflictError(kind=_SEMANTIC_MODEL, name=name)

@@ -11,13 +11,12 @@ from collections.abc import Iterator
 from typing import Any, Literal, cast
 
 import sqlglot
-import yaml
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.core.document_text import edit_text, without_vendor
+from slayer.core.document_text import edit_text, parse_document_text, without_vendor
 from slayer.core.errors import AmbiguousReferenceError, SlayerError
 from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
@@ -1041,10 +1040,12 @@ async def _expanded_query_backed(
     return virtual
 
 
-async def _stored_documents(*, storage: Any, datasource: str) -> list[tuple[str, str]]:
-    """Each stored semantic-model document's name and text."""
+async def _stored_documents(*, storage: Any, datasource: str, loaded: set[str]) -> list[tuple[str, str]]:
+    """The name and text of each stored semantic-model document named in ``loaded``."""
     documents: list[tuple[str, str]] = []
     for _, name in await storage.list_semantic_models(datasource):
+        if name not in loaded:
+            continue
         text = await storage.get_semantic_model_text(name, data_source=datasource)
         if text is not None:
             documents.append((name, text))
@@ -1065,13 +1066,14 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
     selected = sorted(set(datasets)) if datasets is not None else sorted(stored)
     virtual = await _expanded_query_backed(engine=engine, stored=stored, selected=selected)
     resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
-    documents = await _stored_documents(storage=storage, datasource=datasource)
-    parsed = [yaml.safe_load(text) for _, text in documents]
+    documents = await _stored_documents(storage=storage, datasource=datasource,
+                                        loaded={d.semantic_model for d in stored.values() if d.semantic_model})
+    parsed = [parse_document_text(text) for _, text in documents]
     members = {d["name"] for doc in parsed for d in doc["datasets"]}
     if datasets is None and len(documents) == 1 and members == set(stored):
         text = documents[0][1] if extensions else edit_text(documents[0][1],
                                                             lambda data: without_vendor(data, ext.VENDOR))
-        return OsiExportResult(document=yaml.safe_load(text), text=text, warnings=[])
+        return OsiExportResult(document=parse_document_text(text), text=text, warnings=[])
     result = _Exporter(config=config, datasets=stored, selected=selected, virtual=virtual, extensions=extensions,
                        resolved=resolved, documents=parsed).run()
     result.text = dump_yaml(result.document)

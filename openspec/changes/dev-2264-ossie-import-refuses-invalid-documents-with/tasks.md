@@ -23,4 +23,4 @@
 ## 4. Docs and gates
 
 - [x] 4.1 Update the Ossie import page (repeated keys and unbuildable scalars refuse; unparseable expressions load not evaluable) and add a `docs/upgrading/2.0.md` before/after for repeated keys; verify `zensical.toml` nav still lists every page
-- [ ] 4.2 Run the local test scope, `poetry run ruff check slayer/ tests/`, `la-typecheck`, `la-check-conventions --base main` and `poetry run la-arch-check`; verify all pass
+- [x] 4.2 Run the local test scope, `poetry run ruff check slayer/ tests/`, `la-typecheck`, `la-check-conventions --base main` and `poetry run la-arch-check`; verify all pass

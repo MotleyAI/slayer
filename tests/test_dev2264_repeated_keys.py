@@ -12,9 +12,14 @@ import yaml
 
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.inspect.service import InspectService
+from slayer.osi.exporter import export_osi
+from slayer.search.service import SearchService
+from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from tests._cli_inprocess import run_cli_in_process
+from tests._engine_helpers import owned_query_engine
 from tests._dev2243_fixtures import (
     DS, SALES, STORAGES, dataset, document_engine, document_text, error, field, importer_module,
     make_storage, place_document, store_document, upstream_validate,
@@ -393,3 +398,94 @@ async def test_an_edit_of_an_unreadable_document_is_refused(tmp_path: Path, kind
         await storage.edit_semantic_model("sales", data_source=DS, description="Changed.")
     assert names_problem(str(info.value), text=text, verdict=verdict, needle=needle, at=at)
     assert await storage.get_semantic_model_text("sales", DS) == text
+
+
+# --------------------------------------------------------------------------- #
+# Other readers of stored documents
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("kind", STORAGES)
+@pytest.mark.parametrize(("text", "verdict", "needle", "at"), UNREADABLE)
+async def test_export_leaves_out_an_unreadable_document(tmp_path: Path, kind: str, text: str, verdict: str,
+                                                        needle: str, at: str) -> None:
+    storage = await hand_placed(kind, tmp_path, text)
+    await store_document(storage, SUPPORT)
+    async with owned_query_engine(storage=storage) as engine:
+        exported = await export_osi(engine=engine, datasource=DS)
+    assert exported.text == SUPPORT
+
+
+@pytest.mark.parametrize(("text", "verdict", "needle", "at"), UNREADABLE)
+async def test_inspect_names_why_a_document_does_not_load(tmp_path: Path, text: str, verdict: str, needle: str,
+                                                          at: str) -> None:
+    storage = await hand_placed("yaml", tmp_path, text)
+    async with owned_query_engine(storage=storage) as engine:
+        payload = json.loads(await InspectService(storage=storage, engine=engine).inspect(
+            reference=f"{DS}.sales", entity_type="semantic_model", format="json"))
+    assert payload["datasets"] == []
+    assert payload["description"] is None
+    assert names_problem("\n".join(payload["warnings"]), text=text, verdict=verdict, needle=needle, at=at)
+
+
+async def test_search_indexes_an_unreadable_document_by_name(tmp_path: Path) -> None:
+    storage = await hand_placed("yaml", tmp_path, BAD_DATE)
+    await store_document(storage, SUPPORT)
+    async with owned_query_engine(storage=storage) as engine:
+        response = await SearchService(storage=storage, engine=engine).search(question="support returns",
+                                                                              datasource=DS, max_results=50)
+    assert response is not None
+
+
+@pytest.mark.parametrize(("text", "verdict", "needle", "at"), UNREADABLE)
+def test_listing_an_unreadable_document(tmp_path: Path, text: str, verdict: str, needle: str, at: str) -> None:
+    place_document(tmp_path, text, name="sales")
+    result = run_cli_in_process(["semantic-models", "list", "--datasource", DS, "--storage", str(tmp_path / "store")])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"{DS}.sales: (no datasets)" in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# Access-filtered storage
+# --------------------------------------------------------------------------- #
+STORED_OPERATIONS = {
+    "read": lambda s: s.get_semantic_model_text("sales", DS),
+    "edit": lambda s: s.edit_semantic_model("sales", data_source=DS, description="Changed."),
+    "delete": lambda s: s.delete_semantic_model("sales", DS),
+}
+WRITES = {
+    "save": lambda s, text: s.save_semantic_model_text(data_source=DS, name="sales", text=text),
+    "create": lambda s, text: s.create_semantic_model(data_source=DS, content=text),
+    "adopt": lambda s, text: s.adopt_semantic_model(data_source=DS, name="sales", text=text, replacing=[]),
+}
+
+
+@pytest.mark.parametrize("operation", STORED_OPERATIONS)
+@pytest.mark.parametrize(("text", "verdict", "needle", "at"), UNREADABLE)
+async def test_a_filtered_caller_is_refused_an_unreadable_document(tmp_path: Path, operation: str, text: str,
+                                                                    verdict: str, needle: str, at: str) -> None:
+    storage = await hand_placed("yaml", tmp_path, text)
+    filtered = AccessFilteredStorage(storage, tags=[], bypass=False)
+    with pytest.raises(error("OssieDocumentInvalidError")) as info:
+        await STORED_OPERATIONS[operation](filtered)
+    assert names_problem(str(info.value), text=text, verdict=verdict, needle=needle, at=at)
+    assert await storage.get_semantic_model_text("sales", DS) == text
+
+
+async def test_a_bypass_caller_reads_and_deletes_an_unreadable_document(tmp_path: Path) -> None:
+    storage = await hand_placed("yaml", tmp_path, DUP_SOURCE)
+    admin = AccessFilteredStorage(storage, tags=[], bypass=True)
+    assert await admin.get_semantic_model_text("sales", DS) == DUP_SOURCE
+    assert await admin.delete_semantic_model("sales", DS)
+    assert await storage.list_semantic_models(DS) == []
+
+
+@pytest.mark.parametrize("write", WRITES)
+@pytest.mark.parametrize(("text", "verdict", "needle", "at"), UNREADABLE)
+async def test_a_filtered_write_of_unreadable_content_is_refused(tmp_path: Path, write: str, text: str, verdict: str,
+                                                                 needle: str, at: str) -> None:
+    storage = make_storage("yaml", tmp_path)
+    await storage.save_datasource(DatasourceConfig(name=DS, type="duckdb", database=str(tmp_path / "absent.duckdb")))
+    filtered = AccessFilteredStorage(storage, tags=[], bypass=False)
+    with pytest.raises(error("OssieDocumentInvalidError")) as info:
+        await WRITES[write](filtered, text)
+    assert names_problem(str(info.value), text=text, verdict=verdict, needle=needle, at=at)
+    assert await storage.list_semantic_models(DS) == []

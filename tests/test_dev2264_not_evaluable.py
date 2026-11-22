@@ -10,6 +10,7 @@ import pytest
 
 from slayer.core.errors import UnevaluableEntityError
 from slayer.core.models import DatasourceConfig
+from slayer.core.syntax import MAX_NESTING, parse_expr
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import SearchService
 from tests._dev2243_fixtures import (
@@ -23,6 +24,7 @@ UNPARSEABLE = [
     pytest.param("CASE WHEN EXISTS (SELECT 1) THEN 1 ELSE 0 END", id="exists"),
     pytest.param("CASE WHEN amount IN (SELECT 1) THEN 1 ELSE 0 END", id="in-subquery"),
     pytest.param("(SELECT 1 UNION SELECT 2)", id="union"),
+    pytest.param("(" * 100 + "amount" + ")" * 100, id="nesting-too-deep"),
 ]
 
 
@@ -117,23 +119,28 @@ async def test_import_osi_reports_an_unparseable_field(tmp_path: Path, monkeypat
 
 # Which form runs on DuckDB: its own entry, else the portable form (``sql``, else an OSSIE_SQL_2026 entry); an entry in
 # another dialect is translated into a DuckDB entry. Only a portable form goes through SLayer's expression reader.
-@pytest.mark.parametrize(("x", "evaluable"), [
-    pytest.param(form("x", sql=SUBQUERY), False, id="sql-alone"),
-    pytest.param(form("x", entries=(("OSSIE_SQL_2026", SUBQUERY),)), False, id="portable-entry-alone"),
-    pytest.param(form("x", entries=(("OSSIE_SQL_2026", SUBQUERY), ("SNOWFLAKE", "amount"))), False,
+@pytest.mark.parametrize(("x", "runs"), [
+    pytest.param(form("x", sql=SUBQUERY), None, id="sql-alone"),
+    pytest.param(form("x", entries=(("OSSIE_SQL_2026", SUBQUERY),)), None, id="portable-entry-alone"),
+    pytest.param(form("x", entries=(("OSSIE_SQL_2026", SUBQUERY), ("SNOWFLAKE", "amount"))), None,
                  id="portable-entry-beside-another-vendor"),
-    pytest.param(form("x", sql=SUBQUERY, entries=(("DUCKDB", "amount"),)), True, id="sql-beside-native-entry"),
-    pytest.param(form("x", sql="amount", entries=(("DUCKDB", SUBQUERY),)), True, id="native-entry-runs-verbatim"),
-    pytest.param(form("x", entries=(("SNOWFLAKE", SUBQUERY),)), True, id="vendor-only"),
-    pytest.param(form("x", entries=(("ANSI_SQL", SUBQUERY),)), True, id="ansi-only"),
+    pytest.param(form("x", sql=SUBQUERY, entries=(("DUCKDB", "amount"),)), "amount", id="sql-beside-native-entry"),
+    pytest.param(form("x", sql="amount", entries=(("DUCKDB", SUBQUERY),)), "subquery",
+                 id="native-entry-runs-verbatim"),
+    pytest.param(form("x", entries=(("SNOWFLAKE", SUBQUERY),)), "subquery", id="vendor-only"),
+    pytest.param(form("x", entries=(("ANSI_SQL", SUBQUERY),)), "subquery", id="ansi-only"),
 ])
-async def test_not_evaluable_follows_the_form_that_runs(x: dict[str, Any], evaluable: bool) -> None:
+async def test_not_evaluable_follows_the_form_that_runs(x: dict[str, Any], runs: str | None) -> None:
+    """``runs``: which expression the DuckDB query evaluates (``amount`` or ``(SELECT 1)``), ``None`` when none."""
     async with document_engine(documents=(orders_doc(x),)) as engine:
         warning = await field_warning(engine, "x")
         query = {"population": "orders", "dimensions": ["orders.x"]}
-        if evaluable:
+        if runs is not None:
             assert warning is None
-            assert (await engine.execute(query)).data
+            rows = (await engine.execute({**query, "dimensions": ["orders.x", "orders.amount"]})).data
+            assert rows
+            expected = [float(r["orders.amount"]) if runs == "amount" else 1.0 for r in rows]
+            assert [float(r["orders.x"]) for r in rows] == expected
         else:
             assert warning
             with pytest.raises(error("UnevaluableEntityError"), match="x"):
@@ -225,3 +232,14 @@ async def test_a_model_metric_naming_another_is_stored_and_evaluated() -> None:
     async with document_engine(documents=(shop_doc(model_metrics=metrics),)) as engine:
         resp = await engine.execute({"population": "orders", "metrics": ["double_revenue"]})
         assert [float(r["double_revenue"]) for r in resp.data] == [1300.0]
+
+
+def test_an_expression_nested_past_the_limit_is_a_parse_error() -> None:
+    with pytest.raises(ValueError, match=f"nest more than {MAX_NESTING} deep"):
+        parse_expr("(" * (MAX_NESTING + 1) + "amount" + ")" * (MAX_NESTING + 1))
+
+
+def test_parentheses_inside_literals_do_not_count_towards_the_limit() -> None:
+    deep = "'" + "(" * 100 + "'"
+    outer = MAX_NESTING - 1  # concat( is the last level
+    assert parse_expr("(" * outer + f"concat(status, {deep})" + ")" * outer) is not None
