@@ -36,7 +36,8 @@ from slayer.core.errors import (
 )
 from slayer.core.keys import SLOT_COMPOSITE_KINDS, is_reaggregation_key, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.names import spelled_name
-from slayer.core.time_spine import is_spine
+from slayer.core.relationship_search import routes
+from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.core.models import DatasetField, EmptyValue, SlayerDataset, aggregation_definition, empty_value
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, first_bucket_remedy, key_display, legacy_class_name
 from slayer.engine.reference_closure import (
@@ -117,7 +118,7 @@ from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQ
 from slayer.ir.terms import Aggregate, AggregateHomes
 from slayer.engine.population.anchors import anchor_route, source_frame
 from slayer.engine.population.home_reading import (
-    anchored_spelling, home_frame, home_read, outside_aggregates, product_anchors,
+    anchored_spelling, home_frame, home_read, outside_aggregates, product_anchors, reads_the_spine,
 )
 from slayer.engine.population.filter_reachability import (
     key_has_host_local_ref,
@@ -2315,7 +2316,12 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             host_dataset=home, host_name=home.name,
         )
 
-    def broadcast_reason_at_home(key: Optional[ValueKey]) -> str:
+    def broadcast_reason_at_home(key: Optional[ValueKey], spelled: Optional[ValueKey] = None) -> str:
+        if key is None and spelled is not None and reads_the_spine(spelled, host=host_dataset):
+            if not (host_dataset.population_spine and home.name == host_dataset.name) and routes(
+                    root=home, target=TIME_SPINE_DATASET, datasets_by_name=home_datasets, cap=1):
+                return f"crosses a fanning or unproven relationship hop to {TIME_SPINE_DATASET}"
+            return f"{home.name} has no route to the time spine"
         return UNREACHABLE_NO_PATH if key is None else key_broadcast_reason(
             key=key, target_path=(), root_dataset=home, datasets_by_name=home_datasets, bundle=home_bundle,
             host_dataset=home, host_name=home.name,
@@ -2340,7 +2346,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         else:
             unreadable = unreadable or g_home is None
             unattributable.append(_UnattributableDim(
-                key=g, name=context.dim_display(g), reason=broadcast_reason_at_home(g_home), routed=g_home or g,
+                key=g, name=context.dim_display(g), reason=broadcast_reason_at_home(g_home, g), routed=g_home or g,
             ))
 
     # One rooting law (Axiom 2.5): re-anchor into the home's coordinates once, a
