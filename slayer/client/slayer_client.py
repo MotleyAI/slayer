@@ -61,6 +61,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+_QUERY_PATH = "/query"
 
 
 # Input union for every public query entry point (mirrors ``engine.execute``):
@@ -246,22 +247,24 @@ class SlayerClient:
     ) -> Any:
         """The ``POST /query?conformance=ossie-l3`` body: the query as given (the server judges it), wrapper keys
         beside it."""
-        if isinstance(query, str):
-            body: Any = {"name": query}
-            if refine is not None:
-                body["refine"] = dict(refine) if isinstance(refine, ABCMapping) else refine.model_dump(
-                    mode="json", exclude_unset=True)
-        elif isinstance(query, SlayerQuery):
-            body = query.model_dump(mode="json", exclude_unset=True)
-        elif isinstance(query, ABCMapping):
-            body = dict(query)
-        else:
+        if not isinstance(query, (str, SlayerQuery, ABCMapping)):
             return [dict(q) if isinstance(q, ABCMapping) else q for q in query]
-        if refine is not None and not isinstance(query, str):
+        if isinstance(query, str):
+            body: dict[str, Any] = {"name": query, **SlayerClient._strict_refine(refine)}
+        elif refine is not None:
             raise ValueError(REFINE_REQUIRES_NAME)
+        else:
+            body = query.model_dump(mode="json", exclude_unset=True) if isinstance(query, SlayerQuery) else dict(query)
         body.update({k: v for k, v in (("variables", dict(variables) if variables else None),
                                        ("dry_run", dry_run or None), ("explain", explain or None)) if v})
         return body
+
+    @staticmethod
+    def _strict_refine(refine: Refinement) -> dict[str, Any]:
+        if refine is None:
+            return {}
+        return {"refine": dict(refine) if isinstance(refine, ABCMapping) else refine.model_dump(
+            mode="json", exclude_unset=True)}
 
     @staticmethod
     def _normalize_for_engine(query: QueryInput) -> Any:
@@ -344,14 +347,14 @@ class SlayerClient:
             )
         if parse_conformance(conformance) is Conformance.OSSIE_L3:
             body = self._strict_body(query, refine=refine, variables=variables, dry_run=dry_run, explain=explain)
-            return self._parse_response(await self._request(method="POST", path="/query", json=body,
+            return self._parse_response(await self._request(method="POST", path=_QUERY_PATH, json=body,
                                                             params={"conformance": Conformance.OSSIE_L3.value}))
         deprecations: list[DeprecatedInputWarning] = []
         body = self._build_query_body(
             query, refine=refine, variables=variables, dry_run=dry_run, explain=explain,
             deprecations_out=deprecations,
         )
-        result = await self._request(method="POST", path="/query", json=body)
+        result = await self._request(method="POST", path=_QUERY_PATH, json=body)
         return self._parse_response(result, deprecations=deprecations)
 
     async def sql(
@@ -685,14 +688,14 @@ class SlayerClient:
             )
         if parse_conformance(conformance) is Conformance.OSSIE_L3:
             body = self._strict_body(query, refine=refine, variables=variables, dry_run=dry_run, explain=explain)
-            return self._parse_response(self._request_sync(method="POST", path="/query", json=body,
+            return self._parse_response(self._request_sync(method="POST", path=_QUERY_PATH, json=body,
                                                            params={"conformance": Conformance.OSSIE_L3.value}))
         deprecations: list[DeprecatedInputWarning] = []
         body = self._build_query_body(
             query, refine=refine, variables=variables, dry_run=dry_run, explain=explain,
             deprecations_out=deprecations,
         )
-        result = self._request_sync(method="POST", path="/query", json=body)
+        result = self._request_sync(method="POST", path=_QUERY_PATH, json=body)
         return self._parse_response(result, deprecations=deprecations)
 
     def sql_sync(

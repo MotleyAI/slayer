@@ -12,7 +12,7 @@ from slayer.core.enums import DataType, TypeKind
 from slayer.core.errors import OssieErrorCode, OssieQueryError
 from slayer.core.models import SlayerDataset, is_key_set_unique
 from slayer.core.names import NAME_PATTERN, match_name, normalized_identifier
-from slayer.core.ossie_conformance import FilterReading, is_iso_temporal, read_filter
+from slayer.core.ossie_conformance import FilterReading, LiteralComparison, is_iso_temporal, read_filter
 from slayer.core.ossie_steps import ossie_from
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, deprecated_inputs_of
 from slayer.core.relationship_walker import unique_key_sets
@@ -137,28 +137,38 @@ def _query_parts(query: SlayerQuery, *, stored: bool) -> Dict[str, Any]:
     binding's shape."""
     names = _set_fields(query, stored=stored) - {"version"}
     if stored:
-        names -= {"name"}
-        if query.population_inferred:
-            names -= {"population", "population_inferred"}
-        if not query.variables:
-            names -= {"variables"}
-    if not stored and deprecated_inputs_of([query]):
+        names -= _stored_bookkeeping(query)
+    elif deprecated_inputs_of([query]):
         raise _invalid("the query uses a SLayer input form that is not part of an Ossie query")
-    out: Dict[str, Any] = {}
-    for name in sorted(names):
-        if getattr(query, name) is None:
-            out[name] = None
-        elif name == "dimensions":
-            out[name] = [_entry_parts(d, key="field", stored=stored) for d in query.dimensions or []]
-        elif name == "metrics":
-            out[name] = [_entry_parts(m, key="metric", stored=stored) for m in query.metrics or []]
-        elif name == "filter":
-            conditions = query.filter_conditions
-            if conditions:
-                out[name] = conditions[0] if len(conditions) == 1 else conditions
-        else:
-            out[name] = getattr(query, name)
+    parts = {name: _part_value(query, name, stored=stored) for name in sorted(names)}
+    return {name: value for name, value in parts.items() if value is not _OMITTED}
+
+
+_OMITTED = object()
+_ENTRY_KEYS = {"dimensions": "field", "metrics": "metric"}
+
+
+def _stored_bookkeeping(query: SlayerQuery) -> set[str]:
+    out = {"name"}
+    if query.population_inferred:
+        out |= {"population", "population_inferred"}
+    if not query.variables:
+        out.add("variables")
     return out
+
+
+def _part_value(query: SlayerQuery, name: str, *, stored: bool) -> Any:
+    value = getattr(query, name)
+    if value is None:
+        return None
+    if name in _ENTRY_KEYS:
+        return [_entry_parts(e, key=_ENTRY_KEYS[name], stored=stored) for e in value]
+    if name == "filter":
+        conditions = query.filter_conditions
+        if not conditions:
+            return _OMITTED
+        return conditions[0] if len(conditions) == 1 else conditions
+    return value
 
 
 def _set_fields(model: BaseModel, *, stored: bool) -> set[str]:
@@ -326,57 +336,75 @@ class _Judged(BaseModel):
 
 def _names_and_kinds(query: _Query, model: _Model) -> _Judged:
     """Rows 3–8."""
-    resolved: Dict[int, Optional[_Target]] = {}
+    resolved = _resolved(query, model)
+    judged = _Judged(dimensions=[resolved[id(e.reference)] for e in query.dimensions],
+                     metrics=[resolved[id(e.reference)] for e in query.metrics])
+    _kinds(query, judged)
+    judged.filter_dataset = _filter_dataset(query, [resolved[id(r)] for r in query.reading.references])
+    return judged
+
+
+def _resolved(query: _Query, model: _Model) -> Dict[int, _Target]:
+    """Every reference's target by the reference's ``id``; raises ``E_NAME_NOT_FOUND`` (row 3)."""
+    out: Dict[int, _Target] = {}
     for ref in [*(e.reference for e in (*query.dimensions, *query.metrics)), *query.reading.references]:
-        resolved[id(ref)] = _resolve(ref, model)
-        if resolved[id(ref)] is None:
+        target = _resolve(ref, model)
+        if target is None:
             raise OssieQueryError(Code.E_NAME_NOT_FOUND, f"{_written(ref)!r} names no field or metric of the model "
                                   f"{model.data_source!r}", suggestion="reference a field or metric as dataset.name, "
                                   "or a model-scoped metric by its bare name")
-    dimensions = [resolved[id(e.reference)] for e in query.dimensions]
-    metrics = [resolved[id(e.reference)] for e in query.metrics]
-    for entry, target in zip(query.dimensions, dimensions):
-        if target is not None and target.kind != "field":
+        out[id(ref)] = target
+    return out
+
+
+def _kinds(query: _Query, judged: _Judged) -> None:
+    for entry, target in zip(query.dimensions, judged.dimensions):
+        if target.kind != "field":
             raise OssieQueryError(Code.E_METRIC_IN_DIMENSIONS, f"the dimension {entry.written!r} names a metric",
                                   dimension=entry.written, suggestion="move it to metrics")
-    for entry, target in zip(query.metrics, metrics):
-        if target is not None and target.kind == "field":
+    for entry, target in zip(query.metrics, judged.metrics):
+        if target.kind == "field":
             raise OssieQueryError(Code.E_FIELD_IN_METRICS, f"the metric {entry.written!r} names a field",
                                   metric=entry.written, suggestion="move it to dimensions, or name a metric over it")
-    filter_targets = [resolved[id(r)] for r in query.reading.references]
-    if query.reading.aggregate or any(t is not None and t.kind != "field" for t in filter_targets):
+
+
+def _filter_dataset(query: _Query, targets: List[_Target]) -> Optional[str]:
+    """The one dataset the filter reads; raises rows 6–8."""
+    if query.reading.aggregate or any(t.kind != "field" for t in targets):
         raise OssieQueryError(Code.E_AGGREGATE_IN_WHERE, f"the filter {query.filter!r} contains an aggregate or a "
                               "metric reference", filter=query.filter, suggestion=_LAYER_2)
     if query.reading.window:
         raise OssieQueryError(Code.E_WINDOW_IN_WHERE, f"the filter {query.filter!r} contains a window function",
                               filter=query.filter, suggestion=_LAYER_2)
-    datasets = list(dict.fromkeys(t.dataset for t in filter_targets if t is not None and t.dataset))
+    datasets = list(dict.fromkeys(t.dataset for t in targets if t.dataset))
     if len(datasets) > 1:
         raise OssieQueryError(Code.E_CROSS_DATASET_FILTER, f"the filter {query.filter!r} reads fields of "
                               f"{', '.join(datasets)}; a filter reads one dataset", filter=query.filter,
                               suggestion=_LAYER_2)
-    return _Judged(dimensions=[t for t in dimensions if t is not None], metrics=[t for t in metrics if t is not None],
-                   filter_dataset=datasets[0] if datasets else None)
+    return datasets[0] if datasets else None
 
 
 def _temporal_literals(query: _Query, model: _Model) -> None:
     """A temporal field compared with a string literal takes ISO-8601 dates and timestamps only (row 1)."""
     for comparison in query.reading.comparisons:
-        target = _resolve(comparison.reference, model)
-        if target is None:
-            continue
-        dataset = model.datasets.get(target.dataset or "")
-        field = dataset.get_field(target.name) if dataset is not None else None
-        if field is not None and field.datatype is DataType.ARRAY:
-            raise _invalid(f"{_written(comparison.reference)!r} is a list field, which Ossie has no type for")
-        bad = [t for t in comparison.texts if not is_iso_temporal(t)]
-        if field is not None and field.datatype is not None and field.datatype.kind in _TEMPORAL and bad:
-            raise _invalid(f"{bad[0]!r} is not an ISO-8601 date or timestamp; a period or relative time is SLayer "
-                           "syntax")
+        _literal_comparison(comparison, model)
     for ref in query.reading.references:
         target = _resolve(ref, model)
         if target is not None and target.datatype is DataType.ARRAY:
             raise _invalid(f"{_written(ref)!r} is a list field, which Ossie has no type for")
+
+
+def _literal_comparison(comparison: LiteralComparison, model: _Model) -> None:
+    target = _resolve(comparison.reference, model)
+    dataset = model.datasets.get(target.dataset or "") if target is not None else None
+    field = dataset.get_field(target.name) if dataset is not None and target is not None else None
+    if field is None or field.datatype is None:
+        return
+    if field.datatype is DataType.ARRAY:
+        raise _invalid(f"{_written(comparison.reference)!r} is a list field, which Ossie has no type for")
+    bad = [t for t in comparison.texts if not is_iso_temporal(t)]
+    if field.datatype.kind in _TEMPORAL and bad:
+        raise _invalid(f"{bad[0]!r} is not an ISO-8601 date or timestamp; a period or relative time is SLayer syntax")
 
 
 def _output_names(query: _Query, judged: _Judged) -> List[Tuple[str, bool]]:
@@ -446,35 +474,54 @@ def _homes(target: _Target, model: _Model, *, chain: Tuple[str, ...] = ()) -> Li
     return list(dict.fromkeys(out))
 
 
-def _paths(query: _Query, judged: _Judged, model: _Model) -> None:  # noqa: C901 — rows 13–17 in Ossie's order
+def _paths(query: _Query, judged: _Judged, model: _Model) -> None:
     """Rows 13–17."""
     if judged.metrics:
         homes = [_homes(m, model) for m in judged.metrics]
+        _metric_reachability(query, judged, model, homes)
+        _metric_ambiguity(query, judged, model, homes)
+    else:
+        _anchor_paths(query, judged, model)
 
-        def reaches(i: int, dataset: str) -> bool:
-            return all(model.paths(h, dataset, cap=1) for h in homes[i])
 
-        rows = [(Code.E_NO_PATH, lambda ok: not any(ok)), (Code.E_PARTIAL_DIMENSION_REACHABILITY,
-                                                          lambda ok: any(ok) and not all(ok))]
-        for code, holds in rows:
-            for entry, target in zip(query.dimensions, judged.dimensions):
-                ok = [reaches(i, target.dataset or "") for i in range(len(judged.metrics))]
-                if holds(ok):
-                    metric = query.metrics[ok.index(False)].written
-                    raise _unreached(code, dimension=entry.written, dataset=target.dataset, metric=metric)
-        if judged.filter_dataset is not None:
-            for i, entry in enumerate(query.metrics):
-                if not reaches(i, judged.filter_dataset):
-                    raise OssieQueryError(Code.E_UNSUPPORTED_FILTER_PATH, f"the metric {entry.written!r} has no path "
-                                          f"to {judged.filter_dataset!r}, the dataset of the filter {query.filter!r}",
-                                          filter=query.filter, metric=entry.written, suggestion=_LAYER_2)
+#: The reachability rows in Ossie's order, each holding of the per-metric reachability of one dimension.
+_REACH_ROWS: Tuple[Tuple[Code, Callable[[List[bool]], bool]], ...] = (
+    (Code.E_NO_PATH, lambda ok: not any(ok)),
+    (Code.E_PARTIAL_DIMENSION_REACHABILITY, lambda ok: any(ok) and not all(ok)),
+)
+
+
+def _reaches(model: _Model, homes: List[str], dataset: str) -> bool:
+    return all(model.paths(h, dataset, cap=1) for h in homes)
+
+
+def _metric_reachability(query: _Query, judged: _Judged, model: _Model, homes: List[List[str]]) -> None:
+    for code, holds in _REACH_ROWS:
         for entry, target in zip(query.dimensions, judged.dimensions):
-            for i, metric in enumerate(query.metrics):
-                _unambiguous(model, homes[i], target.dataset or "", dimension=entry.written, metric=metric.written)
-        if judged.filter_dataset is not None:
-            for i, metric in enumerate(query.metrics):
-                _unambiguous(model, homes[i], judged.filter_dataset, filter=query.filter, metric=metric.written)
+            ok = [_reaches(model, h, target.dataset or "") for h in homes]
+            if holds(ok):
+                metric = query.metrics[ok.index(False)].written
+                raise _unreached(code, dimension=entry.written, dataset=target.dataset, metric=metric)
+    if judged.filter_dataset is None:
         return
+    for entry, metric_homes in zip(query.metrics, homes):
+        if not _reaches(model, metric_homes, judged.filter_dataset):
+            raise OssieQueryError(Code.E_UNSUPPORTED_FILTER_PATH, f"the metric {entry.written!r} has no path to "
+                                  f"{judged.filter_dataset!r}, the dataset of the filter {query.filter!r}",
+                                  filter=query.filter, metric=entry.written, suggestion=_LAYER_2)
+
+
+def _metric_ambiguity(query: _Query, judged: _Judged, model: _Model, homes: List[List[str]]) -> None:
+    for entry, target in zip(query.dimensions, judged.dimensions):
+        for metric, metric_homes in zip(query.metrics, homes):
+            _unambiguous(model, metric_homes, target.dataset or "", dimension=entry.written, metric=metric.written)
+    if judged.filter_dataset is not None:
+        for metric, metric_homes in zip(query.metrics, homes):
+            _unambiguous(model, metric_homes, judged.filter_dataset, filter=query.filter, metric=metric.written)
+
+
+def _anchor_paths(query: _Query, judged: _Judged, model: _Model) -> None:
+    """A dimension-only query's anchor and its paths."""
     datasets = list(dict.fromkeys(t.dataset or "" for t in judged.dimensions))
     anchors = [a for a in datasets if all(model.paths(a, d, cap=1) for d in datasets)]
     if not anchors:

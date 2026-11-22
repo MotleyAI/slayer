@@ -452,9 +452,16 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     async def _strict_query(body: Any) -> tuple[Any, dict[str, bool]]:
         """A strict request: the run's wrapper keys, the rest of the body the query as submitted."""
-        wrapper = {k: body.pop(k) for k in list(body) if k in _RUN_BY_NAME_FIELDS} if isinstance(body, dict) else {}
+        wrapper: dict[str, Any] = {}
+        if isinstance(body, dict):
+            wrapper = {k: v for k, v in body.items() if k in _RUN_BY_NAME_FIELDS}
+            body = {k: v for k, v in body.items() if k not in _RUN_BY_NAME_FIELDS}
         flags = {"dry_run": bool(wrapper.get("dry_run")), "explain": bool(wrapper.get("explain"))}
-        run_query = wrapper["name"] if wrapper.get("name") is not None else body
+        name = wrapper.get("name")
+        if name is not None and body:
+            raise OssieQueryError(OssieErrorCode.E_INVALID_QUERY, f"a saved query run by name takes no query parts "
+                                  f"beside its name; put {sorted(body)} in 'refine'")
+        run_query = name if name is not None else body
         result = await engine.execute(query=run_query, variables=wrapper.get("variables"), refine=wrapper.get("refine"),
                                       conformance=Conformance.OSSIE_L3, dry_run=flags["dry_run"],
                                       explain=flags["explain"])

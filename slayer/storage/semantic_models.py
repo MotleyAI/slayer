@@ -308,18 +308,12 @@ def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> M
     names: dict[str, None] = {}
     for column in columns(tree, OSSIE_SQL):
         name = column.name.casefold()
-        if _aggregated(column):
-            if not column.table:
-                problems.append(MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN, reason=(
-                    f"reads the unqualified field {column.name!r}; qualify it by its dataset")))
-        elif column.table:
-            problems.append(MetricProblem(code=OssieErrorCode.E_UNAGGREGATED_FINER_GRAIN_REFERENCE,
-                                          reason=f"reads {column.table}.{column.name} outside an aggregate"))
-        elif name in metric_names:
+        if not _aggregated(column) and not column.table and name in metric_names:
             names[name] = None
-        else:
-            problems.append(MetricProblem(code=OssieErrorCode.E_UNAGGREGATED_FINER_GRAIN_REFERENCE, reason=(
-                f"reads the unqualified field {column.name!r}; qualify it by its dataset")))
+            continue
+        problem = _reference_problem(column)
+        if problem is not None:
+            problems.append(problem)
     homes: dict[str, None] = {}
     for aggregate in _components(tree):
         home, problem = _component(aggregate)
@@ -330,6 +324,18 @@ def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> M
     if tree.find(exp.Window) is not None:
         problems.append(MetricProblem(code=OssieErrorCode.E_DEFERRED_WINDOWED_METRIC, reason=WINDOW_WARNING))
     return ModelScopedAnalysis(homes=list(homes), metrics=list(names), problems=problems)
+
+
+def _reference_problem(column: exp.Column) -> MetricProblem | None:
+    """Why Ossie rejects a field reference that names no metric."""
+    unqualified = f"reads the unqualified field {column.name!r}; qualify it by its dataset"
+    if _aggregated(column):
+        return None if column.table else MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN,
+                                                       reason=unqualified)
+    if column.table:
+        return MetricProblem(code=OssieErrorCode.E_UNAGGREGATED_FINER_GRAIN_REFERENCE,
+                             reason=f"reads {column.table}.{column.name} outside an aggregate")
+    return MetricProblem(code=OssieErrorCode.E_UNAGGREGATED_FINER_GRAIN_REFERENCE, reason=unqualified)
 
 
 def _components(tree: exp.Expr) -> list[exp.Expr]:

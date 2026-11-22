@@ -20,7 +20,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.query import SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.base import StorageBackend
 from tests._cli_inprocess import run_cli_in_process
@@ -159,6 +160,18 @@ def test_rest_takes_the_conformance_in_the_url(rest: TestClient) -> None:
     limited = rest.post("/query", params={"conformance": STRICT}, json=LIMITED)
     assert limited.status_code == 400
     assert limited.json()["detail"]["code"] == "E_INVALID_QUERY"
+
+
+def test_rest_run_by_name_refuses_query_parts_beside_the_name(tmp_path: Path) -> None:
+    storage = asyncio.run(prepare_store(tmp_path))
+    asyncio.run(storage.save_dataset(SlayerDataset(name="by_region", data_source=DS,
+                                                   source_queries=[SlayerQuery.model_validate(ADMITTED)])))
+    rest = TestClient(create_app(storage=storage))
+    assert rest.post("/query", params={"conformance": STRICT}, json={"name": "by_region"}).status_code == 200
+    response = rest.post("/query", params={"conformance": STRICT},
+                         json={"name": "by_region", "metrics": ["orders.total_revenue"]})
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "E_INVALID_QUERY"
 
 
 def test_rest_unknown_conformance(rest: TestClient) -> None:
