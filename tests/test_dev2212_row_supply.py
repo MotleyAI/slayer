@@ -371,7 +371,6 @@ async def test_a_product_anchor_beside_a_metric_of_another_group_answers(backend
         (region, p, n) for region in ("EAST", "NORTH", "WEST") for p, n in (("high", 1), ("low", 2))}
 
 
-@pytest.mark.xfail(strict=True, reason="DEV-2388: the source binds from the host orders, walking back into it")
 @pytest.mark.parametrize("extra", [[], [RET]])
 async def test_a_metric_written_through_another_anchor_supplies_rows(backend: str, extra: list) -> None:
     async with seed_engine(backend) as eng:

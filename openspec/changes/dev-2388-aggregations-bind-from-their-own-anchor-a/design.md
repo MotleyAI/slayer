@@ -24,7 +24,8 @@ semantics Axioms 2 (2.4, 2.6 and 2.9 as edited), 3.1, 3.3, 4, 6, 7–8, 10, 12.1
 (edited), P4. system §3 P4 (AST-built SQL), P10 (one typing). engine P1 (typed pipeline), P3 (pure resolution, one
 bundle), P4 (interning), P9 (every user-facing type error in the checker), P10 (dependency closures). No `model.c4`,
 `views.c4` or `index.yaml` change: the work stays in `engine.binding`/`bind_inputs`, `engine.population`,
-`engine.compile`, `ir`, `core.keys`, along existing arrows. All touched specs are in the `queries` cross-cutting group.
+`engine.compile`, `ir`, `core.keys`, along existing arrows. All touched specs are in the `queries` and `models`
+cross-cutting groups.
 
 ## Goals / Non-Goals
 
@@ -136,9 +137,11 @@ bundle), P4 (interning), P9 (every user-facing type error in the checker), P10 (
     routes every dimension anyway, so no host choice can add a refusal; folded its reordered-metrics test.
 22. Datasource: the existing anchored-datasource test stays green without `anchored_rows`; nested saved-metric anchor
     case added. (codex, finding 11)
-23. Every requirement pinning host-rooted values modified: population, references, multi-stage, semantics. The scan of
-    `cross-model-aggregates` and `partitioned-aggregates` found no further host-pinned values: their population
-    filter inheritance covers producers rooted at the population, whose home is the population. (codex, finding 12)
+23. Every requirement pinning host-rooted values modified: population, references, multi-stage, semantics,
+    model-filters, cross-model-aggregates. `cross-model-aggregates` › Producer filter routing keeps its population
+    filter inheritance: it covers producers whose home is the population. The plan-time scan missed
+    `models/model-filters`, `cross-model-aggregates` › Empty cells and `semantics` › Home dataset / Grain-union broadcasting;
+    the pr-tests sweep of every main spec added them (decisions 27–29, 31). (codex, finding 12)
 24. Consumer positions: filter, order, computed dimension with `partition_by=`, attached parameter under a two-route
     population. (codex, finding 13)
 25. Error contract: candidates sorted by canonical name, declared case; tie → ambiguity, none → input safety.
@@ -147,6 +150,29 @@ bundle), P4 (interning), P9 (every user-facing type error in the checker), P10 (
     direct inherited relationship is taken first" rewritten (titles kept) to exercise references the population reads:
     under this change an aggregation's source is never routed from the population. `queries/multi-stage` scenario "A
     filtered stage restricts what is reached through it" rewritten (title kept) per decision 4. (default)
+27. `models/model-filters` › Model filters define the model's dataset: a model filter restricts only reads of its
+    model, "the root of a cross-model or isolated aggregate" read as its home; scenario "Isolated, windowed and shifted
+    evaluations read the filtered root" rewritten (title kept): the root's own aggregates stay over orders 1–3, an
+    isolated `count(returns.*)` counts 4, grouped by `done_orders.id` 2 / 1 / 0 (decision 4). (default)
+28. `queries/cross-model-aggregates` › Empty cells take the aggregation's empty value: as an aggregation source the
+    empty value fills operand cells only; scenario "Re-aggregation counts the zeros" rewritten (title kept): 9/5 over
+    the customers with an order, and a `FILTER (WHERE …)` variant (5/5) whose filtered-out customer still counts as 0,
+    keeping the title true (decision 11). (default)
+29. `queries/semantics` › Home dataset of a row-level aggregation source: the fallback candidate, default cancellation
+    and root-anchored defaults are stated from the source's reference anchor and as query references (arc42 2.4 / 2.6
+    as edited), never from the query root; every scenario keeps its values (each query's root is there the unique
+    smallest dataset determining the inputs' anchors). (default)
+30. `queries/population` › A restricted population narrows a home only on the home's own paths: the `orders.status`
+    rows include C4's NULL-status row with a NULL value — the anchored rows are unchanged. (default)
+31. `queries/semantics` › Grain-union broadcasting: inside a second-order aggregation's source the operand dataset,
+    not the population, supplies the cells (Axiom 2.4 as edited); scenarios unchanged. (codex)
+32. `queries/attribution-modes`: a partition key's own dependency closure is judged from the key's anchor
+    (Principle 1), never from the population ("host"); requirement renamed "Partition key fanning from its anchor fails
+    closed in every mode", "Error mode refuses silent semantics" aligned, scenario bodies de-hosted, outcomes kept, one
+    scenario added for a key fanning from the population but local to its anchor; `queries/transforms` scenario
+    "Partition key across a fanning hop stays a typed error" body aligned (codex). Options: key's anchor (keeps every
+    scenario and today's engine behaviour) / aggregate's home (Axiom 8's former literal; flips "Host-safe partition key
+    keeps its mode-aware resolution" to an error). Axiom 8 reworded to match (approved separately). (user)
 
 ## Risks / Trade-offs
 

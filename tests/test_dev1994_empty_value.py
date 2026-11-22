@@ -17,6 +17,7 @@ from slayer.core.models import Aggregation
 from slayer.ir.planned import RegroupSubstitution
 from tests._dev1994_fixtures import (
     AVG_BY_CUSTOMER,
+    AVG_OK_ORDERS_PER_CUSTOMER,
     AVG_ORDERS_PER_CUSTOMER,
     AVG_ORDERS_PER_CUSTOMER_BY_REGION,
     CHANGE_BY_MONTH,
@@ -217,6 +218,12 @@ class TestReaggregation:
                           metrics=[m("avg(count(orders.id, partition_by=[customers.name]))", "a")])
         (row,) = resp.data
         assert row[col(resp.columns, "a")] == pytest.approx(AVG_ORDERS_PER_CUSTOMER)
+
+    async def test_avg_counts_a_filtered_out_cell_as_zero(self, dialect) -> None:
+        resp = await _run(dialect, population="customers", metrics=[m(
+            "avg(count(orders.id, partition_by=[customers.name]) FILTER (WHERE orders.status = 'ok'))", "a")])
+        (row,) = resp.data
+        assert row[col(resp.columns, "a")] == pytest.approx(AVG_OK_ORDERS_PER_CUSTOMER)
 
     async def test_avg_per_region_counts_the_zeros(self, dialect) -> None:
         resp = await _run(dialect, population="customers", dimensions=["regions.name"], metrics=[

@@ -35,11 +35,19 @@ workaround for the first case; this change removes the cause.
 ### Modified Capabilities
 
 - `queries/semantics`: an aggregation binds from its own anchor (ADDED); a second-order aggregation's operand rows are
-  its constituents' row supply (MODIFIED).
+  its constituents' row supply; a home's candidates and definition defaults resolve from the source's anchor, never the
+  query root; inside a second-order source the operand dataset, not the population, supplies grain-union cells
+  (MODIFIED).
 - `queries/references`: an aggregation's source anchor is a reading dataset; each spelling is routed on its own
   (MODIFIED).
 - `queries/population`: an anchored query keeps its rows; its values are its homes' values (MODIFIED).
 - `queries/multi-stage`: a restricted stage restricts a home only along the home's own paths (MODIFIED).
+- `models/model-filters`: a model filter restricts only reads of its model; as the population it decides only the rows
+  (MODIFIED).
+- `queries/cross-model-aggregates`: inside a re-aggregation the empty value fills operand cells only (MODIFIED).
+- `queries/attribution-modes`: a partition key fans or not from its own anchor, never from the population (RENAMED,
+  MODIFIED).
+- `queries/transforms`: a shifted leaf's fanning partition key is judged from the key's anchor (MODIFIED).
 
 ## Impact
 
@@ -50,5 +58,5 @@ workaround for the first case; this change removes the cause.
 - `slayer/engine/compile/stages.py`: producer synthesis, association arm, `_host_membership` removed, re-aggregation
   carrier over the constituents' row supply.
 - `slayer/core/keys.py`, `slayer/ir/prebound.py`: key identity of anchored references and aggregates.
-- `architecture/semantics.arc42.md` (approved edits applied), docs (`concepts/queries.md`, `concepts/references.md`,
+- `architecture/semantics.arc42.md` (approved edits applied, Axiom 8 included), docs (`concepts/queries.md`, `concepts/references.md`,
   `upgrading/2.0.md`), golden SQL whose join-back or carrier shape changes.

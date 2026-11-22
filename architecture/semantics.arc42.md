@@ -177,10 +177,10 @@ principles every layer obeys.
    spec: `queries/semantics` › Loud degradation)
    [enforced: test:tests/test_dev1836_broadcast_strict.py]; and error (refuse)
    [enforced: test:tests/test_dev1841_error_mode.py]. Every aggregation associates — a windowed one per bucket, over the home rows with an associated row in the bucket's frame [enforced: test:tests/test_dev1914_ranked_windowed_association.py]; an explicit partition_by
-   naming a dimension unattributable only from a further (cross-model) root is an
+   naming a dimension unattributable from the aggregation's home is an
    error outside associate mode
    [enforced: test:tests/test_dev1841_association_errors.py], but one whose own
-   dependency closure (engine P10) crosses a fanning hop from its home is a
+   dependency closure (engine P10) crosses a fanning hop from its anchor (Principle 1) is a
    mode-invariant input-safety error — raised in every mode, associate included,
    since it can never be counted without multiplying rows (Axiom 2.8).
    [enforced: test:tests/test_dev1911_fanning_partition_key.py]
@@ -199,7 +199,7 @@ principles every layer obeys.
    [enforced: test:tests/test_dev1868_residue_split.py]
 10. **Grain-union broadcast**: combining aggregates unions their grains, each
     operand broadcast from its own grain to the union — coarser to finer only;
-    the population supplies the row set, a cell an operand lacks contributes
+    the population supplies the row set — inside a second-order source, its operand dataset (2.4) —, a cell an operand lacks contributes
     its empty value (Axiom 4; NULL for a transform), and combining never removes rows (spec: `queries/semantics` ›
     Grain-union broadcasting). [enforced: test:tests/test_dev1739_execution.py]
 11. **Transforms are typed**: a transform consumes an aggregate-valued dataset and

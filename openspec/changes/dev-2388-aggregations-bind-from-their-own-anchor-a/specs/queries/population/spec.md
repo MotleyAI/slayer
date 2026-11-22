@@ -35,9 +35,10 @@ true` without `population` SHALL fail with a typed validation error.
 - **WHEN** `customers` carries the model filter `segment = 'retail'`, and a query with
   `population: "customers"` measures `sum(orders.amount)`, once grouped by `orders.status` and once
   by `customers.region`, over the seed of "Rows of an inferred query are the row supply"
-- **THEN** by `orders.status` the rows are completed 150 and open 500 — every order counts, its home
-  reading no customer; by `customers.region` the rows are EAST 300, NORTH NULL and WEST 300 — the
-  corporate customer's order reaches no region and lands in the NULL tuple, which is no row
+- **THEN** by `orders.status` the rows are completed 150, open 500 and NULL with NULL — every order
+  counts, its home reading no customer, and C4, which has no order, keeps the NULL-status row; by `customers.region` the rows are EAST 300, NORTH NULL and
+  WEST 300 — the corporate customer's order reaches no region and lands in the NULL tuple, which is
+  no row
 
 #### Scenario: Omitted population infers
 

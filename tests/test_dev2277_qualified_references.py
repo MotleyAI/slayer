@@ -156,18 +156,22 @@ async def test_the_explicit_route_resolves_the_ambiguity(backend: str) -> None:
 
 async def test_a_unique_fanning_route_is_taken(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute({"population": "customers", "dimensions": ["customers.customer_id"],
-                                 "metrics": ["sum(orders.amount)"]})
-    assert by(resp, "customers.customer_id", "orders.amount_sum") == {
-        "C1": 300.0, "C2": 50.0, "C3": 300.0, "C4": None,
-    }
+                                 "filter": ["orders.status = 'open'"]})
+    assert {r["customers.customer_id"] for r in resp.data} == {"C1", "C3"}
 
 
 async def test_several_fanning_routes_are_refused(backend: str) -> None:
     async with seed_engine(backend, managers=True) as eng:
-        err = await _raises(eng, {"population": "customers", "metrics": ["sum(orders.amount)"]},
+        err = await _raises(eng, {"population": "customers", "dimensions": ["customers.customer_id"],
+                                  "filter": ["orders.status = 'open'"]},
                             UnresolvableDimensionRelationshipError)
-    assert "customers.orders.amount" in str(err)
-    assert "customers.managers.orders.amount" in str(err)
+        resp = await eng.execute({"population": "customers", "dimensions": ["customers.customer_id"],
+                                  "metrics": ["sum(orders.amount)"]})
+    assert "customers.orders.status" in str(err)
+    assert "customers.managers.orders.status" in str(err)
+    assert by(resp, "customers.customer_id", "orders.amount_sum") == {
+        "C1": 300.0, "C2": 50.0, "C3": 300.0, "C4": None,
+    }
 
 
 async def test_a_directed_cycle_takes_its_to_one_path(backend: str) -> None:

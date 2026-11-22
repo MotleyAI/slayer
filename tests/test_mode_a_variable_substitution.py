@@ -661,8 +661,8 @@ class TestCrossModelConsistency:
         return SlayerQueryEngine(storage=storage), tmp
 
     async def test_source_model_filter_var_applies_to_reroot(self) -> None:
-        # The host's ``amount >= {floor}`` restricts the customers-rooted count to customers with a
-        # passing order; {floor} is substituted wherever it is emitted, and nowhere left raw.
+        # The population's ``amount >= {floor}`` never narrows the customers home, which reads no order;
+        # {floor} is substituted wherever it is emitted, and nowhere left raw.
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
@@ -675,13 +675,13 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            assert _sum(resp, "customers.id_count") == 2
+            assert _sum(resp, "customers.id_count") == 3
             assert "{floor}" not in resp.sql  # no un-substituted placeholder
         finally:
             tmp.cleanup()
 
     async def test_source_model_filter_var_applies_to_reroot_reachable(self) -> None:
-        # The host's dataset filter restricts the customers-rooted count exactly as the same query filter does.
+        # The population's dataset filter restricts only reads of orders; the customers home counts every customer.
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
@@ -694,8 +694,7 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            # The host's dataset filter restricts the customers-rooted count.
-            assert _sum(resp, "customers.id_count") == 2
+            assert _sum(resp, "customers.id_count") == 3
             # The substituted predicate is emitted where the filter DOES apply,
             # and no placeholder token survives anywhere.
             assert "amount >= 100" in resp.sql
