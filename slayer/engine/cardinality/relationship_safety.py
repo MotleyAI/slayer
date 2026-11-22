@@ -712,30 +712,40 @@ def grain_member_attributable(
     fanning reference is unattributable; every nested aggregate must be too."""
     saw = False
     for r in _grain_nodes(key):
-        if isinstance(r, AggregateKey) and is_framed_path(source_anchor_path(r.source)):
-            # Read from its own frame, an attached aggregate stands for its grain members (Axiom 2.3).
-            saw = True
-            if not all(grain_member_attributable(
-                key=p, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
-                bundle=bundle, host_dataset=host_dataset, host_name=host_name,
-            ) for p in r.partition_keys or ()):
-                return False
-        elif isinstance(r, AggregateKey):
-            saw = True
-            if not attributable_from_root(
-                host_path=source_anchor_path(r.source), target_path=target_path,
-                root_dataset=root_dataset, datasets_by_name=datasets_by_name,
-            ):
-                return False
-        elif isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey, StarKey)):
-            saw = True
-            if not key_attributable_from_root(
-                key=r, target_path=target_path, root_dataset=root_dataset,
-                datasets_by_name=datasets_by_name, bundle=bundle,
-                host_dataset=host_dataset, host_name=host_name,
-            ):
-                return False
+        verdict = _grain_node_attributable(
+            r, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+            bundle=bundle, host_dataset=host_dataset, host_name=host_name,
+        )
+        if verdict is False:
+            return False
+        saw = saw or verdict is True
     return saw
+
+
+def _grain_node_attributable(
+    r: ValueKey, *, target_path: Tuple[str, ...], root_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
+    host_dataset: SlayerDataset, host_name: Optional[str],
+) -> Optional[bool]:
+    """One grain node's verdict; ``None`` for a node that references nothing."""
+    if isinstance(r, AggregateKey) and is_framed_path(source_anchor_path(r.source)):
+        # Read from its own frame, an attached aggregate stands for its grain members (Axiom 2.3).
+        return all(grain_member_attributable(
+            key=p, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+            bundle=bundle, host_dataset=host_dataset, host_name=host_name,
+        ) for p in r.partition_keys or ())
+    if isinstance(r, AggregateKey):
+        return attributable_from_root(
+            host_path=source_anchor_path(r.source), target_path=target_path,
+            root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+        )
+    if isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey, StarKey)):
+        return key_attributable_from_root(
+            key=r, target_path=target_path, root_dataset=root_dataset,
+            datasets_by_name=datasets_by_name, bundle=bundle,
+            host_dataset=host_dataset, host_name=host_name,
+        )
+    return None
 
 
 def _grain_nodes(key: ValueKey) -> Iterator[ValueKey]:

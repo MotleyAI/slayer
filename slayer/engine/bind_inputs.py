@@ -1709,6 +1709,33 @@ def _snap_frame_bound(
     )
 
 
+def _granularities_by_field(td_keys: List[ValueKey]) -> Dict[ValueKey, List[Granularity]]:
+    """Each time-dimension field's requested granularities, in first-seen order."""
+    grans_by_field: Dict[ValueKey, List[Granularity]] = {}
+    for td_key in td_keys:
+        if isinstance(td_key, TimeTruncKey):
+            grans = grans_by_field.setdefault(td_key.source, [])
+            if td_key.granularity not in grans:
+                grans.append(td_key.granularity)
+    return grans_by_field
+
+
+def _granularity_conflicts(grans_by_field: Dict[ValueKey, List[Granularity]]) -> List[GranularityConflict]:
+    """Granularity pairs on one field that do not nest."""
+    # Two spellings of one field are one field to the population that reads them.
+    grans_by_read: Dict[ValueKey, List[Granularity]] = {}
+    for field, grans in grans_by_field.items():
+        read = field.model_copy(update={"anchor": None}) if isinstance(field, (FieldKey, FieldSqlKey)) else field
+        merged = grans_by_read.setdefault(read, [])
+        merged.extend(g for g in grans if g not in merged)
+    return [
+        GranularityConflict(field=dotted_key_display(field), granularities=(a, b))
+        for field, grans in grans_by_read.items()
+        for i, a in enumerate(grans) for b in grans[i + 1:]
+        if not (nests_into(a, b) or nests_into(b, a))
+    ]
+
+
 def _snap_whole_periods(
     *,
     bound_filters: List[BoundFilter],
@@ -1721,24 +1748,8 @@ def _snap_whole_periods(
     """``whole_periods_only``: snap every frame bound on a time-dimension field down to the
     earliest bucket boundary, the upper bound clamped to now (added when absent); report
     granularity pairs on one field that do not nest."""
-    grans_by_field: Dict[ValueKey, List[Granularity]] = {}
-    for td_key in td_keys:
-        if isinstance(td_key, TimeTruncKey):
-            grans = grans_by_field.setdefault(td_key.source, [])
-            if td_key.granularity not in grans:
-                grans.append(td_key.granularity)
-    # Two spellings of one field are one field to the population that reads them.
-    grans_by_read: Dict[ValueKey, List[Granularity]] = {}
-    for field, grans in grans_by_field.items():
-        read = field.model_copy(update={"anchor": None}) if isinstance(field, (FieldKey, FieldSqlKey)) else field
-        merged = grans_by_read.setdefault(read, [])
-        merged.extend(g for g in grans if g not in merged)
-    conflicts = [
-        GranularityConflict(field=dotted_key_display(field), granularities=(a, b))
-        for field, grans in grans_by_read.items()
-        for i, a in enumerate(grans) for b in grans[i + 1:]
-        if not (nests_into(a, b) or nests_into(b, a))
-    ]
+    grans_by_field = _granularities_by_field(td_keys)
+    conflicts = _granularity_conflicts(grans_by_field)
     upper_seen: set = set()
     snapped = []
     for bf in bound_filters:

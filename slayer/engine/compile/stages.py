@@ -2148,22 +2148,27 @@ def _query_spelling(key: ValueKey, *, context: _ProducerSynthesisContext) -> str
         key = key.source
     host = context.host_dataset
     datasets = {**context.datasets_by_name, host.name: host}
+    mapping: Dict[ValueKey, ValueKey] = {
+        r: _anchor_spelled(r, host_name=host.name, datasets=datasets)
+        for r in dict.fromkeys(walk_value_keys(key)) if isinstance(r, (FieldKey, FieldSqlKey, StarKey))
+    }
+    return key_display(substitute_value_keys(key, mapping) if mapping else key)
 
+
+def _anchor_spelled(
+    r: FieldKey | FieldSqlKey | StarKey, *, host_name: str, datasets: Mapping[str, SlayerDataset],
+) -> ValueKey:
+    """``r`` with its path spelled from its anchor (else its frame, else the host)."""
     def spelled(name: str) -> str:
         dataset = datasets.get(name)
         return spelled_name(dataset.spelling) if dataset is not None else name
 
-    mapping: Dict[ValueKey, ValueKey] = {}
-    for r in walk_value_keys(key):
-        if r in mapping:
-            continue
-        if isinstance(r, (FieldKey, FieldSqlKey)) and r.anchor is not None:
-            mapping[r] = r.model_copy(update={"path": (spelled(r.anchor[0]), *r.anchor[1:]), "anchor": None})
-        elif isinstance(r, (FieldKey, FieldSqlKey, StarKey)):
-            frame = token_anchor(r.path[0]) if r.path else None
-            mapping[r] = r.model_copy(update={"path": (spelled(frame), *r.path[1:]) if frame is not None
-                                              else (spelled(host.name), *r.path)})
-    return key_display(substitute_value_keys(key, mapping) if mapping else key)
+    if isinstance(r, (FieldKey, FieldSqlKey)) and r.anchor is not None:
+        return r.model_copy(update={"path": (spelled(r.anchor[0]), *r.anchor[1:]), "anchor": None})
+    frame = token_anchor(r.path[0]) if r.path else None
+    if frame is not None:
+        return r.model_copy(update={"path": (spelled(frame), *r.path[1:])})
+    return r.model_copy(update={"path": (spelled(host_name), *r.path)})
 
 
 def _broadcast_replacement(
@@ -2188,7 +2193,6 @@ class _UnattributableDim(NamedTuple):
 
 def _home_filters(
     base_filters: List[Tuple[BoundFilter, Optional[str]]], *, read: Callable[[ValueKey], Optional[ValueKey]],
-    host: SlayerDataset,
 ) -> List[Tuple[BoundFilter, Optional[str]]]:
     """The population's ROW conjuncts as the home reads them; a conjunct the home reaches by no relationship path
     restricts it as a product does — not at all (semantics Axiom 3.1)."""
@@ -2223,29 +2227,39 @@ def _rooted_at_home(
         return reroot_from_root(k, target_path=target_path, root_dataset=root_dataset,
                                 datasets_by_name=datasets_by_name, host_name=host_name)
 
-    def grain(k: ValueKey) -> ValueKey:
-        return read(k) or rerooted(k)
+    return cast(_KeyT, _HomeRooting(rerooted=rerooted, read=read).interior(key))
 
-    def interior(k: Any) -> Any:
+
+class _HomeRooting(NamedTuple):
+    """Re-roots an aggregation's interior; its grains are read from the home, falling back to re-rooting."""
+
+    rerooted: Callable[[ValueKey], ValueKey]
+    read: Callable[[ValueKey], Optional[ValueKey]]
+
+    def grain(self, k: ValueKey) -> ValueKey:
+        return self.read(k) or self.rerooted(k)
+
+    def interior(self, k: Any) -> Any:
         if not isinstance(k, VALUE_KEY_TYPES):
             return k
         if isinstance(k, AggregateKey):
-            return k.model_copy(update={
-                "source": interior(k.source), "args": tuple(interior(a) for a in k.args),
-                "kwargs": tuple((n, interior(v)) for n, v in k.kwargs),
-                "filter": None if k.filter is None else interior(k.filter),
-                "partition_keys": None if k.partition_keys is None else Grain.of(grain(p) for p in k.partition_keys),
-            })
+            return self._aggregate(k)
         if isinstance(k, TransformKey):
             return k.model_copy(update={
-                "input": interior(k.input), "partition_keys": Grain.of(grain(p) for p in k.partition_keys),
-                "time_key": None if k.time_key is None else grain(k.time_key),
+                "input": self.interior(k.input), "partition_keys": Grain.of(self.grain(p) for p in k.partition_keys),
+                "time_key": None if k.time_key is None else self.grain(k.time_key),
             })
         if any(isinstance(c, (AggregateKey, TransformKey)) for c in walk_value_keys(k)):
-            return k.map_children(interior)
-        return rerooted(k)
+            return k.map_children(self.interior)
+        return self.rerooted(k)
 
-    return cast(_KeyT, interior(key))
+    def _aggregate(self, k: AggregateKey) -> AggregateKey:
+        return k.model_copy(update={
+            "source": self.interior(k.source), "args": tuple(self.interior(a) for a in k.args),
+            "kwargs": tuple((n, self.interior(v)) for n, v in k.kwargs),
+            "filter": None if k.filter is None else self.interior(k.filter),
+            "partition_keys": None if k.partition_keys is None else Grain.of(self.grain(p) for p in k.partition_keys),
+        })
 
 
 def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive target-rooted producer synthesis (root / safe-grain / broadcast / inputs / filter-inheritance / recursive plan / attach); the arms share the re-rooting coordinate state.
@@ -2307,7 +2321,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
                           fanning=policy.associates)
         return None if found is None else lower_axis_hops(found, root_dataset=home, datasets_by_name=home_datasets)
 
-    base_filters_with_text = _home_filters(base_filters_with_text, read=read, host=host_dataset)
+    base_filters_with_text = _home_filters(base_filters_with_text, read=read)
 
     def attributable_at_home(key: ValueKey) -> bool:
         return grain_member_attributable(
@@ -2382,10 +2396,6 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     # rows — the broadcast producer, warned as associated.
     product = unreadable or _meets_as_product(home=home, host=host_dataset, datasets_by_name=home_datasets)
     product_associate = policy.associates and product
-    rerooted_of = dict(safe_pairs)
-
-    def _rerooted(g: ValueKey) -> ValueKey:
-        return rerooted_of.get(g) or read(g) or g
 
     # A crossing implicit ranking key fails closed in every mode, ahead of any grain or axis decision.
     if is_ranked(agg_rooted) and explicit_ranking_key(agg_rooted) is None:
@@ -2781,6 +2791,14 @@ def _check_attached_params_determined(
         field_default_key(path=target_path, leaf=col, base=root_dataset)
         for col in primary_key
     )) if primary_key else f"{root_dataset.name} rows"
+
+    def determined_at_home(member: ValueKey) -> bool:
+        at_home = read(member)
+        return at_home is not None and _home_determines_grain_member(
+            key=at_home, target_path=(), root_dataset=root_dataset, host_dataset=root_dataset,
+            datasets_by_name=datasets_by_name, bundle=bundle,
+        )
+
     for name, value in agg.kwargs:
         if not isinstance(value, (AggregateKey, TransformKey)):
             continue
@@ -2792,14 +2810,7 @@ def _check_attached_params_determined(
             continue
         check_parameter_determined(
             alias=alias, param_name=name, grain_display=grain_display,
-            determined=all(
-                (at_home := read(member)) is not None and _home_determines_grain_member(
-                    key=at_home, target_path=(), root_dataset=root_dataset,
-                    host_dataset=root_dataset, datasets_by_name=datasets_by_name,
-                    bundle=bundle,
-                )
-                for member in grain
-            ),
+            determined=all(determined_at_home(member) for member in grain),
         )
 
 
@@ -3444,7 +3455,7 @@ def _operand_cells(
             return None
         at_home[k] = found
     filters, semi_joins = _cross_dataset_inherited_filters(
-        base_filters=_home_filters([(bf, None) for bf in inherited], read=read, host=host), target_path=(),
+        base_filters=_home_filters([(bf, None) for bf in inherited], read=read), target_path=(),
         root_dataset=home, datasets_by_name=datasets, host_name=home.name, host_dataset=home, bundle=home_bundle,
     )
     prebound, _ordered = _regroup_producer_prebound(
@@ -5185,21 +5196,13 @@ def _respellings(
         return _leaf_variants(rest=flat, key=key, upstream=upstream)[1:]
     head: Tuple[str, ...] = ()
     if is_framed_path(path):
-        frame = datasets_by_name.get(display_token(path[0]))
-        if frame is None:
+        start = _framed_start(flat=flat, path=path, root=root, datasets_by_name=datasets_by_name)
+        if start is None:
             return ()
-        if flat.startswith(f"{frame.name}__"):
-            # Read from its own frame: the anchor hop spells its dataset, the route follows from there.
-            head, path, root = (frame.name,), path[1:], frame
-            if not path:
-                return tuple(f"{frame.name}__{leaf}" for leaf in _leaf_variants(
-                    rest=flat[len(frame.name) + 2:], key=key, upstream=upstream))[1:]
-        elif root is not None:
-            # Named by the reader's route to the frame (a saved metric's reference).
-            try:
-                path = (*anchor_route(reader=root, anchor=frame, datasets_by_name=datasets_by_name).route, *path[1:])
-            except UnresolvableDimensionRelationshipError:
-                return ()
+        head, path, root = start
+        if head and not path:
+            return tuple(f"{head[0]}__{leaf}" for leaf in _leaf_variants(
+                rest=flat[len(head[0]) + 2:], key=key, upstream=upstream))[1:]
     prefix = "__".join((*head, *path)) + "__"
     if root is None or not flat.startswith(prefix):
         return ()
@@ -5221,6 +5224,25 @@ def _respellings(
         upstream=_field_respellings(terminal.fields if terminal else []),
     )
     return tuple(p + "__" + leaf for p in paths for leaf in leaves)[1:]
+
+
+def _framed_start(
+    *, flat: str, path: Tuple[str, ...], root: Optional[SlayerDataset], datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[Tuple[Tuple[str, ...], Tuple[str, ...], Optional[SlayerDataset]]]:
+    """A framed path's ``(head, path, root)`` to respell from; ``None`` when it has no stale spelling."""
+    frame = datasets_by_name.get(display_token(path[0]))
+    if frame is None:
+        return None
+    if flat.startswith(f"{frame.name}__"):
+        # Read from its own frame: the anchor hop spells its dataset, the route follows from there.
+        return (frame.name,), path[1:], frame
+    if root is None:
+        return (), path, root
+    # Named by the reader's route to the frame (a saved metric's reference).
+    try:
+        return (), (*anchor_route(reader=root, anchor=frame, datasets_by_name=datasets_by_name).route, *path[1:]), root
+    except UnresolvableDimensionRelationshipError:
+        return None
 
 
 def _field_respellings(fields) -> Dict[str, Tuple[str, ...]]:

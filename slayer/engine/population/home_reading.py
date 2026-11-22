@@ -63,7 +63,7 @@ def _read_leaf(
         route = _spine_route(home, datasets_by_name=datasets_by_name, leaf=field_leaf(r), fanning=fanning)
         return None if route is None else r.model_copy(update={"path": (*route, *r.path[1:])})
     spelling = anchored_spelling(r, reader=host)
-    anchor = host if spelling[0] == host.name else datasets_by_name.get(spelling[0])
+    anchor = _anchor_of(spelling, host=host, datasets_by_name=datasets_by_name)
     if anchor is None:
         return None
     if anchor.name == home.name:
@@ -72,14 +72,7 @@ def _read_leaf(
         route = _spine_route(home, datasets_by_name=datasets_by_name, leaf=field_leaf(r), fanning=fanning)
         return None if route is None else r.model_copy(update={"path": (*route, *spelling[1:]), "anchor": None})
     if frame is not None and anchor.name == frame[0].name:
-        # Anchored at the source's own frame: read back along the source's written path to the frame, then forward;
-        # a reference at or beyond the home reads the home row itself.
-        home_path, route = frame[1], spelling[1:]
-        if route[:len(home_path)] == home_path:
-            return r.model_copy(update={"path": route[len(home_path):], "anchor": spelling})
-        chain = follow(root=frame[0], path=home_path, datasets_by_name=datasets_by_name) or []
-        back = tuple(reverse_token(e) for e in reversed(chain))
-        return r.model_copy(update={"path": (*back, *route), "anchor": spelling})
+        return _read_from_frame(r, frame=frame, spelling=spelling, datasets_by_name=datasets_by_name)
     reached = anchor_route(reader=home, anchor=anchor, datasets_by_name=datasets_by_name,
                            rest=(*spelling[1:], field_leaf(r)))
     if reached.unrelated and anchor.name not in home.unrelated_datasets:
@@ -87,25 +80,49 @@ def _read_leaf(
     return r.model_copy(update={"path": (*reached.route, *spelling[1:]), "anchor": spelling})
 
 
+def _anchor_of(
+    spelling: Tuple[str, ...], *, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[SlayerDataset]:
+    return host if spelling[0] == host.name else datasets_by_name.get(spelling[0])
+
+
+def _read_from_frame(
+    r: FieldKey | FieldSqlKey, *, frame: Frame, spelling: Tuple[str, ...], datasets_by_name: Dict[str, SlayerDataset],
+) -> ValueKey:
+    """``r`` anchored at the source's own frame: read back along the source's written path to the frame, then
+    forward; a reference at or beyond the home reads the home row itself."""
+    home_path, route = frame[1], spelling[1:]
+    if route[:len(home_path)] == home_path:
+        return r.model_copy(update={"path": route[len(home_path):], "anchor": spelling})
+    chain = follow(root=frame[0], path=home_path, datasets_by_name=datasets_by_name) or []
+    back = tuple(reverse_token(e) for e in reversed(chain))
+    return r.model_copy(update={"path": (*back, *route), "anchor": spelling})
+
+
 def product_anchors(
     keys: Iterable[ValueKey], *, home: SlayerDataset, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
 ) -> frozenset[str]:
     """The anchors of ``keys``' references that ``home`` meets only as a product (semantics Axiom 3.1)."""
-    out: set[str] = set()
-    for key in keys:
-        for r in outside_aggregates(key):
-            if not isinstance(r, (FieldKey, FieldSqlKey)):
-                continue
-            spelling = anchored_spelling(r, reader=host)
-            anchor = host if spelling[0] == host.name else datasets_by_name.get(spelling[0])
-            if anchor is None or anchor.name == home.name or is_spine(anchor) or TIME_SPINE_DATASET in spelling:
-                continue
-            try:
-                if anchor_route(reader=home, anchor=anchor, datasets_by_name=datasets_by_name).unrelated:
-                    out.add(anchor.name)
-            except UnresolvableDimensionRelationshipError:
-                continue
-    return frozenset(out)
+    met = (
+        _product_anchor(r, home=home, host=host, datasets_by_name=datasets_by_name)
+        for key in keys for r in outside_aggregates(key) if isinstance(r, (FieldKey, FieldSqlKey))
+    )
+    return frozenset(name for name in met if name is not None)
+
+
+def _product_anchor(
+    r: FieldKey | FieldSqlKey, *, home: SlayerDataset, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[str]:
+    """``r``'s anchor when ``home`` meets it only as a product, else ``None``."""
+    spelling = anchored_spelling(r, reader=host)
+    anchor = _anchor_of(spelling, host=host, datasets_by_name=datasets_by_name)
+    if anchor is None or anchor.name == home.name or is_spine(anchor) or TIME_SPINE_DATASET in spelling:
+        return None
+    try:
+        unrelated = anchor_route(reader=home, anchor=anchor, datasets_by_name=datasets_by_name).unrelated
+    except UnresolvableDimensionRelationshipError:
+        return None
+    return anchor.name if unrelated else None
 
 
 def reads_the_spine(key: ValueKey, *, host: SlayerDataset) -> bool:
