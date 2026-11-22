@@ -27,6 +27,7 @@ from slayer.core.relationship_walker import (
 )
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET
 from slayer.core.keys import (
+    TransformKey,
     is_framed_path,
     is_ranked,
     SLOT_COMPOSITE_KINDS,
@@ -576,9 +577,7 @@ def assert_partition_key_attributable(
     if crosses_product_hop(host=host_m, path=key_host_path(pk), datasets_by_name=datasets_by_name):
         return  # a row-level read across a product hop: the checker refuses it (Axiom 3.1)
     universe = {**datasets_by_name, host_m.name: host_m}
-    for r in walk_value_keys(pk):
-        if not isinstance(r, (FieldKey, FieldSqlKey)):
-            continue
+    for r in _grain_references(pk):
         spelling = r.anchor if r.anchor is not None else (host_m.name, *r.path)
         anchor = universe.get(spelling[0])
         if anchor is None:
@@ -596,6 +595,21 @@ def assert_partition_key_attributable(
                 bundle=anchored_bundle, host_dataset=anchor,
             ),
         )
+
+
+def _grain_references(key: ValueKey) -> Iterator[FieldKey | FieldSqlKey]:
+    """A grain key's own references: a nested aggregate contributes its grain keys, never its interior."""
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        yield key
+    elif isinstance(key, AggregateKey):
+        for p in key.partition_keys or ():
+            yield from _grain_references(p)
+    elif isinstance(key, TransformKey):
+        for p in (*key.partition_keys, *((key.time_key,) if key.time_key is not None else ())):
+            yield from _grain_references(p)
+    else:
+        for c in key.children():
+            yield from _grain_references(c)
 
 
 def shared_relationship_key_reroot(

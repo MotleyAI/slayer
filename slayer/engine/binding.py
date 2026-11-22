@@ -1765,6 +1765,7 @@ def _bind_agg_call(
         )
     host = scope.grain_scope.population
     assert host is not None and scope.population is not None
+    query_scope, query_bundle = scope, bundle
     if frame.name != scope.population.name:
         scope = DatasetScope(population=frame, anchored=True, grain=scope.grain_scope) \
             if frame.name != host.name else scope.grain_scope
@@ -1774,7 +1775,11 @@ def _bind_agg_call(
         dim_alias_map=dim_alias_map,
     )
     if not isinstance(key, AggregateKey):
-        return key
+        # A series transform over an attached value (``first(regions.metric)``) reads no rows of its own.
+        return key if scope is query_scope else _bind_agg_call_in(
+            parsed, scope=query_scope, bundle=query_bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+            dim_alias_map=dim_alias_map,
+        )
     key = interior_unanchored(key)
     return framed_aggregate(key, frame=frame.name) if frame.name != host.name else key
 

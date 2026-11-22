@@ -3128,7 +3128,11 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # outer grain and every cell-determined parameter as its own columns.
     field_params = [k for _n, v in reagg_params if not isinstance(v, (AggregateKey, TransformKey))
                     for k in outside_aggregates(v) if isinstance(k, (FieldKey, FieldSqlKey))]
-    carrier_grain = union_grain | Grain.of([*outer_grain, *field_params])
+    # An outer grain key carrying an attached value reads it as a constituent column; row-level ones are grain columns.
+    row_outer = [g for g in outer_grain if not operand_constituents(g)]
+    for g in outer_grain:
+        constituents.extend(c for c in operand_constituents(g) if c not in constituents)
+    carrier_grain = union_grain | Grain.of([*row_outer, *field_params])
     grain_placeholders: Dict[ValueKey, ValueKey] = (
         {g: registry.placeholder_for(g) for g in _regroup_partition_order(carrier_grain)} if union_grain else {})
     # The carrier: one producer at the union grain carrying every constituent
@@ -3432,8 +3436,15 @@ def _constituent_home(c: ValueKey, *, context: _ProducerSynthesisContext) -> Opt
     """The dataset an operand constituent is counted over; ``None`` for a transform or another operand."""
     if not isinstance(c, AggregateKey) or is_reaggregation_key(c):
         return None
-    home = walk_key_path(dataset=context.host_dataset, path=context.home_of(c), bundle=context.bundle)
+    home = walk_key_path(dataset=context.host_dataset, path=_constituent_home_path(c, context=context),
+                         bundle=context.bundle)
     return None if home is None else context.bundle.factor_free(home)
+
+
+def _constituent_home_path(c: AggregateKey, *, context: _ProducerSynthesisContext) -> Tuple[str, ...]:
+    """A constituent's home path; a normalized one (an ungrained parameter at the outer grain) homes as its source."""
+    found = context.homes.by_key.get(c)
+    return found.path if found is not None else source_anchor_path(c.source)
 
 
 def _grain_anchor(grain: Grain, *, context: _ProducerSynthesisContext) -> SlayerDataset:
@@ -3475,7 +3486,7 @@ def _operand_supply(
         home = _constituent_home(c, context=context)
         if home is None or home.name in branches or grain_of(c) != union_grain:
             continue
-        found = cells(home=home, keys=keys, home_path=context.home_of(c))
+        found = cells(home=home, keys=keys, home_path=_constituent_home_path(c, context=context))
         if found is not None:
             branches[home.name] = PlannedRowBranch(cells=found)
     if branches:
@@ -3488,7 +3499,7 @@ def _operand_supply(
     for c in constituents:
         home = _constituent_home(c, context=context)
         grain = [k for k in keys if k in grain_of(c)]
-        found = None if home is None or not grain else cells(home=home, keys=grain, home_path=context.home_of(c))
+        found = None if home is None or not grain else cells(home=home, keys=grain, home_path=_constituent_home_path(c, context=context))
         if found is not None:
             restrict.append(found)
     return PlannedRowSupply(branches=[PlannedRowBranch(cells=anchor_cells, restrict=restrict)])
