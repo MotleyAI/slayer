@@ -9,6 +9,7 @@ from typing import Any
 
 from slayer.core import slayer_extension as ext
 from slayer.core.models import SlayerDataset
+from slayer.core.portable_sql import portable_entity_expression
 from slayer.storage.document_mapping import document_payload, with_dataset, with_document_payload
 
 __all__ = ["UNSET", "MetricSpec", "edited_document", "metric_spec", "with_datasets"]
@@ -38,7 +39,8 @@ def metric_spec(raw: dict[str, Any]) -> dict[str, Any]:
     """A metric argument (its ``expression`` a SQL text or an Ossie expression object) as an Ossie metric entity."""
     expression = raw.get("expression")
     entity = {k: v for k, v in raw.items() if v is not None}
-    entity["expression"] = {"sql": expression} if isinstance(expression, str) else dict(expression or {})
+    entity["expression"] = portable_entity_expression(
+        {"sql": expression} if isinstance(expression, str) else dict(expression or {}))
     return entity
 
 

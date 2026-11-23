@@ -45,7 +45,9 @@ reaches a dataset metric only through `AGG(dataset.metric)`:
 4 customers, one row of 162.5 without dimensions. Each aggregate in it runs over its own
 dataset's rows. A query alias of the same name shadows it. `AGG` takes a single dataset
 metric: `AGG` of a field, of a model-scoped metric, of any other expression or with a
-`FILTER` clause is refused. Create and change documents with `create_semantic_model` /
+`FILTER` clause is refused. In a document, a dataset metric may call `AGG(source.x)`, where
+`x` is an aggregate its source defines; {{product}} loads it but cannot evaluate it yet, so queries
+reading it fail. Create and change documents with `create_semantic_model` /
 `edit_semantic_model`; `inspect(reference="revenue_per_customer", entity_type="metric")`
 shows one.
 
