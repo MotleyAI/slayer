@@ -176,7 +176,9 @@ def cells(resp: SlayerResponse, *keys: str, value: str = "w", months: tuple[str,
         parts = tuple(month(row[c]) if c in months else (num(row[c]) if isinstance(row[c], (int, float)) else row[c])
                       for c in keys)
         return parts[0] if len(parts) == 1 else parts
-    return {k(r): num(r[value]) for r in resp.data}
+    out = {k(r): num(r[value]) for r in resp.data}
+    assert len(out) == len(resp.data), resp.data  # a duplicate cell must not hide behind the last row
+    return out
 
 
 def assert_cells(got: dict, expected: dict) -> None:

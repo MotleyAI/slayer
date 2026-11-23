@@ -2847,10 +2847,10 @@ def _check_attached_params_determined(
 def _check_inline_params_determined(
     *, dispositions: Sequence[RootDisposition], context: "_ProducerSynthesisContext",
 ) -> None:
-    """The home-determination rule on the plain path: an inline root's home is the host."""
+    """The home-determination rule on the host-homed paths: an inline or local-producer root's home is the host."""
     host = context.bundle.factor_free(context.host_dataset)
     for d in dispositions:
-        if d.routing != "inline" or not isinstance(d.root, AggregateKey):
+        if d.routing not in ("inline", "local_producer") or not isinstance(d.root, AggregateKey):
             continue
         _check_attached_params_determined(
             agg=d.root, target_path=(), root_dataset=host, context=context,

@@ -272,6 +272,31 @@ class TestCrossModelParameterOnLocalRoot:
         assert "weight" in msg
         assert "determine" in msg.lower()
 
+    @pytest.mark.parametrize("build", [orders_q, assoc_q], ids=["default", "associate"])
+    @pytest.mark.parametrize(("dims", "partition"), [
+        (["orders.status"], "[]"),
+        (["orders.status", "orders.channel"], "[orders.status]"),
+    ], ids=["to_unit", "to_status"])
+    async def test_regrouped_undetermined_parameter_stays_rejected(self, weak_plans_engine, build, dims, partition):
+        """Scenario: Undetermined attached parameter stays rejected — a local root regrouped by its own
+        partition_by= refuses like its ungrouped twin, never with values."""
+        q = build(dimensions=dims, metrics=[QueryMetric(
+            metric=("weighted_avg(orders.amount, weight=sum(customers.spend, "
+                    f"partition_by=customers.plans.level), partition_by={partition})"),
+            alias="w")])
+        with pytest.raises(ParameterGrainError, match="weight"):
+            await weak_plans_engine.execute(q)
+
+    async def test_regrouped_determined_parameter_executes(self, weak_plans_engine):
+        """A regrouped local root whose parameter the order row determines still executes."""
+        resp = await weak_plans_engine.execute(orders_q(
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(
+                metric=("weighted_avg(orders.amount, weight=sum(customers.spend, "
+                        "partition_by=customers.tier), partition_by=[])"),
+                alias="w")]))
+        assert {r["w"] for r in resp.data} != {None}
+
 
 class TestUndeterminedParameterRejected:
     async def test_associate_parameter_not_entity_determined(self, orders_engine):

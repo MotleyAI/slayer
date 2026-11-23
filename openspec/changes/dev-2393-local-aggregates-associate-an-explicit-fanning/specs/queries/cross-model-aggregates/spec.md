@@ -3,7 +3,8 @@
 ### Requirement: Explicit grain and window on cross-model aggregates
 Cross-model aggregates SHALL accept `partition_by=`, `window=`, and `first`/`last`.
 The explicit-key rule below SHALL hold alike for cross-model aggregates and for local
-aggregates rooted at the query population. Under `"broadcast"` and `"error"` modes,
+aggregates rooted at the query population; keys across a product hop keep
+`queries/unrelated-datasets`. Under `"broadcast"` and `"error"` modes,
 every explicit partition key MUST be attributable from the aggregate's home — an
 unattributable key is a hard error naming the key and both remedies (omitting the mode,
 and declaring cardinality or a covering unique key). When the mode is omitted or

@@ -89,8 +89,10 @@ resolves per this rule. Keys across a product hop keep `queries/unrelated-datase
   ORDER BY target, a computed-dimension aggregate, a re-aggregation inner
   (`avg(sum(pop, partition_by=bad_pop))`), an attached parameter, or a windowed aggregate
 - **THEN** each position executes under the default and `"associate"` with the same
-  associated cells as the measure position, by executed values, and fails with the typed
-  partition-key error under `"broadcast"` and `"error"`
+  associated cells as the measure position, by executed values — an attached parameter
+  only where the enclosing aggregation's home determines its grain, otherwise failing with
+  the typed determination error (`queries/partitioned-aggregates`) — and fails with the
+  typed partition-key error under `"broadcast"` and `"error"`
 
 #### Scenario: Keys mixing attributable and unattributable members
 - **WHEN** a query rooted at `customers` selects
