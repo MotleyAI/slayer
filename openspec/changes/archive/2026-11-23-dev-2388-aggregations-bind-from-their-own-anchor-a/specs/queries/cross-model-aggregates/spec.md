@@ -31,7 +31,8 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 #### Scenario: Inferred population
 - **WHEN** a query without `population` has `dimensions=[customers.name]` and selects
   `count(orders.id)`
-- **THEN** the population is `customers` and the childless customer's cell holds 0
+- **THEN** the rows are the customers some order reaches, so the childless customer has no row; with
+  `population: "customers"` it holds 0
 
 #### Scenario: Multi-hop count
 - **WHEN** a query rooted at `regions` groups by `name` and selects
@@ -64,7 +65,7 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 #### Scenario: Re-aggregation counts the zeros
 - **WHEN** a query rooted at `customers` selects
   `avg(count(orders.id, partition_by=[name]))`, and again with the inner count carrying
-  `FILTER (WHERE orders.status = 'ok')`, where one customer's only order is not `ok`
+  `FILTER (WHERE orders.status = 'ok')`, customer names being unique, where one customer's only order is not `ok`
 - **THEN** the unfiltered average runs over the customers some order reaches (total orders
   divided by the customers with an order), a childless customer having no operand cell; the
   filtered average includes the customer whose only order is not `ok` as 0, by executed values

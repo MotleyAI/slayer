@@ -1260,7 +1260,7 @@ and the unit SHALL hold for a query naming `population` too.
 An aggregation's source SHALL be bound from its **source anchor**, never through the query's
 population (semantics Axiom 2.6): the dataset its source's references are anchored at when they
 share one anchor; when they are anchored apart, the smallest dataset determining every leaf's
-anchor over provably to-one hops — a dataset another candidate determines is not smaller. Tied
+anchor over provably to-one hops — a dataset that determines another candidate it is not determined by back is not smaller. Tied
 minimal candidates SHALL fail with the typed ambiguity error of `queries/references`, naming one
 explicit single-anchor spelling per candidate, ordered by canonical dataset name, each in its
 declared case; no candidate SHALL fail with the input-safety error naming the leaf and the hop.

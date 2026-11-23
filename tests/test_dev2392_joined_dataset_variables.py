@@ -6,7 +6,8 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import SlayerDataset
+from slayer.core.models import DatasetMetric, SlayerDataset
+from slayer.core.query import SlayerQuery
 
 from tests._dev2212_fixtures import BACKENDS, customers_dataset, orders_dataset, returns_dataset, run, seed_engine
 
@@ -99,3 +100,53 @@ async def test_an_unread_dataset_missing_a_variable_never_fails_the_query(backen
         resp = await run(eng, population="customers", dimensions=[R], metrics=["customers.customer_count"],
                          variables={"other": 1})
     assert {r[R]: r["customers.customer_count"] for r in resp.data} == {"EAST": 2, "WEST": 1, "NORTH": 1}
+
+
+def _with_source_metric() -> SlayerDataset:
+    base = _returns()
+    return base.model_copy(update={"metrics": [*base.metrics, DatasetMetric(name="src_total",
+                                                                            expression="sum(source.amount)")]})
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_stage_rebinding_a_dataset_keeps_it_resolved(backend: str) -> None:
+    # `source.amount` reads a field only resolution adds; the named stage rebinds returns under m=5.
+    async with seed_engine(backend, datasets=_datasets(returns=_with_source_metric())) as eng:
+        resp = await eng.execute([
+            {"name": "s", "population": "customers", "dimensions": [R],
+             "metrics": [{"metric": "returns.src_total", "alias": "v"}], "variables": {"m": 5}},
+            {"population": "s", "dimensions": ["s.region", "s.v"]},
+        ])
+    got = {r["s.region"]: r["s.v"] for r in resp.data}
+    assert (got["EAST"], got["NORTH"]) == (25, 10)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_spliced_stage_over_a_variable_dataset_keeps_it_resolved(backend: str) -> None:
+    qb = SlayerDataset.model_validate({"name": "qb", "data_source": "test", "source_queries": [
+        {"population": "returns", "dimensions": ["returns.customer_id"],
+         "metrics": [{"metric": "returns.src_total", "alias": "v"}], "variables": {"m": 5}}]})
+    async with seed_engine(backend, datasets=[*_datasets(returns=_with_source_metric()), qb]) as eng:
+        resp = await run(eng, population="qb", dimensions=["qb.customer_id", "qb.v"])
+    assert {r["qb.customer_id"]: r["qb.v"] for r in resp.data} == {"C1": 25, "C4": 10}
+
+
+def _shared_splice_datasets() -> list[SlayerDataset]:
+    q = SlayerDataset.model_validate({"name": "q", "data_source": "test", "source_queries": [
+        {"population": "customers", "dimensions": [R], "metrics": [{"metric": "returns.total_returns", "alias": "tr"}]}]})
+    readers = [SlayerDataset.model_validate({
+        "name": n, "data_source": "test", "query_variables": {"m": m},
+        "source_queries": [{"population": "q", "dimensions": ["q.region", "q.tr"]}]}) for n, m in (("a", 5), ("b", 20))]
+    return [*_datasets(), q, *readers]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])
+async def test_a_splice_read_under_conflicting_joined_dataset_variables_is_refused(backend: str, order) -> None:
+    # q's joined returns reads {m}; a and b supply different m, so one statement cannot splice q once.
+    first, root = order
+    stages: list[SlayerQuery | dict] = [{"name": "x", "population": first, "dimensions": [f"{first}.region", f"{first}.tr"]},
+              {"population": root, "dimensions": [f"{root}.region", f"{root}.tr"]}]
+    async with seed_engine(backend, datasets=_shared_splice_datasets()) as eng:
+        with pytest.raises(ValueError, match="conflicting values"):
+            await eng.execute(stages)

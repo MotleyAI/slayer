@@ -1027,8 +1027,12 @@ class SlayerQueryEngine:
                       for d in bundle.referenced_datasets]
         stages = {name: await self._resolved(d, datasource=datasource, datasets=peers)
                   for name, d in bundle.stage_source_datasets.items()}
+        # A stage rebinding a dataset from its stored definition resolves it with the same live types.
+        live = {d.name: await self._live_column_types(datasource=datasource, dataset=d)
+                for d in bundle.unbound_datasets.values() if not d.source_queries}
         resolved = bundle.model_copy(update={
             "population": population, "referenced_datasets": referenced, "stage_source_datasets": stages,
+            "live_column_types": live, "unresolved_datasets": {d.name: d for d in peers},
         })
         return resolved.model_copy(update={"spliced_rows": _spliced_rows(resolved)})
 

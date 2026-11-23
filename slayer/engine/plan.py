@@ -27,6 +27,7 @@ from slayer.core.scope import (
     stale_spelling_stage,
 )
 from slayer.engine.compile import compile_query
+from slayer.engine.definitions import resolved_dataset
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.extensions import apply_query_extensions, with_own_extension
 from slayer.engine.normalization import normalize_query
@@ -253,6 +254,8 @@ class _StagePlanner:
             assert planned is not None
             if row_supply is not None and row_supply.branches:
                 planned = planned.model_copy(update={"row_supply": self._plan_row_supply(row_supply)})
+            if owner in self.state.spliced:
+                self.state.spliced[owner].footprint |= self._read_placeholders(seen, row_supply=row_supply)
             self._record(query, planned=planned, stamped=stamped, seen=seen, chain=chain,
                          raw=[*on_chain, *unspliceable], owner=owner)
             return
@@ -275,6 +278,18 @@ class _StagePlanner:
             except Exception as exc:  # noqa: BLE001 — a miss may be a missing splice; retried by the caller
                 failure = exc
         return planned, failure, seen, stamped
+
+    def _read_placeholders(self, seen: Dict[str, bool], *, row_supply: Optional[RowSupply]) -> Set[str]:
+        """The ``{var}`` every stored dataset a stage reads (its joined datasets and cells' sources) depends on:
+        a splice reused under other values of them conflicts."""
+        cells = {q.population_name for b in (row_supply.branches if row_supply else ()) for q in (b.cells, *b.restrict)}
+        names = {n for n, strict in seen.items() if strict} | {n for n in cells if n}
+        out: Set[str] = set()
+        for name in names:
+            stored = None if name in self.bundle.query_backed else self.bundle.unbound_dataset(name)
+            if stored is not None:
+                out |= dataset_placeholder_names(stored)
+        return out
 
     def _plan_row_supply(self, supply: RowSupply) -> PlannedRowSupply:
         """Each branch's cells (and restricting cells) planned as dimension-only queries over their sources."""
@@ -522,7 +537,11 @@ class _StagePlanner:
         if source is None:
             return stage, None, set(), variables
         layers = self._stage_layers(stage, chain=chain)
-        return stage, bind_dataset(source, layers=layers, bundle=self.bundle), dataset_placeholder_names(source), variables
+        bound = bind_dataset(source, layers=layers, bundle=self.bundle)
+        if source.name in self.bundle.unbound_datasets:
+            # Rebuilt from its stored definition: resolved as the statement's datasets were, among this stage's peers.
+            bound = resolve_rebound(bound, bundle=bind_read_datasets(self.bundle, layers=layers))
+        return stage, bound, dataset_placeholder_names(source), variables
 
     def _stage_layers(self, stage: SlayerQuery, *, chain: Tuple[str, ...]) -> Dict[str, Any]:
         """A spliced stage's own variable layers, without any dataset's defaults."""
@@ -591,6 +610,16 @@ def bind_dataset(dataset: SlayerDataset, *, layers: Mapping[str, Any], bundle: R
     )
 
 
+def resolve_rebound(dataset: SlayerDataset, *, bundle: ResolvedSourceBundle) -> SlayerDataset:
+    """``dataset``, freshly bound from its stored definition, resolved for the datasource like the statement's
+    datasets, among its peers' bound forms before resolution; unchanged before the bundle is resolved."""
+    if bundle.live_column_types is None or dataset.source_queries:
+        return dataset
+    peers = [bundle.unresolved_datasets.get(d.name, d) for d in bundle.referenced_datasets]
+    return resolved_dataset(dataset, ds_type=bundle.datasource_type, datasets=peers,
+                            live=bundle.live_column_types.get(dataset.name, {}))
+
+
 def bind_read_datasets(
     bundle: ResolvedSourceBundle, *, layers: Mapping[str, Any], strict_population: bool = False,
 ) -> ResolvedSourceBundle:
@@ -599,24 +628,37 @@ def bind_read_datasets(
     do not all supply keeps its definition (the universe holds datasets no statement reads); with
     ``strict_population`` the population raises instead."""
     unbound = dict(bundle.unbound_datasets)
+    rebuilt: Dict[str, SlayerDataset] = {}
 
     def bound(dataset: SlayerDataset, *, strict: bool = False) -> SlayerDataset:
-        base = unbound.get(dataset.name, dataset)
+        stored = unbound.get(dataset.name)
+        base = dataset if stored is None else stored
         try:
             out = bind_dataset(base, layers=layers, bundle=bundle)
         except VariableError:
             if strict:
                 raise
-            return base
+            return dataset
         if out is not base:
             unbound.setdefault(dataset.name, base)
+        if stored is not None:
+            rebuilt[dataset.name] = out
         return out
 
     population = None if bundle.population is None else bound(bundle.population, strict=strict_population)
     referenced = [population if population is not None and m.name == population.name else bound(m)
                   for m in bundle.referenced_datasets]
-    return bundle.model_copy(update={
+    out = bundle.model_copy(update={
         "population": population, "referenced_datasets": referenced, "unbound_datasets": unbound,
+        "unresolved_datasets": {**bundle.unresolved_datasets, **rebuilt},
+    })
+    if not rebuilt:
+        return out
+    # Rebuilt from their stored definitions: resolved as the statement's datasets were, among bound peers.
+    resolved = {name: resolve_rebound(d, bundle=out) for name, d in rebuilt.items()}
+    return out.model_copy(update={
+        "population": None if population is None else resolved.get(population.name, population),
+        "referenced_datasets": [resolved.get(d.name, d) for d in referenced],
     })
 
 

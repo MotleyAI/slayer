@@ -104,6 +104,10 @@ class ResolvedSourceBundle(BaseModel):
     variable_layers: Dict[str, Any] = Field(default_factory=dict)
     # Each dataset as stored, before its Mode-A surfaces were bound; a spliced stage rebinds under its own layers.
     unbound_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
+    # Once the datasets are resolved for the datasource: each one's live source-column types and its bound form
+    # before resolution, so a dataset rebound from its stored definition resolves the same way, among bound peers.
+    live_column_types: Optional[Dict[str, Dict[str, DataType]]] = None
+    unresolved_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
     dialect: str  # sqlglot dialect the query renders in
     # The datasource's type: picks its own dialect where several share a sqlglot name (MariaDB / MySQL).

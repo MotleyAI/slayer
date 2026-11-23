@@ -535,6 +535,7 @@ async def test_one_to_one_twins_stay_tied_with_another_minimal_dataset(backend: 
             await eng.execute(query)
     assert "pc" in str(ei.value)
     assert "pa" in str(ei.value)
+    assert "pb" in str(ei.value)
 
 
 DISCOUNT_TABLES = [
@@ -696,8 +697,8 @@ async def test_two_operand_keys_one_home_key_reads_each_keep_a_cell_column(cell_
                      dimensions=[{"field": "date_trunc('month', orders.ordered_at)", "alias": "om"}],
                      metrics=[_m("max(sum(orders.amount, partition_by=[orders.customer_id, orders.ordered_at]) "
                                  "FILTER (WHERE orders.amount > 0))")])
-    assert sorted((str(r["om"])[:7], r["v"]) for r in resp.data) == [
-        ("2025-01", 20), ("2025-01", 20), ("2025-02", 5), ("2025-02", 5)]
+    assert sorted((str(r["time_spine.timestamp"])[:7], str(r["om"])[:7], r["v"]) for r in resp.data) == [
+        ("2025-01", "2025-01", 20), ("2025-01", "2025-02", 5), ("2025-02", "2025-01", 20), ("2025-02", "2025-02", 5)]
 
 
 NO_AXIS_TABLES = [
@@ -720,3 +721,28 @@ async def test_a_window_its_home_cannot_slide_is_a_typed_error(backend: str, pop
     async with _engine(backend, NO_AXIS_TABLES, NO_AXIS_DATASETS) as eng:
         with pytest.raises(TimeAxisError):
             await eng.execute(query)
+
+
+MIXED_TABLES = [
+    TableSpec(name="customers", columns=[("customer_id", "TEXT"), ("multiplier", "DOUBLE")],
+              rows=[("C1", 1.0), ("C2", 2.0), ("C3", 3.0)]),
+    TableSpec(name="orders", columns=[("order_id", "TEXT"), ("customer_id", "TEXT"), ("amount", "DOUBLE")],
+              rows=[("O1", "C1", 10.0), ("O2", "C1", 20.0), ("O3", "C2", 5.0)]),
+]
+MIXED_DATASETS = [
+    _ds("customers", "customer_id", "multiplier", numeric=("multiplier",)),
+    _ds("orders", "order_id", "customer_id", "amount", numeric=("amount",), rels=(_rel("customers", "customer_id"),)),
+]
+
+
+@pytest.mark.parametrize("inner", ["sum(orders.amount, partition_by=[orders.order_id])",
+                                   "sum(orders.amount, partition_by=[orders.order_id]) FILTER (WHERE orders.amount > 0)"],
+                         ids=["plain", "filtered"])
+async def test_a_dimension_mixing_an_attached_value_and_a_row_field_beside_a_reaggregation(backend: str,
+                                                                                         inner: str) -> None:
+    # The re-aggregation's operand carries the mixed key's row field as a grain column.
+    k = {"field": "sum(orders.amount, partition_by=[customers.customer_id]) + customers.multiplier", "alias": "k"}
+    async with _engine(backend, MIXED_TABLES, MIXED_DATASETS) as eng:
+        resp = await run(eng, population="customers", dimensions=["customers.customer_id", k],
+                         metrics=[_m(f"max({inner})")])
+    assert table(resp, "customers.customer_id", "k", "v") == rows(("C1", 31, 20), ("C2", 7, 5), ("C3", None, None))

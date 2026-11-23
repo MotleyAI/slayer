@@ -3164,9 +3164,12 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
                     for k in outside_aggregates(v) if isinstance(k, (FieldKey, FieldSqlKey))]
     # An outer grain key carrying an attached value reads it as a constituent column; row-level ones are grain columns.
     row_outer = [g for g in outer_grain if not operand_constituents(g)]
+    # Its row fields beside the attached value (`sum(...) + customers.multiplier`) are grain columns too.
+    mixed_fields = [k for g in outer_grain if operand_constituents(g) for k in outside_aggregates(g)
+                    if isinstance(k, (FieldKey, FieldSqlKey))]
     for g in outer_grain:
         constituents.extend(c for c in operand_constituents(g) if c not in constituents)
-    carrier_grain = union_grain | Grain.of([*row_outer, *field_params])
+    carrier_grain = union_grain | Grain.of([*row_outer, *field_params, *mixed_fields])
     grain_placeholders: Dict[ValueKey, ValueKey] = (
         {g: registry.placeholder_for(g) for g in _regroup_partition_order(carrier_grain)}
         if union_grain and not _cells_are_the_carrier(
@@ -3582,20 +3585,10 @@ def _operand_supply(
 
     cells = functools.partial(_operand_cells, names=names, context=context, inherited=inherited,
                     producer_registry=producer_registry)
-    # One branch per home and route: two frames reaching one home can reach different cells.
-    branches: Dict[Tuple[str, Tuple[str, ...]], PlannedRowBranch] = {}
-    for c in constituents:
-        home = _constituent_home(c, context=context)
-        if home is None or grain_of(c) != union_grain:
-            continue
-        route = (home.name, _constituent_home_path(c, context=context))
-        if route in branches:
-            continue
-        found = cells(home=home, keys=keys, home_path=route[1])
-        if found is not None:
-            branches[route] = PlannedRowBranch(cells=found)
+    branches = _full_grain_branches(constituents, keys=keys, cells=cells, full=lambda c: grain_of(c) == union_grain,
+                                    context=context)
     if branches:
-        return PlannedRowSupply(branches=list(branches.values()))
+        return PlannedRowSupply(branches=branches)
     anchor = _grain_anchor(carrier_grain, context=context)
     anchor_cells = cells(home=anchor, keys=keys)
     if anchor_cells is None:
@@ -3608,6 +3601,26 @@ def _operand_supply(
         if found is not None:
             restrict.append(found)
     return PlannedRowSupply(branches=[PlannedRowBranch(cells=anchor_cells, restrict=restrict)])
+
+
+def _full_grain_branches(
+    constituents: Sequence[ValueKey], *, keys: Sequence[ValueKey], cells: Callable[..., Optional[PlannedQuery]],
+    full: Callable[[ValueKey], bool], context: _ProducerSynthesisContext,
+) -> List[PlannedRowBranch]:
+    """One cells branch per home and route of the ``full``-grain constituents: two frames reaching one home can
+    reach different cells."""
+    branches: Dict[Tuple[str, Tuple[str, ...]], PlannedRowBranch] = {}
+    for c in constituents:
+        home = _constituent_home(c, context=context)
+        if home is None or not full(c):
+            continue
+        route = (home.name, _constituent_home_path(c, context=context))
+        if route in branches:
+            continue
+        found = cells(home=home, keys=keys, home_path=route[1])
+        if found is not None:
+            branches[route] = PlannedRowBranch(cells=found)
+    return list(branches.values())
 
 
 def _assert_total_routing(prebound: PreboundQuery, *, homes: AggregateHomes) -> None:
