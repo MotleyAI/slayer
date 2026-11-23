@@ -109,12 +109,19 @@ Each Ossie construct `slayer import-osi` converted in 1.x SHALL evaluate nativel
 - **THEN** a query naming `gross_revenue` returns the sum of `orders.total_amount`, and the document's text is unchanged
 
 ### Requirement: Entities SLayer cannot evaluate yet still load
-A field or metric of a valid document whose expression SLayer cannot evaluate yet SHALL load with a structured load warning naming the entity and the reason, visible on `inspect`, `datasets_summary` and search results. These are: a window function; a model-scoped metric reading a field unqualified or outside an aggregate; a dataset-scoped metric that evaluates a measure of its dataset's source with `AGG(source.measure)` (SLayer's sources expose no measure columns, and Ossie requires a consumer to reject `AGG` on a column that is not a measure and never to replace it with an ordinary aggregate); and any model-scoped metric that reaches such an entity, directly through `AGG(d.m)` or transitively through other model-scoped metrics, whose warning SHALL name the dependency chain. Every query reading the entity SHALL fail with a typed error naming it and the reason; no other entity SHALL be affected. A save SLayer authors that adds or changes a definition to one SLayer cannot evaluate SHALL be refused with that typed error; an unchanged entity that loaded with a warning SHALL survive saves of other parts of its document.
+A field or metric of a valid document whose expression SLayer cannot evaluate yet SHALL load with a structured load warning naming the entity and the reason, visible on `inspect`, `datasets_summary` and search results, and reported by `slayer import-osi`. These are: a window function; a model-scoped metric reading a field unqualified or outside an aggregate; an expression whose runnable form SLayer's expression reader cannot parse (for example a subquery); a dataset-scoped metric that evaluates a measure of its dataset's source with `AGG(source.measure)` (SLayer's sources expose no measure columns, and Ossie requires a consumer to reject `AGG` on a column that is not a measure and never to replace it with an ordinary aggregate); and any model-scoped metric that reaches such an entity, directly through `AGG(d.m)` or transitively through other model-scoped metrics, whose warning SHALL name the dependency chain. Every query reading the entity SHALL fail with a typed error naming it and the reason; no other entity SHALL be affected. A save SLayer authors that adds or changes a definition to one SLayer cannot evaluate SHALL be refused with that typed error; an unchanged entity that loaded with a warning SHALL survive saves of other parts of its document.
 
 #### Scenario: A windowed field loads and fails only when read
 - **WHEN** a document declares a field `running_total` with expression `SUM(amount) OVER (ORDER BY order_date)` beside a field `amount`
 - **THEN** the document loads, `inspect` shows the warning on `running_total`, a query of `sum(sales.amount)` succeeds, and a query reading `sales.running_total` fails with a typed error naming `running_total`
 
+#### Scenario: An expression SLayer cannot parse loads not evaluable
+- **WHEN** a document declares a field `flag` with expression `(SELECT 1)` beside a field `amount`
+- **THEN** the document loads, `inspect` shows a warning on `flag` naming the parse failure, `slayer import-osi` reports `flag` as not evaluable, a query of `sum(sales.amount)` succeeds, and a query reading `sales.flag` fails with a typed error naming `flag`
+
+#### Scenario: SQL keywords inside literals stay evaluable
+- **WHEN** a document declares a field `kind` with expression `CASE WHEN status IN ('select', 'from') THEN 'where' END`
+- **THEN** `kind` loads with no load warning and a query reading it succeeds
 #### Scenario: A source-measure metric loads and fails only when read
 - **WHEN** a document's dataset `orders` declares the metrics `revenue_total` (`AGG(source.revenue)`) and `order_count` (`COUNT(*)`)
 - **THEN** the document loads, `inspect` shows on `orders.revenue_total` a warning that it evaluates a measure of its source, which SLayer cannot evaluate yet, a query of `orders.order_count` succeeds, and a query reading `orders.revenue_total` fails with a typed error naming `revenue_total` and that reason
@@ -182,11 +189,15 @@ Deleting a document dataset SHALL run the same cascade as deleting a standalone 
 - **THEN** the memory no longer lists `shop.orders` and the document no longer declares `orders` or its relationships
 
 ### Requirement: Access filtering covers documents
-An access-filtered view SHALL read every document dataset the caller cannot access as deleted, prune relationships into it, and prune every model-scoped metric that reads it through any aggregate component or through other model-scoped metrics, transitively. A pruned metric SHALL fail as an unknown metric with no suggestion naming a hidden entity. A write through the view SHALL merge onto the full document, never dropping or exposing hidden entities.
+An access-filtered view SHALL read every document dataset the caller cannot access as deleted, prune relationships into it, and prune every model-scoped metric that reads it through any aggregate component or through other model-scoped metrics, transitively. A pruned metric SHALL fail as an unknown metric with no suggestion naming a hidden entity. A write through the view SHALL merge onto the full document, never dropping or exposing hidden entities. A stored document whose text does not read SHALL be refused to a caller without bypass on read, edit and delete, with the typed error and reasons of "A document whose text repeats a mapping key is refused", since the access of its datasets cannot be decided; a bypass caller SHALL read and delete it as stored.
 
 #### Scenario: A metric over a hidden dataset is invisible
 - **WHEN** a caller cannot access dataset `payroll`, and the model-scoped metric `cost_per_head` reads `payroll.salary`
 - **THEN** the caller's query naming `cost_per_head` fails as an unknown metric that suggests no hidden name
+
+#### Scenario: An unreadable document fails closed through the filter
+- **WHEN** a stored document repeats the key `source`, and a caller without bypass reads, edits or deletes it through an access-filtered view
+- **THEN** each call fails with a typed error naming `source` and its line, the stored text is unchanged, and a bypass caller can read and delete it
 
 ### Requirement: Fields without a datatype load with an unknown type
 A field that declares no `datatype` SHALL load with an unknown type that no check or coercion reads. The engine SHALL resolve unknown types before binding a query that reads them, once per engine and storage fingerprint, without blocking the event loop, from the live type of the field's expression; the resolved type SHALL NOT be persisted. A save-time check that needs an unknown type SHALL be deferred to the query-time check.
@@ -238,6 +249,16 @@ Every case of upstream `compliance/wide_table/cases` SHALL run against its named
 - **WHEN** the grader runs over m0–m8 through `slayer ossie-roundtrip`
 - **THEN** every element is graded `PORTABLE`
 
+### Requirement: A document whose text repeats a mapping key is refused
+A stored document whose YAML or JSON text repeats an explicit mapping key, at any depth, SHALL be unloadable with a typed error naming the document and every repeated key with its line; repeated YAML merge directives SHALL be allowed. A scalar the YAML loader cannot build SHALL make the document unloadable naming the value and its line. A save or edit whose text repeats a key SHALL be refused with the same reasons, storing nothing. An unloadable document SHALL follow `models/document-isolation`.
+
+#### Scenario: A hand-placed document with a repeated key
+- **WHEN** a file in `semantic_models/shop/` declares the key `source` twice in dataset `orders`
+- **THEN** loading the datasource reports the document as unloadable naming `source` and its line, none of its datasets are visible, and the datasource's other documents load
+
+#### Scenario: A save with a repeated key
+- **WHEN** a document's text saved through SLayer repeats the key `name` in a field
+- **THEN** the save fails with a typed error naming `name` and its line, and the stored document is unchanged
 ### Requirement: The native validity check agrees with upstream's validator
 SLayer's validity check SHALL report a document invalid exactly when the vendored upstream `validation/validate.py` reports an error for it, on every sqlglot version SLayer supports, including:
 - In a dataset-scoped `OSSIE_SQL_2026` metric, `AGG` SHALL be valid only as `AGG(source.measure)`: a single column argument qualified by `source` in any case, with no further qualifier, no `*`, a non-empty name and no `FILTER` clause, in a dataset that declares no field named `source`. Any other `AGG` call there SHALL be an error stating that `AGG` in a dataset-scoped metric takes a single `source.measure` reference; a `FILTER` clause and a field named `source` SHALL each be an error stating that cause.

@@ -6,15 +6,14 @@ wrapper yields one ``legacy`` document per wrapped model. Unreadable or
 malformed files are logged and skipped; unknown versions warn but still parse.
 """
 
-import json
 import logging
 import os
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import ValidationError
 
+from slayer.core.document_text import parse_document_text
 from slayer.osi.models import OSIDocument
 
 logger = logging.getLogger(__name__)
@@ -43,8 +42,7 @@ def _collect_files(path: Path) -> list[Path]:
 
 
 def _load(path: Path) -> Any:
-    text = path.read_text(encoding="utf-8")
-    return json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)
+    return parse_document_text(path.read_text(encoding="utf-8"))
 
 
 def _flat_mappings(path: Path, data: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -83,7 +81,7 @@ def parse_osi_file(path: Path) -> list[OSIDocument]:
     except OSError as exc:
         logger.warning("Failed to read OSI file %s: %s", path, exc)
         return []
-    except (yaml.YAMLError, ValueError) as exc:  # ValueError: bad UTF-8, JSON, or YAML timestamp
+    except ValueError as exc:  # bad UTF-8, or text the document reader refuses
         logger.warning("Failed to parse OSI file %s: %s", path, exc)
         return []
 
