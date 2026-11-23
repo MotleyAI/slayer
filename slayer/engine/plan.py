@@ -613,11 +613,11 @@ def bind_dataset(dataset: SlayerDataset, *, layers: Mapping[str, Any], bundle: R
 def resolve_rebound(dataset: SlayerDataset, *, bundle: ResolvedSourceBundle) -> SlayerDataset:
     """``dataset``, freshly bound from its stored definition, resolved for the datasource like the statement's
     datasets, among its peers' bound forms before resolution; unchanged before the bundle is resolved."""
-    if bundle.live_column_types is None or dataset.source_queries:
+    if bundle.live_source_types is None or dataset.source_queries:
         return dataset
     peers = [bundle.unresolved_datasets.get(d.name, d) for d in bundle.referenced_datasets]
     return resolved_dataset(dataset, ds_type=bundle.datasource_type, datasets=peers,
-                            live=bundle.live_column_types.get(dataset.name, {}))
+                            live=bundle.live_source_types.get(dataset.name, {}))
 
 
 def bind_read_datasets(

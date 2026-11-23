@@ -106,7 +106,7 @@ class ResolvedSourceBundle(BaseModel):
     unbound_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
     # Once the datasets are resolved for the datasource: each one's live source-column types and its bound form
     # before resolution, so a dataset rebound from its stored definition resolves the same way, among bound peers.
-    live_column_types: Optional[Dict[str, Dict[str, DataType]]] = None
+    live_source_types: Optional[Dict[str, Dict[str, DataType]]] = None
     unresolved_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
     dialect: str  # sqlglot dialect the query renders in
