@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
-from collections.abc import Awaitable, Callable, Hashable, Iterable, Mapping, Set as AbstractSet
+from collections.abc import Awaitable, Callable, Hashable, Iterable, Mapping, Sequence, Set as AbstractSet
 
 from pydantic import BaseModel
 from typing_extensions import deprecated
@@ -252,6 +252,19 @@ def _stage_names(data: dict) -> frozenset[str]:
     queries = data.get("source_queries")
     return frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str)) if isinstance(
         queries, list) else frozenset()
+
+
+def _memory_in_datasource(data: dict, *, data_source: str, identities: Sequence[tuple[str, str]]) -> bool:
+    """Whether a raw stored memory's query reads ``data_source`` (the granularity rename's scope)."""
+    inline_data_source, source = memory_source_dataset(data)
+    if inline_data_source is not None:
+        return inline_data_source == data_source
+    if memory_fallback_population(data, identities=identities)[0]:
+        return raw_memory_datasource(data, identities=identities) == data_source
+    if (data_source, source) not in identities:
+        return False
+    return all(d == data_source for d, n in identities if n == source) or (
+        f"{data_source}.{source}" in (data.get("entities") or []))
 
 
 def _incoming_keys(*, sibling: dict, target: str, target_fields: list) -> list[tuple[Any, str | None]]:
@@ -1487,23 +1500,14 @@ class StorageBackend(ABC):
 
     async def _rename_granularities(self, *, data_source: str, raw: dict, renames: Renames) -> None:
         identities = await self._list_all_dataset_identities()
-        own = {n for d, n in identities if d == data_source}
-        elsewhere = {n for d, n in identities if d != data_source}
         renamed = self._granularity_renamed_docs = getattr(self, "_granularity_renamed_docs", {})
-        for name in sorted(own):
+        for name in sorted({n for d, n in identities if d == data_source}):
             data = await self._load_raw_dataset_dict(name=name, data_source=data_source)
             if isinstance(data, dict) and (new := rename_in_dataset(data, renames=renames)) != data:
                 await self._write_raw_dataset_dict(name=name, data_source=data_source, data=new)
                 renamed[("dataset", f"{data_source}.{name}")] = (data, new)
         for memory_id, data in (await self._raw_memory_dicts()).items():
-            inline_data_source, source = memory_source_dataset(data)
-            if inline_data_source is not None:
-                in_datasource = inline_data_source == data_source
-            elif memory_fallback_population(data, identities=identities)[0]:
-                in_datasource = raw_memory_datasource(data, identities=identities) == data_source
-            else:
-                in_datasource = source in own and (
-                    source not in elsewhere or f"{data_source}.{source}" in (data.get("entities") or []))
+            in_datasource = _memory_in_datasource(data, data_source=data_source, identities=identities)
             if in_datasource and (new := rename_in_memory(data, renames=renames)) != data:
                 await self._write_raw_memory_dict(memory_id=memory_id, data=new)
                 renamed[("memory", memory_id)] = (data, new)
