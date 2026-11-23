@@ -66,29 +66,29 @@ LIB = TableSpec(
         ("x", "DOUBLE"), ("y", "DOUBLE"), ("a", "INT"), ("b", "INT"), ("c", "INT"), ("cp", "INT"),
         ("code", "TEXT"), ("word", "TEXT"), ("tag", "TEXT"), ("notes", "TEXT"), ("prefix", "TEXT"),
         ("payload", "TEXT"), ("num_txt", "TEXT"), ("qty", "INT"), ("ts", "TIMESTAMP"), ("doc", "TEXT"),
-        ("big", "TEXT"), ("k", "INT"), ("d", "DECIMAL"), ("e", "DECIMAL"),
+        ("big", "TEXT"), ("k", "INT"), ("d", "DECIMAL"), ("e", "DECIMAL"), ("h", "INT"), ("g", "DECIMAL"),
     ],
     rows=[
         (1, "ABCDE", "CD", 2, 7, 2, 0.5, 1.0, None, 2, 1, 65, "ab123", "paid", "+1 (555) 01",
-         "paid\nlate", "ab1", P1, "120.5", 3, "2025-03-05 10:00:00", '{"v": null}', "12345678901234567", 5, 2.5, 0.125),
+         "paid\nlate", "ab1", P1, "120.5", 3, "2025-03-05 10:00:00", '{"v": null}', "12345678901234567", 5, 2.5, 0.125, 1250, 1234.567),
         (2, "€é", "é", -2, -7, -2, 2.0, -1.0, 3, None, 1, 8364, "ab12", "PAID", "5 USD",
-         "line1\nline2", "zz", '{"a": {}, "qty": "3"}', "99", 0, "2025-03-31 23:59:59", '{}', None, -5, -2.5, -0.125),
+         "line1\nline2", "zz", '{"a": {}, "qty": "3"}', "99", 0, "2025-03-31 23:59:59", '{}', None, -5, -2.5, -0.125, -1250, None),
         (3, "a/b/c", "/", 0, 7, 0, -1.0, 0.5, 1, 2, None, 128512, "a_1", "ada", "a@x.org",
-         "nothing", "a_", '{"a": {"b": null}, "qty": "x"}', "abc", 1, "2025-04-01 00:00:00", '{"v": {"k": 1}}', None, 4, None, None),
+         "nothing", "a_", '{"a": {"b": null}, "qty": "x"}', "abc", 1, "2025-04-01 00:00:00", '{"v": {"k": 1}}', None, 4, None, None, 1249, None),
         (4, "", "x", 9, -7, 3, 1.0, 1.0, None, None, None, 55296, "abc1", "Ada", "nobody",
-         "paid late", "a_", '{"a": {"b": [1]}}', None, 2, "2024-12-31 12:00:00", '{"v": [1]}', None, None, None, None),
+         "paid late", "a_", '{"a": {"b": [1]}}', None, 2, "2024-12-31 12:00:00", '{"v": [1]}', None, None, None, None, None, None),
         (5, None, "a", None, 7, None, None, 1.0, 5, 5, 5, None, None, None, None,
-         None, None, "not json", "3.0", 3, None, '{"v": "x"}', None, None, None, None),
+         None, None, "not json", "3.0", 3, None, '{"v": "x"}', None, None, None, None, None, None),
         (6, "Ada Lovelace", "Love", 3, 7, -3, -8.0, None, -1, 0, 1, 1114112, "[ab]1", "123", "15%",
-         "Paid Later", "[a", None, "10", 1, "2025-02-10 08:00:00", '{"v": 0}', None, None, None, None),
+         "Paid Later", "[a", None, "10", 1, "2025-02-10 08:00:00", '{"v": 0}', None, None, None, None, None, None),
         (7, "x\U0001F600y", "\U0001F600", -9, -7, 7, -1.5, 2.0, 2, None, None, 57343, "a1", "١٢٣", "150",
-         "x", "%", P7, "1.5", 2, "2025-03-15 00:00:00", '{"v": false}', None, None, None, None),
+         "x", "%", P7, "1.5", 2, "2025-03-15 00:00:00", '{"v": false}', None, None, None, None, None, None),
         (8, "ab", "", 1, 0, 1, 0.0, 1.0, None, None, 4, 1114111, "a*?1", "admin", "x",
-         "late paid", "a*", "{}", "1", 1, "2025-01-01 00:00:00", '{"v": "2024-02-29"}', None, None, None, None),
+         "late paid", "a*", "{}", "1", 1, "2025-01-01 00:00:00", '{"v": "2024-02-29"}', None, None, None, None, None, None),
         (9, "abc", "z", -1, None, -1, 27.0, -3.0, 0, -3, None, 233, "ab\n", "Adele", "USD USD",
-         "a\nb", None, P9, "02", 2, "2025-06-30 18:30:00", '{"v": "2024-02-29 10:00:00"}', None, None, None, None),
+         "a\nb", None, P9, "02", 2, "2025-06-30 18:30:00", '{"v": "2024-02-29 10:00:00"}', None, None, None, None, None, None),
         (10, "Ünïcode", None, 5, 8, 4, 0.25, 0.5, 7, 1, 3, 97, "1_2", "c:\\x1", "",
-         "", "1\\_", P10, "x", None, "2025-03-01 00:00:00", '{"v": 12}', None, None, None, None),
+         "", "1\\_", P10, "x", None, "2025-03-01 00:00:00", '{"v": 12}', None, None, None, None, None, None),
     ],
 )
 LIB_DECIMAL = "DECIMAL(10,3)"
@@ -613,11 +613,13 @@ def _coercion_cases() -> list[Case]:
 
 
 def _numeric_semantics_cases() -> list[Case]:
-    """True division of INT operands; two-argument ``round`` ties on DECIMAL away from zero."""
+    """True division of INT operands; two-argument ``round`` ties on DECIMAL away from zero, negative digits included."""
     return [
         _v("divide|int-operands", ["/"], "lib.k / 2", only({1: 2.5, 2: -2.5, 3: 2.0})),
         _v("round|decimal-tie-scale-0", ["round"], "round(lib.d, 0)", only({1: 3, 2: -3})),
         _v("round|decimal-tie-scale-2", ["round"], "round(lib.e, 2)", only({1: 0.13, 2: -0.13})),
+        _v("round|int-negative-digits", ["round"], "round(lib.h, -2)", only({1: 1300, 2: -1300, 3: 1200})),
+        _v("round|decimal-negative-digits", ["round"], "round(lib.g, -1)", only({1: 1230})),
     ]
 
 

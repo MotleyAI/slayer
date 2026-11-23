@@ -54,7 +54,7 @@ from tests._dev2120_fixtures import (
     lib_dataset,
     server_table_statements as dev2120_table_statements,
 )
-from tests._cast_fixtures import check_try_cast_targets
+from tests._cast_fixtures import check_author_casts, check_boolean_casts, check_try_cast_targets
 from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
@@ -283,6 +283,10 @@ async def _week_buckets(engine: SlayerQueryEngine, *, field: str, granularity: s
 class TestTrinoQueries:
     async def test_try_cast_integer_targets(self, trino_env: SlayerQueryEngine) -> None:
         await check_try_cast_targets(trino_env, dataset="orders")
+
+    async def test_author_casts(self, trino_env: SlayerQueryEngine) -> None:
+        await check_author_casts(trino_env, dataset="orders")
+        await check_boolean_casts(trino_env, dataset="orders")
 
     async def test_count_all(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery.model_validate({

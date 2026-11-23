@@ -8,5 +8,5 @@ On load, a stored model written before this change whose field's Mode-B `express
 - **THEN** after load the field's expression is `amount + 1`, a warning names the model and `a`, and the query returns `amount + 1` for each row as before
 
 #### Scenario: A model written before the agg upgrade
-- **WHEN** a stored model written before the `agg` upgrade has the field `a` with expression `agg(amount)`
-- **THEN** after load the expression is `agg_aggregation(amount)`, as that upgrade defines, and this upgrade leaves it unchanged
+- **WHEN** a stored model written before the `agg` upgrade has the metric `m` with formula `agg(amount)`
+- **THEN** after load the metric's expression is `agg_aggregation(amount)`, as that upgrade defines, and this upgrade leaves it unchanged

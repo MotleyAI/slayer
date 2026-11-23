@@ -34,7 +34,7 @@ from slayer.live_schema.schema_drift import EditDatasetDelete, validate_datasour
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient, SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._cast_fixtures import check_try_cast_targets
+from tests._cast_fixtures import check_author_casts, check_try_cast_targets
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
@@ -395,6 +395,10 @@ async def test_dev2120_library(bq_dev2120_storage) -> None:
 
 async def test_try_cast_integer_targets(bq_dev2120_storage) -> None:
     await check_try_cast_targets(SlayerQueryEngine(storage=bq_dev2120_storage), dataset=LIB.name)
+
+
+async def test_author_casts(bq_dev2120_storage) -> None:
+    await check_author_casts(SlayerQueryEngine(storage=bq_dev2120_storage), dataset=LIB.name)
 
 
 async def test_dev2120_native_json_column(bq_dev2120_storage) -> None:
