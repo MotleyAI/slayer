@@ -3,7 +3,6 @@
 import functools
 import json
 import logging
-import re
 import sys
 import weakref
 from importlib.metadata import PackageNotFoundError
@@ -12,6 +11,8 @@ from collections.abc import Callable, Sequence
 from inspect import cleandoc
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+from packaging.specifiers import SpecifierSet
+from packaging.version import InvalidVersion, Version
 from pydantic import (
     BaseModel, ConfigDict, Discriminator, Field, Tag, TypeAdapter, ValidationError, WrapValidator,
 )
@@ -112,9 +113,8 @@ _NESTED_CAP_HINT = "pass a higher 'limit' on the root query to get more rows"
 #: A definition and its deprecated twin: an upsert spelling one replaces the other.
 _DEFINITION_TWINS = (frozenset({"sql", "expression"}), frozenset({"formula", "expression"}))
 
-#: The mcp releases SLayer runs on: ``[_MCP_MIN, _MCP_BELOW)``.
+#: The mcp releases SLayer runs on.
 _MCP_RANGE = ">=2.3,<3"
-_MCP_MIN, _MCP_BELOW = (2, 3), (3, 0)
 # Shared remedy for every mcp-import failure below.
 _MCP_REMEDY = (
     f"Install a supported version: pip install 'mcp{_MCP_RANGE}' "
@@ -191,9 +191,11 @@ def _agent_description(fn: Callable[..., Any]) -> str:
 
 
 def _mcp_supported(version_str: str) -> bool:
-    """Whether ``version_str`` lies in ``_MCP_RANGE``; an unparseable version does not."""
-    match = re.match(r"(\d+)\.(\d+)", version_str.strip())
-    return match is not None and _MCP_MIN <= (int(match[1]), int(match[2])) < _MCP_BELOW
+    """Whether ``version_str`` is a PEP 440 version in ``_MCP_RANGE``; pre-releases and unparseable versions are not."""
+    try:
+        return Version(version_str) in SpecifierSet(_MCP_RANGE)
+    except InvalidVersion:
+        return False
 
 
 def _import_mcp_sdk() -> "tuple[type[MCPServer], type[ToolError], type[MCPError]]":

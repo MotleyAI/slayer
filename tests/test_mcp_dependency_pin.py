@@ -98,10 +98,21 @@ class TestMcpImportGuard:
         assert installed in message
         assert REQUIRED_RANGE in message
 
-    def test_unparseable_version_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        message = self._message(monkeypatch, installed="not-a-version", block=True)
-        assert "not-a-version" in message
+    @pytest.mark.parametrize("installed", ["not-a-version", "2.3.invalid"])
+    def test_unparseable_version_is_refused(self, monkeypatch: pytest.MonkeyPatch, installed: str) -> None:
+        message = self._message(monkeypatch, installed=installed, block=False)
+        assert installed in message
         assert REMEDY in message
+
+    def test_pre_release_of_the_floor_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        message = self._message(monkeypatch, installed="2.3.0rc1", block=False)
+        assert "2.3.0rc1" in message
+        assert REQUIRED_RANGE in message
+
+    @pytest.mark.parametrize("installed", ["2.3.0", "2.3.0.post1"])
+    def test_full_releases_in_range_build(self, monkeypatch: pytest.MonkeyPatch, installed: str) -> None:
+        self._pretend_installed(monkeypatch, installed)
+        assert isinstance(_build(), MCPServer)
 
     @pytest.mark.parametrize(("installed", "block"), [
         (None, True), ("1.27.0", True), ("2.2.0", False), ("3.0.0", False), ("not-a-version", True),

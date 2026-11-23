@@ -108,10 +108,10 @@ class TestDescribeDatasourceTables:
     async def _call_describe(
         self, server, *, name: str, list_tables: bool = True, schema_name: str = "",
     ) -> str:
-        content = (await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="describe_datasource",
             arguments={"name": name, "list_tables": list_tables, "schema_name": schema_name},
-        )).content
+        ))
         return content[0].text
 
     async def test_tables_appear_by_default(self, env: InspectEnv) -> None:
@@ -249,7 +249,7 @@ class TestInspectModelEndToEnd:
     section of the markdown output is produced end-to-end."""
 
     async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
-        content = (await server.call_tool(name=name, arguments=arguments or {})).content
+        content = text_blocks(await server.call_tool(name=name, arguments=arguments or {}))
         return content[0].text
 
     async def test_full_response(self, env: InspectEnv) -> None:
@@ -324,7 +324,7 @@ class TestInspectModelSectionGatingIntegration:
     """
 
     async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
-        content = (await server.call_tool(name=name, arguments=arguments or {})).content
+        content = text_blocks(await server.call_tool(name=name, arguments=arguments or {}))
         return content[0].text
 
     async def test_columns_only_short_circuits_samples(self, env: InspectEnv) -> None:
@@ -567,10 +567,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
     """End-to-end sampled_values + distinct_count contract through the dataset ``inspect``."""
 
     async def _call_json(self, server, *, dataset_name: str) -> dict:
-        content = (await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": dataset_name, "compact": False, "format": "json"},
-        )).content
+        ))
         return _json.loads(content[0].text)
 
     async def test_json_output_includes_sampled_values_and_distinct_count(
@@ -824,9 +824,11 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await self._call_json(server, dataset_name="wide")
 
         reloaded = await storage.get_dataset("wide", data_source="wide_ds")
+        assert reloaded is not None
         # Every one of the 15 categorical fields has structured profile.
         for i in range(col_count):
             col = reloaded.get_field(f"c{i}")
+            assert col is not None
             assert col.sampled_values is not None, (
                 f"c{i}.sampled_values is None — max_dims cap not removed"
             )

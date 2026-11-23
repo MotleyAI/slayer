@@ -623,7 +623,7 @@ files = [
     {file = "certifi-2026.2.25-py3-none-any.whl", hash = "sha256:027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa"},
     {file = "certifi-2026.2.25.tar.gz", hash = "sha256:e887ab5cee78ea814d3472169153c2d12cd43b14bd03329a39a9c6e2e80bfba7"},
 ]
-markers = {main = "python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\") or (extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"client\") and python_version >= \"3.14\" or python_version <= \"3.13\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"client\")"}
+markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"client\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"client\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"client\""}
 
 [[package]]
 name = "cffi"
@@ -873,7 +873,7 @@ files = [
     {file = "charset_normalizer-3.4.7-py3-none-any.whl", hash = "sha256:3dce51d0f5e7951f8bb4900c257dad282f49190fdbebecd4ba99bcc41fef404d"},
     {file = "charset_normalizer-3.4.7.tar.gz", hash = "sha256:ae89db9e5f98a11a4bf50407d4363e7b09b31e55bc117b4f7d80aab97ba009e5"},
 ]
-markers = {main = "python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\") or (extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\") and python_version >= \"3.14\" or python_version <= \"3.13\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\")"}
+markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\""}
 
 [[package]]
 name = "ciso8601"
@@ -2105,7 +2105,7 @@ files = [
 google-auth = ">=2.14.1,<3.0.0"
 googleapis-common-protos = ">=1.63.2,<2.0.0"
 grpcio = [
-    {version = ">=1.49.1,<2.0.0", optional = true, markers = "python_version >= \"3.11\" and extra == \"grpc\""},
+    {version = ">=1.49.1,<2.0.0", optional = true, markers = "python_version >= \"3.11\" and extra == \"grpc\" and python_version < \"3.14\""},
     {version = ">=1.75.1,<2.0.0", optional = true, markers = "python_version >= \"3.14\" and extra == \"grpc\""},
 ]
 grpcio-status = [
@@ -2277,7 +2277,7 @@ description = "Common protobufs used in Google APIs"
 optional = true
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"otel\") or python_version < \"3.15\" and (extra == \"otel\" or extra == \"all\" or extra == \"bigquery\") or extra == \"otel\" or extra == \"all\""
+markers = "(extra == \"otel\" or extra == \"all\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"otel\") or extra == \"otel\" or extra == \"all\""
 files = [
     {file = "googleapis_common_protos-1.75.0-py3-none-any.whl", hash = "sha256:961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed"},
     {file = "googleapis_common_protos-1.75.0.tar.gz", hash = "sha256:53a062ff3c32552fbd62c11fe23768b78e4ddf0494d5e5fd97d3f4689c75fbbd"},
@@ -2370,7 +2370,7 @@ description = "HTTP/2-based RPC framework"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "(extra == \"bigquery\" or extra == \"all\") and python_version < \"3.15\""
+markers = "python_version < \"3.15\" and (extra == \"bigquery\" or extra == \"all\")"
 files = [
     {file = "grpcio-1.81.0-cp310-cp310-linux_armv7l.whl", hash = "sha256:b4108e5d9d0f651b7eea749116181fe6c315b145661a80ec31f05ec2dbe21af7"},
     {file = "grpcio-1.81.0-cp310-cp310-macosx_11_0_universal2.whl", hash = "sha256:b76ea9d55cd08fcdbda25d28e0f76679536710acb7fbd5b1f70cb4ac49317265"},
@@ -2438,7 +2438,7 @@ description = "Status proto mapping for gRPC"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "(extra == \"bigquery\" or extra == \"all\") and python_version < \"3.15\""
+markers = "python_version < \"3.15\" and (extra == \"bigquery\" or extra == \"all\")"
 files = [
     {file = "grpcio_status-1.81.0-py3-none-any.whl", hash = "sha256:10eb4c2309db902dc26c1873e80a821bf794be772c10dfd83030f7f59f165fab"},
     {file = "grpcio_status-1.81.0.tar.gz", hash = "sha256:b6fe9788cfdd1f0f63c0528a1e0bfdb41e8ff0583e920d2d8e8888598c01bb69"},
@@ -5223,7 +5223,7 @@ description = ""
 optional = true
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"otel\" or extra == \"dbt\" or extra == \"flight\") or python_version < \"3.15\" and (extra == \"otel\" or extra == \"all\" or extra == \"dbt\" or extra == \"flight\" or extra == \"bigquery\") or extra == \"otel\" or extra == \"all\" or extra == \"dbt\" or extra == \"flight\""
+markers = "(extra == \"bigquery\" or extra == \"all\" or extra == \"otel\" or extra == \"dbt\" or extra == \"flight\") and python_version < \"3.15\" or extra == \"otel\" or extra == \"all\" or extra == \"dbt\" or extra == \"flight\""
 files = [
     {file = "protobuf-6.33.6-cp310-abi3-win32.whl", hash = "sha256:7d29d9b65f8afef196f8334e80d6bc1d5d4adedb449971fefd3723824e6e77d3"},
     {file = "protobuf-6.33.6-cp310-abi3-win_amd64.whl", hash = "sha256:0cd27b587afca21b7cfa59a74dcbd48a50f0a6400cfb59391340ad729d91d326"},
@@ -6741,7 +6741,7 @@ files = [
     {file = "requests-2.33.1-py3-none-any.whl", hash = "sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a"},
     {file = "requests-2.33.1.tar.gz", hash = "sha256:18817f8c57c6263968bc123d237e3b8b08ac046f5456bd1e307ee8f4250d3517"},
 ]
-markers = {main = "python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\") or (extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\") and python_version >= \"3.14\" or python_version <= \"3.13\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\")"}
+markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\""}
 
 [package.dependencies]
 certifi = ">=2023.5.7"
@@ -7995,7 +7995,7 @@ files = [
     {file = "urllib3-2.6.3-py3-none-any.whl", hash = "sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4"},
     {file = "urllib3-2.6.3.tar.gz", hash = "sha256:1b62b6884944a57dbe321509ab94fd4d3b307075e0c2eae991ac71ee15ad38ed"},
 ]
-markers = {main = "python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\") or (extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\") and python_version >= \"3.14\" or python_version <= \"3.13\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\")"}
+markers = {main = "(extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\" or extra == \"bigquery\") and python_version < \"3.15\" or python_version == \"3.14\" and (extra == \"bigquery\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\") or extra == \"clickhouse\" or extra == \"all\" or extra == \"dbt\" or extra == \"advanced-search\" or extra == \"embedding-search\" or extra == \"snowflake\" or extra == \"trino\" or extra == \"otel\""}
 
 [package.extras]
 brotli = ["brotli (>=1.2.0) ; platform_python_implementation == \"CPython\"", "brotlicffi (>=1.2.0.0) ; platform_python_implementation != \"CPython\""]
@@ -8630,4 +8630,4 @@ trino = ["trino"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "220b21838eb12b85093dc9429bf5c39f8dbee1cbfa75ba3e8e6de53472714a54"
+content-hash = "c93d3321f143e33d1f829bc9a3732e310273e5ebaba3f2962f06b9997aade8c6"

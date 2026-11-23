@@ -4490,24 +4490,6 @@
                 }
             }
         ],
-        "./tests/integration/test_mcp_inspect.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 27,
-                    "endColumn": 36,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 37,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/integration/test_notebooks.py": [
             {
                 "code": "reportMissingImports",
