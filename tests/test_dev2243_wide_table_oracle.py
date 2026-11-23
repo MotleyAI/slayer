@@ -19,9 +19,6 @@ from pydantic import BaseModel
 
 from tests._dev2217_fixtures import FIXTURES, STRICT, WIDE_TABLE, fixture_engine, ossie_query_error
 
-#: Row cases whose metric binds through the stage's host, which has two routes to the metric's home.
-OWN_HOME = frozenset({"a16_shared_dimensions_stores"})
-OWN_HOME_XFAIL = "DEV-2388: a metric binds through its host, not from its own home"
 
 Cell = Decimal | str | None
 
@@ -87,8 +84,7 @@ ROW_CASES = [c for c in CASES if c.name.startswith("a")]
 
 
 def _case_param(case: Path) -> Any:
-    marks = [pytest.mark.xfail(strict=True, reason=OWN_HOME_XFAIL)] if case.name in OWN_HOME else []
-    return pytest.param(case, id=case.name, marks=marks)
+    return pytest.param(case, id=case.name)
 
 
 def _query(case: Path) -> dict[str, Any]:
@@ -102,7 +98,6 @@ def _rows(data: list[dict[str, Any]], keys: list[str]) -> Counter[tuple[Cell, ..
 def test_every_case_names_a_known_fixture() -> None:
     assert CASES
     assert {read_expected(case).fixture for case in CASES} <= set(FIXTURES)
-    assert OWN_HOME <= {case.name for case in CASES}
 
 
 @pytest.mark.parametrize("case", [_case_param(c) for c in CASES])

@@ -141,9 +141,10 @@ class TestTransformValuedParameter:
         with pytest.raises(SlayerError):
             await keyed_engine.execute(q)
 
-    @pytest.mark.parametrize("mode", [None, "broadcast", "associate", "error"])
+    @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_keyless_home_partition_key_error(self, keyless_engine, mode) -> None:
-        """The inner partition key crosses the keyless (unproven) orders → customers hop."""
+        """The inner partition key crosses the keyless (unproven) orders → customers hop from its home, not from its
+        anchor: it errors outside association."""
         q = _by_status(mode, RANKED)
         with pytest.raises(PartitionKeyError, match="regions.name"):
             await keyless_engine.execute(q)

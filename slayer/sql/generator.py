@@ -3235,6 +3235,51 @@ class SQLGenerator:
             )
         return body
 
+    def _association_level_one_from_host(
+        self, *, inner_cols: List[Expr], planned_query: PlannedQuery, scope: ScopeFrame, bundle, kernel,
+        source_dataset, source_relation, entity_exprs: List[Expression], regroup_join_specs,
+    ) -> exp.Select:
+        """Level 1 of an association producer over its root's rows, every row attach joined on its grain."""
+        self._resolve_where_filter_relationships_via_scope(
+            planned_query=planned_query, scope=scope, skip_filter_ids=set(),
+        )
+        where, _having = self._build_where_having_from_planned(
+            planned_query=planned_query, source_relation=source_relation,
+            source_dataset=source_dataset, bundle=bundle, skip_filter_ids=set(),
+        )
+        regroup_attach_conditions = self._resolve_regroup_attach_conditions(
+            regroup_join_specs=regroup_join_specs or [], scope=scope,
+        )
+        from_expr, joins = self._build_from_and_joins(
+            source_dataset=source_dataset, source_relation=source_relation,
+            joined_paths=scope.relationship_paths.as_list(), bundle=bundle,
+        )
+        inner = exp.Select().select(*inner_cols).from_(from_expr)
+        inner = _apply_joins(select=inner, joins=joins)
+        for _cte_name, _condition in regroup_attach_conditions:
+            if _condition is None:
+                inner = inner.join(exp.to_identifier(_cte_name), join_type="CROSS")
+            else:
+                inner = inner.join(
+                    exp.to_identifier(_cte_name), on=_condition, join_type="LEFT",
+                )
+        if where is not None:
+            inner = inner.where(where)
+        # A host row with no associated entity (a NULL key from the LEFT JOIN) is
+        # not a distinct entity — exclude it so ``count(*)`` never counts it. A
+        # null-safe re-aggregation keeps a NULL grain cell as its own
+        # cell instead.
+        if not getattr(kernel, "null_safe", False):
+            for eexpr in entity_exprs:
+                inner = inner.where(
+                    exp.Not(this=exp.Is(this=eexpr, expression=exp.Null())))
+        for cond in self._semi_join_exists_conditions(
+            planned_query=planned_query, source_dataset=source_dataset,
+            source_relation=source_relation, bundle=bundle,
+        ):
+            inner = inner.where(cond)
+        return inner
+
     def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
         self, *, planned_query: PlannedQuery, bundle, kernel, source_dataset, source_relation,
         slots_by_id, regroup_env=None, regroup_join_specs=None,
@@ -3370,46 +3415,17 @@ class SQLGenerator:
                 input_type=_picked_type,
             )
 
-        self._resolve_where_filter_relationships_via_scope(
-            planned_query=planned_query, scope=scope, skip_filter_ids=set(),
-        )
-        where, _having = self._build_where_having_from_planned(
-            planned_query=planned_query, source_relation=source_relation,
-            source_dataset=source_dataset, bundle=bundle, skip_filter_ids=set(),
-        )
-        # A re-aggregation attaches its carrier (the inner producer)
-        # as a row producer supplying the per-cell value; join it into level 1.
-        regroup_attach_conditions = self._resolve_regroup_attach_conditions(
-            regroup_join_specs=regroup_join_specs or [], scope=scope,
-        )
-        from_expr, joins = self._build_from_and_joins(
-            source_dataset=source_dataset, source_relation=source_relation,
-            joined_paths=scope.relationship_paths.as_list(), bundle=bundle,
-        )
-        inner = exp.Select().select(*inner_cols).from_(from_expr)
-        inner = _apply_joins(select=inner, joins=joins)
-        for _cte_name, _condition in regroup_attach_conditions:
-            if _condition is None:
-                inner = inner.join(exp.to_identifier(_cte_name), join_type="CROSS")
-            else:
-                inner = inner.join(
-                    exp.to_identifier(_cte_name), on=_condition, join_type="LEFT",
-                )
-        if where is not None:
-            inner = inner.where(where)
-        # A host row with no associated entity (a NULL key from the LEFT JOIN) is
-        # not a distinct entity — exclude it so ``count(*)`` never counts it. A
-        # null-safe re-aggregation keeps a NULL grain cell as its own
-        # cell instead.
-        if not getattr(kernel, "null_safe", False):
-            for eexpr in entity_exprs:
-                inner = inner.where(
-                    exp.Not(this=exp.Is(this=eexpr, expression=exp.Null())))
-        for cond in self._semi_join_exists_conditions(
-            planned_query=planned_query, source_dataset=source_dataset,
-            source_relation=source_relation, bundle=bundle,
-        ):
-            inner = inner.where(cond)
+        row_attaches = [a for a in planned_query.regroup_attach_plans if a.attach_phase == "row"]
+        driving = next((spec[0] for a, spec in zip(row_attaches, regroup_join_specs or []) if a.drives), None)
+        if driving is not None:
+            # A re-aggregation reads its operand's cells as its own rows (semantics Axiom 2.4).
+            inner = exp.Select().select(*inner_cols).from_(exp.to_identifier(driving))
+        else:
+            inner = self._association_level_one_from_host(
+                inner_cols=inner_cols, planned_query=planned_query, scope=scope, bundle=bundle, kernel=kernel,
+                source_dataset=source_dataset, source_relation=source_relation, entity_exprs=entity_exprs,
+                regroup_join_specs=regroup_join_specs,
+            )
         for g in group:
             inner = inner.group_by(g)
 
@@ -4127,6 +4143,8 @@ class SQLGenerator:
         root_name = getattr(attach, "producer_root_dataset", None)
         if not root_name:
             return bundle
+        # A home stamped with the datasets it meets as a product renders over its own bundle.
+        bundle = attach.producer_plan.stage_bundle or bundle
         root = bundle.get_referenced_dataset(root_name)
         if root is None:
             raise RuntimeError(

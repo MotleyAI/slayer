@@ -222,13 +222,12 @@ class TestSavedMeasures:
         resp = await exec_engine.execute([stage1, root], variables={"k": 10})
         assert only_value(resp) == pytest.approx(2100.0)
 
-    async def test_saved_measure_through_join_unresolved(self, exec_engine: SlayerQueryEngine) -> None:
+    async def test_saved_measure_through_join_binds_query_variables(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(customers_dataset().model_copy(update={
             "metrics": [DatasetMetric(name="spend_scaled", expression="sum(spend) * {k}")],
         }))
         query = q(metrics=["customers.spend_scaled"], variables={"k": 10})
-        with pytest.raises(UnresolvedPlaceholderError, match=r"\{k\}"):
-            await exec_engine.execute(query)
+        assert only_value(await exec_engine.execute(query)) == pytest.approx(3500.0)
 
     async def test_saved_measure_undefined_variable(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(orders_dataset().model_copy(update={

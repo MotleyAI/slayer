@@ -209,6 +209,12 @@ class DatasetScope(BaseModel):
     #: A query's own scope: each reference is anchored at its first segment (``queries/references``); otherwise
     #: references read from ``population`` (a stored definition's dataset-local mode).
     anchored: bool = False
+    #: Inside an aggregation read from its own frame: the query's scope, where grain references bind.
+    grain: Optional["DatasetScope"] = None
+
+    @property
+    def grain_scope(self) -> "DatasetScope":
+        return self.grain or self
 
 
 def root_spelling(scope: DatasetScope) -> Optional[str]:

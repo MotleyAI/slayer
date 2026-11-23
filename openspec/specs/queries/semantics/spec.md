@@ -119,9 +119,10 @@ When aggregates at different grains combine in one expression, the expression's 
 SHALL be the union of its operands' grains, each operand broadcast from its own grain
 to that union; combining at different grains is never, by itself, an error. Broadcast
 SHALL only go from coarser to finer; consuming an aggregate at a strictly coarser
-grain SHALL fail with a typed error, never collapse implicitly. The population supplies the
-rows — for a query omitting `population`, its row supply — and a cell an operand lacks
-contributes the operand's empty value.
+grain SHALL fail with a typed error, never collapse implicitly. At query level the population
+supplies the rows — for a query omitting `population`, its row supply —; inside a second-order
+aggregation's source the operand dataset supplies them (› Second-order aggregation over attached
+values); in both, a cell an operand lacks contributes the operand's empty value.
 
 #### Scenario: Different-grain arithmetic broadcasts to the union
 - **WHEN** a measure divides a query-grain aggregate by a
@@ -471,9 +472,17 @@ union of its inner aggregates' grains — each inner's explicit `partition_by=`,
 the query's dimensions and time buckets — where a windowed inner's grain always
 includes the query's time bucket whether or not its `partition_by=` names it, and an
 axis-collapsing transform (`first`, `last`) at that union minus its time axis; a
-constituent with no declared grain is typed at the query's dimensions. Its rows are the distinct union-grain cells of the row-filtered
-population; each constituent's value attaches null-safely at its own grain, a cell
-a constituent lacks contributes NULL, and no constituent adds or removes cells. The
+constituent with no declared grain is typed at the query's dimensions. Its rows are the
+row supply of its constituents at the union grain (`queries/population` › Rows of an
+inferred query are the row supply), whatever the query's population: the NULL-safe union of
+the cells of every constituent at the full union grain — the tuples its row-filtered home
+rows reach, a measure-local `FILTER (WHERE …)` narrowing only its value — and, when no
+constituent is at the full union grain, the cells of the union grain's dimension anchor
+agreeing with the coarser constituents' cells, a query needing an undefined anchor failing
+closed with the population-inference error. The population's rows never add or remove an
+operand cell. Each constituent's value attaches null-safely at its own grain, coarser
+constituents broadcast onto the finer cells, and a cell a constituent lacks contributes
+its empty value (NULL for a transform). The
 outer aggregation partitions those cells by the query dimensions attributable to
 the operand dataset per Axiom 1 (Determination): a dimension is attributable iff
 the grain determines it — a grain member, or a field reached from a grain member
@@ -542,9 +551,10 @@ column's values.
 - **WHEN** the operand combines aggregates at `[city, region]` and `[region]`
   grains and some union-grain cell has no value for one constituent (e.g. a
   measure-local filter eliminates its rows)
-- **THEN** the operand dataset has exactly the population's distinct
-  `(city, region)` cells, the region-grain value broadcast onto them, and the
-  missing value contributes NULL to that cell without removing it
+- **THEN** the operand dataset has exactly the `(city, region)` cells the finer
+  constituent's home rows reach, the measure-local filter narrowing only its value,
+  the region-grain value broadcast onto them, and the missing value contributes its
+  empty value to that cell without removing it
 
 #### Scenario: Outer dimension attributed through a to-one chain
 - **WHEN** the inner grain is an entity key (e.g. `customer_id`) and a query
@@ -587,8 +597,8 @@ column's values.
 - **WHEN** the same query runs omitting the mode, and again under
   `to_many_handling: "associate"`
 - **THEN** in both runs each region cell aggregates the distinct city cells associated with
-  it through the population — a city value co-occurring with two regions counts
-  in both — by executed values
+  it through its constituent's home rows — a city value co-occurring with two
+  regions there counts in both — by executed values
 
 #### Scenario: Unattributable outer dimension refuses under error mode
 - **WHEN** the same query runs under `to_many_handling: "error"`
@@ -639,6 +649,24 @@ column's values.
   `avg(sum(amount, partition_by=[city, region]))`
 - **THEN** each row carries the average of exactly its own city cells, identical to the
   query over `[region, upper(city)]`, by executed values on SQLite and DuckDB, with no warning
+
+#### Scenario: The operand's cells never depend on the population
+- **WHEN** over the seed of `queries/population` › Rows of an inferred query are the row supply, a query
+  grouped by `customers.region` measures
+  `count(count(returns.*, partition_by=[customers.region, customers.segment]))`, with
+  `population: "orders"`, with `population: "customers"`, without a population, and without a
+  population beside `orders.total_revenue`
+- **THEN** each region counts the `(region, segment)` cells some return reaches: EAST 1 and WEST 0
+  under `orders`; EAST 1, NORTH 1 and WEST 0 under `customers`; EAST 1 and NORTH 1 inferred alone;
+  EAST 1, NORTH 1 and WEST 0 beside `orders.total_revenue` — never a population cell the
+  constituent's home rows do not reach
+
+#### Scenario: Constituents with no full-grain member take the union grain's anchor
+- **WHEN** a query grouped by `region` measures
+  `count(sum(a, partition_by=[city]) * sum(b, partition_by=[region]))`, where Paris and Lyon lie in
+  EU and Tokyo in Asia
+- **THEN** the operand cells are the `(city, region)` cells of the dimension anchor of `city` and
+  `region`, EU counting 2 and Asia 1 — never every city paired with every region
 
 ### Requirement: Aggregation parameters are typed by the home dataset's grain
 Every parameter of an aggregation — a keyword or positional parameter (`weight=`,
@@ -823,52 +851,51 @@ ungrained form on construction grounds is a closure violation.
   `count(id, partition_by=region)` — never the not-determined rejection
 
 ### Requirement: Home dataset of a row-level aggregation source
-An aggregation over a row-level source SHALL run over the rows of exactly one home
-dataset (Axiom 2): the source's anchor when every dependency of every input —
-each source leaf, each column-valued parameter and each
-non-overridden definition default, each taken through its dependency closure, and
-each grain member of every attached constituent (an aggregate or grained transform
-operand is opaque and stands for its grain: its explicit `partition_by=`, else the
-query's dimensions; a transform's grain is the union of its inner aggregates', where
-a windowed inner's grain always includes the query's time bucket whether or not its
-`partition_by=` names it) — is reachable from it over provably to-one hops, else the
-deepest join path from the query root from which every such dependency is
-reachable over provably to-one hops. A non-overridden definition default SHALL be
-resolved as a reference from the owning model — the source anchor that declares the
-aggregation — with each column reference (bare, or one inside an expression default)
-taken in the owner's coordinates. A qualifier naming a dataset already on the owner's
-path from the query root — the root itself included — SHALL cancel the path back to
-that dataset, so the reference reads that dataset's row on the path, keeping the
-path's own spelling of it, never a second join to it; a qualifier the owner cannot
-reach forward otherwise SHALL instead be anchored at the query root, while an
-ambiguous or only partially resolvable owner reference — a first segment that
-resolves, by cancellation or as a hop, followed by one that does not — SHALL fail
-closed rather than silently re-anchor at the root. An edge-name segment never
-cancels. Only a definition default cancels: a query-typed path that revisits a
-dataset stays refused with the circular-join error, and so does a default reference
-that is circular from the query root. (Whether a derived column whose
-own `DatasetField.sql` revisits is likewise refused is out of scope here — DEV-1952.) A
-default is resolved once, when the query is bound, and is thereafter the same value as
-its explicit spelling — the column it resolves to, or for an expression default each
-of its references: it homes, is checked for input safety and renders exactly as that
-spelling would, in every producer kind — plain, association, windowed and
-second-order — and in every position, filters and order keys included; a default and
-its identical explicit spelling in one query are computed once. So a default that
-resolves to a genuine host-local (root) column SHALL widen the home to the root, and a
-default whose resolved path reaches a dataset over a fanning hop SHALL widen the home
-to that dataset, exactly as spelling that column explicitly would; a definition
-default whose definition crosses a fanning hop SHALL fail closed even when other
-inputs widen the home away from the declaring model; and a cancelled or root-anchored
-default is never rendered as a join from the owner back to the dataset it names.
-Candidates are the source's anchor, the longest common prefix of the source leaves'
-own paths, tried first, then the input paths and their longest common prefix,
-deepest first. The aggregation is computed over the
-home's rows, each counted once, never over a join product. When no candidate
-determines every input the query SHALL fail with the input-safety error naming the
-offending leaf and hop. The home SHALL depend on the leaves' paths alone, never on
-the spelling of the expression. Every other rule — attribution and
-`to_many_handling` modes, explicit grain, `window=`, filter routing, positions —
-applies exactly as for a single-column source rooted at the home.
+An aggregation over a row-level source SHALL run over the rows of exactly one home dataset
+(Axiom 2): the source's anchor (› An aggregation binds from its own anchor) when every
+dependency of every input — each source leaf, each column-valued parameter and each
+non-overridden definition default, each taken through its dependency closure, and each grain
+member of every attached constituent (an aggregate or grained transform operand is opaque
+and stands for its grain: its explicit `partition_by=`, else the query's dimensions; a
+transform's grain is the union of its inner aggregates', where a windowed inner's grain
+always includes the query's time bucket whether or not its `partition_by=` names it) — is
+reachable from it over provably to-one hops, else the deepest candidate from which every
+such dependency is reachable over provably to-one hops. A non-overridden definition default
+SHALL be resolved as a reference from the owning model — the source anchor that declares the
+aggregation — with each column reference (bare, or one inside an expression default) taken
+in the owner's coordinates. A qualifier naming a dataset already on the source's path from
+its reference anchor (`queries/references`) — that anchor itself included — SHALL cancel the
+path back to that dataset, so the reference reads that dataset's row on the path, keeping
+the path's own spelling of it, never a second join to it; a qualifier the owner cannot reach
+forward otherwise SHALL instead be read as a query reference anchored at its first segment,
+while an ambiguous or only partially resolvable owner reference — a first segment that
+resolves, by cancellation or as a hop, followed by one that does not — SHALL fail closed
+rather than silently re-anchor. An edge-name segment never cancels. Only a definition
+default cancels: a query-typed path that revisits a dataset stays refused with the
+circular-join error, and so does a default reference that is circular along the source's
+path. (Whether a derived column whose own `DatasetField.sql` revisits is likewise refused is
+out of scope here — DEV-1952.) A default is resolved once, when the query is bound, and is
+thereafter the same value as its explicit spelling — the column it resolves to, or for an
+expression default each of its references: it homes, is checked for input safety and renders
+exactly as that spelling would, in every producer kind — plain, association, windowed and
+second-order — and in every position, filters and order keys included; a default and its
+identical explicit spelling in one query are computed once. So a default read as a query
+reference — anchored at its first segment, even when that anchor is the query's population —
+SHALL widen the home exactly as spelling that reference explicitly would, and a default
+whose resolved path reaches a dataset over a fanning hop SHALL widen the home to that
+dataset, exactly as spelling that column explicitly would; a definition default whose
+definition crosses a fanning hop SHALL fail closed even when other inputs widen the home
+away from the declaring model; and a cancelled default, or one read as a query reference, is
+never rendered as a join from the owner back to the dataset it names. Candidates are the
+source's anchor, the longest common prefix of the source leaves' own paths, tried first,
+then the input paths — each from its own reference anchor, never a route from the query's
+population — and their longest common prefix, deepest first. The aggregation is computed
+over the home's rows, each counted once, never over a join product. When no candidate
+determines every input the query SHALL fail with the input-safety error naming the offending
+leaf and hop. The home SHALL depend on the leaves' paths alone, never on the spelling of the
+expression. Every other rule — attribution and `to_many_handling` modes, explicit grain,
+`window=`, filter routing, positions — applies exactly as for a single-column source rooted
+at the home.
 
 #### Scenario: Deepest determining dataset wins
 - **WHEN** a query rooted at `orders` selects `sum(customers.spend - customers.regions.pop)`
@@ -1228,3 +1255,81 @@ and the unit SHALL hold for a query naming `population` too.
 - **WHEN** a query with measures and no dimensions runs, with and without `population`, with and
   without a filter no row passes
 - **THEN** it returns exactly one row
+
+### Requirement: An aggregation binds from its own anchor
+An aggregation's source SHALL be bound from its **source anchor**, never through the query's
+population (semantics Axiom 2.6): the dataset its source's references are anchored at when they
+share one anchor; when they are anchored apart, the smallest dataset determining every leaf's
+anchor over provably to-one hops — a dataset that determines another candidate it is not determined by back is not smaller. Tied
+minimal candidates SHALL fail with the typed ambiguity error of `queries/references`, naming one
+explicit single-anchor spelling per candidate, ordered by canonical dataset name, each in its
+declared case; no candidate SHALL fail with the input-safety error naming the leaf and the hop.
+The aggregation's parameters, definition defaults, `FILTER (WHERE …)` and ranking key SHALL be
+bound from the same anchor, and its home resolved from there per › Home dataset of a row-level
+aggregation source. Its producer SHALL be rooted at its home, read its grain dimensions and the
+filter conjuncts restricting it from that home (`queries/references`), associate per home row
+inside the home's own join tree — a keyless home's rows told apart by a per-query row number and a
+list child's by its parent and element — and meet the result only on grain values, NULL-safely,
+never on a key of the population. A saved metric's definition SHALL be bound from the dataset that
+declares it, as a reference anchored there. No value or refusal of an aggregation SHALL depend on
+the population's routes, on which dataset hosts an inferred stage, on sibling measures, or on the
+order in which the query writes its entries. The time spine SHALL stay a spine query's row source,
+producers only attaching to its grain.
+
+#### Scenario: A named population with two routes to the anchor
+- **WHEN** `orders → customers → regions`, `regions → managers` and `orders → managers` are
+  many-to-one, and a query with `population: "regions"` groups by `regions.name` and measures
+  `orders.total_revenue`, and again with the same aggregate as a filter, an order key, a computed
+  dimension with `partition_by=[regions.name]`, and an attached parameter
+- **THEN** each answers North 150 and South 300 in its position, the source binding from `orders`
+
+#### Scenario: A metric written through another anchor binds from that anchor
+- **WHEN** over the seed of `queries/population` › Rows of an inferred query are the row supply, a
+  query without a population groups by `customers.region` and measures `sum(customers.orders.amount)`,
+  then beside `returns.total_returns`, then with no dimension
+- **THEN** it answers EAST 350 and WEST 300; beside the returns it adds NORTH with NULL and 10; with
+  no dimension it answers one row, 650 — the home `orders` reached along the source's written path
+
+#### Scenario: A saved metric bound through a host with two routes to its home
+- **WHEN** `store_sales` and `store_returns` each relate many-to-one to `item` and to `date_dim`, and
+  a query without a population groups by `item.brand` and `date_dim.year` and measures
+  `store_sales.total_sales` and `store_returns.total_returns`
+- **THEN** it answers Acme 2023 125/10, Acme 2024 200/NULL and Beta 2024 90/5, each saved metric
+  bound from the dataset declaring it
+
+#### Scenario: Leaves anchored apart meet at the smallest determining dataset
+- **WHEN** `order_lines → orders → customers` and `order_lines → products` are many-to-one, and
+  `sum(customers.discount * products.price)` is measured with `population: "customers"`, with
+  `population: "products"` and without a population
+- **THEN** it is homed on `order_lines`, each line counted once, with the same value per cell in all
+  three queries
+
+#### Scenario: Tied minimal datasets are refused
+- **WHEN** `orders` and `tickets` each relate many-to-one to `customers` and to `managers`, and a query
+  with `population: "orders"` measures `sum(customers.discount * managers.bonus)`
+- **THEN** it fails with the ambiguity error naming `orders.customers.discount * orders.managers.bonus`
+  and `tickets.customers.discount * tickets.managers.bonus`, and the first spelling executes
+
+#### Scenario: Unconnected anchors are refused
+- **WHEN** an aggregation's source reads `orders.amount * tickets.weight` and no join path connects
+  `orders` and `tickets`
+- **THEN** it fails with the input-safety error, never as a product of the two datasets
+
+#### Scenario: Ranked and filtered aggregations bind from their anchor
+- **WHEN** with the two-route schema above, a query with `population: "regions"` groups by
+  `regions.name` and measures `last(orders.amount, orders.ordered_at)` and
+  `sum(orders.amount) FILTER (WHERE orders.amount > 60)`
+- **THEN** both bind from `orders`, the ordering key and the filter read from the home, with the
+  values of the same aggregations without a population
+
+#### Scenario: A spine query keeps its spine rows
+- **WHEN** with the two-route schema, a query with `population: "regions"` groups by a monthly
+  `time_spine.timestamp` bounded over a range with an empty month and by `regions.name`, and measures
+  `orders.total_revenue`
+- **THEN** every month appears for every region, the empty month carrying NULL, the source binding
+  from `orders`
+
+#### Scenario: The order of metrics never changes a value
+- **WHEN** an inferred query measures `orders.total_revenue`, `returns.total_returns` and a
+  re-aggregation, in each order
+- **THEN** every order returns the same rows and values

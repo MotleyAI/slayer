@@ -446,7 +446,7 @@ filters:
   - "status <> 'test'"
 ```
 
-They apply wherever the dataset's rows are read — as a query's source, a relationship target, a cross-dataset aggregate or inside another dataset's filter — before any join, so a LEFT join with no passing match reads as NULL and an INNER join drops the row.
+They apply wherever the dataset's rows are read — as a query's source, a relationship target, a cross-dataset aggregate or inside another dataset's filter — before any join, so a LEFT join with no passing match reads as NULL and an INNER join drops the row. As a query's population they decide only its rows: a metric of another dataset is narrowed only where that dataset reads the filtered one along its own paths.
 
 These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`; a bare name reads a source column and a path reads a field (`orders.status`, `customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `DatasetMetric.expression`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
 
@@ -553,7 +553,7 @@ Rules:
     With `variables={"regions": ["US","CA"]}` this renders `... WHERE 1=1 AND (region IN ('US', 'CA'))`; with no `regions` supplied it renders `... WHERE 1=1 AND (1=1)`. A block must contain at least one `{var}`; blocks do not nest; a block collapses even on a **zero-variable** call (unlike bare placeholders, which are left literal when no variable is in play at all). Optional blocks are rejected in every Mode-B expression.
 - **`inspect` shows the literal template** (`{floor}`), not a rendered value. A `Variables:` line lists the dataset's placeholders classified **required** (bare, no default — omitting it raises) vs **optional** (inside a block, or carrying a `query_variables` default). The classification is derived from the SQL, not stored, so it can never drift from the template.
 
-**Scope:** substitution applies to the query's **direct population**, each stage's own population, and every stage of a query-backed source (spliced into the statement); relationship-target and cross-dataset-target datasets are not yet substituted, so a `{var}` there is left untouched (and surfaces as an error on the stray placeholder).
+**Scope:** every dataset a query reads (its population, a joined dataset, an aggregate's own dataset, each stage of a query-backed source) binds its `{var}` with its own `query_variables` defaults, overridden by the query's variables and runtime variables; another dataset's defaults never reach it.
 
 **Saved metric expressions** (`DatasetMetric.expression`) on those same datasets take variables too, bound as literals like any Mode-B expression and with no optional blocks, and inspection lists their placeholders as required unless defaulted.
 

@@ -147,17 +147,20 @@ class TestToOnePathRule:
     async def test_a_unique_fanning_route_is_taken(self, backend: str) -> None:
         async with seed_engine(backend) as eng:
             resp = await eng.execute({"population": "customers", "dimensions": ["customers.customer_id"],
-                                      "metrics": ["sum(orders.amount)"]})
-        assert resp.columns == ["customers.customer_id", "orders.amount_sum"]
-        assert table(resp, "customers.customer_id", "orders.amount_sum") == {
-            ("C1", 300.0), ("C2", 50.0), ("C3", 300.0), ("C4", None)}
+                                      "filter": ["orders.status = 'open'"]})
+        assert table(resp, "customers.customer_id") == {("C1",), ("C3",)}
 
     async def test_several_fanning_routes_are_refused(self, backend: str) -> None:
         async with seed_engine(backend, managers=True) as eng:
-            err = await _raises(eng, {"population": "customers", "metrics": ["sum(orders.amount)"]},
+            err = await _raises(eng, {"population": "customers", "dimensions": ["customers.customer_id"],
+                                      "filter": ["orders.status = 'open'"]},
                                 UnresolvableDimensionRelationshipError)
-        assert "customers.orders.amount" in str(err)
-        assert "customers.managers.orders.amount" in str(err)
+            resp = await eng.execute({"population": "customers", "dimensions": ["customers.customer_id"],
+                                      "metrics": ["sum(orders.amount)"]})
+        assert "customers.orders.status" in str(err)
+        assert "customers.managers.orders.status" in str(err)
+        assert table(resp, "customers.customer_id", "orders.amount_sum") == {
+            ("C1", 300.0), ("C2", 50.0), ("C3", 300.0), ("C4", None)}
 
     async def test_an_adjacent_to_one_edge_wins_over_an_adjacent_fanning_edge(self, backend: str) -> None:
         fanning = DatasetRelationship(to="customers", name="managed", from_columns=["manager_id"],

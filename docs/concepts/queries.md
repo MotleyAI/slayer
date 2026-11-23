@@ -599,6 +599,8 @@ Adding a second granularity of a saved time field (`{"time_dimensions": ["date_t
 
 `population` names the query's **population**: the dataset whose rows the result is quantified over, one result row per distinct combination of the dimensions among its filtered rows. Metrics never change those rows. A metric's home row with no matching population row (an order whose customer is missing) lands in no row.
 
+The population decides only the rows. Each metric is read from its own dataset and meets the population on dimension values, so the population never needs a route to it. A restricted population (dataset filters, row-level security, a filtered stage) narrows a metric only where the metric's own dataset reads the restricted rows along its own paths.
+
 Omit `population` and the rows are the **row supply**:
 
 - Each metric supplies the dimension values its home's filtered rows reach along the home's own relationship paths. A home row with no related row lands in the NULL value. The rows are the union over every metric.
