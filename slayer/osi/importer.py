@@ -11,14 +11,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import BaseModel
 from sqlglot import exp
 
 from slayer.core import slayer_extension as ext
-from slayer.core.document_text import edit_text
+from slayer.core.document_text import edit_text, parse_document_text
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.ossie_validity import columns, parse_ossie_sql
+from slayer.core.portable_sql import portable_entity_expression
 from slayer.core.semantic_model import OSSIE_VERSION, ossie_validity_errors
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.ingestion import introspect_table_to_dataset
@@ -223,6 +223,15 @@ def _carried_fields(*, current: SlayerDataset, old: SlayerDataset) -> list[Datas
 
 # ---- the import ---------------------------------------------------------------
 
+def _portable_document(doc: dict[str, Any]) -> None:
+    """Respell every field and metric expression of ``doc`` in place with the canonical portable-SQL writer."""
+    entities = [e for d in doc.get("datasets") or [] if isinstance(d, dict)
+                for e in [*(d.get("fields") or []), *(d.get("metrics") or [])]]
+    for entity in [*entities, *(doc.get("metrics") or [])]:
+        if isinstance(entity, dict) and "expression" in entity:
+            entity["expression"] = portable_entity_expression(entity["expression"])
+
+
 class _Importer:
     def __init__(self, *, storage: Any, data_source: str, engine: SlayerQueryEngine | None) -> None:
         self.storage = storage
@@ -244,9 +253,9 @@ class _Importer:
     async def _file(self, file: Path) -> None:
         text = file.read_text(encoding="utf-8")  # NOSONAR(S8707) — reading the file the CLI user names is the feature
         try:
-            data = yaml.safe_load(text)
-        except yaml.YAMLError as exc:
-            raise _Refused(f"the file is not valid YAML or JSON: {exc}") from exc
+            data = parse_document_text(text)
+        except ValueError as exc:
+            raise _Refused(str(exc)) from exc
         if not isinstance(data, dict) or ("datasets" not in data and "semantic_model" not in data):
             raise _Refused("the file is not a semantic-model document (it holds neither `datasets` nor a legacy "
                            "`semantic_model`); ontology and mapping documents are not imported")
@@ -271,6 +280,7 @@ class _Importer:
         upgraded = json.loads(json.dumps(data, default=str))
         legacy = _legacy_extensions(upgraded, owner=f"semantic model {name!r}")
         if changes or legacy:
+            _portable_document(upgraded)
             upgraded["version"] = OSSIE_VERSION
             for key in ("dialects", "vendors"):
                 upgraded.pop(key, None)
@@ -280,7 +290,7 @@ class _Importer:
         if legacy:
             self.entry("legacy_extensions", "legacy `custom_extensions` entries read as `nonportable_extensions`",
                        document=name)
-        data = yaml.safe_load(text)
+        data = parse_document_text(text)
         boundaries = _boundaries(data)
         if boundaries:
             await self._split(data, boundaries)
@@ -330,6 +340,7 @@ class _Importer:
             self.entry("upgraded", f"legacy version {version or 'unset'} upgraded to {OSSIE_VERSION}", document=name)
             await self._declare_columns(doc)
             self._qualify_metrics(doc)
+            _portable_document(doc)
             await self._store(name, dump_yaml(doc), doc)
 
     async def _declare_columns(self, doc: dict[str, Any]) -> None:

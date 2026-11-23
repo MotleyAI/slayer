@@ -174,8 +174,9 @@ elaborate→compile and `query_engine.py` orchestrates.
    warning on the response; a slack rule retires by promotion to first-class
    grammar, never by accumulating rewrites. [review]
 8. **Models persist verbatim**: `save_dataset` stores the author's spelling
-   unchanged, a deprecated spelling excepted, which is stored as its canonical
-   twin; normalization applies to queries at execute time only. The one
+   unchanged, except a deprecated spelling or one Ossie rejects where it is
+   stored, each stored as its canonical twin; normalization applies to queries
+   at execute time only. The one
    exception: a saved query stores each inferred stage's dimension anchor as its
    `population`, marked `population_inferred`. [review]
 9. **The term-interface boundary**: `binding`, `bind_inputs`,
