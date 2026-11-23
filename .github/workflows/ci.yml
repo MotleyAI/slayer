@@ -232,10 +232,23 @@ jobs:
   # workflows so each dialect's CI lives in one place and is path-gated.
   # SQL Server gained its first verify.py-based CI coverage there too.
 
+  bigquery-gate:
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/expensive-job-gate.yml
+    with:
+      workflow: ci.yml
+      job: bigquery-example
+
   bigquery-example:
+    needs: bigquery-gate
     # Skip on forked-PR runs where the GCP secrets aren't available — the job
     # would fail otherwise and we'd rather not nag external contributors.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    # BigQuery bills per query, so bigquery-gate also limits which PR pushes run it.
+    if: >-
+      ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      && needs.bigquery-gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     # One run at a time in the shared GCP project; overlapping runs queue, never cancel.
     concurrency:
