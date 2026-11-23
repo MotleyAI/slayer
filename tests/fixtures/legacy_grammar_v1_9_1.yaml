@@ -1,0 +1,637 @@
+# Recorded from real motley-slayer==1.9.1; regenerate with provenance.command, never edit by hand.
+provenance:
+  version: 1.9.1
+  command: uv venv v191 --python 3.12 && uv pip install --python v191/bin/python motley-slayer==1.9.1 && v191/bin/python -I
+    record_v191.py tests/fixtures/legacy_grammar_v1_9_1.yaml (record_v191.py = provenance.script)
+  script: |
+    """Judge each corpus text with motley-slayer==1.9.1 and write tests/fixtures/legacy_grammar_v1_9_1.yaml.
+
+    Usage: <venv>/bin/python -I record_v191.py <out.yaml>
+    """
+
+    import ast
+    import sys
+    from importlib.metadata import version
+
+    import yaml
+
+    from slayer.core.query import _VAR_PATTERN, _contains_block_delimiter, substitute_variables
+    from slayer.engine.syntax import (
+        _normalize_sql_filter_operators,
+        _preprocess_colons,
+        _preprocess_star_args,
+        _rewrite_case_when,
+        _rewrite_count_distinct,
+        _rewrite_extract,
+        parse_expr,
+        parse_filter_expr,
+    )
+
+    F, E = "filter", "expression"
+    COMMAND = ("uv venv v191 --python 3.12 && uv pip install --python v191/bin/python motley-slayer==1.9.1 && "
+               "v191/bin/python -I record_v191.py tests/fixtures/legacy_grammar_v1_9_1.yaml "
+               "(record_v191.py = provenance.script)")
+
+    # (surface, text[, variables for the full 1.9.1 parse])
+    CORPUS = [
+        # --- SQL filter spellings -------------------------------------------------
+        (F, "status = 'ok'"),
+        (F, 'status = "ok"'),
+        (F, 'status == "paid"'),
+        (F, 'status <> "ok"'),
+        (F, 'status != "ok"'),
+        (F, 'status = "ok" AND NOT region = "EU"'),
+        (F, 'status = "ok" and not region = "EU"'),
+        (F, 'status = "ok" And Not region = "EU"'),
+        (F, 'region IS NULL OR status = "ok"'),
+        (F, "region is null"),
+        (F, "region IS NOT NULL"),
+        (F, "region = NULL"),
+        (F, 'status IN ("ok", "paid")'),
+        (F, 'status NOT IN ("ok", "paid")'),
+        (F, "status In ('ok')"),
+        (F, "name LIKE 'A%' AND status = \"ok\""),
+        (F, "name NOT LIKE 'A%'"),
+        (F, "name like 'A%'"),
+        (F, 'name LIKE "A%"'),
+        (F, 'status || region = "okEU"'),
+        (F, 'status | region = "okEU"'),
+        (F, "amount >= 10 AND amount <= 30"),
+        (F, "amount:sum > 100"),
+        (F, "count(*) > 1"),
+        (F, "customers.*:count > 1"),
+        (F, 'iif(status = "ok", 1, 0) = 1'),
+        (F, 'sum(CASE WHEN status = "ok" THEN amount ELSE 0 END) > 10'),
+        (F, "extract(year from ordered_at) = 2024"),
+        (F, "count(distinct customer_id) > 1"),
+        # --- the = vs kwarg scanner reads the 1.9.1 function names ----------------
+        (F, "cumsum(x = 1, amount) > 0"),
+        (F, "lag(amount, x = 1, 2) > 0"),
+        (F, "coalesce(x = 1, amount) > 0"),
+        (F, "COALESCE(x = 1, amount) > 0"),
+        (F, "myfn(x = 1, amount) > 0"),
+        (F, "amount:first(x = 1, y) > 0"),
+        (F, "consecutive_periods(status = 'paid') > 2"),
+        # --- refused filter spellings ---------------------------------------------
+        (F, "x BETWEEN 1 AND 2"),
+        (F, "amount::int > 1"),
+        (F, "CAST(amount AS INT) > 1"),
+        (F, "amount : sum > 100"),
+        (F, " status == \"paid\""),
+        (F, "\n  status == \"paid\""),
+        # --- semantic rejections: 1.9.1 refused, gate holds ------------------------
+        (F, "amount = 10 = 20"),
+        (F, "unknown_fn(status) = 'ok'"),
+        # --- {var} placeholders -----------------------------------------------------
+        (F, "status = {s}"),
+        (F, "status IN {statuses}", {"statuses": ["ok", "paid"]}),
+        (F, "status IN ({statuses})", {"statuses": ["ok", "paid"]}),
+        (F, "status = '{{x}}'"),
+        (F, "status = {1bad}"),
+        (F, "status = { s }"),
+        (F, 'status = "ok" {? AND region = {r} ?}'),
+        (F, "status = 'a?}'"),
+        # --- expression surfaces ----------------------------------------------------
+        (E, 'sum(CASE WHEN status = "ok" THEN amount ELSE 0 END)'),
+        (E, 'sum(CASE WHEN status IS NULL THEN amount ELSE 0 END)'),
+        (E, "CASE status WHEN 'ok' THEN 1 ELSE 0 END"),
+        (E, 'count(distinct iif(status == "ok", id, None))'),
+        (E, "count(DISTINCT customer_id)"),
+        (E, 'sum(iif(extract(year from created_at) == 2024 and status == "ok", amount, 0))'),
+        (E, "EXTRACT(MONTH FROM created_at)"),
+        (E, 'sum(iif(status == "ok", amount, 0))'),
+        (E, 'sum(iif(region == "EU", amount, 0))'),
+        (E, "status | region"),
+        (E, 'concat(status | region, "-")'),
+        (E, "sum(amount) --sum(refund)"),
+        (E, "amount:sum"),
+        (E, "*:count"),
+        (E, "customers.*:count"),
+        (E, "count(*)"),
+        (E, "count(customers.*)"),
+        (E, "sum(amount) / {divisor}"),
+        (E, 'note == "tab\\there"'),
+        (E, "rank(sum(amount), direction='desc')"),
+        # --- pass error paths -------------------------------------------------------
+        (E, 'sum(CASE WHEN status = "ok" THEN amount ELSE 0)'),
+        (E, "CASE END"),
+        (E, "sum(distinct customer_id)"),
+        (E, "count(distinct a, b)"),
+        (E, "extract(fortnight from created_at)"),
+        (E, "extract(year created_at)"),
+        # --- refused on an expression surface ---------------------------------------
+        (E, 'sum(iif(a = "x", 1, 0))'),
+        (E, "status = 'ok'"),
+        (E, "iif(x IS NULL, 0, x)"),
+        (E, "sum(a || b)"),
+        (E, "sum(x::int)"),
+        (E, "sum(CAST(x AS INT))"),
+        (E, "sum(x) FILTER (WHERE y > 1)"),
+        (E, "sum(amount) OVER (PARTITION BY status)"),
+        (E, "amount : sum"),
+        (E, "sum(amount) {? * {k} ?}"),
+        (E, "sum(amount) / {bad name}"),
+        # --- semantic rejections on an expression surface ---------------------------
+        (E, "unknown_fn(amount)"),
+        (E, "amount > 1 > 0"),
+        (E, "__slayer_x"),
+    ]
+
+
+    def _probe(match):
+        full = match.group(0)
+        if full in ("{{", "}}"):
+            return full[0]
+        if match.group(1) is None:
+            raise ValueError(f"invalid placeholder {full!r}")
+        return "0"
+
+
+    def gate_holds(text, *, is_filter):
+        """1.9.1's pre-parse passes then ast.parse (no _convert); placeholders probed as design decision 6."""
+        try:
+            if _contains_block_delimiter(text):
+                return False
+            t = _VAR_PATTERN.sub(_probe, text)
+            if is_filter:
+                t = _normalize_sql_filter_operators(t)
+            t = _rewrite_count_distinct(_rewrite_extract(t, original=t), original=t)
+            t, _ = _preprocess_colons(_rewrite_case_when(t))
+            ast.parse(_preprocess_star_args(t), mode="eval")
+        except (ValueError, SyntaxError):
+            return False
+        return True
+
+
+    def v191_parse(text, *, is_filter, variables):
+        """1.9.1's full reader on a query surface: unconditional substitution (``apply_variables_to_query``), then
+        parse_filter_expr / parse_expr."""
+        names = {m.group(1) for m in _VAR_PATTERN.finditer(text) if m.group(1)}
+        values = {n: variables.get(n, 0) for n in names}
+        try:
+            t = substitute_variables(text, values, escape="python")
+            (parse_filter_expr if is_filter else parse_expr)(t)
+        except Exception as e:  # noqa: BLE001 - recording every refusal
+            return "refused", f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
+        return "accepted", None
+
+
+    def main(out):
+        cases = []
+        for entry in CORPUS:
+            surface, text = entry[0], entry[1]
+            variables = entry[2] if len(entry) > 2 else {}
+            is_filter = surface == F
+            v191, error = v191_parse(text, is_filter=is_filter, variables=variables)
+            gate = gate_holds(text, is_filter=is_filter)
+            if v191 == "accepted":
+                assert gate, text
+            case = {"surface": surface, "text": text, "v191": v191, "gate": gate}
+            if variables:
+                case["variables"] = variables
+            if error:
+                case["v191_error"] = error
+            cases.append(case)
+        doc = {"provenance": {"version": version("motley-slayer"), "command": COMMAND, "script": open(__file__).read()},
+               "cases": cases}
+        yaml.add_representer(str, lambda d, s: d.represent_scalar(
+            "tag:yaml.org,2002:str", s, style="|" if "\n" in s.strip() else None), Dumper=yaml.SafeDumper)
+        with open(out, "w", encoding="utf-8") as f:
+            f.write("# Recorded from real motley-slayer==1.9.1; regenerate with provenance.command, never edit by hand.\n")
+            yaml.safe_dump(doc, f, sort_keys=False, allow_unicode=True, width=120)
+
+
+    if __name__ == "__main__":
+        main(sys.argv[1])
+cases:
+- surface: filter
+  text: status = 'ok'
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status = "ok"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status == "paid"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status <> "ok"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status != "ok"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status = "ok" AND NOT region = "EU"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status = "ok" and not region = "EU"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status = "ok" And Not region = "EU"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: region IS NULL OR status = "ok"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: region is null
+  v191: accepted
+  gate: true
+- surface: filter
+  text: region IS NOT NULL
+  v191: accepted
+  gate: true
+- surface: filter
+  text: region = NULL
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status IN ("ok", "paid")
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status NOT IN ("ok", "paid")
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status In ('ok')
+  v191: accepted
+  gate: true
+- surface: filter
+  text: name LIKE 'A%' AND status = "ok"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: name NOT LIKE 'A%'
+  v191: accepted
+  gate: true
+- surface: filter
+  text: name like 'A%'
+  v191: accepted
+  gate: true
+- surface: filter
+  text: name LIKE "A%"
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''name LIKE "A%"'': invalid syntax (<unknown>, line 1)'
+- surface: filter
+  text: status || region = "okEU"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status | region = "okEU"
+  v191: accepted
+  gate: true
+- surface: filter
+  text: amount >= 10 AND amount <= 30
+  v191: accepted
+  gate: true
+- surface: filter
+  text: amount:sum > 100
+  v191: accepted
+  gate: true
+- surface: filter
+  text: count(*) > 1
+  v191: accepted
+  gate: true
+- surface: filter
+  text: customers.*:count > 1
+  v191: accepted
+  gate: true
+- surface: filter
+  text: iif(status = "ok", 1, 0) = 1
+  v191: accepted
+  gate: true
+- surface: filter
+  text: sum(CASE WHEN status = "ok" THEN amount ELSE 0 END) > 10
+  v191: accepted
+  gate: true
+- surface: filter
+  text: extract(year from ordered_at) = 2024
+  v191: accepted
+  gate: true
+- surface: filter
+  text: count(distinct customer_id) > 1
+  v191: accepted
+  gate: true
+- surface: filter
+  text: cumsum(x = 1, amount) > 0
+  v191: accepted
+  gate: true
+- surface: filter
+  text: lag(amount, x = 1, 2) > 0
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''lag(amount, x = 1, 2) > 0'': positional argument follows keyword argument
+    (<unknown>, line 1)'
+- surface: filter
+  text: coalesce(x = 1, amount) > 0
+  v191: accepted
+  gate: true
+- surface: filter
+  text: COALESCE(x = 1, amount) > 0
+  v191: accepted
+  gate: true
+- surface: filter
+  text: myfn(x = 1, amount) > 0
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''myfn(x = 1, amount) > 0'': positional argument follows keyword argument
+    (<unknown>, line 1)'
+- surface: filter
+  text: amount:first(x = 1, y) > 0
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''amount:first(x = 1, y) > 0'': positional argument follows keyword argument
+    (<unknown>, line 1)'
+- surface: filter
+  text: consecutive_periods(status = 'paid') > 2
+  v191: accepted
+  gate: true
+- surface: filter
+  text: x BETWEEN 1 AND 2
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''x BETWEEN 1 and 2'': invalid syntax (<unknown>, line 1)'
+- surface: filter
+  text: amount::int > 1
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''amount::int > 1'': invalid syntax (<unknown>, line 1)'
+- surface: filter
+  text: CAST(amount AS INT) > 1
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''CAST(amount AS INT) > 1'': invalid syntax. Perhaps you forgot a comma?
+    (<unknown>, line 1)'
+- surface: filter
+  text: 'amount : sum > 100'
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''amount : sum > 100'': invalid syntax (<unknown>, line 1)'
+- surface: filter
+  text: ' status == "paid"'
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression '' status == "paid"'': unexpected indent (<unknown>, line 1)'
+- surface: filter
+  text: "\n  status == \"paid\""
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''\n  status == "paid"'': unexpected indent (<unknown>, line 2)'
+- surface: filter
+  text: amount = 10 = 20
+  v191: refused
+  gate: true
+  v191_error: 'ValueError: Invalid Mode-B expression ''amount == 10 == 20'': chained comparisons are not supported. Each Cmp
+    must be a single comparison; split (e.g.) `1 < x < 10` into `1 <'
+- surface: filter
+  text: unknown_fn(status) = 'ok'
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status = {s}
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status IN {statuses}
+  v191: refused
+  gate: true
+  variables:
+    statuses:
+    - ok
+    - paid
+  v191_error: 'ValueError: Invalid Mode-B expression "status in ''ok'', ''paid'',": unsupported AST node Tuple.'
+- surface: filter
+  text: status IN ({statuses})
+  v191: accepted
+  gate: true
+  variables:
+    statuses:
+    - ok
+    - paid
+- surface: filter
+  text: status = '{{x}}'
+  v191: accepted
+  gate: true
+- surface: filter
+  text: status = {1bad}
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid variable name ''1bad'' in filter: ''status = {1bad}''. Variable names must contain only
+    letters, digits, and underscores.'
+- surface: filter
+  text: status = { s }
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid variable name '' s '' in filter: ''status = { s }''. Variable names must contain only letters,
+    digits, and underscores.'
+- surface: filter
+  text: status = "ok" {? AND region = {r} ?}
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Optional blocks ''{? ... ?}'' are supported only on raw-SQL model surfaces, not in Mode-B expressions:
+    ''status = "ok" {? AND region = {r} ?}''.'
+- surface: filter
+  text: status = 'a?}'
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Optional blocks ''{? ... ?}'' are supported only on raw-SQL model surfaces, not in Mode-B expressions:
+    "status = ''a?}''".'
+- surface: expression
+  text: sum(CASE WHEN status = "ok" THEN amount ELSE 0 END)
+  v191: accepted
+  gate: true
+- surface: expression
+  text: sum(CASE WHEN status IS NULL THEN amount ELSE 0 END)
+  v191: accepted
+  gate: true
+- surface: expression
+  text: CASE status WHEN 'ok' THEN 1 ELSE 0 END
+  v191: accepted
+  gate: true
+- surface: expression
+  text: count(distinct iif(status == "ok", id, None))
+  v191: accepted
+  gate: true
+- surface: expression
+  text: count(DISTINCT customer_id)
+  v191: accepted
+  gate: true
+- surface: expression
+  text: sum(iif(extract(year from created_at) == 2024 and status == "ok", amount, 0))
+  v191: accepted
+  gate: true
+- surface: expression
+  text: EXTRACT(MONTH FROM created_at)
+  v191: accepted
+  gate: true
+- surface: expression
+  text: sum(iif(status == "ok", amount, 0))
+  v191: accepted
+  gate: true
+- surface: expression
+  text: sum(iif(region == "EU", amount, 0))
+  v191: accepted
+  gate: true
+- surface: expression
+  text: status | region
+  v191: accepted
+  gate: true
+- surface: expression
+  text: concat(status | region, "-")
+  v191: accepted
+  gate: true
+- surface: expression
+  text: sum(amount) --sum(refund)
+  v191: accepted
+  gate: true
+- surface: expression
+  text: amount:sum
+  v191: accepted
+  gate: true
+- surface: expression
+  text: '*:count'
+  v191: accepted
+  gate: true
+- surface: expression
+  text: customers.*:count
+  v191: accepted
+  gate: true
+- surface: expression
+  text: count(*)
+  v191: accepted
+  gate: true
+- surface: expression
+  text: count(customers.*)
+  v191: accepted
+  gate: true
+- surface: expression
+  text: sum(amount) / {divisor}
+  v191: accepted
+  gate: true
+- surface: expression
+  text: note == "tab\there"
+  v191: accepted
+  gate: true
+- surface: expression
+  text: rank(sum(amount), direction='desc')
+  v191: accepted
+  gate: true
+- surface: expression
+  text: sum(CASE WHEN status = "ok" THEN amount ELSE 0)
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Malformed CASE expression in ''sum(CASE WHEN status = "ok" THEN amount ELSE 0)'': missing END.'
+- surface: expression
+  text: CASE END
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''CASE END'': invalid syntax (<unknown>, line 1)'
+- surface: expression
+  text: sum(distinct customer_id)
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''sum(distinct customer_id)'': DISTINCT is supported only as count(distinct
+    x), i.e. count_distinct(x).'
+- surface: expression
+  text: count(distinct a, b)
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''count(distinct a, b)'': DISTINCT is supported only as count(distinct
+    x), i.e. count_distinct(x).'
+- surface: expression
+  text: extract(fortnight from created_at)
+  v191: refused
+  gate: true
+  v191_error: 'ValueError: Invalid Mode-B expression ''extract(fortnight from created_at)'': unknown date_part() part ''fortnight'';
+    accepted: year, iso_year, quarter, month, week, day, day_o'
+- surface: expression
+  text: extract(year created_at)
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''extract(year created_at)'': invalid syntax. Perhaps you forgot a comma?
+    (<unknown>, line 1)'
+- surface: expression
+  text: sum(iif(a = "x", 1, 0))
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''sum(iif(a = "x", 1, 0))'': positional argument follows keyword argument
+    (<unknown>, line 1)'
+- surface: expression
+  text: status = 'ok'
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression "status = ''ok''": invalid syntax (<unknown>, line 1)'
+- surface: expression
+  text: iif(x IS NULL, 0, x)
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''iif(x IS NULL, 0, x)'': invalid syntax. Perhaps you forgot a comma?
+    (<unknown>, line 1)'
+- surface: expression
+  text: sum(a || b)
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''sum(a || b)'': invalid syntax (<unknown>, line 1)'
+- surface: expression
+  text: sum(x::int)
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''sum(x::int)'': invalid syntax (<unknown>, line 1)'
+- surface: expression
+  text: sum(CAST(x AS INT))
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''sum(CAST(x AS INT))'': invalid syntax. Perhaps you forgot a comma?
+    (<unknown>, line 1)'
+- surface: expression
+  text: sum(x) FILTER (WHERE y > 1)
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''sum(x) FILTER (WHERE y > 1)'': invalid syntax (<unknown>, line 1)'
+- surface: expression
+  text: sum(amount) OVER (PARTITION BY status)
+  v191: refused
+  gate: false
+  v191_error: 'IllegalWindowInFilterError: IllegalWindowInFilterError: Window expressions are not allowed in filters.'
+- surface: expression
+  text: 'amount : sum'
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid Mode-B expression ''amount : sum'': invalid syntax (<unknown>, line 1)'
+- surface: expression
+  text: sum(amount) {? * {k} ?}
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Optional blocks ''{? ... ?}'' are supported only on raw-SQL model surfaces, not in Mode-B expressions:
+    ''sum(amount) {? * {k} ?}''.'
+- surface: expression
+  text: sum(amount) / {bad name}
+  v191: refused
+  gate: false
+  v191_error: 'ValueError: Invalid variable name ''bad name'' in filter: ''sum(amount) / {bad name}''. Variable names must
+    contain only letters, digits, and underscores.'
+- surface: expression
+  text: unknown_fn(amount)
+  v191: accepted
+  gate: true
+- surface: expression
+  text: amount > 1 > 0
+  v191: refused
+  gate: true
+  v191_error: 'ValueError: Invalid Mode-B expression ''amount > 1 > 0'': chained comparisons are not supported. Each Cmp must
+    be a single comparison; split (e.g.) `1 < x < 10` into `1 < x a'
+- surface: expression
+  text: __slayer_x
+  v191: refused
+  gate: true
+  v191_error: 'ValueError: Mode-B expression ''__slayer_x'' uses the reserved ''__slayer_'' identifier prefix, which is reserved
+    for SLayer-internal placeholders.'
