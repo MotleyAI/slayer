@@ -6545,10 +6545,11 @@ class SQLGenerator:
 
         def _table(hop: SemiJoinHop, leading: bool) -> Tuple[Expression, str]:
             if hop.lateral is None:
-                return self._emit_relation(
+                relation = self._emit_relation(
                     dataset=self._hop_dataset(name=hop.to, bundle=bundle), alias=_alias(hop.node_path),
                     bundle=bundle,
-                ), "CROSS"
+                )
+                return (mark_untrusted(relation) if hop.untrusted else relation), "CROSS"
             parent_path = tuple(hop.node_path[:-1])
             relation = self._list_relation(
                 parent=bundle.datasets_by_name[node_datasets[parent_path]], field=hop.lateral,

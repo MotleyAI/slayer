@@ -75,6 +75,9 @@ from slayer.engine.cardinality.relationship_safety import (
     reroot_from_root,
     shared_relationship_key_reroot,
     undetermined_witness,
+    is_untrusted_hop,
+    mixes_untrusted_branch,
+    untrusted_branch,
     refuse_untrusted_inputs,
     safe_reachable,
 )
@@ -1478,6 +1481,7 @@ def _path_edges_exist(
 def _register_hop(
     nodes: Dict[Tuple[str, ...], SemiJoinHop], *, node_path: Tuple[str, ...],
     target_dataset: str, keys: List[Tuple[DatasetField, DatasetField]], declared_left: bool, lateral: Optional[str] = None,
+    untrusted: bool = False,
 ) -> None:
     nodes.setdefault(node_path, SemiJoinHop(
         to=target_dataset,
@@ -1485,6 +1489,7 @@ def _register_hop(
         node_path=node_path,
         declared_left=declared_left,
         lateral=lateral,
+        untrusted=untrusted,
     ))
 
 
@@ -1520,6 +1525,7 @@ def _forward_hops(
             keys=relationship_key_fields(edge=edge, source=datasets[edge.source_dataset], target=datasets[edge.to]),
             declared_left=edge.join_type == JoinType.LEFT,
             lateral=_forward_lateral(edge),
+            untrusted=is_untrusted_hop(edge=edge, target=datasets[edge.to]),
         )
     return node_path
 
@@ -1844,7 +1850,9 @@ def _conjunct_disposition(
             host_dataset=host_dataset, host_name=host_name,
         )
 
-    if all(_attributable(r) for r in refs):
+    mixed = not target_path and mixes_untrusted_branch(
+        cj, root_dataset=root_dataset, host_dataset=host_dataset, bundle=bundle)
+    if not mixed and all(_attributable(r) for r in refs):
         rerooted = reroot_from_root(
             cj, target_path=target_path, root_dataset=root_dataset,
             datasets_by_name=datasets_by_name, host_name=host_name,
@@ -1885,6 +1893,8 @@ class _DisposedConjunct(BaseModel):
     disposition: Literal["inline", "semi_join"]
     fanning_paths: Tuple[Tuple[str, ...], ...] = ()
     push: Optional[_Push] = None
+    #: Pushed only for mixing an untrusted to-one branch with other reads; no path fans out.
+    untrusted_only: bool = False
 
 
 class PopulationFilters(BaseModel):
@@ -2003,13 +2013,10 @@ def _dispose_one_conjunct(
         key=cj, anchor_dataset=host_dataset,
         anchor_relation=host_dataset.name, bundle=bundle,
     ) or ()
-    fanning = tuple(
-        _canonical_path(p, root=host_dataset, datasets_by_name=datasets_by_name)
-        for p in closure
-        if p and not safe_reachable(
-            root=host_dataset, path=p, datasets_by_name=datasets_by_name,
-        )
-    )
+    unsafe = [p for p in closure if p and not safe_reachable(root=host_dataset, path=p, datasets_by_name=datasets_by_name)]
+    untrusted = [p for p in closure if p and p not in unsafe
+                 and untrusted_branch(root=host_dataset, path=p, datasets_by_name=datasets_by_name) is not None]
+    fanning = tuple(_canonical_path(p, root=host_dataset, datasets_by_name=datasets_by_name) for p in [*unsafe, *untrusted])
     if inline_bf is not None:
         disposition: Literal["inline", "semi_join"] = "inline"
         push = None
@@ -2019,7 +2026,7 @@ def _dispose_one_conjunct(
         inline_bf = bound_filter_from_key(cj)
     return _DisposedConjunct(
         conjunct=cj, inline_bf=inline_bf, text=text, is_date_range=is_date,
-        disposition=disposition, fanning_paths=fanning, push=push,
+        disposition=disposition, fanning_paths=fanning, push=push, untrusted_only=not unsafe,
     )
 
 
@@ -4953,13 +4960,11 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         # Backstop (D6): with a plain aggregate inline over the population, a
         # fanning conjunct always takes the EXISTS — its fanning dimension is
         # routed to a producer, never materialised on the base grain.
-        n_semi = sum(
-            1 for dc in population_filters.conjuncts
-            if dc.disposition == "semi_join"
-        )
+        fanning_semi = [dc.conjunct for dc in population_filters.conjuncts
+                        if dc.disposition == "semi_join" and not dc.untrusted_only]
         assert not (
             _has_inline_population_aggregate(prebound, homes=routed.homes)
-            and len(pushed_conjunct_keys) < n_semi
+            and any(k not in pushed_conjunct_keys for k in fanning_semi)
         ), "a spine-covered fanning mask coexists with an inline plain aggregate"
         host_population_gated = bool(pop_semi_join_groups)
     # An inferred spine stage with no other dimensions lists every bucket: its filters restrict the homes only.

@@ -66,6 +66,9 @@ from slayer.engine.cardinality.inference import (
 )
 
 __all__ = [
+    "is_untrusted_hop",
+    "mixes_untrusted_branch",
+    "untrusted_branch",
     "refuse_untrusted_inputs",
     "provably_fans",
     "safe_reachable",
@@ -79,6 +82,42 @@ def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSON
     """Whether a crossing-input local aggregate may stay inline in the host base.
     Hardcoded ``False`` (always a producer); the seam that will flip."""
     return False
+
+
+def is_untrusted_hop(*, edge: OrientedRelationship, target: SlayerDataset) -> bool:
+    """A provably to-one hop that is not trusted: lowered without assuming its arity."""
+    return provably_to_one(edge=edge, target_dataset=target) and not trusted_to_one(edge=edge, target_dataset=target)
+
+
+def untrusted_branch(
+    *, root: SlayerDataset, path: Tuple[str, ...], datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[Tuple[str, ...]]:
+    """``path``'s canonical prefix through its first untrusted to-one hop from ``root``; ``None`` when it crosses none."""
+    try:
+        chain = follow(root=root, path=path, datasets_by_name=datasets_by_name) or []
+    except AmbiguousRelationshipPathError:
+        return None
+    for i, edge in enumerate(chain):
+        target = datasets_by_name.get(edge.to)
+        if target is not None and is_untrusted_hop(edge=edge, target=target):
+            return canonical_path(chain[: i + 1])
+    return None
+
+
+def mixes_untrusted_branch(
+    key: ValueKey, *, root_dataset: SlayerDataset, host_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> bool:
+    """Whether ``key`` reads an untrusted to-one branch together with anything outside it (the root's own fields,
+    another branch): no distinct projection of one branch evaluates it once per row."""
+    datasets = bundle.datasets_by_name
+    groups: set = set()
+    for r in walk_value_keys(key):
+        if not isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey, StarKey)) or isinstance(r, TimeTruncKey):
+            continue
+        closure = key_closure(key=r, anchor_dataset=host_dataset, anchor_relation=host_dataset.name, bundle=bundle)
+        for path in _effective_dependency_paths(closure or (), key_host_path(r)):
+            groups.add(untrusted_branch(root=root_dataset, path=path, datasets_by_name=datasets) if path else None)
+    return len(groups) > 1 and any(g is not None for g in groups)
 
 
 def untrusted_input_hop(

@@ -267,6 +267,20 @@ async def test_a_predicate_mixing_home_and_target_counts_once(backend: str, pred
     assert not joins_customers_inline(resp)
 
 
+@pytest.mark.parametrize(("dimensions", "expected"), [
+    pytest.param([], {None: 600.0}, id="no-dimension"),
+    pytest.param([REGION], {"EAST": 300.0, "WEST": 500.0}, id="same-branch-dimension"),
+])
+async def test_a_mixed_predicate_on_split_rows_counts_once(backend: str, dimensions: list[str],
+                                                           expected: dict[Any, float]) -> None:
+    # C1 is (EAST, gold) and (WEST, silver): O2 (open) meets both rows.
+    predicate = "customers.tier = 'gold' OR orders.status = 'open'" if dimensions else (
+        "customers.region = 'WEST' OR orders.status = 'open'")
+    async with engine(backend, SPLIT_C1) as eng:
+        resp = await run(eng, dimensions=dimensions, metrics=[REVENUE], filter=[predicate])
+    assert {r.get(REGION): float(r[REVENUE]) for r in resp.data} == expected
+
+
 def two_branch_datasets() -> list[SlayerDataset]:
     managers = SlayerDataset(name="managers", sql_table="managers", data_source=DS,
                              fields=[DatasetField(name="manager_id", datatype=DataType.STRING, primary_key=True),
