@@ -547,14 +547,12 @@ def _fields_to_dataset(
             )
         )
 
-    primary = [c.name for c in cols if c.primary_key]
-    enforced = ([primary] if primary else []) + [[c.name] for c in cols if c.unique] if enforces_keys else []
     return SlayerDataset(
         name=name,
         sql_table=sql_table,
         data_source=data_source,
         fields=cols,
-        enforced_keys=enforced,
+        enforced_keys=_declared_keys(cols) if enforces_keys else [],
         relationships=relationships or [],
         source_kind=source_kind,
         hidden=hidden,
@@ -1508,15 +1506,20 @@ def _additive_merge_existing(
     )
 
 
+def _declared_keys(fields: list[DatasetField]) -> list[list[str]]:
+    """The primary key (when declared) and each single-field unique key of ``fields``."""
+    primary = [c.name for c in fields if c.primary_key]
+    return ([primary] if primary else []) + [[c.name] for c in fields if c.unique]
+
+
 def _merged_enforced_keys(
     *, persisted: SlayerDataset, fresh: SlayerDataset, merged_fields: list[DatasetField],
 ) -> list[list[str]]:
     """``persisted``'s enforced keys plus each fresh one that names a declared key of the merged fields; none removed."""
     by_spelling = {c.physical_name: c.name for c in merged_fields if c.is_base}
     fresh_names = {c.name: by_spelling.get(_spelling(c)) for c in fresh.fields}
-    primary = sorted(c.name for c in merged_fields if c.primary_key)
-    declared = ([primary] if primary else []) + [[c.name] for c in merged_fields if c.unique]
-    out = [list(k) for k in persisted.enforced_keys]
+    declared = [sorted(k) for k in _declared_keys(merged_fields)]
+    out =[list(k) for k in persisted.enforced_keys]
     for key in fresh.enforced_keys:
         mapped = [fresh_names.get(n) for n in key]
         if any(m is None for m in mapped):

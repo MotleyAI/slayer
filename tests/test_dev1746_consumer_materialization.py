@@ -16,8 +16,9 @@ from slayer.core.models import DatasetField
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.sql.scope import ScopeFrame
 
-from tests._cross_dataset_chain import _gen
 from tests._engine_helpers import _extract_cte_body, _norm
+from tests._trusted import trusted_chain_gen as _gen
+
 
 # Byte-parity baselines: swapping which materialiser mints ``_val_<n>`` must not change these
 # fragments; the ranking window's ORDER BY is asserted structurally (NULL flag, then the key).

@@ -10,7 +10,7 @@
 - [x] 1.8 Save-validation tests: undeclared enforced key refused, query-backed refused, repointing drops
 - [x] 1.9 Document round-trip tests: imported retail never trusted (350), `trusted` round-trips (650), unset cardinality round-trips, enforced keys round-trip
 - [x] 1.10 Migration tests from serialized previous-version payloads: `SlayerModel` v28, `SlayerQuery` v18 (query-extension relationship), `Memory` v13 with an embedded query, a query-backed model's backing query; all relationships trusted and EAST 650 preserved
-- [ ] 1.11 Existing tests pinning inline SQL or values for an unflagged declared hop: list them and get the owner's approval to align each before changing it
+- [x] 1.11 Existing tests pinning inline SQL or values for an unflagged declared hop: list them and get the owner's approval to align each before changing it
 
 ## 2. Model surface
 
@@ -24,7 +24,8 @@
 - [x] 3.2 Switch the emission points to it — the generator marks each join across an untrusted hop (`_hop_join`, semi-join hops) and one statement pass reads it through the projection; `_filtered_dataset` inlines only trusted hops; `_conjunct_disposition` + `fanning_paths` push mixed conjuncts; discovery and the producer dimension split associate mixed dimensions — leaving every typing consumer on `provably_to_one`; verify typing tests unchanged
 - [x] 3.3 Distinct-projection lowering (B) through the dataset relation door; verify 1.1, 1.3
 - [x] 3.4 Fallback to the association producer (A) without warnings for dimensions mixing an untrusted branch, a semi-join push for mixed conjuncts, aggregate inputs across the hop read once via `ANY_VALUE` in the projection; `"error"` refusal for inputs; verify 1.3, 1.4
-- [ ] 3.5 Verify 1.5 and the full local test scope; re-bless goldens only where SQL for an unflagged declared hop changes, with owner approval
+- [x] 3.6 Subtree conjuncts not proven null-rejecting are projected as a value inside the distinct projection (LEFT join kept, unmatched home rows kept iff the conjunct holds on NULLs); verify null-safe equality and null-tolerant filters on dirty and unmatched data
+- [x] 3.5 Verify 1.5 and the full local test scope; re-bless goldens only where SQL for an unflagged declared hop changes, with owner approval
 
 ## 4. Ingestion, drift, documents, migration
 

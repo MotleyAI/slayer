@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import DriftReportEntry, IdempotentIngestResult
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._dev2437_fixtures import (
@@ -161,7 +161,7 @@ class TestIngestion:
     async def test_sqlite_partial_and_expression_unique_indexes_are_not_enforced(self, tmp_path: Path) -> None:
         """Partial and expression unique indexes are never recorded; a primary key beside them is."""
         path = tmp_path / "shop.db"
-        with contextlib.closing(sqlite3.connect(path)) as con:
+        with transaction(path) as con:
             con.executescript(
                 "CREATE TABLE keyed (id TEXT PRIMARY KEY, name TEXT);"
                 "CREATE TABLE partial (customer_id TEXT, active INTEGER);"

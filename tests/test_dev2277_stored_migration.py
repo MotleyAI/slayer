@@ -135,8 +135,9 @@ def memory_bytes(*, backend: str, base: str, storage: StorageBackend, memory_id:
 
 
 def test_versions_bumped() -> None:
-    # SlayerQuery 18 only stamps ``population_inferred``.
-    assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == {**UPGRADED_AT, "SlayerQuery": 18}
+    # Later bumps: SlayerQuery 18 stamps ``population_inferred``; 29/19/14 trust stored relationships.
+    assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == {
+        "SlayerModel": 29, "SlayerQuery": 19, "Memory": 14}
 
 
 # --------------------------------------------------------------------------- #
@@ -162,7 +163,7 @@ class TestRewrites:
         storage = await store(tmp_path, seed_ds, backend=backend, models=(sq,))
         await load(storage, "sq")
         raw = await raw_doc(storage, "sq")
-        assert raw["version"] == UPGRADED_AT["SlayerModel"]
+        assert raw["version"] == 29
         (written,) = raw["source_queries"]
         assert written["dimensions"] == ["orders.status"]
         assert written["metrics"] == ["count(orders.*)"]

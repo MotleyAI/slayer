@@ -54,8 +54,10 @@ dataset relation door, so model `filters` and RLS sit inside it); system 4 (sqlg
    on every cross-dataset dimension. (default, structural)
 2. **Untrusted lowering is the distinct projection (B), the association producer (A) its fallback.** B: a subtree beyond
    its first untrusted hop joins the home as `SELECT DISTINCT <hop source-side keys>, <each dimension value computed
-   inside>`; the subtree's own conjuncts go inside, the join is INNER when it carries a conjunct and LEFT otherwise; a
-   filter-only subtree joins as an inner join on its DISTINCT keys. Computed and time-truncated dimensions de-duplicate on
+   inside>`; the subtree's own conjuncts go inside: one proven to reject a null-extended row filters there and makes the
+   join INNER, any other is projected as a value and the join stays LEFT, keeping an unmatched home row exactly when the
+   conjunct holds on NULLs; a filter-only subtree joins as an inner join on its DISTINCT keys. Computed and
+   time-truncated dimensions de-duplicate on
    their grouped value. A is used when a dimension reads an untrusted subtree together with anything outside it; a
    conjunct doing so is pushed as a correlated EXISTS semi-join. An aggregate input read across
    the hop is projected inside the distinct projection as one matching value per projected row

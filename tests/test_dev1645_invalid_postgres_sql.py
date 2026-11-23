@@ -33,7 +33,18 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, SlayerQuery, TimeDimension
 from slayer.sql.generator import SQLGenerator
 
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _engine_generate as _engine_generate_untrusted
+from tests._trusted import trusting, trusting_all
+
+
+async def _engine_generate(
+    *, query: SlayerQuery, dataset: SlayerDataset, extra_datasets: list[SlayerDataset] | None = None,
+    dialect: str = "postgres",
+) -> str:
+    # These pins describe the inline-join lowering of trusted hops.
+    return await _engine_generate_untrusted(
+        query=query, dataset=trusting(dataset), extra_datasets=trusting_all(extra_datasets or []), dialect=dialect,
+    )
 
 
 def _norm(s: str) -> str:

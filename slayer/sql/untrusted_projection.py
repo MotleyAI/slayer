@@ -14,8 +14,11 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
 UNTRUSTED_HOP = "slayer_untrusted_hop"
-_DIMENSION_PREFIX = "_slayer_d"
-_COLUMN_PREFIX = "_slayer_c"
+# Under the save-time reserved ``__slayer_`` prefix: no column or field read through the projection can collide.
+_DIMENSION_PREFIX = "__slayer_d"
+_COLUMN_PREFIX = "__slayer_c"
+_PREDICATE = "__slayer_p"
+_MATCHED = "__slayer_m"
 
 
 _E = TypeVar("_E", bound=Expr)
@@ -29,14 +32,18 @@ def mark_untrusted(relation: _E) -> _E:
 
 def project_untrusted_hops(statement: _E) -> _E:
     """``statement`` with every marked join read through its subtree's distinct projection."""
-    for select in list(statement.find_all(exp.Select)):
-        while _project_first(select):
-            pass
+    for select in list(statement.find_all(exp.Select)):  # NOSONAR(S7504) — each rewrite edits the tree being walked
+        _project_select(select)
     return statement
 
 
 def _alias_of(relation: Expr) -> str:
     return relation.alias_or_name
+
+
+def _ident(column: exp.Column, name: str) -> exp.Identifier:
+    """``name`` quoted as ``column`` is when it keeps the column's name, so a case-folding backend resolves it."""
+    return exp.to_identifier(name, quoted=bool(column.this.args.get("quoted")) and name == column.name)
 
 
 def _scope_columns(node: Expr, shadowed: frozenset[str] = frozenset()) -> Iterator[exp.Column]:
@@ -67,24 +74,64 @@ def _conjuncts(where: Optional[exp.Where]) -> List[Expr]:
     return list(where.this.flatten()) if isinstance(where.this, exp.And) else [where.this]
 
 
-_NULL_TOLERANT = (exp.Is, exp.Coalesce, exp.Case, exp.If, exp.Not, exp.Nullif, exp.Exists)
+_STRICT_BINARY = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Like, exp.ILike)
 
 
-def _pushable(conjunct: Expr, subtree: Set[str]) -> bool:
-    """A conjunct reading only the subtree that rejects its null-extended rows, so it may filter inside an inner join."""
-    tables = _tables(conjunct)
-    return bool(tables) and tables <= subtree and not any(conjunct.find_all(*_NULL_TOLERANT)) \
-        and not isinstance(conjunct, _NULL_TOLERANT)
+_STRICT_ARITHMETIC = (exp.Add, exp.Sub, exp.Mul, exp.Div)
+
+
+def _subtree_column(node: Optional[Expr], subtree: Set[str]) -> bool:
+    """``node`` is NULL whenever the subtree's columns are: a subtree column under casts and arithmetic."""
+    while isinstance(node, (exp.Paren, exp.Cast, exp.Neg)):
+        node = node.this
+    if isinstance(node, _STRICT_ARITHMETIC):
+        return _subtree_column(node.this, subtree) or _subtree_column(node.expression, subtree)
+    return isinstance(node, exp.Column) and node.table in subtree
+
+
+def _rejects_nulls(predicate: Expr, subtree: Set[str]) -> bool:
+    """Proven not true on a row whose subtree columns are all NULL; shapes outside this allowlist are not proven."""
+    parts = predicate.flatten() if isinstance(predicate, exp.And) else [predicate]
+    return any(_strict_part(p, subtree) for p in parts)
+
+
+def _strict_part(part: Expr, subtree: Set[str]) -> bool:
+    if isinstance(part, exp.Paren):
+        return _rejects_nulls(part.this, subtree)
+    if isinstance(part, exp.Not) and isinstance(part.this, exp.Is) and isinstance(part.this.expression, exp.Null):
+        return _subtree_column(part.this.this, subtree)
+    if isinstance(part, (exp.In, exp.Between)):
+        return _subtree_column(part.this, subtree)
+    if isinstance(part, _STRICT_BINARY):
+        return _subtree_column(part.this, subtree) or _subtree_column(part.expression, subtree)
+    return False
+
+
+def _nulled(predicate: Expr, subtree: Set[str]) -> Expr:
+    """``predicate`` on a null-extended row: each subtree column read as NULL."""
+    if isinstance(predicate, exp.Column):
+        return exp.Null()
+    out = predicate.copy()
+    for column in list(_scope_columns(out)):  # NOSONAR(S7504) — the loop replaces nodes of the tree being walked
+        if column.table in subtree:
+            column.replace(exp.Null())
+    return out
+
+
+def _is_left(join: exp.Join) -> bool:
+    return (join.args.get("side") or "").upper() == "LEFT"
 
 
 def _subtree_joins(joins: List[exp.Join], start: int) -> Tuple[Set[str], List[int]]:
-    """The aliases of the marked join at ``start`` and of every later join reading only them."""
+    """The aliases of the marked join at ``start`` and of every later join reading only them whose condition rejects
+    their null-extended rows, so it matches the same rows inside the projection as after it."""
     subtree = {_alias_of(joins[start].this)}
     members = [start]
     for i in range(start + 1, len(joins)):
         alias = _alias_of(joins[i].this)
-        reads = (_tables(joins[i].this) | _tables(joins[i].args.get("on") or exp.null())) - {alias}
-        if reads and reads <= subtree:
+        on = joins[i].args.get("on")
+        reads = (_tables(joins[i].this) | (_tables(on) if on is not None else set())) - {alias}
+        if reads and reads <= subtree and (on is None or _rejects_nulls(on, subtree)):
             subtree.add(alias)
             members.append(i)
     return subtree, members
@@ -112,13 +159,13 @@ def _is_input(column: exp.Column, select: exp.Select) -> bool:
     return False
 
 
-def _project_first(select: exp.Select) -> bool:
-    joins: List[exp.Join] = list(select.args.get("joins") or [])
-    start = next((i for i, j in enumerate(joins) if j.this.meta.get(UNTRUSTED_HOP)), None)
-    if start is None:
-        return False
-    _Projection(select=select, joins=joins, start=start).apply()
-    return True
+def _project_select(select: exp.Select) -> None:
+    while True:
+        joins: List[exp.Join] = list(select.args.get("joins") or [])
+        start = next((i for i, j in enumerate(joins) if j.this.meta.get(UNTRUSTED_HOP)), None)
+        if start is None:
+            return
+        _Projection(select=select, joins=joins, start=start).apply()
 
 
 class _Projection:
@@ -150,15 +197,45 @@ class _Projection:
             yield self.select.args["from"]
 
     def apply(self) -> None:
-        conjuncts = _conjuncts(self.select.args.get("where"))
-        inside = [c for c in conjuncts if _pushable(c, self.subtree)]
-        outside = [c for c in conjuncts if not any(c is i for i in inside)]
+        inside, valued, outside = self._split_where()
         dims = self._dimensions()
         self.select.set("where", exp.Where(this=exp.and_(*outside)) if outside else None)
+        group, inputs = self._project_reads(dim_names={name for _, name in dims})
+        for expr, name in dims:
+            group.append(expr)
+            self.projected.append(expr.as_(name))
+        # A home row with no subtree row a filter or an inner member keeps is dropped, as after the subtree's joins.
+        inner_only = bool(inside) or not all(_is_left(j) for j in self.inner_joins)
+        kept = self._valued_filter(valued, group=group, null_extended=_is_left(self.root) and not inner_only)
+        inner = exp.select(*self.projected, *inputs).from_(self.relation.copy())
+        for j in self.inner_joins:
+            inner.append("joins", j.copy())
+        if inside:
+            inner = inner.where(exp.and_(*(c.copy() for c in inside)))
+        inner = inner.group_by(*(g.copy() for g in group)) if inputs else inner.distinct()
+        self.relation.meta.pop(UNTRUSTED_HOP, None)
+        self.root.set("this", exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier(self.alias))))
+        if inner_only:
+            self.root.set("side", None)
+            self.root.set("kind", None)
+        self.select.set("joins", self.outer_joins)
+        if kept is not None:
+            self.select.set("where", exp.Where(this=exp.and_(*outside, kept)))
+
+    def _split_where(self) -> Tuple[List[Expr], List[Expr], List[Expr]]:
+        """The WHERE conjuncts as (filtering inside, evaluated inside as a value, left outside)."""
+        conjuncts = _conjuncts(self.select.args.get("where"))
+        own = [c for c in conjuncts if (tables := _tables(c)) and tables <= self.subtree]
+        inside = [c for c in own if _rejects_nulls(c, self.subtree)]
+        valued = [c for c in own if not any(c is i for i in inside)]
+        return inside, valued, [c for c in conjuncts if not any(c is o for o in own)]
+
+    def _project_reads(self, *, dim_names: Set[str]) -> Tuple[List[Expr], List[Expr]]:
+        """Project every subtree column the statement reads, renaming each read; (grouped values, ``ANY_VALUE``
+        inputs)."""
         group: List[Expr] = []
         inputs: List[Expr] = []
         on = self.root.args.get("on")
-        dim_names = {name for _, name in dims}
         reads = [c for part in [*self._outer_parts(), *self._where_parts()] for c in _scope_columns(part)
                  if c.table in self.subtree and not (c.table == self.alias and c.name in dim_names)]
         key_reads = [c for c in (_scope_columns(on) if on is not None else []) if c.table in self.subtree]
@@ -167,32 +244,36 @@ class _Projection:
         aggregating = _aggregating(self.select)
         for column in [*key_reads, *reads]:
             ident = (column.table, column.name)
-            name = self._name(column)
             if ident not in self.names:
+                name = self._name(column)
                 self.names[ident] = name
                 source = exp.Column(this=column.this.copy(), table=exp.to_identifier(column.table))
+                alias = _ident(column, name)
                 if aggregating and ident in input_cols and ident not in raw_cols:
-                    inputs.append(exp.AnyValue(this=source).as_(name))
+                    inputs.append(exp.AnyValue(this=source).as_(alias))
                 else:
                     group.append(source)
-                    self.projected.append(source.as_(name))
+                    self.projected.append(source.as_(alias))
             self._rename(column)
-        for expr, name in dims:
-            group.append(expr)
-            self.projected.append(expr.as_(name))
-        inner = exp.select(*self.projected, *inputs).from_(self.relation.copy())
-        for j in self.inner_joins:
-            inner.append("joins", j.copy())
-        if inside:
-            inner = inner.where(exp.and_(*(c.copy() for c in inside)))
-        inner = inner.group_by(*(g.copy() for g in group)) if inputs else inner.distinct()
-        self.relation.meta.pop(UNTRUSTED_HOP, None)
-        projection = exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier(self.alias)))
-        self.root.set("this", projection)
-        if inside:
-            self.root.set("side", None)
-            self.root.set("kind", None)
-        self.select.set("joins", self.outer_joins)
+        return group, inputs
+
+    def _valued_filter(self, valued: List[Expr], *, group: List[Expr], null_extended: bool) -> Optional[Expr]:
+        """Project ``valued`` as a value of each subtree row; the outer condition keeping a matched row it holds on,
+        and, when the join can null-extend, an unmatched home row it holds on with NULL subtree columns."""
+        if not valued:
+            return None
+        holds = exp.Case(ifs=[exp.If(this=exp.and_(*(c.copy() for c in valued)), true=exp.Literal.number(1))])
+        group.append(holds)
+        self.projected.append(holds.copy().as_(_PREDICATE))
+        kept: Expr = exp.EQ(this=self._read(_PREDICATE), expression=exp.Literal.number(1))
+        if not null_extended:
+            return kept
+        self.projected.append(exp.Literal.number(1).as_(_MATCHED))
+        unmatched = exp.Is(this=self._read(_MATCHED), expression=exp.Null())
+        return exp.or_(kept, exp.and_(unmatched, *(_nulled(c, self.subtree) for c in valued)))
+
+    def _read(self, name: str) -> exp.Column:
+        return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(self.alias))
 
     def _where_parts(self) -> List[Expr]:
         where = self.select.args.get("where")
@@ -207,9 +288,7 @@ class _Projection:
         return f"{_COLUMN_PREFIX}{len(self.names)}"
 
     def _rename(self, column: exp.Column) -> None:
-        name = self.names[(column.table, column.name)]
-        quoted = column.this.args.get("quoted", False) if name == column.name else False
-        column.set("this", exp.to_identifier(name, quoted=quoted))
+        column.set("this", _ident(column, self.names[(column.table, column.name)]))
         column.set("table", exp.to_identifier(self.alias))
 
     def _dimensions(self) -> List[Tuple[Expr, str]]:
@@ -227,12 +306,12 @@ class _Projection:
             name = f"{_DIMENSION_PREFIX}{i}"
             out.append((g.copy(), name))
             replacement = exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(self.alias))
-            for part in list(self._outer_parts()):
+            for part in self._outer_parts():
                 self._replace(part, g, replacement)
         return out
 
     @staticmethod
     def _replace(part: Expr, target: Expr, replacement: Expr) -> None:
-        for node in list(part.walk()):
+        for node in list(part.walk()):  # NOSONAR(S7504) — the loop replaces nodes of the tree being walked
             if node is not part and node.parent is not None and node == target:
                 node.replace(replacement.copy())

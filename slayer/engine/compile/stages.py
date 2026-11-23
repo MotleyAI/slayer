@@ -1852,7 +1852,8 @@ def _conjunct_disposition(
 
     mixed = not target_path and mixes_untrusted_branch(
         cj, root_dataset=root_dataset, host_dataset=host_dataset, bundle=bundle)
-    if not mixed and all(_attributable(r) for r in refs):
+    attributable = all(_attributable(r) for r in refs)
+    if not mixed and attributable:
         rerooted = reroot_from_root(
             cj, target_path=target_path, root_dataset=root_dataset,
             datasets_by_name=datasets_by_name, host_name=host_name,
@@ -1877,7 +1878,8 @@ def _conjunct_disposition(
         host_dataset=host_dataset, datasets_by_name=datasets_by_name,
         bundle=bundle, host_name=host_name,
     )
-    return None, (key_rewritten, display, nodes, rejects)
+    # Pushed only for an untrusted to-one branch: unwarned, as a dimension mixing one associates unwarned.
+    return None, (key_rewritten, None if attributable else display, nodes, rejects)
 
 
 class _DisposedConjunct(BaseModel):

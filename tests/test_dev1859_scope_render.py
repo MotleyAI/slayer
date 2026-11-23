@@ -25,13 +25,21 @@ from tests._dev1847_fixtures import (
     SlayerQuery,
     corders_dataset,
     customers_dataset,
-    gen,
+    dev1847_datasets,
     regions_dataset,
     sales_dataset,
 )
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting_all
 
 _CROSS_MIXED = ("sum(customers.region_id * sum(corders.amount, partition_by=customers.region_id))")
+
+
+async def _gen(query: SlayerQuery) -> str:
+    # These pins describe the inline-join lowering of trusted hops.
+    models = trusting_all(dev1847_datasets())
+    return await _engine_generate(
+        query=query, dataset=models[0], extra_datasets=models[1:], dialect="postgres", validate=False)
 
 
 def _join_count_to(sql: str, table: str) -> int:
@@ -49,12 +57,12 @@ def _derived_ref_datasets():
         DatasetField(name="rid1", datatype=DataType.FLOAT, expression="region_id * 1"))
     corders.fields.append(
         DatasetField(name="cust_rid", datatype=DataType.FLOAT, expression="customers.rid1"))
-    return [corders, customers, regions, sales]
+    return trusting_all([corders, customers, regions, sales])
 
 
 class TestJoinEmittedOnce:
     async def test_cross_model_constituent_producer_emitted_once(self):
-        sql = await gen(SlayerQuery(
+        sql = await _gen(SlayerQuery(
             population="customers", dimensions=[QueryDimension(field="customers.region_id")],
             metrics=[QueryMetric(metric=_CROSS_MIXED, alias="xm")]))
         producers = [n for n in re.findall(r"(_cm_\w+) AS \(", sql)

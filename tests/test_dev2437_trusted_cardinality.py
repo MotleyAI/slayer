@@ -23,12 +23,15 @@ from slayer.core.relationship_walker import OrientedRelationship, list_child
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.sql.dialects.base import LIST_POSITION
 
+from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._dev1948_fixtures import AMOUNT_BY_TIER, chain_list, make_dev1948_engine, rows_by
 from tests._dev2212_fixtures import with_policy
+from tests._engine_helpers import seeded_exec_engine
 from tests._dev2437_fixtures import (
     BACKENDS,
     C3_TWO_GROUPS,
     CLEAN,
+    DATED_ORDERS,
     DS,
     DUP_C1,
     REGION,
@@ -310,6 +313,76 @@ async def test_two_target_branches_count_each_order_once(backend: str) -> None:
     got = {(r[REGION], r["managers.name"]): float(r[REVENUE]) for r in resp.data}
     assert got == {("EAST", "mia"): 300.0, ("EAST", "max"): 50.0, ("WEST", "max"): 300.0}
     assert not joins_customers_inline(resp)
+
+
+def managed_customers_datasets(*, trusted: bool) -> list[SlayerDataset]:
+    """``customers → managers`` an INNER hop; ``orders → customers`` trusted or not."""
+    managers = two_branch_datasets()[-1]
+    to_managers = DatasetRelationship(to="managers", from_columns=["manager_id"], to_columns=["manager_id"],
+                                      cardinality=RelationshipCardinality.MANY_TO_ONE, join_type=JoinType.INNER)
+    return [customers_dataset(relationships=[to_managers]), orders_dataset(trusted=trusted), returns_dataset(),
+            managers]
+
+
+async def test_an_inner_hop_beyond_the_untrusted_hop_drops_unmatched_orders(backend: str) -> None:
+    # C3's manager M9 does not exist: O4 drops whether or not the hop is trusted.
+    seed = [(c, r, "M9" if c == "C3" else m, t, w) for c, r, m, t, w in CLEAN]
+    rows = {}
+    for trusted in (True, False):
+        async with engine(backend, seed, managed_customers_datasets(trusted=trusted)) as eng:
+            resp = await run(eng, dimensions=["customers.managers.name"], metrics=[REVENUE])
+        rows[trusted] = {r["customers.managers.name"]: float(r[REVENUE]) for r in resp.data}
+    assert rows[False] == rows[True] == {"mia": 350.0}
+
+
+@pytest.mark.parametrize("predicate", [
+    pytest.param("customers.region IS NOT DISTINCT FROM NULL", id="null-safe-equality"),
+    pytest.param("customers.region IS NULL", id="is-null"),
+    pytest.param("COALESCE(customers.region, 'none') = 'none'", id="coalesce"),
+])
+async def test_a_null_keeping_filter_keeps_an_unmatched_order(backend: str, predicate: str) -> None:
+    # C3 is missing: O4 (300) meets no customer and its NULL region passes the filter.
+    async with engine(backend, [c for c in CLEAN if c[0] != "C3"]) as eng:
+        resp = await run(eng, metrics=[REVENUE], filter=[predicate])
+    assert [float(r[REVENUE]) for r in resp.data] == [300.0]
+
+
+@pytest.mark.parametrize("predicate", [
+    pytest.param("customers.tier IN ('gold', 'silver') OR customers.tier IS NULL", id="or-is-null"),
+    pytest.param("COALESCE(customers.tier, 'x') <> 'y'", id="coalesce"),
+])
+async def test_a_null_keeping_filter_on_differing_rows_counts_once(backend: str, predicate: str) -> None:
+    # C1 is both gold and silver; both rows pass: each order counts once.
+    async with engine(backend, [*CLEAN, ("C1", "EAST", "M1", "silver", 1.0)]) as eng:
+        resp = await run(eng, metrics=[REVENUE], filter=[predicate])
+    assert [float(r[REVENUE]) for r in resp.data] == [650.0]
+
+
+async def test_an_arithmetic_filter_on_the_target_filters_inside_the_projection(backend: str) -> None:
+    async with engine(backend, DUP_C1) as eng:
+        resp = await run(eng, metrics=[REVENUE], filter=["customers.weight * 2 + 1 > 2"])
+    assert [float(r[REVENUE]) for r in resp.data] == [650.0]
+    assert "__slayer_p" not in sql_of(resp)
+
+
+async def test_a_target_column_named_like_an_internal_alias_reads_its_own_value(backend: str) -> None:
+    # A physical column ``_slayer_p``, grouped beside a null-keeping filter: C1 (twice) and C3 are 'x'.
+    customers = TableSpec(name="customers", columns=[("customer_id", "TEXT"), ("region", "TEXT"), ("_slayer_p", "TEXT")],
+                          rows=[("C1", "EAST", "x"), ("C1", "EAST", "x"), ("C2", "EAST", "y"), ("C3", "WEST", "x")])
+    datasets = [customers_dataset(fields=[DatasetField(name="_slayer_p", datatype=DataType.STRING)]),
+                orders_dataset(), returns_dataset()]
+    async with seeded_exec_engine(dialect=backend, seed=lambda p: seed_backend(backend, p, [customers, DATED_ORDERS]),
+                                  datasets=datasets) as (eng, _):
+        resp = await run(eng, dimensions=["customers._slayer_p"], metrics=[REVENUE],
+                         filter=["customers.region IS NULL OR customers._slayer_p = 'x'"])
+    assert {r["customers._slayer_p"]: float(r[REVENUE]) for r in resp.data} == {"x": 600.0}
+
+
+async def test_a_null_keeping_filter_drops_a_matched_order_whose_rows_all_fail(backend: str) -> None:
+    # C2 is silver: O3 meets a customer the filter rejects, so its NULL-row reading never applies.
+    async with engine(backend, CLEAN) as eng:
+        resp = await run(eng, metrics=[REVENUE], filter=["customers.tier IS NULL OR customers.tier = 'gold'"])
+    assert [float(r[REVENUE]) for r in resp.data] == [600.0]
 
 
 async def test_a_dimension_alone_lowers_through_the_distinct_projection(backend: str) -> None:

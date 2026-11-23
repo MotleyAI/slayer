@@ -246,6 +246,13 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "metric …"
          + SUGGEST + "Fix the input's SQL, or remove it from the aggregate.",
          category="checker", family="cross-model", user=True, owner="checker"),
+    _row(module=_EE, function="check_inputs_trusted", exc="UnsafeRelationshipInputError",
+         message="The aggregate reads an input across the untrusted relationship … → …: with repeated … rows it would "
+         "read one of several matching values."
+         + AT + "metric …"
+         + SUGGEST + "Mark the relationship … → … trusted, or record its key as an enforced key of …; or omit "
+         "to_many_handling to read one matching value per … row.",
+         category="checker", family="cross-model", user=True, owner="checker"),
     _row(module=_EE, function="check_local_producer_inputs_safe", exc="UnsafeRelationshipInputError",
          message="The aggregate ranks/reads by …, which crosses an unproven relationship hop to … from …."
          + AT + "metric …"

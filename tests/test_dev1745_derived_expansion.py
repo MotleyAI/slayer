@@ -27,6 +27,7 @@ from slayer.core.query import SlayerQuery
 from slayer.sql.field_expansion import expand_derived_refs_sync
 
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting, trusting_all
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +170,8 @@ class TestDerivedOfDerivedEmission:
 
     async def _sql(self, query: SlayerQuery) -> str:
         return await _engine_generate(
-            query=query, dataset=_orders(), dialect="postgres", validate=False,
-            extra_datasets=[_customers(), _regions()],
+            query=query, dataset=trusting(_orders()), dialect="postgres", validate=False,
+            extra_datasets=trusting_all([_customers(), _regions()]),
         )
 
     async def test_dimension_on_derived_of_derived(self) -> None:
