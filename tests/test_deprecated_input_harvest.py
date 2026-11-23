@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 import yaml
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from slayer.api.server import create_app
 from slayer.core.errors import SlayerError
@@ -36,6 +36,7 @@ from tests._deprecated_input_helpers import (
     recorded,
     strict,
 )
+from tests._mcp_results import text_blocks
 
 STAGE_A = {"name": "a", "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 STAGE_B = {"name": "b", "population": "a", "metrics": [{"metric": "sum(a.n)", "alias": "total"}]}
@@ -152,7 +153,7 @@ class TestRefinement:
             return await server.call_tool(name="query", arguments={"query": SAVED, "refine": refine, "format": "json"})
 
         with recorded():
-            blocks, _ = await call({"strict": True})
+            blocks = (await call({"strict": True})).content
             assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == 1
             with pytest.raises(ToolError) as failed:
                 await call({"strict": True, "measures": [CM]})
@@ -221,7 +222,7 @@ class TestSurfaces:
         stages, expected = STAGED[case]
         server = create_mcp_server(storage=engine.storage)
         with recorded():
-            blocks, _ = await server.call_tool(name="query", arguments={"query": stages, "format": "json"})
+            blocks = text_blocks(await server.call_tool(name="query", arguments={"query": stages, "format": "json"}))
         assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == expected
 
 

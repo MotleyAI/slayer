@@ -518,6 +518,16 @@ class TestCliFlagPlumbing:
         create_app_kwargs = next(c[1] for c in capture if c[0] == "create_app")
         assert create_app_kwargs.get("ingest_on_startup") is True
 
+    def test_serve_host_threads_to_create_app(self, monkeypatch: pytest.MonkeyPatch):
+        """The mounted MCP app's DNS-rebinding rule follows ``--host``."""
+        capture: list = []
+        _patch_serve_dependencies(monkeypatch, capture=capture)
+
+        cli._run_serve(_serve_args(host="0.0.0.0"))  # NOSONAR(S1313) — bind address under test
+
+        create_app_kwargs = next(c[1] for c in capture if c[0] == "create_app")
+        assert create_app_kwargs.get("host") == "0.0.0.0"  # NOSONAR(S1313) — bind address under test
+
     def test_mcp_flag_threads_to_create_mcp_server(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
         _patch_mcp_dependencies(monkeypatch, capture=capture)

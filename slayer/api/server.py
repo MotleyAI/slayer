@@ -419,7 +419,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
     client_factory: ClientFactory | None = None,
+    host: str = "127.0.0.1",
 ) -> FastAPI:
+    """The REST app with the MCP server mounted at ``/mcp``; a loopback ``host`` keeps its DNS-rebinding check."""
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
     engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
     # Every route reads datasets, and the live database, through the server's engine.
@@ -457,7 +459,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     mcp = create_mcp_server(
         storage=storage, always_load_query=always_load_query, client_factory=client_factory, _seed_help=False,
     )
-    mcp_app = mcp.sse_app()
+    mcp_app = mcp.sse_app(host=host)
     app.mount(_MCP_MOUNT, mcp_app)
 
     @app.get("/health")

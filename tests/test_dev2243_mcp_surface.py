@@ -64,7 +64,7 @@ def _descriptions(node: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str
 
 
 def _all_text(tool: Any) -> str:
-    return "\n".join([tool.description or "", *(text for _, text in _descriptions(tool.inputSchema))])
+    return "\n".join([tool.description or "", *(text for _, text in _descriptions(tool.input_schema))])
 
 
 def _model_scoped_topic() -> Any:
@@ -85,14 +85,14 @@ class TestTheSemanticModelTools:
     def test_every_parameter_is_described(self, tools: dict[str, Any], name: str) -> None:
         """Spec: mcp/tool-surface › The new tools fit the budget (every parameter described)."""
         assert name in tools, sorted(tools)
-        props = tools[name].inputSchema.get("properties", {})
+        props = tools[name].input_schema.get("properties", {})
         assert NEW_TOOLS[name] <= set(props), sorted(props)
         undescribed = [p for p, schema in props.items() if not (schema.get("description") or "").strip()]
         assert undescribed == []
 
     def test_create_dataset_describes_semantic_model(self, tools: dict[str, Any]) -> None:
         """Spec: mcp/tool-surface › The semantic-model tools fit the surface rules (create_dataset)."""
-        props = tools["create_dataset"].inputSchema.get("properties", {})
+        props = tools["create_dataset"].input_schema.get("properties", {})
         assert "semantic_model" in props, sorted(props)
         assert (props["semantic_model"].get("description") or "").strip()
 
@@ -115,7 +115,7 @@ class TestQueryGuidance:
     ) -> None:
         """Spec: mcp/tool-surface › Query guidance names bare model-scoped metrics and AGG."""
         query = tools["query"]
-        texts = [*_descriptions(query.inputSchema), (("<tool description>",), query.description or "")]
+        texts = [*_descriptions(query.input_schema), (("<tool description>",), query.description or "")]
         owners = [path for path, text in texts if marker.search(text)]
         assert owners == [METRICS_FIELD], owners
 

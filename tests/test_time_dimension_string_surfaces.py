@@ -38,7 +38,7 @@ def rest_client(storage) -> TestClient:
 
 
 async def _call(server, **arguments: Any) -> str:
-    content_blocks, _ = await server.call_tool(name="query", arguments=arguments)
+    content_blocks = (await server.call_tool(name="query", arguments=arguments)).content
     return content_blocks[0].text
 
 
@@ -80,7 +80,7 @@ class TestMcpSurface:
         self, mcp_server,
     ) -> None:
         tools = {t.name: t for t in await mcp_server.list_tools()}
-        props = tools["query"].inputSchema["$defs"]["SlayerQuery"]["properties"]
+        props = tools["query"].input_schema["$defs"]["SlayerQuery"]["properties"]
         dims = props["dimensions"].get("description") or ""
         for gran in GRANULARITIES:
             # Whole-token: ``week`` must not be satisfied by ``week_sunday`` alone.

@@ -160,7 +160,7 @@ def rest_client(store_dir: str) -> Iterator[TestClient]:
 # Output paths
 # --------------------------------------------------------------------------- #
 async def _mcp(server: Any, fmt: str) -> str:
-    blocks, _ = await server.call_tool(name="query", arguments={"query": QUERY, "format": fmt})
+    blocks = (await server.call_tool(name="query", arguments={"query": QUERY, "format": fmt})).content
     return blocks[0].text
 
 

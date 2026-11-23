@@ -26,7 +26,7 @@ def yaml_storage() -> Generator[YAMLStorage, None, None]:
 
 
 async def _call(mcp_server, *, name: str, arguments: dict) -> str:
-    content_blocks, _ = await mcp_server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await mcp_server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 
@@ -108,7 +108,7 @@ async def test_tool_descriptor_lists_compact_arg(
     mcp = create_mcp_server(storage=yaml_storage)
     tools = await mcp.list_tools()
     tool: Any = next(t for t in tools if t.name == "inspect")
-    schema = tool.inputSchema
+    schema = tool.input_schema
     assert "compact" in schema["properties"]
 
 
@@ -120,5 +120,5 @@ async def test_tool_descriptor_omits_reachable_fields_depth_arg(
     mcp = create_mcp_server(storage=yaml_storage)
     tools = await mcp.list_tools()
     tool: Any = next(t for t in tools if t.name == "inspect")
-    schema = tool.inputSchema
+    schema = tool.input_schema
     assert "reachable_fields_depth" not in schema["properties"]
