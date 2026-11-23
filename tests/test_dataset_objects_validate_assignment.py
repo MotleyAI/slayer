@@ -61,6 +61,11 @@ class TestInvalidAssignment:
         data = shop_orders()
         assert got == construction_refusal(SlayerDataset, {**data, "fields": [*data["fields"], {"name": "amount"}]})
 
+    def test_a_field_with_an_expression_refuses_the_deprecated_sql_too(self) -> None:
+        field = DatasetField(name="amount", expression="amount")
+        got = _refused_assignment(field, "sql", "a + b")
+        assert got == construction_refusal(DatasetField, {"name": "amount", "expression": "amount", "sql": "a + b"})
+
     def test_a_datasource_port_must_be_a_number(self) -> None:
         datasource = DatasourceConfig(name=DS, type="sqlite", database="x.db")
         got = _refused_assignment(datasource, "port", "abc")

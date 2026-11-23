@@ -43,7 +43,7 @@ from slayer.core.enums import (
     builtin_empty_value,
     type_display,
 )
-from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, UnknownKeyError
+from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, SpellingConflictError, UnknownKeyError
 from slayer.core.names import NAME_PATTERN, folded_collisions, match_name
 from slayer.core import vocabulary
 from slayer.core.vocabulary import SOURCE_ORIGIN_KEYS, Spellings, attribute_used, converted_document, converted_input, method_twin, name_twins, renamed_input, same_ignoring_deprecations
@@ -375,6 +375,13 @@ class DatasetField(DatasetPart):
         if from_sql:
             out._from_sql = True
         return out
+
+    @model_validator(mode="after")
+    def _one_spelling(self) -> "DatasetField":
+        """``expression`` or its deprecated ``sql``, never both (as input refuses)."""
+        if self.sql is not None and self.expression is not None:
+            raise SpellingConflictError(old="sql", new="expression")
+        return self
 
     @field_validator("name")
     @classmethod
