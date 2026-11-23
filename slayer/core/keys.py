@@ -1243,15 +1243,19 @@ def constituent_grain(
 
 def transform_operand_grain(
     input: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
+    collapse_axis: bool = True,
 ) -> Grain:
     """A transform input's operand grain (Axioms 11.1, 11.3b, 11.5), recursive.
-    Without an aggregate, row leaves sit at the query grain."""
+    Without an aggregate, row leaves sit at the query grain; ``collapse_axis=False``
+    keeps the axis a nested first/last drops."""
     if any(isinstance(k, AggregateKey) for k in walk_value_keys(input)):
         return _operand_grain(
             input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=None,
+            collapse_axis=collapse_axis,
         )
     grain = _operand_grain(
         input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=query_grain,
+        collapse_axis=collapse_axis,
     )
     # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1).
     return query_grain if grain.is_empty else grain
@@ -1259,7 +1263,7 @@ def transform_operand_grain(
 
 def _operand_grain(
     k: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
-    leaf_grain: Optional[Grain],
+    leaf_grain: Optional[Grain], collapse_axis: bool,
 ) -> Grain:
     if isinstance(k, AggregateKey):
         grain = query_grain if k.partition_keys is None else k.partition_keys
@@ -1269,8 +1273,9 @@ def _operand_grain(
     if isinstance(k, TransformKey):
         grain = transform_operand_grain(
             k.input, query_grain=query_grain, active_bucket=active_bucket,
+            collapse_axis=collapse_axis,
         )
-        if k.op in AXIS_COLLAPSING_TRANSFORMS and k.time_key is not None:
+        if collapse_axis and k.op in AXIS_COLLAPSING_TRANSFORMS and k.time_key is not None:
             return grain - {k.time_key}
         return grain
     if isinstance(k, (FieldKey, FieldSqlKey, TimeTruncKey)):
@@ -1279,6 +1284,7 @@ def _operand_grain(
     for c in k.children():
         grain = grain | _operand_grain(
             c, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=leaf_grain,
+            collapse_axis=collapse_axis,
         )
     return grain
 

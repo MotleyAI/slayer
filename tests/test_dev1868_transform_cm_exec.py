@@ -79,8 +79,9 @@ class TestChangeOverCrossModelRanked:
             "order": {"metrics": [QueryMetric(metric="sum(orders.amount)", alias="s")],
                       "order": [{"field": change, "direction": "asc"}]},
         }[position]
+        query = q(dimensions=["customers.regions.name"], time_dimensions=month_td(), **kw)
         with pytest.raises(TimeAxisError):
-            await exec_engine.execute(q(dimensions=["customers.regions.name"], time_dimensions=month_td(), **kw))
+            await exec_engine.execute(query)
 
 
 class TestTransformFilterAndOrderPositions:

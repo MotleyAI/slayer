@@ -248,8 +248,9 @@ class TestChangeOverAttached:
     @pytest.mark.parametrize("op", ["change", "change_pct"])
     async def test_change_over_time_less_partition_fails(self, exec_backend, op) -> None:
         _, engine = exec_backend
+        query = q(
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            metrics=[QueryMetric(metric=f"{op}(sum(orders.amount, partition_by=orders.region))", alias="x")],
+        )
         with pytest.raises(TimeAxisError):
-            await engine.execute(q(
-                dimensions=["orders.region"], time_dimensions=month_td(),
-                metrics=[QueryMetric(metric=f"{op}(sum(orders.amount, partition_by=orders.region))", alias="x")],
-            ))
+            await engine.execute(query)
