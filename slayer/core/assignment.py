@@ -36,11 +36,15 @@ def _merged(old: dict[str, Any] | None, new: dict[str, Any] | None) -> dict[str,
 class AtomicAssignment(BaseModel):
     """A validated assignment (and ``assign``) runs on a candidate copy, committed only when every check passes."""
 
+    def _before_assign(self, name: str) -> None:
+        """Clear state derived from field ``name`` so the assignment's validation derives it afresh."""
+
     def __setattr__(self, name: str, value: Any) -> None:
         if name not in type(self).__pydantic_fields__ or not self.model_config.get("validate_assignment"):
             super().__setattr__(name, value)
             return
         candidate = self._candidate()
+        candidate._before_assign(name)
         BaseModel.__setattr__(candidate, name, value)
         self._commit(candidate)
 
@@ -55,14 +59,18 @@ class AtomicAssignment(BaseModel):
         for name, value in changes.items():
             # Each value passes its own field's checks (and warns) as a single assignment would; a cross-attribute
             # check waits for the final state.
+            probe._before_assign(name)
             vars(probe)[name] = _PENDING
             try:
                 BaseModel.__setattr__(probe, name, value)
             except Exception:
                 if vars(probe)[name] is _PENDING:
                     raise
+        cleared = self._candidate()
+        for name in changes:
+            cleared._before_assign(name)
         with converted_document(stored=True):  # values already checked above: no second warning
-            built = cls.model_validate({**{n: v for n, v in vars(self).items() if n in fields}, **changes})
+            built = cls.model_validate({**{n: v for n, v in vars(cleared).items() if n in fields}, **changes})
         candidate = self._candidate()
         vars(candidate).update({n: v for n, v in vars(built).items() if n in fields})
         object.__setattr__(candidate, "__pydantic_fields_set__", self.__pydantic_fields_set__ | changes.keys())
