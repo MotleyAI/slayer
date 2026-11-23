@@ -87,7 +87,6 @@ async def test_appendix_b_errors(tmp_path: Path, fixture: str, query: dict[str, 
     assert {name: getattr(exc, name) for name in attributes} == attributes
 
 
-@pytest.mark.xfail(strict=True, reason="DEV-2388: a metric binds through its host, not from its own home")
 async def test_appendix_b3_shared_dimensions(tmp_path: Path) -> None:
     async with fixture_engine(tmp_path, "stores") as engine:
         response = await strict(engine, {"dimensions": ["item.brand", "date_dim.year"],
