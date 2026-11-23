@@ -195,7 +195,8 @@ class _Stage:
         if start is None:
             return None
         prefix, dataset, rest = start
-        resolved = self.scope.resolve(rest, root=dataset) if rest else ((), [])
+        rest_quoted = quoted[len(hops) - len(rest):len(hops)]
+        resolved = self.scope.resolve(rest, root=dataset, quoted=rest_quoted) if rest else ((), [])
         if resolved is None:
             return None
         path, chain = resolved
