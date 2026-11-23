@@ -30,6 +30,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._cli_inprocess import CliResult, run_cli_in_process
 from tests._gateway_harness import seed_shop
 from tests._key_read_failure import LOST, fail_key_read
+from tests._mcp_results import text_blocks
 
 _EMPTY = "No tables or views found"
 _USER_WORDS = "Hand-written by the analyst"
@@ -279,8 +280,8 @@ class TestEmptyIngestMessage:
 
 async def _mcp_create(storage: YAMLStorage, db: str, **scope: Any) -> str:
     server = create_mcp_server(storage=storage, _seed_help=False)
-    blocks = (await server.call_tool(name="create_datasource",
-                                       arguments={"name": "app", "type": "sqlite", "database": db, **scope})).content
+    blocks = text_blocks(await server.call_tool(name="create_datasource",
+                                       arguments={"name": "app", "type": "sqlite", "database": db, **scope}))
     block = next(iter(blocks))
     assert isinstance(block, TextContent), block
     return block.text

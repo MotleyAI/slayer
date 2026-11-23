@@ -32,7 +32,7 @@ python = "^3.11"
 sqlglot = {version = ">=30.17", extras = ["c"]}
 sqlalchemy = ">=2.0.43,<2.1"
 greenlet = ">=1"
-pydantic = ">=2.0"
+pydantic = ">=2.12"
 pyparsing = ">=3.1"
 python-dateutil = ">=2.8"
 typing-extensions = ">=4.5"
@@ -40,13 +40,10 @@ pyyaml = ">=6.0"
 # Round-trip YAML: a semantic-model document keeps its comments and layout through edits.
 ruamel-yaml = ">=0.19.1"
 fastapi = ">=0.100"
-uvicorn = ">=0.20"
+uvicorn = ">=0.31.1"
 httpx = {version = ">=0.24", optional = true}
 pandas = {version = ">=2.0", optional = true}
-# mcp 2.x dropped the `mcp.server.fastmcp` module layout that `slayer/mcp/server.py`
-# imports (renamed to `mcp.server.mcpserver.MCPServer`); cap until the 2.x migration
-# lands. Floor 1.19: the first `FastMCP.tool` accepting `meta` (always-load option).
-mcp = ">=1.19,<2"
+mcp = ">=2.3,<3"
 psycopg = {version = ">=3.1", extras = ["binary"], optional = true}
 pymysql = {version = ">=1.0", optional = true}
 clickhouse-sqlalchemy = {version = ">=0.3", optional = true}

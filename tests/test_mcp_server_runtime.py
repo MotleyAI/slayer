@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -25,13 +25,13 @@ _QUERY = {"population": "orders", "metrics": ["count(orders.*)"]}
 
 
 @contextlib.asynccontextmanager
-async def _client(tmp_path: Path) -> AsyncIterator[Client]:
+async def _client(tmp_path: Path) -> AsyncGenerator[Client, None]:
     server = create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path)), _seed_help=False)
     try:
         async with Client(server, mode="legacy") as connected:
             yield connected
     finally:
-        await server._slayer_engine.aclose()
+        await getattr(server, "_slayer_engine").aclose()
 
 
 async def _call(tmp_path: Path, *, tool: str, arguments: dict[str, Any]) -> CallToolResult:

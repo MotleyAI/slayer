@@ -51,6 +51,7 @@ from slayer.inspect.service import InspectService
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cli_inprocess import run_cli_in_process
+from tests._mcp_results import text_blocks
 
 
 # ---------------------------------------------------------------------------
@@ -264,10 +265,10 @@ class TestModelCollectionVerbose:
     ) -> None:
 
         server = create_mcp_server(storage=single_ds)
-        blocks = (await server.call_tool(
+        blocks = text_blocks(await server.call_tool(
             name="datasets_summary",
             arguments={"datasource_name": "mydb", "compact": False},
-        )).content
+        ))
         summary = blocks[0].text
         out = await _svc(single_ds).inspect(
             reference=None, entity_type="dataset", compact=False,
@@ -279,12 +280,12 @@ class TestModelCollectionVerbose:
     ) -> None:
 
         server = create_mcp_server(storage=single_ds)
-        blocks = (await server.call_tool(
+        blocks = text_blocks(await server.call_tool(
             name="datasets_summary",
             arguments={
                 "datasource_name": "mydb", "compact": False, "format": "json",
             },
-        )).content
+        ))
         summary = json.loads(blocks[0].text)
         out = await _svc(single_ds).inspect(
             reference=None, entity_type="dataset", compact=False, format="json",
@@ -380,9 +381,9 @@ class TestDatasourceCollection:
     ) -> None:
 
         server = create_mcp_server(storage=two_ds)
-        blocks = (await server.call_tool(
+        blocks = text_blocks(await server.call_tool(
             name="list_datasources", arguments={},
-        )).content
+        ))
         listing = blocks[0].text
         out = await _svc(two_ds).inspect(reference=None, entity_type="datasource")
         assert out == listing
@@ -432,9 +433,9 @@ class TestDatasourceCollection:
     ) -> None:
 
         server = create_mcp_server(storage=empty_store)
-        blocks = (await server.call_tool(
+        blocks = text_blocks(await server.call_tool(
             name="list_datasources", arguments={},
-        )).content
+        ))
         empty_msg = blocks[0].text
         out = await _svc(empty_store).inspect(
             reference=None, entity_type="datasource",
@@ -532,9 +533,9 @@ class TestMcpCollection:
     ) -> None:
 
         server = create_mcp_server(storage=two_ds)
-        blocks = (await server.call_tool(
+        blocks = text_blocks(await server.call_tool(
             name="inspect", arguments={"entity_type": "dataset"},
-        )).content
+        ))
         out = blocks[0].text
         assert "# Datasource: `mydb` — 3 dataset(s)" in out
         assert "- `orders` (3 fields; relationships: `customers`)" in out
@@ -557,12 +558,12 @@ class TestMcpCollection:
     ) -> None:
 
         server = create_mcp_server(storage=two_ds)
-        listing_blocks = (await server.call_tool(
+        listing_blocks = text_blocks(await server.call_tool(
             name="list_datasources", arguments={},
-        )).content
-        inspect_blocks = (await server.call_tool(
+        ))
+        inspect_blocks = text_blocks(await server.call_tool(
             name="inspect", arguments={"entity_type": "datasource"},
-        )).content
+        ))
         assert inspect_blocks[0].text == listing_blocks[0].text
 
 

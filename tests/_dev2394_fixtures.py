@@ -23,6 +23,7 @@ from slayer.storage.base import StorageBackend
 from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._dev2243_fixtures import DS, SALES, make_storage, metric, semantic_model_module, store_document
 from tests._engine_helpers import owned_query_engine
+from tests._mcp_results import text_blocks
 
 AGG_SHAPES = ("anonymous", "agg")
 MEASURE_REASON = "measure of its source"
@@ -137,7 +138,7 @@ async def mcp_reply(storage: StorageBackend, tool: str, **arguments: Any) -> str
     """One MCP ``tool`` call on a fresh server: its text, or the raised error's type and text."""
     server = create_mcp_server(storage=storage, _seed_help=False)
     try:
-        blocks = (await server.call_tool(name=tool, arguments=arguments)).content
+        blocks = text_blocks(await server.call_tool(name=tool, arguments=arguments))
         return "\n".join(getattr(b, "text", "") for b in blocks)
     except Exception as exc:  # noqa: BLE001 — the refusal text is the assertion subject
         return f"{type(exc).__name__}: {exc}"

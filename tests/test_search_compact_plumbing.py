@@ -29,6 +29,7 @@ from slayer.client.slayer_client import SlayerClient
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.base import StorageBackend, resolve_storage
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._mcp_results import text_blocks
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +240,9 @@ async def test_mcp_search_json_round_trip_compact_shape(
     """Codex#11: parse the JSON string returned by MCP and assert the
     compact field set."""
     mcp = create_mcp_server(storage=storage)
-    content_blocks = (await mcp.call_tool(name="search", arguments={
+    content_blocks = text_blocks(await mcp.call_tool(name="search", arguments={
         "entities": ["warehouse.orders.amount_paid"],
-    })).content
+    }))
     payload = json.loads(content_blocks[0].text)
     mem_hits = [h for h in payload["results"] if h["kind"] == "memory"]
     assert mem_hits

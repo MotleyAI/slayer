@@ -36,6 +36,7 @@ from tests._deprecated_input_helpers import (
     recorded,
     strict,
 )
+from tests._mcp_results import text_blocks
 
 STAGE_A = {"name": "a", "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 STAGE_B = {"name": "b", "population": "a", "metrics": [{"metric": "sum(a.n)", "alias": "total"}]}
@@ -221,7 +222,7 @@ class TestSurfaces:
         stages, expected = STAGED[case]
         server = create_mcp_server(storage=engine.storage)
         with recorded():
-            blocks = (await server.call_tool(name="query", arguments={"query": stages, "format": "json"})).content
+            blocks = text_blocks(await server.call_tool(name="query", arguments={"query": stages, "format": "json"}))
         assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == expected
 
 

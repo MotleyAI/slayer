@@ -20,6 +20,7 @@ from slayer.core.models import SlayerDataset
 from slayer.mcp.server import create_mcp_server
 from tests._deprecated_input_helpers import recorded
 from tests._ossie_vocabulary_fixtures import BACKENDS, shop_customers, shop_orders, shop_store, vocab_engine
+from tests._mcp_results import text_blocks
 
 QUERY: dict[str, Any] = {"population": "orders", "dimensions": [{"field": "orders.status", "label": "Status"}],
                          "metrics": [{"metric": "sum(orders.amount)", "alias": "total", "label": "Total"}]}
@@ -66,7 +67,7 @@ async def test_rest_attributes_carry_metrics_only() -> None:
 async def test_mcp_json_attributes_carry_metrics_only() -> None:
     async with vocab_engine("sqlite") as engine:
         server = create_mcp_server(storage=engine.storage, _seed_help=False)
-        blocks = (await server.call_tool(name="query", arguments={"query": QUERY, "format": "json"})).content
+        blocks = text_blocks(await server.call_tool(name="query", arguments={"query": QUERY, "format": "json"}))
     attributes = json.loads(getattr(next(iter(blocks)), "text"))["attributes"]
     assert set(attributes["metrics"]) == {METRIC_COLUMN}
     assert "measures" not in attributes

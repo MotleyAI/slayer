@@ -55,6 +55,7 @@ from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
+from tests._mcp_results import text_blocks
 
 
 # ---------------------------------------------------------------------------
@@ -794,7 +795,7 @@ class TestMCPSurface:
         pattern as ``tests/test_mcp_server.py:_call``."""
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
-        content_blocks = (await server.call_tool(
+        content_blocks = text_blocks(await server.call_tool(
             name="query",
             arguments={
                 "query": {
@@ -804,7 +805,7 @@ class TestMCPSurface:
                 },
                 "format": "json",
             },
-        )).content
+        ))
         result = content_blocks[0].text
         payload = json.loads(result)
         # MCP `query` with format=json returns a JSON array of rows.
@@ -817,7 +818,7 @@ class TestMCPSurface:
         raw rows into an outer stage that aggregates."""
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
-        content_blocks = (await server.call_tool(
+        content_blocks = text_blocks(await server.call_tool(
             name="query",
             arguments={
                 "query": [
@@ -835,7 +836,7 @@ class TestMCPSurface:
                 ],
                 "format": "json",
             },
-        )).content
+        ))
         payload = json.loads(content_blocks[0].text)
         # 3 unique status values, all 6 rows aggregated.
         assert isinstance(payload, list)

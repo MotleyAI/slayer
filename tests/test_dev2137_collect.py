@@ -15,6 +15,7 @@ from slayer.core.models import Aggregation, DatasetField
 from slayer.mcp.server import create_mcp_server
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_dataset, emit_contractors, stored_contractors
 from tests._dev2137_fixtures import all_datasets, as_list, by, list_engine, metric, query
+from tests._mcp_results import text_blocks
 
 
 @pytest.fixture(scope="module")
@@ -103,10 +104,10 @@ class TestListResults:
 
     async def test_json_result(self, engine) -> None:
         server = create_mcp_server(storage=engine.storage)
-        blocks = (await server.call_tool(name="query", arguments={
+        blocks = text_blocks(await server.call_tool(name="query", arguments={
             "query": {"population": "contractors", "dimensions": ["contractors.team"],
                       "metrics": [{"metric": "collect(contractors.city)", "alias": "c"}]},
-            "format": "json"})).content
+            "format": "json"}))
         block = next(iter(blocks))
         assert isinstance(block, TextContent), block
         decoded = json.loads(block.text)

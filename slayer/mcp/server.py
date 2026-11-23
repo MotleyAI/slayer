@@ -1,7 +1,9 @@
 """MCP server for SLayer."""
 
+import functools
 import json
 import logging
+import re
 import sys
 import weakref
 from importlib.metadata import PackageNotFoundError
@@ -87,7 +89,10 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import Context, MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
+    from mcp.shared.exceptions import MCPError
+    from mcp.types import CallToolResult, InputRequiredResult
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +112,13 @@ _NESTED_CAP_HINT = "pass a higher 'limit' on the root query to get more rows"
 #: A definition and its deprecated twin: an upsert spelling one replaces the other.
 _DEFINITION_TWINS = (frozenset({"sql", "expression"}), frozenset({"formula", "expression"}))
 
+#: The mcp releases SLayer runs on: ``[_MCP_MIN, _MCP_BELOW)``.
+_MCP_RANGE = ">=2.3,<3"
+_MCP_MIN, _MCP_BELOW = (2, 3), (3, 0)
 # Shared remedy for every mcp-import failure below.
 _MCP_REMEDY = (
-    "Install a supported version: pip install 'mcp>=1.19,<2' "
-    "(or upgrade SLayer, which pins mcp<2: pip install -U motley-slayer)."
+    f"Install a supported version: pip install 'mcp{_MCP_RANGE}' "
+    "(or upgrade SLayer: pip install -U motley-slayer)."
 )
 
 # Claude Code's default cap on each tool description and on the server instructions.
@@ -182,41 +190,46 @@ def _agent_description(fn: Callable[..., Any]) -> str:
     return text
 
 
-def _mcp_major(version_str: str) -> int | None:
-    """Best-effort major-version parse; ``None`` when unparseable."""
+def _mcp_supported(version_str: str) -> bool:
+    """Whether ``version_str`` lies in ``_MCP_RANGE``; an unparseable version does not."""
+    match = re.match(r"(\d+)\.(\d+)", version_str.strip())
+    return match is not None and _MCP_MIN <= (int(match[1]), int(match[2])) < _MCP_BELOW
+
+
+def _import_mcp_sdk() -> "tuple[type[MCPServer], type[ToolError], type[MCPError]]":
+    """mcp 2.x's ``MCPServer``, ``ToolError`` and ``MCPError``, or an actionable ImportError."""
     try:
-        return int(version_str.split(".", 1)[0].strip())
-    except ValueError:
-        return None
-
-
-def _import_fastmcp():
-    """Return the mcp 1.x ``FastMCP`` class, or raise an actionable ImportError.
-
-    Absent package and wrong major (mcp 2.x dropped the module) get different remedies.
-    """
+        installed = _pkg_version("mcp")
+    except PackageNotFoundError as exc:
+        raise ImportError(f"MCP package not found. {_MCP_REMEDY}") from exc
+    if not _mcp_supported(installed):
+        raise ImportError(f"mcp {installed} is installed, but SLayer requires mcp{_MCP_RANGE}. {_MCP_REMEDY}")
     try:
-        from mcp.server.fastmcp import FastMCP  # ALLOW(import-not-top): optional-dep probe — must attempt the import at call time to diagnose absent vs wrong-major
+        from mcp.server.mcpserver import MCPServer  # ALLOW(import-not-top): SDK probe — at build time, so an out-of-range install gets the remedy, not a raw import error
+        from mcp.server.mcpserver.exceptions import ToolError  # ALLOW(import-not-top): SDK probe, as above
+        from mcp.shared.exceptions import MCPError  # ALLOW(import-not-top): SDK probe, as above
     except ImportError as exc:
+        raise ImportError(
+            f"mcp {installed} is installed, but 'mcp.server.mcpserver' could not be imported: {exc} {_MCP_REMEDY}"
+        ) from exc
+    return MCPServer, ToolError, MCPError
+
+
+def _keeping_failure_text(
+    fn: Callable[..., Any], *, tool_error: "type[ToolError]", mcp_error: "type[MCPError]",
+) -> Callable[..., Any]:
+    """``fn`` raising any failure but an MCP one as a ``tool_error`` with its message, which the SDK shows the agent."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
-            installed = _pkg_version("mcp")
-        except PackageNotFoundError:
-            raise ImportError(f"MCP package not found. {_MCP_REMEDY}") from exc
-        major = _mcp_major(installed)
-        if major is not None and major >= 2:
-            detail = (
-                f"mcp {installed} is installed, but SLayer targets the mcp 1.x "
-                f"FastMCP API: mcp 2.x dropped 'mcp.server.fastmcp' (renamed to "
-                f"mcp.server.mcpserver.MCPServer)."
-            )
-        else:
-            # 1.x that failed for another reason — report that, not the rename.
-            detail = (
-                f"mcp {installed} is installed, but 'mcp.server.fastmcp' could "
-                f"not be imported: {exc}"
-            )
-        raise ImportError(f"{detail} {_MCP_REMEDY}") from exc
-    return FastMCP
+            return await fn(*args, **kwargs)
+        except (tool_error, mcp_error):
+            raise
+        except Exception as exc:
+            raise tool_error(str(exc)) from exc
+
+    return wrapper
 
 
 def _tool_operation(bound: Any) -> dict[str, str]:
@@ -272,57 +285,64 @@ def _reported_text(text: str, lines: list[str]) -> str:
     return text + "".join(f"\nWarning: {line}" for line in lines if line not in text)
 
 
-def _with_deprecations(result: Any, renamed: list[DeprecatedInputWarning]) -> Any:
-    """A tool result (content blocks, optionally with structured output) whose first text reports ``renamed``."""
-    if not renamed:
+def _with_deprecations(
+    result: "CallToolResult | InputRequiredResult", renamed: list[DeprecatedInputWarning],
+) -> "CallToolResult | InputRequiredResult":
+    """``result`` whose first text block (and string structured ``result``) reports ``renamed``."""
+    content = getattr(result, "content", None)
+    if not renamed or content is None:
         return result
     lines = [r.human_message() for r in renamed]
-    blocks, structured = result if isinstance(result, tuple) else (result, None)
-    blocks = list(blocks)
+    blocks = list(content)
     first = next((i for i, b in enumerate(blocks) if getattr(b, "type", None) == "text"), None)
     if first is not None:
         blocks[first] = blocks[first].model_copy(update={"text": _reported_text(blocks[first].text, lines)})
+    structured = getattr(result, "structured_content", None)
     if isinstance(structured, dict) and isinstance(structured.get("result"), str):
         structured = {**structured, "result": _reported_text(structured["result"], lines)}
-    return (blocks, structured) if isinstance(result, tuple) else blocks
+    return result.model_copy(update={"content": blocks, "structured_content": structured})
 
 
-def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
-    """``fastmcp_cls`` counting every tool call, and each session's client once."""
+def _counted(server_cls: "type[MCPServer]", *, tool_error: "type[ToolError]") -> "type[MCPServer]":
+    """``server_cls`` counting every tool call, and each session's client once."""
 
-    class CountedFastMCP(fastmcp_cls):
+    class CountedMCPServer(server_cls):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
             self._usage_reporting_sessions: weakref.WeakSet = weakref.WeakSet()
 
         @otel.request(surface="mcp", extract=_tool_operation)
-        async def call_tool(self, name: str, arguments: dict[str, Any]):
-            session = self._observe_session()
+        async def call_tool(
+            self, name: str, arguments: dict[str, Any], context: "Context | None" = None,
+        ) -> "CallToolResult | InputRequiredResult":
+            session = self._observe_session(context)
             with usage_reporting.action() as action:
                 try:
                     # One request is one input document: its pre-2.0 spellings each warn once.
                     with converted_document(stored=False) as (spellings, _):
                         arguments, renamed = _converted_arguments(tool=name, arguments=arguments)
-                        result = await super().call_tool(name, arguments)
+                        result = await super().call_tool(name, arguments, context)
                         result = _with_deprecations(result, [*renamed, *spellings.report()])
                 except BaseException as exc:
                     usage_reporting.record(
-                        surface="mcp", token=name, error=_counted_error(exc), dry_run=action.dry_run, session=session,
+                        surface="mcp", token=name, error=_counted_error(exc, tool_error=tool_error),
+                        dry_run=action.dry_run, session=session,
                     )
                     raise
             usage_reporting.record(surface="mcp", token=name, dry_run=action.dry_run, session=session)
             return result
 
-        def _observe_session(self) -> object | None:
-            """The calling session (counting its client at its first call), or ``None``."""
-            if not usage_reporting.is_active():
+        def _observe_session(self, context: "Context | None") -> object | None:
+            """The calling client connection (counting its client at its first call), or ``None``."""
+            if context is None or not usage_reporting.is_active():
                 return None
             try:
-                session = self.get_context().session
+                # mcp 2.x builds a ServerSession per request and exposes the connection no other way.
+                session = context.session._connection  # pyright: ignore[reportPrivateUsage] -- the only per-connection key
                 if session in self._usage_reporting_sessions:
                     return session
                 self._usage_reporting_sessions.add(session)
-                info = session.client_params.clientInfo if session.client_params else None
+                info = session.client_params.client_info if session.client_params else None
             except Exception:
                 logger.debug("usage reporting: no MCP session to identify", exc_info=True)
                 return None
@@ -331,19 +351,7 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             )
             return session
 
-    return CountedFastMCP
-
-
-def _set_server_version(mcp) -> None:
-    """Stamp SLayer's version onto the lowlevel MCP server (best-effort; cosmetic)."""
-    lowlevel = getattr(mcp, "_mcp_server", None)
-    if lowlevel is None:
-        logger.debug("MCP server exposes no _mcp_server; leaving serverInfo.version")
-        return
-    try:
-        lowlevel.version = __version__
-    except AttributeError:
-        logger.debug("MCP serverInfo.version is read-only; leaving it", exc_info=True)
+    return CountedMCPServer
 
 
 def _ambiguous_with_mcp_hint(exc: AmbiguousDatasetError) -> str:
@@ -366,9 +374,11 @@ def _db_tool_failure(exc: Exception) -> ToolFailure:
     return ToolFailure(_friendly_db_error(exc))
 
 
-def _counted_error(exc: BaseException) -> BaseException:
-    """The failure to count: past FastMCP's ``ToolError`` wrapping and a ``ToolFailure``, to their cause."""
-    error = exc.__cause__ or exc  # FastMCP re-raises a tool's exception as ToolError from the original
+def _counted_error(exc: BaseException, *, tool_error: "type[ToolError]") -> BaseException:
+    """The failure to count: past every ``ToolError`` wrapping and a ``ToolFailure``, to their cause."""
+    error = exc
+    while isinstance(error, tool_error) and error.__cause__ is not None:
+        error = error.__cause__
     if isinstance(error, ToolFailure) and error.__cause__ is not None:
         return error.__cause__
     return error
@@ -578,7 +588,7 @@ async def _render_ingest_result(
     return "\n".join(lines)
 
 
-def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; complexity is the cumulative inline closure body of every @mcp.tool() handler. Splitting would require dependency-injecting the engine/storage/services into a separate module — out of scope for incremental PRs.
+def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory; complexity is the cumulative inline closure body of every @mcp.tool() handler. Splitting would require dependency-injecting the engine/storage/services into a separate module — out of scope for incremental PRs.
     storage: StorageBackend,
     *,
     ingest_on_startup: bool = False,
@@ -609,18 +619,19 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 storage=storage, client_for=engine.client_for, stream=sys.stderr,
             )
         )
-    FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
+    server_cls, tool_error, mcp_error = _import_mcp_sdk()
 
-    mcp = _counted(FastMCP)("SLayer", instructions=SERVER_INSTRUCTIONS)
-    _set_server_version(mcp)
+    mcp = _counted(server_cls, tool_error=tool_error)("SLayer", instructions=SERVER_INSTRUCTIONS, version=__version__)
     # Expose the closure engine so callers can dispose per-task pools via
     # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).
     # The read-only introspection tools share this same engine.
     mcp._slayer_engine = engine
 
     def tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """``mcp.tool`` with the budgeted docstring as the description."""
-        return lambda fn: mcp.tool(description=_agent_description(fn), **kwargs)(fn)
+        """``mcp.tool`` with the budgeted docstring as the description, keeping every failure's text."""
+        return lambda fn: mcp.tool(description=_agent_description(fn), **kwargs)(
+            _keeping_failure_text(fn, tool_error=tool_error, mcp_error=mcp_error),
+        )
 
     @tool(meta=_ALWAYS_LOAD_META if always_load_query else None)
     async def query(

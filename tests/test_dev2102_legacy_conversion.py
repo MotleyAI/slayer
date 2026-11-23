@@ -28,6 +28,7 @@ from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._deprecated_input_helpers import SAVED, deprecated_in, deprecations, mcp_payload, orders_engine, payload_of
+from tests._mcp_results import text_blocks
 
 LEGACY = {
     "dataset": "orders",
@@ -152,7 +153,7 @@ class TestStructuredDeprecation:
     async def test_mcp_reports_it(self, recorded) -> None:
         async with orders_engine() as engine:
             server = create_mcp_server(storage=engine.storage)
-            blocks = (await server.call_tool(name="query", arguments={"query": LEGACY_RUN, "format": "json"})).content
+            blocks = text_blocks(await server.call_tool(name="query", arguments={"query": LEGACY_RUN, "format": "json"}))
         assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == 1
 
     async def test_the_local_client_reports_it(self, recorded) -> None:

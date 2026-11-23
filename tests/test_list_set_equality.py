@@ -52,6 +52,7 @@ from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, NO_LIST_DATABASES
 from tests._dev2137_fixtures import metric, num, query
 from tests._engine_helpers import seeded_exec_engine
 from tests._pg_helpers import client_datasource, pg_query_engine
+from tests._mcp_results import text_blocks
 
 postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")
@@ -763,9 +764,9 @@ class TestWarning:
     async def test_mcp_renders_it(self) -> None:
         async with duckdb_engine(statements=contractor_statements("duckdb"), engine_datasets=datasets()) as e:
             server = create_mcp_server(storage=e.storage, _seed_help=False)
-            blocks = (await server.call_tool(name="query", arguments={"query": {
+            blocks = text_blocks(await server.call_tool(name="query", arguments={"query": {
                 "population": "contractors", "dimensions": ["contractors.skills"],
-                "metrics": [{"metric": "count_distinct(contractors.skills)", "alias": "n"}]}})).content
+                "metrics": [{"metric": "count_distinct(contractors.skills)", "alias": "n"}]}}))
         text = "\n".join(b.text for b in blocks if isinstance(b, TextContent))
         assert "count_distinct(skills.value)" in text, text
 

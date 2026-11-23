@@ -35,7 +35,7 @@ def _mcp_specifier() -> SpecifierSet:
 
 
 def _build() -> object:
-    return create_mcp_server(storage=None, _seed_help=False)  # NOSONAR(S5655) — metadata-only build needs no storage
+    return create_mcp_server(storage=None, _seed_help=False)  # pyright: ignore[reportArgumentType]  # NOSONAR(S5655) — metadata-only build needs no storage
 
 
 class TestMcpDependencyPin:

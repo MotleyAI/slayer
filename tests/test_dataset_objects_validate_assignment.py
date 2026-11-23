@@ -23,6 +23,7 @@ from tests._ossie_shapes_fixtures import execute, shop_engine_store
 from tests._ossie_vocabulary_fixtures import shop_orders
 from tests._stored_upgrade_fixtures import DS
 from tests._validation_refusals import construction_refusal, refusal, state
+from tests._mcp_results import text_blocks
 
 RELATIONSHIP = {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}
 
@@ -151,7 +152,7 @@ async def _edit(storage: StorageBackend, **arguments: Any) -> str:
     """One MCP ``edit_dataset`` call on a fresh server: its text, or the raised error's text."""
     server = create_mcp_server(storage=storage, _seed_help=False)
     try:
-        blocks = (await server.call_tool(name="edit_dataset", arguments={"data_source": DS, **arguments})).content
+        blocks = text_blocks(await server.call_tool(name="edit_dataset", arguments={"data_source": DS, **arguments}))
         return "\n".join(getattr(b, "text", "") for b in blocks)
     except Exception as exc:  # noqa: BLE001 — the refusal text is the assertion subject
         return f"{type(exc).__name__}: {exc}"
