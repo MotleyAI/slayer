@@ -104,7 +104,8 @@ models alongside; the Mode B grammar: `syntax.py`.
    grandfathered child-level `#legacy` doors (`core.query`/`core.models` →
    `sql.*`, `storage.migrations`), slated to die.
    [enforced: arch_check:model-truth]
-8. **Every write is checked**: an attribute assigned on a dataset or query object passes the checks construction applies, and a refused assignment leaves the object unchanged. [enforced: test:tests/test_law_dataset_objects_validate_assignment.py] [target: DEV-1695]
+8. **Input refuses what it does not read**: a fresh query or dataset object carrying a key it does not read is refused with a typed error naming the key, never silently dropped. [enforced: test:tests/test_law_query_input_refuses_unknown_keys.py] [review]
+9. **Every write is checked**: an attribute assigned on a dataset or query object passes the checks construction applies, and a refused assignment leaves the object unchanged. [enforced: test:tests/test_law_dataset_objects_validate_assignment.py] [target: DEV-1695]
 
 ## 4. Rationale
 
