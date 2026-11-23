@@ -91,6 +91,9 @@ provenance:
         (F, "status = { s }"),
         (F, 'status = "ok" {? AND region = {r} ?}'),
         (F, "status = 'a?}'"),
+        (F, 'orders.{col} = "ok"', {"col": "status"}),
+        (E, 'sum(iif(extract({part} from created_at) == 2024 and status == "ok", amount, 0))', {"part": "year"}),
+        (E, "{col}:sum", {"col": "amount"}),
         # --- expression surfaces ----------------------------------------------------
         (E, 'sum(CASE WHEN status = "ok" THEN amount ELSE 0 END)'),
         (E, 'sum(CASE WHEN status IS NULL THEN amount ELSE 0 END)'),
@@ -138,21 +141,26 @@ provenance:
     ]
 
 
-    def _probe(match):
+    def _probe(match, atom):
         full = match.group(0)
         if full in ("{{", "}}"):
             return full[0]
         if match.group(1) is None:
             raise ValueError(f"invalid placeholder {full!r}")
-        return "0"
+        return atom
 
 
     def gate_holds(text, *, is_filter):
-        """1.9.1's pre-parse passes then ast.parse (no _convert); placeholders probed as design decision 6."""
+        """Placeholders probed as design decision 6: every one as ``0``, or every one as a bare identifier."""
+        return any(_gate_holds_as(text, is_filter=is_filter, atom=atom) for atom in ("0", "_v"))
+
+
+    def _gate_holds_as(text, *, is_filter, atom):
+        """1.9.1's pre-parse passes then ast.parse (no _convert), every ``{name}`` rendered as ``atom``."""
         try:
             if _contains_block_delimiter(text):
                 return False
-            t = _VAR_PATTERN.sub(_probe, text)
+            t = _VAR_PATTERN.sub(lambda m: _probe(m, atom), text)
             if is_filter:
                 t = _normalize_sql_filter_operators(t)
             t = _rewrite_count_distinct(_rewrite_extract(t, original=t), original=t)
@@ -445,6 +453,24 @@ cases:
   gate: false
   v191_error: 'ValueError: Optional blocks ''{? ... ?}'' are supported only on raw-SQL model surfaces, not in Mode-B expressions:
     "status = ''a?}''".'
+- surface: filter
+  text: orders.{col} = "ok"
+  v191: accepted
+  gate: true
+  variables:
+    col: status
+- surface: expression
+  text: sum(iif(extract({part} from created_at) == 2024 and status == "ok", amount, 0))
+  v191: accepted
+  gate: true
+  variables:
+    part: year
+- surface: expression
+  text: '{col}:sum'
+  v191: accepted
+  gate: true
+  variables:
+    col: amount
 - surface: expression
   text: sum(CASE WHEN status = "ok" THEN amount ELSE 0 END)
   v191: accepted

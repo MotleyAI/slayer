@@ -132,6 +132,25 @@ class TestExpressionSpellingsMigration:
         assert _gate_messages(gate_log) == []
 
 
+class TestNameValuedPlaceholderMigration:
+    """1.9.1 rendered string variables unquoted, so a ``{name}`` may stand where only a name parses."""
+
+    def test_path_segment_in_a_filter(self, gate_log: pytest.LogCaptureFixture) -> None:
+        assert rewrite_query_strings(_v6(filters=['tickets.{col} = "ok"']))["filters"] == ["tickets.{col} = 'ok'"]
+        assert _gate_messages(gate_log) == []
+
+    def test_extract_part_in_a_measure(self, gate_log: pytest.LogCaptureFixture) -> None:
+        stored = 'sum(iif(extract({part} from created_at) == 2024 and status == "ok", amount, 0))'
+        out = rewrite_query_strings(_v6(measures=[{"formula": stored, "name": "v"}]))
+        assert out["measures"] == [{"formula": stored.replace('"ok"', "'ok'"), "name": "v"}]
+        assert _gate_messages(gate_log) == []
+
+    def test_colon_aggregation_operand(self, gate_log: pytest.LogCaptureFixture) -> None:
+        out = rewrite_query_strings(_v6(measures=[{"formula": "{col}:sum", "name": "v"}]))
+        assert out["measures"] == [{"formula": "{col}:sum", "name": "v"}]
+        assert _gate_messages(gate_log) == []
+
+
 #: Each non-filter surface of a v6 query holding ``text``, keyed by the field path the warning names.
 def _expression_surfaces(text: str) -> dict[str, dict]:
     return {

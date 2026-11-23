@@ -67,6 +67,7 @@ _CALL_TOKEN_RE = re.compile(
 )
 _COLON_AGG_RE = re.compile(r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?):([a-zA-Z_]\w*)")
 _STAR_ARG_TOKEN = "__slayer_star__"
+_PLACEHOLDER_ATOMS = ("0", "_v")
 
 _Token = tuple[str, str, int, int]
 _Hist = list[tuple[str, str]]
@@ -74,11 +75,18 @@ _Frame = tuple[bool, str | None]
 
 
 def is_old_grammar(text: str, *, filter: bool) -> bool:
-    """Whether 1.9.1's reader parsed ``text`` on a query filter (``filter``) or another Mode-B surface."""
+    """Whether 1.9.1's reader parsed ``text`` on a query filter (``filter``) or another Mode-B surface.
+
+    1.9.1 rendered string values unquoted, so a ``{name}`` may have been a number or a name: either probe suffices.
+    """
+    return any(_parses_with(text, filter=filter, atom=atom) for atom in _PLACEHOLDER_ATOMS)
+
+
+def _parses_with(text: str, *, filter: bool, atom: str) -> bool:
     try:
         if "{?" in text or "?}" in text:
             return False
-        probed = _VAR_PATTERN.sub(_probe_placeholder, text)
+        probed = _VAR_PATTERN.sub(lambda m: _probe_placeholder(m, atom=atom), text)
         if filter:
             probed = _normalize_sql_filter_operators(probed)
         probed = _rewrite_count_distinct(_rewrite_extract(probed))
@@ -89,13 +97,13 @@ def is_old_grammar(text: str, *, filter: bool) -> bool:
     return True
 
 
-def _probe_placeholder(match: re.Match[str]) -> str:
+def _probe_placeholder(match: re.Match[str], *, atom: str) -> str:
     full = match.group(0)
     if full in ("{{", "}}"):
         return full[0]
     if match.group(1) is None:
         raise ValueError(full)
-    return "0"
+    return atom
 
 
 def _preprocess_colons(text: str) -> str:
