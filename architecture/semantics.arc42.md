@@ -107,6 +107,7 @@ principles every layer obeys.
    [enforced: test:tests/test_dev2013_expression_attribution.py]
    [enforced: test:tests/test_dev2367_list_elements_across_joins.py]
    [enforced: test:tests/test_dev2388_own_anchor.py]
+   [enforced: test:tests/test_dev2430_row_expression_home.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations

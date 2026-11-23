@@ -2,9 +2,9 @@
 
 - [ ] 1.1 Create `tests/test_dev2430_row_expression_home.py` (SQLite and DuckDB, the `tests/_dev2212_fixtures.py` seed plus the extra fields each scenario needs), one test per scenario of `specs/queries/semantics` › *Row-level expressions are homed or refused*; verify every refusal test fails on the current code and every legal-shape test (remedy, parent + child, filter, product hop) passes or fails only where the probe in design.md › Context says today's behaviour differs (parent + child time dimension).
 - [ ] 1.2 Cover design decisions 13, 15, 16, 17 explicitly: a derived leaf whose definition crosses an unproven hop, alone and inside a larger expression; a transform constituent grained on a sibling; product-hop precedence for dimension, time dimension, order key and a derived field; a sibling order key refused before the wrap and a parent + child order key still wrapped `max` (descending) / `min` (ascending).
-- [ ] 1.3 Add the `specs/queries/time-dimensions` scenarios (sibling leaves fail closed naming both; parent + child homed and associated) to the new file; verify they fail on current code.
-- [ ] 1.4 Align `tests/test_dev2119_expression_time_dimensions.py::TestExpressionTyping::test_leaf_across_a_fanning_hop_fails_closed` to assert the parent + child expression executes, associated (approved alignment, design decision 4); verify it fails on current code.
-- [ ] 1.5 Apply the approved Axiom 2 status-tag edit to `architecture/semantics.arc42.md` verbatim (design decision 11, second bullet) once the test file exists; verify `poetry run la-arch-check` passes.
+- [x] 1.3 Add the `specs/queries/time-dimensions` scenarios (sibling leaves fail closed naming both; parent + child homed and associated) to the new file; verify they fail on current code.
+- [x] 1.4 Align `tests/test_dev2119_expression_time_dimensions.py::TestExpressionTyping::test_leaf_across_a_fanning_hop_fails_closed` to assert the parent + child expression executes, associated (approved alignment, design decision 4); verify it fails on current code.
+- [x] 1.5 Apply the approved Axiom 2 status-tag edit to `architecture/semantics.arc42.md` verbatim (design decision 11, second bullet) once the test file exists; verify `poetry run la-arch-check` passes.
 
 ## 2. Resolver (pr-implement)
 
