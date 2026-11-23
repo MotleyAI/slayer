@@ -8,24 +8,24 @@
 
 ## 2. Sharding
 
-- [ ] 2.1 Longest-first ordering in `tests/_sharding.py` `pytest_collection_modifyitems` (under `--shard`, after deselection); update the module docstring — verify 1.1 passes
-- [ ] 2.2 Rebalance `tests/shard_durations.json`: `gh run download <id> -p 'shard-durations-*' -D <dir>/<id>` for main runs 45033597470, 45027708884, 44996098478, 44916409383, then `poetry run python -m tests._sharding tests/shard_durations.json <dir>/*/*/shard-durations.json` (all 24 files) — verify the file lists every current test module the runs measured and the 4-shard plan's stored loads are within 5% of each other
+- [x] 2.1 Longest-first ordering in `tests/_sharding.py` `pytest_collection_modifyitems` (under `--shard`, after deselection); update the module docstring — verify 1.1 passes
+- [x] 2.2 Rebalance `tests/shard_durations.json`: `gh run download <id> -p 'shard-durations-*' -D <dir>/<id>` for main runs 45033597470, 45027708884, 44996098478, 44916409383, then `poetry run python -m tests._sharding tests/shard_durations.json <dir>/*/*/shard-durations.json` (all 24 files) — verify the file lists every current test module the runs measured and the 4-shard plan's stored loads are within 5% of each other
 
 ## 3. Watchdog
 
-- [ ] 3.1 `tests/_hang_watchdog.py`: options, controller in-flight tracking (`logstart` add; `logfinish` / crashed-item report remove; per-worker activity from `report.node`) and the stall reporter thread — verify 1.2 passes
-- [ ] 3.2 Deadline stack dumps: controller start time to workers via `workerinput`; `faulthandler.dump_traceback_later` per process into the report dir; immediate dump when already past — verify 1.3 passes
+- [x] 3.1 `tests/_hang_watchdog.py`: options, controller in-flight tracking (`logstart` add; `logfinish` / crashed-item report remove; per-worker activity from `report.node`) and the stall reporter thread — verify 1.2 passes
+- [x] 3.2 Deadline stack dumps: controller start time to workers via `workerinput`; `faulthandler.dump_traceback_later` per process into the report dir; immediate dump when already past — verify 1.3 passes
 - [ ] 3.3 Hard bound via `pytest_timeout_set_timer` / `pytest_timeout_cancel_timer` (`tryfirst`, return `None`), workers only, signal method only — verify 1.4 and 1.5 pass
-- [ ] 3.4 Register `tests._hang_watchdog` in `tests/conftest.py` `pytest_plugins` — verify the local test scope passes with no watchdog output
+- [x] 3.4 Register `tests._hang_watchdog` in `tests/conftest.py` `pytest_plugins` — verify the local test scope passes with no watchdog output
 
 ## 4. CI
 
-- [ ] 4.1 `ci.yml` `unit-tests`: `shard: [1, 2, 3, 4]`, `--shard K/4`, `timeout-minutes: 25`, the watchdog flags (`--stall-report-after 120 --stack-dump-after 1320 --hang-report-dir "$RUNNER_TEMP/hang-reports" --hard-timeout-grace 30`), an `if: failure()` step printing every report file, and an `if: ${{ !cancelled() }}` artifact upload of the report dir — verify by review and the PR's CI run
-- [ ] 4.2 `latest-deps.yml`: the same 4 shards and watchdog flags (keeps 30 min) — verify by review
+- [x] 4.1 `ci.yml` `unit-tests`: `shard: [1, 2, 3, 4]`, `--shard K/4`, `timeout-minutes: 25`, the watchdog flags (`--stall-report-after 120 --stack-dump-after 1320 --hang-report-dir "$RUNNER_TEMP/hang-reports" --hard-timeout-grace 30`), an `if: failure()` step printing every report file, and an `if: ${{ !cancelled() }}` artifact upload of the report dir — verify by review and the PR's CI run
+- [x] 4.2 `latest-deps.yml`: the same 4 shards and watchdog flags (keeps 30 min) — verify by review
 - [ ] 4.3 Fix any test that fails only under the new order or shard membership (never restore the old order) — verify the PR's CI is green
 
 ## 5. Gates and soak
 
-- [ ] 5.1 Lint, `la-typecheck` (no new errors vs the baseline), `la-arch-check` — verify all pass
+- [x] 5.1 Lint, `la-typecheck` (no new errors vs the baseline), `la-arch-check` — verify all pass
 - [ ] 5.2 Soak before merge: 3 consecutive green full CI runs on the PR (reruns), no unit shard timing out, no hang-report files — verify from the runs
 - [ ] 5.3 After merge: check the `hang-reports` artifacts of main's CI runs for about a week; analyse and fix any dump under DEV-2391 before it closes — verify on the issue
