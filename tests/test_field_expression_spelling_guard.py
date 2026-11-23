@@ -137,6 +137,7 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestSpineOperands::test_extension_column_filter": 1,
         "TestSpineLeftAlone::test_path_continuing_past_the_spine": 1,
     }),
+    *_allow("test_stored_upgrade_filter_literals.py", _STORED, {"<module>": 2}),
 ]
 
 

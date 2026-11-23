@@ -341,7 +341,7 @@ class TestSpineLeftAlone:
         with logged(caplog) as texts:
             filters = await loaded_filters(storage, "join_named")
         assert filters == [text]
-        assert not any(text in t for t in texts), texts
+        assert any("join_named" in t and text in t for t in texts), texts
 
     async def test_sibling_stage_named_like_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                       caplog: pytest.LogCaptureFixture) -> None:

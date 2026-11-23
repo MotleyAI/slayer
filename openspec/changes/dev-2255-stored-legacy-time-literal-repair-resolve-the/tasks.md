@@ -27,34 +27,34 @@
 
 ## 2. `core` readers
 
-- [ ] 2.1 Record each string-literal token's offset outside node identity; verify the `core.syntax` suite passes unchanged
-- [ ] 2.2 Add `literal_comparisons` (Pydantic item type), empty on unparseable text; verify 1.10 passes
-- [ ] 2.3 `core.date_only` sites carry per-segment quoting; verify the date-only suites pass unchanged
+- [x] 2.1 Record each string-literal token's offset outside node identity; verify the `core.syntax` suite passes unchanged
+- [x] 2.2 Add `literal_comparisons` (Pydantic item type), empty on unparseable text; verify 1.10 passes
+- [x] 2.3 `core.date_only` sites carry per-segment quoting; verify the date-only suites pass unchanged
 
 ## 3. Shared resolver quoting
 
-- [ ] 3.1 Thread optional per-hop `quoted` flags through `resolve_path`, `resolve_anchored_path`, `drop_root_hop`,
+- [x] 3.1 Thread optional per-hop `quoted` flags through `resolve_path`, `resolve_anchored_path`, `drop_root_hop`,
       `find_anchor`, `resolve_hop`, short-form route selection and `walk`; verify 1.11 and the drift / memory-resolver /
       qualification suites pass
-- [ ] 3.2 The qualifier passes each reference's flags and keeps a quoted leaf double-quoted; verify the qualification
+- [x] 3.2 The qualifier passes each reference's flags and keeps a quoted leaf double-quoted; verify the qualification
       suites pass
 
 ## 4. Storage
 
-- [ ] 4.1 Share qualification's population inference, datasource choice and stage universe with the typed step; expose
+- [x] 4.1 Share qualification's population inference, datasource choice and stage universe with the typed step; expose
       the inliner's extension-column lookup
-- [ ] 4.2 The typed step: legacy sites (filters) and whole-day sites (every text `upgrade_query` covers), each under its
+- [x] 4.2 The typed step: legacy sites (filters) and whole-day sites (every text `upgrade_query` covers), each under its
       version gate, typed by `resolve_path` from the population (stage host for a stage population), DATE / TIMESTAMP
       only for the repair, TIMESTAMP for whole-day, span splice; verify 1.2–1.8 pass
-- [ ] 4.3 One guarded conversion scope (typing → inlining → qualification) for model stages, the current-document branch
+- [x] 4.3 One guarded conversion scope (typing → inlining → qualification) for model stages, the current-document branch
       and memory queries, each operation run when any nested stage needs it; verify 1.9 passes
-- [ ] 4.4 SlayerQuery v14→15 and Memory v10→11 become version stamps; `typing_with` / `needs_typing` serve a dataset's own
+- [x] 4.4 SlayerQuery v14→15 and Memory v10→11 become version stamps; `typing_with` / `needs_typing` serve a dataset's own
       texts only; delete `_query_host`'s query use of `StoredDatasets.field_type`; verify every whole-day scenario passes
-- [ ] 4.5 `storage/legacy_time_literals.py` without sqlglot (normalisation, date-range repair, span splice); verify the
+- [x] 4.5 `storage/legacy_time_literals.py` without sqlglot (normalisation, date-range repair, span splice); verify the
       filter-literal and date-range tests pass
 
 ## 5. Finish
 
-- [ ] 5.1 Local test scope, `ruff check slayer/ tests/`, `la-typecheck` (no new errors vs baseline) and the enforcement
+- [x] 5.1 Local test scope, `ruff check slayer/ tests/`, `la-typecheck` (no new errors vs baseline) and the enforcement
       bundle (`la-arch-check`, LikeC4 validate) green
-- [ ] 5.2 `openspec validate dev-2255-stored-legacy-time-literal-repair-resolve-the --strict` green
+- [x] 5.2 `openspec validate dev-2255-stored-legacy-time-literal-repair-resolve-the --strict` green

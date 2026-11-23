@@ -67,6 +67,8 @@ def test_each_element_of_an_all_literal_not_in_list() -> None:
     pytest.param("ordered_at >= 1", id="numeric-literal"),
     pytest.param("coalesce(ordered_at, '2024/01/01') >= ordered_at", id="literal-inside-call-operand"),
     pytest.param("ordered_at >=", id="unparseable"),
+    pytest.param("unknown() = '2024/01/01'", id="unknown-function"),
+    pytest.param("ordered_at = '2024/01/01' over (partition by status)", id="raw-window"),
     pytest.param("", id="empty"),
 ])
 def test_not_reported(text: str) -> None:

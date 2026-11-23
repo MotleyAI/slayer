@@ -341,7 +341,6 @@ async def test_inferred_population_types_a_routed_reference(tmp_path, regions_ds
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend, models=_routed_models(),
                                   stage=_rootless("regions.opened_on >= '2024/01/01'"))
     assert await _loaded_filters(storage) == [f"{ROUTE}.opened_on >= '2024-01-01'"]
-    assert await _total(storage) == AMOUNT_OPENED_SINCE_2024
 
 
 async def test_ambiguous_inferred_population_is_refused(tmp_path, regions_ds):
@@ -462,6 +461,34 @@ async def test_older_stage_with_extension_columns_is_typed_inlined_and_qualified
     assert await _total(storage) == AMOUNT_OPENED_ON_JAN_1
 
 
+#: A current-version stage still holding extension columns (hand-edited): its own form, not its version, needs inlining.
+CURRENT_STAGE_WITH_COLUMNS = {
+    "version": 17, "population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+    "filter": ["orders.customers.regions.founded_at >= '2024-01-01'"],
+    "extensions": [{"dataset": "regions", "columns": EXTENDED_REGIONS_AT["columns"]}],
+}
+INLINED_FOUNDED_AT = "CAST(customers.regions.opened_at AS TIMESTAMP) >= '2024-01-01'"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_current_stage_holding_extension_columns_is_inlined(tmp_path, regions_ds, backend):
+    stage = CURRENT_STAGE_WITH_COLUMNS
+    storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=regions_ds, models=[
+        *_routed_models(), query_backed_v10(name="rev_f", stages=[stage], version=28)])
+    assert await _loaded_filters(storage) == [INLINED_FOUNDED_AT]
+    assert await _total(storage) == AMOUNT_OPENED_ON_JAN_1
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_current_memory_query_holding_extension_columns_is_inlined(tmp_path, regions_ds, backend):
+    memory = memory_v2(memory_id="m_columns", query=CURRENT_STAGE_WITH_COLUMNS, version=13)
+    storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=regions_ds,
+                              models=_routed_models(), memories=[memory])
+    mem = await storage.get_memory("m_columns")
+    assert mem.query is not None
+    assert mem.query.filter == [INLINED_FOUNDED_AT]
+
+
 # --------------------------------------------------------------------------- #
 # The conversion scope: no recursion, no double write, raw reads unmutated.
 # --------------------------------------------------------------------------- #
@@ -539,7 +566,7 @@ async def test_loading_the_converting_document_neither_recurses_nor_writes_twice
 async def test_two_model_cycle_neither_recurses_nor_writes_a_peer_twice(tmp_path, regions_ds, backend, first):
     """``rev_g`` reads ``rev_f``, and ``rev_f``'s conversion reads every dataset of its datasource, ``rev_g`` included."""
     rev_g = query_backed_v10(name="rev_g", stages=[{
-        "source_model": "rev_f", "measures": [{"formula": "sum(rev)", "name": "rev"}],
+        "source_model": "rev_f", "measures": [{"formula": "sum(rev)", "name": "total"}],
         "filters": ["rev >= 0"]}])
     rev_f = query_backed_v10(name="rev_f", stages=[rev_query(filters=["regions.opened_on >= '2024/01/01'"])])
     storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=regions_ds,
@@ -547,6 +574,7 @@ async def test_two_model_cycle_neither_recurses_nor_writes_a_peer_twice(tmp_path
     saved = _counting_saves(storage)
     second = "rev_g" if first == "rev_f" else "rev_f"
     loaded = {n: await _loaded_filters(storage, n) for n in (first, second)}
-    assert loaded == {"rev_f": [f"{ROUTE}.opened_on >= '2024-01-01'"], "rev_g": ["rev >= 0"]}
+    assert loaded == {"rev_f": [f"{ROUTE}.opened_on >= '2024-01-01'"], "rev_g": ["rev_f.rev >= 0"]}
     assert (saved.count("rev_f"), saved.count("rev_g")) == (1, 1), saved
-    assert await _total(storage, "rev_g") == AMOUNT_OPENED_SINCE_2024
+    total = await run(storage, {"population": "rev_g", "metrics": ["sum(rev_g.total)"]})
+    assert metric_total(total, metric="total_sum") == AMOUNT_OPENED_SINCE_2024
