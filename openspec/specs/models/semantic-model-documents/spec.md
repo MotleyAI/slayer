@@ -162,11 +162,15 @@ Deleting a document dataset SHALL run the same cascade as deleting a standalone 
 - **THEN** the memory no longer lists `shop.orders` and the document no longer declares `orders` or its relationships
 
 ### Requirement: Access filtering covers documents
-An access-filtered view SHALL read every document dataset the caller cannot access as deleted, prune relationships into it, and prune every model-scoped metric that reads it through any aggregate component or through other model-scoped metrics, transitively. A pruned metric SHALL fail as an unknown metric with no suggestion naming a hidden entity. A write through the view SHALL merge onto the full document, never dropping or exposing hidden entities.
+An access-filtered view SHALL read every document dataset the caller cannot access as deleted, prune relationships into it, and prune every model-scoped metric that reads it through any aggregate component or through other model-scoped metrics, transitively. A pruned metric SHALL fail as an unknown metric with no suggestion naming a hidden entity. A write through the view SHALL merge onto the full document, never dropping or exposing hidden entities. A stored document whose text does not read SHALL be refused to a caller without bypass on read, edit and delete, with the typed error and reasons of "A document whose text repeats a mapping key is refused", since the access of its datasets cannot be decided; a bypass caller SHALL read and delete it as stored.
 
 #### Scenario: A metric over a hidden dataset is invisible
 - **WHEN** a caller cannot access dataset `payroll`, and the model-scoped metric `cost_per_head` reads `payroll.salary`
 - **THEN** the caller's query naming `cost_per_head` fails as an unknown metric that suggests no hidden name
+
+#### Scenario: An unreadable document fails closed through the filter
+- **WHEN** a stored document repeats the key `source`, and a caller without bypass reads, edits or deletes it through an access-filtered view
+- **THEN** each call fails with a typed error naming `source` and its line, the stored text is unchanged, and a bypass caller can read and delete it
 
 ### Requirement: Fields without a datatype load with an unknown type
 A field that declares no `datatype` SHALL load with an unknown type that no check or coercion reads. The engine SHALL resolve unknown types before binding a query that reads them, once per engine and storage fingerprint, without blocking the event loop, from the live type of the field's expression; the resolved type SHALL NOT be persisted. A save-time check that needs an unknown type SHALL be deferred to the query-time check.
