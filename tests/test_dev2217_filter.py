@@ -1,7 +1,7 @@
 """The strict filter is an OSSIE_SQL_2026 expression: Ossie constructs SLayer implements are admitted, SLayer-only
 constructs are ``E_INVALID_QUERY`` and keep answering under the default conformance.
 
-Spec: queries/ossie-l3-binding › The filter is an Ossie expression. ``matched()`` has no surface syntax, so no case.
+Spec: queries/ossie-l3-binding › The filter is an Ossie expression.
 """
 
 from __future__ import annotations
