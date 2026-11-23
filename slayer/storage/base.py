@@ -29,6 +29,7 @@ from slayer.core.errors import (
     AmbiguousReferenceError,
     CaseCollisionError,
     ColonSpellingError,
+    EnforcedKeyError,
     IdCollisionError,
     NamespaceCollisionError,
     OssieDocumentInvalidError,
@@ -46,7 +47,7 @@ from slayer.core.errors import (
 from slayer.engine.field_dependency import (
     check_dataset_filters, check_evaluated_metrics, validate_derived_fields, warn_broken_dependents,
 )
-from slayer.core.relationship_walker import edges_between
+from slayer.core.relationship_walker import edges_between, unique_key_sets
 from slayer.core.names import folded_collisions
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
 from slayer.core.field_expression import stored_definition_text
@@ -675,6 +676,18 @@ def _refuse_colon_metrics(dataset: SlayerDataset) -> None:
             continue
 
 
+def check_enforced_keys(dataset: SlayerDataset) -> None:
+    """Every enforced key is a declared key of a table-backed dataset."""
+    declared = [sorted(k) for k in unique_key_sets(dataset)]
+    for key in dataset.enforced_keys:
+        if not dataset.sql_table:
+            raise EnforcedKeyError(dataset=dataset.name, key=key,
+                                   reason="is recorded on a dataset not backed by a table (sql or a backing query)")
+        if sorted(key) not in declared:
+            raise EnforcedKeyError(dataset=dataset.name, key=key,
+                                   reason="is not a declared key (its primary key or a unique field)")
+
+
 def _validate_default_time_dimension(dataset: SlayerDataset) -> None:
     field = dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
     if field is not None and field.datatype is not None and field.datatype not in TEMPORAL_DATATYPES:
@@ -855,6 +868,7 @@ class StorageBackend(ABC):
             datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
             if datasource is not None and not dataset.source_queries:
                 dataset = with_converted_sql(dataset, ds_type=datasource.type)
+            dataset = await self._without_repointed_enforced_keys(dataset)
             await self.validate_for_save(dataset, failures=failures)
             warn_library_shadows(dataset)
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
@@ -868,6 +882,18 @@ class StorageBackend(ABC):
             if moving:
                 await self._delete_dataset_row(data_source=dataset.data_source, name=dataset.name)
         self._forget_raw(data_source=dataset.data_source, name=dataset.name)
+
+    async def _without_repointed_enforced_keys(self, dataset: SlayerDataset) -> SlayerDataset:
+        """``dataset`` without enforced keys when its source differs from the stored dataset's (they describe the old)."""
+        if not dataset.enforced_keys:
+            return dataset
+        stored = None
+        with contextlib.suppress(Exception):
+            stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
+        if stored is None or (stored.sql_table, stored.sql, stored.source_queries) == (
+                dataset.sql_table, dataset.sql, dataset.source_queries):
+            return dataset
+        return dataset.model_copy(update={"enforced_keys": []})
 
     async def _owner_of(self, name: str, *, data_source: str) -> str | None:
         """The one owner lookup: the document declaring dataset ``name``, ``None`` for a standalone or new one."""
@@ -921,6 +947,7 @@ class StorageBackend(ABC):
         if is_spine_spelling(dataset.name) and (dataset.data_source, dataset.name) not in identities:
             raise ReservedDatasetNameError(name=dataset.name)
         _refuse_colon_metrics(dataset)
+        check_enforced_keys(dataset)
         datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
         if datasource is not None and not dataset.source_queries:
             check_forms(dataset, ds_type=datasource.type)

@@ -166,6 +166,7 @@ def _constant(value: Expression) -> bool:
 
 
 class PostgresDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "postgres"
     array_cast_types: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})

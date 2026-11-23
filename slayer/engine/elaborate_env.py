@@ -2244,6 +2244,20 @@ def check_partition_key_analysable(*, label: str, pk: ValueKey, analysable: bool
     )
 
 
+def check_inputs_trusted(*, alias: str, hop: Optional[Tuple[str, str]]) -> None:
+    """Under ``to_many_handling: "error"``, an aggregate input read across an untrusted to-one hop is refused."""
+    if hop is None:
+        return
+    source, target = hop
+    raise UnsafeRelationshipInputError(
+        summary=f"The aggregate reads an input across the untrusted relationship {source} → {target}: with "
+        f"repeated {target} rows it would read one of several matching values.",
+        location=f"metric {alias!r}",
+        suggestion=f"Mark the relationship {source} → {target} trusted, or record its key as an enforced key of "
+        f"{target}; or omit to_many_handling to read one matching value per {source} row.",
+    )
+
+
 def check_local_producer_inputs_safe(
     *, alias: Optional[str], host: str,
     ranked_crossings: Sequence[Tuple[str, str]],

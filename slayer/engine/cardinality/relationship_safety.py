@@ -23,6 +23,7 @@ from slayer.core.relationship_walker import (
     provably_to_one,
     resolve_hop,
     reverse_token,
+    trusted_to_one,
     unique_key_sets,
 )
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, axis_field, is_spine
@@ -55,7 +56,7 @@ from slayer.engine.reference_closure import (
     definition_refs,
     key_closure,
 )
-from slayer.engine.elaborate_env import check_partition_key_analysable
+from slayer.engine.elaborate_env import check_inputs_trusted, check_partition_key_analysable
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import AggregateHomes
 from slayer.engine.cardinality.inference import (
@@ -65,6 +66,7 @@ from slayer.engine.cardinality.inference import (
 )
 
 __all__ = [
+    "refuse_untrusted_inputs",
     "provably_fans",
     "safe_reachable",
     "may_inline_crossing_inputs",
@@ -77,6 +79,47 @@ def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSON
     """Whether a crossing-input local aggregate may stay inline in the host base.
     Hardcoded ``False`` (always a producer); the seam that will flip."""
     return False
+
+
+def untrusted_input_hop(
+    *, agg: AggregateKey, host: SlayerDataset, bundle: ResolvedSourceBundle, homes: AggregateHomes,
+) -> Optional[Tuple[str, str]]:
+    """The first provably but untrusted to-one hop ``agg``'s inputs cross from its home, as ``(from, to)``."""
+    target_path = source_anchor_path(agg.source) if homes.target_rooted(agg) else ()
+    closure = aggregate_input_closure(key=agg, anchor_dataset=host, anchor_relation=host.name, bundle=bundle)
+    datasets = bundle.datasets_by_name
+    try:
+        home_chain = follow(root=host, path=target_path, datasets_by_name=datasets) if target_path else []
+    except AmbiguousRelationshipPathError:
+        return None
+    home = datasets.get(home_chain[-1].to) if home_chain else host
+    for path in closure or ():
+        if home is None or path[:len(target_path)] != target_path or len(path) == len(target_path):
+            continue
+        try:
+            chain = follow(root=home, path=path[len(target_path):], datasets_by_name=datasets) or []
+        except AmbiguousRelationshipPathError:
+            continue
+        for edge in chain:
+            target = datasets.get(edge.to)
+            if target is not None and provably_to_one(edge=edge, target_dataset=target) and not trusted_to_one(
+                    edge=edge, target_dataset=target):
+                return edge.source_dataset, edge.to
+    return None
+
+
+def refuse_untrusted_inputs(
+    *, roots: Iterable[ValueKey], host: Optional[SlayerDataset], bundle: ResolvedSourceBundle,
+    homes: AggregateHomes,
+) -> None:
+    """Under ``to_many_handling: "error"``, refuse an aggregate reading an input across an untrusted to-one hop."""
+    if host is None:
+        return
+    for root in roots:
+        for k in walk_value_keys(root):
+            if isinstance(k, AggregateKey) and k in homes.by_key:
+                check_inputs_trusted(alias=key_display(k), hop=untrusted_input_hop(
+                    agg=k, host=host, bundle=bundle, homes=homes))
 
 
 def provably_fans(*, edge: OrientedLike, target_dataset: SlayerDataset) -> bool:

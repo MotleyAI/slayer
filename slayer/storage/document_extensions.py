@@ -101,7 +101,8 @@ def apply_dataset_entry(dataset: SlayerDataset, entry: Entry | None, *, notes: l
         return dataset
     payload: ext.DatasetPayload = entry.payload
     update: dict[str, Any] = {"hidden": payload.hidden, "access_tags": list(payload.access_tags),
-                              "aggregations": list(payload.aggregations), "meta": payload.meta}
+                              "aggregations": list(payload.aggregations), "meta": payload.meta,
+                              "enforced_keys": [list(k) for k in payload.enforced_keys]}
     if payload.default_time_dimension is None or dataset.get_field(payload.default_time_dimension) is not None:
         update["default_time_dimension"] = payload.default_time_dimension
     source = payload.source

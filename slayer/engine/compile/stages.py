@@ -75,6 +75,7 @@ from slayer.engine.cardinality.relationship_safety import (
     reroot_from_root,
     shared_relationship_key_reroot,
     undetermined_witness,
+    refuse_untrusted_inputs,
     safe_reachable,
 )
 from slayer.core.query import (
@@ -88,6 +89,7 @@ from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import DatasetScope, PassThrough, StageField, StageSchema, host_dataset_name
 from slayer.engine.elaborate_env import (
+    consumer_roots,
     check_reserved_regroup_prefix,
     ConsumerPosition,
     row_refs_off_grain,
@@ -4597,6 +4599,11 @@ def _route_top_level(
         prebound=prebound, filter_typings=filter_typings, scope=scope, bundle=bundle,
     ))
     stripped, homes = _strip_redundant_partitions(env)
+    if prebound.mode_policy.refuses:
+        refuse_untrusted_inputs(roots=[r.key for r in consumer_roots(
+            declared_metrics=prebound.declared_metrics, order_specs=prebound.order_specs,
+            bound_filters=prebound.bound_filters, metric_typed=frozenset(),
+        )], host=scope.population, bundle=bundle, homes=homes)
     supply = bundle.row_supply
     dispositions = discover_roots(
         stripped, filter_typings=filter_typings, scope=scope, bundle=bundle, homes=homes,

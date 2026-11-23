@@ -40,7 +40,7 @@ from slayer.core.vocabulary import name_twins
 from slayer.core.warnings import BrokenDependentWarning
 from slayer.sql.dialects.reflection import TableKeyReadFailure, info_schema_list_element
 from slayer.sql.sql_predicate import parse_sql_predicate
-from slayer.live_schema.introspect_utils import reflect_columns
+from slayer.live_schema.introspect_utils import reflect_columns, reflect_table_keys
 from slayer.live_schema.schema_scope import (
     UNREACHABLE,
     SchemaEnumerationError,
@@ -102,6 +102,8 @@ class RemoveSpec(BaseModel):
     # Edge references of the dropped relationships that have one; ``relationship_edges`` addresses each exactly.
     relationships: list[str] = Field(default_factory=list)
     relationship_edges: list[RelationshipEdgeRef] = Field(default_factory=list)
+    # Enforced key sets the database no longer enforces; only the enforcement record is removed.
+    enforced_keys: list[list[str]] = Field(default_factory=list)
 
     def add_relationship(self, *, dataset: SlayerDataset, relationship: DatasetRelationship) -> None:
         if is_addressable(dataset=dataset, relationship=relationship):
@@ -407,6 +409,8 @@ class LiveTable(BaseModel):
     db_types: dict[str, str] = Field(default_factory=dict)
     # Listed but its metadata read failed: present, yet no drift evidence.
     readable: bool = True
+    # The primary-key and unconditional unique key sets the database enforces; ``None`` = not read.
+    key_sets: list[list[str]] | None = None
 
 
 # Type-bucket comparison
@@ -571,11 +575,34 @@ def _diff_sql_table_relationships(
     return dropped, reasons
 
 
+def _vanished_enforced_keys(
+    *, dataset: SlayerDataset, live_table: LiveTable, enforces_keys: bool,
+) -> tuple[list[list[str]], list[DeleteReason]]:
+    """Each enforced key set the live table no longer enforces (every one where the database enforces none)."""
+    if enforces_keys and live_table.key_sets is None:
+        return [], []
+    live = [sorted(k) for k in live_table.key_sets or []] if enforces_keys else []
+    vanished: list[list[str]] = []
+    reasons: list[DeleteReason] = []
+    for key in dataset.enforced_keys:
+        fields = [dataset.get_field(n) for n in key]
+        spelled = sorted(f.physical_name if f.is_base else f.name for f in fields if f is not None)
+        if len(spelled) == len(key) and spelled in live:
+            continue
+        vanished.append(list(key))
+        why = "the database does not enforce unique keys" if not enforces_keys else (
+            "the live table no longer carries it as a primary or unique key")
+        reasons.append(DeleteReason(target=f"enforced_key:{','.join(key)}",
+                                    reason=f"Enforced key {list(key)} is not enforced: {why}"))
+    return vanished, reasons
+
+
 def diff_sql_table_dataset(
     *,
     dataset: SlayerDataset,
     live_table: LiveTable | None,
     available_datasets_in_ds: set[str],
+    enforces_keys: bool = True,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
     """Diff a sql_table-mode dataset against live introspection → ``(entry_or_None, dropped_column_names)``; ``live_table is None`` → WholeDatasetDelete."""
     if live_table is None:
@@ -603,10 +630,12 @@ def diff_sql_table_dataset(
         available_datasets_in_ds=available_datasets_in_ds,
     )
 
-    if not dropped_cols and not dropped_relationships:
+    vanished_keys, key_reasons = _vanished_enforced_keys(
+        dataset=dataset, live_table=live_table, enforces_keys=enforces_keys)
+    if not dropped_cols and not dropped_relationships and not vanished_keys:
         return None, set()
-    reasons = col_reasons + relationship_reasons
-    remove = RemoveSpec(fields=dropped_cols)
+    reasons = col_reasons + relationship_reasons + key_reasons
+    remove = RemoveSpec(fields=dropped_cols, enforced_keys=vanished_keys)
     for relationship in dropped_relationships:
         remove.add_relationship(dataset=dataset, relationship=relationship)
 
@@ -1982,7 +2011,18 @@ async def _introspect_one_table(*, client: SqlClient, table_name: str, ref: Sche
     return LiveTable(
         columns={c.name: c.narrowed_type for c in cols},
         db_types={c.name: c.type_name for c in cols if c.type_name},
+        key_sets=await _live_key_sets(client=client, table_name=table_name, ref=ref),
     )
+
+
+async def _live_key_sets(*, client: SqlClient, table_name: str, ref: SchemaRef | None) -> list[list[str]] | None:
+    """The table's enforced key sets by live column name; ``None`` when unread or the database enforces none."""
+    if not dialect_for_ds_type(client.datasource.type).enforces_unique_keys:
+        return None
+    keys = await reflect_table_keys(client=client, table_name=table_name, ref=ref)
+    if keys.failed_reads:
+        return None
+    return ([keys.primary_key] if keys.primary_key else []) + [list(k) for k in keys.unique_key_sets]
 
 
 async def _live_columns_for_sql_dataset(
@@ -2304,6 +2344,7 @@ def _diff_one_sql_table_dataset(
         dataset=dataset,
         live_table=live,
         available_datasets_in_ds=available_in_ds,
+        enforces_keys=dialect.enforces_unique_keys,
     )
 
 

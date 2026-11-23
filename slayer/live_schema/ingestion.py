@@ -514,8 +514,10 @@ def _fields_to_dataset(
     hidden: bool = False,
     meta: dict[str, Any] | None = None,
     description: str | None = None,
+    enforces_keys: bool = False,
 ) -> SlayerDataset:
-    """Generate a SlayerDataset with one field per introspected column."""
+    """Generate a SlayerDataset with one field per introspected column; ``enforces_keys``: the database enforces its
+    declared keys, recorded as ``enforced_keys``."""
     cols: list[DatasetField] = []
     unique_set = unique_fields or set()
 
@@ -545,11 +547,14 @@ def _fields_to_dataset(
             )
         )
 
+    primary = [c.name for c in cols if c.primary_key]
+    enforced = ([primary] if primary else []) + [[c.name] for c in cols if c.unique] if enforces_keys else []
     return SlayerDataset(
         name=name,
         sql_table=sql_table,
         data_source=data_source,
         fields=cols,
+        enforced_keys=enforced,
         relationships=relationships or [],
         source_kind=source_kind,
         hidden=hidden,
@@ -644,6 +649,7 @@ async def introspect_table_to_dataset(
         unique_fields=_solo_unique_fields(keys),
         source_kind=source_kind,
         description=await _safe_get_table_comment(client, table_name, ref),
+        enforces_keys=dialect_of(client).enforces_unique_keys,
     )
 
 
@@ -888,6 +894,7 @@ async def _build_one_dataset(
         hidden=internal_tool is not None,
         meta=meta,
         description=await _safe_get_table_comment(client, table, ref),
+        enforces_keys=dialect_of(client).enforces_unique_keys,
     )
 
 
@@ -1462,7 +1469,9 @@ def _additive_merge_existing(
     merged_relationships, relationships_metadata_changed = _merge_stored_relationships(
         persisted=persisted, fresh=fresh
     )
-    metadata_changed = field_merge.metadata_changed or relationships_metadata_changed
+    enforced_keys = _merged_enforced_keys(persisted=persisted, fresh=fresh, merged_fields=merged_fields)
+    metadata_changed = (field_merge.metadata_changed or relationships_metadata_changed
+                        or enforced_keys != persisted.enforced_keys)
 
     kind_changed = (
         fresh.source_kind is not None
@@ -1481,7 +1490,8 @@ def _additive_merge_existing(
     ):
         return AdditiveMergeResult(merged=persisted)
 
-    update: dict[str, Any] = {"fields": merged_fields, "relationships": merged_relationships}
+    update: dict[str, Any] = {"fields": merged_fields, "relationships": merged_relationships,
+                              "enforced_keys": enforced_keys}
     if kind_changed:
         update["source_kind"] = fresh.source_kind
     if dataset_described:
@@ -1496,6 +1506,25 @@ def _additive_merge_existing(
         described_fields=field_merge.described,
         dataset_described=dataset_described,
     )
+
+
+def _merged_enforced_keys(
+    *, persisted: SlayerDataset, fresh: SlayerDataset, merged_fields: list[DatasetField],
+) -> list[list[str]]:
+    """``persisted``'s enforced keys plus each fresh one that names a declared key of the merged fields; none removed."""
+    by_spelling = {c.physical_name: c.name for c in merged_fields if c.is_base}
+    fresh_names = {c.name: by_spelling.get(_spelling(c)) for c in fresh.fields}
+    primary = sorted(c.name for c in merged_fields if c.primary_key)
+    declared = ([primary] if primary else []) + [[c.name] for c in merged_fields if c.unique]
+    out = [list(k) for k in persisted.enforced_keys]
+    for key in fresh.enforced_keys:
+        mapped = [fresh_names.get(n) for n in key]
+        if any(m is None for m in mapped):
+            continue
+        names = sorted(m for m in mapped if m is not None)
+        if names in declared and all(sorted(k) != names for k in out):
+            out.append(names)
+    return out
 
 
 class _TableMerge(BaseModel):
