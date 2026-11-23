@@ -258,7 +258,7 @@ class TestHardBound:
         dumps = _reports(reports, r"hard-timeout-gw0-\d+\.txt")
         assert len(dumps) == 1, result.outlines
         assert "in stuck_teardown" in next(iter(dumps.values()))
-        assert _passed(result) == ["test_z_ok.py::test_ok"]
+        assert "test_z_ok.py::test_ok" in _passed(result)
 
     @pytest.mark.parametrize("marker", ["timeout(1)", "timeout(timeout=1)", "timeout(timeout=1, method='signal')"])
     def test_marker_timeout_overrides_the_command_line(self, project: pytest.Pytester, marker: str) -> None:

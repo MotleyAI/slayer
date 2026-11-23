@@ -92,3 +92,21 @@ jobs:
           --shard ${{ matrix.shard }}/4
           --stall-report-after 120 --stack-dump-after 1320 --hang-report-dir "$RUNNER_TEMP/hang-reports"
           --hard-timeout-grace 30
+
+      - name: Print hang reports
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/hang-reports/*; do
+            [ -e "$f" ] || continue
+            echo "===== $f"
+            cat "$f"
+          done
+
+      - name: Upload hang reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hang-reports-latest-deps-${{ matrix.shard }}
+          path: ${{ runner.temp }}/hang-reports
+          if-no-files-found: ignore
+          retention-days: 14
