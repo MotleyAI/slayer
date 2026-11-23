@@ -5,12 +5,14 @@ a source) applies only while its fingerprint matches the entity. An unusable ent
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel
 
 from slayer.core import slayer_extension as ext
 from slayer.core.field_expression import DialectEntry, ExpressionObject
+from slayer.core.granularity import CustomGranularity
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
 from slayer.core.ossie_expression import OSIExpression
 from slayer.core.query import SlayerQuery
@@ -187,8 +189,10 @@ def relocate_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Resto
         item.home = home.name
 
 
-def restore_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Restored], dialect: str) -> None:
-    """Revert each restored metric that does not bind to its document form, with a note."""
+def restore_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Restored], dialect: str,
+                    granularities: Mapping[str, CustomGranularity]) -> None:
+    """Revert each restored metric that does not bind (under the datasource's ``granularities``) to its document form,
+    with a note."""
     peers = list(datasets.values())
     for item in restored:
         dataset = datasets[item.home]
@@ -196,7 +200,8 @@ def restore_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Restor
         assert i is not None
         metric = dataset.metrics[i]
         try:
-            bind_dataset_expression(metric.text, dataset=dataset, datasets=peers, dialect=dialect)
+            bind_dataset_expression(metric.text, dataset=dataset, datasets=peers, dialect=dialect,
+                                    granularities=granularities)
         except Exception as exc:  # noqa: BLE001 — any binding failure keeps the document form
             del dataset.metrics[i]
             origin = datasets[item.origin]

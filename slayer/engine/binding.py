@@ -289,9 +289,12 @@ def bind_expr(
 
 def bind_dataset_expression(
     expression: str, *, dataset: SlayerDataset, datasets: Sequence[SlayerDataset], dialect: str,
+    granularities: Optional[Mapping[str, CustomGranularity]] = None,
 ) -> ValueKey:
-    """``expression`` bound on ``dataset`` (saved metrics inlined) against the ``datasets`` graph, reading no database."""
-    bundle = ResolvedSourceBundle(dialect=dialect, population=dataset, referenced_datasets=list(datasets))
+    """``expression`` bound on ``dataset`` (saved metrics inlined) against the ``datasets`` graph, reading no database;
+    ``granularities`` are the datasource's custom granularities, keyed by ``granularity_key``."""
+    bundle = ResolvedSourceBundle(dialect=dialect, population=dataset, referenced_datasets=list(datasets),
+                                  granularities=dict(granularities or {}))
     return bind_expr(
         parse_expr(expression), scope=DatasetScope(population=dataset), bundle=bundle, allow_metrics=True,
     ).value_key
