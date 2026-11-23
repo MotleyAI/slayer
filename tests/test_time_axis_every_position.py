@@ -124,6 +124,13 @@ class TestNestedCollapseDropsAxis:
         assert "partition_by=" not in (err.suggestion or "")
         assert collapse in (err.suggestion or "")
 
+    # A collapsed literal-only transform must not fall back to the query grain.
+    @pytest.mark.parametrize("dimensions", [[], ["orders.region"]])
+    @pytest.mark.parametrize("expr", ["time_shift(last(cumsum(1)), -1)", "cumsum(last(cumsum(1)))"])
+    async def test_aggregate_free_operand_refused_at_any_grain(self, engine, expr, dimensions) -> None:
+        err = await _refusal(engine, _query(dimensions=dimensions, metrics=_metrics(expr)))
+        assert "last" in (err.suggestion or "")
+
 
 class TestWindowedInnerCarriesAxis:
     async def test_measure_and_source(self, engine) -> None:

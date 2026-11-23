@@ -1257,8 +1257,10 @@ def transform_operand_grain(
         input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=query_grain,
         collapse_axis=collapse_axis,
     )
-    # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1).
-    return query_grain if grain.is_empty else grain
+    # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1). An empty grain left by a
+    # first/last collapse stays empty.
+    grained = any(isinstance(k, (TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)) for k in walk_value_keys(input))
+    return query_grain if grain.is_empty and not grained else grain
 
 
 def _operand_grain(
