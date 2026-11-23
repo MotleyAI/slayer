@@ -13,7 +13,7 @@ import pytest
 
 import slayer.storage.base as storage_base
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.models import DatasetField, DatasetMetric, DatasourceConfig, SlayerDataset
 from slayer.sql import connection_policy
 from slayer.storage.base import StorageBackend
 
@@ -96,6 +96,23 @@ class TestDatasetChangedInPlace:
             await storage.save_dataset(orders)
         assert refusal(caught.value) == construction_refusal(SlayerDataset, data)
         assert (writes, peers, canonical) == ([], [], [])
+        assert await storage.get_dataset("orders", data_source=DS) is None
+
+
+class TestModelOfAnotherClass:
+    @pytest.mark.parametrize("kind", STORAGES)
+    async def test_a_metric_placed_among_the_fields_refuses_the_save(
+        self, kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        storage = await _store(kind, tmp_path)
+        orders = SlayerDataset.model_validate(_orders_data())
+        orders.fields.append(DatasetMetric(name="doubled", expression="amount"))  # pyright: ignore[reportArgumentType]
+        held = {name: orders.__dict__[name] for name in SlayerDataset.model_fields}
+        writes = _calls(monkeypatch, storage, "_save_dataset_impl")
+        with pytest.raises(Exception) as caught:  # noqa: PT011 — compared with construction's refusal below
+            await storage.save_dataset(orders)
+        assert refusal(caught.value) == construction_refusal(SlayerDataset, held)
+        assert writes == []
         assert await storage.get_dataset("orders", data_source=DS) is None
 
 

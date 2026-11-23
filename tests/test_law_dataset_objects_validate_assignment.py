@@ -102,6 +102,20 @@ def test_a_wrong_typed_assignment_raises_and_changes_nothing(cls: type[BaseModel
     assert state(obj) == before
 
 
+@pytest.mark.parametrize("via", ["setattr", "assign"])
+@pytest.mark.parametrize("cls", NON_FROZEN, ids=lambda c: c.__name__)
+def test_a_valid_assignment_is_accepted_and_changes_nothing_else(cls: type[BaseModel], via: str) -> None:
+    payload, attribute = MINIMAL[cls]
+    obj = cls.model_validate(payload)
+    dumped, value = obj.model_dump(), getattr(obj, attribute)
+    if via == "assign":
+        assert isinstance(obj, AtomicAssignment)
+        obj.assign(**{attribute: value})
+    else:
+        setattr(obj, attribute, value)
+    assert obj.model_dump() == dumped
+
+
 class _Sorted(AtomicAssignment, BaseModel):
     """An early validator sorts ``items`` in place; a later one may refuse the sorted state."""
 

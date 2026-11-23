@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from slayer.core.vocabulary import converted_document
+
 _PENDING = object()
 
 
@@ -44,20 +46,30 @@ class AtomicAssignment(BaseModel):
 
     def assign(self, **changes: Any) -> None:
         """Change several attributes together, validated once on the final state; all or nothing."""
-        candidate = self._candidate()
-        fields = type(self).__pydantic_fields__
-        names = list(changes)
-        for i, name in enumerate(names):
-            if i == len(names) - 1 or name not in fields:
-                BaseModel.__setattr__(candidate, name, changes[name])
-                continue
-            # A field's own checks refuse at once; a cross-attribute check waits for the final state.
-            vars(candidate)[name] = _PENDING
+        cls = type(self)
+        fields = cls.__pydantic_fields__
+        unknown = [name for name in changes if name not in fields]
+        if unknown:
+            raise ValueError(f"{cls.__name__} has no field {unknown[0]!r}")
+        probe = self._candidate()
+        for name, value in changes.items():
+            # Each value passes its own field's checks (and warns) as a single assignment would; a cross-attribute
+            # check waits for the final state.
+            vars(probe)[name] = _PENDING
             try:
-                BaseModel.__setattr__(candidate, name, changes[name])
+                BaseModel.__setattr__(probe, name, value)
             except Exception:
-                if vars(candidate)[name] is _PENDING:
+                if vars(probe)[name] is _PENDING:
                     raise
+        with converted_document(stored=True):  # values already checked above: no second warning
+            built = cls.model_validate({**{n: v for n, v in vars(self).items() if n in fields}, **changes})
+        candidate = self._candidate()
+        vars(candidate).update({n: v for n, v in vars(built).items() if n in fields})
+        object.__setattr__(candidate, "__pydantic_fields_set__", self.__pydantic_fields_set__ | changes.keys())
+        private = candidate.__pydantic_private__
+        if private is not None:
+            defaults = {k: a.get_default() for k, a in cls.__private_attributes__.items()}
+            private.update({k: v for k, v in (built.__pydantic_private__ or {}).items() if v != defaults.get(k)})
         self._commit(candidate)
 
     def _candidate(self) -> "AtomicAssignment":

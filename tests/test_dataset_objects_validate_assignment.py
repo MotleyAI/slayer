@@ -111,6 +111,26 @@ class TestLinkedAttributes:
         assert refusal(caught.value) == construction_refusal(
             SlayerDataset, {**shop_orders(), "description": "Every order.", "sql": "SELECT * FROM orders"})
 
+    def test_a_change_naming_no_field_is_refused_and_changes_nothing(self) -> None:
+        number_format = NumberFormat()
+        before = state(number_format)
+        with pytest.raises(ValueError, match="no field '_note'"):
+            number_format.assign(symbol="$", _note=True)
+        assert state(number_format) == before
+
+    @pytest.mark.parametrize("rename_first", [False, True])
+    def test_the_final_state_decides_whatever_the_keyword_order(self, rename_first: bool) -> None:
+        dataset = SlayerDataset.model_validate({"name": "old", "sql_table": "t", "data_source": DS,
+                                                "fields": [{"name": "amount"}, {"name": "discount"}]})
+        fields = [{"name": "amount"}, {"name": "discount"},
+                  {"name": "net", "sql": "amount - discount"}, {"name": "copy", "sql": "net"}]
+        changes: dict[str, Any] = {"name": "new", "fields": fields} if rename_first else {"fields": fields, "name": "new"}
+        with recorded():
+            dataset.assign(**changes)
+        copy = dataset.get_field("copy")
+        assert copy is not None
+        assert copy.expression == "new.net"
+
     def test_the_deprecated_key_pairs_attribute_writes_both_key_lists(self) -> None:
         relationship = DatasetRelationship.model_validate(RELATIONSHIP)
         with recorded() as caught:
@@ -186,6 +206,19 @@ class TestEditSourceSwitch:
         stages = [{"population": "customers", "dimensions": ["customers.region"]}]
         reply = await _edit(storage, dataset_name="people", source_queries=stages)
         assert [r["dataset_level_change"] for r in refreshes] == [True], reply
+
+    async def test_a_switch_whose_call_removes_the_metrics_applies(self, tmp_path: Path) -> None:
+        storage = await shop_engine_store(tmp_path)
+        people = {"name": "people", "sql_table": "customers", "data_source": DS,
+                  "fields": [{"name": "id", "datatype": "Integer", "primary_key": True},
+                             {"name": "region", "datatype": "String"}],
+                  "metrics": [{"name": "headcount", "expression": "count(*)"}]}
+        await storage.save_dataset(SlayerDataset.model_validate(people))
+        stages = [{"population": "customers", "dimensions": ["customers.region"]}]
+        reply = await _edit(storage, dataset_name="people", source_queries=stages, remove={"metrics": ["headcount"]})
+        stored = await _stored(storage, "people")
+        assert stored.source_queries is not None, reply
+        assert stored.metrics == []
 
     async def test_a_switch_the_final_state_refuses_leaves_the_dataset_unchanged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

@@ -61,6 +61,7 @@ ALLOWLIST: list[AllowlistEntry] = [
     *_allow("test_dataset_objects_validate_assignment.py", _CONVERSION, {
         "TestConstructionNormalizations::test_a_deprecated_sql_naming_one_column_reads_as_the_expression": 1,
         "TestConstructionNormalizations::test_a_prebuilt_sql_field_placed_in_a_dataset_keeps_its_origin": 1,
+        "TestLinkedAttributes::test_the_final_state_decides_whatever_the_keyword_order": 2,
     }),
     *_allow("test_dev2175_stored_upgrade.py", _STORED, {
         "items_v": 4,
