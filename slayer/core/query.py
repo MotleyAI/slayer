@@ -1,6 +1,7 @@
 """Query models for SLayer — the user-facing ``SlayerQuery`` and its helpers."""
 from __future__ import annotations
 
+import functools
 import json
 import re
 from collections.abc import Callable, Container, Generator, Iterable
@@ -16,6 +17,7 @@ from pydantic import (
     ModelWrapValidatorHandler,
     PrivateAttr,
     SerializerFunctionWrapHandler,
+    ValidationInfo,
     field_validator,
     model_serializer,
     model_validator,
@@ -49,7 +51,6 @@ from slayer.core.refs import auto_name_from_expression
 from slayer.core.strict_flag import strict_flag, without_strict
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
 from slayer.core.vocabulary import (
-    EXTENSION_KEYS,
     FIELD_REF_KEYS,
     ORDER_ITEM_KEYS,
     QUERY_KEYS,
@@ -729,30 +730,62 @@ def field_ref_of(text: str) -> FieldRef | None:
     return FieldRef(name=parts[-1], dataset=".".join(parts[:-1]) or None, quoted=list(dotted_quoting(parsed)))
 
 
-def _refuse_unknown_entry_keys(data: dict[str, Any], *, keys: tuple[str, ...], what: str) -> None:
-    unknown = next((k for k in data if k not in keys), None)
-    if unknown is not None:
-        raise UnknownKeyError(key=unknown, path=unknown, keys=f"{what} takes {', '.join(f'`{k}`' for k in keys)}")
+@functools.cache
+def _advertised_keys(model: type[BaseModel]) -> str:
+    """The keys ``model``'s input schema advertises, as a backticked list."""
+    return ", ".join(f"`{k}`" for k in model.model_json_schema(mode="validation").get("properties", {}))
+
+
+class QueryInput(BaseModel):
+    """A query input object: a key it does not read is refused; an assignment is validated, and a failed one leaves
+    the object unchanged."""
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    #: How the refusal names the object.
+    _WHAT: ClassVar[str]
+    #: A dedicated refusal text per known foreign key.
+    _HINTS: ClassVar[dict[str, str]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_unknown_keys(cls, data: Any) -> Any:
+        """Runs after every subclass conversion, on what remains."""
+        if isinstance(data, dict):
+            unknown = [k for k in data if k not in cls.model_fields]
+            if unknown:
+                keys = cls._HINTS.get(unknown[0]) or f"{cls._WHAT} takes {_advertised_keys(cls)}"
+                raise UnknownKeyError(key=unknown[0], path=unknown[0], keys=keys)
+        return data
+
+    def _before_assign(self, name: str) -> None:
+        """Clear state derived from field ``name`` so the assignment's validation derives it afresh."""
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name not in type(self).model_fields:
+            super().__setattr__(name, value)
+            return
+        state = (dict(self.__dict__), set(self.__pydantic_fields_set__), dict(self.__pydantic_private__ or {}))
+        try:
+            self._before_assign(name)
+            super().__setattr__(name, value)
+        except Exception:
+            object.__setattr__(self, "__dict__", state[0])
+            object.__setattr__(self, "__pydantic_fields_set__", state[1])
+            if self.__pydantic_private__ is not None:
+                object.__setattr__(self, "__pydantic_private__", state[2])
+            raise
 
 
 def _without_none(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if v is not None}
 
 
-_DIMENSION_KEYS = ("field", "alias", "label")
-
-
-def _dimension_input(data: Any, spellings: Spellings) -> Any:
-    data = vocabulary.dimension_entry(data, spellings)
-    if isinstance(data, dict):
-        _refuse_unknown_entry_keys(data, keys=_DIMENSION_KEYS, what="a query dimension entry")
-    return data
-
-
-class QueryDimension(BaseModel):
+@vocabulary.input_object("dimension")
+class QueryDimension(QueryInput):
     """A group-by: a field reference or a row-level expression, with an optional result ``alias`` and ``label``."""
 
-    model_config = ConfigDict(extra="forbid")
+    _WHAT: ClassVar[str] = "a query dimension entry"
 
     field: str = Field(description="A field reference (a name or dotted relationship path) or a row-level expression.")
     alias: str | None = Field(default=None, description="The result key; defaults to the field's.")
@@ -763,7 +796,7 @@ class QueryDimension(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _entry_input(cls, data: Any, handler: ModelWrapValidatorHandler["QueryDimension"]) -> "QueryDimension":
-        return converted_input(data, handler, _dimension_input, stored=in_stored_document())
+        return converted_input(data, handler, vocabulary.dimension_entry, stored=in_stored_document())
 
     @field_validator("alias")
     @classmethod
@@ -921,8 +954,17 @@ def _coerce_time_dimension_text(value: Any) -> Any:
     return value
 
 
-class TimeDimension(BaseModel):
+@vocabulary.input_object("time_dimension")
+class TimeDimension(QueryInput):
     """A time-bucketed group-by: ``field`` truncated to ``granularity``."""
+
+    _WHAT: ClassVar[str] = "a time dimension"
+    _HINTS: ClassVar[dict[str, str]] = {
+        "name": "a time dimension names its result `alias`",
+        "compareDateRange": "SLayer compares periods with the `change`, `change_pct` and `time_shift` metrics, "
+                            "not with a second date range",
+    }
+
     field: Annotated[str, BeforeValidator(_coerce_time_dimension_text)]
     alias: str | None = Field(default=None, description="The result key; defaults to the field's.")
     granularity: GranularitySpec = Field(
@@ -952,7 +994,7 @@ class TimeDimension(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["TimeDimension"]) -> "TimeDimension":
-        return converted_input(data, handler, _time_dimension_input, stored=in_stored_document())
+        return converted_input(data, handler, vocabulary.time_dimension, stored=in_stored_document())
 
     @model_validator(mode="before")
     @classmethod
@@ -1002,13 +1044,6 @@ class TimeDimension(BaseModel):
         return self.field_ref
 
 
-def _time_dimension_input(data: Any, spellings: Spellings) -> Any:
-    data = vocabulary.time_dimension(data, spellings)
-    if isinstance(data, dict) and "name" in data:
-        raise UnknownKeyError(key="name", path="name", keys="a time dimension names its result `alias`")
-    return data
-
-
 def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
     """Add the ``date_trunc('<unit>', expr)`` string alternative to each ``time_dimensions``
     item in the derived JSON/MCP input schema, without widening the field's Python
@@ -1026,11 +1061,12 @@ def _advertise_order_item(schema: dict[str, Any]) -> None:
     props.pop("implied", None)
 
 
-class OrderItem(BaseModel):
+@vocabulary.input_object("order_item")
+class OrderItem(QueryInput):
     """A sort key."""
-    # extra="forbid": reject stray keys so a mixed canonical+shorthand item
-    # raises instead of silently dropping the extra key.
-    model_config = ConfigDict(extra="forbid", json_schema_extra=_advertise_order_item)
+
+    model_config = ConfigDict(json_schema_extra=_advertise_order_item)
+    _WHAT: ClassVar[str] = "an order entry"
 
     field: Annotated[str, BeforeValidator(_order_text)] = Field(
         description="A result column name, a field reference, or an aggregate or transform expression.",
@@ -1055,11 +1091,15 @@ class OrderItem(BaseModel):
     @classmethod
     def _capture_raw_expression(cls, data: Any) -> Any:
         """An expression ``field`` is also the item's ``raw_expression``."""
-        if isinstance(data, dict) and isinstance(field := data.get("field"), str) and "raw_expression" not in data:
+        if isinstance(data, dict) and isinstance(field := data.get("field"), str) and data.get("raw_expression") is None:
             candidate = _order_expression_candidate(field)
             if candidate is not None:
                 data = {**data, "raw_expression": candidate}
         return data
+
+    def _before_assign(self, name: str) -> None:
+        if name == "field":
+            object.__setattr__(self, "raw_expression", None)
 
     @model_validator(mode="after")
     def _check_reference(self) -> "OrderItem":
@@ -1114,21 +1154,12 @@ class OrderItem(BaseModel):
         self.raw_expression = value
 
 
-_QUERY_METRIC_KEYS = ("metric", "alias", "label", "description", "datatype", "meta")
-
-
-def _metric_input(data: Any, spellings: Spellings) -> Any:
-    data = vocabulary.query_metric(data, spellings)
-    if isinstance(data, dict):
-        _refuse_unknown_entry_keys(data, keys=_QUERY_METRIC_KEYS, what="a query metric entry")
-    return data
-
-
-class QueryMetric(MetricBase):
+@vocabulary.input_object("metric")
+class QueryMetric(MetricBase, QueryInput):
     """A query metric entry: a saved metric's reference or an aggregate expression, with an optional result ``alias``."""
 
-    model_config = ConfigDict(extra="forbid")
     _TEXT: ClassVar[str] = "metric"
+    _WHAT: ClassVar[str] = "a query metric entry"
 
     metric: str = Field(description="A saved metric's reference or an aggregate expression.")
     alias: str | None = Field(
@@ -1142,7 +1173,7 @@ class QueryMetric(MetricBase):
     @model_validator(mode="wrap")
     @classmethod
     def _entry_input(cls, data: Any, handler: ModelWrapValidatorHandler["QueryMetric"]) -> "QueryMetric":
-        return converted_input(data, handler, _metric_input, stored=in_stored_document())
+        return converted_input(data, handler, vocabulary.query_metric, stored=in_stored_document())
 
     @field_validator("alias")
     @classmethod
@@ -1351,10 +1382,11 @@ def _extension_fields_removed(data: dict) -> str:
     )
 
 
-class DatasetExtension(BaseModel):
+@vocabulary.input_object("extension")
+class DatasetExtension(QueryInput):
     """Query-scoped metrics and relationships added to one dataset a query object reads."""
 
-    model_config = ConfigDict(extra="forbid")
+    _WHAT: ClassVar[str] = "an extension"
 
     dataset: str                                # Dataset/stage to extend
     metrics: list[DatasetMetric] | None = None
@@ -1363,7 +1395,7 @@ class DatasetExtension(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["DatasetExtension"]) -> "DatasetExtension":
-        return renamed_input(data, handler, EXTENSION_KEYS, stored=in_stored_document())
+        return converted_input(data, handler, vocabulary.extension_keys, stored=in_stored_document())
 
     @model_serializer(mode="wrap")
     def _compact_metrics(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -1434,6 +1466,13 @@ def convert_legacy_root_extension(data: dict) -> tuple[dict, DeprecatedInputWarn
     return data, deprecated_input("An extension object in `population`", "`extensions`", removal="3.0")
 
 
+def without_null_version(data: Any) -> Any:
+    """Query input whose null ``version`` reads as omitted; run first on every entry point."""
+    if isinstance(data, dict) and "version" in data and data["version"] is None:
+        return {k: v for k, v in data.items() if k != "version"}
+    return data
+
+
 def prepare_query_input(data: dict) -> tuple[dict, list[DeprecatedInputWarning]]:
     """Fresh query input with its deprecated forms converted (and a versioned payload migrated), with every
     conversion's deprecation."""
@@ -1499,10 +1538,11 @@ def _parsed_identity(text: str, root: str | None) -> str:
     return text if node is None else canonical_metric_text(root_relative(node, root))
 
 
-class SlayerQuery(BaseModel):
+@vocabulary.input_object("query")
+class SlayerQuery(QueryInput):
     """User-facing query object — what to retrieve from a dataset, as names/references, no SQL."""
 
-    model_config = ConfigDict(extra="forbid")
+    _WHAT: ClassVar[str] = "a query"
 
     version: int = CURRENT_VERSIONS["SlayerQuery"]
     name: str | None = Field(
@@ -1628,10 +1668,12 @@ class SlayerQuery(BaseModel):
     def _migrate_and_rewrite(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerQuery"]) -> "SlayerQuery":
         # One validator sequences convert → migrate → functional-granularity rewrite.
         payloads: list[DeprecatedInputWarning] = []
+        data = without_null_version(data)
         is_dict = isinstance(data, dict)
-        stored = in_stored_document() or (is_dict and "version" in data)
+        stored =in_stored_document() or (is_dict and "version" in data)
         with converted_document(stored=stored) as (spellings, _):
             if isinstance(data, dict):
+                data = vocabulary.camel_healed(data, "query")
                 if not stored:
                     data = spellings.rename(data, QUERY_KEYS)
                 data, payloads = prepare_query_input(data)
@@ -1659,6 +1701,15 @@ class SlayerQuery(BaseModel):
     def deprecated_inputs(self) -> tuple[DeprecatedInputWarning, ...]:
         """Deprecations of the input forms converted while building this query."""
         return self._deprecated_inputs
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _null_reads_as_default(cls, v: Any, info: ValidationInfo) -> Any:
+        """A null on a setting that cannot be null takes its default (after spelling conflicts are checked)."""
+        if v is None and info.field_name is not None:
+            default = cls.model_fields[info.field_name].get_default(call_default_factory=True)
+            return v if default is None else default
+        return v
 
     @field_validator("name")
     @classmethod
@@ -1966,10 +2017,11 @@ def _refinement_field(name: str) -> Any:
 _NON_NULLABLE_SETTINGS = ("whole_periods_only", "distinct_dimension_values")
 
 
-class QueryRefinement(BaseModel):
+@vocabulary.input_object("refinement")
+class QueryRefinement(QueryInput):
     """Clauses merged into a saved query's final stage when it runs by name."""
 
-    model_config = ConfigDict(extra="forbid")
+    _WHAT: ClassVar[str] = "a refinement"
 
     dimensions: DimensionsField = _refinement_field("dimensions")
     time_dimensions: list[TimeDimension] | None = _refinement_field("time_dimensions")
@@ -2000,7 +2052,7 @@ class QueryRefinement(BaseModel):
         is_dict = isinstance(data, dict)
         with converted_document(stored=in_stored_document()) as (spellings, _):
             if isinstance(data, dict):
-                data = spellings.rename(data, REFINEMENT_KEYS)
+                data = spellings.rename(vocabulary.camel_healed(data, "refinement"), REFINEMENT_KEYS)
                 if "strict" in data:
                     data, payload = _convert_strict(data)
                 data = _rewrite_functional_granularity(data)
