@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 import sqlglot
@@ -160,9 +161,11 @@ async def _cols_sql(engine: SlayerQueryEngine, query: SlayerQuery):
 
 
 def _reads(cols: list[str], sql: str) -> str:
-    """``sql`` with each result key replaced by its position, so two spellings compare by what they read."""
+    """``sql`` with each result key and producer CTE name replaced by its position, so two spellings compare by what they read."""
     for i, col in enumerate(cols):
         sql = sql.replace(f'"{col}"', f'"_col{i}"')
+    for i, cte in enumerate(dict.fromkeys(re.findall(r"\b_cm_\w+", sql))):
+        sql = re.sub(rf"\b{cte}\b", f"_cm{i}", sql)
     return sql
 
 
@@ -552,10 +555,10 @@ class TestUniformSurfaces:
                       {"metric": "count(Subscription.Customer.Consumer.*)", "alias": "c"}],
         )
         await _assert_equiv(engine, short, full)
-        # Both aggregates bind to the routed terminal, not the root — the SUM reads
-        # the Consumer join alias, so the emitted SQL references it.
+        # Both aggregates read Consumer rows, not the root's.
         _, sql = await _cols_sql(engine, short)
-        assert "Subscription__Customer__Consumer" in sql
+        assert "MAX(Consumer.amount)" in sql
+        assert 'FROM "Consumer" AS Consumer' in sql
 
     async def test_short_form_filter(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)

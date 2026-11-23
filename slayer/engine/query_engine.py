@@ -83,17 +83,15 @@ from slayer.engine.population.inference import (
     DimensionAnchor,
     PopulationChoice,
     ambiguity_resolved_path,
-    declared_head_spellings,
     determined_path,
     infer_rows,
     infer_spine_population,
     item_blockers,
-    metric_anchor_names,
     spine_datasource,
     spine_factor_out,
 )
 from slayer.engine.population.row_supply import (
-    RowPlan, anchored_rows, plan_rows, plan_spine_rows, refuse_product_split, stored_rows,
+    plan_rows, plan_spine_rows, refuse_product_split, stored_rows,
 )
 from slayer.core.time_points import host_clock
 from slayer.core.names import name_taken
@@ -185,7 +183,7 @@ from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
 from slayer.engine.elaborate_env import check_result_names_case, check_stage_flatten_collision, saved_date_only_notices
 from slayer.engine.extensions import with_own_extension
-from slayer.engine.plan import bound_supply, plan_stages
+from slayer.engine.plan import bind_dataset, bind_read_datasets, bound_supply, plan_stages
 from slayer.ir.variables import (
     apply_variables_to_query,
     bind_extension_metrics,
@@ -856,8 +854,6 @@ class _StageInference(BaseModel):
     row_sources: List[str] = PydanticField(default_factory=list)
     # The anchor a save pins as the stage's population.
     pin: Optional[str] = None
-    # A named population planned from a metric's home (its rows stay the population's).
-    anchored: bool = False
 
 
 class _Inference(BaseModel):
@@ -1031,8 +1027,12 @@ class SlayerQueryEngine:
                       for d in bundle.referenced_datasets]
         stages = {name: await self._resolved(d, datasource=datasource, datasets=peers)
                   for name, d in bundle.stage_source_datasets.items()}
+        # A stage rebinding a dataset from its stored definition resolves it with the same live types.
+        live = {d.name: await self._live_column_types(datasource=datasource, dataset=d)
+                for d in bundle.unbound_datasets.values() if not d.source_queries}
         resolved = bundle.model_copy(update={
             "population": population, "referenced_datasets": referenced, "stage_source_datasets": stages,
+            "live_source_types": live, "unresolved_datasets": {d.name: d for d in peers},
         })
         return resolved.model_copy(update={"spliced_rows": _spliced_rows(resolved)})
 
@@ -1542,28 +1542,10 @@ class SlayerQueryEngine:
         dialect = self._dialect_for_type(datasource.type)
         bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
 
-        # Substitute {var} into the direct source dataset's Mode-A surfaces before
-        # anything parses them; the substituted copy replaces the dataset as both
-        # ``population`` and its ``referenced_datasets`` entry. Rendered virtual
-        # datasets are skipped. Called unconditionally: a no-op for a variable-free,
-        # block-free dataset, but a block-bearing dataset must run so its ``{? ?}``
-        # collapse to ``(1=1)`` even on a zero-variable call.
-        if dataset.source_dataset_origin is None and not dataset.source_queries:
-            substituted = _substitute_dataset_sql_surfaces(
-                dataset=dataset,
-                variables=bundle.query_variables,
-                dialect=dialect_for_ds_type(datasource.type),
-            )
-            bundle = bundle.model_copy(
-                update={
-                    "population": substituted,
-                    "referenced_datasets": [
-                        substituted if m.name == dataset.name else m
-                        for m in bundle.referenced_datasets
-                    ],
-                }
-            )
-            dataset = substituted
+        # Every dataset the statement reads binds its Mode-A surfaces before anything parses them.
+        bundle = bind_read_datasets(bundle, layers=bundle.variable_layers, strict_population=True)
+        dataset = bundle.population
+        assert dataset is not None
 
         # Slack-normalization: rewrite slack-but-unambiguous input (func-style
         # aggs, misplaced metrics) to canonical form, each stage against its
@@ -1597,27 +1579,22 @@ class SlayerQueryEngine:
         # query-backed root's own defaults layer only its spliced stages).
         fallback_vars = {} if dataset.source_queries else dataset.query_variables
         stage_sources = dict(bundle.stage_source_datasets)
+        stage_layers: Dict[str, Dict[str, Any]] = {}
         for nm, nq in list(normed_named.items()):
             source = stage_sources.get(nm)
-            # Lowest layer: the stage's own source-dataset defaults.
-            stage_vars = {
-                **((source.query_variables if source is not None else fallback_vars) or {}),
-                **(root_vars or {}),
-                **(nq.variables or {}),
-                **(runtime_kwarg or {}),
-            }
+            layers = stage_layers[nm] = {**(root_vars or {}), **(nq.variables or {}), **(runtime_kwarg or {})}
+            # The stage's text reads its own source-dataset defaults as the lowest layer.
+            stage_vars = {**((source.query_variables if source is not None else fallback_vars) or {}), **layers}
             normed_named[nm] = bind_extension_metrics(
                 query=apply_variables_to_query(query=nq, variables=stage_vars), variables=stage_vars,
             )
             if nm in supplies:
                 supplies[nm] = bound_supply(supplies[nm], variables=stage_vars)
             if source is not None:
-                stage_sources[nm] = _substitute_dataset_sql_surfaces(
-                    dataset=source, variables=stage_vars,
-                    dialect=dialect_for_ds_type(datasource.type),
-                )
+                stage_sources[nm] = bind_dataset(source, layers=layers, bundle=bundle)
         bundle = await self._resolved_bundle(
-            bundle.model_copy(update={"stage_source_datasets": stage_sources, "row_supplies": supplies}),
+            bundle.model_copy(update={"stage_source_datasets": stage_sources, "stage_variable_layers": stage_layers,
+                                     "row_supplies": supplies}),
             datasource=datasource,
         )
 
@@ -1755,7 +1732,7 @@ class SlayerQueryEngine:
         row_sources = [stage_displays[s].name if s in stage_displays else s for s in main.row_sources]
         return _Inference(
             query=main.query, named_queries=rewritten, population=population,
-            population_inferred=main.supply is not None and not main.anchored, data_source=inferred_data_source,
+            population_inferred=main.supply is not None, data_source=inferred_data_source,
             row_sources=row_sources, supplies=supplies, pins=pins,
         )
 
@@ -1793,17 +1770,6 @@ class SlayerQueryEngine:
                 sibling_stage_names=sibling_stage_names,
             )
         name = query.population_name
-        routed = None
-        if spine_ds is None:
-            spelled = await declared_head_spellings(query, storage=self.storage, data_source=data_source,
-                                                    siblings=sibling_stage_names)
-            routed = await self._anchored_rows(spelled, data_source=data_source)
-        if routed is not None:
-            plan, routed_ds = routed
-            return _StageInference(
-                query=query.model_copy(update={"population": plan.population}), data_source=routed_ds,
-                reported=name, supply=plan.supply, row_sources=list(plan.row_sources), anchored=True,
-            )
         return _StageInference(query=query, data_source=spine_ds, reported=name,
                                row_sources=[name] if name is not None else [])
 
@@ -1838,22 +1804,6 @@ class SlayerQueryEngine:
             data_source=data_source_p, reported=choice.display, supply=plan.supply,
             row_sources=list(plan.row_sources), pin=None if product else p,
         )
-
-    async def _anchored_rows(
-        self, query: SlayerQuery, *, data_source: Optional[str],
-    ) -> Optional[Tuple[RowPlan, str]]:
-        """A named population's row plan and its datasource when it cannot route to a metric's home (else ``None``)."""
-        population = query.population_name
-        if population is None or not query.metrics or is_spine_query(query):
-            return None
-        if metric_anchor_names(query.model_copy(update={"population": None})) <= {population}:
-            return None
-        dataset = await self.storage.get_dataset(population, data_source=data_source)
-        if dataset is None or not dataset.data_source:
-            return None
-        loaded, _unloaded = await self.storage.load_datasets(data_source=dataset.data_source)
-        plan = anchored_rows(query, datasets_by_name={m.name: m for m in loaded})
-        return (plan, dataset.data_source) if plan is not None else None
 
     async def _spine_list_datasource(self, *, queries: List[SlayerQuery], stage_names: Set[str]) -> Optional[str]:
         """The one datasource every dataset a spine-reading query list names lives in, if there is one."""

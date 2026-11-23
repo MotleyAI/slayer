@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any, Literal, cast
 
+import warnings
+
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -17,7 +19,11 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.document_text import edit_text, parse_document_text, without_vendor
-from slayer.core.errors import AmbiguousReferenceError, OssieDocumentInvalidError, SlayerError
+from slayer.core.deprecation import outside_stacklevel
+from slayer.core.errors import (
+    AmbiguousReferenceError, OssieDocumentInvalidError, SlayerError, StoredDocumentLoadError, UnreadableDocumentError,
+)
+from slayer.core.warnings import SlayerUnloadableDocumentWarning, UnloadableDocumentWarning
 from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
 from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
@@ -1043,13 +1049,20 @@ async def _expanded_query_backed(
     return virtual
 
 
-async def _stored_documents(*, storage: Any, datasource: str) -> list[tuple[str, str]]:
-    """Each stored semantic-model document's name and text."""
-    documents: list[tuple[str, str]] = []
+async def _stored_documents(*, storage: Any, datasource: str, loaded: set[str],
+                            skipped: list[StoredDocumentLoadError]) -> list[tuple[str, str, Any]]:
+    """The name, text and data of each stored semantic-model document named in ``loaded`` that still reads; one that
+    no longer reads goes to ``skipped``."""
+    documents: list[tuple[str, str, Any]] = []
     for _, name in await storage.list_semantic_models(datasource):
-        text = await storage.get_semantic_model_text(name, data_source=datasource)
-        if text is not None:
-            documents.append((name, text))
+        if name not in loaded:
+            continue
+        try:
+            text = await storage.get_semantic_model_text(name, data_source=datasource)
+            if text is not None:
+                documents.append((name, text, parse_document_text(text)))
+        except (UnreadableDocumentError, OssieDocumentInvalidError) as exc:  # edited since it loaded
+            skipped.append(StoredDocumentLoadError(kind="semantic_model", name=name, data_source=datasource, cause=exc))
     return documents
 
 
@@ -1059,11 +1072,15 @@ def _valid_portable(text: str | None) -> str | None:
     return written if written is not None and portable_problem(written) is None else None
 
 
-def _parsed_document(name: str, text: str) -> Any:
-    try:
-        return parse_document_text(text)
-    except ValueError as exc:
-        raise OssieDocumentInvalidError(name=name, reasons=[str(exc)]) from exc
+def _left_out(skipped: list[StoredDocumentLoadError]) -> list[ConversionWarning]:
+    """A report entry, and an ``unloadable_document`` warning, for each document the export leaves out."""
+    out: list[ConversionWarning] = []
+    for error in skipped:
+        payload = UnloadableDocumentWarning(document_kind="semantic_model", data_source=error.data_source, name=error.name,
+                                            cause=error.cause_text)
+        warnings.warn(SlayerUnloadableDocumentWarning(payload), stacklevel=outside_stacklevel())
+        out.append(ConversionWarning(message=payload.human_message(), category="unloadable_document", severity="dropped"))
+    return out
 
 
 async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: list[str] | None = None,
@@ -1074,20 +1091,28 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
     if config is None:
         raise OsiExportError(f"Datasource {datasource!r} not found.")
     stored = await _stored_datasets(storage=storage, datasource=datasource)
+    skipped = [e for e in (await storage.load_datasets(data_source=datasource))[1] if e.kind == "semantic_model"]
+    documents = await _stored_documents(storage=storage, datasource=datasource, skipped=skipped,
+                                        loaded={d.semantic_model for d in stored.values() if d.semantic_model})
+    readable = {name for name, _, _ in documents}
+    stored = {n: d for n, d in stored.items() if not d.semantic_model or d.semantic_model in readable}
+    left_out = _left_out(skipped)
+    if not stored and skipped:
+        raise skipped[0]  # nothing else to export: the document's own load error
     unknown = [m for m in datasets or [] if m not in stored]
     if unknown:
         raise OsiExportError(f"Unknown dataset(s) in datasource {datasource!r}: {', '.join(unknown)}.")
     selected = sorted(set(datasets)) if datasets is not None else sorted(stored)
     virtual = await _expanded_query_backed(engine=engine, stored=stored, selected=selected)
     resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
-    documents = await _stored_documents(storage=storage, datasource=datasource)
-    parsed = [_parsed_document(name, text) for name, text in documents]
+    parsed = [data for _, _, data in documents]
     members = {d["name"] for doc in parsed for d in doc["datasets"]}
     if datasets is None and len(documents) == 1 and members == set(stored):
         text = documents[0][1] if extensions else edit_text(documents[0][1],
                                                             lambda data: without_vendor(data, ext.VENDOR))
-        return OsiExportResult(document=parse_document_text(text), text=text, warnings=[])
+        return OsiExportResult(document=parse_document_text(text), text=text, warnings=left_out)
     result = _Exporter(config=config, datasets=stored, selected=selected, virtual=virtual, extensions=extensions,
                        resolved=resolved, documents=parsed).run()
+    result.warnings = [*left_out, *result.warnings]
     result.text = dump_yaml(result.document)
     return result

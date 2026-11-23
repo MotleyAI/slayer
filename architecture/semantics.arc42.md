@@ -36,7 +36,8 @@ principles every layer obeys.
 2. **Home dataset**: every row-level expression, and every aggregation, has at most
    one home dataset — the dataset over whose rows it is evaluated with exactly one
    value per row (an aggregation is counted over it, Axiom 4). Datasets are the
-   environment's root and the join paths from it; "D determines X" is Axiom 1,
+   model's datasets and the join paths between them, a reference naming one by its
+   anchor (Principle 1); "D determines X" is Axiom 1,
    judged through dependency closures (engine P10). The home is resolved by:
    - **2.1 Leaf.** A column or star reference is homed on the dataset it lives on —
      the terminal of its join path. A derived column is homed there provided that
@@ -71,14 +72,17 @@ principles every layer obeys.
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
      home and never widens it; the aggregation's own `partition_by=` is not an input.
      A source with no row-level leaf is a second-order aggregation: its home is the
-     operand dataset — the constituents' union-grain cells (Axiom 6) — not a model.
+     operand dataset — the row supply (12.3–12.4) of its constituents at their union
+     grain — not a model.
    - **2.5 Recursion.** Nesting resolves bottom-up: each aggregation resolves its home
      from its own source, parameters and constituent types; whatever encloses it sees
      only a typed dataset (2.3). No sibling term and no spelling of the enclosing query
      affects a node's home; the query's dimensions enter only as the type of an
      ungrained constituent.
-   - **2.6 Anchor and candidates.** The source anchor is the longest common prefix of
-     the source leaves' paths — where the source lives: the aggregation's definition
+   - **2.6 Anchor and candidates.** The source anchor is where the source lives — the
+     longest common prefix of its leaves' paths from their shared anchor (Principle 1);
+     leaves anchored apart meet at the smallest dataset determining each leaf's anchor
+     over provably to-one hops (2.2), tied candidates refused as ambiguous: the aggregation's definition
      (a custom aggregation and its parameter defaults) is resolved there, a qualifier
      naming a dataset on the anchor's path cancelling back to it, any other qualifier
      the anchor cannot reach forward read as a query reference (Principle 1) instead. The home,
@@ -92,8 +96,8 @@ principles every layer obeys.
      input, the aggregation is illegal and the query fails with the input-safety error
      naming the leaf and the hop — never a multiplied or silently re-rooted value.
    - **2.9 Home is not population.** The home is per aggregation node (where it is
-     counted); the population (Axiom 12) is per query (which cells exist) and never
-     moves a home. A query dimension the home does not determine is broadcast,
+     counted); the population (Axiom 12) is per query (which cells exist), never
+     moves a home nor routes to one, and meets it only on grain values (Axiom 6). A query dimension the home does not determine is broadcast,
      associated or refused (Axioms 7–8).
    [enforced: test:tests/test_dev1892_parameter_typing.py]
    [enforced: test:tests/test_dev1832_home.py]
@@ -102,6 +106,7 @@ principles every layer obeys.
    [enforced: test:tests/test_dev1908_default_cancellation.py]
    [enforced: test:tests/test_dev2013_expression_attribution.py]
    [enforced: test:tests/test_dev2367_list_elements_across_joins.py]
+   [enforced: test:tests/test_dev2388_own_anchor.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
@@ -171,10 +176,10 @@ principles every layer obeys.
    [enforced: test:tests/test_dev1841_error_mode.py]. A value repeated across a dimension's cells is a coarser grain
    asked for by `partition_by=` (Axiom 10), never a mode: the deprecated broadcast mode (the same value, warned) is
    refused from 3.0 [enforced: test:tests/test_law_removal_tripwire.py]. Every aggregation associates — a windowed one per bucket, over the home rows with an associated row in the bucket's frame [enforced: test:tests/test_dev1914_ranked_windowed_association.py]; an explicit partition_by
-   naming a dimension unattributable only from a further (cross-model) root is an
+   naming a dimension unattributable from the aggregation's home is an
    error outside associate mode
    [enforced: test:tests/test_dev1841_association_errors.py], but one whose own
-   dependency closure (engine P10) crosses a fanning hop from its home is a
+   dependency closure (engine P10) crosses a fanning hop from its anchor (Principle 1) is a
    mode-invariant input-safety error — raised in every mode, associate included,
    since it can never be counted without multiplying rows (Axiom 2.8).
    [enforced: test:tests/test_dev1911_fanning_partition_key.py]
@@ -193,7 +198,7 @@ principles every layer obeys.
    [enforced: test:tests/test_dev1868_residue_split.py]
 10. **Grain-union broadcast**: combining aggregates unions their grains, each
     operand broadcast from its own grain to the union — coarser to finer only;
-    the population supplies the row set, a cell an operand lacks contributes
+    the population supplies the row set — inside a second-order source, its operand dataset (2.4) —, a cell an operand lacks contributes
     its empty value (Axiom 4; NULL for a transform), and combining never removes rows (spec: `queries/semantics` ›
     Grain-union broadcasting). [enforced: test:tests/test_dev1739_execution.py]
 11. **Transforms are typed**: a transform consumes an aggregate-valued dataset and
@@ -351,7 +356,7 @@ All code, old and new, MUST obey these.
    A query reference is **anchored** at its first segment, a dataset — a query
    stage by its name in its own query list, which precedes a same-named model;
    the rest is an explicit route. Each dataset reading the reference — the
-   population; an aggregate's home, for its grain and filters — reaches the anchor over declared relationships, an
+   population; an aggregation's source anchor (Axiom 2.6), for its source; its home, for its grain and filters — reaches the anchor over declared relationships, an
    inherited one counting only beside a declared one between the same two
    datasets: by its only to-one path, else its only route, else the reference is
    refused as ambiguous. Only when declared relationships give no route are
@@ -367,6 +372,7 @@ All code, old and new, MUST obey these.
    [enforced: test:tests/test_dev2277_qualified_references.py]
    [enforced: test:tests/test_dev2277_routing.py]
    [enforced: test:tests/test_dev2212_home_routing.py]
+   [enforced: test:tests/test_dev2388_own_anchor.py]
 2. **Two expression layers**: Mode A, the datasource's own SQL (a definition's entry for that dialect, `filter`, dataset `filters`), vs Mode B, a SQL-compatible grammar (a definition's portable `sql`, query fields) — one canonical function library, extended never forked. [review]
    - **2.1** Every Mode B construct means the same on every dialect.
      [enforced: test:tests/test_dev2120_library_matrix.py]

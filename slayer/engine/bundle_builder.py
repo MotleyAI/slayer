@@ -127,6 +127,9 @@ async def build_resolved_source_bundle(
         query=query,
         stage_source_datasets=stage_source_datasets,
         query_variables=query_variables,
+        variable_layers=merge_query_variables(
+            runtime=runtime_variables, stage=query.variables, outer=outer_variables, dataset_defaults=None,
+        ),
         datasource_hint=data_source,
         stage_displays=dict(stage_displays),
         query_backed=query_backed,

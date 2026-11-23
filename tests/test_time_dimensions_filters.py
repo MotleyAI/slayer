@@ -542,7 +542,7 @@ class TestDateRangeFilter:
             planned=planned, leaf="signed_up_at",
         )
         # Joined TD: path carries the relationship hop on the underlying field.
-        expected_col = FieldKey(path=("customers",), leaf="signed_up_at")
+        expected_col = FieldKey(path=("customers",), leaf="signed_up_at", anchor=("customers",))
         assert lower.operands[0] == expected_col
 
     def test_user_filter_and_date_range_coexist(self) -> None:

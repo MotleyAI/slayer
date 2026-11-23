@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey
+from slayer.core.keys import AggregateKey, anchor_token
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
@@ -22,6 +22,9 @@ from tests._dev1832_fixtures import (
     dev1832_datasets,
     orders_q,
 )
+
+#: An aggregation read from its frame ``customers`` spells its home from there.
+C = anchor_token("customers")
 
 
 def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
@@ -59,7 +62,7 @@ def _parallel_edge_datasets() -> list[SlayerDataset]:
 class TestHomeDatasetPerScenario:
     def test_deepest_determining_dataset_wins(self):
         # sum(customers.spend - customers.regions.pop) → home is customers.
-        assert _home_path("sum(customers.spend - customers.regions.pop)") == ("customers",)
+        assert _home_path("sum(customers.spend - customers.regions.pop)") == (C,)
 
     def test_host_side_leaf_pulls_home_to_root(self):
         # amount is host-local → home is orders (the root).
@@ -72,24 +75,24 @@ class TestHomeDatasetPerScenario:
     def test_a_parameter_widens_the_home(self):
         # weight=amount (orders-local) pulls the home to the root.
         assert _home_path(
-            "wsum(customers.spend + customers.regions.pop, weight=orders.amount)") == ()
+            "wsum(customers.spend + customers.regions.pop, weight=orders.amount)") == (C, "orders")
 
     def test_a_definition_default_widens_the_home_the_same_way(self):
         # wsum's default weight (spend) is customers-local → home stays customers,
         # not the root — the default joins the home candidates.
-        assert _home_path("wsum(customers.spend - customers.regions.pop)") == ("customers",)
+        assert _home_path("wsum(customers.spend - customers.regions.pop)") == (C,)
 
     def test_an_expression_default_widens_the_home_like_a_dotted_one(self):
         # weight = "stores.rent * 2" reads the root-side stores → home is orders.
-        assert _home_path("wsum_expr(customers.spend)") == ()
+        assert _home_path("wsum_expr(customers.spend)") == (C, "orders")
 
     def test_a_local_expression_default_constrains_nothing(self):
         # weight = "spend * 2" is local to the definition → home stays customers.
-        assert _home_path("wsum_local_expr(customers.spend)") == ("customers",)
+        assert _home_path("wsum_local_expr(customers.spend)") == (C,)
 
     def test_spelling_never_moves_the_home(self):
         assert _home_path("sum(customers.spend)") == _home_path("sum(customers.spend + 0)")
-        assert _home_path("sum(customers.spend + 0)") == ("customers",)
+        assert _home_path("sum(customers.spend + 0)") == (C,)
 
     def test_no_home_falls_back_to_the_anchor(self):
         # bad_pop crosses the fanning regions→region_events hop, so no dataset
@@ -107,13 +110,13 @@ class TestHomeIsSpellingInvariant:
     def test_single_deep_leaf_homes_at_its_own_dataset(self):
         # A lone customers.regions.pop homes at customers.regions; adding a
         # customers-local leaf pulls the shared home shallower to customers.
-        assert _home_path("sum(customers.regions.pop)") == ("customers", "regions")
+        assert _home_path("sum(customers.regions.pop)") == (C, "regions")
         assert _home_path(
-            "sum(customers.spend - customers.regions.pop)") == ("customers",)
+            "sum(customers.spend - customers.regions.pop)") == (C,)
 
     @pytest.mark.parametrize("formula,expected", [
         ("sum(orders.amount - orders.cost)", ()),                       # both host-local
-        ("sum(customers.spend - customers.discount)", ("customers",)),
+        ("sum(customers.spend - customers.discount)", (C,)),
     ])
     def test_home_path_matrix(self, formula, expected):
         assert _home_path(formula) == expected
@@ -127,19 +130,19 @@ class TestAttachedConstituentGrainWidensTheHome:
 
     def test_explicit_status_partition_pulls_home_to_root(self):
         assert _home_path(
-            "sum(customers.discount * avg(orders.amount, partition_by=orders.status))") == ()
+            "sum(customers.discount * avg(orders.amount, partition_by=orders.status))") == (C, "orders")
 
     def test_explicit_tier_partition_keeps_home_at_customers(self):
         assert _home_path(
             "sum(customers.discount * avg(orders.amount, partition_by=customers.tier))"
-        ) == ("customers",)
+        ) == (C,)
 
     def test_ungrained_constituent_takes_the_query_dimension(self):
         assert _home_path(
-            "sum(customers.discount * avg(orders.amount))", dimensions=["orders.status"]) == ()
+            "sum(customers.discount * avg(orders.amount))", dimensions=["orders.status"]) == (C, "orders")
         assert _home_path(
             "sum(customers.discount * avg(orders.amount))",
-            dimensions=["customers.tier"]) == ("customers",)
+            dimensions=["customers.tier"]) == (C,)
 
 
 class TestParallelNamedEdges:

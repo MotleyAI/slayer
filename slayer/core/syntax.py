@@ -1304,12 +1304,8 @@ def reference_spans(text: str) -> Tuple[ParsedExpr, Mapping[int, Tuple[int, int]
         _STATE.reset(text)
         _STATE.refs = {}
         try:
-            parsed = cast(ParsedExpr, _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)[0])
+            parsed = cast(ParsedExpr, _parse_tree(text))
             found = _STATE.refs
-        except _Problem as problem:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
-        except pp.ParseBaseException as e:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
         finally:
             _STATE.refs = None
     return parsed, MappingProxyType(
@@ -1389,21 +1385,51 @@ def call_spans(text: str) -> Tuple[CallSpan, ...]:
         return ()
 
 
+#: Parenthesis depth past which an expression is refused: deeper ones exhaust the parser's recursion.
+MAX_NESTING = 32
+
+
+def _nesting(text: str) -> int:
+    """The deepest parenthesis nesting in ``text``'s code, literals and comments aside."""
+    depth = deepest = 0
+    for region in (r for r in _regions(text) if r.kind == "code"):
+        for ch in text[region.start:region.end]:
+            depth += (ch == "(") - (ch == ")")
+            deepest = max(deepest, depth)
+    return deepest
+
+
+def _parse_tree(text: str) -> Any:
+    """``text`` parsed by the grammar (the caller holds ``_PARSE_LOCK``); raises ``ValueError`` when it does not parse."""
+    if _nesting(text) > MAX_NESTING:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: parentheses nest more than {MAX_NESTING} deep.")
+    try:
+        masked = _mask_placeholders(text)
+        if not masked.strip():
+            raise ValueError("Empty Mode-B expression.")
+        return _EXPRESSION.parse_string(masked, parse_all=True)[0]
+    except _Problem as problem:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
+    except pp.ParseBaseException as e:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
+    except RecursionError:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: it nests too deeply to read.") from None
+
+
 @lru_cache(maxsize=8192)
 def _read(text: str) -> _Reading:
+    try:
+        return _reading(text)
+    except RecursionError:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: it nests too deeply to read.") from None
+
+
+def _reading(text: str) -> _Reading:
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
     with _PARSE_LOCK:
         _STATE.reset(text)
-        try:
-            masked = _mask_placeholders(text)
-            if not masked.strip():
-                raise ValueError("Empty Mode-B expression.")
-            parsed = cast(ParsedExpr, _EXPRESSION.parse_string(masked, parse_all=True)[0])
-        except _Problem as problem:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
-        except pp.ParseBaseException as e:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
+        parsed = cast(ParsedExpr, _parse_tree(text))
         methods, calls = list(_STATE.methods.values()), sorted(_STATE.calls.values(), key=lambda c: c.start)
     legacy = tuple(sorted([*_text_legacy_spans(text), *methods], key=lambda s: (s.start, s.end)))
     if any(_is_interval(n) for n in walk_parsed(parsed)):
@@ -2945,12 +2971,8 @@ def rewrite_colon_spans(text: str, *, units: Optional[frozenset[str]] = None) ->
         _STATE.reset(text)
         _STATE.spans = []
         try:
-            _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)
+            _parse_tree(text)
             spans = _STATE.spans
-        except _Problem as problem:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
-        except pp.ParseBaseException as e:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
         finally:
             _STATE.spans = None
     picked = [s for s in spans if units is None or (s.args is None and s.name.casefold() in units)]

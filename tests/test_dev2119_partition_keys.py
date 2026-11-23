@@ -84,9 +84,7 @@ class TestAttributability:
             await engine.execute(query, dry_run=True)
         msg = str(ei.value)
         assert "regions.manager" in msg
-        assert "unproven" in msg
-        assert "attributable" in msg
-        assert "Declare relationship cardinality" in msg
+        assert "is not a query dimension" in msg
 
 
 class TestAggregateBearingKey:

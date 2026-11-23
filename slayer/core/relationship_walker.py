@@ -29,7 +29,9 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType, invert_cardinality
 from slayer.core.errors import AmbiguousHopError, AmbiguousRelationshipPathError, CircularRelationshipPathError, SelfRelationshipTraversalError
-from slayer.core.keys import FieldElementFn, FieldKey, FieldSqlKey, FieldTypeFn, ValueKey, source_anchor_path
+from slayer.core.keys import (
+    FieldElementFn, FieldKey, FieldSqlKey, FieldTypeFn, ValueKey, anchor_token, source_anchor_path, token_anchor,
+)
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset, is_key_set_unique, relationship_key_error
 from slayer.core.names import match_name
 from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_DATASET, axis_field, is_spine, spine_relationships
@@ -45,6 +47,7 @@ __all__ = [
     "edges_between",
     "follow",
     "incident_dataset_names",
+    "is_anchor_edge",
     "is_product_edge",
     "is_lateral_edge",
     "is_unrelated_edge",
@@ -75,8 +78,9 @@ __all__ = [
 
 
 #: A product hop's kind: the population to its spine, the spine to a dataset with no axis route,
-#: or the population to a dataset no relationship path reaches (minted only by strict resolution).
-ProductKind = Literal["spine", "detached", "unrelated"]
+#: the population to a dataset no relationship path reaches (minted only by strict resolution), or an
+#: anchor hop to an aggregation's frame (never joined).
+ProductKind = Literal["spine", "detached", "unrelated", "anchor"]
 
 
 class OrientedRelationship(BaseModel):
@@ -143,6 +147,11 @@ def _observe(targets: Iterable[str], *, strict: bool) -> None:
         sink[name] = sink.get(name, False) or strict
 
 
+def observe_read(name: str) -> None:
+    """Record ``name`` as read by a reference anchored at it (no hop walked to reach it)."""
+    _observe([name], strict=True)
+
+
 def canonical_token(edge: OrientedRelationship) -> str:
     """A hop's canonical spelling: the edge name, else the target's spelling."""
     return edge.name or edge.target_spelling or edge.to
@@ -150,6 +159,8 @@ def canonical_token(edge: OrientedRelationship) -> str:
 
 def reverse_token(edge: OrientedRelationship) -> str:
     """The spelling of ``edge`` walked backwards: the edge name, else the source's spelling."""
+    if edge.product == "anchor":
+        return anchor_token(edge.source_dataset)
     return edge.name or edge.source_spelling or edge.source_dataset
 
 
@@ -395,6 +406,21 @@ def is_unrelated_edge(edge: OrientedRelationship) -> bool:
     return edge.product == "unrelated"
 
 
+def is_anchor_edge(edge: OrientedRelationship) -> bool:
+    return edge.product == "anchor"
+
+
+def _anchor_edge(*, source: SlayerDataset, target: SlayerDataset) -> OrientedRelationship:
+    """The anchor hop from ``source`` to ``target``: a frame change, never a join."""
+    return OrientedRelationship(
+        source_dataset=source.name, to=target.name, column_pairs=[],
+        join_type=PRODUCT_JOIN_TYPE, cardinality=RelationshipCardinality.MANY_TO_MANY,
+        name=anchor_token(target.name), declaring_dataset=source.name,
+        source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
+        product="anchor",
+    )
+
+
 def _declared_toward(dataset: SlayerDataset, target: str, *, spine: bool) -> list[DatasetRelationship]:
     relationships = spine_relationships(dataset, datasets_by_name={TIME_SPINE_DATASET: dataset}) if spine else dataset.relationships
     return [j for j in relationships if j.to == target]
@@ -505,6 +531,10 @@ def resolve_hop(
     reference error) and raises :class:`AmbiguousRelationshipPathError` when two or more
     edges qualify, :class:`AmbiguousHopError` when it names an edge and another edge's target.
     """
+    framed = token_anchor(token)
+    if framed is not None:
+        target = datasets_by_name.get(framed)
+        return None if target is None else _anchor_edge(source=current, target=target)
     incident = neighbors(dataset=current, datasets_by_name=datasets_by_name)
     candidates = matching_edges(incident, token, quoted=quoted)
     if not candidates:
@@ -604,6 +634,8 @@ def _walk(
         )
         if edge is None:
             return None, WalkMiss(index=i, token=token, kind="no_edge")
+        if is_anchor_edge(edge):
+            visited = set()  # a new frame: revisits are frame-local
         if not revisits and edge.to in visited:
             raise CircularRelationshipPathError(
                 reference=".".join(path),
