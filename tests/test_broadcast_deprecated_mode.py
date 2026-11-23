@@ -622,7 +622,7 @@ def _mcp_query_schema() -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmp:
         server = create_mcp_server(storage=YAMLStorage(base_dir=tmp), _seed_help=False)
         tools = {t.name: t for t in asyncio.run(server.list_tools())}
-    return tools["query"].inputSchema
+    return tools["query"].input_schema
 
 
 class TestNotOffered:

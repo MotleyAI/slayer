@@ -1,4 +1,4 @@
-"""The ``mcp`` dependency must stay on the 1.x FastMCP API: mcp 2.0.0 renamed away ``mcp.server.fastmcp``, so an unbounded pin breaks lockfile-free installs."""
+"""The ``mcp`` dependency is pinned to the tested 2.x line, and building the server refuses any other install."""
 
 from __future__ import annotations
 
@@ -8,22 +8,16 @@ import tomllib
 from importlib.metadata import PackageNotFoundError, version
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-import slayer
-from slayer.mcp.server import _import_fastmcp, _set_server_version, create_mcp_server
+from slayer.mcp.server import create_mcp_server
 
 PYPROJECT = pathlib.Path(__file__).parent.parent / "pyproject.toml"
 
-# The 1.x verified end-to-end over stdio.
-VERIFIED_1X = "1.29.0"
-FIRST_BREAKING_MAJOR = "2.0.0"
-
-# Every branch of the import error must offer the same remedy.
-REMEDY = "mcp>=1.19,<2"
-# The old text, which sent users round the loop that reproduced the failure.
+REQUIRED_RANGE = ">=2.3,<3"
+REMEDY = f"mcp{REQUIRED_RANGE}"
 OBSOLETE_REMEDY = "Reinstall SLayer"
 
 
@@ -32,219 +26,91 @@ def _mcp_constraint() -> str:
     with open(PYPROJECT, "rb") as fh:
         deps = tomllib.load(fh)["tool"]["poetry"]["dependencies"]
     spec = deps["mcp"]
-    # Poetry accepts a bare string or a table; survive a future conversion to the table form.
     return spec["version"] if isinstance(spec, dict) else spec
 
 
 def _mcp_specifier() -> SpecifierSet:
-    """The declared constraint as a PEP 440 specifier set (raises ``InvalidSpecifier`` on a non-PEP-440 form like a Poetry caret)."""
+    """The declared constraint as a PEP 440 specifier set (raises on a non-PEP-440 form like a Poetry caret)."""
     return SpecifierSet(_mcp_constraint())
 
 
+def _build() -> object:
+    return create_mcp_server(storage=None, _seed_help=False)  # NOSONAR(S5655) — metadata-only build needs no storage
+
+
 class TestMcpDependencyPin:
-    """Pin the mcp compatibility boundary at the packaging-metadata level."""
+    @pytest.mark.parametrize("admitted", ["2.3.0", "2.3.1", "2.9.0"])
+    def test_constraint_admits_the_tested_2_x_line(self, admitted: str) -> None:
+        assert Version(admitted) in _mcp_specifier(), _mcp_constraint()
 
-    def test_mcp_constraint_excludes_2_x(self) -> None:
-        """The bug: an unbounded pin let resolvers pick mcp 2.0.0."""
-        assert Version(FIRST_BREAKING_MAJOR) not in _mcp_specifier(), (
-            f"`mcp = {_mcp_constraint()!r}` admits {FIRST_BREAKING_MAJOR}, which "
-            f"removed `mcp.server.fastmcp` and breaks `slayer mcp` on every "
-            f"fresh install."
-        )
+    @pytest.mark.parametrize("excluded", ["1.27.0", "2.0.0", "2.2.0", "2.2.9", "3.0.0"])
+    def test_constraint_excludes_untested_lines(self, excluded: str) -> None:
+        assert Version(excluded) not in _mcp_specifier(), _mcp_constraint()
 
-    def test_mcp_constraint_admits_1_x(self) -> None:
-        """The cap must not be 'fixed' by over-tightening onto one release."""
-        assert Version(VERIFIED_1X) in _mcp_specifier(), (
-            f"`mcp = {_mcp_constraint()!r}` excludes {VERIFIED_1X}, the 1.x "
-            f"verified against a live datasource."
-        )
-
-    def test_mcp_constraint_is_pep440(self) -> None:
+    def test_constraint_is_pep440(self) -> None:
         _mcp_specifier()
 
-    def test_installed_mcp_is_1_x(self) -> None:
-        """The resolved environment, not just the declaration, is on 1.x."""
-        installed = Version(version("mcp"))
-        assert installed.major == 1
-        assert installed in _mcp_specifier()
+    def test_installed_mcp_is_in_range(self) -> None:
+        assert Version(version("mcp")) in _mcp_specifier()
 
 
-class TestFastMcpImportError:
-    """Import failure must name the real remedy, not 'Reinstall SLayer'; ``sys.modules[name]=None`` forces the ImportError without an mcp 2.x install."""
+class TestMcpImportGuard:
+    """``_pkg_version`` stands in for the installed distribution; ``sys.modules[name]=None`` for an absent module."""
 
     @staticmethod
-    def _block_fastmcp(monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", None)
-
-    @staticmethod
-    def _pretend_installed(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
-        monkeypatch.setattr("slayer.mcp.server._pkg_version", lambda _name: version)
-
-    def test_returns_fastmcp_when_available(self) -> None:
-        assert _import_fastmcp() is FastMCP
-
-    def test_wrong_major_message_names_version_and_remedy(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._block_fastmcp(monkeypatch)
-        self._pretend_installed(monkeypatch, FIRST_BREAKING_MAJOR)
-
-        with pytest.raises(ImportError) as excinfo:
-            _import_fastmcp()
-
-        message = str(excinfo.value)
-        assert FIRST_BREAKING_MAJOR in message
-        assert "mcp 2.x" in message  # the branch actually taken
-        assert "mcp.server.fastmcp" in message
-        assert REMEDY in message
-        assert OBSOLETE_REMEDY not in message
-
-    def test_1_x_metadata_is_not_blamed_on_the_2_x_rename(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """An ImportError from inside a genuine 1.x mcp must not be misdiagnosed as the 2.x rename."""
-        self._block_fastmcp(monkeypatch)
-        self._pretend_installed(monkeypatch, "1.27.0")
-
-        with pytest.raises(ImportError) as excinfo:
-            _import_fastmcp()
-
-        message = str(excinfo.value)
-        assert "1.27.0" in message
-        assert "could not be imported" in message  # the branch actually taken
-        assert "mcpserver" not in message, (
-            "mcp 1.27.0 predates the 2.x rename — the message must not claim "
-            "the module was renamed away."
-        )
-        assert "2.x removed" not in message
-        assert REMEDY in message
-
-    def test_unparseable_version_falls_back_to_the_generic_message(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._block_fastmcp(monkeypatch)
-        self._pretend_installed(monkeypatch, "not-a-version")
-
-        with pytest.raises(ImportError) as excinfo:
-            _import_fastmcp()
-
-        message = str(excinfo.value)
-        assert "not-a-version" in message
-        assert "could not be imported" in message  # generic, not the 2.x branch
-        assert "mcpserver" not in message
-        assert "2.x removed" not in message
-        assert REMEDY in message
-
-    def test_missing_package_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._block_fastmcp(monkeypatch)
-
+    def _pretend_installed(monkeypatch: pytest.MonkeyPatch, installed: str | None) -> None:
         def _absent(_name: str) -> str:
             raise PackageNotFoundError("mcp")
 
-        monkeypatch.setattr("slayer.mcp.server._pkg_version", _absent)
-
-        with pytest.raises(ImportError) as excinfo:
-            _import_fastmcp()
-
-        message = str(excinfo.value)
-        assert "not found" in message.lower()
-        assert REMEDY in message
-        assert OBSOLETE_REMEDY not in message
-
-    def test_every_branch_offers_the_same_remedy(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """No branch may drop part of the remedy the others give."""
-
-        def _message_for(installed: str | None) -> str:
-            with pytest.MonkeyPatch.context() as patch:
-                patch.setitem(sys.modules, "mcp.server.fastmcp", None)
-                if installed is None:
-                    def _absent(_name: str) -> str:
-                        raise PackageNotFoundError("mcp")
-
-                    patch.setattr("slayer.mcp.server._pkg_version", _absent)
-                else:
-                    patch.setattr(
-                        "slayer.mcp.server._pkg_version", lambda _name: installed
-                    )
-                with pytest.raises(ImportError) as excinfo:
-                    _import_fastmcp()
-                return str(excinfo.value)
-
-        for installed in (None, "1.27.0", "not-a-version", FIRST_BREAKING_MAJOR):
-            message = _message_for(installed)
-            assert REMEDY in message, installed
-            assert "motley-slayer" in message, installed
-            assert OBSOLETE_REMEDY not in message, installed
-
-    def test_original_exception_is_chained(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._block_fastmcp(monkeypatch)
-        self._pretend_installed(monkeypatch, FIRST_BREAKING_MAJOR)
-
-        with pytest.raises(ImportError) as excinfo:
-            _import_fastmcp()
-
-        assert isinstance(excinfo.value.__cause__, ImportError)
-
-    def test_create_mcp_server_surfaces_the_actionable_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The helper is actually wired into the factory, not merely defined."""
-        self._block_fastmcp(monkeypatch)
-        self._pretend_installed(monkeypatch, FIRST_BREAKING_MAJOR)
-
-        with pytest.raises(ImportError) as excinfo:
-            create_mcp_server(storage=None, _seed_help=False)  # NOSONAR(S5655) — metadata-only build needs no storage
-
-        assert REMEDY in str(excinfo.value)
-
-
-class _ReadOnlyVersion:
-    """Stands in for a future SDK exposing ``version`` as a read-only property."""
-
-    @property
-    def version(self) -> str:
-        return "read-only"
-
-
-class _ReadOnlyVersionServer:
-    def __init__(self) -> None:
-        self._mcp_server = _ReadOnlyVersion()
-
-
-class _NoLowlevelServer:
-    """A FastMCP-shaped object that exposes no ``_mcp_server`` at all."""
-
-
-class TestServerInfoVersion:
-    """serverInfo.version must be SLayer's version, not the mcp SDK's (FastMCP 1.x otherwise falls back to ``pkg_version("mcp")``)."""
+        monkeypatch.setattr("slayer.mcp.server._pkg_version", _absent if installed is None else lambda _name: installed)
 
     @staticmethod
-    def _server():
-        # storage=None / _seed_help=False is the metadata-only build path — no storage or DB access needed.
-        return create_mcp_server(storage=None, _seed_help=False)  # NOSONAR(S5655) — metadata-only build needs no storage
+    def _block_mcpserver(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(sys.modules, "mcp.server.mcpserver", None)
 
-    def test_lowlevel_server_version_is_slayer_version(self) -> None:
-        assert self._server()._mcp_server.version == slayer.__version__
+    def _message(self, monkeypatch: pytest.MonkeyPatch, *, installed: str | None, block: bool) -> str:
+        self._pretend_installed(monkeypatch, installed)
+        if block:
+            self._block_mcpserver(monkeypatch)
+        with pytest.raises(ImportError) as excinfo:
+            _build()
+        return str(excinfo.value)
 
-    def test_initialization_options_report_slayer_version(self) -> None:
-        options = self._server()._mcp_server.create_initialization_options()
-        assert options.server_version == slayer.__version__
+    def test_builds_on_mcpserver_when_in_range(self) -> None:
+        assert isinstance(_build(), MCPServer)
 
-    def test_server_name_unchanged(self) -> None:
-        options = self._server()._mcp_server.create_initialization_options()
-        assert options.server_name == "SLayer"
+    def test_missing_package_names_the_install_remedy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        message = self._message(monkeypatch, installed=None, block=True)
+        assert "not found" in message.lower()
+        assert REMEDY in message
 
-    def test_read_only_version_degrades_instead_of_crashing(self) -> None:
-        """A future SDK making ``version`` read-only must not break the build."""
-        server = _ReadOnlyVersionServer()
+    def test_1_x_names_installed_version_and_required_range(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        message = self._message(monkeypatch, installed="1.27.0", block=True)
+        assert "1.27.0" in message
+        assert REQUIRED_RANGE in message
 
-        _set_server_version(server)
+    @pytest.mark.parametrize("installed", ["2.2.0", "3.0.0"])
+    def test_out_of_range_names_installed_version_and_required_range(
+        self, monkeypatch: pytest.MonkeyPatch, installed: str,
+    ) -> None:
+        """The module imports, but the version is outside the tested range."""
+        message = self._message(monkeypatch, installed=installed, block=False)
+        assert installed in message
+        assert REQUIRED_RANGE in message
 
-        assert server._mcp_server.version == "read-only"
+    def test_unparseable_version_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        message = self._message(monkeypatch, installed="not-a-version", block=True)
+        assert "not-a-version" in message
+        assert REMEDY in message
 
-    def test_absent_lowlevel_server_degrades_instead_of_crashing(self) -> None:
-        _set_server_version(_NoLowlevelServer())
+    @pytest.mark.parametrize(("installed", "block"), [
+        (None, True), ("1.27.0", True), ("2.2.0", False), ("3.0.0", False), ("not-a-version", True),
+    ])
+    def test_every_branch_offers_the_same_remedy(
+        self, monkeypatch: pytest.MonkeyPatch, installed: str | None, block: bool,
+    ) -> None:
+        message = self._message(monkeypatch, installed=installed, block=block)
+        assert REMEDY in message
+        assert "motley-slayer" in message
+        assert OBSOLETE_REMEDY not in message
+        assert "<2" not in message

@@ -1,0 +1,5104 @@
+{
+  "always_load_query=False": [
+    {
+      "description": "Create a semantic dataset from a database table (sql_table), a SQL query (sql), or a SLayer query (query: the dataset becomes query-backed and its fields come from the result).\n\nHost a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).\n\nExample: create_dataset(name=\"orders\", sql_table=\"public.orders\", data_source=\"mydb\", fields=[{\"name\": \"amount\", \"sql\": \"amount\", \"datatype\": \"Float\"}], metrics=[{\"name\": \"aov\", \"expression\": \"sum(amount) / count(*)\"}])\n\nA custom aggregation named sum_sq is called like a built-in: sum_sq(field). Authoring guide: inspect(reference=\"memory:help.datasets\", entity_type=\"memory\").",
+      "input_schema": {
+        "properties": {
+          "access_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Access groups allowed to see the dataset; omit for public.",
+            "title": "Access Tags"
+          },
+          "aggregations": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Custom aggregations, {\"name\": \"sum_sq\", \"expression\": \"SUM({value} * {value})\", \"params\": [{\"name\": \"weight\", \"sql\": \"quantity\"}], \"description\": ..., \"datatype\": ...}; the expression is SQL with {value} for the aggregated field; datatype (optional) is the result type, else inferred.",
+            "title": "Aggregations"
+          },
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Datasource name (from list_datasources).",
+            "title": "Data Source"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What one row of this dataset represents.",
+            "title": "Description"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Field definitions: {\"name\", \"expression\", \"datatype\"}; expression is SQL over the source columns (a bare name reads a source column, dataset.field a field; unset reads the column named like the field); datatype TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); optional primary_key, unique (single-field uniqueness other than the primary key), allowed_aggregations, filter (a condition masking the field's value inside aggregates), granularity (only for a field truly bucketed at that grain), label, description, hidden, meta.",
+            "title": "Fields"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Saved metrics, {\"name\": \"aov\", \"expression\": \"sum(revenue) / count(*)\"} plus optional label, description, meta; queries reference them by dataset (\"orders.aov\").",
+            "title": "Metrics"
+          },
+          "name": {
+            "description": "Unique dataset name (lowercase, underscores).",
+            "title": "Name",
+            "type": "string"
+          },
+          "query": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A query object or list of stages; makes the dataset query-backed. Excludes sql_table, sql, fields, metrics and aggregations.",
+            "title": "Query"
+          },
+          "semantic_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Add the dataset to this semantic model (an Ossie document of the datasource); omit to store it standalone.",
+            "title": "Semantic Model"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A SQL query as the dataset's source, instead of sql_table.",
+            "title": "Sql"
+          },
+          "sql_table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database table, e.g. \"public.orders\".",
+            "title": "Sql Table"
+          },
+          "variables": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Default values for {var} placeholders in the backing query.",
+            "title": "Variables"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "create_datasetArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_dataset"
+    },
+    {
+      "description": "Create a database connection, verify it, and auto-ingest datasets. Use ${ENV_VAR} in credentials to read environment variables.\n\nExample: create_datasource(name=\"mydb\", type=\"postgres\", host=\"localhost\", port=5432, database=\"app\", username=\"user\", password=\"${DB_PASSWORD}\")",
+      "input_schema": {
+        "$defs": {
+          "CustomGranularity": {
+            "description": "A named granularity: boundaries at ``origin + k \u00d7 multiple \u00d7 base``. Lenient at\nconstruction; ``definition_error`` states the save-time rules.",
+            "properties": {
+              "base": {
+                "title": "Base",
+                "type": "string"
+              },
+              "multiple": {
+                "default": 1,
+                "title": "Multiple",
+                "type": "integer"
+              },
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Origin"
+              }
+            },
+            "required": [
+              "name",
+              "base"
+            ],
+            "title": "CustomGranularity",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "all_schemas": {
+            "default": false,
+            "description": "Ingest every non-system schema; excludes schema_name and schemas.",
+            "title": "All Schemas",
+            "type": "boolean"
+          },
+          "auto_ingest": {
+            "default": true,
+            "description": "Create datasets from the schema (default true).",
+            "title": "Auto Ingest",
+            "type": "boolean"
+          },
+          "connection_string": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Full connection string instead of the individual fields.",
+            "title": "Connection String"
+          },
+          "database": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database name.",
+            "title": "Database"
+          },
+          "granularities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/CustomGranularity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Custom time granularities, each {name, base, multiple, origin}: buckets start at origin + k * multiple * base, e.g. {name: \"fiscal_year\", base: \"year\", origin: \"2000-04-01\"}; usable wherever a built-in granularity is.",
+            "title": "Granularities"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database host (default localhost).",
+            "title": "Host"
+          },
+          "name": {
+            "description": "Unique datasource name.",
+            "title": "Name",
+            "type": "string"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database password; ${ENV_VAR} is resolved.",
+            "title": "Password"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database port, e.g. 5432.",
+            "title": "Port"
+          },
+          "schema_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Default schema, also the single schema auto-ingested.",
+            "title": "Schema Name"
+          },
+          "schemas": {
+            "default": "",
+            "description": "Comma-separated schemas to ingest; excludes schema_name and all_schemas.",
+            "title": "Schemas",
+            "type": "string"
+          },
+          "type": {
+            "description": "Database type: postgres, mysql, sqlite, bigquery, snowflake, ...",
+            "title": "Type",
+            "type": "string"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database user; ${ENV_VAR} is resolved.",
+            "title": "Username"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "create_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_datasource"
+    },
+    {
+      "description": "Create a semantic model: an Ossie document holding datasets, their relationships and model-scoped metrics (metrics a query names bare). Give its Ossie content, or the standalone datasets it takes over (they keep their names).",
+      "input_schema": {
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A whole Ossie 0.3.0.dev0 semantic-model document, as YAML/JSON text or an object.",
+            "title": "Content"
+          },
+          "data_source": {
+            "description": "The datasource it describes (from list_datasources).",
+            "title": "Data Source",
+            "type": "string"
+          },
+          "datasets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Standalone datasets of the datasource to move into the new semantic model, instead of content.",
+            "title": "Datasets"
+          },
+          "name": {
+            "description": "The semantic model's name, unique in its datasource.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "data_source"
+        ],
+        "title": "create_semantic_modelArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_semantic_model"
+    },
+    {
+      "description": "Brief summary of every non-hidden dataset in a datasource.",
+      "input_schema": {
+        "properties": {
+          "compact": {
+            "default": true,
+            "description": "Default true: per dataset its name, description, field count, metric names and relationship targets. False adds the full field and metric tables.",
+            "title": "Compact",
+            "type": "boolean"
+          },
+          "datasource_name": {
+            "description": "Datasource name (from list_datasources).",
+            "title": "Datasource Name",
+            "type": "string"
+          },
+          "format": {
+            "default": "markdown",
+            "description": "\"markdown\" (default) or \"json\".",
+            "title": "Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "datasource_name"
+        ],
+        "title": "datasets_summaryArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "datasets_summary"
+    },
+    {
+      "description": "Delete a semantic dataset.",
+      "input_schema": {
+        "properties": {
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The dataset's datasource; required when the name exists in several datasources.",
+            "title": "Data Source"
+          },
+          "name": {
+            "description": "Dataset to delete.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "delete_datasetArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_dataset"
+    },
+    {
+      "description": "Delete a datasource configuration.",
+      "input_schema": {
+        "properties": {
+          "name": {
+            "description": "Datasource to delete.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "delete_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_datasource"
+    },
+    {
+      "description": "Delete a semantic model together with all its datasets and model-scoped metrics.",
+      "input_schema": {
+        "properties": {
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Its datasource; required when the name exists in several datasources.",
+            "title": "Data Source"
+          },
+          "name": {
+            "description": "Semantic model to delete.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "delete_semantic_modelArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_semantic_model"
+    },
+    {
+      "description": "Show datasource details: connection status, available schemas, and (by default) the tables in the given or default schema.\n\nUse it after create_datasource to verify the connection and see what is queryable before ingest_datasource.",
+      "input_schema": {
+        "properties": {
+          "list_tables": {
+            "default": true,
+            "description": "Also list the tables of schema_name (default true).",
+            "title": "List Tables",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Datasource name (from list_datasources).",
+            "title": "Name",
+            "type": "string"
+          },
+          "schema_name": {
+            "default": "",
+            "description": "Schema whose tables to list, e.g. \"public\"; empty is the default schema.",
+            "title": "Schema Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "describe_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "describe_datasource"
+    },
+    {
+      "description": "Edit an existing dataset in one call: metadata, upserts of fields / metrics / aggregations / relationships (by name; only the given keys change), dataset filters, and removals (applied first). A dataset of a semantic model is edited in place in its document.\n\nHost a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).\n\nExample: edit_dataset(dataset_name=\"orders\", fields=[{\"name\": \"status\", \"datatype\": \"String\"}], metrics=[{\"name\": \"aov\", \"expression\": \"sum(revenue) / count(*)\"}], remove={\"metrics\": [\"old_metric\"]})",
+      "input_schema": {
+        "properties": {
+          "access_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Replace the access groups allowed to see the dataset; [] makes it public.",
+            "title": "Access Tags"
+          },
+          "add_filters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL conditions always applied to the dataset, e.g. [\"deleted_at IS NULL\"].",
+            "title": "Add Filters"
+          },
+          "aggregations": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Custom aggregations to upsert by name, {\"name\", \"expression\" (SQL with {value} and {param} placeholders), \"params\": [{\"name\", \"sql\"}], \"description\", \"datatype\" (result type; omitted: inferred), \"meta\"}.",
+            "title": "Aggregations"
+          },
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The dataset's datasource; required when the name exists in several datasources.",
+            "title": "Data Source"
+          },
+          "dataset_name": {
+            "description": "Dataset to edit.",
+            "title": "Dataset Name",
+            "type": "string"
+          },
+          "default_time_dimension": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A date/time field: the default time axis for transforms.",
+            "title": "Default Time Dimension"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "New dataset description.",
+            "title": "Description"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fields to upsert by name; only the given keys change. {\"name\", \"datatype\", \"element_type\", \"expression\", \"description\", \"primary_key\", \"unique\", \"hidden\", \"allowed_aggregations\", \"filter\", \"label\", \"granularity\"}; datatype TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); unique marks single-field uniqueness other than the primary key (used for relationship cardinality); set granularity only for a field truly bucketed at that grain (null clears it).",
+            "title": "Fields"
+          },
+          "hidden": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Hide the dataset from discovery (still queryable).",
+            "title": "Hidden"
+          },
+          "meta": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "JSON metadata replacing the dataset's meta; null clears it.",
+            "title": "Meta"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Saved metrics to upsert by name, {\"name\": \"aov\", \"expression\": \"sum(revenue) / count(*)\"} plus optional label, description, meta; queries use them by dataset (orders.aov).",
+            "title": "Metrics"
+          },
+          "new_data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Move the dataset to another datasource (rare).",
+            "title": "New Data Source"
+          },
+          "query_variables": {
+            "description": "Replace the backing query's default {var} values; null clears them.",
+            "title": "Query Variables"
+          },
+          "relationships": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Relationships to upsert, {\"to\": \"customers\", \"from_columns\": [\"customer_id\"], \"to_columns\": [\"id\"], \"name\", \"cardinality\": \"many_to_one\", \"description\", \"meta\"}, matched by name, else target and key fields, else the sole relationship to the target; a second relationship to a target needs a name. Keys name fields by name; a composite key lists several fields on each side, in pair order. cardinality (one_to_one / one_to_many / many_to_one / many_to_many, read source->target) is descriptive only; omit it when unknown.",
+            "title": "Relationships"
+          },
+          "remove": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Entities to delete before the upserts: {\"fields\": [...], \"metrics\": [...], \"aggregations\": [...], \"relationships\": [target dataset or edge name, ...], \"relationship_edges\": [{\"to\", \"name\", \"from_columns\", \"to_columns\"}, ...]}.",
+            "title": "Remove"
+          },
+          "remove_filters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dataset filters to remove (exact text).",
+            "title": "Remove Filters"
+          },
+          "source_queries": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Replace the backing query with these stages (all but the last carry a name); makes the dataset query-backed, clears sql_table and sql, and refreshes the cached fields.",
+            "title": "Source Queries"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL query as the source; clears sql_table and source_queries.",
+            "title": "Sql"
+          },
+          "sql_table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database table; clears sql and source_queries.",
+            "title": "Sql Table"
+          }
+        },
+        "required": [
+          "dataset_name"
+        ],
+        "title": "edit_datasetArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "edit_dataset"
+    },
+    {
+      "description": "Update a datasource's metadata.",
+      "input_schema": {
+        "$defs": {
+          "CustomGranularity": {
+            "description": "A named granularity: boundaries at ``origin + k \u00d7 multiple \u00d7 base``. Lenient at\nconstruction; ``definition_error`` states the save-time rules.",
+            "properties": {
+              "base": {
+                "title": "Base",
+                "type": "string"
+              },
+              "multiple": {
+                "default": 1,
+                "title": "Multiple",
+                "type": "integer"
+              },
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Origin"
+              }
+            },
+            "required": [
+              "name",
+              "base"
+            ],
+            "title": "CustomGranularity",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "New datasource description.",
+            "title": "Description"
+          },
+          "granularities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/CustomGranularity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Replace the custom time granularities, each {name, base, multiple, origin}: buckets start at origin + k * multiple * base.",
+            "title": "Granularities"
+          },
+          "name": {
+            "description": "Datasource to update.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "edit_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "edit_datasource"
+    },
+    {
+      "description": "Edit a semantic model in place: its description and AI context, its model-scoped metrics and relationships, and standalone datasets moved into it. Edit its datasets with edit_dataset.",
+      "input_schema": {
+        "properties": {
+          "add_datasets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Standalone datasets of the datasource to move into the semantic model.",
+            "title": "Add Datasets"
+          },
+          "ai_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "New AI context: instructions text, or {instructions, synonyms, examples}.",
+            "title": "Ai Context"
+          },
+          "data_source": {
+            "description": "Its datasource.",
+            "title": "Data Source",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "New description of the semantic model.",
+            "title": "Description"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model-scoped metrics to add or replace, {\"name\", \"expression\", \"description\", \"ai_context\"}; the expression reads like a query: qualified fields inside aggregates, AGG(dataset.metric), other model-scoped metrics by bare name.",
+            "title": "Metrics"
+          },
+          "name": {
+            "description": "Semantic model to edit.",
+            "title": "Name",
+            "type": "string"
+          },
+          "relationships": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Relationships to add or replace, {\"name\", \"from\", \"to\", \"from_columns\", \"to_columns\"} (many-to-one from \"from\").",
+            "title": "Relationships"
+          },
+          "remove_metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model-scoped metrics to remove.",
+            "title": "Remove Metrics"
+          },
+          "remove_relationships": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Relationships to remove, by name.",
+            "title": "Remove Relationships"
+          }
+        },
+        "required": [
+          "name",
+          "data_source"
+        ],
+        "title": "edit_semantic_modelArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "edit_semantic_model"
+    },
+    {
+      "description": "Delete a memory by id; other memories' memory:<id> links to it are removed.",
+      "input_schema": {
+        "properties": {
+          "id": {
+            "description": "The memory_id returned by save_memory (a legacy int is accepted).",
+            "title": "Id"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "forget_memoryArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "forget_memory"
+    },
+    {
+      "description": "Return the datasource priority list (most preferred first), or [] when none is set.",
+      "input_schema": {
+        "properties": {},
+        "title": "get_datasource_priorityArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_datasource_priority"
+    },
+    {
+      "description": "Discover a database's tables and create or additively update datasets from them.\n\nIdempotent and additive: new fields and relationships are appended; existing definitions are never overwritten. Also returns the pending validate_datasets deletes.",
+      "input_schema": {
+        "properties": {
+          "all_schemas": {
+            "default": false,
+            "description": "Every non-system schema; excludes schema_name and schemas.",
+            "title": "All Schemas",
+            "type": "boolean"
+          },
+          "datasource_name": {
+            "description": "An existing datasource (from list_datasources).",
+            "title": "Datasource Name",
+            "type": "string"
+          },
+          "include_tables": {
+            "default": "",
+            "description": "Comma-separated tables to ingest; empty for all.",
+            "title": "Include Tables",
+            "type": "string"
+          },
+          "schema_name": {
+            "default": "",
+            "description": "One schema, e.g. \"public\"; empty is the default schema.",
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "schemas": {
+            "default": "",
+            "description": "Comma-separated schemas; excludes schema_name and all_schemas.",
+            "title": "Schemas",
+            "type": "string"
+          }
+        },
+        "required": [
+          "datasource_name"
+        ],
+        "title": "ingest_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "ingest_datasource"
+    },
+    {
+      "description": "Inspect one entity by reference and kind, a batch when `reference` is a list, or a whole collection when `reference` is omitted. A point lookup: use `search` to find entities by meaning, with related memories.\n\nBefore using a field as a filter, projection, group-by or relationship key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a field by its name alone.\n\nCollection: omit `reference` with entity_type \"dataset\" (every dataset, grouped by datasource) or \"datasource\".\nBatch: a list of same-kind references returns one block per id in input order (a JSON array in json); a bad id does not sink the batch.\nHelp: reference \"memory:help.intro\" (entity_type \"memory\") for the overview; batch several help topics in one call.",
+      "input_schema": {
+        "properties": {
+          "compact": {
+            "default": true,
+            "description": "Default true: the description only for field / metric / aggregation / datasource / memory (never shortens a help.* topic), a schema skeleton without database calls for a dataset. False: the full render.",
+            "title": "Compact",
+            "type": "boolean"
+          },
+          "descriptions_max_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Truncate every description, and a memory's body, to this many characters.",
+            "title": "Descriptions Max Chars"
+          },
+          "entity_type": {
+            "description": "Required: datasource, dataset, field, metric, aggregation, memory or semantic_model. Asserts the resolved kind and disambiguates a name shared by, e.g., a field and an aggregation.",
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "format": {
+            "default": "markdown",
+            "description": "\"markdown\" (default) or \"json\".",
+            "title": "Format",
+            "type": "string"
+          },
+          "num_rows": {
+            "default": 3,
+            "description": "Sample rows for a dataset; ignored for other kinds.",
+            "title": "Num Rows",
+            "type": "integer"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "One reference, a list of same-kind references (batch), or omitted for the collection. Canonical (mydb, mydb.orders, mydb.orders.amount), a bare name, a relationship path (orders.customers.region), or memory:<id>.",
+            "title": "Reference"
+          },
+          "sections": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dataset sections to render: fields, metrics, aggregations, relationships, samples, learnings, saved_queries; default all. Ignored for other kinds.",
+            "title": "Sections"
+          },
+          "show_sql": {
+            "default": false,
+            "description": "Include generated SQL for a dataset; ignored for other kinds.",
+            "title": "Show Sql",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "entity_type"
+        ],
+        "title": "inspectArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "inspect"
+    },
+    {
+      "description": "List all configured database connections (names and types only, credentials are not shown). Use describe_datasource for connection details and status.",
+      "input_schema": {
+        "properties": {},
+        "title": "list_datasourcesArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_datasources"
+    },
+    {
+      "description": "ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Describe the result you want (metrics, dimensions, filters, order) and SLayer writes the SQL, including the joins. A single query can:\n- put several grains on one row: a group's share of its total or of the grand total, the region total next to each city;\n- rank, keep the top N per group, and sort by values it does not display;\n- compute period-over-period changes and trailing windows (90 days, 3 months), which look back before date_range by themselves, and running totals;\n- aggregate fields of joined datasets over their own rows, without double counting;\n- nest aggregates (the average of per-city totals) and chain stages.\n\nThe syntax is in the descriptions of the query object's fields: metrics, filter, order, time_dimensions[].date_range, population and dimensions. Full reference: inspect(reference=[\"memory:help.aggregations\", \"memory:help.transforms\", \"memory:help.time\", \"memory:help.relationships\", \"memory:help.queries\"], entity_type=\"memory\").\n\n`query` is a query object, a list of them (stages: all but the last carry a name; later stages use earlier ones as population), or a saved query-backed dataset's name (optionally with `refine`).\n\nFirst inspect the dataset and search for saved learnings. Then run the final query and check the row count, each aggregate's scope, NULLs and the sort. Without a `limit`, responses stop at 20 rows.",
+      "input_schema": {
+        "$defs": {
+          "DataType": {
+            "enum": [
+              "String",
+              "Integer",
+              "Decimal",
+              "Float",
+              "Boolean",
+              "Date",
+              "Time",
+              "DateTime",
+              "DateTimeTz",
+              "Opaque",
+              "Array"
+            ],
+            "title": "DataType",
+            "type": "string"
+          },
+          "DatasetExtension": {
+            "additionalProperties": false,
+            "description": "Query-scoped metrics and relationships added to one dataset a query object reads.",
+            "properties": {
+              "dataset": {
+                "title": "Dataset",
+                "type": "string"
+              },
+              "metrics": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/DatasetMetric"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Metrics"
+              },
+              "relationships": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/DatasetRelationship"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Relationships"
+              }
+            },
+            "required": [
+              "dataset"
+            ],
+            "title": "DatasetExtension",
+            "type": "object"
+          },
+          "DatasetMetric": {
+            "description": "A named aggregation expression saved on a dataset (or a query extension) and referenced by bare name.",
+            "properties": {
+              "datatype": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DataType"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "expression": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "$ref": "#/$defs/ExpressionObject"
+                  }
+                ],
+                "description": "Same syntax as the query object's metrics, as a string or {sql, dialects}; only sql (or an OSSIE_SQL_2026 entry) is evaluated. source.x reads the dataset's source column.",
+                "title": "Expression"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Label"
+              },
+              "load_warning": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Load Warning"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Meta"
+              },
+              "name": {
+                "description": "The metric's name; queries, filters and order reference it.",
+                "title": "Name",
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "name"
+            ],
+            "title": "DatasetMetric",
+            "type": "object"
+          },
+          "DatasetRelationship": {
+            "description": "A relationship to another dataset.",
+            "properties": {
+              "cardinality": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RelationshipCardinality"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "from_columns": {
+                "description": "This dataset's key fields, in pair order with to_columns.",
+                "items": {
+                  "type": "string"
+                },
+                "title": "From Columns",
+                "type": "array"
+              },
+              "join_type": {
+                "$ref": "#/$defs/JoinType",
+                "default": "left"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Meta"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Name"
+              },
+              "to": {
+                "title": "To",
+                "type": "string"
+              },
+              "to_columns": {
+                "description": "The joined dataset's key fields, in pair order with from_columns.",
+                "items": {
+                  "type": "string"
+                },
+                "title": "To Columns",
+                "type": "array"
+              }
+            },
+            "required": [
+              "to",
+              "from_columns",
+              "to_columns"
+            ],
+            "title": "DatasetRelationship",
+            "type": "object"
+          },
+          "DialectEntry": {
+            "additionalProperties": false,
+            "description": "One dialect's text of an expression.",
+            "properties": {
+              "dialect": {
+                "title": "Dialect",
+                "type": "string"
+              },
+              "expression": {
+                "title": "Expression",
+                "type": "string"
+              }
+            },
+            "required": [
+              "dialect",
+              "expression"
+            ],
+            "title": "DialectEntry",
+            "type": "object"
+          },
+          "ExpressionObject": {
+            "additionalProperties": false,
+            "description": "Ossie's expression: portable ``sql``, per-dialect ``dialects`` entries, or both.",
+            "properties": {
+              "dialects": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/DialectEntry"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Dialects"
+              },
+              "sql": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Sql"
+              }
+            },
+            "title": "ExpressionObject",
+            "type": "object"
+          },
+          "JoinType": {
+            "enum": [
+              "left",
+              "inner"
+            ],
+            "title": "JoinType",
+            "type": "string"
+          },
+          "OrderItem": {
+            "additionalProperties": false,
+            "description": "A sort key.",
+            "properties": {
+              "direction": {
+                "default": "asc",
+                "title": "Direction",
+                "type": "string"
+              },
+              "field": {
+                "description": "A result column name, a field reference, or an aggregate or transform expression.",
+                "title": "Field",
+                "type": "string"
+              },
+              "nulls": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "first",
+                      "last"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Nulls"
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "title": "OrderItem",
+            "type": "object"
+          },
+          "QueryDimension": {
+            "additionalProperties": false,
+            "description": "A group-by: a field reference or a row-level expression, with an optional result ``alias`` and ``label``.",
+            "properties": {
+              "alias": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The result key; defaults to the field's.",
+                "title": "Alias"
+              },
+              "field": {
+                "description": "A field reference (a name or dotted relationship path) or a row-level expression.",
+                "title": "Field",
+                "type": "string"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Label"
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "title": "QueryDimension",
+            "type": "object"
+          },
+          "QueryMetric": {
+            "additionalProperties": false,
+            "description": "A query metric entry: a saved metric's reference or an aggregate expression, with an optional result ``alias``.",
+            "properties": {
+              "alias": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Result key; filters and order may use it in place of the metric.",
+                "title": "Alias"
+              },
+              "datatype": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DataType"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Label"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Meta"
+              },
+              "metric": {
+                "description": "A saved metric's reference or an aggregate expression.",
+                "title": "Metric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "metric"
+            ],
+            "title": "QueryMetric",
+            "type": "object"
+          },
+          "QueryRefinement": {
+            "additionalProperties": false,
+            "description": "Clauses merged into a saved query's final stage when it runs by name.",
+            "properties": {
+              "dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/QueryDimension"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's dimensions.",
+                "title": "Dimensions"
+              },
+              "distinct_dimension_values": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's distinct_dimension_values.",
+                "title": "Distinct Dimension Values"
+              },
+              "filter": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's filter.",
+                "title": "Filter"
+              },
+              "limit": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's limit.",
+                "title": "Limit"
+              },
+              "main_time_dimension": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's main_time_dimension.",
+                "title": "Main Time Dimension"
+              },
+              "metrics": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/QueryMetric"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's metrics.",
+                "title": "Metrics"
+              },
+              "offset": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's offset.",
+                "title": "Offset"
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/OrderItem"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's order.",
+                "title": "Order"
+              },
+              "time_dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/TimeDimension"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's time_dimensions.",
+                "title": "Time Dimensions"
+              },
+              "to_many_handling": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "associate",
+                      "error"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's to_many_handling.",
+                "title": "To Many Handling"
+              },
+              "whole_periods_only": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's whole_periods_only.",
+                "title": "Whole Periods Only"
+              }
+            },
+            "title": "QueryRefinement",
+            "type": "object"
+          },
+          "RelationshipCardinality": {
+            "description": "Arity of a relationship, read source->target (\"many orders -> one customer\").\n\nDescriptive metadata, orthogonal to ``JoinType`` \u2014 it does not change the\nemitted join.",
+            "enum": [
+              "one_to_one",
+              "one_to_many",
+              "many_to_one",
+              "many_to_many"
+            ],
+            "title": "RelationshipCardinality",
+            "type": "string"
+          },
+          "SlayerQuery": {
+            "additionalProperties": false,
+            "description": "User-facing query object \u2014 what to retrieve from a dataset, as names/references, no SQL.",
+            "properties": {
+              "dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/QueryDimension"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Group-by fields, one result row per distinct combination: fields named by their dataset (orders.status), a route from it (customers.regions.name), row-level expressions, or {\"field\": ..., \"alias\": ...}. date_trunc('<unit>', expr) buckets a timestamp like a time_dimensions entry: date_trunc('month', orders.created_at); units are second, minute, hour, day, week, week_sunday, month, quarter, year, or the datasource's custom ones, while month(orders.created_at) is the month of year (an integer). An aggregate inside a computed dimension needs partition_by= to fix its grain: {\"field\": \"iif(sum(orders.amount, partition_by=customers.id) > 150, 'high', 'low')\", \"alias\": \"spend_band\"}. Group by naturally readable labels: a name (customers.regions.name), never by an id alone unless ids are asked for; when a name may repeat (people, products), by the id and the name.",
+                "title": "Dimensions"
+              },
+              "distinct_dimension_values": {
+                "default": true,
+                "description": "Default true: dimension-only queries return distinct dimension combinations (GROUP BY the projected dimensions). Set false for raw per-record rows \u2014 requires empty `metrics` and no metric reference in `filter`/`order`. For rows plus a count, keep the default and add `count(<dataset>.*)`.",
+                "title": "Distinct Dimension Values",
+                "type": "boolean"
+              },
+              "extensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/DatasetExtension"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Query-scoped metrics and relationships added to any dataset this query object reads (its population, a joined dataset, or a stage), at most one entry per dataset, visible only in this query object. A relationship repeating a stored relationship, in either direction, is that edge, and its name is a local alias. An `inner` relationship keeps only the rows with a match; it never multiplies rows. Rooted at orders: [{\"dataset\": \"customers\", \"metrics\": [{\"name\": \"credit_total\", \"expression\": \"sum(credit)\"}], \"relationships\": [{\"to\": \"vip_list\", \"from_columns\": [\"id\"], \"to_columns\": [\"customer_id\"], \"join_type\": \"inner\"}]}] adds customers.credit_total and keeps only the orders of customers on the vip list.",
+                "title": "Extensions"
+              },
+              "filter": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "A condition, or a list of conditions AND-ed; each routes automatically to row filtering (WHERE), aggregate filtering (HAVING) or filtering after transforms. SQL operators: = <> < <= > >=, in, between, like / ilike, is null / is not null, IS [NOT] TRUE / FALSE (NULL counts as not true), IS DISTINCT FROM / IS NOT DISTINCT FROM (NULL-safe =), and / or / not, CAST(x AS DATE), regex x ~ '^A[0-9]{3}', JSON payload ->> 'key'; strings are single-quoted ('paid'); build them from the field's sampled values.\n- Aggregates and transforms filter too, by expression or by a metric's name: sum(orders.amount) > 100; top N per group: rank(sum(orders.amount), partition_by=customers.regions.name, direction='desc') <= 1.\n- Anti-join: rooted at customers, orders.id is null keeps the customers without orders.\n- A list tags: contains(tags, 'x') or tags.value = 'x'; contains_any(tags, ['x', 'y']) shares an element, contains_all(tags, ['x', 'y']) holds every one.\n- Time points: a string compared with a date/time field is a half-open period: '2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), or relative: 'today', 'last month', 'last 7 days' (excludes the current day), 'year to date'. order_date >= '2025-Q1' starts at the period, <= ends with it, order_date in '2025-Q1' is inside it. A date '2025-03-01' is its midnight; created_at in '2025-03-01' is the whole day.\n- {variable} placeholders take literal values from variables.\nMore: inspect(reference=[\"memory:help.time\", \"memory:help.relationships\"], entity_type=\"memory\").",
+                "title": "Filter"
+              },
+              "limit": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Max rows to return: the top N, or a limit covering a list longer than the 20 rows an uncapped MCP response returns (with a notice). Never use it to cut a list asked for in full.",
+                "title": "Limit"
+              },
+              "main_time_dimension": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Name (or field) of the time dimension that time-ordered transforms (change, lag, ...) key off; overrides auto-detection when the query has multiple time dimensions.",
+                "title": "Main Time Dimension"
+              },
+              "metrics": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/QueryMetric"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Values to return: expression strings or {\"metric\": ..., \"alias\": ...} (alias sets the result key). Every field, metric and row count names its dataset first: orders.amount, orders.revenue (a saved metric), count(orders.*); a bare name is an alias of this query, else a model-scoped metric of a semantic model. AGG(orders.revenue) evaluates the dataset metric. The engine joins the datasets. Expressions combine aggregations with arithmetic, also across datasets: rooted at customers, sum(orders.amount) / count(customers.*) divides the orders' total by the number of customers.\n- Aggregations: count(orders.*), sum(orders.amount), count_distinct(orders.customer_id), avg(orders.amount - orders.cost), percentile(orders.amount, p=0.9).\n- agg(x) FILTER (WHERE c) aggregates only the rows where c holds: count(orders.*) FILTER (WHERE orders.status = 'paid').\n- partition_by= computes an aggregate at a coarser grain, repeated on every row; spell its keys exactly like the query's dimensions. Share of group: sum(orders.amount) / sum(orders.amount, partition_by=customers.regions.name); share of the grand total: sum(orders.amount) / sum(orders.amount, partition_by=[]).\n- window= turns any aggregation into a trailing time window ending at each time bucket, in compact durations only ('90d', '3m', '1y'; never '3 months'): count_distinct(orders.customer_id, window='90d').\n- Nesting aggregates per-group values: avg(sum(orders.amount, partition_by=[customers.regions.name, customers.id]), partition_by=[customers.regions.name]) averages the per-customer totals in each region.\n- Transforms wrap an aggregate; all but the rank family need a time dimension: cumsum(sum(orders.amount)) running total; change(sum(orders.amount)) / change_pct(sum(orders.amount)) period-over-period delta / ratio; time_shift(sum(orders.amount), -1) the previous bucket's value ('year' as a third argument for year-over-year); lag(x, n) / lead(x, n) n rows back / ahead; rank(x, direction='desc') / dense_rank(x, direction='asc') with direction required and partition_by= to rank within groups; ntile(x, n=4) buckets, lowest first; consecutive_periods(sum(orders.amount) > 0) trailing run length.\n- A joined dataset's aggregate such as sum(customers.credit) from orders is computed over that dataset's own rows, each customer once. Sliced by a dimension it cannot be attributed to (an order's status), each group aggregates the distinct customers reaching it, with an associated warning (groups may overlap); sum(customers.credit, partition_by=[]) repeats the total on every group instead. Rooted at customers, sum(orders.amount) and sum(returns.amount) in one query are each computed over their own rows: several child datasets never fan out or double count. A child row without a parent (an order with no customer) has NULL parent fields: it counts in the NULL row of a parent dimension when that row exists, and in an ungrouped total; never add it again. An aggregate over a dataset no relationship path reaches from the root is computed over that dataset's own rows and repeated on every row (per bucket of a time_spine time dimension), with an unrelated_dataset warning: rooted at customers, count(events.id) / count(customers.*).\nMore (every aggregation, empty-input values, nesting and transform rules): inspect(reference=[\"memory:help.aggregations\", \"memory:help.transforms\"], entity_type=\"memory\").",
+                "title": "Metrics"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Stage name. In a list of query objects every entry but the last carries a name, and later stages use it as their population. A STAGE IS NOT NEEDED for top N per group (filter on `rank(...)` in the same stage), for averaging or bucketing per-entity totals (a nested aggregate, or a computed dimension with `partition_by`), or for shares and totals (`partition_by`). A filter on a transform's value (`rank(...) <= 3`, `cumsum(...) > 100`) applies after it, which is computed over every row the other filters keep. Stages ARE needed only to drop rows by a dimension or time condition that a cross-row value must still see, or to join or reuse a whole result: a row filter or date_range applies before a running total, lag / lead, rank, ntile, consecutive_periods or `partition_by` total (change, change_pct, time_shift and window= still read past date_range or a filter on their own time dimension, but not past other filters). Compute the value in an inner stage and filter in the outer one. An outer stage sees the inner result's columns with dotted paths flattened to __: an inner dimension customers.regions.name is customers__regions__name outside; a metric keeps its name. More: inspect(reference=[\"memory:help.queries\"], entity_type=\"memory\").",
+                "title": "Name"
+              },
+              "offset": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Rows to skip.",
+                "title": "Offset"
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/OrderItem"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Sort keys, [{\"field\": ..., \"direction\": \"asc\" | \"desc\", \"nulls\": \"first\" | \"last\"}] (nulls optional). field is a result column name or any aggregate or transform expression, displayed or not: with metrics [\"count(orders.*)\"], [{\"field\": \"sum(orders.amount)\", \"direction\": \"desc\"}] sorts by an amount it does not return. Add limit for the top N. Return only the columns the question asks for: never add the sort value to metrics just to sort by it.",
+                "title": "Order"
+              },
+              "population": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The population: the rows the result lists. When the question asks for every X (each region, zero included), root at X so rows without facts appear: rooted at regions, the metrics count(customers.orders.id) and {\"metric\": \"sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))\", \"alias\": \"orders_2025\"} list every region, including those without orders (a count over no rows is 0, any other aggregate NULL). Always alias a conditional aggregate. Otherwise root where the facts are (rows without facts then drop out), or omit to infer the rows: every dimension combination some metric's rows reach (the dimension values alone with no metrics, one row with no dimensions), reported in the response. A saved dataset or stage name. Write a per-query field as an expression in the position that uses it (a dimension, a filter, an aggregation's argument).",
+                "title": "Population"
+              },
+              "population_inferred": {
+                "default": false,
+                "description": "Set by saving; keeps the rows inferred while `population` pins the anchor.",
+                "title": "Population Inferred",
+                "type": "boolean"
+              },
+              "time_dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/TimeDimension"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Time-bucketed group-bys \u2014 one result row per bucket. Each entry is a TimeDimension dict or the string date_trunc('<unit>', expr), e.g. \"date_trunc('month', orders.created_at)\"; the field may be any date or time expression, with an optional alias. Buckets without rows are absent. To return every bucket, empty ones included, bucket time_spine.timestamp with a lower date_range bound and aggregate datasets by dotted path: {\"field\": \"time_spine.timestamp\", \"granularity\": \"month\", \"date_range\": \"2025\"} with sum(orders.amount) returns all twelve months. It also lines several datasets up on one time axis.",
+                "title": "Time Dimensions"
+              },
+              "to_many_handling": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "associate",
+                      "error"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "What happens when an aggregation is sliced by a dimension not attributable to it. Omitted (default) or associate: aggregate per cell over the distinct associated rows, e.g. per list element tags.value | error (refuse). To repeat a value across the cells, give the aggregate partition_by= with the dimensions it is attributable to.",
+                "title": "To Many Handling"
+              },
+              "variables": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "{placeholder} values scoped to this query object / stage; the tool-level variables argument overrides. A placeholder binds a literal value only: its text inside quotes ('{s}'), a number, numeric string or boolean in a bare slot, a list as the whole right-hand side of IN (items.status in ({statuses}); over a list field, one list: items.tags in ({wanted})) or as a list literal anywhere else (items.tags = {wanted}, a list-function argument). A placeholder in a name position is an error.",
+                "title": "Variables"
+              },
+              "version": {
+                "default": 18,
+                "title": "Version",
+                "type": "integer"
+              },
+              "whole_periods_only": {
+                "default": false,
+                "description": "Snap date filters to whole time buckets and drop the current incomplete bucket.",
+                "title": "Whole Periods Only",
+                "type": "boolean"
+              }
+            },
+            "title": "SlayerQuery",
+            "type": "object"
+          },
+          "TimeDimension": {
+            "additionalProperties": false,
+            "description": "A time-bucketed group-by: ``field`` truncated to ``granularity``.",
+            "properties": {
+              "alias": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The result key; defaults to the field's.",
+                "title": "Alias"
+              },
+              "date_range": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The buckets to return: one period (\"2025\", \"2025-Q1\", \"last month\") or [lower, upper] with either bound null (one-sided); a bound may be a {var} placeholder, written unquoted (\"{start}\"). change, change_pct, time_shift and window= aggregates read rows before the range (a forward time_shift, after it) by themselves, so each month of 2025 with its change vs the previous month is just \"2025\": never widen the range and drop rows afterwards. cumsum starts at the range start.",
+                "title": "Date Range"
+              },
+              "field": {
+                "title": "Field",
+                "type": "string"
+              },
+              "granularity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TimeGranularity"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "description": "A built-in granularity, or a custom granularity defined on the query's datasource.",
+                "title": "Granularity"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Label"
+              }
+            },
+            "required": [
+              "field",
+              "granularity"
+            ],
+            "title": "TimeDimension",
+            "type": "object"
+          },
+          "TimeGranularity": {
+            "enum": [
+              "second",
+              "minute",
+              "hour",
+              "day",
+              "week",
+              "week_sunday",
+              "month",
+              "quarter",
+              "year"
+            ],
+            "title": "TimeGranularity",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "conformance": {
+            "default": "slayer",
+            "description": "\"slayer\" (default) or \"ossie-l3\": accept only Ossie Layer 3 queries, refusing others with Ossie's error codes, and name columns by Ossie's output names.",
+            "enum": [
+              "slayer",
+              "ossie-l3"
+            ],
+            "title": "Conformance",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": false,
+            "description": "Return the generated SQL without executing it.",
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "explain": {
+            "default": false,
+            "description": "Run the database's EXPLAIN and return the query plan.",
+            "title": "Explain",
+            "type": "boolean"
+          },
+          "format": {
+            "default": "markdown",
+            "description": "\"markdown\" (default), \"json\" or \"csv\".",
+            "title": "Format",
+            "type": "string"
+          },
+          "query": {
+            "description": "A query object, a list of query objects (stages), or a saved query-backed dataset's name.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/SlayerQuery"
+              },
+              {
+                "items": {
+                  "$ref": "#/$defs/SlayerQuery"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Query"
+          },
+          "refine": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/QueryRefinement"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Saved-dataset-name form only: clauses merged into the saved query's final stage."
+          },
+          "show_sql": {
+            "default": false,
+            "description": "Include the generated SQL in the response.",
+            "title": "Show Sql",
+            "type": "boolean"
+          },
+          "variables": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Values for {placeholder}s in conditions, expressions, date_range bounds and dataset SQL; override a stage's own variables, an outer query's variables and the saved dataset's defaults.",
+            "title": "Variables"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "queryArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "query"
+    },
+    {
+      "description": "Recommend the population (a query's root dataset) for a set of dataset.field / metric items, with each item's reference path from that root, ready to drop into the query (a joined field comes back as customers.regions.name, a root-owned one as status; aggregations are kept).\n\nThe root is the dataset from which every item is reachable with the fewest relationship hops. With at least one field item, an aggregated item on a dataset with no relationship path to the root does not block it: its path is flagged unrelated (aggregated over that dataset's own rows). When none reaches everything, population is null and coverage lists the best partial roots for a multi-stage query.\n\nCall it once the item list is final; explore with search / inspect first.",
+      "input_schema": {
+        "properties": {
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Datasource scope; omitted, names resolve via the datasource priority list.",
+            "title": "Data Source"
+          },
+          "format": {
+            "default": "markdown",
+            "description": "\"markdown\" (default) or \"json\".",
+            "title": "Format",
+            "type": "string"
+          },
+          "items": {
+            "description": "Entity references: orders.revenue, customers.name, sum(orders.revenue), a saved metric's bare name, ...",
+            "items": {
+              "type": "string"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "root_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Intended root (dataset or <data_source>.<dataset>); honoured when it reaches every item, else the automatic pick is used with a warning.",
+            "title": "Root Hint"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "recommend_populationArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "recommend_population"
+    },
+    {
+      "description": "Save an agent memory: a free-form note plus the SLayer entities it concerns.\n\nWith a list of entity references the memory appears among search's memories; with a query object it appears among search's example queries. Returns the memory_id, the canonical entities stored and any warnings. Deleting a dataset, datasource or metric strips references to it from every memory; the note itself is kept.\n\nExamples:\nsave_memory(learning=\"orders.is_returned in {0,1,NULL}; treat NULL as not returned\", linked_entities=[\"orders.is_returned\"])\nsave_memory(learning=\"Paid revenue by status\", linked_entities={\"population\": \"orders\", \"metrics\": [\"sum(orders.amount)\"], \"filter\": \"orders.status = 'paid'\"}, id=\"kb.paid-revenue\")",
+      "input_schema": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "One-line preview (at most 500 chars) shown by search and compact inspect.",
+            "title": "Description"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stable memory id such as \"kb.policy.42\" (no : / ? # or whitespace); an existing id is overwritten. Omit to allocate one.",
+            "title": "Id"
+          },
+          "learning": {
+            "description": "The note text; required, non-empty.",
+            "title": "Learning",
+            "type": "string"
+          },
+          "linked_entities": {
+            "description": "A list of entity references (resolved to <datasource>.<dataset>[.<leaf>]; memory:<id> links another memory), or a query object whose entities are extracted and which is stored as an example query.",
+            "title": "Linked Entities"
+          }
+        },
+        "required": [
+          "learning",
+          "linked_entities"
+        ],
+        "title": "save_memoryArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "save_memory"
+    },
+    {
+      "description": "Search saved memories, example queries and entities (datasets, fields, metrics, ...) by entity overlap and by meaning.\n\nCall it before `query` to surface notes and example queries saved against the entities you plan to use. Discovery, not detail: hits are one-line descriptions; read the ones you need with `inspect`, batching same-kind ids in one call.\n\nHits from all channels are fused into one ranked list. With no input it returns the newest memories, with a warning.",
+      "input_schema": {
+        "properties": {
+          "compact": {
+            "default": true,
+            "description": "Default true: one-line hits. False returns full renders; avoid it for broad searches.",
+            "title": "Compact",
+            "type": "boolean"
+          },
+          "cypher_filter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "openCypher MATCH ... RETURN <node>.id AS id pre-filtering hits to the returned ids, e.g. MATCH (n:DatasetField) RETURN n.id AS id to spend max_results on fields only. Labels: Memory, Datasource, Dataset, DatasetField, Metric, Aggregation; without the advanced_search extra only such label filters work.",
+            "title": "Cypher Filter"
+          },
+          "datasource": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict every hit to this datasource.",
+            "title": "Datasource"
+          },
+          "entities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Entity references; ranks memories tagged with overlapping entities.",
+            "title": "Entities"
+          },
+          "max_results": {
+            "default": 10,
+            "description": "Maximum hits returned (default 10).",
+            "title": "Max Results",
+            "type": "integer"
+          },
+          "query": {
+            "default": null,
+            "description": "A query object whose entities are extracted and searched like entities.",
+            "title": "Query"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Free text, matched by full text (and by embeddings when configured) over memories and entities.",
+            "title": "Question"
+          }
+        },
+        "title": "searchArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "search"
+    },
+    {
+      "description": "Set how a bare dataset name that exists in several datasources resolves: the first datasource in this list that has it wins; otherwise the name is ambiguous and errors.",
+      "input_schema": {
+        "properties": {
+          "priority": {
+            "description": "Existing datasource names, most preferred first; an empty list clears it.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Priority",
+            "type": "array"
+          }
+        },
+        "required": [
+          "priority"
+        ],
+        "title": "set_datasource_priorityArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "set_datasource_priority"
+    },
+    {
+      "description": "Diff stored datasets against the live database schemas.\n\nReturns, as JSON, the deletes (fields, metrics, relationships, filters, whole datasets) needed to keep the stored datasets valid. Read-only.",
+      "input_schema": {
+        "properties": {
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Datasource to validate; omit for all.",
+            "title": "Data Source"
+          }
+        },
+        "title": "validate_datasetsArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "validate_datasets"
+    }
+  ],
+  "always_load_query=True": [
+    {
+      "description": "Create a semantic dataset from a database table (sql_table), a SQL query (sql), or a SLayer query (query: the dataset becomes query-backed and its fields come from the result).\n\nHost a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).\n\nExample: create_dataset(name=\"orders\", sql_table=\"public.orders\", data_source=\"mydb\", fields=[{\"name\": \"amount\", \"sql\": \"amount\", \"datatype\": \"Float\"}], metrics=[{\"name\": \"aov\", \"expression\": \"sum(amount) / count(*)\"}])\n\nA custom aggregation named sum_sq is called like a built-in: sum_sq(field). Authoring guide: inspect(reference=\"memory:help.datasets\", entity_type=\"memory\").",
+      "input_schema": {
+        "properties": {
+          "access_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Access groups allowed to see the dataset; omit for public.",
+            "title": "Access Tags"
+          },
+          "aggregations": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Custom aggregations, {\"name\": \"sum_sq\", \"expression\": \"SUM({value} * {value})\", \"params\": [{\"name\": \"weight\", \"sql\": \"quantity\"}], \"description\": ..., \"datatype\": ...}; the expression is SQL with {value} for the aggregated field; datatype (optional) is the result type, else inferred.",
+            "title": "Aggregations"
+          },
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Datasource name (from list_datasources).",
+            "title": "Data Source"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What one row of this dataset represents.",
+            "title": "Description"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Field definitions: {\"name\", \"expression\", \"datatype\"}; expression is SQL over the source columns (a bare name reads a source column, dataset.field a field; unset reads the column named like the field); datatype TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); optional primary_key, unique (single-field uniqueness other than the primary key), allowed_aggregations, filter (a condition masking the field's value inside aggregates), granularity (only for a field truly bucketed at that grain), label, description, hidden, meta.",
+            "title": "Fields"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Saved metrics, {\"name\": \"aov\", \"expression\": \"sum(revenue) / count(*)\"} plus optional label, description, meta; queries reference them by dataset (\"orders.aov\").",
+            "title": "Metrics"
+          },
+          "name": {
+            "description": "Unique dataset name (lowercase, underscores).",
+            "title": "Name",
+            "type": "string"
+          },
+          "query": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A query object or list of stages; makes the dataset query-backed. Excludes sql_table, sql, fields, metrics and aggregations.",
+            "title": "Query"
+          },
+          "semantic_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Add the dataset to this semantic model (an Ossie document of the datasource); omit to store it standalone.",
+            "title": "Semantic Model"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A SQL query as the dataset's source, instead of sql_table.",
+            "title": "Sql"
+          },
+          "sql_table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database table, e.g. \"public.orders\".",
+            "title": "Sql Table"
+          },
+          "variables": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Default values for {var} placeholders in the backing query.",
+            "title": "Variables"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "create_datasetArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_dataset"
+    },
+    {
+      "description": "Create a database connection, verify it, and auto-ingest datasets. Use ${ENV_VAR} in credentials to read environment variables.\n\nExample: create_datasource(name=\"mydb\", type=\"postgres\", host=\"localhost\", port=5432, database=\"app\", username=\"user\", password=\"${DB_PASSWORD}\")",
+      "input_schema": {
+        "$defs": {
+          "CustomGranularity": {
+            "description": "A named granularity: boundaries at ``origin + k \u00d7 multiple \u00d7 base``. Lenient at\nconstruction; ``definition_error`` states the save-time rules.",
+            "properties": {
+              "base": {
+                "title": "Base",
+                "type": "string"
+              },
+              "multiple": {
+                "default": 1,
+                "title": "Multiple",
+                "type": "integer"
+              },
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Origin"
+              }
+            },
+            "required": [
+              "name",
+              "base"
+            ],
+            "title": "CustomGranularity",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "all_schemas": {
+            "default": false,
+            "description": "Ingest every non-system schema; excludes schema_name and schemas.",
+            "title": "All Schemas",
+            "type": "boolean"
+          },
+          "auto_ingest": {
+            "default": true,
+            "description": "Create datasets from the schema (default true).",
+            "title": "Auto Ingest",
+            "type": "boolean"
+          },
+          "connection_string": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Full connection string instead of the individual fields.",
+            "title": "Connection String"
+          },
+          "database": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database name.",
+            "title": "Database"
+          },
+          "granularities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/CustomGranularity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Custom time granularities, each {name, base, multiple, origin}: buckets start at origin + k * multiple * base, e.g. {name: \"fiscal_year\", base: \"year\", origin: \"2000-04-01\"}; usable wherever a built-in granularity is.",
+            "title": "Granularities"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database host (default localhost).",
+            "title": "Host"
+          },
+          "name": {
+            "description": "Unique datasource name.",
+            "title": "Name",
+            "type": "string"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database password; ${ENV_VAR} is resolved.",
+            "title": "Password"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database port, e.g. 5432.",
+            "title": "Port"
+          },
+          "schema_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Default schema, also the single schema auto-ingested.",
+            "title": "Schema Name"
+          },
+          "schemas": {
+            "default": "",
+            "description": "Comma-separated schemas to ingest; excludes schema_name and all_schemas.",
+            "title": "Schemas",
+            "type": "string"
+          },
+          "type": {
+            "description": "Database type: postgres, mysql, sqlite, bigquery, snowflake, ...",
+            "title": "Type",
+            "type": "string"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database user; ${ENV_VAR} is resolved.",
+            "title": "Username"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "create_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_datasource"
+    },
+    {
+      "description": "Create a semantic model: an Ossie document holding datasets, their relationships and model-scoped metrics (metrics a query names bare). Give its Ossie content, or the standalone datasets it takes over (they keep their names).",
+      "input_schema": {
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A whole Ossie 0.3.0.dev0 semantic-model document, as YAML/JSON text or an object.",
+            "title": "Content"
+          },
+          "data_source": {
+            "description": "The datasource it describes (from list_datasources).",
+            "title": "Data Source",
+            "type": "string"
+          },
+          "datasets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Standalone datasets of the datasource to move into the new semantic model, instead of content.",
+            "title": "Datasets"
+          },
+          "name": {
+            "description": "The semantic model's name, unique in its datasource.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "data_source"
+        ],
+        "title": "create_semantic_modelArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_semantic_model"
+    },
+    {
+      "description": "Brief summary of every non-hidden dataset in a datasource.",
+      "input_schema": {
+        "properties": {
+          "compact": {
+            "default": true,
+            "description": "Default true: per dataset its name, description, field count, metric names and relationship targets. False adds the full field and metric tables.",
+            "title": "Compact",
+            "type": "boolean"
+          },
+          "datasource_name": {
+            "description": "Datasource name (from list_datasources).",
+            "title": "Datasource Name",
+            "type": "string"
+          },
+          "format": {
+            "default": "markdown",
+            "description": "\"markdown\" (default) or \"json\".",
+            "title": "Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "datasource_name"
+        ],
+        "title": "datasets_summaryArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "datasets_summary"
+    },
+    {
+      "description": "Delete a semantic dataset.",
+      "input_schema": {
+        "properties": {
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The dataset's datasource; required when the name exists in several datasources.",
+            "title": "Data Source"
+          },
+          "name": {
+            "description": "Dataset to delete.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "delete_datasetArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_dataset"
+    },
+    {
+      "description": "Delete a datasource configuration.",
+      "input_schema": {
+        "properties": {
+          "name": {
+            "description": "Datasource to delete.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "delete_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_datasource"
+    },
+    {
+      "description": "Delete a semantic model together with all its datasets and model-scoped metrics.",
+      "input_schema": {
+        "properties": {
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Its datasource; required when the name exists in several datasources.",
+            "title": "Data Source"
+          },
+          "name": {
+            "description": "Semantic model to delete.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "delete_semantic_modelArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_semantic_model"
+    },
+    {
+      "description": "Show datasource details: connection status, available schemas, and (by default) the tables in the given or default schema.\n\nUse it after create_datasource to verify the connection and see what is queryable before ingest_datasource.",
+      "input_schema": {
+        "properties": {
+          "list_tables": {
+            "default": true,
+            "description": "Also list the tables of schema_name (default true).",
+            "title": "List Tables",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Datasource name (from list_datasources).",
+            "title": "Name",
+            "type": "string"
+          },
+          "schema_name": {
+            "default": "",
+            "description": "Schema whose tables to list, e.g. \"public\"; empty is the default schema.",
+            "title": "Schema Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "describe_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "describe_datasource"
+    },
+    {
+      "description": "Edit an existing dataset in one call: metadata, upserts of fields / metrics / aggregations / relationships (by name; only the given keys change), dataset filters, and removals (applied first). A dataset of a semantic model is edited in place in its document.\n\nHost a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).\n\nExample: edit_dataset(dataset_name=\"orders\", fields=[{\"name\": \"status\", \"datatype\": \"String\"}], metrics=[{\"name\": \"aov\", \"expression\": \"sum(revenue) / count(*)\"}], remove={\"metrics\": [\"old_metric\"]})",
+      "input_schema": {
+        "properties": {
+          "access_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Replace the access groups allowed to see the dataset; [] makes it public.",
+            "title": "Access Tags"
+          },
+          "add_filters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL conditions always applied to the dataset, e.g. [\"deleted_at IS NULL\"].",
+            "title": "Add Filters"
+          },
+          "aggregations": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Custom aggregations to upsert by name, {\"name\", \"expression\" (SQL with {value} and {param} placeholders), \"params\": [{\"name\", \"sql\"}], \"description\", \"datatype\" (result type; omitted: inferred), \"meta\"}.",
+            "title": "Aggregations"
+          },
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The dataset's datasource; required when the name exists in several datasources.",
+            "title": "Data Source"
+          },
+          "dataset_name": {
+            "description": "Dataset to edit.",
+            "title": "Dataset Name",
+            "type": "string"
+          },
+          "default_time_dimension": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A date/time field: the default time axis for transforms.",
+            "title": "Default Time Dimension"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "New dataset description.",
+            "title": "Description"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fields to upsert by name; only the given keys change. {\"name\", \"datatype\", \"element_type\", \"expression\", \"description\", \"primary_key\", \"unique\", \"hidden\", \"allowed_aggregations\", \"filter\", \"label\", \"granularity\"}; datatype TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); unique marks single-field uniqueness other than the primary key (used for relationship cardinality); set granularity only for a field truly bucketed at that grain (null clears it).",
+            "title": "Fields"
+          },
+          "hidden": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Hide the dataset from discovery (still queryable).",
+            "title": "Hidden"
+          },
+          "meta": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "JSON metadata replacing the dataset's meta; null clears it.",
+            "title": "Meta"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Saved metrics to upsert by name, {\"name\": \"aov\", \"expression\": \"sum(revenue) / count(*)\"} plus optional label, description, meta; queries use them by dataset (orders.aov).",
+            "title": "Metrics"
+          },
+          "new_data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Move the dataset to another datasource (rare).",
+            "title": "New Data Source"
+          },
+          "query_variables": {
+            "description": "Replace the backing query's default {var} values; null clears them.",
+            "title": "Query Variables"
+          },
+          "relationships": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Relationships to upsert, {\"to\": \"customers\", \"from_columns\": [\"customer_id\"], \"to_columns\": [\"id\"], \"name\", \"cardinality\": \"many_to_one\", \"description\", \"meta\"}, matched by name, else target and key fields, else the sole relationship to the target; a second relationship to a target needs a name. Keys name fields by name; a composite key lists several fields on each side, in pair order. cardinality (one_to_one / one_to_many / many_to_one / many_to_many, read source->target) is descriptive only; omit it when unknown.",
+            "title": "Relationships"
+          },
+          "remove": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Entities to delete before the upserts: {\"fields\": [...], \"metrics\": [...], \"aggregations\": [...], \"relationships\": [target dataset or edge name, ...], \"relationship_edges\": [{\"to\", \"name\", \"from_columns\", \"to_columns\"}, ...]}.",
+            "title": "Remove"
+          },
+          "remove_filters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dataset filters to remove (exact text).",
+            "title": "Remove Filters"
+          },
+          "source_queries": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Replace the backing query with these stages (all but the last carry a name); makes the dataset query-backed, clears sql_table and sql, and refreshes the cached fields.",
+            "title": "Source Queries"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "SQL query as the source; clears sql_table and source_queries.",
+            "title": "Sql"
+          },
+          "sql_table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Database table; clears sql and source_queries.",
+            "title": "Sql Table"
+          }
+        },
+        "required": [
+          "dataset_name"
+        ],
+        "title": "edit_datasetArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "edit_dataset"
+    },
+    {
+      "description": "Update a datasource's metadata.",
+      "input_schema": {
+        "$defs": {
+          "CustomGranularity": {
+            "description": "A named granularity: boundaries at ``origin + k \u00d7 multiple \u00d7 base``. Lenient at\nconstruction; ``definition_error`` states the save-time rules.",
+            "properties": {
+              "base": {
+                "title": "Base",
+                "type": "string"
+              },
+              "multiple": {
+                "default": 1,
+                "title": "Multiple",
+                "type": "integer"
+              },
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "origin": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Origin"
+              }
+            },
+            "required": [
+              "name",
+              "base"
+            ],
+            "title": "CustomGranularity",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "New datasource description.",
+            "title": "Description"
+          },
+          "granularities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/CustomGranularity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Replace the custom time granularities, each {name, base, multiple, origin}: buckets start at origin + k * multiple * base.",
+            "title": "Granularities"
+          },
+          "name": {
+            "description": "Datasource to update.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "edit_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "edit_datasource"
+    },
+    {
+      "description": "Edit a semantic model in place: its description and AI context, its model-scoped metrics and relationships, and standalone datasets moved into it. Edit its datasets with edit_dataset.",
+      "input_schema": {
+        "properties": {
+          "add_datasets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Standalone datasets of the datasource to move into the semantic model.",
+            "title": "Add Datasets"
+          },
+          "ai_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "New AI context: instructions text, or {instructions, synonyms, examples}.",
+            "title": "Ai Context"
+          },
+          "data_source": {
+            "description": "Its datasource.",
+            "title": "Data Source",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "New description of the semantic model.",
+            "title": "Description"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model-scoped metrics to add or replace, {\"name\", \"expression\", \"description\", \"ai_context\"}; the expression reads like a query: qualified fields inside aggregates, AGG(dataset.metric), other model-scoped metrics by bare name.",
+            "title": "Metrics"
+          },
+          "name": {
+            "description": "Semantic model to edit.",
+            "title": "Name",
+            "type": "string"
+          },
+          "relationships": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Relationships to add or replace, {\"name\", \"from\", \"to\", \"from_columns\", \"to_columns\"} (many-to-one from \"from\").",
+            "title": "Relationships"
+          },
+          "remove_metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Model-scoped metrics to remove.",
+            "title": "Remove Metrics"
+          },
+          "remove_relationships": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Relationships to remove, by name.",
+            "title": "Remove Relationships"
+          }
+        },
+        "required": [
+          "name",
+          "data_source"
+        ],
+        "title": "edit_semantic_modelArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "edit_semantic_model"
+    },
+    {
+      "description": "Delete a memory by id; other memories' memory:<id> links to it are removed.",
+      "input_schema": {
+        "properties": {
+          "id": {
+            "description": "The memory_id returned by save_memory (a legacy int is accepted).",
+            "title": "Id"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "forget_memoryArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "forget_memory"
+    },
+    {
+      "description": "Return the datasource priority list (most preferred first), or [] when none is set.",
+      "input_schema": {
+        "properties": {},
+        "title": "get_datasource_priorityArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_datasource_priority"
+    },
+    {
+      "description": "Discover a database's tables and create or additively update datasets from them.\n\nIdempotent and additive: new fields and relationships are appended; existing definitions are never overwritten. Also returns the pending validate_datasets deletes.",
+      "input_schema": {
+        "properties": {
+          "all_schemas": {
+            "default": false,
+            "description": "Every non-system schema; excludes schema_name and schemas.",
+            "title": "All Schemas",
+            "type": "boolean"
+          },
+          "datasource_name": {
+            "description": "An existing datasource (from list_datasources).",
+            "title": "Datasource Name",
+            "type": "string"
+          },
+          "include_tables": {
+            "default": "",
+            "description": "Comma-separated tables to ingest; empty for all.",
+            "title": "Include Tables",
+            "type": "string"
+          },
+          "schema_name": {
+            "default": "",
+            "description": "One schema, e.g. \"public\"; empty is the default schema.",
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "schemas": {
+            "default": "",
+            "description": "Comma-separated schemas; excludes schema_name and all_schemas.",
+            "title": "Schemas",
+            "type": "string"
+          }
+        },
+        "required": [
+          "datasource_name"
+        ],
+        "title": "ingest_datasourceArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "ingest_datasource"
+    },
+    {
+      "description": "Inspect one entity by reference and kind, a batch when `reference` is a list, or a whole collection when `reference` is omitted. A point lookup: use `search` to find entities by meaning, with related memories.\n\nBefore using a field as a filter, projection, group-by or relationship key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a field by its name alone.\n\nCollection: omit `reference` with entity_type \"dataset\" (every dataset, grouped by datasource) or \"datasource\".\nBatch: a list of same-kind references returns one block per id in input order (a JSON array in json); a bad id does not sink the batch.\nHelp: reference \"memory:help.intro\" (entity_type \"memory\") for the overview; batch several help topics in one call.",
+      "input_schema": {
+        "properties": {
+          "compact": {
+            "default": true,
+            "description": "Default true: the description only for field / metric / aggregation / datasource / memory (never shortens a help.* topic), a schema skeleton without database calls for a dataset. False: the full render.",
+            "title": "Compact",
+            "type": "boolean"
+          },
+          "descriptions_max_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Truncate every description, and a memory's body, to this many characters.",
+            "title": "Descriptions Max Chars"
+          },
+          "entity_type": {
+            "description": "Required: datasource, dataset, field, metric, aggregation, memory or semantic_model. Asserts the resolved kind and disambiguates a name shared by, e.g., a field and an aggregation.",
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "format": {
+            "default": "markdown",
+            "description": "\"markdown\" (default) or \"json\".",
+            "title": "Format",
+            "type": "string"
+          },
+          "num_rows": {
+            "default": 3,
+            "description": "Sample rows for a dataset; ignored for other kinds.",
+            "title": "Num Rows",
+            "type": "integer"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "One reference, a list of same-kind references (batch), or omitted for the collection. Canonical (mydb, mydb.orders, mydb.orders.amount), a bare name, a relationship path (orders.customers.region), or memory:<id>.",
+            "title": "Reference"
+          },
+          "sections": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dataset sections to render: fields, metrics, aggregations, relationships, samples, learnings, saved_queries; default all. Ignored for other kinds.",
+            "title": "Sections"
+          },
+          "show_sql": {
+            "default": false,
+            "description": "Include generated SQL for a dataset; ignored for other kinds.",
+            "title": "Show Sql",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "entity_type"
+        ],
+        "title": "inspectArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "inspect"
+    },
+    {
+      "description": "List all configured database connections (names and types only, credentials are not shown). Use describe_datasource for connection details and status.",
+      "input_schema": {
+        "properties": {},
+        "title": "list_datasourcesArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_datasources"
+    },
+    {
+      "description": "ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Describe the result you want (metrics, dimensions, filters, order) and SLayer writes the SQL, including the joins. A single query can:\n- put several grains on one row: a group's share of its total or of the grand total, the region total next to each city;\n- rank, keep the top N per group, and sort by values it does not display;\n- compute period-over-period changes and trailing windows (90 days, 3 months), which look back before date_range by themselves, and running totals;\n- aggregate fields of joined datasets over their own rows, without double counting;\n- nest aggregates (the average of per-city totals) and chain stages.\n\nThe syntax is in the descriptions of the query object's fields: metrics, filter, order, time_dimensions[].date_range, population and dimensions. Full reference: inspect(reference=[\"memory:help.aggregations\", \"memory:help.transforms\", \"memory:help.time\", \"memory:help.relationships\", \"memory:help.queries\"], entity_type=\"memory\").\n\n`query` is a query object, a list of them (stages: all but the last carry a name; later stages use earlier ones as population), or a saved query-backed dataset's name (optionally with `refine`).\n\nFirst inspect the dataset and search for saved learnings. Then run the final query and check the row count, each aggregate's scope, NULLs and the sort. Without a `limit`, responses stop at 20 rows.",
+      "input_schema": {
+        "$defs": {
+          "DataType": {
+            "enum": [
+              "String",
+              "Integer",
+              "Decimal",
+              "Float",
+              "Boolean",
+              "Date",
+              "Time",
+              "DateTime",
+              "DateTimeTz",
+              "Opaque",
+              "Array"
+            ],
+            "title": "DataType",
+            "type": "string"
+          },
+          "DatasetExtension": {
+            "additionalProperties": false,
+            "description": "Query-scoped metrics and relationships added to one dataset a query object reads.",
+            "properties": {
+              "dataset": {
+                "title": "Dataset",
+                "type": "string"
+              },
+              "metrics": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/DatasetMetric"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Metrics"
+              },
+              "relationships": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/DatasetRelationship"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Relationships"
+              }
+            },
+            "required": [
+              "dataset"
+            ],
+            "title": "DatasetExtension",
+            "type": "object"
+          },
+          "DatasetMetric": {
+            "description": "A named aggregation expression saved on a dataset (or a query extension) and referenced by bare name.",
+            "properties": {
+              "datatype": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DataType"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "expression": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "$ref": "#/$defs/ExpressionObject"
+                  }
+                ],
+                "description": "Same syntax as the query object's metrics, as a string or {sql, dialects}; only sql (or an OSSIE_SQL_2026 entry) is evaluated. source.x reads the dataset's source column.",
+                "title": "Expression"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Label"
+              },
+              "load_warning": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Load Warning"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Meta"
+              },
+              "name": {
+                "description": "The metric's name; queries, filters and order reference it.",
+                "title": "Name",
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "name"
+            ],
+            "title": "DatasetMetric",
+            "type": "object"
+          },
+          "DatasetRelationship": {
+            "description": "A relationship to another dataset.",
+            "properties": {
+              "cardinality": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RelationshipCardinality"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "from_columns": {
+                "description": "This dataset's key fields, in pair order with to_columns.",
+                "items": {
+                  "type": "string"
+                },
+                "title": "From Columns",
+                "type": "array"
+              },
+              "join_type": {
+                "$ref": "#/$defs/JoinType",
+                "default": "left"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Meta"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Name"
+              },
+              "to": {
+                "title": "To",
+                "type": "string"
+              },
+              "to_columns": {
+                "description": "The joined dataset's key fields, in pair order with from_columns.",
+                "items": {
+                  "type": "string"
+                },
+                "title": "To Columns",
+                "type": "array"
+              }
+            },
+            "required": [
+              "to",
+              "from_columns",
+              "to_columns"
+            ],
+            "title": "DatasetRelationship",
+            "type": "object"
+          },
+          "DialectEntry": {
+            "additionalProperties": false,
+            "description": "One dialect's text of an expression.",
+            "properties": {
+              "dialect": {
+                "title": "Dialect",
+                "type": "string"
+              },
+              "expression": {
+                "title": "Expression",
+                "type": "string"
+              }
+            },
+            "required": [
+              "dialect",
+              "expression"
+            ],
+            "title": "DialectEntry",
+            "type": "object"
+          },
+          "ExpressionObject": {
+            "additionalProperties": false,
+            "description": "Ossie's expression: portable ``sql``, per-dialect ``dialects`` entries, or both.",
+            "properties": {
+              "dialects": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/DialectEntry"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Dialects"
+              },
+              "sql": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Sql"
+              }
+            },
+            "title": "ExpressionObject",
+            "type": "object"
+          },
+          "JoinType": {
+            "enum": [
+              "left",
+              "inner"
+            ],
+            "title": "JoinType",
+            "type": "string"
+          },
+          "OrderItem": {
+            "additionalProperties": false,
+            "description": "A sort key.",
+            "properties": {
+              "direction": {
+                "default": "asc",
+                "title": "Direction",
+                "type": "string"
+              },
+              "field": {
+                "description": "A result column name, a field reference, or an aggregate or transform expression.",
+                "title": "Field",
+                "type": "string"
+              },
+              "nulls": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "first",
+                      "last"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Nulls"
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "title": "OrderItem",
+            "type": "object"
+          },
+          "QueryDimension": {
+            "additionalProperties": false,
+            "description": "A group-by: a field reference or a row-level expression, with an optional result ``alias`` and ``label``.",
+            "properties": {
+              "alias": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The result key; defaults to the field's.",
+                "title": "Alias"
+              },
+              "field": {
+                "description": "A field reference (a name or dotted relationship path) or a row-level expression.",
+                "title": "Field",
+                "type": "string"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Label"
+              }
+            },
+            "required": [
+              "field"
+            ],
+            "title": "QueryDimension",
+            "type": "object"
+          },
+          "QueryMetric": {
+            "additionalProperties": false,
+            "description": "A query metric entry: a saved metric's reference or an aggregate expression, with an optional result ``alias``.",
+            "properties": {
+              "alias": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Result key; filters and order may use it in place of the metric.",
+                "title": "Alias"
+              },
+              "datatype": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DataType"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Label"
+              },
+              "meta": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Meta"
+              },
+              "metric": {
+                "description": "A saved metric's reference or an aggregate expression.",
+                "title": "Metric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "metric"
+            ],
+            "title": "QueryMetric",
+            "type": "object"
+          },
+          "QueryRefinement": {
+            "additionalProperties": false,
+            "description": "Clauses merged into a saved query's final stage when it runs by name.",
+            "properties": {
+              "dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/QueryDimension"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's dimensions.",
+                "title": "Dimensions"
+              },
+              "distinct_dimension_values": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's distinct_dimension_values.",
+                "title": "Distinct Dimension Values"
+              },
+              "filter": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's filter.",
+                "title": "Filter"
+              },
+              "limit": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's limit.",
+                "title": "Limit"
+              },
+              "main_time_dimension": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's main_time_dimension.",
+                "title": "Main Time Dimension"
+              },
+              "metrics": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/QueryMetric"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's metrics.",
+                "title": "Metrics"
+              },
+              "offset": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's offset.",
+                "title": "Offset"
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/OrderItem"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's order.",
+                "title": "Order"
+              },
+              "time_dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/TimeDimension"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's time_dimensions.",
+                "title": "Time Dimensions"
+              },
+              "to_many_handling": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "associate",
+                      "error"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's to_many_handling.",
+                "title": "To Many Handling"
+              },
+              "whole_periods_only": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Same syntax as the query object's whole_periods_only.",
+                "title": "Whole Periods Only"
+              }
+            },
+            "title": "QueryRefinement",
+            "type": "object"
+          },
+          "RelationshipCardinality": {
+            "description": "Arity of a relationship, read source->target (\"many orders -> one customer\").\n\nDescriptive metadata, orthogonal to ``JoinType`` \u2014 it does not change the\nemitted join.",
+            "enum": [
+              "one_to_one",
+              "one_to_many",
+              "many_to_one",
+              "many_to_many"
+            ],
+            "title": "RelationshipCardinality",
+            "type": "string"
+          },
+          "SlayerQuery": {
+            "additionalProperties": false,
+            "description": "User-facing query object \u2014 what to retrieve from a dataset, as names/references, no SQL.",
+            "properties": {
+              "dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/QueryDimension"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Group-by fields, one result row per distinct combination: fields named by their dataset (orders.status), a route from it (customers.regions.name), row-level expressions, or {\"field\": ..., \"alias\": ...}. date_trunc('<unit>', expr) buckets a timestamp like a time_dimensions entry: date_trunc('month', orders.created_at); units are second, minute, hour, day, week, week_sunday, month, quarter, year, or the datasource's custom ones, while month(orders.created_at) is the month of year (an integer). An aggregate inside a computed dimension needs partition_by= to fix its grain: {\"field\": \"iif(sum(orders.amount, partition_by=customers.id) > 150, 'high', 'low')\", \"alias\": \"spend_band\"}. Group by naturally readable labels: a name (customers.regions.name), never by an id alone unless ids are asked for; when a name may repeat (people, products), by the id and the name.",
+                "title": "Dimensions"
+              },
+              "distinct_dimension_values": {
+                "default": true,
+                "description": "Default true: dimension-only queries return distinct dimension combinations (GROUP BY the projected dimensions). Set false for raw per-record rows \u2014 requires empty `metrics` and no metric reference in `filter`/`order`. For rows plus a count, keep the default and add `count(<dataset>.*)`.",
+                "title": "Distinct Dimension Values",
+                "type": "boolean"
+              },
+              "extensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/DatasetExtension"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Query-scoped metrics and relationships added to any dataset this query object reads (its population, a joined dataset, or a stage), at most one entry per dataset, visible only in this query object. A relationship repeating a stored relationship, in either direction, is that edge, and its name is a local alias. An `inner` relationship keeps only the rows with a match; it never multiplies rows. Rooted at orders: [{\"dataset\": \"customers\", \"metrics\": [{\"name\": \"credit_total\", \"expression\": \"sum(credit)\"}], \"relationships\": [{\"to\": \"vip_list\", \"from_columns\": [\"id\"], \"to_columns\": [\"customer_id\"], \"join_type\": \"inner\"}]}] adds customers.credit_total and keeps only the orders of customers on the vip list.",
+                "title": "Extensions"
+              },
+              "filter": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "A condition, or a list of conditions AND-ed; each routes automatically to row filtering (WHERE), aggregate filtering (HAVING) or filtering after transforms. SQL operators: = <> < <= > >=, in, between, like / ilike, is null / is not null, IS [NOT] TRUE / FALSE (NULL counts as not true), IS DISTINCT FROM / IS NOT DISTINCT FROM (NULL-safe =), and / or / not, CAST(x AS DATE), regex x ~ '^A[0-9]{3}', JSON payload ->> 'key'; strings are single-quoted ('paid'); build them from the field's sampled values.\n- Aggregates and transforms filter too, by expression or by a metric's name: sum(orders.amount) > 100; top N per group: rank(sum(orders.amount), partition_by=customers.regions.name, direction='desc') <= 1.\n- Anti-join: rooted at customers, orders.id is null keeps the customers without orders.\n- A list tags: contains(tags, 'x') or tags.value = 'x'; contains_any(tags, ['x', 'y']) shares an element, contains_all(tags, ['x', 'y']) holds every one.\n- Time points: a string compared with a date/time field is a half-open period: '2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), or relative: 'today', 'last month', 'last 7 days' (excludes the current day), 'year to date'. order_date >= '2025-Q1' starts at the period, <= ends with it, order_date in '2025-Q1' is inside it. A date '2025-03-01' is its midnight; created_at in '2025-03-01' is the whole day.\n- {variable} placeholders take literal values from variables.\nMore: inspect(reference=[\"memory:help.time\", \"memory:help.relationships\"], entity_type=\"memory\").",
+                "title": "Filter"
+              },
+              "limit": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Max rows to return: the top N, or a limit covering a list longer than the 20 rows an uncapped MCP response returns (with a notice). Never use it to cut a list asked for in full.",
+                "title": "Limit"
+              },
+              "main_time_dimension": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Name (or field) of the time dimension that time-ordered transforms (change, lag, ...) key off; overrides auto-detection when the query has multiple time dimensions.",
+                "title": "Main Time Dimension"
+              },
+              "metrics": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/QueryMetric"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Values to return: expression strings or {\"metric\": ..., \"alias\": ...} (alias sets the result key). Every field, metric and row count names its dataset first: orders.amount, orders.revenue (a saved metric), count(orders.*); a bare name is an alias of this query, else a model-scoped metric of a semantic model. AGG(orders.revenue) evaluates the dataset metric. The engine joins the datasets. Expressions combine aggregations with arithmetic, also across datasets: rooted at customers, sum(orders.amount) / count(customers.*) divides the orders' total by the number of customers.\n- Aggregations: count(orders.*), sum(orders.amount), count_distinct(orders.customer_id), avg(orders.amount - orders.cost), percentile(orders.amount, p=0.9).\n- agg(x) FILTER (WHERE c) aggregates only the rows where c holds: count(orders.*) FILTER (WHERE orders.status = 'paid').\n- partition_by= computes an aggregate at a coarser grain, repeated on every row; spell its keys exactly like the query's dimensions. Share of group: sum(orders.amount) / sum(orders.amount, partition_by=customers.regions.name); share of the grand total: sum(orders.amount) / sum(orders.amount, partition_by=[]).\n- window= turns any aggregation into a trailing time window ending at each time bucket, in compact durations only ('90d', '3m', '1y'; never '3 months'): count_distinct(orders.customer_id, window='90d').\n- Nesting aggregates per-group values: avg(sum(orders.amount, partition_by=[customers.regions.name, customers.id]), partition_by=[customers.regions.name]) averages the per-customer totals in each region.\n- Transforms wrap an aggregate; all but the rank family need a time dimension: cumsum(sum(orders.amount)) running total; change(sum(orders.amount)) / change_pct(sum(orders.amount)) period-over-period delta / ratio; time_shift(sum(orders.amount), -1) the previous bucket's value ('year' as a third argument for year-over-year); lag(x, n) / lead(x, n) n rows back / ahead; rank(x, direction='desc') / dense_rank(x, direction='asc') with direction required and partition_by= to rank within groups; ntile(x, n=4) buckets, lowest first; consecutive_periods(sum(orders.amount) > 0) trailing run length.\n- A joined dataset's aggregate such as sum(customers.credit) from orders is computed over that dataset's own rows, each customer once. Sliced by a dimension it cannot be attributed to (an order's status), each group aggregates the distinct customers reaching it, with an associated warning (groups may overlap); sum(customers.credit, partition_by=[]) repeats the total on every group instead. Rooted at customers, sum(orders.amount) and sum(returns.amount) in one query are each computed over their own rows: several child datasets never fan out or double count. A child row without a parent (an order with no customer) has NULL parent fields: it counts in the NULL row of a parent dimension when that row exists, and in an ungrouped total; never add it again. An aggregate over a dataset no relationship path reaches from the root is computed over that dataset's own rows and repeated on every row (per bucket of a time_spine time dimension), with an unrelated_dataset warning: rooted at customers, count(events.id) / count(customers.*).\nMore (every aggregation, empty-input values, nesting and transform rules): inspect(reference=[\"memory:help.aggregations\", \"memory:help.transforms\"], entity_type=\"memory\").",
+                "title": "Metrics"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Stage name. In a list of query objects every entry but the last carries a name, and later stages use it as their population. A STAGE IS NOT NEEDED for top N per group (filter on `rank(...)` in the same stage), for averaging or bucketing per-entity totals (a nested aggregate, or a computed dimension with `partition_by`), or for shares and totals (`partition_by`). A filter on a transform's value (`rank(...) <= 3`, `cumsum(...) > 100`) applies after it, which is computed over every row the other filters keep. Stages ARE needed only to drop rows by a dimension or time condition that a cross-row value must still see, or to join or reuse a whole result: a row filter or date_range applies before a running total, lag / lead, rank, ntile, consecutive_periods or `partition_by` total (change, change_pct, time_shift and window= still read past date_range or a filter on their own time dimension, but not past other filters). Compute the value in an inner stage and filter in the outer one. An outer stage sees the inner result's columns with dotted paths flattened to __: an inner dimension customers.regions.name is customers__regions__name outside; a metric keeps its name. More: inspect(reference=[\"memory:help.queries\"], entity_type=\"memory\").",
+                "title": "Name"
+              },
+              "offset": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Rows to skip.",
+                "title": "Offset"
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/OrderItem"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Sort keys, [{\"field\": ..., \"direction\": \"asc\" | \"desc\", \"nulls\": \"first\" | \"last\"}] (nulls optional). field is a result column name or any aggregate or transform expression, displayed or not: with metrics [\"count(orders.*)\"], [{\"field\": \"sum(orders.amount)\", \"direction\": \"desc\"}] sorts by an amount it does not return. Add limit for the top N. Return only the columns the question asks for: never add the sort value to metrics just to sort by it.",
+                "title": "Order"
+              },
+              "population": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The population: the rows the result lists. When the question asks for every X (each region, zero included), root at X so rows without facts appear: rooted at regions, the metrics count(customers.orders.id) and {\"metric\": \"sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))\", \"alias\": \"orders_2025\"} list every region, including those without orders (a count over no rows is 0, any other aggregate NULL). Always alias a conditional aggregate. Otherwise root where the facts are (rows without facts then drop out), or omit to infer the rows: every dimension combination some metric's rows reach (the dimension values alone with no metrics, one row with no dimensions), reported in the response. A saved dataset or stage name. Write a per-query field as an expression in the position that uses it (a dimension, a filter, an aggregation's argument).",
+                "title": "Population"
+              },
+              "population_inferred": {
+                "default": false,
+                "description": "Set by saving; keeps the rows inferred while `population` pins the anchor.",
+                "title": "Population Inferred",
+                "type": "boolean"
+              },
+              "time_dimensions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/TimeDimension"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Time-bucketed group-bys \u2014 one result row per bucket. Each entry is a TimeDimension dict or the string date_trunc('<unit>', expr), e.g. \"date_trunc('month', orders.created_at)\"; the field may be any date or time expression, with an optional alias. Buckets without rows are absent. To return every bucket, empty ones included, bucket time_spine.timestamp with a lower date_range bound and aggregate datasets by dotted path: {\"field\": \"time_spine.timestamp\", \"granularity\": \"month\", \"date_range\": \"2025\"} with sum(orders.amount) returns all twelve months. It also lines several datasets up on one time axis.",
+                "title": "Time Dimensions"
+              },
+              "to_many_handling": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "associate",
+                      "error"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "What happens when an aggregation is sliced by a dimension not attributable to it. Omitted (default) or associate: aggregate per cell over the distinct associated rows, e.g. per list element tags.value | error (refuse). To repeat a value across the cells, give the aggregate partition_by= with the dimensions it is attributable to.",
+                "title": "To Many Handling"
+              },
+              "variables": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "{placeholder} values scoped to this query object / stage; the tool-level variables argument overrides. A placeholder binds a literal value only: its text inside quotes ('{s}'), a number, numeric string or boolean in a bare slot, a list as the whole right-hand side of IN (items.status in ({statuses}); over a list field, one list: items.tags in ({wanted})) or as a list literal anywhere else (items.tags = {wanted}, a list-function argument). A placeholder in a name position is an error.",
+                "title": "Variables"
+              },
+              "version": {
+                "default": 18,
+                "title": "Version",
+                "type": "integer"
+              },
+              "whole_periods_only": {
+                "default": false,
+                "description": "Snap date filters to whole time buckets and drop the current incomplete bucket.",
+                "title": "Whole Periods Only",
+                "type": "boolean"
+              }
+            },
+            "title": "SlayerQuery",
+            "type": "object"
+          },
+          "TimeDimension": {
+            "additionalProperties": false,
+            "description": "A time-bucketed group-by: ``field`` truncated to ``granularity``.",
+            "properties": {
+              "alias": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The result key; defaults to the field's.",
+                "title": "Alias"
+              },
+              "date_range": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "The buckets to return: one period (\"2025\", \"2025-Q1\", \"last month\") or [lower, upper] with either bound null (one-sided); a bound may be a {var} placeholder, written unquoted (\"{start}\"). change, change_pct, time_shift and window= aggregates read rows before the range (a forward time_shift, after it) by themselves, so each month of 2025 with its change vs the previous month is just \"2025\": never widen the range and drop rows afterwards. cumsum starts at the range start.",
+                "title": "Date Range"
+              },
+              "field": {
+                "title": "Field",
+                "type": "string"
+              },
+              "granularity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TimeGranularity"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "description": "A built-in granularity, or a custom granularity defined on the query's datasource.",
+                "title": "Granularity"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Label"
+              }
+            },
+            "required": [
+              "field",
+              "granularity"
+            ],
+            "title": "TimeDimension",
+            "type": "object"
+          },
+          "TimeGranularity": {
+            "enum": [
+              "second",
+              "minute",
+              "hour",
+              "day",
+              "week",
+              "week_sunday",
+              "month",
+              "quarter",
+              "year"
+            ],
+            "title": "TimeGranularity",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "conformance": {
+            "default": "slayer",
+            "description": "\"slayer\" (default) or \"ossie-l3\": accept only Ossie Layer 3 queries, refusing others with Ossie's error codes, and name columns by Ossie's output names.",
+            "enum": [
+              "slayer",
+              "ossie-l3"
+            ],
+            "title": "Conformance",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": false,
+            "description": "Return the generated SQL without executing it.",
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "explain": {
+            "default": false,
+            "description": "Run the database's EXPLAIN and return the query plan.",
+            "title": "Explain",
+            "type": "boolean"
+          },
+          "format": {
+            "default": "markdown",
+            "description": "\"markdown\" (default), \"json\" or \"csv\".",
+            "title": "Format",
+            "type": "string"
+          },
+          "query": {
+            "description": "A query object, a list of query objects (stages), or a saved query-backed dataset's name.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/SlayerQuery"
+              },
+              {
+                "items": {
+                  "$ref": "#/$defs/SlayerQuery"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Query"
+          },
+          "refine": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/QueryRefinement"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Saved-dataset-name form only: clauses merged into the saved query's final stage."
+          },
+          "show_sql": {
+            "default": false,
+            "description": "Include the generated SQL in the response.",
+            "title": "Show Sql",
+            "type": "boolean"
+          },
+          "variables": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Values for {placeholder}s in conditions, expressions, date_range bounds and dataset SQL; override a stage's own variables, an outer query's variables and the saved dataset's defaults.",
+            "title": "Variables"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "queryArguments",
+        "type": "object"
+      },
+      "meta": {
+        "anthropic/alwaysLoad": true
+      },
+      "name": "query"
+    },
+    {
+      "description": "Recommend the population (a query's root dataset) for a set of dataset.field / metric items, with each item's reference path from that root, ready to drop into the query (a joined field comes back as customers.regions.name, a root-owned one as status; aggregations are kept).\n\nThe root is the dataset from which every item is reachable with the fewest relationship hops. With at least one field item, an aggregated item on a dataset with no relationship path to the root does not block it: its path is flagged unrelated (aggregated over that dataset's own rows). When none reaches everything, population is null and coverage lists the best partial roots for a multi-stage query.\n\nCall it once the item list is final; explore with search / inspect first.",
+      "input_schema": {
+        "properties": {
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Datasource scope; omitted, names resolve via the datasource priority list.",
+            "title": "Data Source"
+          },
+          "format": {
+            "default": "markdown",
+            "description": "\"markdown\" (default) or \"json\".",
+            "title": "Format",
+            "type": "string"
+          },
+          "items": {
+            "description": "Entity references: orders.revenue, customers.name, sum(orders.revenue), a saved metric's bare name, ...",
+            "items": {
+              "type": "string"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "root_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Intended root (dataset or <data_source>.<dataset>); honoured when it reaches every item, else the automatic pick is used with a warning.",
+            "title": "Root Hint"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "recommend_populationArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "recommend_population"
+    },
+    {
+      "description": "Save an agent memory: a free-form note plus the SLayer entities it concerns.\n\nWith a list of entity references the memory appears among search's memories; with a query object it appears among search's example queries. Returns the memory_id, the canonical entities stored and any warnings. Deleting a dataset, datasource or metric strips references to it from every memory; the note itself is kept.\n\nExamples:\nsave_memory(learning=\"orders.is_returned in {0,1,NULL}; treat NULL as not returned\", linked_entities=[\"orders.is_returned\"])\nsave_memory(learning=\"Paid revenue by status\", linked_entities={\"population\": \"orders\", \"metrics\": [\"sum(orders.amount)\"], \"filter\": \"orders.status = 'paid'\"}, id=\"kb.paid-revenue\")",
+      "input_schema": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "One-line preview (at most 500 chars) shown by search and compact inspect.",
+            "title": "Description"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stable memory id such as \"kb.policy.42\" (no : / ? # or whitespace); an existing id is overwritten. Omit to allocate one.",
+            "title": "Id"
+          },
+          "learning": {
+            "description": "The note text; required, non-empty.",
+            "title": "Learning",
+            "type": "string"
+          },
+          "linked_entities": {
+            "description": "A list of entity references (resolved to <datasource>.<dataset>[.<leaf>]; memory:<id> links another memory), or a query object whose entities are extracted and which is stored as an example query.",
+            "title": "Linked Entities"
+          }
+        },
+        "required": [
+          "learning",
+          "linked_entities"
+        ],
+        "title": "save_memoryArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "save_memory"
+    },
+    {
+      "description": "Search saved memories, example queries and entities (datasets, fields, metrics, ...) by entity overlap and by meaning.\n\nCall it before `query` to surface notes and example queries saved against the entities you plan to use. Discovery, not detail: hits are one-line descriptions; read the ones you need with `inspect`, batching same-kind ids in one call.\n\nHits from all channels are fused into one ranked list. With no input it returns the newest memories, with a warning.",
+      "input_schema": {
+        "properties": {
+          "compact": {
+            "default": true,
+            "description": "Default true: one-line hits. False returns full renders; avoid it for broad searches.",
+            "title": "Compact",
+            "type": "boolean"
+          },
+          "cypher_filter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "openCypher MATCH ... RETURN <node>.id AS id pre-filtering hits to the returned ids, e.g. MATCH (n:DatasetField) RETURN n.id AS id to spend max_results on fields only. Labels: Memory, Datasource, Dataset, DatasetField, Metric, Aggregation; without the advanced_search extra only such label filters work.",
+            "title": "Cypher Filter"
+          },
+          "datasource": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict every hit to this datasource.",
+            "title": "Datasource"
+          },
+          "entities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Entity references; ranks memories tagged with overlapping entities.",
+            "title": "Entities"
+          },
+          "max_results": {
+            "default": 10,
+            "description": "Maximum hits returned (default 10).",
+            "title": "Max Results",
+            "type": "integer"
+          },
+          "query": {
+            "default": null,
+            "description": "A query object whose entities are extracted and searched like entities.",
+            "title": "Query"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Free text, matched by full text (and by embeddings when configured) over memories and entities.",
+            "title": "Question"
+          }
+        },
+        "title": "searchArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "search"
+    },
+    {
+      "description": "Set how a bare dataset name that exists in several datasources resolves: the first datasource in this list that has it wins; otherwise the name is ambiguous and errors.",
+      "input_schema": {
+        "properties": {
+          "priority": {
+            "description": "Existing datasource names, most preferred first; an empty list clears it.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Priority",
+            "type": "array"
+          }
+        },
+        "required": [
+          "priority"
+        ],
+        "title": "set_datasource_priorityArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "set_datasource_priority"
+    },
+    {
+      "description": "Diff stored datasets against the live database schemas.\n\nReturns, as JSON, the deletes (fields, metrics, relationships, filters, whole datasets) needed to keep the stored datasets valid. Read-only.",
+      "input_schema": {
+        "properties": {
+          "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Datasource to validate; omit for all.",
+            "title": "Data Source"
+          }
+        },
+        "title": "validate_datasetsArguments",
+        "type": "object"
+      },
+      "meta": null,
+      "name": "validate_datasets"
+    }
+  ]
+}

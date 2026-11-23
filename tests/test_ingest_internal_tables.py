@@ -1193,9 +1193,9 @@ class TestVisibilitySurfaces:
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = (await mcp.call_tool(
             name="datasets_summary", arguments={"datasource_name": "ds"}
-        )
+        )).content
         summary = blocks[0].text
 
         assert "orders" in summary
@@ -1328,10 +1328,10 @@ class TestMcpIngestReporting:
 
     async def _ingest_via_mcp(self, storage, *, schema_name: str = "") -> str:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = (await mcp.call_tool(
             name="ingest_datasource",
             arguments={"datasource_name": "ds", "schema_name": schema_name},
-        )
+        )).content
         return blocks[0].text
 
     async def test_first_ingest_reports_hidden_internals(
@@ -1425,10 +1425,10 @@ class TestMcpIngestReporting:
             assert model.hidden is True, name
 
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = (await mcp.call_tool(
             name="ingest_datasource",
             arguments={"datasource_name": "second", "schema_name": ""},
-        )
+        )).content
         out = blocks[0].text
 
         assert 'data_source="second"' in out

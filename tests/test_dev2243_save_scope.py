@@ -51,7 +51,7 @@ async def _mcp(storage: StorageBackend, tool: str, **arguments: Any) -> str:
     """One MCP ``tool`` call on a fresh server: its text, or the raised error's text."""
     server = create_mcp_server(storage=storage, _seed_help=False)
     try:
-        blocks, _ = await server.call_tool(name=tool, arguments=arguments)
+        blocks = (await server.call_tool(name=tool, arguments=arguments)).content
         return "\n".join(getattr(b, "text", "") for b in blocks)
     except Exception as exc:  # noqa: BLE001 — the refusal text is the assertion subject
         return f"{type(exc).__name__}: {exc}"

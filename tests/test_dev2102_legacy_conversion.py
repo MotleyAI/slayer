@@ -152,7 +152,7 @@ class TestStructuredDeprecation:
     async def test_mcp_reports_it(self, recorded) -> None:
         async with orders_engine() as engine:
             server = create_mcp_server(storage=engine.storage)
-            blocks, _ = await server.call_tool(name="query", arguments={"query": LEGACY_RUN, "format": "json"})
+            blocks = (await server.call_tool(name="query", arguments={"query": LEGACY_RUN, "format": "json"})).content
         assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == 1
 
     async def test_the_local_client_reports_it(self, recorded) -> None:

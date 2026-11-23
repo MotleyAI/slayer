@@ -99,8 +99,8 @@ class TestMcpSurface:
     async def test_mode_reaches_engine(self, storage) -> None:
         """The mode rides inside the unified ``query`` object (DEV-1858 tool shape)."""
         server = create_mcp_server(storage=storage)
-        blocks, _ = await server.call_tool(name="query", arguments={
-            "query": _ASSOCIATE_BODY, "format": "json"})
+        blocks = (await server.call_tool(name="query", arguments={
+            "query": _ASSOCIATE_BODY, "format": "json"})).content
         text = blocks[0].text
         assert "420" in text
         assert "290" in text
@@ -109,6 +109,6 @@ class TestMcpSurface:
     async def test_strict_converts(self, storage) -> None:
         server = create_mcp_server(storage=storage)
         with recorded():
-            blocks, _ = await server.call_tool(name="query", arguments={"query": _STRICT_BODY, "format": "json"})
+            blocks = (await server.call_tool(name="query", arguments={"query": _STRICT_BODY, "format": "json"})).content
         [w] = deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))
         assert "to_many_handling" in w["new"]

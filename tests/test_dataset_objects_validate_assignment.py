@@ -151,7 +151,7 @@ async def _edit(storage: StorageBackend, **arguments: Any) -> str:
     """One MCP ``edit_dataset`` call on a fresh server: its text, or the raised error's text."""
     server = create_mcp_server(storage=storage, _seed_help=False)
     try:
-        blocks, _ = await server.call_tool(name="edit_dataset", arguments={"data_source": DS, **arguments})
+        blocks = (await server.call_tool(name="edit_dataset", arguments={"data_source": DS, **arguments})).content
         return "\n".join(getattr(b, "text", "") for b in blocks)
     except Exception as exc:  # noqa: BLE001 — the refusal text is the assertion subject
         return f"{type(exc).__name__}: {exc}"

@@ -77,10 +77,10 @@ class TestDropAddressesOneEdge:
     async def test_json_removal_replays_through_edit_model(self, drifted: Live) -> None:
         entry = await _orders_entry(drifted)
         server = create_mcp_server(storage=drifted.storage, _seed_help=False)
-        blocks, _ = await server.call_tool(
+        blocks = (await server.call_tool(
             name="edit_dataset",
             arguments={"dataset_name": "orders", "remove": entry.remove.model_dump(mode="json")},
-        )
+        )).content
         (block,) = blocks
         assert isinstance(block, TextContent)
         assert '"success": true' in block.text

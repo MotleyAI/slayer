@@ -116,7 +116,7 @@ async def mcp_reply(storage: StorageBackend, tool: str, **arguments: Any) -> str
     """One MCP ``tool`` call on a fresh server: its text, or the raised error's text."""
     server = create_mcp_server(storage=storage, _seed_help=False)
     try:
-        blocks, _ = await server.call_tool(name=tool, arguments=arguments)
+        blocks = (await server.call_tool(name=tool, arguments=arguments)).content
         return getattr(next(iter(blocks)), "text")
     except Exception as exc:  # noqa: BLE001 — the refusal text is the assertion subject
         return f"{type(exc).__name__}: {exc}"
@@ -128,7 +128,7 @@ async def mcp_ok(storage: StorageBackend, tool: str, **arguments: Any) -> str:
     """One MCP ``tool`` call that must succeed."""
     server = create_mcp_server(storage=storage, _seed_help=False)
     try:
-        blocks, _ = await server.call_tool(name=tool, arguments=arguments)
+        blocks = (await server.call_tool(name=tool, arguments=arguments)).content
     finally:
         await getattr(server, "_slayer_engine").aclose()
     return getattr(next(iter(blocks)), "text")

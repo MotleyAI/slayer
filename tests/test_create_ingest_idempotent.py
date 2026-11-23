@@ -279,8 +279,8 @@ class TestEmptyIngestMessage:
 
 async def _mcp_create(storage: YAMLStorage, db: str, **scope: Any) -> str:
     server = create_mcp_server(storage=storage, _seed_help=False)
-    blocks, _ = await server.call_tool(name="create_datasource",
-                                       arguments={"name": "app", "type": "sqlite", "database": db, **scope})
+    blocks = (await server.call_tool(name="create_datasource",
+                                       arguments={"name": "app", "type": "sqlite", "database": db, **scope})).content
     block = next(iter(blocks))
     assert isinstance(block, TextContent), block
     return block.text

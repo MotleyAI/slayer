@@ -35,7 +35,7 @@ import json, os, sys, time
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 B = json.loads({behaviour!r})
 ROWS = [{{"orders.stores.name": "Brooklyn", "orders.order_total_sum": 1.0}}]
@@ -52,7 +52,7 @@ def record_query(leg, query):
 def mcp_server():
     if B["mcp"] == "hang":
         time.sleep(3600)
-    server = FastMCP("fake-slayer")
+    server = MCPServer("fake-slayer")
 
     @server.tool()
     def query(query: Any, variables: Any = None, refine: Any = None, show_sql: bool = False,

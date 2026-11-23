@@ -103,10 +103,10 @@ class TestListResults:
 
     async def test_json_result(self, engine) -> None:
         server = create_mcp_server(storage=engine.storage)
-        blocks, _ = await server.call_tool(name="query", arguments={
+        blocks = (await server.call_tool(name="query", arguments={
             "query": {"population": "contractors", "dimensions": ["contractors.team"],
                       "metrics": [{"metric": "collect(contractors.city)", "alias": "c"}]},
-            "format": "json"})
+            "format": "json"})).content
         block = next(iter(blocks))
         assert isinstance(block, TextContent), block
         decoded = json.loads(block.text)

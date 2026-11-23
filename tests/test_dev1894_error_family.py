@@ -196,7 +196,7 @@ class TestRawRowsConstruction:
 
 
 async def _forget_text(server) -> str:
-    blocks, _ = await server.call_tool(name="forget_memory", arguments={"id": "m1"})
+    blocks = (await server.call_tool(name="forget_memory", arguments={"id": "m1"})).content
     (block,) = blocks
     assert isinstance(block, TextContent)
     return block.text

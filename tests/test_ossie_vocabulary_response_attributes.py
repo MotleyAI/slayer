@@ -66,7 +66,7 @@ async def test_rest_attributes_carry_metrics_only() -> None:
 async def test_mcp_json_attributes_carry_metrics_only() -> None:
     async with vocab_engine("sqlite") as engine:
         server = create_mcp_server(storage=engine.storage, _seed_help=False)
-        blocks, _ = await server.call_tool(name="query", arguments={"query": QUERY, "format": "json"})
+        blocks = (await server.call_tool(name="query", arguments={"query": QUERY, "format": "json"})).content
     attributes = json.loads(getattr(next(iter(blocks)), "text"))["attributes"]
     assert set(attributes["metrics"]) == {METRIC_COLUMN}
     assert "measures" not in attributes

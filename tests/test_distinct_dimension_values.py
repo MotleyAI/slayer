@@ -27,7 +27,7 @@ import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from slayer.api.server import QueryRequest, create_app
 from slayer.async_utils import run_sync
@@ -794,7 +794,7 @@ class TestMCPSurface:
         pattern as ``tests/test_mcp_server.py:_call``."""
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
-        content_blocks, _ = await server.call_tool(
+        content_blocks = (await server.call_tool(
             name="query",
             arguments={
                 "query": {
@@ -804,7 +804,7 @@ class TestMCPSurface:
                 },
                 "format": "json",
             },
-        )
+        )).content
         result = content_blocks[0].text
         payload = json.loads(result)
         # MCP `query` with format=json returns a JSON array of rows.
@@ -817,7 +817,7 @@ class TestMCPSurface:
         raw rows into an outer stage that aggregates."""
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
-        content_blocks, _ = await server.call_tool(
+        content_blocks = (await server.call_tool(
             name="query",
             arguments={
                 "query": [
@@ -835,7 +835,7 @@ class TestMCPSurface:
                 ],
                 "format": "json",
             },
-        )
+        )).content
         payload = json.loads(content_blocks[0].text)
         # 3 unique status values, all 6 rows aggregated.
         assert isinstance(payload, list)

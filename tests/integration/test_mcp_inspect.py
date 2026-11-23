@@ -107,10 +107,10 @@ class TestDescribeDatasourceTables:
     async def _call_describe(
         self, server, *, name: str, list_tables: bool = True, schema_name: str = "",
     ) -> str:
-        content, _ = await server.call_tool(
+        content = (await server.call_tool(
             name="describe_datasource",
             arguments={"name": name, "list_tables": list_tables, "schema_name": schema_name},
-        )
+        )).content
         return content[0].text
 
     async def test_tables_appear_by_default(self, env: InspectEnv) -> None:
@@ -248,7 +248,7 @@ class TestInspectModelEndToEnd:
     section of the markdown output is produced end-to-end."""
 
     async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
-        content, _ = await server.call_tool(name=name, arguments=arguments or {})
+        content = (await server.call_tool(name=name, arguments=arguments or {})).content
         return content[0].text
 
     async def test_full_response(self, env: InspectEnv) -> None:
@@ -323,7 +323,7 @@ class TestInspectModelSectionGatingIntegration:
     """
 
     async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
-        content, _ = await server.call_tool(name=name, arguments=arguments or {})
+        content = (await server.call_tool(name=name, arguments=arguments or {})).content
         return content[0].text
 
     async def test_columns_only_short_circuits_samples(self, env: InspectEnv) -> None:
@@ -405,9 +405,9 @@ class TestMeasureTypeInference:
     async def test_type_appears_in_model_inspect(self, env: InspectEnv) -> None:
         """The dataset inspect fields table includes a type column with declared types."""
         server = create_mcp_server(storage=env["storage"])
-        content, _ = await server.call_tool(
+        content = (await server.call_tool(
             name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "num_rows": 0},
-        )
+        )).content
         result = content[0].text
         columns_section = result.split("## Fields")[1].split("##")[0]
         assert "| datatype |" in columns_section
@@ -543,10 +543,10 @@ class TestIngestDatasourceModelsTool:
         ))
 
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = (await server.call_tool(
             name="ingest_datasource",
             arguments={"datasource_name": "ingest_ds"},
-        )
+        )).content
         text = content[0].text
 
         # Idempotent ingest renders "Created N new dataset(s):" for new
@@ -566,10 +566,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
     """End-to-end sampled_values + distinct_count contract through the dataset ``inspect``."""
 
     async def _call_json(self, server, *, dataset_name: str) -> dict:
-        content, _ = await server.call_tool(
+        content = (await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": dataset_name, "compact": False, "format": "json"},
-        )
+        )).content
         return _json.loads(content[0].text)
 
     async def test_json_output_includes_sampled_values_and_distinct_count(
@@ -595,10 +595,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
         issue explicitly says the text format does not change. New data is
         carried only in JSON (and in the persisted dataset)."""
         server = create_mcp_server(storage=env["storage"])
-        content, _ = await server.call_tool(
+        content = (await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
-        )
+        )).content
         text = content[0].text
         col_section = text.split("## Fields")[1].split("## Metrics")[0]
         # No new column headers in the markdown table.
@@ -663,10 +663,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await storage.save_dataset(model)
 
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = (await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
-        )
+        )).content
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["fields"] if c["name"] == "notes")
         # All-NULL categorical field contract:
@@ -705,10 +705,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
             ],
         ))
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = (await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "many_values", "compact": False},  # markdown
-        )
+        )).content
         text = content[0].text
         col_section = text.split("## Fields")[1]
         kind_row_start = col_section.find("| kind ")
@@ -771,10 +771,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
         monkeypatch.setattr(SlayerQueryEngine, "execute", explodes)
 
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = (await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
-        )
+        )).content
         text = content[0].text
         col_section = text.split("## Fields")[1]
         status_row_start = col_section.find("| status ")
@@ -873,10 +873,10 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
         ))
 
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = (await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
-        )
+        )).content
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["fields"] if c["name"] == "notes")
         assert notes["sampled"] == ""

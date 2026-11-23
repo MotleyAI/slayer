@@ -763,9 +763,9 @@ class TestWarning:
     async def test_mcp_renders_it(self) -> None:
         async with duckdb_engine(statements=contractor_statements("duckdb"), engine_datasets=datasets()) as e:
             server = create_mcp_server(storage=e.storage, _seed_help=False)
-            blocks, _ = await server.call_tool(name="query", arguments={"query": {
+            blocks = (await server.call_tool(name="query", arguments={"query": {
                 "population": "contractors", "dimensions": ["contractors.skills"],
-                "metrics": [{"metric": "count_distinct(contractors.skills)", "alias": "n"}]}})
+                "metrics": [{"metric": "count_distinct(contractors.skills)", "alias": "n"}]}})).content
         text = "\n".join(b.text for b in blocks if isinstance(b, TextContent))
         assert "count_distinct(skills.value)" in text, text
 

@@ -323,7 +323,7 @@ async def mcp_text(storage: StorageBackend, tool: str, **arguments) -> str:
     """Call one MCP ``tool`` on a fresh server over ``storage``; the text reply."""
     server = create_mcp_server(storage=storage, _seed_help=False)
     try:
-        blocks, _ = await server.call_tool(name=tool, arguments=arguments)
+        blocks = (await server.call_tool(name=tool, arguments=arguments)).content
     finally:
         await getattr(server, "_slayer_engine").aclose()
     return getattr(next(iter(blocks)), "text")
