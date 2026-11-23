@@ -309,3 +309,10 @@ A time bucket inside a measure SHALL export in the metric's `sql` as `DATE_TRUNC
 #### Scenario: Custom granularity on SQLite
 - **WHEN** a SQLite datasource defines the granularity `fiscal_year` and `orders` has the measure `fiscal_years: count_distinct(date_trunc('fiscal_year', ordered_on))`
 - **THEN** no metric `fiscal_years` is exported, `orders`' extension carries the measure, and the report lists it as SLayer-only
+
+### Requirement: Exported portable SQL is valid OSSIE_SQL_2026
+Every portable `sql` the exporter emits, for fields, dataset-scoped metrics and model-scoped metrics, SHALL pass the native validity check: `INTERVAL` arithmetic SHALL be exported as `DATEADD(<unit>, <n>, <expr>)`, a subtraction as a negative `<n>`, a chain as nested calls. The exported value SHALL equal the original's. A stored document SHALL still export with its original text.
+
+#### Scenario: An INTERVAL field exports as DATEADD
+- **WHEN** a standalone DuckDB dataset stored before this change has the field `due` with expression `order_date + INTERVAL '7 days'` and is exported
+- **THEN** the exported field has `sql: DATEADD(day, 7, order_date)`, the exported document passes upstream's validator, and re-importing it gives `due` the same values
