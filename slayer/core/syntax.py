@@ -260,6 +260,8 @@ _DISTINCT_ONLY = ("DISTINCT is supported only as count(distinct x), i.e. count_d
                   "i.e. collect(x)")
 #: Calls taking a leading DISTINCT, and the aggregation each spells.
 _DISTINCT_CALLS = {"count": "count_distinct", "array_agg": "collect"}
+_NOT_IN = "not in"
+_IN_OPS = frozenset({"in", _NOT_IN})
 
 
 class _Problem(ValueError):
@@ -1186,7 +1188,7 @@ def _in_scalar_item(item: Any) -> Literal | Placeholder:
 def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
     """``L IN (M1, M2)`` over lists is ``L = M1 OR L = M2``."""
     if not isinstance(right, _ListItems):
-        node = Cmp(op="not in" if negate else "in", left=left, right=right)
+        node = Cmp(op=_NOT_IN if negate else "in", left=left, right=right)
         return _written_comparison(node) if isinstance(right, TupleLit) else node
     equalities = tuple(Cmp(op="==", left=left, right=item) for item in right.items)
     return _negated(equalities[0] if len(equalities) == 1 else BoolOp(op="or", operands=equalities), negate)
@@ -1337,7 +1339,7 @@ def _reference_reading(node: Any) -> Optional[Tuple[Tuple[str, ...], Tuple[bool,
 
 def _compared_literals(node: Cmp) -> Iterator[Tuple[Any, Any]]:
     """``(literal, reference)`` per string literal ``node`` compares directly with a reference."""
-    if node.op in ("in", "not in"):
+    if node.op in _IN_OPS:
         if isinstance(node.right, TupleLit):
             yield from ((e, node.left) for e in node.right.elements)
         return
@@ -1575,9 +1577,6 @@ def _in_slot_ordinals(template: Any) -> frozenset[int]:
         for node in walk_parsed(template)
         if isinstance(node, Cmp) and node.op in _IN_OPS and isinstance(node.right, Placeholder)
     )
-
-
-_IN_OPS = frozenset({"in", "not in"})
 
 
 def parse_bound_expr(text: str, variables: Mapping[str, Any]) -> ParsedExpr:

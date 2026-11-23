@@ -1,4 +1,4 @@
-"""A stored query's literals typed by the column the binder reads them against (``models/stored-upgrade``): legacy time
+"""A stored query's literals typed by the field the binder reads them against (``models/stored-upgrade``): legacy time
 literals repaired, and date-only comparisons given their whole-day meaning. A comparison it cannot type is left."""
 
 from __future__ import annotations
@@ -44,14 +44,14 @@ def typed_stage(
     stage: dict, *, gates: LiteralGates, reading: StageReading, extension_types: Optional[StoredDatasets],
     label: Optional[str],
 ) -> dict:
-    """A migrated raw stored ``stage`` with its gated rewrites applied, each compared column typed from ``reading``; its
+    """A migrated raw stored ``stage`` with its gated rewrites applied, each compared field typed from ``reading``; its
     extensions' own texts typed with ``extension_types`` (``None``: none hold a date-only literal)."""
-    columns = _Columns(stage=stage, reading=reading)
+    compared = _ComparedFields(stage=stage, reading=reading)
     out = dict(stage)
     if gates.legacy:
-        out = _with_filters(out, columns.repaired)
+        out = _with_filters(out, compared.repaired)
     if gates.whole_day:
-        out = rewrite_query_fields(out, lambda text: columns.whole_day(text, label=label), CURRENT_KEYS)
+        out = rewrite_query_fields(out, lambda text: compared.whole_day(text, label=label), CURRENT_KEYS)
         if extension_types is not None:
             out = upgraded_extension_texts(out, datasets=extension_types, label=label)
     return out
@@ -66,15 +66,15 @@ def _with_filters(stage: dict, fn: Callable[[str], str]) -> dict:
     return stage
 
 
-class _Columns:
-    """A stage's compared columns, typed as the binder reads them from its population."""
+class _ComparedFields:
+    """A stage's compared fields, typed as the binder reads them from its population."""
 
     def __init__(self, *, stage: dict, reading: StageReading) -> None:
         self.stage = stage
         self.reading = reading
 
     def type_of(self, parts: Sequence[str], quoted: Sequence[bool]) -> Optional[DataType]:
-        """The type of the column ``parts`` names; ``None`` when unresolvable or untyped."""
+        """The type of the field ``parts`` names; ``None`` when unresolvable or untyped."""
         host = self.reading.host
         if host is None or not parts:
             return None
@@ -112,12 +112,12 @@ class _Columns:
         return found.kind if found is not None else None
 
     def repaired(self, text: str) -> str:
-        """``text`` with each legacy literal compared with a DATE or TIMESTAMP column repaired."""
+        """``text`` with each legacy literal compared with a DATE or TIMESTAMP field repaired."""
         found = [c for c in legacy_literal_comparisons(text) if self._kind(c.parts, c.quoted) in _TEMPORAL]
         return repaired_literals(text, found) if found else text
 
     def whole_day(self, text: str, *, label: Optional[str]) -> str:
-        """``text`` with each date-only comparison of a TIMESTAMP column given its whole-day meaning; an untypable one
+        """``text`` with each date-only comparison of a TIMESTAMP field given its whole-day meaning; an untypable one
         logged."""
         scan = scan_date_only(text)
         if not scan.sites and not scan.unlocated:
