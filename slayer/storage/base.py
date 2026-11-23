@@ -15,12 +15,12 @@ from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
-from collections.abc import Awaitable, Callable, Hashable, Iterable, Set as AbstractSet
+from collections.abc import Awaitable, Callable, Hashable, Iterable, Mapping, Set as AbstractSet
 
 from typing_extensions import deprecated
 
 from slayer.core.deprecation import outside_stacklevel
-from slayer.core.enums import DataType, RESERVED_NAMES, TEMPORAL_DATATYPES, TimeGranularity, stored_datatype
+from slayer.core.enums import DataType, RESERVED_NAMES, TEMPORAL_DATATYPES, TimeGranularity
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset, spine_variant_warnings
 from slayer.core.errors import (
@@ -46,7 +46,7 @@ from slayer.engine.field_dependency import (
     check_dataset_filters, check_evaluated_metrics, validate_derived_fields, warn_broken_dependents,
 )
 from slayer.core.relationship_walker import edges_between
-from slayer.core.names import folded_collisions, match_name
+from slayer.core.names import folded_collisions
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
 from slayer.core.field_expression import stored_definition_text
 from slayer.core.models import (
@@ -82,7 +82,8 @@ from slayer.memories.models import (
 )
 from slayer.storage import migrations as _mig
 from slayer.storage.date_only_migration import (
-    StoredDatasets, below_date_only_upgrade, is_exact_inverse_relationship, needs_typing, stored_type, typing_with, upgraded_text,
+    UPGRADED_AT, StoredDatasets, holds_extension_date_literal, is_exact_inverse_relationship, needs_typing, stored_type,
+    typing_with,
 )
 from slayer.storage.document_keys import (
     CURRENT_KEYS,
@@ -108,7 +109,6 @@ from slayer.storage.mode_b_texts import (
     rewrite_memory_doc,
     rewrite_dataset_doc,
 )
-from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
     apply_dunder_rewrite_to_dataset_dict,
     extract_dunder_chains,
@@ -118,8 +118,9 @@ from slayer.database.client import SqlClient
 from slayer.sql.definitions import check_forms, with_converted_sql
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.mode_a_variables import check_placeholders
-from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
-from slayer.storage.qualified_references import qualified_stages
+from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields, without_extension_fields
+from slayer.storage.qualified_references import qualified_stages, stage_readings
+from slayer.storage.stored_literals import LiteralGates, typed_stage
 from slayer.storage.document_mapping import as_expression, with_dataset, without_dataset
 from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle, warn_broken_model_metrics
 from slayer.storage.semantic_model_edits import UNSET, MetricSpec, edited_document, metric_spec, with_datasets
@@ -163,14 +164,25 @@ _INLINING: ContextVar[frozenset[tuple[str, str]]] = ContextVar("_INLINING", defa
 _QUALIFIED_AT = {"SlayerModel": 28, "SlayerQuery": 17, "Memory": 13}
 
 
-def _unqualified(query: Any, *, document_version: int, entity: str) -> bool:
-    """Whether a raw stored query was written before qualified references (a version-less one, by its document)."""
+def _stage_below(query: Any, *, document_version: int, entity: str, at: Mapping[str, int]) -> bool:
+    """Whether a raw stored query was written below the versions ``at`` (a version-less one, by its document)."""
     if not isinstance(query, dict):
         return False
     version = query.get("version")
     if version is not None:
-        return int(version) < _QUALIFIED_AT["SlayerQuery"]
-    return document_version < _QUALIFIED_AT[entity]
+        return int(version) < at["SlayerQuery"]
+    return document_version < at[entity]
+
+
+def _unqualified(query: Any, *, document_version: int, entity: str) -> bool:
+    """Whether a raw stored query was written before qualified references."""
+    return _stage_below(query, document_version=document_version, entity=entity, at=_QUALIFIED_AT)
+
+
+def _stage_gates(query: Any, *, document_version: int, entity: str, legacy: bool) -> LiteralGates:
+    """The literal rewrites a raw stored query calls for; ``legacy`` when its document's own gate repairs them."""
+    return LiteralGates(legacy=legacy, whole_day=_stage_below(
+        query, document_version=document_version, entity=entity, at=UPGRADED_AT))
 # The loading query engine's client source, set by its storage view around each call it delegates.
 CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
@@ -826,11 +838,12 @@ class StorageBackend(ABC):
         """Patch document ``document``: dataset ``name`` becomes ``mutate(current)`` (``None`` removes it), read and
         written as one serialized step."""
         datasource = await self.get_datasource(data_source)
-        ds_type = datasource.type if datasource is not None else None
+        ds_type, granularities = (datasource.type, datasource.granularities) if datasource is not None else (None, [])
         reader = dialect_for_ds_type(ds_type).sqlglot_name
 
         def patch(text: str) -> str:
-            current = decompose(text=text, name=document, data_source=data_source, ds_type=ds_type)
+            current = decompose(text=text, name=document, data_source=data_source, ds_type=ds_type,
+                                granularities=granularities)
             old = next((d for d in current.datasets if d.name.casefold() == name.casefold()), None)
             new = mutate(old)
             base = (new._read_as if new is not None and new._read_as is not None else None) or old
@@ -1068,7 +1081,8 @@ class StorageBackend(ABC):
         standalone = [n for ds, n in await self._standalone_identities() if ds == data_source]
         datasource = await self.get_datasource(data_source)
         return build_index(data_source=data_source, documents=documents, standalone=standalone,
-                           ds_type=datasource.type if datasource is not None else None)
+                           ds_type=datasource.type if datasource is not None else None,
+                           granularities=datasource.granularities if datasource is not None else [])
 
     async def _document_dataset(self, name: str, *, data_source: str | None) -> SlayerDataset | None:
         """The document dataset ``name`` (case-insensitive), ``None`` when no document declares it; raises
@@ -1150,7 +1164,8 @@ class StorageBackend(ABC):
         checked_document(text=text, name=name)
         datasource = await self.get_datasource(data_source)
         decomposed = decompose(text=text, name=name, data_source=data_source,
-                               ds_type=datasource.type if datasource is not None else None)
+                               ds_type=datasource.type if datasource is not None else None,
+                               granularities=datasource.granularities if datasource is not None else [])
         wanted = {n.casefold() for n in names}
         return [d.model_copy(deep=True, update={"semantic_model": None})
                 for d in decomposed.datasets if d.name.casefold() in wanted]
@@ -1171,7 +1186,8 @@ class StorageBackend(ABC):
         for other, text in others:
             with contextlib.suppress(Exception):
                 index = build_index(data_source=data_source, documents=[(other, text)], standalone=[],
-                                    ds_type=datasource.type if datasource else None)
+                                    ds_type=datasource.type if datasource else None,
+                                    granularities=datasource.granularities if datasource else [])
                 taken.update({k: f"dataset {d.name!r} of semantic model {other!r}" for k, d in index.datasets.items()})
                 other_metrics.update({k: f"metric {m.name!r} of semantic model {other!r}"
                                       for k, m in index.metrics.items()})
@@ -1238,7 +1254,8 @@ class StorageBackend(ABC):
         ds_type = datasource.type if datasource is not None else None
         reader = dialect_for_ds_type(ds_type).sqlglot_name
         specs = [metric_spec(m) for m in metrics or []]
-        current = decompose(text=text, name=name, data_source=data_source, ds_type=ds_type)
+        current = decompose(text=text, name=name, data_source=data_source, ds_type=ds_type,
+                            granularities=datasource.granularities if datasource is not None else [])
         members = [*current.datasets, *moved]
         other_metrics = [m for m in await self.list_model_scoped_metrics(data_source) if m.semantic_model != name]
         others = [m.name for m in other_metrics]
@@ -1634,7 +1651,7 @@ class StorageBackend(ABC):
                 keys=keys_for(entity="SlayerModel", version=pre_version),
             )
         typing = StoredDatasets()
-        if needs_typing("SlayerModel", data):
+        if needs_typing(data):
             typing = (await self._stored_datasets(data_source)).model_copy(update={"stages": _stage_names(data)})
         with typing_with(typing):
             dataset, write_back = await self._migrated_dataset(name=name, data=data, data_source=data_source)
@@ -1655,6 +1672,8 @@ class StorageBackend(ABC):
         queries = data.get("source_queries")
         pending = [_unqualified(q, document_version=pre_version, entity="SlayerModel")
                    for q in queries] if isinstance(queries, list) else []
+        gates = [_stage_gates(q, document_version=pre_version, entity="SlayerModel", legacy=p)
+                 for q, p in zip(queries, pending)] if isinstance(queries, list) else []
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
             if pre_version < _RELATIONSHIP_TARGET_REPAIR_BELOW_VERSION:
@@ -1666,9 +1685,7 @@ class StorageBackend(ABC):
             )
             await self._canonicalize_relationship_key_spellings(data=data, data_source=data_source)
             await self._declare_relationship_keys(name=name, data=data, data_source=data_source)
-            await self._repair_source_query_filters(name=name, data=data, data_source=data_source)
-            data = await self._inlined_source_queries(name=name, data=data, data_source=data_source)
-            data = await self._qualified_source_queries(name=name, data=data, data_source=data_source,
+            data = await self._converted_source_queries(name=name, data=data, data_source=data_source, gates=gates,
                                                         pending=pending)
             # Collapse stored exact-inverse mirror pairs.
             data = await self._dedup_exact_inverse_relationships(
@@ -1682,9 +1699,9 @@ class StorageBackend(ABC):
                 await self._apply_refinement_or_raise(
                     name=name, data=data, data_source=data_source,
                 )
-        elif any(pending):
+        elif any(pending) or any(g.any for g in gates) or any(map(holds_removed_forms, queries if isinstance(queries, list) else [])):
             # A current document can hold an older nested stage: its own version decides.
-            data = await self._qualified_source_queries(name=name, data=data, data_source=data_source,
+            data = await self._converted_source_queries(name=name, data=data, data_source=data_source, gates=gates,
                                                         pending=pending)
             write_back = True
         dataset = SlayerDataset.model_validate(data)
@@ -1779,28 +1796,69 @@ class StorageBackend(ABC):
                 keys.extend(_incoming_keys(sibling=sibling, target=name, target_fields=fields))
         return keys
 
-    async def _inlined_source_queries(self, *, name: str, data: dict, data_source: str) -> dict:
-        """``data`` with its stages' extension fields inlined (``extension_fields``)."""
+    async def _converted_source_queries(
+        self, *, name: str, data: dict, data_source: str, gates: list[LiteralGates], pending: list[bool],
+    ) -> dict:
+        """``data`` with its stages converted (``_converted_queries``), the document itself out of its own reads."""
         queries = data.get("source_queries")
-        if not isinstance(queries, list) or not all(isinstance(q, dict) for q in queries):
+        if not isinstance(queries, list) or not all(isinstance(q, dict) for q in queries) or len(queries) != len(pending):
             return data
         token = _INLINING.set(_INLINING.get() | {(data_source, name)})
         try:
-            inlined = await self._inlined_queries(queries=queries, data_source=data_source, document=name)
+            converted = await self._converted_queries(queries=queries, gates=gates, pending=pending,
+                                                      data_source=data_source, document=name)
         finally:
             _INLINING.reset(token)
-        return data if inlined is None else {**data, "source_queries": inlined}
+        return {**data, "source_queries": converted}
 
-    async def _inlined_queries(self, *, queries: list[dict], data_source: str | None, document: str) -> list | None:
-        """Raw stored ``queries`` with their extension fields inlined; ``None`` when none holds a removed form."""
-        migrated = [_mig.migrate("SlayerQuery", _mig.stamp_stored(q)) for q in queries]
-        if not any(holds_removed_forms(q) for q in migrated):
-            return None
-        converted = inline_extension_fields(
-            migrated, datasets_by_ds=await self._converting_datasets(data_source), data_source=data_source,
-            priority=await self.get_datasource_priority(), document=document,
-        )
-        return [without_none(q.model_dump(mode="json")) for q in converted]
+    async def _converted_queries(
+        self, *, queries: list[dict], gates: list[LiteralGates], pending: list[bool], data_source: str | None,
+        document: str,
+    ) -> list:
+        """Raw stored ``queries`` (one query list) migrated, then over one read of the datasets they read: their gated
+        literals typed, their extension fields inlined, and each ``pending`` one's references qualified."""
+        with _mig.migrating_document(document, stored=True):
+            migrated = [_mig.migrate("SlayerQuery", _mig.stamp_stored(q)) for q in queries]
+        removed = any(holds_removed_forms(q) for q in migrated)
+        if not (removed or any(pending) or any(g.any for g in gates)):
+            return migrated
+        datasets_by_ds = await self._converting_datasets(data_source)
+        priority = await self.get_datasource_priority()
+        if any(g.any for g in gates):
+            migrated = await self._typed_queries(migrated, gates=gates, datasets_by_ds=datasets_by_ds,
+                                                 data_source=data_source, priority=priority, document=document)
+        if removed:
+            converted = inline_extension_fields(migrated, datasets_by_ds=datasets_by_ds, data_source=data_source,
+                                                priority=priority, document=document)
+            migrated = [without_none(q.model_dump(mode="json")) for q in converted]
+        if not any(pending):
+            return migrated
+        return self._qualified_queries(queries=migrated, pending=pending, datasets_by_ds=datasets_by_ds,
+                                       data_source=data_source, priority=priority, document=document)
+
+    async def _typed_queries(
+        self, queries: list[dict], *, gates: list[LiteralGates], datasets_by_ds: dict[str, dict[str, SlayerDataset]],
+        data_source: str | None, priority: list[str], document: str,
+    ) -> list[dict]:
+        """Migrated raw stored ``queries`` with their gated literals typed as the binder reads them."""
+        try:
+            with _mig.migrating_document(document, stored=True):
+                validated = [SlayerQuery.model_validate(without_extension_fields(q)) for q in queries]
+        except ValueError:
+            return queries  # the conversion after it refuses the document
+        readings = stage_readings(validated, datasets_by_ds=datasets_by_ds, data_source=data_source, priority=priority)
+        stages = _stage_names({"source_queries": queries})
+        out: list[dict] = []
+        for query, gate, reading in zip(queries, gates, readings):
+            if not gate.any:
+                out.append(query)
+                continue
+            types = None
+            if gate.whole_day and holds_extension_date_literal(query):
+                types = (await self._stored_datasets(reading.data_source)).model_copy(update={"stages": stages})
+            label = query.get("name") if isinstance(query.get("name"), str) and query.get("name") else document
+            out.append(typed_stage(query, gates=gate, reading=reading, extension_types=types, label=label))
+        return out
 
     async def _converting_datasets(self, data_source: str | None) -> dict[str, dict[str, SlayerDataset]]:
         """The loadable datasets a stored query's conversion reads, by datasource (the documents converting excluded)."""
@@ -1816,19 +1874,6 @@ class StorageBackend(ABC):
                 datasets_by_ds.setdefault(ds, {})[dataset.name] = dataset
         return datasets_by_ds
 
-    async def _qualified_source_queries(self, *, name: str, data: dict, data_source: str, pending: list[bool]) -> dict:
-        """``data`` with its pre-2.0 stages' references qualified (``qualified_references``)."""
-        queries = data.get("source_queries")
-        if not any(pending) or not isinstance(queries, list) or len(queries) != len(pending):
-            return data
-        token = _INLINING.set(_INLINING.get() | {(data_source, name)})
-        try:
-            qualified = await self._qualified_queries(queries=queries, pending=pending, data_source=data_source,
-                                                      document=name)
-        finally:
-            _INLINING.reset(token)
-        return {**data, "source_queries": qualified}
-
     async def incident_edge_names(self, name: str, *, data_source: str) -> frozenset[str]:
         """The names of the stored edges incident to dataset ``name`` of ``data_source``, declared on either side."""
         return (await self._stored_datasets(data_source)).incident_names(name)
@@ -1841,100 +1886,22 @@ class StorageBackend(ABC):
         pending = [v is not None and int(v) < _QUALIFIED_AT["SlayerQuery"] for v in versions]
         if len(pending) != len(queries) or not any(pending):
             return queries
-        qualified = await self._qualified_queries(queries=queries, pending=pending, data_source=data_source,
-                                                  document=document)
+        qualified = self._qualified_queries(
+            queries=list(queries), pending=pending, datasets_by_ds=await self._converting_datasets(data_source),
+            data_source=data_source, priority=await self.get_datasource_priority(), document=document)
         return [SlayerQuery.model_validate(q) for q in qualified]
 
-    async def _qualified_queries(
-        self, *, queries: list[Any], pending: list[bool], data_source: str | None, document: str,
+    def _qualified_queries(
+        self, *, queries: list[Any], pending: list[bool], datasets_by_ds: dict[str, dict[str, SlayerDataset]],
+        data_source: str | None, priority: list[str], document: str,
     ) -> list[Any]:
         """Raw stored ``queries`` with each ``pending`` one's references qualified, keeping their meaning."""
         with _mig.migrating_document(document, stored=True):
             validated = [q if isinstance(q, SlayerQuery) else SlayerQuery.model_validate(
                 _mig.stamp_stored(q) if isinstance(q, dict) else q) for q in queries]
-        converted = qualified_stages(
-            validated, pending=pending, datasets_by_ds=await self._converting_datasets(data_source),
-            data_source=data_source, priority=await self.get_datasource_priority(),
-        )
+        converted = qualified_stages(validated, pending=pending, datasets_by_ds=datasets_by_ds,
+                                     data_source=data_source, priority=priority)
         return [without_none(q.model_dump(mode="json")) for q in converted]
-
-    async def _repair_source_query_filters(self, *, name: str, data: dict, data_source: str) -> None:
-        queries = data.get("source_queries")
-        if not isinstance(queries, list):
-            return
-        stage_names = frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str))
-        with _mig.migrating_document(name, stored=True):
-            for query in queries:
-                await self._repair_query_filters(query=query, data_source=data_source, stage_names=stage_names)
-
-    async def _repair_query_filters(
-        self, *, query: Any, data_source: str | None, stage_names: frozenset[str] = frozenset(),
-    ) -> None:
-        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP field;
-        the stored query is migrated first, so its filters read under the current grammar."""
-        if not isinstance(query, dict):
-            return
-        whole_day_dates = below_date_only_upgrade("SlayerQuery", query)
-        migrated = _mig.migrate("SlayerQuery", _mig.stamp_stored(query))
-        query.clear()
-        query.update(migrated)
-        filters = query.get("filter")
-        if not isinstance(filters, list):
-            return
-        found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]
-        if not any(found):
-            return
-        resolved = await self._query_host(source=query.get("population"), data_source=data_source,
-                                          stage_names=stage_names)
-        if resolved is None:
-            return
-        host, datasets = resolved
-        extensions = query.get("extensions")
-        extensions = [e for e in extensions if isinstance(e, dict)] if isinstance(extensions, list) else []
-        for i, pairs in enumerate(found):
-            if pairs is None:
-                continue
-            temporal = [
-                literal for literal, field in pairs
-                if stored_datatype(datasets.field_type(host=host, parts=[p.name for p in field.parts], extensions=extensions))
-                in TEMPORAL_DATATYPES
-            ]
-            if temporal and whole_day_dates:
-                # A repaired legacy date is a date-only literal meant as its whole day, as stored.
-                filters[i] = upgraded_text(repaired_filter(filters[i], temporal), host=host, extensions=extensions,
-                                           datasets=datasets, label=query.get("name"))
-            elif temporal:
-                filters[i] = repaired_filter(filters[i], temporal)
-
-    async def _query_host(
-        self, *, source: Any, data_source: str | None, stage_names: frozenset[str],
-    ) -> tuple[dict, StoredDatasets] | None:
-        """The raw stored dataset (or the spine) a stored query reads, and the stored datasets typing it; ``None`` for a stage
-        or an unresolvable source."""
-        if isinstance(source, dict) and isinstance(source.get("fields"), list):
-            inline_ds = str(source.get("data_source") or data_source)
-            return source, (await self._stored_datasets(inline_ds)).model_copy(update={"stages": stage_names})
-        if not isinstance(source, str):
-            return None
-        if data_source is None:
-            try:
-                data_source = await self._source_data_source(source)
-            except (AmbiguousDatasetError, AmbiguousReferenceError):
-                return None
-        datasets = (await self._stored_datasets(data_source)).model_copy(update={"stages": stage_names})
-        host = datasets.host(source)
-        return (host, datasets) if host is not None else None
-
-    async def _source_data_source(self, source: str) -> str | None:
-        """The datasource of the stored dataset an unquoted ``source`` names (the spine counted as a dataset), else the
-        store's only datasource; raises when several stored datasets or datasources hold it."""
-        names = {n for _, n in await self._list_all_dataset_identities()}
-        name = match_name(name=source, declared=sorted(names | {TIME_SPINE_DATASET}), quoted=False)
-        if name not in names:
-            datasources = await self.list_datasources()
-            return datasources[0] if len(datasources) == 1 else None
-        identity = await self.resolve_dataset_identity(name)
-        return identity[0] if identity is not None else None
 
     async def _stored_datasets(self, data_source: str | None) -> StoredDatasets:
         """Every raw stored dataset dict of ``data_source``."""
@@ -1946,17 +1913,6 @@ class StorageBackend(ABC):
             if isinstance(raw, dict):
                 datasets[name] = dataset_in(raw, LEGACY_KEYS)
         return StoredDatasets(data_source=data_source, datasets=datasets)
-
-    async def _memory_typing(self, data: dict) -> StoredDatasets | None:
-        """The stored datasets of the datasource a stored memory's query reads; ``None`` (nothing typed) when that
-        datasource is ambiguous."""
-        data_source, source = memory_source_dataset(data)
-        if data_source is None and source is not None:
-            try:
-                data_source = await self._source_data_source(source)
-            except (AmbiguousDatasetError, AmbiguousReferenceError):
-                return None
-        return await self._stored_datasets(data_source)
 
     async def _dedup_exact_inverse_relationships(
         self, *, name: str, data: dict, data_source: str,
@@ -2211,24 +2167,18 @@ class StorageBackend(ABC):
                 data = rewrite_memory_doc(data, await self._custom_bucket_calls(
                     data_sources=await self._memory_data_sources(data)),
                     keys=keys_for(entity="Memory", version=int(data["version"])))
-            typing = await self._memory_typing(data) if needs_typing("Memory", data) else StoredDatasets()
-            unqualified = isinstance(data, dict) and _unqualified(
-                data.get("query"), document_version=int(data["version"]), entity="Memory")
-            with typing_with(typing):
-                # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
-                if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
-                    await self._repair_query_filters(query=data.get("query"), data_source=None)
-                # ...and so does the extension-field inlining, on every load of a pre-v10 document.
-                if isinstance(data, dict) and int(data["version"]) < _EXTENSION_FIELDS_INLINED_AT and isinstance(
-                        data.get("query"), dict):
-                    inlined = await self._inlined_queries(queries=[data["query"]], data_source=None, document=memory_id)
-                    data = data if inlined is None else {**data, "query": inlined[0]}
-                # ...and so does the upgrade to qualified references.
-                if unqualified and isinstance(data, dict):
-                    qualified = await self._qualified_queries(queries=[data["query"]], pending=[True],
+            query = data.get("query") if isinstance(data, dict) else None
+            if isinstance(query, dict):
+                # Memories are never written back, so their query converts on every load.
+                version = int(data["version"])
+                pending = _unqualified(query, document_version=version, entity="Memory")
+                gates = _stage_gates(query, document_version=version, entity="Memory",
+                                     legacy=version < _MEMORY_FILTER_REPAIR_BELOW_VERSION)
+                if pending or gates.any or version < _EXTENSION_FIELDS_INLINED_AT or holds_removed_forms(query):
+                    converted = await self._converted_queries(queries=[query], gates=[gates], pending=[pending],
                                                               data_source=None, document=memory_id)
-                    data = {**data, "query": qualified[0]}
-                return Memory.model_validate(data)
+                    data = {**data, "query": converted[0]}
+            return Memory.model_validate(data)
 
     @abstractmethod
     async def _delete_memory_row(self, memory_id: str) -> bool:

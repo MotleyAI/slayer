@@ -31,6 +31,8 @@ from tests._stored_upgrade_fixtures import (
     query_backed_v10,
     raw_doc,
     raw_store,
+    region_join,
+    regions_v10,
     run,
     seed_shop,
     stored_bytes,
@@ -232,6 +234,25 @@ class TestQualification:
         assert [f.casefold() for f in loaded.filter or []] == ["upper(customers.region) = 'north'"]
         resp = await run(storage, loaded)
         assert [r["rev"] for r in resp.data] == [120.0]
+
+    async def test_a_quoted_hop_in_its_exact_spelling_is_inlined(self, tmp_path, shop_ds) -> None:
+        storage = await _quoted_hop_store(tmp_path, shop_ds, written='customers."Regions".lbl')
+        model, _ = await _load(storage, "quoted_hop")
+        assert [d.field for d in _stage_of(model).dimensions or []] == ["upper(customers.Regions.label)"]
+
+    async def test_a_quoted_hop_in_another_case_does_not_resolve(self, tmp_path, shop_ds) -> None:
+        storage = await _quoted_hop_store(tmp_path, shop_ds, written='customers."REGIONS".lbl')
+        with pytest.raises(StoredDocumentLoadError, match="does not resolve"):
+            await storage.get_dataset("quoted_hop", data_source=DS)
+    # A quoted hop inside an extension field's own sql: DEV-2438.
+
+
+async def _quoted_hop_store(tmp_path, ds: DatasourceConfig, *, written: str) -> StorageBackend:
+    stage = _stage(extensions=[_ext("Regions", {"name": "lbl", "sql": "upper(label)"})],
+                   dimensions=[written], measures=[_REV])
+    return await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=ds, models=[
+        orders_v10(), customers_v10(joins=[region_join("Regions")]), regions_v10(name="Regions"),
+        _qb("quoted_hop", stage)])
 
 
 _Q_AMOUNT = "iif(orders.status = 'ok', orders.amount, NULL)"

@@ -23,6 +23,7 @@ from slayer.core.deprecation import outside_stacklevel
 from slayer.core.errors import (
     AmbiguousReferenceError, OssieDocumentInvalidError, SlayerError, StoredDocumentLoadError, UnreadableDocumentError,
 )
+from slayer.core.granularity import CustomGranularity
 from slayer.core.warnings import SlayerUnloadableDocumentWarning, UnloadableDocumentWarning
 from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
@@ -41,6 +42,7 @@ from slayer.core.keys import (
     SqlFragmentKey,
     StarKey,
     TimePointCmpKey,
+    TimeTruncKey,
     TransformKey,
     ValueKey,
     aggregation_source_type,
@@ -75,6 +77,7 @@ from slayer.sql.field_expansion import expand_field_definition_parts_sync, expan
 from slayer.sql.root_scope import root_scope_field_ids
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.ossie import OssieDialect
 from slayer.sql.render.aggregates import AggregateSpec, render_aggregate
 from slayer.sql.render.value_expr import AliasFacilities, CompositeFacilities, RenderContext, render_value_key
 
@@ -233,6 +236,11 @@ def _refuse_slayer_only(agg: AggregateKey) -> None:
         raise _Refused("is a windowed or partitioned aggregate", _RESTORE)
 
 
+def _calls(tree: exp.Expr) -> set[str]:
+    """The lower-cased names of the functions ``tree`` calls."""
+    return {(f.name if isinstance(f, exp.Anonymous) else f.sql_name()).lower() for f in tree.find_all(exp.Func)}
+
+
 def _outermost_aggregates(key: ValueKey) -> Iterator[AggregateKey]:
     if isinstance(key, AggregateKey):
         yield key
@@ -269,7 +277,8 @@ class _Exporter:
         self.dialect: SqlDialect = dialect_for_ds_type(config.type)
         self.target = self.dialect.sqlglot_name
         self.token = ossie_token(config.type)
-        self.neutral = SqlDialect()
+        self.neutral = OssieDialect()
+        self.granularities = config.granularity_definitions
         self.virtual = virtual
         self.graph: dict[str, SlayerDataset] = {
             name: r if isinstance(r := (resolved or {}).get(name), SlayerDataset) else d for name, d in datasets.items()}
@@ -668,7 +677,7 @@ class _Exporter:
             label = f"Metric {slayer_metric.name or slayer_metric.expression!r} on {name!r}"
             try:
                 key = bind_dataset_expression(slayer_metric.text, dataset=ds.graph, datasets=list(self.graph.values()),
-                                         dialect=self.target)
+                                              dialect=self.target, granularities=self.granularities)
             except Exception as exc:  # noqa: BLE001 — an unbindable metric travels verbatim
                 self._carry_metric(ds, slayer_metric, label=f"{label} does not bind ({exc})", needs=set())
                 continue
@@ -717,14 +726,30 @@ class _Exporter:
         readers: list[str] = []
         for agg in aggregates:
             readers.append(self._aggregate_reader(ds, agg))
-        portable = not any(a.agg == "count_distinct_approx" for a in aggregates)
+        portable = not any(a.agg == "count_distinct_approx" for a in aggregates) and not any(
+            isinstance(k, TimeTruncKey) and isinstance(k.granularity, CustomGranularity) for k in walk_value_keys(key))
         scoped = len(set(readers)) == 1 and readers[0] not in self.fixed
         try:
             tree = self._render(ds.graph, _instant_comparisons(key), scoped=scoped, portable=portable)
         except Exception as exc:  # noqa: BLE001 — anything the shared renderer refuses stays SLayer-only
             raise _Refused(f"does not render as standard SQL ({exc})", _RESTORE) from exc
+        if not portable:
+            self._check_dialect_entry(self.graph[readers[0]] if scoped else ds.graph, tree)
         return _Metric(home=ds.dataset.name, metric=metric, scope="dataset" if scoped else "model",
                        dataset=readers[0], tree=tree, portable=portable)
+
+    def _check_dialect_entry(self, receiver: SlayerDataset, tree: exp.Expr) -> None:
+        """Refuse a dialect entry SLayer cannot read back on ``receiver``, or that calls SLayer's own registered
+        functions."""
+        registered = sorted(_calls(tree) & self.dialect.slayer_registered_functions)
+        if registered:
+            raise _Refused(f"renders on {self.token} only through SLayer's own functions {registered}", _RESTORE)
+        try:
+            bind_dataset_expression(tree.sql(dialect=self.target), dataset=receiver, datasets=list(self.graph.values()),
+                                    dialect=self.target, granularities=self.granularities)
+        except Exception as exc:  # noqa: BLE001 — any failure means load could not read the entry
+            raise _Refused(f"renders on {self.token} only as SQL SLayer cannot read back "
+                           f"({str(exc).splitlines()[0]})", _RESTORE) from exc
 
     def _aggregate_reader(self, ds: _Dataset, agg: AggregateKey) -> str:
         """The one dataset ``agg`` reads, or refused."""
@@ -784,7 +809,7 @@ class _Exporter:
         def row(value: ValueKey) -> Expression:
             leaves = [k for k in walk_value_keys(value) if isinstance(k, (FieldKey, FieldSqlKey))]
             slots = {leaf: f"s{i}" for i, leaf in enumerate(leaves)}
-            aliases = AliasFacilities(slot_id_by_key=slots,
+            aliases = AliasFacilities(slotted_kinds=(FieldKey, FieldSqlKey), slot_id_by_key=slots,
                                       value_by_slot_id={s: self._ref(home, k, scoped=scoped) for k, s in slots.items()})
             return _ossie_division(render_value_key(key=value, ctx=RenderContext(
                 dialect=dialect, aliases=aliases, field_type=field_type)))
@@ -873,7 +898,8 @@ class _Exporter:
             aggs[str(_SENTINEL + k)] = hit
             text = f"{text[:start]}({_SENTINEL + k}){text[end:]}"
         try:
-            key = bind_dataset_expression(text, dataset=home, datasets=list(self.graph.values()), dialect=self.target)
+            key = bind_dataset_expression(text, dataset=home, datasets=list(self.graph.values()), dialect=self.target,
+                                          granularities=self.granularities)
             tree = self._render(home, _instant_comparisons(key), scoped=False, portable=metric.portable)
         except Exception:  # noqa: BLE001 — the expanded form stands
             return None

@@ -7,6 +7,7 @@ datasource gets an in-memory entry for it, never written back.
 from __future__ import annotations
 
 import functools
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -21,6 +22,7 @@ from slayer.core.errors import (
 from slayer.core.field_expression import (
     DialectEntry, Expression, ExpressionObject, portable_text, running_form, token,
 )
+from slayer.core.granularity import CustomGranularity, granularity_key
 from slayer.core.syntax import parse_expr
 from slayer.core import slayer_extension as ext
 from slayer.core.models import DatasetField, DatasetMetric, ExtensionNote, SlayerDataset
@@ -254,7 +256,10 @@ def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: st
 
 
 @functools.lru_cache(maxsize=256)
-def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> Decomposition:
+def _decomposed(text: str, name: str, data_source: str, ds_type: str | None,
+                granularities: tuple[str, ...]) -> Decomposition:
+    """``granularities``: the datasource's custom granularities as JSON (a hashable cache key)."""
+    defined = {granularity_key(g.name): g for g in map(CustomGranularity.model_validate_json, granularities)}
     doc = checked_document(text=text, name=name)
     target = ossie_token(ds_type)
     reader = dialect_for_ds_type(ds_type).sqlglot_name
@@ -267,7 +272,7 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
         owner, declared = restored_relationship(rel, datasets=datasets, notes=datasets[rel.from_dataset].extension_notes)
         datasets[owner].relationships.append(
             declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)}).from_document(rel.from_dataset))
-    restore_metrics(datasets, restored=restored, dialect=reader)
+    restore_metrics(datasets, restored=restored, dialect=reader, granularities=defined)
     metrics = []
     for m in doc.metrics or []:
         expression, problem = _runnable_metric(m.expression, target=target)
@@ -296,9 +301,12 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
                          notes=notes, chained=chained)
 
 
-def decompose(*, text: str, name: str, data_source: str, ds_type: str | None) -> Decomposition:
-    """``text`` decomposed for a datasource of ``ds_type``; raises ``OssieDocumentInvalidError`` when invalid."""
-    return _decomposed(text, name, data_source, ds_type).model_copy(deep=True)
+def decompose(*, text: str, name: str, data_source: str, ds_type: str | None,
+              granularities: Sequence[CustomGranularity]) -> Decomposition:
+    """``text`` decomposed for a datasource of ``ds_type`` defining ``granularities``; raises
+    ``OssieDocumentInvalidError`` when invalid."""
+    key = tuple(g.model_dump_json() for g in granularities)
+    return _decomposed(text, name, data_source, ds_type, key).model_copy(deep=True)
 
 
 def _aggregated(node: exp.Expr) -> bool:
@@ -495,13 +503,14 @@ class DocumentIndex(BaseModel):
 
 
 def build_index(*, data_source: str, documents: list[tuple[str, str]], standalone: list[str],
-                ds_type: str | None) -> DocumentIndex:
+                ds_type: str | None, granularities: Sequence[CustomGranularity]) -> DocumentIndex:
     """Decompose ``documents`` (``(name, text)``) of ``data_source`` and quarantine every name two owners claim."""
     index = DocumentIndex(data_source=data_source)
     decomposed: list[Decomposition] = []
     for name, text in documents:
         try:
-            decomposed.append(decompose(text=text, name=name, data_source=data_source, ds_type=ds_type))
+            decomposed.append(decompose(text=text, name=name, data_source=data_source, ds_type=ds_type,
+                                        granularities=granularities))
         except Exception as exc:  # noqa: BLE001 — one unloadable document never hides the others
             index.failures.append(StoredDocumentLoadError(kind="semantic_model", name=name, data_source=data_source,
                                                           cause=exc))

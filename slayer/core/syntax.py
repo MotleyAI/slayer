@@ -260,6 +260,8 @@ _DISTINCT_ONLY = ("DISTINCT is supported only as count(distinct x), i.e. count_d
                   "i.e. collect(x)")
 #: Calls taking a leading DISTINCT, and the aggregation each spells.
 _DISTINCT_CALLS = {"count": "count_distinct", "array_agg": "collect"}
+_NOT_IN = "not in"
+_IN_OPS = frozenset({"in", _NOT_IN})
 
 
 class _Problem(ValueError):
@@ -412,6 +414,9 @@ class _State:
         self.spans: Optional[List["_ColonSpan"]] = None
         #: While ``reference_spans`` reads: each reference node by id, with its offsets.
         self.refs: Optional[Dict[int, Tuple[Any, int, int]]] = None
+        #: While ``literal_comparisons`` reads: each string literal by id with its offsets, and each written comparison.
+        self.literals: Optional[Dict[int, Tuple[Any, int, int]]] = None
+        self.compared: Optional[Dict[int, Any]] = None
 
     def reset(self, text: str) -> None:
         self.text, self.farthest, self.calls, self.methods, self.spellings = text, 0, {}, {}, {}
@@ -538,12 +543,23 @@ def _number(toks: List[Any]) -> Literal:
     return Literal(value=Decimal(text))
 
 
-def _string(toks: List[Any]) -> Literal:
-    return Literal(value=toks[0][1:-1].replace("''", "'"))
+def _string(_s: str, loc: int, toks: pp.ParseResults) -> Literal:
+    raw = _first(toks)
+    node = Literal(value=raw[1:-1].replace("''", "'"))
+    if _STATE.literals is not None:
+        _STATE.literals[id(node)] = (node, loc, loc + len(raw))
+    return node
+
+
+def _written_comparison(node: Any) -> Any:
+    """``node``, recorded for ``literal_comparisons`` as a comparison written in the text."""
+    if _STATE.compared is not None:
+        _STATE.compared[id(node)] = node
+    return node
 
 
 _NUMBER = _on(_t(pp.Regex(r"(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?").set_name("number")), _number)
-_STRING = _on(_t(pp.Regex(r"'(?:[^']|'')*'").set_name("string")), _string)
+_STRING = _t(pp.Regex(r"'(?:[^']|'')*'").set_name("string")).set_parse_action(_string)
 _CONSTANT_WORDS = {"True": True, "False": False, "None": None}
 _SQL_CONSTANT_WORDS = {"true": True, "false": False, "null": None}
 
@@ -1190,7 +1206,8 @@ def _in_scalar_item(item: Any) -> Literal | Placeholder:
 def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
     """``L IN (M1, M2)`` over lists is ``L = M1 OR L = M2``."""
     if not isinstance(right, _ListItems):
-        return Cmp(op="not in" if negate else "in", left=left, right=right)
+        node = Cmp(op=_NOT_IN if negate else "in", left=left, right=right)
+        return _written_comparison(node) if isinstance(right, TupleLit) else node
     equalities = tuple(Cmp(op="==", left=left, right=item) for item in right.items)
     return _negated(equalities[0] if len(equalities) == 1 else BoolOp(op="or", operands=equalities), negate)
 
@@ -1207,7 +1224,7 @@ _CMP_SUFFIX = (
     _suffix(_sym(r"==|=", "comparison") + pp.Suppress(_kw("any")) + LPAR + _concat_level + RPAR,
             lambda left, t: _spelled_call("= ANY(…)", ScalarCall(name="contains", args=(t[1], left))))
     | _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
-            lambda left, t: Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "="))
+            lambda left, t: _written_comparison(Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "=")))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("distinct")) + pp.Suppress(_kw("from")) + _concat_level,
               lambda left, t: Cmp(op="is not distinct from" if t[0] else "is distinct from", left=left, right=t[1]))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("null") | pp.Regex(r"None\b")),
@@ -1312,6 +1329,63 @@ def reference_spans(text: str) -> Tuple[ParsedExpr, Mapping[int, Tuple[int, int]
             _STATE.refs = None
     return parsed, MappingProxyType(
         {key: (start, start + len(text[start:end].rstrip())) for key, (_node, start, end) in found.items()})
+
+
+class LiteralComparison(BaseModel):
+    """A string literal ``value`` at ``text[start:end]`` compared directly with the reference ``parts`` (per-segment
+    ``quoted``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    value: str
+    start: int
+    end: int
+    parts: Tuple[str, ...]
+    quoted: Tuple[bool, ...]
+
+
+def _reference_reading(node: Any) -> Optional[Tuple[Tuple[str, ...], Tuple[bool, ...]]]:
+    if isinstance(node, Ref) and not node.evaluated:
+        return (node.name,), (node.quoted,)
+    if isinstance(node, DottedRef) and not node.evaluated:
+        return node.parts, tuple(node.quoted_at(i) for i in range(len(node.parts)))
+    return None
+
+
+def _compared_literals(node: Cmp) -> Iterator[Tuple[Any, Any]]:
+    """``(literal, reference)`` per string literal ``node`` compares directly with a reference."""
+    if node.op in _IN_OPS:
+        if isinstance(node.right, TupleLit):
+            yield from ((e, node.left) for e in node.right.elements)
+        return
+    yield from ((node.right, node.left), (node.left, node.right))
+
+
+@lru_cache(maxsize=8192)
+def literal_comparisons(text: str) -> Tuple[LiteralComparison, ...]:
+    """Each string literal ``text`` compares directly with a column reference — ``=``, ``==``, ``!=``, ``<>``, ``<``,
+    ``<=``, ``>``, ``>=`` either way round, or an element of an all-literal ``[NOT] IN`` list — in source order; none
+    when ``text`` does not parse."""
+    with _PARSE_LOCK:
+        _STATE.reset(text)
+        _STATE.literals, _STATE.compared = {}, {}
+        try:
+            parsed = _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)[0]
+            literals, compared = _STATE.literals, _STATE.compared
+        except (ValueError, pp.ParseBaseException):
+            return ()
+        finally:
+            _STATE.literals = _STATE.compared = None
+    out: List[LiteralComparison] = []
+    written = (n for n in walk_parsed(parsed) if isinstance(n, Cmp) and compared.get(id(n)) is n)
+    for cmp in written:
+        for literal, other in _compared_literals(cmp):
+            reading = _reference_reading(other)
+            located = literals.get(id(literal))
+            if reading is not None and located is not None and located[0] is literal and isinstance(literal.value, str):
+                out.append(LiteralComparison(
+                    value=literal.value, start=located[1], end=located[2], parts=reading[0], quoted=reading[1]))
+    return tuple(sorted(out, key=lambda c: c.start))
 
 
 def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
@@ -1558,9 +1632,6 @@ def _in_slot_ordinals(template: Any) -> frozenset[int]:
         for node in walk_parsed(template)
         if isinstance(node, Cmp) and node.op in _IN_OPS and isinstance(node.right, Placeholder)
     )
-
-
-_IN_OPS = frozenset({"in", "not in"})
 
 
 def parse_bound_expr(text: str, variables: Mapping[str, Any]) -> ParsedExpr:
@@ -2455,6 +2526,8 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
     """The canonical lower-case unit (or ``date_part`` part) word of ``arg``, one of ``words``."""
     accepted = ", ".join(words)
     what = "part" if name == "date_part" else "unit"
+    if name == "date_part" and _bare_part(arg, words=words):
+        arg = Literal(value=arg.name)
     if not (isinstance(arg, Literal) and isinstance(arg.value, str)):
         spelled = keyword_spelling(arg)
         raise ValueError(
@@ -2472,6 +2545,14 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
             f"{arg.value!r}; accepted: {accepted}."
         )
     return word
+
+
+def _bare_part(arg: Any, *, words: Tuple[str, ...]) -> bool:
+    """Whether ``arg`` is an unquoted word naming a date part (or its alias), as ``EXTRACT`` takes it."""
+    if not isinstance(arg, Ref) or arg.quoted or arg.evaluated:
+        return False
+    word = arg.name.lower()
+    return word in words or word in DATE_PART_ALIASES or word in AMBIGUOUS_WEEKDAY_NAMES
 
 
 def _folded(node: Any) -> Any:

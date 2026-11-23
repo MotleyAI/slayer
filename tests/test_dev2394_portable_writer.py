@@ -238,7 +238,7 @@ async def test_a_cross_dataset_metric_exports_its_interval_as_dateadd(tmp_path: 
         before = await engine.execute({"population": "orders", **query})
         exported = await export_osi(engine=engine, datasource=EXPORT_DS)
     sql = doc_metric(exported.text, "recent_per_customer", dataset_name=None)["expression"]["sql"]
-    assert "DATEADD(day, 10, " in sql
+    assert "DATEADD(DAY, 10, " in sql.upper()
     assert "INTERVAL" not in sql.upper()
     assert validity_errors(exported.document) == []
     path = tmp_path / "exported.yaml"
