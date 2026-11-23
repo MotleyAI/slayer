@@ -41,13 +41,14 @@ principles every layer obeys.
    judged through dependency closures (engine P10). The home is resolved by:
    - **2.1 Leaf.** A column or star reference is homed on the dataset it lives on —
      the terminal of its join path. A derived column is homed there provided that
-     dataset determines every column its definition reads; a dependency reached only
-     across a fanning or unproven hop, or a definition that cannot be analysed, leaves
-     it without a home. A literal is determined by every dataset and constrains nothing.
+     dataset determines every column its definition reads; a dependency reached across a
+     fanning hop makes it an operand at each dataset such a dependency lives on (Axiom 2.2),
+     and one reached only across an unproven hop, or a definition that cannot be analysed,
+     leaves it without a home. A literal is determined by every dataset and constrains nothing.
    - **2.2 Combination.** A combination of row-level expressions — arithmetic,
      comparison, scalar function, conditional — is homed on the deepest dataset that
      determines every operand's home over provably to-one hops. When no dataset
-     determines them all, the expression is illegal.
+     determines them all, the expression is illegal, except as a field filter, which restricts by association (Axiom 14).
    - **2.3 Attached constituent.** An aggregate or transform appearing as an operand
      is a typed dataset (Axiom 6) and is opaque: only its type is consulted (Axiom 9)
      — its grain: the explicit `partition_by=`, else the query's dimensions; for a

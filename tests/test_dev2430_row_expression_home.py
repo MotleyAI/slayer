@@ -113,8 +113,8 @@ def _siblings_x(**kw: Any) -> SlayerQuery:
                 "metrics": [COUNT], **kw})
 
 
-def _bucketed(resp, key: str, value: str = "m") -> dict:
-    out = {bucket(r[key]): float(r[value]) for r in resp.data}
+def _bucketed(resp, key: str, value: str = "m", *, width: int = 7) -> dict:
+    out = {bucket(r[key], width=width): float(r[value]) for r in resp.data}
     assert len(out) == len(resp.data), resp.data
     return out
 
@@ -154,7 +154,8 @@ async def test_sibling_operands_in_an_order_key_are_refused_before_the_wrap(back
         err = await _refused(eng, q(population="customers", dimensions=[R], metrics=[COUNT],
                                     order=[{"field": SIBLINGS, "direction": "desc"}]))
     _names(err, position="order", operands=("orders.amount", "returns.amount"), hops=())
-    assert "min(" not in str(err).lower() and "max(" not in str(err).lower()
+    assert "min(" not in str(err).lower()
+    assert "max(" not in str(err).lower()
 
 
 @pytest.mark.parametrize("constituent", [
@@ -255,6 +256,18 @@ async def test_parent_and_child_operands_in_a_dimension_are_homed_on_the_child(b
                          metrics=[COUNT])
     assert table(resp, "x", "m") == rows((0, 1), (50, 1), (100, 1), (200, 1), (None, 1))
     assert kinds(resp, "associated")
+
+
+async def test_a_parent_and_child_expression_reads_null_without_a_home_row(backend: str) -> None:
+    def query(field: str) -> SlayerQuery:
+        return q(population="customers", metrics=[COUNT], dimensions=[{"field": field, "alias": "t"}])
+    async with _engine(backend) as eng:
+        by_expr = await eng.execute(query("coalesce(orders.shipped_at, customers.signup_ts)"))
+        by_col = await eng.execute(query("orders.eff_col"))
+    assert _bucketed(by_expr, "t", width=10) == {
+        "2024-11-01": 1, "2025-01-12": 1, "2025-01-25": 1, "2025-03-01": 1, None: 1}
+    assert _bucketed(by_expr, "t", width=10) == _bucketed(by_col, "t", width=10)
+    assert kinds(by_expr, "associated")
 
 
 async def test_a_parent_and_child_dimension_broadcasts_under_broadcast(backend: str) -> None:

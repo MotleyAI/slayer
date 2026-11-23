@@ -4,7 +4,9 @@
 A row-level expression in a value position — a dimension (plain or computed), a time dimension, or a
 row-level order key — SHALL be homed on the deepest dataset that determines every operand over
 provably to-one hops (Axiom 2.2). Each row-level leaf is an operand at the dataset it is declared on,
-its dependency closure only validating that home; an attached aggregate or transform operand stands
+or, when its definition reads across a provably fanning hop, at each dataset that definition reaches;
+a definition reading across an unproven hop is refused, and one that cannot be analysed keeps its
+resolution error; an attached aggregate or transform operand stands
 for its grain members (Axiom 2.3); a literal constrains nothing, so an expression with one operand
 is always homed. When no dataset determines every operand, the query SHALL fail before any SQL is
 generated with the typed input-safety error, naming the position, two operands that no dataset
@@ -16,9 +18,9 @@ metrics. A row-level order key SHALL be judged before any host-grain wrap is bui
 filter is not a value position: a conjunct whose operands no dataset determines keeps restricting
 by association (*Filters restrict by association or fail loudly*). An operand on a dataset no join
 path reaches from the population SHALL keep the product-hop type error of `queries/unrelated-datasets`,
-reported ahead of this refusal. An expression whose operands a dataset determines SHALL keep its
-established values; a population that does not determine its home resolves it per the
-`to_many_handling` mode, as for a column of that home.
+reported ahead of this refusal. An expression whose operands a dataset determines SHALL take the
+values of a column of its home, a population row with no home row reading NULL; a population that
+does not determine its home resolves it per the `to_many_handling` mode, as for a column of that home.
 
 Scenarios below run on the seed of `queries/population` › Rows of an inferred query are the row
 supply: `orders` and `returns` are sibling many-to-one children of `customers`; `tickets` is
@@ -47,6 +49,10 @@ reached by no relationship.
 #### Scenario: Parent and child operands are homed on the child
 - **WHEN** a query with `population: "customers"` measuring `count(customers.*)` groups by `{"field": "orders.amount * (customers.region = 'EAST')", "alias": "x"}`; or buckets `case when customers.region = 'EAST' then orders.ordered_at end` at `month`; or groups by `customers.region` and orders by `orders.amount * (customers.region = 'EAST')` descending, NULLs last
 - **THEN** by executed values the dimension cells are 0 → 1, 50 → 1, 100 → 1, 200 → 1, NULL → 1; the time-dimension cells are 2025-01 → 2, 2025-02 → 1, NULL → 2, each with the `associated` warning; and the regions are ordered EAST, WEST, NORTH by the per-region `max` of the key
+
+#### Scenario: A parent and child expression reads NULL without a home row
+- **WHEN** a query with `population: "customers"` measuring `count(customers.*)` groups by `{"field": "coalesce(orders.shipped_at, customers.signup_ts)", "alias": "t"}`
+- **THEN** by executed values the cells equal those of grouping by `orders.eff_col`: 2024-11-01 → 1, 2025-01-12 → 1, 2025-01-25 → 1, 2025-03-01 → 1, NULL → 1 (the customer without orders), with the `associated` warning
 
 #### Scenario: A derived operand is judged by its closure
 - **WHEN** `orders` declares `amount_x2` as `amount * 2` and a query with `population: "customers"` groups by `orders.amount_x2 * returns.amount`

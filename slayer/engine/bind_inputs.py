@@ -43,7 +43,6 @@ from slayer.core.keys import (
     attached_operand_keys,
     is_reaggregation_key,
     rewrite_rank_partition_keys,
-    source_anchor_path,
     walk_value_keys,
     window_kwarg_of,
 )
@@ -99,7 +98,6 @@ from slayer.engine.elaborate_env import (
     check_raw_rows_filter_metric_ref,
     check_raw_rows_order_metric_ref,
     check_time_dimension_field,
-    check_time_dimension_home,
     check_time_dimension_row_level,
     check_spine_time_dimension,
     time_dimension_type,
@@ -111,8 +109,8 @@ from slayer.engine.elaborate_env import (
     resolve_time_points,
     date_only_notices,
 )
-from slayer.engine.population.home import row_expression_crossing
 from slayer.engine.cardinality.relationship_safety import assert_partition_key_analysable
+from slayer.engine.population.home import home_column
 from slayer.engine.key_metadata import (
     SlotTyping,
     bundle_dialect,
@@ -607,6 +605,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     bundle=bundle,
                 )
             order_specs.append(OrderSpec(bound=bo, direction=o.direction, nulls=o.nulls or "default"))
+    order_specs = _home_column_order_keys(
+        order_specs, grain={dm.bound.value_key for dm in declared_metrics[:n_dims + n_tds]}, scope=scope, bundle=bundle,
+    )
 
     field_type = scope_field_type(scope=scope, bundle=bundle)
     zoned = scope_zoned_timestamp(scope=scope, bundle=bundle)
@@ -886,6 +887,20 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
 
 # Helpers
+
+
+def _home_column_order_keys(
+    order_specs: List[OrderSpec], *, grain: set, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> List[OrderSpec]:
+    """Each row-level order key outside the grain, read as a column of its home."""
+    return [
+        spec if spec.bound.value_key in grain or any(
+            isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(spec.bound.value_key)
+        ) else spec.model_copy(update={"bound": spec.bound.model_copy(update={
+            "value_key": home_column(spec.bound.value_key, host_dataset=scope.population, bundle=bundle),
+        })})
+        for spec in order_specs
+    ]
 
 
 def _format_description_for_dimension(
@@ -1173,6 +1188,9 @@ def _declared_computed_dimension(
         name=name, bound=bound,
         distinct_dimension_values=query.distinct_dimension_values,
     )
+    bound = bound.model_copy(update={
+        "value_key": home_column(bound.value_key, host_dataset=scope.population, bundle=bundle),
+    })
     check_list_dimension(name=name, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle),
                          will_group_by=_will_group_by(query))
     dim_type = _type_for_metric_expression(scope=scope, bound=bound, bundle=bundle)
@@ -1890,12 +1908,6 @@ def _check_time_dimension(
             offender=td.field if _reads_spine(source, scope=scope) else None, remedy=bucket_remedy(source),
         )
         check_time_dimension_row_level(name=td.field, source=source)
-        if scope.population is not None:
-            check_time_dimension_home(
-                name=td.field,
-                crossing=row_expression_crossing(source=source, host_dataset=scope.population, bundle=bundle),
-                anchor=".".join((scope.population.name, *source_anchor_path(source))),
-            )
         field_type = time_dimension_type(source, field_type=scope_field_type(scope=scope, bundle=bundle))
     check_time_dimension_field(
         name=td.field,
