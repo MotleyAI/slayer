@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import _sharding as sharding
 from tests._sharding import assign_shards, main, merge_durations, parse_shard
 
 _MODULES = {
@@ -166,6 +167,79 @@ def test_stored_durations_under_xdist_cover_every_worker_module(
     out = pytester.path / "durations.json"
     assert len(_passed_under_xdist(pytester, "--store-shard-durations", str(out))) == sum(_MODULES.values()) + 2
     assert sorted(json.loads(out.read_text())) == sorted([*_MODULES, "test_marked.py"])
+
+
+_WEIGHTS = {"test_a.py": 1.0, "test_b.py": 5.0, "test_c.py": 3.0, "sub/test_e.py": 4.0}
+_MEDIAN = 3.5
+
+
+def _weight(module: str) -> float:
+    return _WEIGHTS.get(module, _MEDIAN)
+
+
+def _module_sequence(nodeids: list[str]) -> list[str]:
+    modules: list[str] = []
+    for nodeid in nodeids:
+        module = nodeid.split("::")[0]
+        if not modules or modules[-1] != module:
+            modules.append(module)
+    return modules
+
+
+def _in_module_order(nodeids: list[str]) -> dict[str, list[str]]:
+    order: dict[str, list[str]] = {}
+    for nodeid in nodeids:
+        order.setdefault(nodeid.split("::")[0], []).append(nodeid)
+    return order
+
+
+@pytest.fixture
+def weighted_project(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> pytest.Pytester:
+    _make_project(pytester)
+    durations = pytester.path / "weights.json"
+    durations.write_text(json.dumps(_WEIGHTS))
+    monkeypatch.setattr(sharding, "DURATIONS_FILE", durations)
+    return pytester
+
+
+class TestLongestFirstOrder:
+    def test_heaviest_module_runs_first_ties_by_path(self, weighted_project: pytest.Pytester) -> None:
+        modules = _module_sequence(_collected(weighted_project, "--shard", "1/1"))
+        assert modules == [
+            "test_b.py", "sub/test_e.py",
+            "sub/g_test.py", "sub/test_f.py", "test_d.py", "test_marked.py",
+            "test_c.py", "test_a.py",
+        ]
+
+    def test_each_shard_runs_its_heaviest_modules_first(self, weighted_project: pytest.Pytester) -> None:
+        for k in (1, 2, 3):
+            modules = _module_sequence(_collected(weighted_project, "--shard", f"{k}/3"))
+            assert len(modules) == len(set(modules))
+            assert modules == sorted(modules, key=lambda m: (-_weight(m), m))
+
+    def test_in_module_order_is_kept(self, weighted_project: pytest.Pytester) -> None:
+        unsharded = _in_module_order(_collected(weighted_project))
+        assert _in_module_order(_collected(weighted_project, "--shard", "1/1")) == unsharded
+
+    def test_order_is_identical_across_runs(self, weighted_project: pytest.Pytester) -> None:
+        first = _collected(weighted_project, "--shard", "1/1")
+        assert first == _collected(weighted_project, "--shard", "1/1")
+
+    def test_without_shard_the_order_is_unchanged(self, weighted_project: pytest.Pytester) -> None:
+        plain = [line for line in weighted_project.runpytest("--collect-only", "-q").outlines if "::" in line]
+        assert _collected(weighted_project) == plain
+
+    def test_xdist_workers_collect_the_same_order(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _make_project(pytester)
+        (pytester.path / "weights.json").write_text(json.dumps(_WEIGHTS))
+        pytester.makeconftest(
+            "from pathlib import Path\nimport tests._sharding as s\n"
+            "s.DURATIONS_FILE = Path(__file__).with_name('weights.json')\n"
+        )
+        monkeypatch.setenv("PYTHONPATH", str(_REPO_ROOT))
+        assert len(_passed_under_xdist(pytester, "--shard", "1/1")) == sum(_MODULES.values()) + 2
 
 
 class TestMergeDurations:

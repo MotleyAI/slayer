@@ -8,14 +8,15 @@ from __future__ import annotations
 import json
 from typing import Any, NamedTuple
 
-import yaml
-
+from slayer.core.document_text import parse_document_text
 from slayer.core.time_spine import TIME_SPINE_DATASET
 from slayer.core.vocabulary import DATASET_KEYS, ENTITY_KINDS, deprecated_spelling, respelled_token
 from slayer.core.errors import (
     AmbiguousDatasetError,
     EntityResolutionError,
     MemoryNotFoundError,
+    OssieDocumentInvalidError,
+    UnreadableDocumentError,
 )
 from slayer.core.models import SlayerDataset
 from slayer.core.warnings import DeprecatedInputWarning
@@ -866,8 +867,13 @@ class InspectService:
             what = "no" if not found else "more than one"
             return _OneResult(None, True, f"'{reference}' names {what} semantic model; pass '<datasource>.<name>'.")
         ds, name = found[0]
-        text = await self._storage.get_semantic_model_text(name, data_source=ds) or ""
-        doc = yaml.safe_load(text) if text else {}
+        try:
+            text = await self._storage.get_semantic_model_text(name, data_source=ds) or ""
+            doc = parse_document_text(text) if text else {}
+        except (UnreadableDocumentError, OssieDocumentInvalidError) as exc:
+            doc = {}
+            warnings = [*warnings, f"Semantic model '{ds}.{name}' does not load: {exc}"]
+        doc = doc if isinstance(doc, dict) else {}
         loaded, _ = await self._storage.load_datasets(data_source=ds)
         members = [d for d in loaded if d.semantic_model == name]
         metrics = [m for m in await self._storage.list_model_scoped_metrics(ds) if m.semantic_model == name]

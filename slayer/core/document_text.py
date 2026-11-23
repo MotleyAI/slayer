@@ -6,7 +6,7 @@ from __future__ import annotations
 import io
 import json
 import re
-from collections.abc import Callable, Hashable, MutableMapping, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -16,20 +16,18 @@ from ruamel.yaml.comments import CommentedSeq
 from ruamel.yaml.util import load_yaml_guess_indent
 from yaml.constructor import ConstructorError
 
+from slayer.core.errors import UnreadableDocumentError
+
 __all__ = ["edit_text", "parse_document_text", "plain", "without_vendor"]
 
-_MERGE = "tag:yaml.org,2002:merge"
-_VALUE = "tag:yaml.org,2002:value"
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+_VALUE_TAG = "tag:yaml.org,2002:value"
 _IN_MAPPING = "while constructing a mapping"
 
 
-class _DocumentLoader(yaml.SafeLoader):
-    """``SafeLoader`` refusing a repeated key and a scalar its tag cannot build, with YAML 1.1 merge precedence (as
-    upstream Ossie's loader)."""
-
-    def construct_document(self, node: yaml.Node) -> Any:
-        self._check_unique_keys(node, set())  # before merges flatten (and mutate) shared alias nodes
-        return super().construct_document(node)
+class _Loader(yaml.SafeLoader):
+    """``SafeLoader`` reporting a scalar it cannot build as a ``ConstructorError`` at its line, with YAML 1.1 merge
+    precedence (as upstream Ossie's loader)."""
 
     def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
         try:
@@ -43,11 +41,11 @@ class _DocumentLoader(yaml.SafeLoader):
         index = 0
         while index < len(node.value):
             key_node, value_node = node.value[index]
-            if key_node.tag == _MERGE:
+            if key_node.tag == _MERGE_TAG:
                 del node.value[index]
                 merge += self._merge_sources(node, value_node)
             else:
-                if key_node.tag == _VALUE:
+                if key_node.tag == _VALUE_TAG:
                     key_node.tag = "tag:yaml.org,2002:str"
                 index += 1
         seen: set[int] = set()
@@ -76,41 +74,84 @@ class _DocumentLoader(yaml.SafeLoader):
             out += sub.value
         return out
 
-    def _check_unique_keys(self, node: yaml.Node, visited: set[int]) -> None:
-        if id(node) in visited:
-            return
-        visited.add(id(node))
-        if isinstance(node, yaml.SequenceNode):
-            for child in node.value:
-                self._check_unique_keys(child, visited)
-        if not isinstance(node, yaml.MappingNode):
-            return
-        seen: set[Any] = set()
-        for key_node, value_node in node.value:
-            if key_node.tag != _MERGE:
-                key = self._key(key_node, mapping=node)
-                if key in seen:
-                    raise ConstructorError(_IN_MAPPING, node.start_mark, f"found duplicate key {key!r}",
-                                           key_node.start_mark)
-                seen.add(key)
-            self._check_unique_keys(value_node, visited)
 
-    def _key(self, key_node: yaml.Node, *, mapping: yaml.MappingNode) -> Hashable:
-        if isinstance(key_node, yaml.ScalarNode):
-            key = self.construct_scalar(key_node) if key_node.tag == _VALUE else self.construct_object(key_node,
-                                                                                                         deep=True)
-            if isinstance(key, Hashable):
-                return key
-        raise ConstructorError(_IN_MAPPING, mapping.start_mark, "found an unhashable key", key_node.start_mark)
+def _line(node: yaml.Node) -> int:
+    return node.start_mark.line + 1
+
+
+def _built(loader: _Loader, node: yaml.ScalarNode, reasons: list[str]) -> tuple[bool, Any]:
+    """``node`` built, or ``(False, None)`` with its reason recorded."""
+    try:
+        if node.tag == _VALUE_TAG:
+            return True, loader.construct_scalar(node)
+        return True, loader.construct_object(node)
+    except ConstructorError as exc:
+        reasons.append(f"line {_line(node)}: {exc.problem}")
+        return False, None
+
+
+def _problems(loader: _Loader, node: yaml.Node, *, reasons: list[str], visited: set[int]) -> None:
+    """Every repeated explicit key and unbuildable scalar under ``node``; merge directives may repeat."""
+    if id(node) in visited:
+        return
+    visited.add(id(node))
+    if isinstance(node, yaml.ScalarNode):
+        if node.tag != _MERGE_TAG:
+            _built(loader, node, reasons)
+        return
+    if isinstance(node, yaml.SequenceNode):
+        for child in node.value:
+            _problems(loader, child, reasons=reasons, visited=visited)
+        return
+    seen: dict[Any, int] = {}
+    for key, value in node.value:
+        if key.tag != _MERGE_TAG:
+            _key_problems(loader, key, seen=seen, reasons=reasons, visited=visited)
+        _problems(loader, value, reasons=reasons, visited=visited)
+
+
+def _key_problems(loader: _Loader, key: yaml.Node, *, seen: dict[Any, int], reasons: list[str],
+                  visited: set[int]) -> None:
+    """``key`` unbuildable, non-scalar or already in ``seen`` (its mapping's keys so far)."""
+    if not isinstance(key, yaml.ScalarNode):
+        reasons.append(f"line {_line(key)}: a mapping key must be a scalar")
+        return
+    visited.add(id(key))
+    ok, built = _built(loader, key, reasons)
+    if ok and built in seen:
+        reasons.append(f"line {_line(key)}: duplicate key {built!r} (first at line {seen[built]})")
+    elif ok:
+        seen[built] = _line(key)
+
+
+def _declared_name(root: yaml.Node) -> str | None:
+    if not isinstance(root, yaml.MappingNode):
+        return None
+    return next((v.value for k, v in root.value
+                 if isinstance(k, yaml.ScalarNode) and k.value == "name" and isinstance(v, yaml.ScalarNode)), None)
 
 
 def parse_document_text(text: str) -> Any:
-    """A document's YAML or JSON text as data; raises ``ValueError`` when it does not parse, repeats a key within one
-    mapping or holds a scalar its tag cannot build."""
+    """A document's YAML or JSON text as data, read as Ossie's loader reads it; raises ``UnreadableDocumentError``
+    listing every repeated key and unbuildable scalar."""
     try:
-        return _DocumentLoader(text).get_single_data()
+        loader = _Loader(text)
     except yaml.YAMLError as exc:
-        raise ValueError(f"the document is not valid YAML or JSON: {exc}") from exc
+        raise UnreadableDocumentError(reasons=[f"the document is not valid YAML or JSON: {exc}"]) from exc
+    try:
+        root = loader.get_single_node()
+    except yaml.YAMLError as exc:
+        raise UnreadableDocumentError(reasons=[f"the document is not valid YAML or JSON: {exc}"]) from exc
+    if root is None:
+        return None
+    reasons: list[str] = []
+    _problems(loader, root, reasons=reasons, visited=set())
+    if not reasons:
+        try:
+            return loader.construct_document(root)
+        except yaml.YAMLError as exc:
+            reasons.append(f"the document is not valid YAML or JSON: {exc}")
+    raise UnreadableDocumentError(reasons=reasons, name=_declared_name(root))
 
 
 def without_vendor(node: Any, vendor: str) -> Any:
@@ -288,7 +329,9 @@ def _splice(*, ours: str, base: str, theirs: str) -> str:
 
 
 def edit_text(text: str, edit: Callable[[dict[str, Any]], dict[str, Any]]) -> str:
-    """``text`` (YAML or JSON) after ``edit`` maps its plain data to the desired data; unchanged parts keep their text."""
+    """``text`` (YAML or JSON) after ``edit`` maps its plain data to the desired data; unchanged parts keep their text.
+    Raises ``UnreadableDocumentError`` when ``parse_document_text`` refuses ``text``."""
+    parse_document_text(text)
     if _is_json(text):
         data = json.loads(text)
         found = _JSON_INDENT.search(text)
