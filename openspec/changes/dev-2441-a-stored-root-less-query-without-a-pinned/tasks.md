@@ -1,7 +1,7 @@
 ## 1. Tests first (pr-tests)
 
 - [ ] 1.1 Write one failing test per scenario of `specs/models/stored-upgrade/spec.md`, each on YAML and SQLite, in a new `tests/test_stored_rootless_datasource.py` over `tests/_stored_upgrade_fixtures.py` (`raw_store`, `memory_v2`, `seed_shop`, `in_datasource`) and `tests/_granularity_rename_fixtures.py` (`write_raw_store`, `memory_doc`, `granularity_definition`); verify each fails on HEAD for the reason the scenario names (the bare-memory repro fails with "names no population"). Gotcha: the repro's `status = 'ok'` logs DEV-2444's false grammar warning; do not assert on its absence.
-- [ ] 1.2 Unit-test the shared fallback (no names → every datasource; named → holders; priority then name; spine spelling shadowed by an exact stored spelling → no fallback; explicit missing population → no fallback) and the name reader (each location of design decision 7, raw at an old version and validated give the same names; an unparsable text gives none); verify they fail before the implementation exists.
+- [x] 1.2 Unit-test the shared fallback (no names → every datasource; named → holders; priority then name; spine spelling shadowed by an exact stored spelling → no fallback; explicit missing population → no fallback) and the name reader (each location of design decision 7, raw at an old version and validated give the same names; an unparsable text gives none); verify they fail before the implementation exists.
 
 ## 2. Shared fallback and name reader
 
