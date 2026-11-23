@@ -16,8 +16,8 @@ from slayer.core.errors import AmbiguousReferenceError, UnqualifiableReferenceEr
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name, quoted_name, spelled_name
 from slayer.core.query import (
-    QueryDimension, QueryMetric, SlayerQuery, TimeDimension, computed_dimension_name, declared_aliases,
-    extension_dataset_names,
+    BarePosition, QueryDimension, QueryMetric, SlayerQuery, TimeDimension, computed_dimension_name, declared_aliases,
+    extension_dataset_names, pre_qualified_reading,
 )
 from slayer.core.relationship_walker import canonical_path
 from slayer.core.syntax import (
@@ -37,6 +37,7 @@ from slayer.engine.extensions import (
     resolve_path,
     respelled,
     sibling_host,
+    stage_output_names,
 )
 from slayer.sql.naming import expression_text_alias
 
@@ -48,11 +49,21 @@ def _same_chain(a: Sequence[Any], b: Sequence[Any]) -> bool:
     return len(a) == len(b) and all(x == y for x, y in zip(a, b))
 
 
+class _PopulationNames(BaseModel):
+    """The field and metric names a stage's population offers its bare names."""
+
+    model_config = ConfigDict(frozen=True)
+
+    fields: Tuple[str, ...] = ()
+    metrics: Tuple[str, ...] = ()
+
+
 class _Stage:
-    """One stored stage's references read from its population ``population``."""
+    """One stored stage's references read from its population ``population``; with ``names``, a bare name keeps its
+    pre-2.0 positional reading."""
 
     def __init__(self, *, query: SlayerQuery, host: Optional[SlayerDataset], stages: frozenset[str],
-                 datasets_by_name: Mapping[str, SlayerDataset]) -> None:
+                 datasets_by_name: Mapping[str, SlayerDataset], names: Optional[_PopulationNames] = None) -> None:
         population = query.population_name
         assert population is not None
         self.population = population
@@ -61,16 +72,17 @@ class _Stage:
         self.stages = stages
         self.datasets = dict(datasets_by_name)
         self.aliases = declared_aliases(query)
+        self.names = names
 
-    def text(self, value: str) -> Tuple[str, List[str]]:
-        """``value`` with its references qualified, and the anchors they start at."""
+    def text(self, value: str, *, position: BarePosition, own: Optional[str] = None) -> Tuple[str, List[str]]:
+        """``value`` with its references qualified, and the anchors they start at; ``own`` is its entry's alias."""
         parsed, spans = reference_spans(value)
         edits: Dict[Tuple[int, int], str] = {}
         anchors: List[str] = []
         for node, _agg in walk_references(parsed):
             span = spans.get(id(node))
             written = value[span[0]:span[1]] if span is not None else None
-            replacement = self._reference(node, written=written)
+            replacement = self._reference(node, written=written, position=position, own=own)
             if replacement is None:
                 continue
             anchors.append(replacement.split(".", 1)[0])
@@ -82,14 +94,14 @@ class _Stage:
             out = out[:start] + replacement + out[end:]
         return out, anchors
 
-    def _reference(self, node: Any, *, written: Optional[str]) -> Optional[str]:
+    def _reference(self, node: Any, *, written: Optional[str], position: BarePosition, own: Optional[str]
+                   ) -> Optional[str]:
         """``node``'s qualified spelling; ``None`` for an alias of the stage."""
         if isinstance(node, StarSource):
             return f"{self.prefix}.*"
         if isinstance(node, Ref):
-            if self.aliases and match_name(name=node.name, declared=self.aliases, quoted=node.quoted) is not None:
-                return None
-            return f"{self.prefix}.{written or spelled_name(node.name)}"
+            return None if self._reads_alias(node, position=position, own=own) else (
+                f"{self.prefix}.{written or spelled_name(node.name)}")
         assert isinstance(node, DottedRef)
         text = written or ".".join(node.parts)
         if node.parts[0].casefold() == TIME_SPINE_DATASET:
@@ -99,6 +111,13 @@ class _Stage:
             same = match_name(name=first, declared=[self.population], quoted=node.quoted_at(0)) is not None
             return text if same else f"{self.prefix}.{text}"
         return self._dotted(node, text=text)
+
+    def _reads_alias(self, node: Ref, *, position: BarePosition, own: Optional[str]) -> bool:
+        if self.names is None:
+            return bool(self.aliases) and match_name(name=node.name, declared=self.aliases, quoted=node.quoted) is not None
+        aliases = [a for a in self.aliases if a != own]
+        return pre_qualified_reading(node.name, quoted=node.quoted, position=position, aliases=aliases,
+                                     fields=self.names.fields, metrics=self.names.metrics) == "alias"
 
     def _dotted(self, node: DottedRef, *, text: str) -> str:
         """A dotted reference kept, or respelled as the explicit route keeping its pre-2.0 path."""
@@ -140,21 +159,21 @@ def _qualified_stage(stage: _Stage, query: SlayerQuery) -> SlayerQuery:
     if query.metrics:
         data["metrics"] = [_qualified_metric(stage, m) for m in query.metrics]
     if isinstance(query.filter, str):
-        data["filter"] = stage.text(query.filter)[0]
+        data["filter"] = stage.text(query.filter, position="filter")[0]
     elif query.filter:
-        data["filter"] = [stage.text(c)[0] for c in query.filter]
+        data["filter"] = [stage.text(c, position="filter")[0] for c in query.filter]
     if query.order:
         data["order"] = [o.model_copy(update={
-            "field": stage.text(o.field)[0],
-            **({"raw_expression": stage.text(o.raw_expression)[0]} if o.raw_expression else {}),
+            "field": stage.text(o.field, position="filter")[0],
+            **({"raw_expression": stage.text(o.raw_expression, position="filter")[0]} if o.raw_expression else {}),
         }) for o in query.order]
     if query.main_time_dimension:
-        data["main_time_dimension"] = stage.text(query.main_time_dimension)[0]
+        data["main_time_dimension"] = stage.text(query.main_time_dimension, position="entry")[0]
     return SlayerQuery.model_validate(data)
 
 
 def _qualified_dimension(stage: _Stage, d: QueryDimension) -> QueryDimension:
-    field, anchors = stage.text(d.field)
+    field, anchors = stage.text(d.field, position="entry", own=d.name if d.alias or d.ref is None else None)
     update: Dict[str, Any] = {"field": field}
     if d.alias is None and d.ref is None and _anchorless(anchors):
         update["alias"] = d.name
@@ -162,7 +181,7 @@ def _qualified_dimension(stage: _Stage, d: QueryDimension) -> QueryDimension:
 
 
 def _qualified_time_dimension(stage: _Stage, td: TimeDimension) -> TimeDimension:
-    field, anchors = stage.text(td.field)
+    field, anchors = stage.text(td.field, position="entry", own=td.alias)
     update: Dict[str, Any] = {"field": field}
     if td.alias is None and td.field_ref is None and _anchorless(anchors):
         update["alias"] = computed_dimension_name(td.field)
@@ -170,7 +189,7 @@ def _qualified_time_dimension(stage: _Stage, td: TimeDimension) -> TimeDimension
 
 
 def _qualified_metric(stage: _Stage, m: QueryMetric) -> QueryMetric:
-    text, anchors = stage.text(m.metric)
+    text, anchors = stage.text(m.metric, position="entry", own=m.alias)
     update: Dict[str, Any] = {"metric": text}
     if m.alias is None and _anchorless(anchors):
         update["alias"] = expression_text_alias(root_relative(parse_expr(m.metric), stage.population))
@@ -183,6 +202,7 @@ def qualified_stages(
 ) -> List[SlayerQuery]:
     """``queries`` (one stored query list) with each ``pending`` stage's references qualified, keeping their meaning."""
     stages = frozenset(q.name for q in queries if q.name)
+    by_name = {q.name: q for q in queries if q.name}
     out: List[SlayerQuery] = []
     for query, todo in zip(queries, pending):
         if not todo:
@@ -194,8 +214,29 @@ def qualified_stages(
         name, is_stage = _read_from(query, stages=stages, datasets=datasets)
         host = datasets[name] if name is not None and not is_stage else None
         read_from = query if query.population_name is not None else query.model_copy(update={"population": name})
-        out.append(_qualified_stage(_Stage(query=read_from, host=host, stages=stages, datasets_by_name=datasets), query))
+        names = None if query.population_name is None else _population_names(
+            host=host, stage=by_name.get(name) if is_stage and name is not None else None)
+        qualified = _qualified_stage(
+            _Stage(query=read_from, host=host, stages=stages, datasets_by_name=datasets, names=names), query)
+        out.append(qualified)
+        if query.name:
+            by_name[query.name] = qualified
     return out
+
+
+def _population_names(*, host: Optional[SlayerDataset], stage: Optional[SlayerQuery]) -> Optional[_PopulationNames]:
+    """What a stage's population offers its bare names: an earlier stage's or an unexpanded query-backed dataset's
+    output columns as fields; ``None`` when unknown."""
+    if stage is not None:
+        return _PopulationNames(fields=tuple(stage_output_names(stage)))
+    if host is None:
+        return None
+    metrics = tuple(m.name for m in host.metrics if m.name)
+    if not host.awaits_fields:
+        return _PopulationNames(fields=tuple(f.name for f in host.fields), metrics=metrics)
+    last = (host.source_queries or [None])[-1]
+    return _PopulationNames(fields=tuple(stage_output_names(last)), metrics=metrics) if isinstance(
+        last, SlayerQuery) else None
 
 
 class StageReading(BaseModel):
