@@ -56,8 +56,10 @@ dataset relation door, so model `filters` and RLS sit inside it); system 4 (sqlg
    its first untrusted hop joins the home as `SELECT DISTINCT <hop source-side keys>, <each dimension value computed
    inside>`; the subtree's own conjuncts go inside, the join is INNER when it carries a conjunct and LEFT otherwise; a
    filter-only subtree joins as an inner join on its DISTINCT keys. Computed and time-truncated dimensions de-duplicate on
-   their grouped value. A is used when one dimension or conjunct reads the home with an untrusted subtree, or two
-   separate subtrees, or when an aggregate input reads across the hop (decision 18). Alternative A-only costs ~3× on
+   their grouped value. A is used when a dimension reads an untrusted subtree together with anything outside it; a
+   conjunct doing so is pushed as a correlated EXISTS semi-join. An aggregate input read across
+   the hop is projected inside the distinct projection as one matching value per projected row
+   (`ANY_VALUE`, grouped by the keys and dimension values) (decision 18). Alternative A-only costs ~3× on
    DuckDB. (user)
 3. **Declared keys do not confer trust**: Ossie's retail model declares `customers.primary_key` and must return 350
    (L2 §11.3). (default, forced by acceptance)

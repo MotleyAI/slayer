@@ -21,9 +21,9 @@
 ## 3. Trusted predicate and lowering
 
 - [x] 3.1 Trusted-hop predicate beside `provably_to_one` (flag, enforced key, constructed keys incl. stage grain, spine, row number, list child's parent hop; inherited edges carry origin trust); verify 1.2
-- [ ] 3.2 Switch the emission points to it — `discovery.py` host-inline routing, `stages.py` producer dimension split / `_conjunct_disposition` + `fanning_paths` / inline host-locus, `generator.py` `_filtered_dataset`, `relationship_safety.py` routing shortcuts — leaving every typing consumer on `provably_to_one`; verify typing tests unchanged
+- [x] 3.2 Switch the emission points to it — the generator marks each join across an untrusted hop (`_hop_join`, semi-join hops) and one statement pass reads it through the projection; `_filtered_dataset` inlines only trusted hops; `_conjunct_disposition` + `fanning_paths` push mixed conjuncts; discovery and the producer dimension split associate mixed dimensions — leaving every typing consumer on `provably_to_one`; verify typing tests unchanged
 - [x] 3.3 Distinct-projection lowering (B) through the dataset relation door; verify 1.1, 1.3
-- [ ] 3.4 Fallback to the association producer (A) without warnings for ineligible cases and aggregate inputs across the hop; `"error"` refusal for inputs; verify 1.3, 1.4
+- [x] 3.4 Fallback to the association producer (A) without warnings for dimensions mixing an untrusted branch, a semi-join push for mixed conjuncts, aggregate inputs across the hop read once via `ANY_VALUE` in the projection; `"error"` refusal for inputs; verify 1.3, 1.4
 - [ ] 3.5 Verify 1.5 and the full local test scope; re-bless goldens only where SQL for an unflagged declared hop changes, with owner approval
 
 ## 4. Ingestion, drift, documents, migration
