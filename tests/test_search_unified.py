@@ -590,7 +590,7 @@ async def test_mcp_search_tool_schema_has_max_results(
     mcp = create_mcp_server(storage=storage_with_corpus)
     tools = await mcp.list_tools()
     search_tool = next(t for t in tools if t.name == "search")
-    schema = search_tool.inputSchema
+    schema = search_tool.input_schema
     props = schema.get("properties", {})
     assert "max_results" in props
 
@@ -602,7 +602,7 @@ async def test_mcp_search_tool_schema_does_not_have_old_params(
     mcp = create_mcp_server(storage=storage_with_corpus)
     tools = await mcp.list_tools()
     search_tool = next(t for t in tools if t.name == "search")
-    schema = search_tool.inputSchema
+    schema = search_tool.input_schema
     props = schema.get("properties", {})
     assert "max_memories" not in props
     assert "max_example_queries" not in props

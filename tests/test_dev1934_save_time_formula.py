@@ -323,7 +323,7 @@ def mcp(seeded) -> tuple[Any, SlayerQueryEngine, YAMLStorage]:
 
 
 async def _call(*, server: Any, name: str, arguments: dict[str, Any]) -> str:
-    blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return blocks[0].text
 
 

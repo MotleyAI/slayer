@@ -10,7 +10,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 async def test_query_schema_and_help_list_time_point_forms(tmp_path) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path)), _seed_help=False)
     tools = {t.name: t for t in await server.list_tools()}
-    defs = tools["query"].inputSchema["$defs"]
+    defs = tools["query"].input_schema["$defs"]
     help_time = next(t for t in HELP_TOPICS if t.id == "help.time")
     doc = "\n".join((
         defs["SlayerQuery"]["properties"]["filter"].get("description") or "",

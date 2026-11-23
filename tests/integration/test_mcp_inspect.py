@@ -28,6 +28,7 @@ from slayer.mcp.server import (
 )
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._mcp_results import text_blocks
 
 pytestmark = pytest.mark.integration
 
@@ -107,10 +108,10 @@ class TestDescribeDatasourceTables:
     async def _call_describe(
         self, server, *, name: str, list_tables: bool = True, schema_name: str = "",
     ) -> str:
-        content, _ = await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="describe_datasource",
             arguments={"name": name, "list_tables": list_tables, "schema_name": schema_name},
-        )
+        ))
         return content[0].text
 
     async def test_tables_appear_by_default(self, env: InspectEnv) -> None:
@@ -248,7 +249,7 @@ class TestInspectModelEndToEnd:
     section of the markdown output is produced end-to-end."""
 
     async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
-        content, _ = await server.call_tool(name=name, arguments=arguments or {})
+        content = text_blocks(await server.call_tool(name=name, arguments=arguments or {}))
         return content[0].text
 
     async def test_full_response(self, env: InspectEnv) -> None:
@@ -323,7 +324,7 @@ class TestInspectModelSectionGatingIntegration:
     """
 
     async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
-        content, _ = await server.call_tool(name=name, arguments=arguments or {})
+        content = text_blocks(await server.call_tool(name=name, arguments=arguments or {}))
         return content[0].text
 
     async def test_columns_only_short_circuits_samples(self, env: InspectEnv) -> None:
@@ -405,9 +406,9 @@ class TestMeasureTypeInference:
     async def test_type_appears_in_model_inspect(self, env: InspectEnv) -> None:
         """The dataset inspect fields table includes a type column with declared types."""
         server = create_mcp_server(storage=env["storage"])
-        content, _ = await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "num_rows": 0},
-        )
+        ))
         result = content[0].text
         columns_section = result.split("## Fields")[1].split("##")[0]
         assert "| datatype |" in columns_section
@@ -543,10 +544,10 @@ class TestIngestDatasourceModelsTool:
         ))
 
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="ingest_datasource",
             arguments={"datasource_name": "ingest_ds"},
-        )
+        ))
         text = content[0].text
 
         # Idempotent ingest renders "Created N new dataset(s):" for new
@@ -566,10 +567,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
     """End-to-end sampled_values + distinct_count contract through the dataset ``inspect``."""
 
     async def _call_json(self, server, *, dataset_name: str) -> dict:
-        content, _ = await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": dataset_name, "compact": False, "format": "json"},
-        )
+        ))
         return _json.loads(content[0].text)
 
     async def test_json_output_includes_sampled_values_and_distinct_count(
@@ -595,10 +596,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
         issue explicitly says the text format does not change. New data is
         carried only in JSON (and in the persisted dataset)."""
         server = create_mcp_server(storage=env["storage"])
-        content, _ = await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
-        )
+        ))
         text = content[0].text
         col_section = text.split("## Fields")[1].split("## Metrics")[0]
         # No new column headers in the markdown table.
@@ -663,10 +664,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await storage.save_dataset(model)
 
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
-        )
+        ))
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["fields"] if c["name"] == "notes")
         # All-NULL categorical field contract:
@@ -705,10 +706,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
             ],
         ))
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "many_values", "compact": False},  # markdown
-        )
+        ))
         text = content[0].text
         col_section = text.split("## Fields")[1]
         kind_row_start = col_section.find("| kind ")
@@ -771,10 +772,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
         monkeypatch.setattr(SlayerQueryEngine, "execute", explodes)
 
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
-        )
+        ))
         text = content[0].text
         col_section = text.split("## Fields")[1]
         status_row_start = col_section.find("| status ")
@@ -823,9 +824,11 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await self._call_json(server, dataset_name="wide")
 
         reloaded = await storage.get_dataset("wide", data_source="wide_ds")
+        assert reloaded is not None
         # Every one of the 15 categorical fields has structured profile.
         for i in range(col_count):
             col = reloaded.get_field(f"c{i}")
+            assert col is not None
             assert col.sampled_values is not None, (
                 f"c{i}.sampled_values is None — max_dims cap not removed"
             )
@@ -873,10 +876,10 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
         ))
 
         server = create_mcp_server(storage=storage)
-        content, _ = await server.call_tool(
+        content = text_blocks(await server.call_tool(
             name="inspect",
             arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
-        )
+        ))
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["fields"] if c["name"] == "notes")
         assert notes["sampled"] == ""
