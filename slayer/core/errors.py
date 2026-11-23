@@ -1461,6 +1461,15 @@ class StoredDocumentLoadError(SlayerError, ValueError):
         return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
 
 
+class UnreadableDocumentError(SlayerError, ValueError):
+    """Document text that does not read into data; ``name`` is the root ``name`` it declares, when found."""
+
+    def __init__(self, *, reasons: Sequence[str], name: str | None = None) -> None:
+        self.reasons = list(reasons)
+        self.name = name
+        super().__init__("; ".join(self.reasons))
+
+
 class OssieDocumentInvalidError(SlayerError):
     """A semantic-model document that is not a valid Ossie ``0.3.0.dev0`` document; ``reasons`` lists every reason."""
 

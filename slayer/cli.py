@@ -24,7 +24,8 @@ from slayer import otel
 from slayer.async_utils import run_sync
 from slayer.core.enums import Conformance
 from slayer.core.deprecation import deprecations_on_one_line
-from slayer.core.errors import OssieQueryError, SlayerError
+from slayer.core.document_text import parse_document_text
+from slayer.core.errors import OssieQueryError, SlayerError, UnreadableDocumentError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
@@ -2567,7 +2568,7 @@ def _run_ossie_roundtrip(args) -> None:
         finally:
             engine.close()
     if args.output.endswith(".json"):
-        text = json.dumps(yaml.safe_load(text), indent=2, ensure_ascii=False) + "\n"
+        text = json.dumps(parse_document_text(text), indent=2, ensure_ascii=False) + "\n"
     # The output path is an intended, user-specified CLI location.
     with open(args.output, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
         fh.write(text)
@@ -2652,9 +2653,10 @@ def _semantic_models_list(storage: StorageBackend, args) -> None:
     for ds, name in found:
         text = run_sync(storage.get_semantic_model_text(name, data_source=ds))
         try:
-            data = yaml.safe_load(text or "") or {}
-        except yaml.YAMLError:
+            data = parse_document_text(text or "") or {}
+        except UnreadableDocumentError:
             data = {}
+        data = data if isinstance(data, dict) else {}
         datasets = [str(d.get("name")) for d in data.get("datasets") or [] if isinstance(d, dict)]
         print(f"{ds}.{name}: {', '.join(datasets) or '(no datasets)'}")
 

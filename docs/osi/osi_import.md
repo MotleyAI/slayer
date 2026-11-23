@@ -36,6 +36,7 @@ print(result.render_report())
 
 A document that is not valid Ossie stores nothing and is refused with every reason, each naming its entity:
 
+- YAML or JSON text repeating a mapping key at any depth (each repeat named with its line; repeated `<<` merge directives are allowed), or holding a scalar YAML cannot build, such as `2024-02-30` (these are then the only reasons reported);
 - a root mixing the flat and wrapper shapes, or holding neither (an Ossie ontology or mapping document);
 - an empty `semantic_model`, or a wrapper declaring `0.3.0.dev0` (whose documents are flat);
 - a key Ossie does not define, or an unknown version;

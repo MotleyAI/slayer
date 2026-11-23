@@ -158,13 +158,15 @@ REFUSED: dict[tuple[str, str], str] = {
     ("harvested/216f1c025746.yaml", "revenue"): "UnknownReferenceError",
     ("harvested/738601d2a838.yaml", "revenue"): "UnknownReferenceError",
     ("harvested/ddeb8527e638.yaml", "revenue"): "UnknownReferenceError",
-    ("harvested/58a8515b964f.yaml", "revenue"): "UnknownFunctionError",
     ("harvested/3cdbe43998c6.yaml", "now_metric"): "NoRowSourceError",
     ("harvested/41093682a932.yaml", "revenue"): "NoRowSourceError",
     ("harvested/c82499fbddd2.yaml", "revenue"): "NoRowSourceError",
     ("harvested/fad5e6f81b85.yaml", "revenue"): "NoRowSourceError",
     ("compliance/wide_table/retail/retail_model.ossie.yaml", "order_less_return"): "UnsafeRelationshipInputError",
 }
+
+#: (document, metric) whose runnable form SLayer's expression reader rejects: loaded not evaluable.
+UNPARSEABLE: set[tuple[str, str]] = {("harvested/58a8515b964f.yaml", "revenue")}
 
 
 def expected_outcomes(data: dict[str, Any]) -> dict[str, str]:
@@ -274,7 +276,8 @@ async def test_every_metric_binds_and_compiles(path: Path, tmp_path: Path) -> No
     """Every metric compiles to SQL; an unevaluable one raises a typed error naming it, a ``REFUSED`` one its error."""
     text, data = _load(path)
     doc_id = path.relative_to(ROOT).as_posix()
-    expected = expected_outcomes(data) | {m: f"refused: {e}" for (d, m), e in REFUSED.items() if d == doc_id}
+    expected = (expected_outcomes(data) | {m: f"refused: {e}" for (d, m), e in REFUSED.items() if d == doc_id}
+                | {m: "unevaluable" for d, m in UNPARSEABLE if d == doc_id})
     async with _env("yaml", tmp_path) as (storage, engine):
         await _store(storage, text=text, data=data)
         actual: dict[str, str] = {}

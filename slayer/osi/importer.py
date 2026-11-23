@@ -16,6 +16,7 @@ from sqlglot import exp
 
 from slayer.core import slayer_extension as ext
 from slayer.core.document_text import edit_text, parse_document_text
+from slayer.core.errors import UnreadableDocumentError
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.ossie_validity import columns, parse_ossie_sql
 from slayer.core.portable_sql import portable_entity_expression
@@ -254,8 +255,8 @@ class _Importer:
         text = file.read_text(encoding="utf-8")  # NOSONAR(S8707) — reading the file the CLI user names is the feature
         try:
             data = parse_document_text(text)
-        except ValueError as exc:
-            raise _Refused(str(exc)) from exc
+        except UnreadableDocumentError as exc:
+            raise _Refused(*exc.reasons) from exc
         if not isinstance(data, dict) or ("datasets" not in data and "semantic_model" not in data):
             raise _Refused("the file is not a semantic-model document (it holds neither `datasets` nor a legacy "
                            "`semantic_model`); ontology and mapping documents are not imported")

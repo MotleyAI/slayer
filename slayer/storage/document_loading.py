@@ -26,6 +26,12 @@ def stored_document_boundary(
         raise StoredDocumentLoadError(kind=kind, name=name, data_source=data_source, cause=exc) from exc
 
 
+def document_kind(error: StoredDocumentLoadError) -> Literal["dataset", "semantic_model", "memory"]:
+    if error.data_source is None:
+        return "memory"
+    return "semantic_model" if error.kind == "semantic_model" else "dataset"
+
+
 class DocumentLoadFailures:
     """Unloadable documents met by one operation; each is warned once, unless ``report`` is off."""
 
@@ -45,7 +51,7 @@ class DocumentLoadFailures:
         if not self.report:
             return
         payload = UnloadableDocumentWarning(
-            document_kind="memory" if error.data_source is None else "dataset",
+            document_kind=document_kind(error),
             data_source=error.data_source, name=error.name, cause=error.cause_text,
         )
         self.warnings.append(payload)
