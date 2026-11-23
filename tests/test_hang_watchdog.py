@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,23 @@ _SIGNAL_PROOF_SLEEP = """
     def test_signal_proof():
         signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
         time.sleep(20)
+"""
+_FAILED_THEN_STUCK_TEARDOWN = """
+    import signal
+    import time
+
+    import pytest
+
+
+    @pytest.fixture
+    def stuck_teardown():
+        yield
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        time.sleep(40)
+
+
+    def test_fails(stuck_teardown):
+        assert False
 """
 
 
@@ -183,6 +201,57 @@ class TestStackDump:
         assert len(worker) == 1
         assert "in _block_in_sessionfinish" in next(iter(worker.values()))
 
+    def test_failed_test_keeps_the_deadline_dump(self, project: pytest.Pytester) -> None:
+        project.makeconftest("""
+            import time
+
+
+            def pytest_sessionfinish(session):
+                if hasattr(session.config, "workerinput"):
+                    _block_in_sessionfinish()
+
+
+            def _block_in_sessionfinish():
+                time.sleep(12)
+        """)
+        project.makepyfile(test_fails="def test_fails():\n    assert False\n")
+        reports = project.path / "reports"
+        result = _run(project, "-n", "1", "--stack-dump-after", "6", "--hang-report-dir", str(reports))
+        assert result.ret == pytest.ExitCode.TESTS_FAILED, result.outlines
+        worker = _reports(reports, r"gw0-\d+\.txt")
+        assert len(worker) == 1, result.outlines
+        assert "in _block_in_sessionfinish" in next(iter(worker.values()))
+
+    def test_deadline_dump_and_hard_bound_share_the_worker(self, project: pytest.Pytester) -> None:
+        project.makepyfile(test_shared="""
+            import signal
+            import time
+
+            import pytest
+
+
+            def test_a_spans_the_deadline():
+                time.sleep(6)
+
+
+            @pytest.mark.timeout(1)
+            def test_b_signal_proof():
+                signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+                time.sleep(20)
+        """)
+        reports = project.path / "reports"
+        result = _run(
+            project, "-n", "1", "--timeout=30", "--hard-timeout-grace", "1",
+            "--stack-dump-after", "3", "--hang-report-dir", str(reports),
+        )
+        assert _crashed(result, "test_shared.py::test_b_signal_proof"), result.outlines
+        deadline = _reports(reports, r"gw0-\d+\.txt")
+        assert len(deadline) == 1, result.outlines
+        assert "in test_a_spans_the_deadline" in next(iter(deadline.values()))
+        hard = _reports(reports, r"hard-timeout-gw0-\d+\.txt")
+        assert len(hard) == 1, result.outlines
+        assert "in test_b_signal_proof" in next(iter(hard.values()))
+
     def test_worker_started_after_the_deadline_dumps_at_once(self, project: pytest.Pytester) -> None:
         project.makepyfile(test_crash="""
             import os
@@ -259,6 +328,42 @@ class TestHardBound:
         assert len(dumps) == 1, result.outlines
         assert "in stuck_teardown" in next(iter(dumps.values()))
         assert "test_z_ok.py::test_ok" in _passed(result)
+
+    def test_gil_holding_c_hang_crashes_its_worker(self, project: pytest.Pytester) -> None:
+        project.makepyfile(test_gil="""
+            import ctypes
+            import signal
+
+
+            def test_gil_held():
+                signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+                ctypes.PyDLL(None).sleep(40)
+        """)
+        reports = project.path / "reports"
+        start = time.monotonic()
+        result = _run(
+            project, "-n", "1", "--timeout=1", "--hard-timeout-grace", "1", "--hang-report-dir", str(reports),
+        )
+        assert time.monotonic() - start < 30, result.outlines
+        assert _crashed(result, "test_gil.py::test_gil_held"), result.outlines
+        dumps = _reports(reports, r"hard-timeout-gw0-\d+\.txt")
+        assert len(dumps) == 1, result.outlines
+        dump = next(iter(dumps.values()))
+        assert "test_gil.py::test_gil_held" in dump
+        assert "in test_gil_held" in dump
+
+    def test_failed_test_keeps_its_teardown_bounded(self, project: pytest.Pytester) -> None:
+        project.makepyfile(test_failing=_FAILED_THEN_STUCK_TEARDOWN)
+        reports = project.path / "reports"
+        start = time.monotonic()
+        result = _run(
+            project, "-n", "1", "--timeout=1", "--hard-timeout-grace", "1", "--hang-report-dir", str(reports),
+        )
+        assert time.monotonic() - start < 30, result.outlines
+        assert _crashed(result, "test_failing.py::test_fails"), result.outlines
+        dumps = _reports(reports, r"hard-timeout-gw0-\d+\.txt")
+        assert len(dumps) == 1, result.outlines
+        assert "in stuck_teardown" in next(iter(dumps.values()))
 
     @pytest.mark.parametrize("marker", ["timeout(1)", "timeout(timeout=1)", "timeout(timeout=1, method='signal')"])
     def test_marker_timeout_overrides_the_command_line(self, project: pytest.Pytester, marker: str) -> None:
@@ -345,6 +450,14 @@ class TestHardBound:
         result = _run(project, "--timeout=1", "--hard-timeout-grace", "1", "--hang-report-dir", str(reports))
         result.assert_outcomes(passed=1, failed=1)
         assert not _reports(reports, r"hard-timeout-.*")
+
+
+@pytest.mark.parametrize("option", ["--stall-report-after", "--stack-dump-after", "--hard-timeout-grace"])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
+def test_invalid_duration_is_a_usage_error(project: pytest.Pytester, option: str, value: str) -> None:
+    project.makepyfile(test_ok="def test_ok():\n    pass\n")
+    result = _run(project, f"{option}={value}", "--hang-report-dir", str(project.path / "reports"))
+    assert result.ret == pytest.ExitCode.USAGE_ERROR, result.outlines
 
 
 def test_without_options_the_watchdog_is_inert(project: pytest.Pytester) -> None:

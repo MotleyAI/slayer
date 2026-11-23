@@ -4,16 +4,20 @@
 live workers silent that long (again every further ``S``). ``--stack-dump-after S``
 dumps every process's thread stacks into ``--hang-report-dir`` ``S`` seconds after the
 session starts. ``--hard-timeout-grace G`` ends a worker whose test outlives its
-pytest-timeout (signal method) by ``G`` seconds, after dumping its stacks.
+pytest-timeout (signal method) by ``G`` seconds, after dumping its stacks. A worker
+enforces both with faulthandler's one timer, a C thread that runs without the GIL.
 """
 
 from __future__ import annotations
 
+import argparse
 import faulthandler
+import math
 import os
 import sys
 import threading
 import time
+from collections.abc import Generator
 from pathlib import Path
 from typing import IO, Any
 
@@ -23,19 +27,26 @@ _TAG = "[hang-watchdog]"
 _DEADLINE_KEY = "hang_watchdog_deadline"
 
 
+def _seconds(value: str) -> float:
+    seconds = float(value)
+    if not (math.isfinite(seconds) and seconds > 0):
+        raise argparse.ArgumentTypeError(f"must be a positive number of seconds, got {value!r}")
+    return seconds
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("hang watchdog")
     group.addoption(
-        "--stall-report-after", type=float, metavar="S",
+        "--stall-report-after", type=_seconds, metavar="S",
         help="xdist: report tests in flight and workers silent for S seconds or more",
     )
     group.addoption(
-        "--stack-dump-after", type=float, metavar="S",
+        "--stack-dump-after", type=_seconds, metavar="S",
         help="dump every process's thread stacks into --hang-report-dir S seconds after session start",
     )
     group.addoption("--hang-report-dir", metavar="DIR", help="directory for the watchdog's stack dumps")
     group.addoption(
-        "--hard-timeout-grace", type=float, metavar="G",
+        "--hard-timeout-grace", type=_seconds, metavar="G",
         help="xdist: end a worker whose test outlives its signal-method timeout by G seconds",
     )
 
@@ -54,8 +65,8 @@ def pytest_configure(config: pytest.Config) -> None:
     dump_after = config.getoption("--stack-dump-after")
     grace = config.getoption("--hard-timeout-grace")
     workerinput: dict[str, Any] | None = getattr(config, "workerinput", None)
-    if dump_after is not None and float(config.getini("faulthandler_timeout") or 0) > 0:
-        raise pytest.UsageError("--stack-dump-after cannot be combined with faulthandler_timeout")
+    if (dump_after is not None or grace is not None) and float(config.getini("faulthandler_timeout") or 0) > 0:
+        raise pytest.UsageError("--stack-dump-after and --hard-timeout-grace cannot be combined with faulthandler_timeout")
     if workerinput is None:
         if stall_after is not None or dump_after is not None:
             deadline = None if dump_after is None else time.time() + dump_after
@@ -63,15 +74,15 @@ def pytest_configure(config: pytest.Config) -> None:
             controller = _Controller(stall_after=stall_after, deadline=deadline, directory=directory)
             config.pluginmanager.register(controller, "hang-watchdog-controller")
         return
-    worker_id = workerinput["workerid"]
-    dump = None
-    if workerinput.get(_DEADLINE_KEY) is not None:
-        dump = _DeadlineDump(path=_report_dir(config) / f"{worker_id}-{os.getpid()}.txt")
-        dump.arm(deadline=workerinput[_DEADLINE_KEY])
-        config.pluginmanager.register(dump, "hang-watchdog-dump")
-    if grace is not None:
-        path = _report_dir(config) / f"hard-timeout-{worker_id}-{os.getpid()}.txt"
-        config.pluginmanager.register(_HardBound(grace=grace, path=path, dump=dump), "hang-watchdog-hard-bound")
+    deadline = workerinput.get(_DEADLINE_KEY)
+    if deadline is None and grace is None:
+        return
+    directory = _report_dir(config)
+    name = f"{workerinput['workerid']}-{os.getpid()}.txt"
+    timer = _WorkerTimer(
+        deadline=deadline, dump_path=directory / name, grace=grace, hard_path=directory / f"hard-timeout-{name}",
+    )
+    config.pluginmanager.register(timer, "hang-watchdog-worker-timer")
 
 
 def _emit(line: str) -> None:
@@ -172,83 +183,72 @@ class _Controller:
         _emit(f"stacks dumped to {self._dump_path.parent}")
 
 
-class _DeadlineDump:
-    """Worker: faulthandler dumps every thread's stack at the controller's deadline."""
+class _WorkerTimer:
+    """Worker: faulthandler's one timer, armed for the earlier of the session deadline (dump) and the hard bound (dump, exit)."""
 
-    def __init__(self, *, path: Path) -> None:
-        self.path = path
-        self._file: IO[str] | None = None
-
-    def arm(self, *, deadline: float) -> None:
-        self._file = self.path.open("w")
-        remaining = deadline - time.time()
-        if remaining > 0:
-            faulthandler.dump_traceback_later(remaining, file=self._file)
-        else:
-            faulthandler.dump_traceback(file=self._file, all_threads=True)
-            self.close()
-
-    def close(self) -> None:
-        if self._file is None:
-            return
-        faulthandler.cancel_dump_traceback_later()
-        self._file.close()
-        self._file = None
-        if self.path.stat().st_size == 0:
-            self.path.unlink()
-
-    @pytest.hookimpl(trylast=True)
-    def pytest_unconfigure(self) -> None:
-        self.close()
-
-
-class _HardBound:
-    """Worker: ends the process when a signal-method test timeout outlives its grace."""
-
-    def __init__(self, *, grace: float, path: Path, dump: _DeadlineDump | None) -> None:
+    def __init__(self, *, deadline: float | None, dump_path: Path, grace: float | None, hard_path: Path) -> None:
         self._grace = grace
-        self._path = path
-        self._dump = dump
-        self._cond = threading.Condition()
-        self._deadline: float | None = None
-        self._nodeid = ""
-        self._thread: threading.Thread | None = None
+        self._session_deadline = deadline
+        self._test_deadline: float | None = None
+        self._interacting = False
+        self._files: dict[Path, IO[str]] = {}
+        if deadline is not None:
+            self._dump_file = self._files[dump_path] = dump_path.open("w")
+        if grace is not None:
+            self._hard_file = self._files[hard_path] = hard_path.open("w")
+        self._rearm()
 
     @pytest.hookimpl(tryfirst=True, optionalhook=True)
     def pytest_timeout_set_timer(self, item: pytest.Item, settings: Any) -> None:
-        if settings.method != "signal" or threading.current_thread() is not threading.main_thread():
+        if self._grace is None or settings.method != "signal":
             return
-        with self._cond:
-            self._nodeid = item.nodeid
-            self._deadline = time.monotonic() + settings.timeout + self._grace
-            if self._thread is None:
-                self._thread = threading.Thread(target=self._watch, name="hang-watchdog-hard-bound", daemon=True)
-                self._thread.start()
-            self._cond.notify()
+        self._hard_file.seek(0)
+        self._hard_file.truncate()
+        self._hard_file.write(f"Hard timeout: {item.nodeid}\n\n")
+        self._hard_file.flush()
+        self._test_deadline = time.time() + settings.timeout + self._grace
+        self._rearm()
 
     @pytest.hookimpl(tryfirst=True, optionalhook=True)
     def pytest_timeout_cancel_timer(self, item: pytest.Item) -> None:
-        with self._cond:
-            self._deadline = None
-            self._cond.notify()
+        if self._interacting or self._test_deadline is None:  # pytest-timeout cancels on every test failure
+            return
+        self._test_deadline = None
+        self._hard_file.seek(0)
+        self._hard_file.truncate()
+        self._rearm()
 
-    def _watch(self) -> None:
-        with self._cond:
-            while True:
-                if self._deadline is None:
-                    self._cond.wait()
-                    continue
-                remaining = self._deadline - time.monotonic()
-                if remaining > 0:
-                    self._cond.wait(remaining)
-                    continue
-                self._fire()
+    @pytest.hookimpl(wrapper=True)
+    def pytest_exception_interact(self) -> Generator[None, object, object]:
+        self._interacting = True
+        try:
+            return (yield)
+        finally:
+            self._interacting = False
+            self._rearm()  # pytest's faulthandler plugin cancels the timer here
 
-    def _fire(self) -> None:
-        with self._path.open("w") as out:
-            out.write(f"Hard timeout: {self._nodeid}\n\n")
-            out.flush()
-            faulthandler.dump_traceback(file=out, all_threads=True)
-        if self._dump is not None:
-            self._dump.close()
-        os._exit(1)
+    @pytest.hookimpl(trylast=True)
+    def pytest_unconfigure(self) -> None:
+        faulthandler.cancel_dump_traceback_later()
+        for path, file in self._files.items():
+            file.close()
+            if path.stat().st_size == 0:
+                path.unlink()
+        self._files.clear()
+
+    def _rearm(self) -> None:
+        now = time.time()
+        if self._session_deadline is not None and self._session_deadline <= now:
+            if os.fstat(self._dump_file.fileno()).st_size == 0:
+                faulthandler.dump_traceback(file=self._dump_file, all_threads=True)
+            self._session_deadline = None
+        targets = []
+        if self._session_deadline is not None:
+            targets.append((self._session_deadline, self._dump_file, False))
+        if self._test_deadline is not None:
+            targets.append((self._test_deadline, self._hard_file, True))
+        if not targets:
+            faulthandler.cancel_dump_traceback_later()
+            return
+        when, file, exit_ = min(targets, key=lambda target: target[0])
+        faulthandler.dump_traceback_later(max(when - now, 0.001), file=file, exit=exit_)
