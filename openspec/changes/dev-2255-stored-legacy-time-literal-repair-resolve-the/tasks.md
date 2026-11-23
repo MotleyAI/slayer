@@ -2,27 +2,27 @@
 
 - [x] 1.0 Earlier failing tests (commit aa60f90f) merged with main 2.0 (a6493b303): mechanical renames done; their
       expectations predate 2.0 and are rewritten below
-- [ ] 1.1 `tests/_stored_upgrade_fixtures.py`: regions fixtures in 2.0 shape (a TIMESTAMP `opened_at` beside the DATE
+- [x] 1.1 `tests/_stored_upgrade_fixtures.py`: regions fixtures in 2.0 shape (a TIMESTAMP `opened_at` beside the DATE
       `opened_on` for the whole-day cases); verify the existing stored-upgrade tests still pass on them
-- [ ] 1.2 Legacy repair, YAML and SQLite: short-form two hops, reverse edge, reversed operands, own qualifier then route —
+- [x] 1.2 Legacy repair, YAML and SQLite: short-form two hops, reverse edge, reversed operands, own qualifier then route —
       each loads with its qualified path and repaired literal and returns the expected total; extension DATE column on
       routed `regions` loads as `CAST(... AS DATE) >= '2024-01-01'` and runs; verify they fail on the current code
-- [ ] 1.3 Operator layouts: one case per layout of decision 14 with main's qualified and whole-day output
-- [ ] 1.4 Verbatim / refusal: routed TEXT column verbatim with its rows; ambiguous short-form route refused by
+- [x] 1.3 Operator layouts: one case per layout of decision 14 with main's qualified and whole-day output
+- [x] 1.4 Verbatim / refusal: routed TEXT column verbatim with its rows; ambiguous short-form route refused by
       qualification; unloadable peer not blocking an unrelated repair
-- [ ] 1.5 Quoting: quoted hop and leaf in exact case repaired; wrong-case hop or leaf never repaired; the qualified leaf
+- [x] 1.5 Quoting: quoted hop and leaf in exact case repaired; wrong-case hop or leaf never repaired; the qualified leaf
       stays double-quoted
-- [ ] 1.6 Stage population (bare reference verbatim, extension-join hop repaired); root-less population (unique inference
+- [x] 1.6 Stage population (bare reference verbatim, extension-join hop repaired); root-less population (unique inference
       through a route, ambiguous inference refused)
-- [ ] 1.7 Memories: routed literal repaired; two datasources with priority both ways; the rewritten spine-memory scenario
-- [ ] 1.8 Whole-day upgrade typed by the binder: routed TIMESTAMP `= '2024-01-01'` reads `in`, a routed slashed
+- [x] 1.7 Memories: routed literal repaired; two datasources with priority both ways; the rewritten spine-memory scenario
+- [x] 1.8 Whole-day upgrade typed by the binder: routed TIMESTAMP `= '2024-01-01'` reads `in`, a routed slashed
       `= '2024/01/01'` the same; quoted operand by exact spelling; a current model holding an older nested stage with
       extension `columns` and a typed literal is typed, inlined and qualified
-- [ ] 1.9 Conversion scope: loading the document itself and a two-model cycle neither recurse nor write a peer twice; raw
+- [x] 1.9 Conversion scope: loading the document itself and a two-model cycle neither recurse nor write a peer twice; raw
       reads unmutated and bytes equal across load orders
-- [ ] 1.10 `core.syntax.literal_comparisons` reader tests (spans, parts, quoting, every layout, function-argument literal
+- [x] 1.10 `core.syntax.literal_comparisons` reader tests (spans, parts, quoting, every layout, function-argument literal
       not reported, unparseable empty, splice round-trip); verify they fail (reader absent)
-- [ ] 1.11 `resolve_path` / `resolve_anchored_path` quoting tests under the 2.0 keyword names: quoted root qualifier,
+- [x] 1.11 `resolve_path` / `resolve_anchored_path` quoting tests under the 2.0 keyword names: quoted root qualifier,
       edge name, short-form dataset, mixed segments, case-colliding names; no flags unchanged; verify they fail
 
 ## 2. `core` readers

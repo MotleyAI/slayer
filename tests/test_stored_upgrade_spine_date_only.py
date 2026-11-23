@@ -196,6 +196,21 @@ class TestSpineOperands:
         assert mem.query is not None
         assert mem.query.filter == [ORDERS_LT]
 
+    @pytest.mark.parametrize(("priority", "loaded"), [([DS, OTHER], ORDERS_LT), ([OTHER, DS], ORDERS_LE)])
+    async def test_memory_on_the_spine_in_a_store_with_two_datasources(
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, priority: list[str], loaded: str,
+    ) -> None:
+        storage = await store(tmp_path, shop_ds, backend=backend,
+                              memories=(memory("m_two_ds", spine_stage(ORDERS_LE)),))
+        text_orders = orders_v10(version=PRE["SlayerModel"])
+        text_orders["columns"] = [{**c, "type": "TEXT"} if c["name"] == "ordered_at" else c
+                                  for c in text_orders["columns"]]
+        await add_other_datasource(storage, tmp_path, backend=backend, models=({**text_orders, "data_source": OTHER},))
+        await storage.set_datasource_priority(priority)
+        mem = await storage.get_memory("m_two_ds")
+        assert mem.query is not None
+        assert mem.query.filter == [loaded]
+
     async def test_memory_on_the_spine_with_a_variant_in_two_datasources(
         self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
     ) -> None:
@@ -291,18 +306,6 @@ class TestSpineLeftAlone:
         assert mem.query.filter == [loaded]
         assert any("m_ambiguous" in t and body["filters"][0] in t for t in texts), texts
 
-    async def test_memory_on_the_spine_in_a_store_with_two_datasources(
-        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        storage = await store(tmp_path, shop_ds, backend=backend,
-                              memories=(memory("m_two_ds", spine_stage(ORDERS_LE)),))
-        await add_other_datasource(storage, tmp_path, backend=backend)
-        with logged(caplog) as texts:
-            mem = await storage.get_memory("m_two_ds")
-        assert mem.query is not None
-        assert mem.query.filter == [ORDERS_LE]
-        assert any("m_two_ds" in t and ORDERS_LE in t for t in texts), texts
-
     async def test_source_held_by_two_datasources(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                   caplog: pytest.LogCaptureFixture) -> None:
         stored_spine = model_doc(TIME_SPINE_DATASET, [{"name": "timestamp", "type": "TEXT", "primary_key": True}])
@@ -313,7 +316,7 @@ class TestSpineLeftAlone:
             mem = await storage.get_memory("m_held_twice")
         assert mem.query is not None
         assert mem.query.filter == [SPINE_LE]
-        assert any("m_held_twice" in t and TS_LE in t for t in texts), texts
+        assert not any(TS_LE in t for t in texts), texts
 
     async def test_path_continuing_past_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                   backend: str) -> None:

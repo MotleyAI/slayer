@@ -65,11 +65,12 @@ def test_each_element_of_an_all_literal_not_in_list() -> None:
     pytest.param("lower(status) = 'ok'", id="call-operand"),
     pytest.param("'a' = 'b'", id="literal-against-literal"),
     pytest.param("ordered_at >= 1", id="numeric-literal"),
+    pytest.param("coalesce(ordered_at, '2024/01/01') >= ordered_at", id="literal-inside-call-operand"),
     pytest.param("ordered_at >=", id="unparseable"),
     pytest.param("", id="empty"),
 ])
 def test_not_reported(text: str) -> None:
-    assert literal_comparisons(text) == ()
+    assert list(literal_comparisons(text)) == []
 
 
 def test_function_argument_beside_a_comparison_is_not_reported() -> None:

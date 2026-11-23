@@ -11,10 +11,13 @@ from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
 from tests._stored_upgrade_fixtures import (
+    AMOUNT_OPENED_BEFORE_2024,
+    AMOUNT_OPENED_ON_JAN_1,
     AMOUNT_OPENED_SINCE_2024,
     BACKENDS,
     CUSTOMERS_TO_ORDERS,
     DS,
+    TOTAL,
     customers_v10,
     in_datasource,
     metric_total,
@@ -44,14 +47,10 @@ REPAIRED_CASES = [
 LEGACY_FRAGMENTS = ("Z'", "+02:00", "/")
 
 VERBATIM_CASES = [
-    pytest.param("status = '2024/01/01'", id="text-column"),
-    pytest.param("missing_col >= '2024-01-01T00:00:00Z'", id="unresolvable"),
+    pytest.param("status = '2024/01/01'", "orders.status = '2024/01/01'", id="text-column"),
+    pytest.param("missing_col >= '2024-01-01T00:00:00Z'", "orders.missing_col >= '2024-01-01T00:00:00Z'",
+                 id="unresolvable"),
 ]
-#: Each verbatim case as it loads: qualified by its population, its literal untouched.
-VERBATIM_LOADED = {
-    "status = '2024/01/01'": "orders.status = '2024/01/01'",
-    "missing_col >= '2024-01-01T00:00:00Z'": "orders.missing_col >= '2024-01-01T00:00:00Z'",
-}
 
 
 @pytest.fixture
@@ -71,10 +70,14 @@ async def _store(*, tmp_path, ds: DatasourceConfig, backend: str, filters: list[
                            models=[orders_v10(), customers_v10(), qb])
 
 
-async def _loaded_filters(storage: StorageBackend) -> list[str]:
-    model = await storage.get_dataset("rev_f", data_source=DS)
+async def _loaded_filters(storage: StorageBackend, name: str = "rev_f", *, index: int = 0) -> list[str]:
+    model = await storage.get_dataset(name, data_source=DS)
     assert model is not None
-    return list((model.source_queries or [])[0].filter or [])
+    return list((model.source_queries or [])[index].filter or [])
+
+
+async def _total(storage: StorageBackend, name: str = "rev_f") -> float:
+    return metric_total(await run(storage, {"population": name, "metrics": [f"sum({name}.rev)"]}), metric="rev_sum")
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -83,8 +86,7 @@ async def test_legacy_literal_against_temporal_column_runs(tmp_path, shop_ds, ba
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend=backend, filters=[stored_filter])
     [loaded] = await _loaded_filters(storage)
     assert not [frag for frag in LEGACY_FRAGMENTS if frag in loaded], loaded
-    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
-    assert metric_total(resp, metric="rev_sum") == expected
+    assert await _total(storage) == expected
 
 
 async def test_repair_keeps_the_rest_of_the_filter_verbatim(tmp_path, shop_ds):
@@ -94,41 +96,22 @@ async def test_repair_keeps_the_rest_of_the_filter_verbatim(tmp_path, shop_ds):
         "orders.ordered_at >= '2024-01-01T00:00:00' and like(orders.status, 'n%')"]
 
 
-@pytest.mark.parametrize(("stored_filter", "repaired"), [
-    ("ordered_at = '2024/01/01'", "ordered_at = '2024-01-01'"),
-    ("ordered_at == '2024/01/01'", "ordered_at = '2024-01-01'"),
-    ("ordered_at != '2024/01/01'", "ordered_at != '2024-01-01'"),
-    ("ordered_at <> '2024/01/01'", "ordered_at <> '2024-01-01'"),
-    ("ordered_at < '2024/01/01'", "ordered_at < '2024-01-01'"),
-    ("ordered_at <= '2024/01/01'", "ordered_at <= '2024-01-01'"),
-    ("ordered_at > '2024/01/01'", "ordered_at > '2024-01-01'"),
-    ("'2024/01/01' > ordered_at", "'2024-01-01' > ordered_at"),
-    ("(ordered_at >= '2024/01/01') and (status = 'ok')", "(ordered_at >= '2024-01-01') and (status = 'ok')"),
-    ("ordered_at NOT IN ('2024/01/01', '2024/02/01')", "ordered_at NOT IN ('2024-01-01', '2024-02-01')"),
-    ("customers.signed_up_at IN ('2024/01/01')", "customers.signed_up_at IN ('2024-01-01')"),
-])
-async def test_every_operator_layout_is_repaired_exactly(tmp_path, shop_ds, stored_filter, repaired):
+@pytest.mark.parametrize(("stored_filter", "loaded"), VERBATIM_CASES)
+async def test_non_temporal_or_unresolvable_comparison_stays_verbatim(tmp_path, shop_ds, stored_filter, loaded):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", filters=[stored_filter])
-    assert await _loaded_filters(storage) == [repaired]
+    assert await _loaded_filters(storage) == [loaded]
 
 
-@pytest.mark.parametrize("stored_filter", VERBATIM_CASES)
-async def test_non_temporal_or_unresolvable_comparison_stays_verbatim(tmp_path, shop_ds, stored_filter):
-    storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", filters=[stored_filter])
-    assert await _loaded_filters(storage) == [VERBATIM_LOADED[stored_filter]]
-
-
-async def test_mixed_in_list_refuses_to_load(tmp_path, shop_ds):
+async def test_mixed_in_list_is_left_to_the_grammar(tmp_path, shop_ds):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml",
                            filters=["ordered_at IN ('2024/01/01', status)"])
-    with pytest.raises(StoredDocumentLoadError):
+    with pytest.raises(StoredDocumentLoadError, match=r"ordered_at IN \('2024/01/01', status\).*must be a literal"):
         await _loaded_filters(storage)
 
 
 async def test_text_column_comparison_keeps_its_rows(tmp_path, shop_ds):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", filters=["status = '2024/01/01'"])
-    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
-    assert metric_total(resp, metric="rev_sum") == 60.0
+    assert await _total(storage) == 60.0
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -141,14 +124,14 @@ async def test_memory_query_filter_literal_is_repaired(tmp_path, shop_ds, backen
     assert mem.query is not None
     [loaded] = mem.query.filter or []
     assert "+02:00" not in loaded
-    resp = await run(storage, mem.query)
-    assert metric_total(resp, metric="rev") == 150.0
+    assert metric_total(await run(storage, mem.query), metric="rev") == 150.0
 
 
 # --------------------------------------------------------------------------- #
 # The compared column resolves as the binder resolves it.
 # --------------------------------------------------------------------------- #
 DS2 = "shop2"
+ROUTE = "orders.customers.regions"
 
 
 def _regions_db(tmp_path, name: str) -> str:
@@ -184,23 +167,24 @@ EXTENDED_REGIONS = {
 
 ROUTED_REPAIRS = [
     pytest.param(_routed_models, rev_query(filters=["regions.opened_on >= '2024/01/01'"]),
-                 "regions.opened_on >= '2024-01-01'", AMOUNT_OPENED_SINCE_2024, id="short-form-two-hops"),
+                 f"{ROUTE}.opened_on >= '2024-01-01'", AMOUNT_OPENED_SINCE_2024, id="short-form-two-hops"),
     pytest.param(_reverse_models, rev_query(filters=["customers.signed_up_at >= '2024-01-01T00:00:00Z'"]),
                  "customers.signed_up_at >= '2024-01-01T00:00:00'", 180.0, id="reverse-edge"),
+    pytest.param(_routed_models, rev_query(filters=["'2024/01/01' <= regions.opened_on"]),
+                 f"'2024-01-01' <= {ROUTE}.opened_on", AMOUNT_OPENED_SINCE_2024, id="short-form-reversed-operands"),
+    pytest.param(_routed_models, rev_query(filters=["orders.regions.opened_on >= '2024/01/01'"]),
+                 f"{ROUTE}.opened_on >= '2024-01-01'", AMOUNT_OPENED_SINCE_2024, id="own-qualifier-then-route"),
     pytest.param(_routed_models,
                  {"version": 12, **rev_query(filters=["regions.founded_on >= '2024/01/01'"]),
                   "extensions": [EXTENDED_REGIONS]},
-                 "regions.founded_on >= '2024-01-01'", AMOUNT_OPENED_SINCE_2024, id="extension-on-routed-model"),
-    pytest.param(_routed_models, rev_query(filters=["'2024/01/01' <= regions.opened_on"]),
-                 "'2024-01-01' <= regions.opened_on", AMOUNT_OPENED_SINCE_2024, id="short-form-reversed-operands"),
-    pytest.param(_routed_models, rev_query(filters=["orders.regions.opened_on >= '2024/01/01'"]),
-                 "orders.regions.opened_on >= '2024-01-01'", AMOUNT_OPENED_SINCE_2024, id="own-qualifier-then-route"),
+                 "CAST(customers.regions.opened_on AS DATE) >= '2024-01-01'", AMOUNT_OPENED_SINCE_2024,
+                 id="extension-on-routed-model"),
 ]
 
 
 async def _routed_store(*, tmp_path, ds: DatasourceConfig, backend: str, models: list[dict], stage: dict,
-                        **extra) -> StorageBackend:
-    qb = query_backed_v10(name="rev_f", stages=[stage])
+                        name: str = "rev_f", **extra) -> StorageBackend:
+    qb = query_backed_v10(name=name, stages=[stage])
     return await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=ds, models=[*models, qb], **extra)
 
 
@@ -211,20 +195,54 @@ async def test_routed_reference_literal_is_repaired_and_runs(
 ):
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend, models=models(), stage=stage)
     assert await _loaded_filters(storage) == [repaired]
-    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
-    assert metric_total(resp, metric="rev_sum") == expected
+    assert await _total(storage) == expected
+
+
+#: Each layout on the routed TIMESTAMP ``regions.opened_at``: repaired, then upgraded to its whole-day meaning.
+OPENED_AT = f"{ROUTE}.opened_at"
+ROUTED_LAYOUTS = [
+    pytest.param("regions.opened_at >= '2024/01/01'", f"{OPENED_AT} >= '2024-01-01'", AMOUNT_OPENED_ON_JAN_1, id="gte"),
+    pytest.param("regions.opened_at = '2024/01/01'", f"{OPENED_AT} in '2024-01-01'", AMOUNT_OPENED_ON_JAN_1, id="eq"),
+    pytest.param("regions.opened_at == '2024/01/01'", f"{OPENED_AT} in '2024-01-01'", AMOUNT_OPENED_ON_JAN_1,
+                 id="double-eq"),
+    pytest.param("regions.opened_at != '2024/01/01'", f"{OPENED_AT} not in '2024-01-01'", AMOUNT_OPENED_BEFORE_2024,
+                 id="neq"),
+    pytest.param("regions.opened_at <> '2024/01/01'", f"{OPENED_AT} not in '2024-01-01'", AMOUNT_OPENED_BEFORE_2024,
+                 id="ltgt"),
+    pytest.param("regions.opened_at < '2024/01/01'", f"{OPENED_AT} < '2024-01-01'", AMOUNT_OPENED_BEFORE_2024, id="lt"),
+    pytest.param("regions.opened_at <= '2024/01/01'", f"{OPENED_AT} < '2024-01-02'", TOTAL, id="lte"),
+    pytest.param("regions.opened_at > '2024/01/01'", f"{OPENED_AT} >= '2024-01-02'", 0.0, id="gt"),
+    pytest.param("'2024/01/01' <= regions.opened_at", f"'2024-01-01' <= {OPENED_AT}", AMOUNT_OPENED_ON_JAN_1,
+                 id="lte-reversed"),
+    pytest.param("'2024/01/01' > regions.opened_at", f"'2024-01-01' > {OPENED_AT}", AMOUNT_OPENED_BEFORE_2024,
+                 id="gt-reversed"),
+    pytest.param("'2024/01/01' >= regions.opened_at", f"'2024-01-02' > {OPENED_AT}", TOTAL, id="gte-reversed"),
+    pytest.param("(regions.opened_at >= '2024/01/01') and (status = 'ok')",
+                 f"({OPENED_AT} >= '2024-01-01') and (orders.status = 'ok')", 30.0, id="parenthesised"),
+    pytest.param("regions.opened_at IN ('2024/01/01 10:00:00', '2024/02/01')",
+                 f"{OPENED_AT} IN ('2024-01-01 10:00:00', '2024-02-01')", AMOUNT_OPENED_ON_JAN_1, id="in"),
+    pytest.param("regions.opened_at NOT IN ('2024/01/01 10:00:00')",
+                 f"{OPENED_AT} NOT IN ('2024-01-01 10:00:00')", AMOUNT_OPENED_BEFORE_2024, id="not-in"),
+]
+
+
+@pytest.mark.parametrize(("stored_filter", "loaded", "expected"), ROUTED_LAYOUTS)
+async def test_every_operator_layout_on_a_routed_column(tmp_path, regions_ds, stored_filter, loaded, expected):
+    storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend="yaml", models=_routed_models(),
+                                  stage=rev_query(filters=[stored_filter]))
+    assert await _loaded_filters(storage) == [loaded]
+    assert await _total(storage) == expected
 
 
 async def test_routed_text_column_stays_verbatim_and_keeps_its_rows(tmp_path, regions_ds):
     stage = rev_query(filters=["regions.label = '2024/01/01'"])
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend="yaml", models=_routed_models(),
                                   stage=stage)
-    assert await _loaded_filters(storage) == ["regions.label = '2024/01/01'"]
-    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
-    assert metric_total(resp, metric="rev_sum") == 120.0
+    assert await _loaded_filters(storage) == [f"{ROUTE}.label = '2024/01/01'"]
+    assert await _total(storage) == AMOUNT_OPENED_BEFORE_2024
 
 
-async def test_ambiguous_short_form_route_and_routed_text_column_stay_verbatim(tmp_path, regions_ds):
+async def test_ambiguous_short_form_route_is_refused_by_qualification(tmp_path, regions_ds):
     """``regions`` is reached through ``customers`` and through ``buyers``, both fan-out-free."""
     orders = orders_v10(joins=[
         {"target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"},
@@ -232,10 +250,10 @@ async def test_ambiguous_short_form_route_and_routed_text_column_stay_verbatim(t
     ])
     models = [orders, customers_v10(joins=[region_join()]), customers_v10(name="buyers", joins=[region_join()]),
               regions_v10()]
-    filters = ["regions.opened_on >= '2024/01/01'", "customers.regions.label = '2024/01/01'"]
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend="yaml", models=models,
-                                  stage=rev_query(filters=filters))
-    assert await _loaded_filters(storage) == filters
+                                  stage=rev_query(filters=["regions.opened_on >= '2024/01/01'"]))
+    with pytest.raises(StoredDocumentLoadError, match="regions.opened_on"):
+        await _loaded_filters(storage)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -245,14 +263,19 @@ async def test_unloadable_model_does_not_block_an_unrelated_repair(tmp_path, reg
     stage = rev_query(filters=["regions.opened_on >= '2024/01/01'"])
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend,
                                   models=[*_routed_models(), broken], stage=stage)
-    assert await _loaded_filters(storage) == ["regions.opened_on >= '2024-01-01'"]
-    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
-    assert metric_total(resp, metric="rev_sum") == AMOUNT_OPENED_SINCE_2024
+    assert await _loaded_filters(storage) == [f"{ROUTE}.opened_on >= '2024-01-01'"]
+    assert await _total(storage) == AMOUNT_OPENED_SINCE_2024
+
+
+# --------------------------------------------------------------------------- #
+# Quoting.
+# --------------------------------------------------------------------------- #
+QUOTED_ROUTE = "orders.customers.Regions"
 
 
 def _case_sensitive_models() -> list[dict]:
     return [orders_v10(), customers_v10(joins=[region_join("Regions")]),
-            regions_v10(name="Regions", date_column="Opened_On")]
+            regions_v10(name="Regions", date_column="Opened_On", timestamp_column="Opened_At")]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -260,22 +283,38 @@ async def test_double_quoted_hop_and_leaf_are_repaired(tmp_path, regions_ds, bac
     stage = rev_query(filters=['"Regions"."Opened_On" >= \'2024/01/01\''])
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend,
                                   models=_case_sensitive_models(), stage=stage)
-    assert await _loaded_filters(storage) == ['"Regions"."Opened_On" >= \'2024-01-01\'']
-    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
-    assert metric_total(resp, metric="rev_sum") == AMOUNT_OPENED_SINCE_2024
+    assert await _loaded_filters(storage) == [f'{QUOTED_ROUTE}."Opened_On" >= \'2024-01-01\'']
+    assert await _total(storage) == AMOUNT_OPENED_SINCE_2024
 
 
-@pytest.mark.parametrize("stored", [
-    pytest.param('"REGIONS"."Opened_On" >= \'2024/01/01\'', id="hop"),
-    pytest.param('"Regions"."OPENED_ON" >= \'2024/01/01\'', id="leaf"),
-])
-async def test_double_quoted_segment_in_the_wrong_case_stays_verbatim(tmp_path, regions_ds, stored):
+async def test_double_quoted_leaf_in_the_wrong_case_stays_verbatim(tmp_path, regions_ds):
+    stage = rev_query(filters=['"Regions"."OPENED_ON" >= \'2024/01/01\''])
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend="yaml",
-                                  models=_case_sensitive_models(), stage=rev_query(filters=[stored]))
-    assert await _loaded_filters(storage) == [stored]
+                                  models=_case_sensitive_models(), stage=stage)
+    assert await _loaded_filters(storage) == [f'{QUOTED_ROUTE}."OPENED_ON" >= \'2024/01/01\'']
 
 
-async def test_sibling_stage_host_bare_reference_stays_verbatim_and_extension_hop_is_repaired(tmp_path, regions_ds):
+async def test_double_quoted_hop_in_the_wrong_case_is_never_repaired(tmp_path, regions_ds):
+    stage = rev_query(filters=['"REGIONS"."Opened_On" >= \'2024/01/01\''])
+    storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend="yaml",
+                                  models=_case_sensitive_models(), stage=stage)
+    with pytest.raises(StoredDocumentLoadError, match="REGIONS"):
+        await _loaded_filters(storage)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_qualified_quoted_leaf_keeps_its_exact_spelling(tmp_path, regions_ds, backend):
+    stage = {**rev_query(filters=['"Regions"."Opened_At" >= \'2024-01-01\'']), "version": 16}
+    storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend,
+                                  models=_case_sensitive_models(), stage=stage)
+    assert await _loaded_filters(storage) == [f'{QUOTED_ROUTE}."Opened_At" >= \'2024-01-01\'']
+    assert await _total(storage) == AMOUNT_OPENED_ON_JAN_1
+
+
+# --------------------------------------------------------------------------- #
+# Populations: an earlier stage, and one inferred for a root-less query.
+# --------------------------------------------------------------------------- #
+async def test_stage_population_types_only_its_extension_joins(tmp_path, regions_ds):
     base = {"version": 12, "name": "base", "source_model": "orders",
             "dimensions": [{"name": "customer_id"}, {"name": "ordered_at"}],
             "measures": [{"formula": "sum(amount)", "name": "rev"}]}
@@ -288,10 +327,29 @@ async def test_sibling_stage_host_bare_reference_stays_verbatim_and_extension_ho
     qb = query_backed_v10(name="rev_s", stages=[base, outer])
     storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=regions_ds,
                               models=[*_routed_models(), qb])
-    model = await storage.get_dataset("rev_s", data_source=DS)
-    assert model is not None
-    assert (model.source_queries or [])[-1].filter == [
-        "ordered_at >= '2024/01/01'", "customers.signed_up_at >= '2024-01-01T00:00:00'"]
+    assert await _loaded_filters(storage, "rev_s", index=-1) == [
+        "base.ordered_at >= '2024/01/01'", "base.customers.signed_up_at >= '2024-01-01T00:00:00'"]
+
+
+def _rootless(*filters: str) -> dict:
+    return {"version": 12, "dimensions": [{"name": "status"}], "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "filters": list(filters)}
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_inferred_population_types_a_routed_reference(tmp_path, regions_ds, backend):
+    storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend, models=_routed_models(),
+                                  stage=_rootless("regions.opened_on >= '2024/01/01'"))
+    assert await _loaded_filters(storage) == [f"{ROUTE}.opened_on >= '2024-01-01'"]
+    assert await _total(storage) == AMOUNT_OPENED_SINCE_2024
+
+
+async def test_ambiguous_inferred_population_is_refused(tmp_path, regions_ds):
+    stage = {**_rootless("signed_up_at >= '2024-01-01T00:00:00Z'"), "dimensions": []}
+    models = [*_routed_models(), customers_v10(name="buyers")]
+    storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend="yaml", models=models, stage=stage)
+    with pytest.raises(StoredDocumentLoadError, match="names no population"):
+        await _loaded_filters(storage)
 
 
 # --------------------------------------------------------------------------- #
@@ -310,15 +368,16 @@ async def test_memory_short_form_routed_literal_is_repaired(tmp_path, regions_ds
                               models=_routed_models(), memories=[_routed_memory()])
     mem = await storage.get_memory("m_routed")
     assert mem.query is not None
-    assert mem.query.filter == ["regions.opened_on >= '2024-01-01'"]
+    assert mem.query.filter == [f"{ROUTE}.opened_on >= '2024-01-01'"]
     assert metric_total(await run(storage, mem.query), metric="rev") == AMOUNT_OPENED_SINCE_2024
 
 
 @pytest.fixture
 def two_regions_ds(tmp_path, regions_ds):
-    """``shop`` routes orders to regions; ``shop2`` holds the same models without the customers → regions join."""
+    """``shop`` routes orders to a DATE ``regions.opened_on``; in ``shop2`` the same route reaches a TEXT one."""
     ds2 = DatasourceConfig(name=DS2, type="duckdb", database=_regions_db(tmp_path, "shop2"))
-    models = [*_routed_models(), *(in_datasource(d, DS2) for d in (orders_v10(), customers_v10(), regions_v10()))]
+    shop2 = (orders_v10(), customers_v10(joins=[region_join()]), regions_v10(date_type="TEXT"))
+    models = [*_routed_models(), *(in_datasource(d, DS2) for d in shop2)]
     try:
         yield regions_ds, ds2, models
     finally:
@@ -326,27 +385,85 @@ def two_regions_ds(tmp_path, regions_ds):
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-@pytest.mark.parametrize(("priority", "repaired"), [
-    pytest.param([DS, DS2], True, id="routed-datasource-first"),
-    pytest.param([DS2, DS], False, id="unrouted-datasource-first"),
-    pytest.param([], False, id="no-priority-ambiguous"),
+@pytest.mark.parametrize(("priority", "loaded"), [
+    pytest.param([DS, DS2], f"{ROUTE}.opened_on >= '2024-01-01'", id="date-datasource-first"),
+    pytest.param([DS2, DS], f"{ROUTE}.opened_on >= '2024/01/01'", id="text-datasource-first"),
 ])
-async def test_memory_repair_follows_the_datasource_priority(tmp_path, two_regions_ds, backend, priority, repaired):
+async def test_memory_repair_follows_the_datasource_priority(tmp_path, two_regions_ds, backend, priority, loaded):
     ds, ds2, models = two_regions_ds
     storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=ds, extra_datasources=[ds2],
                               models=models, memories=[_routed_memory()])
     await storage.set_datasource_priority(priority)
     mem = await storage.get_memory("m_routed")
     assert mem.query is not None
-    if not repaired:
-        assert mem.query.filter == [ROUTED_MEMORY_FILTER]
-        return
-    assert mem.query.filter == ["regions.opened_on >= '2024-01-01'"]
-    assert metric_total(await run(storage, mem.query), metric="rev") == AMOUNT_OPENED_SINCE_2024
+    assert mem.query.filter == [loaded]
+    if priority[0] == DS:
+        assert metric_total(await run(storage, mem.query), metric="rev") == AMOUNT_OPENED_SINCE_2024
 
 
 # --------------------------------------------------------------------------- #
-# Building the repair's views never mutates the pass's raw reads.
+# The whole-day upgrade types its operand as the binder resolves it.
+# --------------------------------------------------------------------------- #
+PRE_WHOLE_DAY = {"SlayerModel": 23, "SlayerQuery": 14}
+
+
+def _whole_day_stage(*filters: str) -> dict:
+    return {**rev_query(filters=list(filters)), "version": PRE_WHOLE_DAY["SlayerQuery"]}
+
+
+def _models_at(version: int, models: list[dict]) -> list[dict]:
+    return [{**m, "version": version} for m in models]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("stage", [
+    pytest.param(_whole_day_stage("regions.opened_at = '2024-01-01'"), id="date-only"),
+    pytest.param({**rev_query(filters=["regions.opened_at = '2024/01/01'"]), "version": 10}, id="slashed"),
+])
+async def test_routed_operand_keeps_its_whole_day_meaning(tmp_path, regions_ds, backend, stage):
+    models = _models_at(PRE_WHOLE_DAY["SlayerModel"], _routed_models())
+    storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=regions_ds, models=[
+        *models, query_backed_v10(name="rev_f", stages=[stage], version=PRE_WHOLE_DAY["SlayerModel"])])
+    assert await _loaded_filters(storage) == [f"{OPENED_AT} in '2024-01-01'"]
+    assert await _total(storage) == AMOUNT_OPENED_ON_JAN_1
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize(("stored_filter", "loaded"), [
+    pytest.param('"Regions"."Opened_At" <= \'2024-01-31\'', f'{QUOTED_ROUTE}."Opened_At" < \'2024-02-01\'',
+                 id="exact"),
+    pytest.param('"Regions"."OPENED_AT" <= \'2024-01-31\'', f'{QUOTED_ROUTE}."OPENED_AT" <= \'2024-01-31\'',
+                 id="wrong-case"),
+])
+async def test_quoted_operand_is_typed_by_its_exact_spelling(tmp_path, regions_ds, backend, stored_filter, loaded):
+    models = _models_at(PRE_WHOLE_DAY["SlayerModel"], _case_sensitive_models())
+    storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=regions_ds, models=[
+        *models, query_backed_v10(name="rev_f", stages=[_whole_day_stage(stored_filter)],
+                                  version=PRE_WHOLE_DAY["SlayerModel"])])
+    assert await _loaded_filters(storage) == [loaded]
+
+
+EXTENDED_REGIONS_AT = {
+    "source_name": "regions",
+    "columns": [{"name": "founded_at", "sql": "opened_at", "type": "TIMESTAMP"}],
+}
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("model_version", [pytest.param(10, id="older-model"), pytest.param(28, id="current-model")])
+async def test_older_stage_with_extension_columns_is_typed_inlined_and_qualified(
+    tmp_path, regions_ds, backend, model_version,
+):
+    stage = {**rev_query(filters=["regions.founded_at = '2024-01-01'"]), "version": 9,
+             "extensions": [EXTENDED_REGIONS_AT]}
+    storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=regions_ds, models=[
+        *_routed_models(), query_backed_v10(name="rev_f", stages=[stage], version=model_version)])
+    assert await _loaded_filters(storage) == ["CAST(customers.regions.opened_at AS TIMESTAMP) in '2024-01-01'"]
+    assert await _total(storage) == AMOUNT_OPENED_ON_JAN_1
+
+
+# --------------------------------------------------------------------------- #
+# The conversion scope: no recursion, no double write, raw reads unmutated.
 # --------------------------------------------------------------------------- #
 def _hygiene_models() -> list[dict]:
     return [
@@ -394,3 +511,42 @@ async def test_concurrent_loads_leave_raw_reads_unmutated_and_bytes_order_indepe
                      for i in range(2))
     assert first == second
     assert "'2024-01-01'" in first["rev_f"]
+
+
+def _counting_saves(storage: StorageBackend) -> list[str]:
+    saved: list[str] = []
+    save = storage.save_dataset
+
+    async def counting_save(dataset, *args, **kwargs):
+        saved.append(dataset.name)
+        return await save(dataset, *args, **kwargs)
+
+    storage.save_dataset = counting_save  # type: ignore[method-assign]
+    return saved
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_loading_the_converting_document_neither_recurses_nor_writes_twice(tmp_path, regions_ds, backend):
+    storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend, models=_routed_models(),
+                                  stage=rev_query(filters=["regions.opened_on >= '2024/01/01'"]))
+    saved = _counting_saves(storage)
+    assert await _loaded_filters(storage) == [f"{ROUTE}.opened_on >= '2024-01-01'"]
+    assert saved.count("rev_f") == 1
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("first", ["rev_f", "rev_g"])
+async def test_two_model_cycle_neither_recurses_nor_writes_a_peer_twice(tmp_path, regions_ds, backend, first):
+    """``rev_g`` reads ``rev_f``, and ``rev_f``'s conversion reads every dataset of its datasource, ``rev_g`` included."""
+    rev_g = query_backed_v10(name="rev_g", stages=[{
+        "source_model": "rev_f", "measures": [{"formula": "sum(rev)", "name": "rev"}],
+        "filters": ["rev >= 0"]}])
+    rev_f = query_backed_v10(name="rev_f", stages=[rev_query(filters=["regions.opened_on >= '2024/01/01'"])])
+    storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=regions_ds,
+                              models=[*_routed_models(), rev_f, rev_g])
+    saved = _counting_saves(storage)
+    second = "rev_g" if first == "rev_f" else "rev_f"
+    loaded = {n: await _loaded_filters(storage, n) for n in (first, second)}
+    assert loaded == {"rev_f": [f"{ROUTE}.opened_on >= '2024-01-01'"], "rev_g": ["rev >= 0"]}
+    assert (saved.count("rev_f"), saved.count("rev_g")) == (1, 1), saved
+    assert await _total(storage, "rev_g") == AMOUNT_OPENED_SINCE_2024

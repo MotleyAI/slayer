@@ -4,7 +4,7 @@ Physical tables::
 
     customers (id, name, region, signed_up_at)
     orders    (order_id, customer_id, status, ordered_at, amount)
-    regions   (name, opened_on, label)       -- seed_regions only
+    regions   (name, opened_on, opened_at, label)       -- seed_regions only
 """
 
 from __future__ import annotations
@@ -44,15 +44,18 @@ ORDERS_ROWS = [
     (6, 2, "2024/01/01", "2024-07-01 00:00:00", 60.0),
 ]
 
-# (name, opened_on, label)
+# (name, opened_on, opened_at, label)
 REGIONS_ROWS = [
-    ("North", "2023-01-15", "2024/01/01"),
-    ("South", "2024-05-01", "s"),
+    ("North", "2023-01-15", "2023-01-15 09:00:00", "2024/01/01"),
+    ("South", "2024-05-01", "2024-01-01 10:00:00", "s"),
 ]
 
 TOTAL = 210.0
 #: sum(amount) of orders whose customer's region opened on or after 2024-01-01 (South: orders 3 and 6).
 AMOUNT_OPENED_SINCE_2024 = 90.0
+#: sum(amount) of orders whose customer's region opened (``opened_at``) on 2024-01-01 (South), and before it (North).
+AMOUNT_OPENED_ON_JAN_1 = 90.0
+AMOUNT_OPENED_BEFORE_2024 = 120.0
 #: sum(amount) by customers.region.
 AMOUNT_BY_REGION = {"North": 120.0, "South": 90.0}
 #: Highest sum(amount) per status ('ok' 80 > 'new' 70 > '2024/01/01' 60).
@@ -89,8 +92,8 @@ def seed_regions(db_path: str) -> None:
     duckdb = pytest.importorskip("duckdb")
     con = duckdb.connect(db_path)
     try:
-        con.execute("CREATE TABLE regions (name TEXT, opened_on DATE, label TEXT)")
-        con.executemany("INSERT INTO regions VALUES (?,?,?)", REGIONS_ROWS)
+        con.execute("CREATE TABLE regions (name TEXT, opened_on DATE, opened_at TIMESTAMP, label TEXT)")
+        con.executemany("INSERT INTO regions VALUES (?,?,?,?)", REGIONS_ROWS)
     finally:
         con.close()
 
@@ -142,14 +145,21 @@ def region_join(target: str = "regions") -> dict:
 CUSTOMERS_TO_ORDERS = {"target_model": "orders", "join_pairs": [["id", "customer_id"]], "cardinality": "one_to_many"}
 
 
-def regions_v10(*, name: str = "regions", version: int = 10, date_column: str = "opened_on") -> dict:
-    """``date_column`` names the DATE column reading ``opened_on``."""
-    date_sql = {"sql": "opened_on"} if date_column != "opened_on" else {}
+def regions_v10(
+    *, name: str = "regions", version: int = 10, date_column: str = "opened_on", timestamp_column: str = "opened_at",
+    date_type: str = "DATE",
+) -> dict:
+    """``date_column`` (typed ``date_type``) reads ``opened_on``; ``timestamp_column`` (TIMESTAMP) reads ``opened_at``."""
+
+    def physical(column: str, physical_name: str) -> dict:
+        return {"sql": physical_name} if column != physical_name else {}
+
     return {
         "version": version, "name": name, "sql_table": "regions", "data_source": DS,
         "columns": [
             {"name": "name", "type": "TEXT", "primary_key": True},
-            {"name": date_column, "type": "DATE", **date_sql},
+            {"name": date_column, "type": date_type, **physical(date_column, "opened_on")},
+            {"name": timestamp_column, "type": "TIMESTAMP", **physical(timestamp_column, "opened_at")},
             {"name": "label", "type": "TEXT"},
         ],
     }
