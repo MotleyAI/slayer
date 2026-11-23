@@ -47,7 +47,7 @@ from slayer.core.models import (
     check_metric_name,
     check_metric_text,
 )
-from slayer.core.names import NAME_PATTERN, quoted_name
+from slayer.core.names import NAME_PATTERN, match_name, quoted_name
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.strict_flag import strict_flag, without_strict
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
@@ -2099,6 +2099,25 @@ def declared_aliases(*sources: "SlayerQuery | QueryRefinement") -> list[str]:
                 names.append(d.name)
         names.extend(td.alias for td in source.time_dimensions or [] if td.alias)
     return names
+
+
+BarePosition = Literal["entry", "filter"]
+BareReading = Literal["alias", "population", "unresolved"]
+
+
+def pre_qualified_reading(
+    name: str, *, quoted: bool, position: BarePosition, aliases: Iterable[str], fields: Iterable[str],
+    metrics: Iterable[str],
+) -> BareReading:
+    """What a pre-2.0 bare ``name`` read, by position: in an entry (``aliases`` without its own) the population's field,
+    metric, then an alias; in a filter or order its field, an alias, then its metric. Ambiguity raises."""
+    order: list[tuple[BareReading, Iterable[str]]] = [
+        ("population", fields), ("population", metrics), ("alias", aliases)] if position == "entry" else [
+        ("population", fields), ("alias", aliases), ("population", metrics)]
+    for reading, declared in order:
+        if match_name(name=name, declared=declared, quoted=quoted) is not None:
+            return reading
+    return "unresolved"
 
 
 def deprecated_inputs_of(

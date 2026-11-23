@@ -668,6 +668,7 @@ In a stored dataset written before this version, a field's `expression`, a field
 ### Requirement: Stored queries are upgraded to qualified references
 A stored query written before this change — a saved query, a query-backed model's `source_queries` stage, or a memory's query, nested or not, with or without a version of its own — SHALL load in the qualified syntax of `queries/references`, with no deprecation warning, by a conversion that reads the stored datasets:
 - each reference SHALL be rewritten to the qualified spelling that has the meaning it had before this change, reading the stage's own population;
+- a bare name SHALL read what it read before this change, in this order: inside a metric, dimension or time-dimension entry, or the main time dimension, the population's field, then the population's metric, then an alias of the stage other than the entry's own; in a filter or order, the population's field, then an alias of the stage, then the population's metric; a population that is a stage or a query-backed dataset SHALL offer its output columns as fields;
 - a reference the new routing would send along a different path SHALL be rewritten to the explicit route from the population that keeps its old path;
 - a reference whose anchor was reached by a route longer than its written path SHALL be rewritten to its explicit route from the population, so its column name is kept;
 - a rewritten path SHALL be kept only if it resolves back to the same oriented sequence of relationships;
@@ -700,3 +701,23 @@ A stored query that cannot be converted this way (a dataset it reads is missing,
 #### Scenario: A quoted leaf keeps its exact spelling
 - **WHEN** a stored query on `orders` filters `"Regions"."Opened_At" >= '2024-01-01'`, `Regions` reached by the route `orders → customers → Regions`
 - **THEN** it loads with the leaf still spelt `"Opened_At"` on its explicit route
+
+#### Scenario: A metric alias equal to a population column reads the column
+- **WHEN** a stored query-backed model's stage over the query-backed model `rev_f`, which outputs the metric column `rev`, measures `sum(rev)` aliased `rev` and filters `rev >= 0`
+- **THEN** it loads as `sum(rev_f.rev)` aliased `rev` with the filter `rev_f.rev >= 0`, and returns the sum of `rev_f.rev` over the `rev_f` rows with `rev >= 0`
+
+#### Scenario: A metric reads the population metric a sibling alias shares
+- **WHEN** a stored query on `orders`, whose metric `revenue` is `sum(amount)`, has the dimension `status`, measures `count(*)` aliased `revenue` and `revenue * 10` aliased `r10`, and filters `revenue > 1`
+- **THEN** it loads as `count(orders.*)` aliased `revenue`, `orders.revenue * 10` aliased `r10` and the filter `revenue > 1`, and returns, for each `status` with more than one order, `r10` equal to ten times its sum of `amount`
+
+#### Scenario: A stage over an earlier stage reads the earlier stage's column
+- **WHEN** a stored query-backed model's first stage `s1` outputs `rev`, and its second stage over `s1` measures `sum(rev)` aliased `rev` and filters `rev > 25`
+- **THEN** the second stage loads as `sum(s1.rev)` aliased `rev` with the filter `s1.rev > 25`, and the model returns the sum of the `s1` rows with `rev > 25`
+
+#### Scenario: A partition key naming a computed dimension stays bare
+- **WHEN** a stored query on `orders` has the dimension `status` and the computed dimension `upper(status)` named `su`, and measures `sum(amount, partition_by=su)`
+- **THEN** it loads with `partition_by=su` unchanged and returns the rows it returned before
+
+#### Scenario: A quoted alias matches only its exact spelling
+- **WHEN** a stored query on `orders`, which has the field `amount`, has the dimension `status`, measures `count(*)` aliased `"Amount"` and filters `"Amount" > 1`
+- **THEN** the filter stays `"Amount" > 1`, reading the metric, and returns each `status` with more than one order
