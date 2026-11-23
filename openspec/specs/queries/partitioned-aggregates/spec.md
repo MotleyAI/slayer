@@ -28,7 +28,7 @@ An aggregation SHALL accept `partition_by=` and `window=` together. The value is
 - THEN ranking still uses the model's resolved ranking time column, not the partition key
 
 ### Requirement: Partitioned aggregates nested inside transforms
-A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates over its operand's domain — the attached aggregate's cells at its `partition_by=` grain, else at the query grain (Axiom 11.1; `queries/transforms` › Transforms evaluate over their operand's domain) — and the measure consumer broadcasts the result onto the query grain (Axiom 11.4); it MUST never fail with an internal error.
+A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike, a temporal transform's operand grain containing the query's active time bucket (Axiom 11.3; otherwise it fails per `queries/type-errors` › The time-axis violation is a type error, not an unimplemented feature). The transform evaluates over its operand's domain — the attached aggregate's cells at its `partition_by=` grain, else at the query grain (Axiom 11.1; `queries/transforms` › Transforms evaluate over their operand's domain) — and the measure consumer broadcasts the result onto the query grain (Axiom 11.4); it MUST never fail with an internal error.
 
 #### Scenario: Running total of partition-grain values
 - WHEN a query selects dimensions `[region, city, date_trunc('month', ordered_at)]` and the measure `cumsum(sum(revenue, partition_by=[region, ordered_at]))`
@@ -39,8 +39,8 @@ A transform SHALL accept a partitioned aggregate as its input when used as a mea
 - THEN the regions are ranked by their totals and each row carries its region's rank: `rank(sum(amount, partition_by=region))` over the `sales` fixture by `[region, city]` reads ranks 1 to 4 over the four regions with a total, Void's all-NULL total ranking NULL, never ranks over the city rows
 
 #### Scenario: Change over a partitioned aggregate executes
-- WHEN a query selects `change(sum(amount, partition_by=region))` or `change_pct(sum(amount, partition_by=region))` over a month time dimension
-- THEN the query executes with the hand-computed bucket-over-previous-bucket difference (or ratio) of the attached value, instead of failing with an internal rendering error
+- WHEN a query by `region` over a month time dimension selects `change(sum(amount, partition_by=[region, ordered_at]))` or `change_pct(sum(amount, partition_by=[region, ordered_at]))`
+- THEN the query executes with the hand-computed bucket-over-previous-bucket difference (or ratio) of the attached value, never an internal rendering error; the same transforms over `sum(amount, partition_by=region)` fail with a `TimeAxisError`
 
 #### Scenario: Ranking partition cells of a computed band
 - WHEN a `sales` query by `[spend_band, city]` selects `rank(sum(amount, partition_by=spend_band), direction='desc')`
@@ -313,8 +313,9 @@ dimension expressions) — and evaluated at that grain, the query's active time 
 reaching the constituent's own producer so a windowed inner resolves it; a time-ordered
 transform constituent whose grain does not contain its time axis SHALL fail with the same
 time-axis error a dimension-position transform raises, the axis being named in
-`partition_by=` exactly as in dimension position (a top-level measure transform is
-unchanged and keeps evaluating at the query grain over the attached value); an inner
+`partition_by=` exactly as in dimension position (and as in every other position, per
+`queries/type-errors` › The time-axis violation is a type error, not an unimplemented
+feature); an inner
 aggregate homed on a joined model whose `partition_by=` names the host's time axis — a
 key reachable from the inner's own root only across a fanning join hop — SHALL resolve
 per `to_many_handling` exactly like the same aggregate outside the re-aggregation:
@@ -601,17 +602,23 @@ and computed-dimension expression — with identical values in each (position pa
 A transform whose input contains a cross-model `partition_by=` aggregate SHALL compile:
 the inner aggregate is computed in its own producer exactly as when consumed directly, and
 the transform consumes the attached value like any local partitioned input. This includes
-ranked inners (`first`/`last`) and holds in measure, filter, and order positions.
+ranked inners (`first`/`last`) and holds in measure, filter, and order positions; a
+time-ordered transform's operand grain SHALL contain the query's active time bucket
+(`queries/type-errors` › The time-axis violation is a type error, not an unimplemented
+feature).
 
 #### Scenario: Transform over a cross-model partitioned sum executes
 - **WHEN** a query selects `rank(sum(customers.spend, partition_by=region), direction='desc')` with `region` among the query dimensions, and another selects `cumsum(sum(customers.spend, partition_by=region))` over a month time dimension
 - **THEN** the rank orders the regions by their cross-model totals, correct by hand-computed executed values on SQLite and DuckDB; the `cumsum` fails with the typed time-axis error whose remedy adds the time key to `partition_by`, in measure, filter and order positions alike, as in dimension position
 
 #### Scenario: Transform over a cross-model ranked partitioned aggregate executes
-- **WHEN** a query selects `change(last(customers.spend, partition_by=region))` over a month
-  time dimension with `region` among the query dimensions
-- **THEN** each row carries the period-over-period difference of its region's last value,
-  correct by executed values
+- **WHEN** a query over a month time dimension with `region` among the query dimensions
+  selects `rank(last(customers.spend, partition_by=region), direction='desc')`, and another
+  uses `change(last(customers.spend, partition_by=region))` as a measure, in a filter and as
+  an order key
+- **THEN** the rank orders the regions by their last values and each row carries its
+  region's rank, correct by executed values; the `change` fails with a `TimeAxisError` in
+  every position
 
 #### Scenario: Nested producer plan shape is pinned
 - **WHEN** two consumers (for example a measure and a filter) share one cross-model

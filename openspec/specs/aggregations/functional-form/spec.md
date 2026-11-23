@@ -493,8 +493,8 @@ does not determine, and fall back to its home model's default time dimension.
 #### Scenario: A shifted partitioned ranked aggregation
 - **WHEN** `orders` declares the default time dimension `shipped_at` and a query groups
   by `region` with a year time dimension on `created_at`, selecting
-  `time_shift(last(amount, partition_by=region), -1)`
-- **THEN** the US 2025 cell is 40 — the US value ranked by `created_at` — never 60 by
+  `time_shift(first(amount, partition_by=[region, created_at]), 1)`
+- **THEN** the US 2024 cell is 30 — the US 2025 value ranked by `created_at` — never 40 by
   the model default `shipped_at`
 
 #### Scenario: Each stage reads its own dimensions
