@@ -25,7 +25,7 @@ A dataset, a datasource, and every field, metric, relationship, aggregation, agg
 - **THEN** both key lists hold the two pairs' sides, with the deprecation warning
 
 #### Scenario: Editing a dataset's source switches it in every direction
-- **WHEN** the MCP `edit_model` tool switches a dataset from `sql_table` to `sql`, from `sql` to `sql_table`, from `sql_table` to `source_queries`, and from `source_queries` to `sql_table`
+- **WHEN** the MCP `edit_dataset` tool switches a dataset from `sql_table` to `sql`, from `sql` to `sql_table`, from `sql_table` to `source_queries`, and from `source_queries` to `sql_table`
 - **THEN** each edit applies, and an edit the final state refuses leaves the dataset unchanged
 
 #### Scenario: Construction normalizations keep their results
