@@ -287,6 +287,16 @@ class TestCrossModelParameterOnLocalRoot:
         with pytest.raises(ParameterGrainError, match="weight"):
             await weak_plans_engine.execute(q)
 
+    @pytest.mark.parametrize("build", [orders_q, assoc_q], ids=["default", "associate"])
+    async def test_nested_undetermined_parameter_stays_rejected(self, weak_plans_engine, build):
+        """Scenario: Undetermined attached parameter stays rejected — an aggregate nested in the parameter's
+        expression refuses like the direct form."""
+        q = build(dimensions=["orders.status"], metrics=[QueryMetric(
+            metric="weighted_avg(orders.amount, weight=1 + sum(customers.spend, partition_by=customers.plans.level))",
+            alias="w")])
+        with pytest.raises(ParameterGrainError, match="weight"):
+            await weak_plans_engine.execute(q)
+
     async def test_regrouped_determined_parameter_executes(self, weak_plans_engine):
         """A regrouped local root whose parameter the order row determines still executes."""
         resp = await weak_plans_engine.execute(orders_q(

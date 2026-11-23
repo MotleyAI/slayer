@@ -570,6 +570,7 @@ def _expand_target_field(
             owner_path=full_path, datasets_by_name=datasets_by_name, dialect=dialect,
             visited=visited, alias_resolver=alias_resolver,
             crossed_paths=crossed_paths, sibling_first=sibling_first,
+            site=(target_dataset.name, target_col.name),
         )
 
     definition = target_col.definition_sql

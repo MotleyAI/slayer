@@ -2721,6 +2721,14 @@ def _param_values(agg: AggregateKey) -> List[Tuple[str, ValueKey]]:
     return [(n, cast(ValueKey, v)) for n, v in agg.kwargs if isinstance(v, VALUE_KEY_TYPES)]
 
 
+def _param_constituents(agg: AggregateKey) -> List[ValueKey]:
+    """Each parameter's top-level attached constituents (aggregates and grained transforms), nested included."""
+    out: List[ValueKey] = []
+    for _n, v in _param_values(agg):
+        out.extend(c for c in operand_constituents(v) if c not in out)
+    return out
+
+
 def _picked_params(agg: AggregateKey) -> List[PickedParam]:
     return [PickedParam(name=n, key=v) for n, v in _param_values(agg)]
 
@@ -2785,7 +2793,7 @@ def _check_param_partition_keys(*, agg: AggregateKey, alias: str, context: "_Pro
     if context.prebound.mode_policy.associates:
         return
     host, bundle = context.host_dataset, context.bundle
-    for _name, value in _param_values(agg):
+    for value in _param_constituents(agg):
         if not isinstance(value, AggregateKey) or value.partition_keys is None or value not in context.homes.by_key:
             continue
         target_path = context.home_of(value)
@@ -2854,19 +2862,18 @@ def _check_attached_params_determined(
             datasets_by_name=datasets_by_name, bundle=bundle,
         )
 
-    for name, value in agg.kwargs:
-        if not isinstance(value, (AggregateKey, TransformKey)):
-            continue
-        grain = attached_parameter_grain(
-            key=value, projected_dim_keys=projected_dim_keys,
-            projected_td_keys=projected_td_keys, active_bucket=active_bucket,
-        )
-        if grain is None:  # ungrained aggregate — determined by construction
-            continue
-        check_parameter_determined(
-            alias=alias, param_name=name, grain_display=grain_display,
-            determined=all(determined_at_home(member) for member in grain),
-        )
+    for name, value in _param_values(agg):
+        for constituent in operand_constituents(value):  # a parameter expression's own aggregates, nested included
+            grain = attached_parameter_grain(
+                key=constituent, projected_dim_keys=projected_dim_keys,
+                projected_td_keys=projected_td_keys, active_bucket=active_bucket,
+            )
+            if grain is None:  # ungrained aggregate — determined by construction
+                continue
+            check_parameter_determined(
+                alias=alias, param_name=name, grain_display=grain_display,
+                determined=all(determined_at_home(member) for member in grain),
+            )
 
 
 def _check_inline_params_determined(

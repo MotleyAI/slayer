@@ -509,6 +509,12 @@ class TestUnparseableDimension:
         assert "regions.unparseable" in str(ei.value), str(ei.value)
         assert_ref_free(str(ei.value))
 
+    async def test_chained_dimension_names_the_unparseable_field(self, unparse_engine):
+        query = q(None, "regions", dimensions=["regions.unparse2"], metrics=[m("sum(regions.pop)")])
+        with pytest.raises(ModeASqlParseError) as ei:
+            await unparse_engine.execute(query)
+        assert "regions.unparseable" in str(ei.value), str(ei.value)
+
 
 class TestTransformPartitionKeys:
     @pytest.mark.parametrize("mode", ASSOCIATING)
