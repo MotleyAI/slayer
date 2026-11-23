@@ -106,11 +106,7 @@ async def test_a_named_population_planned_on_its_home_keeps_its_datasource(engin
 _VIA_SOURCE, _AT_MANAGERS = "customers.regions.managers.name", "managers.name"
 
 
-@pytest.mark.parametrize("dimensions", [
-    pytest.param([_VIA_SOURCE, _AT_MANAGERS], marks=pytest.mark.xfail(
-        strict=True, reason="DEV-2388: the first spelling of a column decides its anchor")),
-    [_AT_MANAGERS, _VIA_SOURCE],
-])
+@pytest.mark.parametrize("dimensions", [[_VIA_SOURCE, _AT_MANAGERS], [_AT_MANAGERS, _VIA_SOURCE]])
 async def test_each_spelling_of_a_column_is_routed_from_the_home(engine, dimensions) -> None:
     # `managers.name` is anchored at managers: from the home orders it has two to-one paths, whatever the order.
     with pytest.raises(UnresolvableDimensionRelationshipError):

@@ -89,6 +89,16 @@ class TestAttributability:
         assert "attributable" in msg
         assert "declare relationship cardinality" in msg.lower()
 
+    @pytest.mark.parametrize("mode", ["broadcast", "error"])
+    async def test_unprojected_joined_leaf_is_not_a_query_dimension(self, engine: SlayerQueryEngine, mode: str) -> None:
+        query = q(dimensions=["orders.region"], to_many_handling=mode,
+                  metrics=[m("sum(orders.amount, partition_by=upper(regions.manager))")])
+        with pytest.raises(PartitionKeyError) as ei:
+            await engine.execute(query, dry_run=True)
+        msg = str(ei.value)
+        assert "regions.manager" in msg
+        assert "is not a query dimension" in msg
+
 
 class TestAggregateBearingKey:
     async def test_inline_key_rejected_with_computed_dimension_remedy(self, engine: SlayerQueryEngine) -> None:

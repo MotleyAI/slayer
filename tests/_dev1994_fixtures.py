@@ -76,9 +76,11 @@ REGION_OF = {
 }
 ORDERS_BY_REGION = {"North": 3, "South": 6, "East": 0, "West": 0}
 CUSTOMERS_BY_REGION = {"North": 3, "South": 3, "East": 0, "West": 2}
-#: Per-customer order count averaged over every customer (childless ones as 0).
-AVG_ORDERS_PER_CUSTOMER = 9 / 8
-AVG_ORDERS_PER_CUSTOMER_BY_REGION = {"North": 1.0, "South": 2.0, "West": 0.0}
+#: Per-customer order count averaged over the customers some order reaches (childless ones have no cell).
+AVG_ORDERS_PER_CUSTOMER = 9 / 5
+AVG_ORDERS_PER_CUSTOMER_BY_REGION: Dict[str, Optional[float]] = {"North": 1.5, "South": 2.0, "West": None}
+#: The same average of ``ok`` orders: Bob, whose only order is ``bad``, keeps his cell as 0.
+AVG_OK_ORDERS_PER_CUSTOMER = 5 / 5
 #: Orders of customers who signed up in each month (no March bucket).
 ORDERS_BY_MONTH = {
     "2023-12": 0, "2024-01": 3, "2024-02": 3, "2024-04": 1, "2024-05": 0, "2024-06": 2,

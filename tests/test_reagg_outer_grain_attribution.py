@@ -56,9 +56,10 @@ from slayer.engine.query_engine import SlayerResponse
 MODES = ["broadcast", "error", "associate"]
 ACCOUNT = "account_snapshots.account_id"
 NAME_KEY = FieldKey(leaf="name")
-ACCOUNT_KEY = FieldKey(path=("account_snapshots",), leaf="account_id")
+ACCOUNT_KEY = FieldKey(path=("account_snapshots",), leaf="account_id", anchor=("account_snapshots",))
 MONTH_KEY = TimeTruncKey(
-    source=FieldKey(path=("account_snapshots",), leaf="snapshot_date"), granularity=TimeGranularity.MONTH)
+    source=FieldKey(path=("account_snapshots",), leaf="snapshot_date", anchor=("account_snapshots",)),
+    granularity=TimeGranularity.MONTH)
 BY_NAME_MONTH = ("customers.name", "snapshot_date")
 BY_NAME_ACCOUNT = ("customers.name", "account_id")
 SUM_MAX_Q_BY_OUTER_ACCOUNT = f"sum({MAX_Q}, partition_by=[{ACCOUNT}])"
@@ -310,6 +311,13 @@ class TestOtherConsumerShapes:
             await engine.execute(q)
         assert "__regroup__" not in str(ei.value)
 
+    async def test_constituent_key_safe_from_its_anchor_associates(self, engine):
+        # The key is local to its anchor, unattributable only from the constituent's home: it associates.
+        resp = await engine.execute(query(
+            dimensions=["customers.name"], to_many_handling="associate",
+            metrics=[m(f"sum(count(customers.name, partition_by=[customers.id, {ACCOUNT}]))")]))
+        assert {r["customers.name"]: r["v"] for r in resp.data} == {"Ann": 2, "Bob": 1, "Cy": 1, "Dee": 2}
+
 
 class TestExpressionAndKeylessGrain:
     async def test_band_determined_through_an_attached_expression(self, engine):
@@ -336,23 +344,27 @@ class TestPlanStructure:
         assert isinstance(slot.key, AggregateKey)
         return slot.key, producer
 
+    @staticmethod
+    def _settled_grain(q) -> Grain:
+        """The outer grain by the population's keys its attach joins back on (the operand's columns stand for them)."""
+        return Grain.of(host_key for host_key, _ in _outer_attach(plan_query(query=q, bundle=bundle())).join_pairs)
+
     def test_explicit_determined_key_is_the_settled_grain(self):
-        key, _ = self._outer_slot_of(_by_account(m(SUM_MAX_Q_BY_OUTER_ACCOUNT)))
-        assert key.partition_keys == Grain.of([ACCOUNT_KEY])
+        assert self._settled_grain(_by_account(m(SUM_MAX_Q_BY_OUTER_ACCOUNT))) == Grain.of([ACCOUNT_KEY])
 
     def test_one_outer_answer_slot_with_the_settled_grain(self):
         key, _ = self._outer_slot(f"sum(sum(account_snapshots.balance, {P}))")
         assert key.agg == "sum"
-        assert key.partition_keys == Grain.of([NAME_KEY, MONTH_KEY])
+        assert self._settled_grain(_by_month(f"sum(sum(account_snapshots.balance, {P}))")) == Grain.of(
+            [NAME_KEY, MONTH_KEY])
 
     def test_broadcast_dimension_left_out_of_the_settled_grain(self):
-        key, _ = self._outer_slot(f"sum({MAX_Q})", to_many_handling="broadcast")
-        assert key.partition_keys == Grain.of([NAME_KEY])
+        assert self._settled_grain(_by_month(f"sum({MAX_Q})", to_many_handling="broadcast")) == Grain.of([NAME_KEY])
 
     @pytest.mark.parametrize("mode", [None, "associate"])
     def test_associated_dimension_in_the_settled_grain(self, mode):
-        key, _ = self._outer_slot(f"sum({MAX_Q})", to_many_handling=mode)
-        assert key.partition_keys == Grain.of([NAME_KEY, MONTH_KEY])
+        assert self._settled_grain(_by_month(f"sum({MAX_Q})", to_many_handling=mode)) == Grain.of(
+            [NAME_KEY, MONTH_KEY])
 
     def test_keyless_settled_grain_is_empty(self):
         pq = plan_query(query=query(metrics=[m(f"sum({MAX_Q})")]), bundle=bundle())

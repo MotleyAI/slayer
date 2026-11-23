@@ -19,7 +19,7 @@ from slayer.core.errors import (
     UnanalyzableAggregationParameterError,
     UnknownReferenceError,
 )
-from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, LiteralKey, SqlFragmentKey, walk_value_keys
+from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, LiteralKey, SqlFragmentKey, anchor_token, walk_value_keys
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
@@ -163,7 +163,7 @@ class TestDefaultEqualsTwin:
 
 class TestOwners:
     def test_saved_measure_binds_its_defaults(self) -> None:
-        assert _kw("customers.wsaved") == {"weight": FieldKey(path=("customers",), leaf="factor")}
+        assert _kw("customers.wsaved") == {"weight": FieldKey(path=(anchor_token("customers"),), leaf="factor")}
 
     def test_reaggregation_resolves_on_the_host(self) -> None:
         frag = _fragment(_kw("wcase_pop(sum(amount, partition_by=customers.regions.id))")["weight"])

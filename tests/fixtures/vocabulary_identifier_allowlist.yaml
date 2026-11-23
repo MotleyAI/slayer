@@ -64,10 +64,13 @@ carve_outs:
   - {name: target_model, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
   - {name: to_columns, file: slayer/core/models.py, reason: "Ossie's own wire name"}
   - {name: semantic_model, file: slayer/core/models.py, reason: "Ossie's semantic model (the document)"}
+  - {name: SOURCE_MEASURE_REASON, file: slayer/core/ossie_validity.py, reason: "Ossie's source measure (AGG(source.measure))"}
   - {name: column, file: slayer/core/ossie_validity.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: columns, file: slayer/core/ossie_validity.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: model, file: slayer/core/ossie_validity.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_metrics, file: slayer/core/ossie_validity.py, reason: "Ossie's semantic model (the document)"}
+  - {name: reads_source_measure, file: slayer/core/ossie_validity.py, reason: "Ossie's source measure (AGG(source.measure))"}
+  - {name: source_measure, file: slayer/core/ossie_validity.py, reason: "Ossie's source measure (AGG(source.measure))"}
   - {name: ColumnFilterRuleset, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
   - {name: JoinFilterRule, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
   - {name: JoinFilterRuleset, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}

@@ -326,6 +326,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_SP, function="_assert_total_routing", exc="ValueError",
          message="Aggregate … in a … received no routing disposition (inline, producer substitution, or explicit rejection) — the planner cannot compile this shape.",
          category="internal", family="internal", user=False, owner="compiler"),
+    _row(module=_SP, function="_grain_anchor", exc="PopulationInferenceError", message="",
+         category="compiler", family="population", user=True, owner="compiler", sites=2),
+    _row(module=_SP, function="_operand_supply", exc="PopulationInferenceError", message="",
+         category="compiler", family="population", user=True, owner="compiler"),
     _row(module=_EE, function="check_reserved_regroup_prefix", exc="NameCollisionError",
          message="Field(s) … use the reserved '__regroup__' prefix, which collides with the regroup primitive's placeholders."
          + SUGGEST + "Rename them.",

@@ -30,7 +30,7 @@ ambiguous correlation hop errors in every mode and is not an error-mode concern.
 
 ## REMOVED Requirements
 
-### Requirement: Partition key fanning from its host fails closed in every mode
+### Requirement: Partition key fanning from its anchor fails closed in every mode
 **Reason**: An explicit `partition_by=` key is a grain member, not an input (Axiom 2.4), so the input-safety rule (Axiom 2.8) does not apply to it. The same grain written as a query dimension already resolves per the mode. Axiom 8 now sends every unattributable explicit key through the one mode gate (see "Unattributable explicit partition keys resolve per the mode").
 **Migration**: None needed. A query this requirement refused now executes under the default and `"associate"`, and raises `PartitionKeyError` under `"broadcast"` and `"error"`. A key whose definition cannot be analysed still fails closed in every mode.
 

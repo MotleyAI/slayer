@@ -183,6 +183,8 @@ class _Walker:
         ):
             return False
         if k.partition_keys is not None:
+            # A requested key the host reaches but does not determine resolves per the mode axis, as does a fanning
+            # window axis.
             return any(self._associable_key(pk, host=host) for pk in k.partition_keys) or (
                 window_kwarg_of(k) is not None and self.active_td is not None
                 and not self._attributable(self.active_td, host=host)

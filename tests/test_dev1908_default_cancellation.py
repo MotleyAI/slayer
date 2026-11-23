@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.errors import UnresolvableDimensionRelationshipError
-from slayer.core.keys import AggregateKey
+from slayer.core.keys import AggregateKey, anchor_token
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
@@ -49,6 +49,9 @@ def _cells(resp) -> dict:
     return {tuple(v for k, v in sorted(r.items()) if k != "w"): r["w"]
             for r in resp.data}
 
+#: An aggregation read from its frame ``customers`` spells its home from there.
+C = anchor_token("customers")
+
 
 def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
     """`home_path` of a metric's outer aggregate over the ``_dev1908_fixtures`` graph."""
@@ -82,27 +85,27 @@ class TestHomePaths:
 
     def test_single_cancel_homes_at_customers_regions(self):
         assert _home_path(
-            "wsum_region_pop(customers.regions.countries.gdp)") == ("customers", "regions")
+            "wsum_region_pop(customers.regions.countries.gdp)") == (C, "regions")
 
     def test_double_cancel_homes_at_customers(self):
         assert _home_path(
-            "wsum_cust_spend2(customers.regions.countries.gdp)") == ("customers",)
+            "wsum_cust_spend2(customers.regions.countries.gdp)") == (C,)
 
     def test_cancel_then_forward_deep_homes_at_customers(self):
         assert _home_path(
-            "wsum_plan_fee(customers.regions.countries.gdp)") == ("customers",)
+            "wsum_plan_fee(customers.regions.countries.gdp)") == (C,)
 
     def test_two_frame_homes_at_customers(self):
         assert _home_path(
-            "wsum_two(customers.regions.countries.gdp)") == ("customers",)
+            "wsum_two(customers.regions.countries.gdp)") == (C,)
 
     def test_events_cancel_homes_at_region_events(self):
         assert _home_path("wsum_rp(customers.regions.region_events.value)") \
-            == ("customers", "regions", "region_events")
+            == (C, "regions", "region_events")
 
     # --- pins that already hold (root-fallback / root-name resolution) ---
     def test_cancel_then_forward_shallow_homes_at_customers_pin(self):
-        assert _home_path("wsum_cust_plan_fee(customers.regions.pop)") == ("customers",)
+        assert _home_path("wsum_cust_plan_fee(customers.regions.pop)") == (C,)
 
     def test_owner_at_root_self_name_homes_at_root_pin(self):
         assert _home_path("wself(orders.amount)") == ()
@@ -273,7 +276,7 @@ class TestCancelThenFanningHop:
     """α: the default homes at the fanned dataset exactly as its explicit twin."""
 
     def test_homes_like_the_explicit_twin(self):
-        home = ("customers", "regions", "region_events")
+        home = (C, "regions", "region_events")
         assert _home_path("wsum_fan(customers.regions.countries.gdp)") == home
         assert _home_path("wsum_fan(customers.regions.countries.gdp, "
                           "weight=customers.regions.region_events.value)") == home
