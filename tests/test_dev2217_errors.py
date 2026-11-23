@@ -13,7 +13,7 @@ from typing import Any, cast
 import pytest
 
 from slayer.core import errors
-from slayer.core.errors import QueryTypeError, SlayerError, UnevaluableEntityError
+from slayer.core.errors import PopulationInferenceError, QueryTypeError, SlayerError, UnevaluableEntityError
 from slayer.core.models import DatasourceConfig
 from slayer.engine.population.inference import query_datasource
 from slayer.storage.base import StorageBackend
@@ -336,3 +336,32 @@ def test_a_filtered_aggregate_is_a_component_of_its_dataset() -> None:
 ])
 async def test_a_window_yields_to_earlier_rows(tmp_path: Path, filter_text: str, code: str) -> None:
     await _code(tmp_path, "retail", {"dimensions": ["orders.order_id"], "filter": filter_text}, code)
+
+
+class _MetricHolders(_Identities):
+    """Also lists the model-scoped metrics ``x.margin`` and ``y.churn``."""
+
+    async def list_datasources(self) -> list[str]:
+        return ["x", "y"]
+
+    async def list_model_scoped_metrics(self, data_source: str) -> list[Any]:
+        return [type("M", (), {"name": {"x": "margin", "y": "churn"}[data_source]})()]
+
+
+async def test_bare_metrics_identify_the_datasource_with_every_other_name() -> None:
+    """A bare metric resolves with the other names: in one datasource it settles it; across two, native refuses."""
+    storage = cast(StorageBackend, _MetricHolders())
+    assert await query_datasource(storage=storage, anchors=[("customers", False)], metrics=[("churn", False)]) == "y"
+    with pytest.raises(PopulationInferenceError):
+        await query_datasource(storage=storage, anchors=[], metrics=[("margin", False), ("churn", False)])
+
+
+class _CaseHolders(_MetricHolders):
+    async def list_model_scoped_metrics(self, data_source: str) -> list[Any]:
+        return [type("M", (), {"name": {"x": "Churn", "y": "churn"}[data_source]})()]
+
+
+async def test_a_name_quoted_and_unquoted_are_two_anchors() -> None:
+    """Unquoted ``churn`` is in both datasources, quoted ``"churn"`` only in ``y``: together they settle ``y``."""
+    storage = cast(StorageBackend, _CaseHolders())
+    assert await query_datasource(storage=storage, anchors=[], metrics=[("churn", False), ("churn", True)]) == "y"

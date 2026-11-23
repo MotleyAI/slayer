@@ -18,7 +18,6 @@ from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, deprecat
 from slayer.core.relationship_walker import unique_key_sets
 from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.syntax import DottedRef, Ref, bind_variables, parse_expr
-from slayer.engine.model_scoped import model_scope
 from slayer.engine.population.inference import query_datasource
 from slayer.engine.response_meta import ResponseAttributes
 
@@ -283,22 +282,11 @@ async def _identify(engine: "SlayerQueryEngine", query: _Query, data_source: Opt
     if data_source is not None:
         return data_source
     heads, bare = _heads(query)
-    found = await query_datasource(storage=engine.storage, anchors=heads)
-    if found is None and bare:
-        found = await _metric_source(engine, bare)
+    found = await query_datasource(storage=engine.storage, anchors=heads, metrics=bare)
     if found is not None:
         return found
     first = (query.dimensions or query.metrics)[0]
     raise OssieQueryError(Code.E_NAME_NOT_FOUND, f"{first.written!r} names nothing in any model")
-
-
-async def _metric_source(engine: "SlayerQueryEngine", bare: List[Tuple[str, bool]]) -> Optional[str]:
-    scope = await model_scope(engine.storage, [], data_source=None)
-    for name, quoted in bare:
-        metric = scope.find(name, quoted=quoted)
-        if metric is not None:
-            return metric.data_source
-    return None
 
 
 # --------------------------------------------------------------------------- #

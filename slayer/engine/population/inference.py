@@ -10,6 +10,7 @@ connects take the product of their anchors. The same determination core backs
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Any, Optional
 
@@ -521,9 +522,12 @@ async def _classification_scopes(
     return scopes, ds_by_dataset
 
 
-async def query_datasource(*, storage: StorageBackend, anchors: Iterable[tuple[str, bool]]) -> str | None:
-    """The single datasource holding every one of ``anchors`` (each a name and whether it is quoted) that exists
-    anywhere (``None`` when none does); raises as inference does when several hold them together, or none does."""
+async def query_datasource(
+    *, storage: StorageBackend, anchors: Iterable[tuple[str, bool]], metrics: Iterable[tuple[str, bool]] = (),
+) -> str | None:
+    """The single datasource holding every one of ``anchors`` (dataset names) and ``metrics`` (bare model-scoped metric
+    names), each with whether it is quoted, that exists anywhere (``None`` when none does); raises as inference does
+    when several hold them together, or none does."""
     names_by_ds: dict[str, list[str]] = {}
     for ds, name in await storage._list_all_dataset_identities():
         names_by_ds.setdefault(ds, []).append(name)
@@ -532,10 +536,24 @@ async def query_datasource(*, storage: StorageBackend, anchors: Iterable[tuple[s
     for name, quoted in anchors:
         for ds, names in names_by_ds.items():
             if match_name(name=name, declared=names, quoted=quoted) is not None:
-                ds_by_anchor.setdefault(name, set()).add(ds)
+                ds_by_anchor.setdefault(_anchor_key("dataset", name, quoted), set()).add(ds)
+    metrics = list(metrics)
+    if metrics:
+        datasources = await storage.list_datasources()
+        listed = await asyncio.gather(*(storage.list_model_scoped_metrics(ds) for ds in datasources))
+        metric_names = {ds: [m.name for m in found] for ds, found in zip(datasources, listed)}
+        for name, quoted in metrics:
+            for ds, names in metric_names.items():
+                if match_name(name=name, declared=names, quoted=quoted) is not None:
+                    ds_by_anchor.setdefault(_anchor_key("metric", name, quoted), set()).add(ds)
     if not ds_by_anchor:
         return None
     return _resolve_datasource(ds_by_dataset=ds_by_anchor, data_source=None, anchors=set(ds_by_anchor))
+
+
+def _anchor_key(kind: str, name: str, quoted: bool) -> str:
+    """One anchor of ``query_datasource``: its kind, name and quoting tell it apart from every other."""
+    return f"{kind}\x1f{name}\x1f{quoted}"
 
 
 def _resolve_datasource(
