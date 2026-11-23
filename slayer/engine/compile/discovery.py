@@ -12,7 +12,10 @@ from slayer.core.models import SlayerDataset
 from slayer.core.keys import (
     AggregateKey,
     ConsumerNode,
+    FieldKey,
+    FieldSqlKey,
     Grain,
+    TimeTruncKey,
     TransformKey,
     ValueKey,
     attached_inputs,
@@ -39,11 +42,12 @@ from slayer.engine.elaborate_env import (
 from slayer.engine.cardinality.relationship_safety import (
     crossing_local_root_predicate,
     grain_member_attributable,
+    key_host_path,
     reads_population_spine,
 )
 from slayer.ir.elaborated import ConjunctTyping
 from slayer.ir.planned import MaskTyping
-from slayer.ir.prebound import PreboundQuery
+from slayer.ir.prebound import PreboundQuery, walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import AggregateHomes
 
@@ -179,13 +183,21 @@ class _Walker:
         ):
             return False
         if k.partition_keys is not None:
-            return any(not self._attributable(pk, host=host) for pk in k.partition_keys) or (
+            return any(self._associable_key(pk, host=host) for pk in k.partition_keys) or (
                 window_kwarg_of(k) is not None and self.active_td is not None
                 and not self._attributable(self.active_td, host=host)
             )
         # The population's spine is counted over each home's own axis, never the product.
         return any(
             reads_population_spine(g, host=host) or not self._attributable(g, host=host) for g in self.grain
+        )
+
+    def _associable_key(self, pk: ValueKey, *, host: SlayerDataset) -> bool:
+        """An explicit key the host reaches through relationships but does not attribute; a key from across a
+        product hop resolves on the unrelated-dataset path instead."""
+        return not self._attributable(pk, host=host) and all(
+            walk_key_path(dataset=host, path=key_host_path(r), bundle=self.bundle) is not None
+            for r in walk_value_keys(pk) if isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey))
         )
 
     def _attributable(self, key: ValueKey, *, host: SlayerDataset) -> bool:
