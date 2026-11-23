@@ -1,10 +1,10 @@
 ## 1. Tests (pr-tests stage; all fail before implementation)
 
-- [ ] 1.1 `tests/test_sharding.py`: under `--shard`, heavier modules (by `shard_durations.json` weight, median for unknown) are collected first, in-module order kept, ties by module path, identical across two runs; without `--shard` the order is unchanged — verify the new tests fail now
-- [ ] 1.2 `tests/test_hang_watchdog.py` (pytester, `-n 1`/`-n 2`, `-p tests._hang_watchdog`): `--stall-report-after 1` names a 3 s sleeping test as in flight with its elapsed time; a worker silent for ≥ S is reported while another worker keeps reporting — verify they fail now
-- [ ] 1.3 Stack dump: `--stack-dump-after 2 --hang-report-dir D` with a blocking test writes `D/gwN-<pid>.txt` containing the test's frame and `D/controller-<pid>.txt` with the in-flight list; a worker blocked in `pytest_sessionfinish` is caught too; a worker started after the deadline dumps immediately — verify they fail now
-- [ ] 1.4 Hard bound: a test with SIGALRM blocked (`signal.pthread_sigmask`), `--timeout=1 --hard-timeout-grace 1`, makes xdist report that test's worker as crashed, `D/hard-timeout-gwN-<pid>.txt` holds its nodeid and stack, and the run's other tests pass; same for a fixture teardown blocked with SIGALRM masked; `func_only=True` does not count setup time; `timeout=0` arms nothing — verify they fail now
-- [ ] 1.5 Inert: without the watchdog options, no report output, no files, no timers — verify it holds (it may already pass)
+- [x] 1.1 `tests/test_sharding.py`: under `--shard`, heavier modules (by `shard_durations.json` weight, median for unknown) are collected first, in-module order kept, ties by module path, identical across two runs; without `--shard` the order is unchanged — verify the new tests fail now
+- [x] 1.2 `tests/test_hang_watchdog.py` (pytester, `-n 1`/`-n 2`, `-p tests._hang_watchdog`): `--stall-report-after 1` names a 3 s sleeping test as in flight with its elapsed time; a worker silent for ≥ S is reported while another worker keeps reporting — verify they fail now
+- [x] 1.3 Stack dump: `--stack-dump-after 2 --hang-report-dir D` with a blocking test writes `D/gwN-<pid>.txt` containing the test's frame and `D/controller-<pid>.txt` with the in-flight list; a worker blocked in `pytest_sessionfinish` is caught too; a worker started after the deadline dumps immediately — verify they fail now
+- [x] 1.4 Hard bound: a test with SIGALRM blocked (`signal.pthread_sigmask`), `--timeout=1 --hard-timeout-grace 1`, makes xdist report that test's worker as crashed, `D/hard-timeout-gwN-<pid>.txt` holds its nodeid and stack, and the run's other tests pass; same for a fixture teardown blocked with SIGALRM masked; `func_only=True` does not count setup time; `timeout=0` arms nothing — verify they fail now
+- [x] 1.5 Inert: without the watchdog options, no report output, no files, no timers — verify it holds (it may already pass)
 
 ## 2. Sharding
 
