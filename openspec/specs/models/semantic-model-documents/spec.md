@@ -76,7 +76,7 @@ Each top-level relationship SHALL become a relationship on its `from` dataset, n
 - **THEN** a query of `sum(orders.amount)` by `customers.region` evaluates each order once, as attributable
 
 ### Requirement: SLAYER entries are read on every load
-An entity's `SLAYER` entry SHALL be applied on every load. Its content that duplicates Ossie core content SHALL apply only when the payload's fingerprint matches the entity's core content as stored; otherwise the core content SHALL apply alone. A payload that is malformed, of an unknown version, attached to an entity it does not describe, or one of several `SLAYER` entries on one entity SHALL be ignored; so SHALL a payload whose content would make its dataset invalid or names an entity the document does not hold. Each ignored payload SHALL produce a structured load warning naming the entity and the reason, visible on `inspect`, and SHALL affect no other entity. A relationship's `SLAYER` entry declaring a cardinality or join type SHALL override the many-to-one, LEFT default.
+An entity's `SLAYER` entry SHALL be applied on every load. Its content that duplicates Ossie core content SHALL apply only when the payload's fingerprint matches the entity's core content as stored; otherwise the core content SHALL apply alone. A payload that is malformed, of an unknown version, attached to an entity it does not describe, or one of several `SLAYER` entries on one entity SHALL be ignored; so SHALL a payload whose content would make its dataset invalid or names an entity the document does not hold. Each ignored payload SHALL produce a structured load warning naming the entity and the reason, visible on `inspect`, and SHALL affect no other entity. A relationship's `SLAYER` entry declaring a cardinality or join type SHALL override the many-to-one, LEFT default. A relationship's `SLAYER` entry SHALL restore exactly one relationship; an entry declaring several SHALL be ignored.
 
 #### Scenario: A hand edit makes its payload stale
 - **WHEN** a document dataset metric's core `sql` is edited by hand after its `SLAYER` entry recorded the formula `revenue / n`
@@ -85,6 +85,10 @@ An entity's `SLAYER` entry SHALL be applied on every load. Its content that dupl
 #### Scenario: A relationship keeps its declared cardinality
 - **WHEN** `edit_dataset` adds a `one_to_many` relationship from document dataset `customers` to document dataset `orders`
 - **THEN** the relationship reads back as `one_to_many`
+
+#### Scenario: An entry declaring several relationships is ignored
+- **WHEN** a document relationship `orders_to_customers`'s `SLAYER` entry declares both `buyer` on `orders` and `placed` on `customers`
+- **THEN** it loads as one many-to-one LEFT relationship `orders_to_customers` on `orders`, and `inspect` shows a load warning naming it
 
 ### Requirement: Top-level metrics decompose into model-scoped metrics
 Each top-level metric SHALL become a model-scoped metric of the document's datasource (`queries/model-scoped-metrics`), named by its `name`, with its `expression`, `description`, `datatype` and `ai_context` kept.
@@ -236,11 +240,19 @@ A corpus vendored with provenance pinning the upstream apache/ossie commit SHALL
 - **THEN** the command exits non-zero and every vendored file and the provenance file are unchanged
 
 ### Requirement: Upstream's wide-table cases are the query oracle
-Every case of upstream `compliance/wide_table/cases` SHALL run against its named fixture model, stored as a native document over its SQL data loaded into in-process DuckDB. A row case (`a*`) SHALL return exactly the expected rows under the default conformance; a case whose metric binds through a host with two routes to its home SHALL be a strict expected failure naming DEV-2388. An error case (`e*`) SHALL be a strict expected failure naming DEV-2217 until the strict binding raises Ossie's error codes.
+Every case of upstream `compliance/wide_table/cases` SHALL run against its named fixture model, stored as a native document over its SQL data loaded into in-process DuckDB, with its `query.json` submitted verbatim under `conformance="ossie-l3"` (`queries/ossie-l3-binding`). A row case (`a*`) SHALL return exactly the expected rows, with the result columns named and ordered as the expected header; an error case (`e*`) SHALL raise its expected Ossie code. Every row case SHALL also return exactly the expected rows under the default conformance. A case whose metric binds through a host with two routes to its home SHALL be a strict expected failure naming DEV-2388, under both conformances.
 
 #### Scenario: The model-scoped metric components case
 - **WHEN** case `a08_model_metric_components` runs on the `retail` fixture
 - **THEN** the result equals its expected rows
+
+#### Scenario: Error cases raise their codes under strict
+- **WHEN** case `e16_partial_dimension_reachability` runs on the `retail` fixture under `conformance="ossie-l3"`
+- **THEN** it raises `E_PARTIAL_DIMENSION_REACHABILITY`, while the same query under the default conformance answers
+
+#### Scenario: Output names label the strict result
+- **WHEN** case `a09_aliases` runs under `conformance="ossie-l3"`
+- **THEN** the result columns are exactly `area`, `revenue`, in that order
 
 ### Requirement: SLayer's round trip grades portable on upstream's ladder
 `slayer ossie-roundtrip <in> <out>` SHALL import the input document natively into scratch storage and export it to `<out>`. Upstream's portability grader, vendored with the corpus, SHALL grade every element of rungs m0–m8 `PORTABLE` through it.
@@ -259,6 +271,7 @@ A stored document whose YAML or JSON text repeats an explicit mapping key, at an
 #### Scenario: A save with a repeated key
 - **WHEN** a document's text saved through SLayer repeats the key `name` in a field
 - **THEN** the save fails with a typed error naming `name` and its line, and the stored document is unchanged
+
 ### Requirement: The native validity check agrees with upstream's validator
 SLayer's validity check SHALL report a document invalid exactly when the vendored upstream `validation/validate.py` reports an error for it, on every sqlglot version SLayer supports, including:
 - In a dataset-scoped `OSSIE_SQL_2026` metric, `AGG` SHALL be valid only as `AGG(source.measure)`: a single column argument qualified by `source` in any case, with no further qualifier, no `*`, a non-empty name and no `FILTER` clause, in a dataset that declares no field named `source`. Any other `AGG` call there SHALL be an error stating that `AGG` in a dataset-scoped metric takes a single `source.measure` reference; a `FILTER` clause and a field named `source` SHALL each be an error stating that cause.
