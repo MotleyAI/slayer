@@ -10,9 +10,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List, Optional, Tuple
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from slayer.core.errors import AmbiguousReferenceError, UnqualifiableReferenceError
 from slayer.core.models import SlayerDataset
-from slayer.core.names import match_name, spelled_name
+from slayer.core.names import match_name, quoted_name, spelled_name
 from slayer.core.query import (
     QueryDimension, QueryMetric, SlayerQuery, TimeDimension, computed_dimension_name, declared_aliases,
     extension_dataset_names,
@@ -34,10 +36,11 @@ from slayer.engine.extensions import (
     resolve_anchored_path,
     resolve_path,
     respelled,
+    sibling_host,
 )
 from slayer.sql.naming import expression_text_alias
 
-__all__ = ["qualified_stages"]
+__all__ = ["StageReading", "qualified_stages", "stage_readings"]
 
 
 
@@ -101,13 +104,14 @@ class _Stage:
         """A dotted reference kept, or respelled as the explicit route keeping its pre-2.0 path."""
         assert self.host is not None
         hops = tuple(node.parts[:-1])
-        old = resolve_path(hops, root=self.host, datasets_by_name=self.datasets)
+        quoted = tuple(node.quoted_at(i) for i in range(len(hops)))
+        old = resolve_path(hops, root=self.host, datasets_by_name=self.datasets, quoted=quoted)
         if old is None and self.host.get_field(hops[0]) is not None:
             return f"{self.prefix}.{text}"  # a list field's elements
         if old is None:
             raise UnqualifiableReferenceError(reference=text, reason=f"does not resolve from {self.population!r}")
         old_chain = old[1]
-        new = resolve_anchored_path(hops, reader=self.host, datasets_by_name=self.datasets)
+        new = resolve_anchored_path(hops, reader=self.host, datasets_by_name=self.datasets, quoted=quoted)
         anchored_here = match_name(name=hops[0], declared=[self.host.spelling], quoted=node.quoted_at(0)) is not None
         written_len = len(hops) - (1 if anchored_here else 0)
         if new is not None and _same_chain(new[1], old_chain) and len(old_chain) == written_len:
@@ -118,7 +122,8 @@ class _Stage:
             raise UnqualifiableReferenceError(
                 reference=text, reason=f"reads a path from {self.population!r} that no qualified spelling names")
         leaf = node.parts[-1]
-        return ".".join((*explicit, leaf if leaf == "*" else spelled_name(leaf)))
+        spelled = quoted_name(leaf) if node.quoted_at(len(hops)) else spelled_name(leaf)
+        return ".".join((*explicit, leaf if leaf == "*" else spelled))
 
 
 def _anchorless(anchors: List[str]) -> bool:
@@ -185,24 +190,66 @@ def qualified_stages(
             continue
         datasets = _stage_universe(query, stages=stages, datasets_by_ds=datasets_by_ds, data_source=data_source,
                                    priority=priority)
-        population = query.population_name
-        if population is None:
-            inferred = _inferred_population(query, datasets=datasets)
-            read_from = query.model_copy(update={"population": inferred})
-            out.append(_qualified_stage(_Stage(query=read_from, host=datasets[inferred],
-                                               stages=stages, datasets_by_name=datasets), query))
-            continue
-        stage = match_name(name=population, declared=stages, quoted=False)
-        if stage is None and _ambiguous_spine(population, datasets=datasets):
-            # Qualified as written: the spelling stays as ambiguous as it was, refused where it runs.
-            out.append(_qualified_stage(_Stage(query=query, host=None, stages=stages, datasets_by_name=datasets), query))
-            continue
-        dataset = None if stage is not None else _population_dataset(population, datasets=datasets)
-        if stage is None and dataset is None:
-            raise UnqualifiableReferenceError(reference=population, reason="names no stored dataset or stage")
-        host = datasets[dataset] if dataset is not None else None
-        out.append(_qualified_stage(_Stage(query=query, host=host, stages=stages, datasets_by_name=datasets), query))
+        # An ambiguous spine spelling is qualified as written: it stays as ambiguous as it was, refused where it runs.
+        name, is_stage = _read_from(query, stages=stages, datasets=datasets)
+        host = datasets[name] if name is not None and not is_stage else None
+        read_from = query if query.population_name is not None else query.model_copy(update={"population": name})
+        out.append(_qualified_stage(_Stage(query=read_from, host=host, stages=stages, datasets_by_name=datasets), query))
     return out
+
+
+class StageReading(BaseModel):
+    """The datasource a stored stage runs in, and its references' reading: its population (``host``; ``None`` when
+    unreadable) over ``datasets``.
+
+    Built with ``model_construct``: its datasets are already validated, and a stage's host has no source.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    data_source: Optional[str] = None
+    host: Optional[SlayerDataset] = None
+    datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
+
+
+def stage_readings(
+    queries: Sequence[SlayerQuery], *, datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]],
+    data_source: Optional[str], priority: Sequence[str],
+) -> List[StageReading]:
+    """Per stage of ``queries`` (one stored query list), the reading qualification keeps, each other stage standing in
+    as the host the static readers build; unreadable where qualification refuses."""
+    stages = frozenset(q.name for q in queries if q.name)
+    out: List[StageReading] = []
+    for query in queries:
+        kwargs = {"stages": stages, "datasets_by_ds": datasets_by_ds, "data_source": data_source, "priority": priority}
+        ds, _ = _datasource_of(query, datasets_by_ds=datasets_by_ds, data_source=data_source, priority=priority)
+        try:
+            name, _ = _read_from(query, stages=stages, datasets=_stage_universe(query, **kwargs))
+        except (AmbiguousReferenceError, UnqualifiableReferenceError):
+            out.append(StageReading.model_construct(data_source=ds, host=None, datasets={}))
+            continue
+        datasets = _stage_universe(query, **kwargs, siblings=True)
+        out.append(StageReading.model_construct(
+            data_source=ds, host=datasets.get(name) if name is not None else None, datasets=datasets))
+    return out
+
+
+def _read_from(query: SlayerQuery, *, stages: frozenset[str], datasets: Mapping[str, SlayerDataset]
+               ) -> Tuple[Optional[str], bool]:
+    """The dataset, or stage (flagged), a stage reads its references from; ``None`` for a spine spelling another stored
+    dataset shares. Raises when it names neither."""
+    population = query.population_name
+    if population is None:
+        return _inferred_population(query, datasets=datasets), False
+    stage = match_name(name=population, declared=stages, quoted=False)
+    if stage is not None:
+        return stage, True
+    if _ambiguous_spine(population, datasets=datasets):
+        return None, False
+    dataset = _population_dataset(population, datasets=datasets)
+    if dataset is None:
+        raise UnqualifiableReferenceError(reference=population, reason="names no stored dataset or stage")
+    return dataset, False
 
 
 def _inferred_population(query: SlayerQuery, *, datasets: Mapping[str, SlayerDataset]) -> str:
@@ -267,13 +314,16 @@ def _population_dataset(population: str, *, datasets: Mapping[str, SlayerDataset
 
 def _stage_universe(
     query: SlayerQuery, *, stages: frozenset[str], datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]],
-    data_source: Optional[str], priority: Sequence[str],
+    data_source: Optional[str], priority: Sequence[str], siblings: bool = False,
 ) -> Dict[str, SlayerDataset]:
-    """The datasets a stage reads, as the engine sees them: its datasource's, the spine, and its extensions."""
+    """The datasets a stage reads, as the engine sees them: its datasource's, the spine, (with ``siblings``) each other
+    stage's host, and its extensions."""
     ds, stored = _datasource_of(query, datasets_by_ds=datasets_by_ds, data_source=data_source, priority=priority)
     universe = dict(stored)
     if ds is not None and TIME_SPINE_DATASET not in universe:
         universe[TIME_SPINE_DATASET] = spine_dataset(data_source=ds)
+    if siblings:
+        universe.update({n: sibling_host(n, query=query, data_source=ds or "") for n in stages if n != query.name})
     if not query.extensions:
         return universe
     try:

@@ -1,9 +1,10 @@
-"""Raw 0.10.x-shaped stores over a small ``shop`` database (orders → customers).
+"""Raw 0.10.x-shaped stores over a small ``shop`` database (orders → customers → regions).
 
 Physical tables::
 
     customers (id, name, region, signed_up_at)
     orders    (order_id, customer_id, status, ordered_at, amount)
+    regions   (name, opened_on, opened_at, label)       -- seed_regions only
 """
 
 from __future__ import annotations
@@ -43,7 +44,18 @@ ORDERS_ROWS = [
     (6, 2, "2024/01/01", "2024-07-01 00:00:00", 60.0),
 ]
 
+# (name, opened_on, opened_at, label)
+REGIONS_ROWS = [
+    ("North", "2023-01-15", "2023-01-15 09:00:00", "2024/01/01"),
+    ("South", "2024-05-01", "2024-01-01 10:00:00", "s"),
+]
+
 TOTAL = 210.0
+#: sum(amount) of orders whose customer's region opened on or after 2024-01-01 (South: orders 3 and 6).
+AMOUNT_OPENED_SINCE_2024 = 90.0
+#: sum(amount) of orders whose customer's region opened (``opened_at``) on 2024-01-01 (South), and before it (North).
+AMOUNT_OPENED_ON_JAN_1 = 90.0
+AMOUNT_OPENED_BEFORE_2024 = 120.0
 #: sum(amount) by customers.region.
 AMOUNT_BY_REGION = {"North": 120.0, "South": 90.0}
 #: Highest sum(amount) per status ('ok' 80 > 'new' 70 > '2024/01/01' 60).
@@ -75,6 +87,17 @@ def seed_shop(db_path: str, *, dialect: str) -> None:
         cur.executemany("INSERT INTO orders VALUES (?,?,?,?,?)", ORDERS_ROWS)
 
 
+def seed_regions(db_path: str) -> None:
+    """Add the ``regions`` table to a seeded DuckDB shop file."""
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect(db_path)
+    try:
+        con.execute("CREATE TABLE regions (name TEXT, opened_on DATE, opened_at TIMESTAMP, label TEXT)")
+        con.executemany("INSERT INTO regions VALUES (?,?,?,?)", REGIONS_ROWS)
+    finally:
+        con.close()
+
+
 # --------------------------------------------------------------------------- #
 # Raw documents in the shape SLayer 0.10.2 wrote them.
 # --------------------------------------------------------------------------- #
@@ -97,7 +120,10 @@ def orders_v10(*, declare_fk: bool = True, version: int = 10, joins: list[dict] 
     }
 
 
-def customers_v10(*, declare_pk: bool = True, version: int = 10) -> dict:
+def customers_v10(
+    *, declare_pk: bool = True, version: int = 10, name: str = "customers", joins: list[dict] | None = None,
+) -> dict:
+    """``name`` other than ``customers`` reads the same table; ``joins`` are stored only when given."""
     columns: list[dict] = [{"name": "id", "type": "INT", "primary_key": True}] if declare_pk else []
     columns += [
         {"name": "name", "type": "TEXT"},
@@ -105,9 +131,42 @@ def customers_v10(*, declare_pk: bool = True, version: int = 10) -> dict:
         {"name": "signed_up_at", "type": "TIMESTAMP"},
     ]
     return {
-        "version": version, "name": "customers", "sql_table": "customers", "data_source": DS,
-        "columns": columns,
+        "version": version, "name": name, "sql_table": "customers", "data_source": DS,
+        "columns": columns, **({"joins": joins} if joins is not None else {}),
     }
+
+
+def region_join(target: str = "regions") -> dict:
+    """A customers-side join to the regions model ``target`` on the region name."""
+    return {"target_model": target, "join_pairs": [["region", "name"]], "cardinality": "many_to_one"}
+
+
+#: The ``orders ↔ customers`` join declared on ``customers`` (orders then stores no joins).
+CUSTOMERS_TO_ORDERS = {"target_model": "orders", "join_pairs": [["id", "customer_id"]], "cardinality": "one_to_many"}
+
+
+def regions_v10(
+    *, name: str = "regions", version: int = 10, date_column: str = "opened_on", timestamp_column: str = "opened_at",
+    date_type: str = "DATE",
+) -> dict:
+    """``date_column`` (typed ``date_type``) reads ``opened_on``; ``timestamp_column`` (TIMESTAMP) reads ``opened_at``."""
+
+    def physical(column: str, physical_name: str) -> dict:
+        return {"sql": physical_name} if column != physical_name else {}
+
+    return {
+        "version": version, "name": name, "sql_table": "regions", "data_source": DS,
+        "columns": [
+            {"name": "name", "type": "TEXT", "primary_key": True},
+            {"name": date_column, "type": date_type, **physical(date_column, "opened_on")},
+            {"name": timestamp_column, "type": "TIMESTAMP", **physical(timestamp_column, "opened_at")},
+            {"name": "label", "type": "TEXT"},
+        ],
+    }
+
+
+def in_datasource(doc: dict, data_source: str) -> dict:
+    return {**doc, "data_source": data_source}
 
 
 def query_backed_v10(*, name: str, stages: list[dict], version: int = 10) -> dict:
@@ -141,18 +200,22 @@ def memory_v2(*, memory_id: str, query: dict, version: int = 2) -> dict:
 async def raw_store(
     *, backend: str, base: str, datasource: DatasourceConfig | None,
     models: Sequence[dict] = (), memories: Sequence[dict] = (), raw_rows: Sequence[tuple[str, str]] = (),
+    extra_datasources: Sequence[DatasourceConfig] = (),
 ) -> StorageBackend:
     """A YAML or SQLite store whose datasets/memories are written verbatim (never validated).
 
-    ``raw_rows`` are ``(name, text)`` dataset payloads written byte-for-byte (corrupt documents).
+    ``raw_rows`` are ``(name, text)`` dataset payloads written byte-for-byte (corrupt documents); a dataset is stored
+    under its own ``data_source`` (default ``DS``).
     """
     os.makedirs(base, exist_ok=True)
+    datasources = [*([datasource] if datasource is not None else []), *extra_datasources]
     if backend == "yaml":
         storage: StorageBackend = YAMLStorage(base_dir=base)
-        if datasource is not None:
-            await storage.save_datasource(datasource)
+        for ds in datasources:
+            await storage.save_datasource(ds)
         for doc in models:
-            _write_text(path=yaml_model_path(base=base, name=doc["name"]), text=yaml.safe_dump(doc, sort_keys=False))
+            _write_text(path=yaml_model_path(base=base, name=doc["name"], data_source=doc.get("data_source", DS)),
+                        text=yaml.safe_dump(doc, sort_keys=False))
         for name, text in raw_rows:
             _write_text(path=yaml_model_path(base=base, name=name), text=text)
         for mem in memories:
@@ -164,12 +227,12 @@ async def raw_store(
         return storage
     db_path = os.path.join(base, "store.db")
     storage = SQLiteStorage(db_path=db_path)
-    if datasource is not None:
-        await storage.save_datasource(datasource)
+    for ds in datasources:
+        await storage.save_datasource(ds)
     with transaction(db_path) as conn:
         for doc in models:
             conn.execute("INSERT INTO models (data_source, name, data) VALUES (?, ?, ?)",
-                         (DS, doc["name"], json.dumps(doc)))
+                         (doc.get("data_source", DS), doc["name"], json.dumps(doc)))
         for name, text in raw_rows:
             conn.execute("INSERT INTO models (data_source, name, data) VALUES (?, ?, ?)", (DS, name, text))
         for mem in memories:
@@ -177,8 +240,8 @@ async def raw_store(
     return storage
 
 
-def yaml_model_path(*, base: str, name: str) -> str:
-    return os.path.join(base, "models", DS, f"{name}.yaml")
+def yaml_model_path(*, base: str, name: str, data_source: str = DS) -> str:
+    return os.path.join(base, "models", data_source, f"{name}.yaml")
 
 
 def _write_text(*, path: str, text: str) -> None:

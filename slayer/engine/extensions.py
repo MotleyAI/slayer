@@ -47,6 +47,7 @@ __all__ = [
     "resolve_path",
     "respelled",
     "respelled_stages",
+    "sibling_host",
     "with_own_extension",
 ]
 
@@ -190,16 +191,24 @@ def _restriction(*, declaring: str, relationship: DatasetRelationship, merge: Ed
     )
 
 
+def _flag(quoted: Sequence[bool], i: int) -> bool:
+    return i < len(quoted) and quoted[i]
+
+
 def resolve_path(
     hops: Sequence[str], *, root: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+    quoted: Sequence[bool] = (),
 ) -> Optional[Tuple[Tuple[str, ...], List[OrientedRelationship]]]:
     """``hops`` from ``root`` as the binder resolves them — its own qualifier dropped, walked, a lone unmatched hop
-    short-form routed — with the edges walked; ``None`` when unresolvable or ambiguous."""
-    hops = drop_root_hop(hops, root.spelling, head_quoted=False)
+    short-form routed — with the edges walked; ``None`` when unresolvable or ambiguous. A hop flagged in ``quoted``
+    matches only its exact spelling."""
+    written = tuple(hops)
+    hops = drop_root_hop(written, root.spelling, head_quoted=_flag(quoted, 0))
+    quoted = tuple(quoted[len(written) - len(hops):])
     try:
-        chain = walk(root=root, path=hops, datasets_by_name=datasets_by_name)
+        chain = walk(root=root, path=hops, datasets_by_name=datasets_by_name, quoted=quoted)
         if chain is None and len(hops) == 1 and resolve_hop(
-                current=root, token=hops[0], datasets_by_name=datasets_by_name) is None:
+                current=root, token=hops[0], datasets_by_name=datasets_by_name, quoted=_flag(quoted, 0)) is None:
             route = dimension_routing.short_form_route_or_none(
                 root=root, target_dataset=hops[0], datasets_by_name=datasets_by_name)
             hops = tuple(route or ())
@@ -211,19 +220,22 @@ def resolve_path(
 
 def resolve_anchored_path(
     hops: Sequence[str], *, reader: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+    quoted: Sequence[bool] = (),
 ) -> Optional[Tuple[Tuple[str, ...], List[OrientedRelationship]]]:
     """A query reference's ``hops`` from ``reader`` as the binder resolves them — the first an anchor reached by the
-    shared anchor resolver, the rest an explicit route — with the edges walked; ``None`` when refused."""
+    shared anchor resolver, the rest an explicit route — with the edges walked; ``None`` when refused. A hop flagged
+    in ``quoted`` matches only its exact spelling."""
     if not hops:
         return (), []
     universe = {**datasets_by_name, reader.name: reader}
     try:
-        anchor = find_anchor(hops[0], quoted=False, reader=reader, datasets_by_name=universe)
+        anchor = find_anchor(hops[0], quoted=_flag(quoted, 0), reader=reader, datasets_by_name=universe)
         if anchor is None:
             return None
-        path = (*anchor_route(reader=reader, anchor=anchor, datasets_by_name=universe, rest=hops[1:]).route,
-                *hops[1:])
-        chain = walk(root=reader, path=path, datasets_by_name=universe)
+        route = anchor_route(reader=reader, anchor=anchor, datasets_by_name=universe, rest=hops[1:]).route
+        path = (*route, *hops[1:])
+        chain = walk(root=reader, path=path, datasets_by_name=universe,
+                     quoted=(*(False for _ in route), *(_flag(quoted, i) for i in range(1, len(hops)))))
     except SlayerError:
         return None
     return (path, chain) if chain is not None else None
@@ -258,15 +270,15 @@ class QueryScope(BaseModel):
     def base(self) -> Optional[str]:
         return self.bases.get("")
 
-    def resolve(self, hops: Sequence[str], *, root: Optional[SlayerDataset] = None):
+    def resolve(self, hops: Sequence[str], *, root: Optional[SlayerDataset] = None, quoted: Sequence[bool] = ()):
         """``resolve_path`` over this scope, from ``root`` (default: the host)."""
         start = root if root is not None else self.host
-        return None if start is None else resolve_path(hops, root=start, datasets_by_name=self.datasets)
+        return None if start is None else resolve_path(hops, root=start, datasets_by_name=self.datasets, quoted=quoted)
 
-    def resolve_reference(self, hops: Sequence[str]):
+    def resolve_reference(self, hops: Sequence[str], *, quoted: Sequence[bool] = ()):
         """``resolve_anchored_path`` of the query's own reference ``hops`` from the host."""
         return None if self.host is None else resolve_anchored_path(
-            hops, reader=self.host, datasets_by_name=self.datasets)
+            hops, reader=self.host, datasets_by_name=self.datasets, quoted=quoted)
 
 
 def query_scopes(
@@ -359,7 +371,7 @@ def _scope(
     siblings = [n for n in named if n != query.name]
     spec = query.population
     datasets: Dict[str, SlayerDataset] = {
-        **stored, **{n: _sibling_host(n, query=query, data_source=data_source) for n in siblings}}
+        **stored, **{n: sibling_host(n, query=query, data_source=data_source) for n in siblings}}
     host_name = spec if _chain_base(spec, named=named)[0] else None
     datasets, restrictions = extend_datasets(
         query, datasets, lookup=lambda name, universe: universe.get(name), on_conflict=lambda _exc: None)
@@ -372,7 +384,7 @@ def _scope(
     )
 
 
-def _sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerDataset:
+def sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerDataset:
     """Sibling stage ``name`` as ``query`` reads it: the output fields its extension relationships name, on either side."""
     keys = [
         pair[0 if e.dataset == name else 1]

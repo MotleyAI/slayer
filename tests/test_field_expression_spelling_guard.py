@@ -85,6 +85,7 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestColumnShapes::test_a_declared_type_is_kept_as_a_cast": 1,
         "TestColumnShapes::test_a_label_carries_over_where_the_position_holds_one": 1,
         "TestUnconvertible::test_an_extension_of_a_name_several_models_match_fails_to_load": 1,
+        "_quoted_hop_store": 1,
     }),
     *_allow("test_dev2101_stored_upgrade.py", _STORED, {"TestEverySurface::test_mode_a_text_is_untouched": 1}),
     *_allow("test_dev2102_stored_upgrade.py", _STORED, {"<module>": 3}),
@@ -137,6 +138,7 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestSpineOperands::test_extension_column_filter": 1,
         "TestSpineLeftAlone::test_path_continuing_past_the_spine": 1,
     }),
+    *_allow("test_stored_upgrade_filter_literals.py", _STORED, {"<module>": 2}),
 ]
 
 
