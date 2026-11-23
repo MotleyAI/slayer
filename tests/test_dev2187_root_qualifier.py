@@ -135,10 +135,10 @@ async def test_a_dataset_anchor_reads_its_only_to_one_path(engine: SlayerQueryEn
     assert canonical_rows(resp) == [("ann", "2"), ("bob", "2")]
 
 
-async def test_an_inner_hop_named_like_the_root_is_still_a_revisit(engine: SlayerQueryEngine) -> None:
-    body = _orders(metrics=["count(customers.orders.id)"])
-    with pytest.raises(Exception, match="customers"):
-        await engine.execute(body)
+async def test_an_inner_hop_named_like_the_root_reads_from_its_own_frame(engine: SlayerQueryEngine) -> None:
+    resp = await engine.execute(_orders(metrics=["count(customers.orders.id)"]))
+    assert canonical_rows(resp) == [("4",)]
+    assert canonical_rows(resp) == canonical_rows(await engine.execute(_orders(metrics=["count(orders.id)"])))
 
 
 async def test_a_longer_name_is_no_root_qualifier(engine: SlayerQueryEngine) -> None:

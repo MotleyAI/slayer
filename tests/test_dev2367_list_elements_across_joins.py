@@ -16,7 +16,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.errors import TimeAxisError, UnsafeRelationshipInputError
-from slayer.core.keys import AggregateKey, FieldKey, Grain
+from slayer.core.keys import AggregateKey, FieldKey, Grain, anchor_token
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -475,12 +475,13 @@ class TestHomeClassification:
         ("contractors", "sum(contractors.rate)", "host", ()),
         ("contractors", "sum(contractors.rate * length(contractors.skills.value))", "physical_target", ("skills",)),
         ("assignments", "sum(contractors.rate * length(contractors.skills.value))", "physical_target",
-         ("contractors", "skills")),
+         (anchor_token("contractors"), "skills")),
         ("contractors", "w(contractors.rate)", "physical_target", ("skills",)),
-        ("assignments", "w(contractors.rate)", "physical_target", ("contractors", "skills")),
-        ("contractors", "sum(contractors.rate * assignments.id)", "physical_target", ("assignments",)),
+        ("assignments", "w(contractors.rate)", "physical_target", (anchor_token("contractors"), "skills")),
+        ("contractors", "sum(contractors.rate * assignments.id)", "physical_target", (anchor_token("assignments"),)),
         ("assignments", "sum(contractors.rate * assignments.id)", "host", ()),
-        ("contractors", "sum(assignments.id * length(contractors.skills.value))", "unresolved", ()),
+        ("contractors", "sum(assignments.id * length(contractors.skills.value))", "unresolved",
+         (anchor_token("assignments"),)),
     ])
     def test_kind_and_path(self, population: str, expression: str, kind: str, path: tuple[str, ...]) -> None:
         assert _home(population, expression) == AggregateHome(kind=kind, path=path)  # pyright: ignore[reportArgumentType]

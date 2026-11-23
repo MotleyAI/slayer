@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.errors import (
     AggArgumentError,
     AmbiguousRelationshipPathError,
+    SlayerError,
     UnevaluableEntityError,
     ScalarArgumentError,
     ScalarOperandTypeError,
@@ -66,9 +67,10 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
-from slayer.core.keys import FieldTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
+from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.relationship_walker import (
     canonical_token,
+    observe_read,
     resolve_hop,
     resolved_terminal,
     aggregation_owner,
@@ -98,6 +100,8 @@ from slayer.engine.population.anchors import (
     anchor_route,
     edge_first_refusal,
     find_anchor,
+    source_frame,
+    to_one_route,
     unknown_dataset,
     unknown_metric,
     unqualified_count,
@@ -107,7 +111,7 @@ from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_
 from slayer.core.query import TimeDimension
 from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
-from slayer.core.time_spine import TIME_SPINE_DATASET
+from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
     AggCall,
@@ -137,10 +141,12 @@ from slayer.core.syntax import (
     dotted_quoting,
     drop_root_qualifier,
     keyword_spelling,
+    map_refs,
     parse_bound_expr,
     parse_expr,
     placeholder_names,
     walk_parsed,
+    walk_parsed_refs,
     positional_hint,
 )
 from slayer.core.scalar_args import (
@@ -862,6 +868,18 @@ def _visible_datasets(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> L
     return [d for d in found.values() if d.name != TIME_SPINE_DATASET]
 
 
+def _anchor_of(parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+               quoted: Tuple[bool, ...]) -> SlayerDataset:
+    """The dataset a query reference ``parts`` is anchored at."""
+    host = scope.population
+    assert host is not None
+    datasets = bundle.datasets_by_name
+    anchor = find_anchor(parts[0], quoted=quoted[0], reader=host, datasets_by_name=datasets)
+    if anchor is None:
+        raise edge_first_refusal(parts, datasets_by_name={**datasets, host.name: host}) or unknown_dataset(parts)
+    return anchor
+
+
 def _anchored_parts(
     parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle, quoted: Tuple[bool, ...],
 ) -> Tuple[Tuple[str, ...], Tuple[bool, ...]]:
@@ -869,14 +887,59 @@ def _anchored_parts(
     host = scope.population
     assert host is not None
     datasets = bundle.datasets_by_name
-    anchor = find_anchor(parts[0], quoted=quoted[0], reader=host, datasets_by_name=datasets)
-    if anchor is None:
-        raise edge_first_refusal(parts, datasets_by_name={**datasets, host.name: host}) or unknown_dataset(parts)
+    anchor = _anchor_of(parts, scope=scope, bundle=bundle, quoted=quoted)
     reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=datasets, rest=parts[1:])
     if anchor.name != host.name:
         _announce_changed_reference(parts, host=host, anchor=anchor, route=reached.route, datasets=datasets,
                                     quoted=quoted[0])
     return (*reached.route, *parts[1:]), (*(False,) * len(reached.route), *quoted[1:])
+
+
+def _with_anchor(key: ValueKey, *, anchor: SlayerDataset, rest: Tuple[str, ...], host: SlayerDataset) -> ValueKey:
+    """A query reference keyed by its anchor and canonical route when the reading dataset is not its anchor
+    (Principle 1)."""
+    if anchor.name == host.name or is_spine(anchor) or not isinstance(key, (FieldKey, FieldSqlKey)):
+        return key
+    return key.model_copy(update={"anchor": (anchor.name, *rest)})
+
+
+def _anchored_saved_metric(
+    parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+    metric_ctx: Optional[MetricResolutionCtx], quoted: Tuple[bool, ...],
+) -> Optional[ValueKey]:
+    """A query reference naming a saved metric off the reading dataset, bound from its declaring dataset: the reader's
+    route to it is asked only for what is not an aggregation's interior."""
+    host = scope.population
+    assert host is not None
+    if len(parts) < 2:
+        return None
+    datasets = {**bundle.datasets_by_name, host.name: host}
+    anchor = _anchor_of(parts, scope=scope, bundle=bundle, quoted=quoted)
+    observe_read(anchor.name)
+    try:
+        walked = walk_terminal(root=anchor, path=parts[1:-1], datasets_by_name=datasets, quoted=quoted[1:-1])
+    except SlayerError:
+        return None
+    if walked is None or walked[0].name == host.name:
+        return None
+    terminal = walked[0]
+    if peek_dataset_field(dataset=terminal, name=parts[-1], quoted=quoted[-1]) is not None:
+        return None
+    metric = terminal.get_metric(parts[-1], quoted=quoted[-1])
+    if metric is None:
+        return None
+
+    def host_path() -> Tuple[str, ...]:
+        path, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+        return _walk_relationship_chain(
+            hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf=path[-1], quoted=flags,
+            routes_short_form=False,
+        )[1]
+
+    return _resolve_saved_metric(
+        metric=metric, terminal_dataset=terminal, scope=scope, bundle=bundle, metric_ctx=metric_ctx,
+        ref_text=".".join(parts), host_path=host_path,
+    )
 
 
 def _announce_changed_reference(
@@ -1217,27 +1280,33 @@ def _resolve_anchored(
             name=".".join(parts), scope_kind="DatasetScope", scope_summary=_NO_ANCHOR_SCOPE_SUMMARY, suggestion=None,
         )
     host = scope.population
+    metric = _anchored_saved_metric(parts, scope=scope, bundle=bundle, metric_ctx=metric_ctx, quoted=quoted)
+    if metric is not None:
+        return metric
+    anchor = _anchor_of(parts, scope=scope, bundle=bundle, quoted=quoted)
     path, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
     if not path[:-1]:
         return _resolve_terminal_leaf(
             current=host, leaf=path[-1], hop_path=(), original_parts=parts, scope=scope, bundle=bundle,
             metric_ctx=metric_ctx, quoted=flags[-1],
         )
+    route_len = len(path) - len(parts) + 1
     current, effective_hop_path = _walk_relationship_chain(
         hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf=path[-1], quoted=flags,
         routes_short_form=False,
-        anchor=(_quoted_segment(parts[0], quoted=quoted[0]), len(path) - len(parts) + 1),
+        anchor=(_quoted_segment(parts[0], quoted=quoted[0]), route_len),
     )
-    if TIME_SPINE_DATASET in effective_hop_path[len(path) - len(parts) + 1:]:  # hops after the anchor's route
+    if TIME_SPINE_DATASET in effective_hop_path[route_len:]:  # hops after the anchor's route
         raise UnresolvableDimensionRelationshipError(
             reference=".".join(parts), root_dataset=host.spelling,
             reason=f"a route never crosses {TIME_SPINE_DATASET!r}, which is read only as an anchor.",
             suggested_path=f"{TIME_SPINE_DATASET}.{path[-1]}",
         )
-    return _resolve_terminal_leaf(
+    key = _resolve_terminal_leaf(
         current=current, leaf=path[-1], hop_path=effective_hop_path, original_parts=parts, scope=scope,
         bundle=bundle, metric_ctx=metric_ctx, quoted=flags[-1],
     )
+    return _with_anchor(key, anchor=anchor, rest=tuple(effective_hop_path[route_len:]), host=host)
 
 
 def _resolve_terminal_leaf(
@@ -1341,12 +1410,12 @@ def _resolve_saved_metric(
     bundle: ResolvedSourceBundle,
     metric_ctx: Optional[MetricResolutionCtx],
     ref_text: str,
-    host_path: Tuple[str, ...],
+    host_path: Tuple[str, ...] | Callable[[], Tuple[str, ...]],
 ) -> ValueKey:
     """Resolve a saved ``DatasetMetric`` into a bound ``ValueKey``. ``host_path``
     is the host→terminal relationship path (``()`` for bare/local); a cross-dataset
-    metric binds against the target then prepends ``host_path``. Raises the
-    ineligible-position error when ``metric_ctx`` is None."""
+    metric binds against the target, its aggregations read from it (semantics Axiom 2.6), any other reference
+    through ``host_path``. Raises the ineligible-position error when ``metric_ctx`` is None."""
     _check_evaluable(metric, dataset=terminal_dataset)
     if metric_ctx is None:
         raise _ineligible_saved_metric_error(
@@ -1376,21 +1445,20 @@ def _resolve_saved_metric(
             scope = DatasetScope(population=scope.population.definition_view())
     elif scope.anchored:
         scope = DatasetScope(population=scope.population)
-    if not host_path:
+    if host_path == ():
         # Bare/local: metric lives on the host; bind inline at this scope.
         return _bind(
             parsed, scope=scope, bundle=bundle, in_filter=False, metric_ctx=child,
         )
-    # Cross-dataset: bind against the target, then prepend into host coordinates.
-    host_dataset = scope.population
-    assert host_dataset is not None
+    # Cross-dataset: bind against the target, then read it from the host.
     target_scope = DatasetScope(population=terminal_dataset)
     target_bundle = _rerooted_bundle(bundle=bundle, target=terminal_dataset)
     bound = _bind(
         parsed, scope=target_scope, bundle=target_bundle, in_filter=False,
         metric_ctx=child,
     )
-    return prepend_value_key(bound, host_path=host_path)
+    route = host_path if callable(host_path) else (lambda: cast(Tuple[str, ...], host_path))
+    return compose_frame(bound, frame=terminal_dataset.name, host_path=route)
 
 
 def _resolve_dotted_star(
@@ -1453,6 +1521,32 @@ def _bare_star(*, scope: DatasetScope) -> StarKey:
     return StarKey()
 
 
+def _grain_bundle(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ResolvedSourceBundle:
+    """``bundle`` rooted where ``scope``'s grain references bind."""
+    host = scope.grain_scope.population
+    return bundle if scope.grain is None or host is None else bundle.rerooted(host)
+
+
+def _anchored_grain_key(
+    parsed: ParsedExpr, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[ValueKey]:
+    """A grain reference the query's population reaches by no single route, keyed by its anchor alone: only the homes
+    that group by it read it (each by its own route); ``None`` when it names no one anchor."""
+    host = scope.population
+    if not scope.anchored or host is None:
+        return None
+    anchors = {a.name: a for node in walk_parsed_refs(parsed) if isinstance(node, DottedRef)
+               if (a := find_anchor(node.parts[0], quoted=dotted_quoting(node)[0], reader=host,
+                                    datasets_by_name=bundle.datasets_by_name)) is not None}
+    if len(anchors) != 1 or any(not isinstance(n, DottedRef) for n in walk_parsed_refs(parsed)):
+        return None
+    (anchor,) = anchors.values()
+    observe_read(anchor.name)
+    bound = _bind(parsed, scope=DatasetScope(population=anchor, anchored=True), bundle=bundle.rerooted(anchor),
+                  in_filter=False)
+    return compose_frame(bound, frame=anchor.name, host_path=lambda: (anchor_token(anchor.name),))
+
+
 def _bind_partition_keys(
     value, *,
     scope: DatasetScope,
@@ -1467,7 +1561,12 @@ def _bind_partition_keys(
         if dim_alias_map and isinstance(elem, Ref) and elem.name in dim_alias_map:
             pks.append(dim_alias_map[elem.name])
             continue
-        bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
+        try:
+            bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
+        except UnresolvableDimensionRelationshipError:
+            bound = _anchored_grain_key(elem, scope=scope, bundle=bundle)
+            if bound is None:
+                raise
         # Whether a key is a query dimension is the checker's; an aggregate-bearing one must already be one.
         if _carries_attached_value(bound) and bound not in (dim_alias_map or {}).values():
             raise PartitionKeyError(
@@ -1591,7 +1690,101 @@ def _source_is_reaggregation(node) -> bool:
     return False
 
 
+def _source_anchors(
+    parsed: AggCall, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[List[SlayerDataset]]:
+    """The datasets a query aggregation's row-level source references are anchored at; ``None`` when one is no
+    dataset reference (an alias, an unknown name, the spine) or the source reads none."""
+    found: List[SlayerDataset] = []
+    # Attached constituents (nested aggregations, transforms) are opaque: only row-level leaves anchor the source.
+    attached = {id(n) for t in walk_parsed(parsed.source) if isinstance(t, (AggCall, TransformCall))
+                for n in walk_parsed(t)}
+    for node in walk_parsed_refs(parsed.source):
+        if isinstance(node, AggCall) or id(node) in attached:
+            continue
+        if not isinstance(node, DottedRef):
+            return None
+        anchor = find_anchor(node.parts[0], quoted=dotted_quoting(node)[0], reader=scope.population,
+                             datasets_by_name=bundle.datasets_by_name)
+        if anchor is None or is_spine(anchor):
+            return None
+        observe_read(anchor.name)
+        found.append(anchor)
+    return found or None
+
+
+def _frame_spelling(
+    parsed: AggCall, *, frame: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> str:
+    """``parsed``'s source with each reference spelled from ``frame``."""
+    datasets = {**bundle.datasets_by_name, frame.name: frame}
+
+    def respell(ref: Ref | DottedRef) -> Ref | DottedRef:
+        if not isinstance(ref, DottedRef):
+            return ref
+        anchor = find_anchor(ref.parts[0], quoted=dotted_quoting(ref)[0], reader=None, datasets_by_name=datasets)
+        if anchor is None:
+            return ref
+        route = to_one_route(frame, anchor, datasets_by_name=datasets)
+        return ref.model_copy(update={"parts": (spelled_name(frame.spelling), *route, *ref.parts[1:]),
+                                      "quoted": False, "quoted_parts": ()})
+
+    return canonical_metric_text(map_refs(parsed.source, respell))
+
+
+def _aggregation_frame(
+    parsed: AggCall, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[SlayerDataset]:
+    """The dataset a query aggregation is read from (semantics Axiom 2.6), when its source names one."""
+    if not scope.anchored or scope.population is None:
+        return None
+    anchors = _source_anchors(parsed, scope=scope, bundle=bundle)
+    if anchors is None:
+        return None
+    return source_frame(
+        anchors, datasets_by_name={**bundle.datasets_by_name, scope.population.name: scope.population},
+        spell=lambda d: _frame_spelling(parsed, frame=d, bundle=bundle),
+    )
+
+
 def _bind_agg_call(
+    parsed: AggCall, *,
+    scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    metric_ctx: Optional[MetricResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+) -> AggregateKey | TransformKey | TimeTruncKey:
+    """Bind an ``AggCall``, its interior read from its own frame (semantics Axiom 2.6), never routed through the
+    query's population."""
+    frame = _aggregation_frame(parsed, scope=scope, bundle=bundle)
+    if frame is None:
+        return _bind_agg_call_in(
+            parsed, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+            dim_alias_map=dim_alias_map,
+        )
+    host = scope.grain_scope.population
+    assert host is not None and scope.population is not None
+    query_scope, query_bundle = scope, bundle
+    if frame.name != scope.population.name:
+        scope = DatasetScope(population=frame, anchored=True, grain=scope.grain_scope) \
+            if frame.name != host.name else scope.grain_scope
+        bundle = bundle.rerooted(frame)
+    key = _bind_agg_call_in(
+        parsed, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+        dim_alias_map=dim_alias_map,
+    )
+    if not isinstance(key, AggregateKey):
+        # A series transform over an attached value (``first(regions.metric)``) reads no rows of its own.
+        return key if scope is query_scope else _bind_agg_call_in(
+            parsed, scope=query_scope, bundle=query_bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+            dim_alias_map=dim_alias_map,
+        )
+    key = interior_unanchored(key)
+    return framed_aggregate(key, frame=frame.name) if frame.name != host.name else key
+
+
+def _bind_agg_call_in(
     parsed: AggCall, *,
     scope: DatasetScope,
     bundle: ResolvedSourceBundle,
@@ -1672,7 +1865,7 @@ def _bind_filtered_agg(
     condition = _bind(parsed.filter, scope=scope, bundle=bundle, in_filter=False, dim_alias_map=dim_alias_map)
     if any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(condition)):
         raise _filter_error("needs a row-level condition; it cannot read an aggregate, a transform or a metric.")
-    key = _bind_agg_call(
+    key = _bind_agg_call_in(
         parsed.model_copy(update={"filter": None}), scope=scope, bundle=bundle, alias_map=alias_map,
         metric_ctx=metric_ctx, dim_alias_map=dim_alias_map,
     )
@@ -1827,8 +2020,8 @@ def _bind_agg(
     for k, v in parsed.kwargs:
         if k == "partition_by":
             partition_keys = _bind_partition_keys(
-                value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-                label="aggregation",
+                value=v, scope=scope.grain_scope, bundle=_grain_bundle(scope=scope, bundle=bundle),
+                dim_alias_map=dim_alias_map, label="aggregation",
             )
             continue
         kwargs_list.append((
@@ -2323,8 +2516,8 @@ def _bind_transform_params(
     for k, v in [*positional_pairs, *kwargs]:
         if k == "partition_by" and rank_family:
             partition_keys = _bind_partition_keys(
-                value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-                label=f"transform {op!r}",
+                value=v, scope=scope.grain_scope, bundle=_grain_bundle(scope=scope, bundle=bundle),
+                dim_alias_map=dim_alias_map, label=f"transform {op!r}",
             )
             continue
         if k == "direction" and rank_family:

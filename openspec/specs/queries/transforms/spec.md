@@ -234,7 +234,8 @@ aligned to the bucket it is the bucket containing the offset instant.
 #### Scenario: Partition key across a fanning hop stays a typed error
 
 - **WHEN** a shifted composite's leaf declares a `partition_by=` key whose
-  dependency closure crosses a fanning hop from the host
+  dependency closure crosses a fanning hop from the key's anchor (`queries/attribution-modes`
+  › Partition key fanning from its anchor fails closed in every mode)
 - **THEN** the query fails with the existing input-safety error naming the
   leaf and the hop, never a value
 
