@@ -97,11 +97,19 @@ Each Ossie construct `slayer import-osi` converted in 1.x SHALL evaluate nativel
 - **THEN** a query naming `gross_revenue` returns the sum of `orders.total_amount`, and the document's text is unchanged
 
 ### Requirement: Entities SLayer cannot evaluate yet still load
-A field or metric of a valid document whose expression SLayer cannot evaluate yet — a window function, or a model-scoped metric reading a field unqualified or outside an aggregate — SHALL load with a structured load warning naming the entity and the reason, visible on `inspect`, `datasets_summary` and search results. Every query reading the entity SHALL fail with a typed error naming it and the reason; no other entity SHALL be affected.
+A field or metric of a valid document whose expression SLayer cannot evaluate yet — a window function, a model-scoped metric reading a field unqualified or outside an aggregate, or an expression whose runnable form SLayer's expression reader cannot parse (for example a subquery) — SHALL load with a structured load warning naming the entity and the reason, visible on `inspect`, `datasets_summary` and search results, and reported by `slayer import-osi`. Every query reading the entity SHALL fail with a typed error naming it and the reason; no other entity SHALL be affected.
 
 #### Scenario: A windowed field loads and fails only when read
 - **WHEN** a document declares a field `running_total` with expression `SUM(amount) OVER (ORDER BY order_date)` beside a field `amount`
 - **THEN** the document loads, `inspect` shows the warning on `running_total`, a query of `sum(sales.amount)` succeeds, and a query reading `sales.running_total` fails with a typed error naming `running_total`
+
+#### Scenario: An expression SLayer cannot parse loads not evaluable
+- **WHEN** a document declares a field `flag` with expression `(SELECT 1)` beside a field `amount`
+- **THEN** the document loads, `inspect` shows a warning on `flag` naming the parse failure, `slayer import-osi` reports `flag` as not evaluable, a query of `sum(sales.amount)` succeeds, and a query reading `sales.flag` fails with a typed error naming `flag`
+
+#### Scenario: SQL keywords inside literals stay evaluable
+- **WHEN** a document declares a field `kind` with expression `CASE WHEN status IN ('select', 'from') THEN 'where' END`
+- **THEN** `kind` loads with no load warning and a query reading it succeeds
 
 ### Requirement: Dataset and model-scoped metric names are unique per datasource
 Within one datasource, dataset names SHALL be unique across all documents and standalone datasets together, and model-scoped metric names SHALL be unique across all documents; a model-scoped metric name SHALL NOT equal a dataset name. Names SHALL compare as `queries/identifier-case` specifies. A save that would introduce a duplicate SHALL be refused with a typed error naming both owners. When stored files collide, the colliding entity SHALL be unloadable in every owner, and so SHALL every entity of the same document that depends on it (a relationship to or from it, a metric reading it), each with a diagnostic naming the cause; every other entity SHALL load. Nothing SHALL silently win a collision.
@@ -201,3 +209,14 @@ Every case of upstream `compliance/wide_table/cases` SHALL run against its named
 #### Scenario: The ladder grades portable
 - **WHEN** the grader runs over m0–m8 through `slayer ossie-roundtrip`
 - **THEN** every element is graded `PORTABLE`
+
+### Requirement: A document whose text repeats a mapping key is refused
+A stored document whose YAML or JSON text repeats an explicit mapping key, at any depth, SHALL be unloadable with a typed error naming the document and every repeated key with its line; repeated YAML merge directives SHALL be allowed. A scalar the YAML loader cannot build SHALL make the document unloadable naming the value and its line. A save or edit whose text repeats a key SHALL be refused with the same reasons, storing nothing. An unloadable document SHALL follow `models/document-isolation`.
+
+#### Scenario: A hand-placed document with a repeated key
+- **WHEN** a file in `semantic_models/shop/` declares the key `source` twice in dataset `orders`
+- **THEN** loading the datasource reports the document as unloadable naming `source` and its line, none of its datasets are visible, and the datasource's other documents load
+
+#### Scenario: A save with a repeated key
+- **WHEN** a document's text saved through SLayer repeats the key `name` in a field
+- **THEN** the save fails with a typed error naming `name` and its line, and the stored document is unchanged
