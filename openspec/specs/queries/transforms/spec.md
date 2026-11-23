@@ -29,8 +29,12 @@ evaluates under exactly one:
   rows at that grain; a leaf whose grain does not contain the axis is constant
   along the axis and contributes its unshifted value. A partition key that is
   attributable across a join is honoured the same way; a partition key whose
-  dependency closure crosses a fanning hop fails with the existing
-  input-safety error, never a value.
+  dependency closure crosses a fanning or unproven hop from the leaf's home
+  resolves per the mode (`queries/attribution-modes` › Unattributable explicit
+  partition keys resolve per the mode): under the default and `"associate"` the
+  leaf reads its associated cell at the shifted bucket, and under `"broadcast"`
+  and `"error"` the query fails with the typed partition-key error, never a
+  multiplied value.
 - **Series regime**: an input containing a nested transform anywhere in
   its tree, a cross-model aggregate leaf inside a composite (a bare cross-model
   aggregate stays re-aggregation), or a top-level aggregate-typed
@@ -233,11 +237,14 @@ aligned to the bucket it is the bucket containing the offset instant.
 
 #### Scenario: Partition key across a fanning hop stays a typed error
 
-- **WHEN** a shifted composite's leaf declares a `partition_by=` key whose
-  dependency closure crosses a fanning hop from the key's anchor (`queries/attribution-modes`
-  › Partition key fanning from its anchor fails closed in every mode)
-- **THEN** the query fails with the existing input-safety error naming the
-  leaf and the hop, never a value
+- **WHEN** a query rooted at `customers` by `orders.status` and signup month
+  requests `time_shift(sum(spend, partition_by=[orders.status, signup_at]), -1)`,
+  omitting the mode
+- **THEN** each row carries the prior signup month's associated cell — ok Jan
+  NULL, Feb 100, Mar 150, Apr 60; new Jan NULL, Feb 100, Mar 150; NULL Apr NULL
+  — by executed values, never a multiplied value; under `"broadcast"` and
+  `"error"` the query fails with the typed partition-key error naming
+  `orders.status`
 
 #### Scenario: Ranked leaf inside a shifted composite executes
 

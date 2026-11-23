@@ -868,9 +868,11 @@ attaches through a target-rooted producer like any cross-model attached
 constituent, subject to the existing input-safety rules. A NULL grain-key value
 forms its own cell and attaches null-safely, per the established null rules. A
 parameter the operating grain does not determine SHALL keep its typed
-rejection. A parameter whose own inputs are unsafe — a partition key fanning
-from the parameter's own home, or a dependency no dialect can analyse — SHALL
-fail closed with the existing typed error in every mode; the enclosing
+rejection. A parameter whose own explicit partition key is unattributable from
+the parameter's own home resolves per the mode inside the parameter's own
+producer (`queries/attribution-modes` › Unattributable explicit partition keys
+resolve per the mode); a parameter with a dependency no dialect can analyse
+SHALL fail closed with the existing typed error in every mode; the enclosing
 aggregation never inspects the parameter's interior. Outer parameters on
 fully-attached (re-aggregation) sources keep their existing rules. The shape
 SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
@@ -997,13 +999,16 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
   though the enclosing aggregation never inspects it
 
 #### Scenario: Attached parameter whose own partition key fans from its own home fails closed
-- **WHEN** a query rooted at `orders` selects
+- **WHEN** a query rooted at `orders` over `[status]`, and again over
+  `[customers.regions.bad_pop]`, selects
   `weighted_avg(amount, weight=sum(customers.regions.pop, partition_by=customers.regions.bad_pop))`
   — the parameter's home is `regions` and `bad_pop` crosses the fanning
   `regions → region_events` hop from it
-- **THEN** the query fails in every mode with the existing mode-invariant
-  partition-key error naming `bad_pop` and the hop `region_events`, never a
-  multiplied value
+- **THEN** the parameter's own producer resolves `bad_pop` per the mode, and an
+  order row does not determine the parameter's grain, so the query fails, never
+  with a value: with the typed determination error naming `weight` when the mode
+  is omitted or `associate`, and with the typed partition-key error naming
+  `bad_pop` under `broadcast` and `error`
 
 #### Scenario: Attached parameter keyed by a host column keeps the mode-aware rule
 - **WHEN** a query rooted at `orders` over `[status]` selects
@@ -1038,7 +1043,9 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
   `status` — under any `to_many_handling` mode, by an attributable
   (`customers.tier`) or an unattributable (`status`) dimension
 - **THEN** the query fails with the typed determination error naming the
-  parameter, never wrong values; the plain and association paths refuse alike
+  parameter, never wrong values; the plain and association paths refuse alike; under
+  `broadcast` and `error` a parameter whose own explicit key is unattributable from its
+  own home is first refused by that key's partition-key error
 
 #### Scenario: Positional transform parameter folds onto the declared name
 - **WHEN** a query rooted at `orders` over `[customers.tier]` selects
@@ -1381,8 +1388,10 @@ cells takes the outer aggregation's empty value (0 for the count family, NULL ot
   dimension with an explicit outer grain, used as a transform input, or passed as an
   aggregate parameter of another aggregation
 - **THEN** each executes by executed values, while a constituent whose own
-  `partition_by=` crosses a fanning hop from its home still fails with the
-  partition-key error in every mode
+  `partition_by=` crosses a fanning hop from its home resolves per the mode
+  (`queries/attribution-modes` › Unattributable explicit partition keys resolve
+  per the mode): associated cells when the mode is omitted or `associate`, the
+  typed partition-key error under `broadcast` and `error`
 
 #### Scenario: Outer grain determined through an attached-aggregate expression
 - **WHEN** a query over `[name, band]` with
