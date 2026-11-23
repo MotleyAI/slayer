@@ -151,8 +151,8 @@ async def refine_engine(dialect: str) -> AsyncGenerator[Tuple[SlayerQueryEngine,
 
 
 async def call_tool_json(server: Any, *, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """JSON payload of an MCP tool call (FastMCP annotates the pre-conversion result type)."""
-    blocks, _ = cast(Any, await server.call_tool(name=name, arguments=arguments))
+    """JSON payload of an MCP tool call."""
+    blocks = cast(Any, await server.call_tool(name=name, arguments=arguments)).content
     return json.loads(blocks[0].text)
 
 

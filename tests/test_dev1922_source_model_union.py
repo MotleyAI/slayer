@@ -14,7 +14,7 @@ from typing import Annotated, Any, Union, get_args, get_origin
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
 
 from slayer.api.server import QueryRequest, create_app
@@ -111,7 +111,7 @@ class TestSchema:
 
     async def test_mcp_query_tool_carries_the_definitions(self, mcp_server) -> None:
         tools = {t.name: t for t in await mcp_server.list_tools()}
-        defs = tools["query"].inputSchema.get("$defs", {})
+        defs = tools["query"].input_schema.get("$defs", {})
         assert "DatasetExtension" in defs
         assert "SlayerDataset" not in defs
 

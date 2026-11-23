@@ -32,9 +32,9 @@ def ev_storage(tmp_path):
 
 
 async def _mcp_query_ids(server) -> set[int]:
-    blocks, _ = await server.call_tool(
+    blocks = (await server.call_tool(
         name="query", arguments={"query": ids_query(LAST_3_MONTHS), "format": "json"},
-    )
+    )).content
     decoded = json.loads(blocks[0].text)
     return row_ids(decoded["data"] if isinstance(decoded, dict) else decoded)
 

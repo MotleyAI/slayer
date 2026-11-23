@@ -64,7 +64,7 @@ async def _seed(storage: YAMLStorage) -> None:
 
 
 async def _call_tool(server, *, name: str, arguments: dict) -> str:
-    content_blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 
@@ -321,7 +321,7 @@ class TestMcpBatch:
         # and the docstring mentions the batch/list behavior.
         server = create_mcp_server(storage=mcp_storage)
         tool = {t.name: t for t in await server.list_tools()}["inspect"]
-        ref_schema = tool.inputSchema["properties"]["reference"]
+        ref_schema = tool.input_schema["properties"]["reference"]
         # Structural assertion (not a substring match): the union must keep BOTH
         # the scalar str branch and a list[str] branch — so it would fail if the
         # batch branch regressed to list[Any] or the scalar branch disappeared.

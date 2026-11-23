@@ -12,7 +12,7 @@ from functools import cache
 from typing import Annotated, Any
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
 from pydantic.json_schema import PydanticJsonSchemaWarning
 
@@ -132,7 +132,7 @@ def _descriptions(node: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str
 
 def _query_texts() -> dict[tuple[str, ...], str]:
     query = _tools()["query"]
-    texts = dict(_descriptions(query.inputSchema))
+    texts = dict(_descriptions(query.input_schema))
     texts[_TOOL_DESCRIPTION] = query.description or ""
     return texts
 
@@ -172,7 +172,7 @@ def test_server_builds_without_json_schema_warnings(tmp_path) -> None:
 
 
 def test_edit_dataset_unset_parameters_are_optional_without_default() -> None:
-    schema = _tools()["edit_dataset"].inputSchema
+    schema = _tools()["edit_dataset"].input_schema
     for param in ("query_variables", "meta"):
         assert "default" not in schema["properties"][param], param
         assert param not in schema.get("required", []), param
@@ -180,7 +180,7 @@ def test_edit_dataset_unset_parameters_are_optional_without_default() -> None:
 
 @pytest.mark.parametrize("name", TOOL_NAMES)
 def test_every_parameter_described(name: str) -> None:
-    props = _tools()[name].inputSchema.get("properties", {})
+    props = _tools()[name].input_schema.get("properties", {})
     undescribed = [p for p, schema in props.items() if not (schema.get("description") or "").strip()]
     assert undescribed == []
 
@@ -253,8 +253,8 @@ class _Payload(BaseModel):
     x: int = 0
 
 
-async def test_fastmcp_description_kwarg_and_annotated_field_description() -> None:
-    mcp = FastMCP("probe")
+async def test_mcpserver_description_kwarg_and_annotated_field_description() -> None:
+    mcp = MCPServer("probe")
 
     @mcp.tool(description="replaced")
     async def probe(p: Annotated[_Payload | None, Field(description="param text")] = None) -> str:
@@ -263,13 +263,13 @@ async def test_fastmcp_description_kwarg_and_annotated_field_description() -> No
 
     tool = next(t for t in await mcp.list_tools() if t.name == "probe")
     assert tool.description == "replaced"
-    prop = tool.inputSchema["properties"]["p"]
+    prop = tool.input_schema["properties"]["p"]
     assert prop["description"] == "param text"
     assert "anyOf" in prop or "$ref" in prop
 
 
 def test_refine_property_carries_its_own_description() -> None:
-    prop = _tools()["query"].inputSchema["properties"]["refine"]
+    prop = _tools()["query"].input_schema["properties"]["refine"]
     assert (prop.get("description") or "").strip()
     assert "anyOf" in prop or "$ref" in prop
 
@@ -335,7 +335,7 @@ def test_dimensions_require_a_readable_label() -> None:
 
 
 def test_query_schema_within_size_budget() -> None:
-    size = len(json.dumps(_tools()["query"].inputSchema))
+    size = len(json.dumps(_tools()["query"].input_schema))
     assert size <= QUERY_SCHEMA_BUDGET, f"query inputSchema is {size} chars"
 
 
@@ -421,7 +421,7 @@ def test_time_preview_drops_gaps() -> None:
 
 
 def test_refinement_clauses_point_to_the_query_fields() -> None:
-    defs = _tools()["query"].inputSchema["$defs"]
+    defs = _tools()["query"].input_schema["$defs"]
     query_props = defs["SlayerQuery"]["properties"]
     for field, schema in defs["QueryRefinement"]["properties"].items():
         text = schema.get("description") or ""
@@ -431,17 +431,17 @@ def test_refinement_clauses_point_to_the_query_fields() -> None:
 
 
 def test_metric_expression_points_to_the_metrics_field() -> None:
-    text = _tools()["query"].inputSchema["$defs"]["DatasetMetric"]["properties"]["expression"].get("description") or ""
+    text = _tools()["query"].input_schema["$defs"]["DatasetMetric"]["properties"]["expression"].get("description") or ""
     assert "metrics" in text
     assert len(text) <= 200, text
 
 
 def test_unrelated_aggregate_varies_per_spine_bucket() -> None:
-    text = _tools()["query"].inputSchema["$defs"]["SlayerQuery"]["properties"]["metrics"].get("description") or ""
+    text = _tools()["query"].input_schema["$defs"]["SlayerQuery"]["properties"]["metrics"].get("description") or ""
     assert "repeated on every row (per bucket of a time_spine time dimension)" in text
 
 
 def test_date_range_is_described() -> None:
-    text = _tools()["query"].inputSchema["$defs"]["TimeDimension"]["properties"]["date_range"].get("description") or ""
+    text = _tools()["query"].input_schema["$defs"]["TimeDimension"]["properties"]["date_range"].get("description") or ""
     for needle in ("change,", "change_pct", "time_shift", "window=", "cumsum"):
         assert needle in text, needle
