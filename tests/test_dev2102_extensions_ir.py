@@ -16,6 +16,7 @@ from slayer.core.models import DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import DatasetExtension, QueryRefinement, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._query_input_fixtures import refusal
 
 CUSTOMERS_EXT = {
     "dataset": "customers",
@@ -97,7 +98,8 @@ class TestRejected:
     def test_unknown_extension_key_is_named(self) -> None:
         with pytest.raises(ValidationError) as info:
             _query(population="orders", extensions=[WITH_FILTERS])
-        assert {(e["type"], str(e["loc"][-1])) for e in info.value.errors()} == {("extra_forbidden", "filters")}
+        err, loc = refusal(info.value)
+        assert (err.key, loc) == ("filters", ("extensions", 0))
 
     def test_an_extension_without_a_dataset(self) -> None:
         with pytest.raises(ValidationError, match="dataset"):
@@ -106,7 +108,7 @@ class TestRejected:
     def test_refinements_carry_no_extensions(self) -> None:
         with pytest.raises(ValidationError) as info:
             QueryRefinement.model_validate({"extensions": [CUSTOMERS_EXT]})
-        assert {(e["type"], str(e["loc"][-1])) for e in info.value.errors()} == {("extra_forbidden", "extensions")}
+        assert refusal(info.value)[0].key == "extensions"
 
     def test_a_model_s_stage_with_a_duplicate_is_rejected_too(self) -> None:
         with pytest.raises(ValidationError) as info:
