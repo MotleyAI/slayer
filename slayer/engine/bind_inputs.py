@@ -1054,20 +1054,26 @@ def _resolve_anchored_saved_metric_ref(
     if anchor is None:
         return None
     *rest, leaf = parts[1:]
+    # A saved metric binds from its declaring dataset, reached from its anchor: the reader's route never decides it.
+    found = _walk_dotted(source_dataset=anchor, hops=rest, bundle=bundle) if rest else (anchor, ())
+    mm = found[0].get_metric(leaf) if found is not None else None
+    if found is None or mm is None:
+        return None
+    return found[0], mm, _reader_spelling(parts, anchor=anchor, host=host, bundle=bundle)
+
+
+def _reader_spelling(
+    parts: Tuple[str, ...], *, anchor: SlayerDataset, host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> str:
+    """``parts`` spelled along the reader's route to the anchor, else as written."""
+    *rest, leaf = parts[1:]
     try:
-        reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=datasets, rest=parts[1:])
+        reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=bundle.datasets_by_name, rest=parts[1:])
     except UnresolvableDimensionRelationshipError:
-        # A saved metric binds from its declaring dataset: the reader's route never decides it.
-        walked = _walk_dotted(source_dataset=anchor, hops=rest, bundle=bundle) if rest else (anchor, ())
-        mm = walked[0].get_metric(leaf) if walked is not None else None
-        return (walked[0], mm, ".".join(parts)) if walked is not None and mm is not None else None
+        return ".".join(parts)
     hops = [*reached.route, *rest]
     walked = _walk_dotted(source_dataset=host, hops=hops, bundle=bundle) if hops else (host, ())
-    if walked is None:
-        return None
-    terminal, canonical = walked
-    mm = terminal.get_metric(leaf)
-    return (terminal, mm, ".".join((*canonical, leaf))) if mm is not None else None
+    return ".".join(parts) if walked is None else ".".join((*walked[1], leaf))
 
 
 def _locate_dotted_saved_metric(
@@ -1680,54 +1686,61 @@ def _snapped_value(
     return floor_to(snapped, TimeGranularity.DAY).date() if is_date else snapped
 
 
+def _anchor_free(key: ValueKey) -> ValueKey:
+    """``key`` as the population reads it: two spellings of one column are one column."""
+    return key.model_copy(update={"anchor": None}) if isinstance(key, (FieldKey, FieldSqlKey)) else key
+
+
 def _snap_frame_bound(
-    cj: ValueKey, *, grans_by_field: Dict[ValueKey, List[Granularity]],
+    cj: ValueKey, *, grans_by_read: Dict[ValueKey, List[Granularity]],
     field_type, now: datetime, upper_seen: set,
 ) -> ValueKey:
-    """A frame-bound conjunct on a time-dimension field snapped to a bucket boundary; others untouched."""
+    """A frame-bound conjunct on a time-dimension column snapped to a bucket boundary of every granularity reading
+    that column; others untouched. The bound keeps its own spelling."""
     if isinstance(cj, ArithmeticKey) and cj.op == "and":
         return cj.map_children(lambda c: _snap_frame_bound(
-            c, grans_by_field=grans_by_field, field_type=field_type, now=now, upper_seen=upper_seen,
+            c, grans_by_read=grans_by_read, field_type=field_type, now=now, upper_seen=upper_seen,
         ))
-    if not is_frame_bound(key=cj, time_fields=grans_by_field.keys()):
+    if not isinstance(cj, ArithmeticKey) or not is_frame_bound(
+            key=cj.model_copy(update={"operands": tuple(_anchor_free(o) for o in cj.operands)}),
+            time_fields=grans_by_read.keys()):
         return cj
-    assert isinstance(cj, ArithmeticKey)
     field, literal = cj.operands
     op = cj.op
-    if field not in grans_by_field:
+    if _anchor_free(field) not in grans_by_read:
         field, literal, op = literal, field, _MIRROR[op]
     assert isinstance(literal, LiteralKey) and isinstance(literal.value, date)
     value = _as_datetime(literal.value)
     if op in _UPPER_OPS:
-        upper_seen.add(field)
+        upper_seen.add(_anchor_free(field))
         value = min(value, now)
     snapped = _snapped_value(
-        value, grans=grans_by_field[field], is_date=field_type(field) is DataType.DATE,
+        value, grans=grans_by_read[_anchor_free(field)], is_date=field_type(field) is DataType.DATE,
     )
     return ArithmeticKey(
         op=">=" if op in _LOWER_OPS else "<", operands=(field, LiteralKey(value=snapped)),
     )
 
 
-def _granularities_by_field(td_keys: List[ValueKey]) -> Dict[ValueKey, List[Granularity]]:
-    """Each time-dimension field's requested granularities, in first-seen order."""
-    grans_by_field: Dict[ValueKey, List[Granularity]] = {}
+def _granularities_by_read(
+    td_keys: List[ValueKey],
+) -> Tuple[Dict[ValueKey, List[Granularity]], Dict[ValueKey, ValueKey]]:
+    """Each time-dimension column's requested granularities over all its spellings, in first-seen order, and the
+    column's first spelling."""
+    grans_by_read: Dict[ValueKey, List[Granularity]] = {}
+    spelling: Dict[ValueKey, ValueKey] = {}
     for td_key in td_keys:
         if isinstance(td_key, TimeTruncKey):
-            grans = grans_by_field.setdefault(td_key.source, [])
+            read = _anchor_free(td_key.source)
+            spelling.setdefault(read, td_key.source)
+            grans = grans_by_read.setdefault(read, [])
             if td_key.granularity not in grans:
                 grans.append(td_key.granularity)
-    return grans_by_field
+    return grans_by_read, spelling
 
 
-def _granularity_conflicts(grans_by_field: Dict[ValueKey, List[Granularity]]) -> List[GranularityConflict]:
-    """Granularity pairs on one field that do not nest."""
-    # Two spellings of one field are one field to the population that reads them.
-    grans_by_read: Dict[ValueKey, List[Granularity]] = {}
-    for field, grans in grans_by_field.items():
-        read = field.model_copy(update={"anchor": None}) if isinstance(field, (FieldKey, FieldSqlKey)) else field
-        merged = grans_by_read.setdefault(read, [])
-        merged.extend(g for g in grans if g not in merged)
+def _granularity_conflicts(grans_by_read: Dict[ValueKey, List[Granularity]]) -> List[GranularityConflict]:
+    """Granularity pairs on one column that do not nest."""
     return [
         GranularityConflict(field=dotted_key_display(field), granularities=(a, b))
         for field, grans in grans_by_read.items()
@@ -1748,8 +1761,8 @@ def _snap_whole_periods(
     """``whole_periods_only``: snap every frame bound on a time-dimension field down to the
     earliest bucket boundary, the upper bound clamped to now (added when absent); report
     granularity pairs on one field that do not nest."""
-    grans_by_field = _granularities_by_field(td_keys)
-    conflicts = _granularity_conflicts(grans_by_field)
+    grans_by_read, spelling = _granularities_by_read(td_keys)
+    conflicts = _granularity_conflicts(grans_by_read)
     upper_seen: set = set()
     snapped = []
     for bf in bound_filters:
@@ -1757,16 +1770,17 @@ def _snap_whole_periods(
             snapped.append(bf)
             continue
         vk = _snap_frame_bound(
-            bf.value_key, grans_by_field=grans_by_field, field_type=field_type,
+            bf.value_key, grans_by_read=grans_by_read, field_type=field_type,
             now=now, upper_seen=upper_seen,
         )
         snapped.append(bf if vk is bf.value_key else bf.model_copy(update={
             "value_key": vk, "referenced_keys": tuple(walk_value_keys(vk)),
         }))
     added = []
-    for field, grans in grans_by_field.items():
-        if field in upper_seen:
+    for read, grans in grans_by_read.items():
+        if read in upper_seen:
             continue
+        field = spelling[read]
         upper = _snapped_value(now, grans=grans, is_date=field_type(field) is DataType.DATE)
         vk = ArithmeticKey(op="<", operands=(field, LiteralKey(value=upper)))
         added.append(BoundFilter(value_key=vk, phase=Phase.ROW, referenced_keys=tuple(walk_value_keys(vk))))

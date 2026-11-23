@@ -2466,9 +2466,11 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             [] if explicit else [u.name for u in unattributable]
         )
         if window_kwarg_of(agg) is not None:
-            if active_td is None:
+            if active_td is None or td_home is None:
+                # No time axis, or one the home cannot read: the window has nothing to slide over.
                 check_windowed_time_axis_attributable(
-                    alias=alias, root_name=root_name, active_td_name=None, attributable=False,
+                    alias=alias, root_name=root_name, attributable=False,
+                    active_td_name=None if active_td is None else context.dim_display(active_td),
                 )
             assert active_td is not None and td_home is not None  # the checker raised otherwise
             window_td_key = cast(TimeTruncKey, dict(safe_pairs).get(active_td) or td_home)
@@ -3234,8 +3236,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         public_alias_by_agg={outer_agg: alias},
         explicit_types={outer_agg: declared_type} if declared_type is not None else None,
         # An operand column is no field of the host: a reserved name, never one a field could share.
-        grain_name_by_key={ph: f"__slayer_cell_{_regroup_grain_name(g)}" for ph, g in original_by_pk.items()
-                           if ph in grain_placeholders.values()},
+        grain_name_by_key=_reserved_cell_names(original_by_pk, placeholders=set(grain_placeholders.values())),
         mode_policy=policy, ranking_candidates=prebound.ranking_candidates,
     )
     outer_plan = compile_synthesized(
@@ -3427,6 +3428,22 @@ def _build_carrier_attach(
     )
 
 
+def _reserved_cell_names(
+    original_by_pk: Mapping[ValueKey, ValueKey], *, placeholders: set[ValueKey],
+) -> Dict[ValueKey, str]:
+    """One reserved column name per operand placeholder, suffixed when two grain keys name alike."""
+    out: Dict[ValueKey, str] = {}
+    for ph, g in original_by_pk.items():
+        if ph not in placeholders:
+            continue
+        base = name = f"__slayer_cell_{_regroup_grain_name(g)}"
+        i = 2
+        while name in out.values():
+            name, i = f"{base}_{i}", i + 1
+        out[ph] = name
+    return out
+
+
 def _operand_cells(
     *, home: SlayerDataset, keys: Sequence[ValueKey], names: Mapping[ValueKey, str],
     context: _ProducerSynthesisContext, inherited: Sequence[BoundFilter],
@@ -3458,17 +3475,37 @@ def _operand_cells(
         base_filters=_home_filters([(bf, None) for bf in inherited], read=read), target_path=(),
         root_dataset=home, datasets_by_name=datasets, host_name=home.name, host_dataset=home, bundle=home_bundle,
     )
+    name_of: Dict[ValueKey, str] = {}
+    for k, v in at_home.items():
+        name_of.setdefault(v, names[k])
     prebound, _ordered = _regroup_producer_prebound(
         pks=Grain.of(at_home.values()), aggs=[], dataset=home, bundle=home_bundle,
-        inherited=filters, n_date_range=0,
-        grain_name_by_key={v: names[k] for k, v in at_home.items()}, mode_policy=policy, ranking_candidates=(),
+        inherited=filters, n_date_range=0, grain_name_by_key=name_of, mode_policy=policy, ranking_candidates=(),
     )
+    prebound = _with_cell_aliases(prebound, extra=[(v, names[k]) for k, v in at_home.items() if names[k] != name_of[v]])
     plan = compile_synthesized(
         prebound=prebound, source_dataset=home.name, bundle=home_bundle, scope=DatasetScope(population=home),
         stage_schemas=context.stage_schemas, producer_registry=producer_registry,
         population=NoInheritedPopulation(reason="operand cells read their home's own rows"),
     )
     return plan.model_copy(update={"stage_bundle": home_bundle, "semi_join_filters": semi_joins or plan.semi_join_filters})
+
+
+def _with_cell_aliases(prebound: PreboundQuery, *, extra: Sequence[Tuple[ValueKey, str]]) -> PreboundQuery:
+    """``prebound`` projecting each ``(home key, name)`` of ``extra`` as one more grain column: two operand keys one
+    home key reads each keep their own cell column."""
+    if not extra:
+        return prebound
+    n_grain = prebound.n_dims + prebound.n_time_dimensions
+    grain = list(prebound.declared_metrics[:n_grain])
+    by_key = {dm.bound.value_key: dm for dm in grain}
+    added = [by_key[k].model_copy(update={"declared_name": n, "public_name": n}) for k, n in extra]
+    dims = [dm for dm in [*grain, *added] if not isinstance(dm.bound.value_key, TimeTruncKey)]
+    tds = [dm for dm in [*grain, *added] if isinstance(dm.bound.value_key, TimeTruncKey)]
+    return prebound.model_copy(update={
+        "declared_metrics": [*dims, *tds, *prebound.declared_metrics[n_grain:]],
+        "n_dims": len(dims), "n_time_dimensions": len(tds),
+    })
 
 
 def _constituent_home(c: ValueKey, *, context: _ProducerSynthesisContext) -> Optional[SlayerDataset]:
@@ -5193,6 +5230,9 @@ def _respellings(
     (auto-names are path- then leaf-prefixed, so re-deriving substitutes both)."""
     path = _value_anchor_path(key)
     if not path:
+        if root is not None and flat.startswith(f"{root.name}__"):
+            # Named by its own dataset (a root-less stage hosted at the aggregate's home).
+            return _prefixed_leaf_variants(prefix=f"{root.name}__", flat=flat, key=key, root=root)
         return _leaf_variants(rest=flat, key=key, upstream=upstream)[1:]
     head: Tuple[str, ...] = ()
     if is_framed_path(path):
@@ -5200,9 +5240,8 @@ def _respellings(
         if start is None:
             return ()
         head, path, root = start
-        if head and not path:
-            return tuple(f"{head[0]}__{leaf}" for leaf in _leaf_variants(
-                rest=flat[len(head[0]) + 2:], key=key, upstream=upstream))[1:]
+        if head and not path and root is not None:
+            return _prefixed_leaf_variants(prefix=f"{head[0]}__", flat=flat, key=key, root=root)
     prefix = "__".join((*head, *path)) + "__"
     if root is None or not flat.startswith(prefix):
         return ()
@@ -5224,6 +5263,12 @@ def _respellings(
         upstream=_field_respellings(terminal.fields if terminal else []),
     )
     return tuple(p + "__" + leaf for p in paths for leaf in leaves)[1:]
+
+
+def _prefixed_leaf_variants(*, prefix: str, flat: str, key: ValueKey, root: SlayerDataset) -> Tuple[str, ...]:
+    """Stale spellings of ``flat`` named ``prefix`` + leaf: the leaf respelled by ``root``'s fields."""
+    leaves = _leaf_variants(rest=flat[len(prefix):], key=key, upstream=_field_respellings(root.fields))
+    return tuple(prefix + leaf for leaf in leaves)[1:]
 
 
 def _framed_start(

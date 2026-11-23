@@ -242,10 +242,13 @@ def source_frame(
         return distinct[0]
     universe = {n: d for n, d in datasets_by_name.items() if not is_spine(d) and d.list_of is None}
     candidates = [d for d in universe.values() if all(_determines(d, a, universe=universe) for a in distinct)]
-    minimal = [d for d in candidates
-               if not any(e.name != d.name and _determines(d, e, universe=universe) for e in candidates)]
-    if len(minimal) == 1:
-        return minimal[0]
+    # Strictly smaller only: candidates determining each other (one-to-one) are one class of the same rows.
+    minimal = [d for d in candidates if not any(
+        e.name != d.name and _determines(d, e, universe=universe) and not _determines(e, d, universe=universe)
+        for e in candidates)]
+    classes = _mutual_classes(minimal, universe=universe)
+    if len(classes) == 1:
+        return classes[0][0] if len(classes[0]) == 1 else None
     if not minimal:
         return None
     spellings = [spell(d) for d in sorted(minimal, key=lambda d: d.name.casefold())]
@@ -255,6 +258,21 @@ def source_frame(
         f"smallest dataset determines them all; read it from one: {', '.join(repr(s) for s in spellings)}.",
         suggested_path=spellings[0],
     )
+
+
+def _mutual_classes(
+    datasets: Sequence[SlayerDataset], *, universe: dict[str, SlayerDataset],
+) -> list[list[SlayerDataset]]:
+    """``datasets`` grouped by mutual determination (one-to-one twins share a class)."""
+    classes: list[list[SlayerDataset]] = []
+    for d in datasets:
+        home = next((c for c in classes if _determines(d, c[0], universe=universe)
+                     and _determines(c[0], d, universe=universe)), None)
+        if home is None:
+            classes.append([d])
+        else:
+            home.append(d)
+    return classes
 
 
 class AnchoredSpelling(BaseModel):

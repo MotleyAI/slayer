@@ -34,6 +34,7 @@ import pytest
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import (
     PopulationInferenceError,
+    TimeAxisError,
     UnresolvableDimensionRelationshipError,
     UnsafeRelationshipInputError,
 )
@@ -508,6 +509,58 @@ async def test_tied_minimal_datasets_are_refused(multi_anchor) -> None:
     assert table(resp, "v") == rows((50,))
 
 
+_ONE_TO_ONE = DatasetRelationship(to="pa", from_columns=["pa_id"], to_columns=["pa_id"],
+                                  cardinality=RelationshipCardinality.ONE_TO_ONE)
+TWIN_TABLES = [
+    TableSpec(name="x", columns=[("x_id", "TEXT"), ("a", "DOUBLE")], rows=[("X1", 1.0), ("X2", 2.0)]),
+    TableSpec(name="y", columns=[("y_id", "TEXT"), ("b", "DOUBLE")], rows=[("Y1", 10.0)]),
+    TableSpec(name="pa", columns=[("pa_id", "TEXT"), ("x_id", "TEXT"), ("y_id", "TEXT")], rows=[("A1", "X1", "Y1")]),
+    TableSpec(name="pb", columns=[("pb_id", "TEXT"), ("pa_id", "TEXT")], rows=[("B1", "A1")]),
+    TableSpec(name="pc", columns=[("pc_id", "TEXT"), ("x_id", "TEXT"), ("y_id", "TEXT")],
+              rows=[("C1", "X1", "Y1"), ("C2", "X2", "Y1")]),
+]
+TWIN_DATASETS = [
+    _ds("x", "x_id", "a", numeric=("a",)), _ds("y", "y_id", "b", numeric=("b",)),
+    _ds("pa", "pa_id", "x_id", "y_id", rels=(_rel("x", "x_id"), _rel("y", "y_id"))),
+    _ds("pb", "pb_id", "pa_id", rels=(_ONE_TO_ONE,)),
+    _ds("pc", "pc_id", "x_id", "y_id", rels=(_rel("x", "x_id"), _rel("y", "y_id"))),
+]
+
+
+async def test_one_to_one_twins_stay_tied_with_another_minimal_dataset(backend: str) -> None:
+    # pa and pb determine each other; neither is strictly smaller, so pc is not the sole frame.
+    query = q(metrics=[_m("sum(x.a + y.b)")])
+    async with _engine(backend, TWIN_TABLES, TWIN_DATASETS) as eng:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
+            await eng.execute(query)
+    assert "pc" in str(ei.value)
+    assert "pa" in str(ei.value)
+
+
+DISCOUNT_TABLES = [
+    TableSpec(name="customers", columns=[("customer_id", "TEXT")], rows=[("C1",), ("C2",)]),
+    TableSpec(name="orders", columns=[("order_id", "TEXT"), ("customer_id", "TEXT")],
+              rows=[("O1", "C1"), ("O2", "C1"), ("O3", "C2")]),
+    TableSpec(name="discounts", columns=[("discount_id", "TEXT"), ("order_id", "TEXT"), ("value", "DOUBLE")],
+              rows=[("D1", "O1", 10.0), ("D2", "O2", 5.0), ("D3", "O3", 7.0)]),
+]
+DISCOUNT_DATASETS = [
+    _ds("customers", "customer_id"),
+    _ds("orders", "order_id", "customer_id", rels=(_rel("customers", "customer_id"),)),
+    _ds("discounts", "discount_id", "order_id", "value", numeric=("value",), rels=(_rel("orders", "order_id"),),
+        metrics=[DatasetMetric(name="revenue", expression="sum(value)", datatype=DataType.INTEGER)]),
+]
+
+
+async def test_a_saved_metric_through_another_anchor_keeps_its_declared_type(backend: str) -> None:
+    # The population's route revisits orders; the metric's metadata is read from its own anchor.
+    async with _engine(backend, DISCOUNT_TABLES, DISCOUNT_DATASETS) as eng:
+        resp = await eng.execute(q(population="orders", metrics=["customers.orders.discounts.revenue"]))
+    (value,) = resp.data[0].values()
+    assert value == 22
+    assert isinstance(value, int)
+
+
 async def test_unconnected_anchors_are_refused(multi_anchor) -> None:
     query = q(metrics=[_m("sum(products.price * widgets.weight)")])
     with pytest.raises(UnsafeRelationshipInputError) as ei:
@@ -569,3 +622,72 @@ async def test_constituents_with_no_full_grain_member_take_the_union_grains_anch
                          metrics=[_m("count(sum(sales.a, partition_by=[sales.city]) * "
                                      "sum(sales.b, partition_by=[sales.region]))")])
     assert table(resp, "sales.region", "v") == rows(("Asia", 1), ("EU", 2))
+
+
+# --------------------------------------------------------------------------- #
+# Operand cells schema
+# --------------------------------------------------------------------------- #
+CELL_TABLES = [
+    TableSpec(name="customers", columns=[("customer_id", "TEXT")], rows=[("C1",), ("C2",)]),
+    TableSpec(name="orders", columns=[("order_id", "TEXT"), ("customer_id", "TEXT"), ("amount", "DOUBLE"),
+                                      ("ordered_at", "DATE"), ("ordered_at_month", "TEXT")],
+              rows=[("O1", "C1", 10.0, "2025-01-05", "jan"), ("O2", "C1", 20.0, "2025-01-15", "jan"),
+                    ("O3", "C2", 5.0, "2025-02-01", "feb")]),
+    TableSpec(name="visits", columns=[("visit_id", "TEXT"), ("customer_id", "TEXT"), ("channel", "TEXT")],
+              rows=[("V1", "C1", "web"), ("V2", "C2", "app")]),
+]
+CELL_DATASETS = [
+    _ds("customers", "customer_id"),
+    _ds("orders", "order_id", "customer_id", "amount", "ordered_at", "ordered_at_month", numeric=("amount",),
+        rels=(_rel("customers", "customer_id"),)),
+    _ds("visits", "visit_id", "customer_id", "channel", rels=(_rel("customers", "customer_id"),)),
+]
+SPINE_MONTHS = {"field": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-01-01", "2025-02-28"]}
+
+
+@pytest.fixture
+async def cell_engine(backend: str):
+    async with _engine(backend, CELL_TABLES, CELL_DATASETS) as eng:
+        yield eng
+
+
+async def test_a_bucket_and_a_field_named_alike_keep_their_own_cell_columns(cell_engine) -> None:
+    # The month bucket of orders.ordered_at and the field orders.ordered_at_month flatten to one name.
+    resp = await run(cell_engine, population="customers", time_dimensions=[{"field": "orders.ordered_at",
+                                                                            "granularity": "month"}],
+                     dimensions=["orders.ordered_at_month"], metrics=[_m(
+                         "max(sum(orders.amount, partition_by=[orders.customer_id, orders.ordered_at, "
+                         "orders.ordered_at_month]))")])
+    assert table(resp, "orders.ordered_at_month", "v") == rows(("feb", 5), ("jan", 30))
+
+
+async def test_two_operand_keys_one_home_key_reads_each_keep_a_cell_column(cell_engine) -> None:
+    # The spine month lowers onto orders' own month: two grain keys, one home key.
+    resp = await run(cell_engine, population="customers", time_dimensions=[SPINE_MONTHS],
+                     dimensions=[{"field": "date_trunc('month', orders.ordered_at)", "alias": "om"}],
+                     metrics=[_m("max(sum(orders.amount, partition_by=[orders.customer_id, orders.ordered_at]) "
+                                 "FILTER (WHERE orders.amount > 0))")])
+    assert sorted((str(r["om"])[:7], r["v"]) for r in resp.data) == [
+        ("2025-01", 20), ("2025-01", 20), ("2025-02", 5), ("2025-02", 5)]
+
+
+NO_AXIS_TABLES = [
+    CELL_TABLES[0], CELL_TABLES[2],
+    TableSpec(name="orders", columns=[("order_id", "TEXT"), ("customer_id", "TEXT"), ("amount", "DOUBLE")],
+              rows=[("O1", "C1", 10.0), ("O3", "C2", 5.0)]),
+]
+NO_AXIS_DATASETS = [
+    CELL_DATASETS[0], CELL_DATASETS[2],
+    _ds("orders", "order_id", "customer_id", "amount", numeric=("amount",), rels=(_rel("customers", "customer_id"),)),
+]
+
+
+@pytest.mark.parametrize("population", ["customers", None])
+async def test_a_window_its_home_cannot_slide_is_a_typed_error(backend: str, population) -> None:
+    # orders reaches no time axis; the association arm refuses the window instead of asserting.
+    query = q(**({"population": population} if population else {}), dimensions=["visits.channel"],
+              time_dimensions=[SPINE_MONTHS],
+              metrics=[_m("sum(orders.amount, window='90d', partition_by=[visits.channel])")])
+    async with _engine(backend, NO_AXIS_TABLES, NO_AXIS_DATASETS) as eng:
+        with pytest.raises(TimeAxisError):
+            await eng.execute(query)

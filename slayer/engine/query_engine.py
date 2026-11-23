@@ -183,7 +183,7 @@ from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
 from slayer.engine.elaborate_env import check_result_names_case, check_stage_flatten_collision, saved_date_only_notices
 from slayer.engine.extensions import with_own_extension
-from slayer.engine.plan import bound_supply, plan_stages
+from slayer.engine.plan import bind_dataset, bind_read_datasets, bound_supply, plan_stages
 from slayer.ir.variables import (
     apply_variables_to_query,
     bind_extension_metrics,
@@ -474,33 +474,6 @@ def _substitute_dataset_sql_surfaces(
     """Copy of ``dataset`` with ``{var}`` bound as literals into its four Mode-A surfaces (no-op when unneeded; never
     mutates input)."""
     return substitute_dataset_sql_surfaces(dataset=dataset, variables=variables, bind_mode_a=partial(bind_mode_a, dialect=dialect))
-
-
-def _bind_dataset_variables(bundle: ResolvedSourceBundle, *, dialect: SqlDialect) -> ResolvedSourceBundle:
-    """``bundle`` with every stored dataset's ``{var}`` bound under its own defaults and the query's layers; rendered
-    and query-backed datasets are skipped. A block-bearing dataset always runs, so its ``{? ?}`` collapse."""
-    unbound: Dict[str, SlayerDataset] = {}
-
-    def bound(dataset: SlayerDataset) -> SlayerDataset:
-        if dataset.source_dataset_origin is not None or dataset.source_queries:
-            return dataset
-        out = _substitute_dataset_sql_surfaces(
-            dataset=dataset, variables={**(dataset.query_variables or {}), **bundle.variable_layers}, dialect=dialect,
-        )
-        if out is not dataset:
-            unbound.setdefault(dataset.name, dataset)
-        return out
-
-    population = bundle.population
-    bound_population = None if population is None else bound(population)
-    referenced = [
-        bound_population if bound_population is not None and m.name == bound_population.name else bound(m)
-        for m in bundle.referenced_datasets
-    ]
-    return bundle.model_copy(update={
-        "population": bound_population, "referenced_datasets": referenced,
-        "unbound_datasets": {**bundle.unbound_datasets, **unbound},
-    })
 
 
 def _render_probe_dataset(dataset: SlayerDataset, *, dialect: SqlDialect) -> SlayerDataset:
@@ -1566,7 +1539,7 @@ class SlayerQueryEngine:
         bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
 
         # Every dataset the statement reads binds its Mode-A surfaces before anything parses them.
-        bundle = _bind_dataset_variables(bundle, dialect=dialect_for_ds_type(datasource.type))
+        bundle = bind_read_datasets(bundle, layers=bundle.variable_layers)
         dataset = bundle.population
         assert dataset is not None
 
@@ -1602,25 +1575,19 @@ class SlayerQueryEngine:
         # query-backed root's own defaults layer only its spliced stages).
         fallback_vars = {} if dataset.source_queries else dataset.query_variables
         stage_sources = dict(bundle.stage_source_datasets)
+        stage_layers: Dict[str, Dict[str, Any]] = {}
         for nm, nq in list(normed_named.items()):
             source = stage_sources.get(nm)
-            # Lowest layer: the stage's own source-dataset defaults.
-            stage_vars = {
-                **((source.query_variables if source is not None else fallback_vars) or {}),
-                **(root_vars or {}),
-                **(nq.variables or {}),
-                **(runtime_kwarg or {}),
-            }
+            layers = stage_layers[nm] = {**(root_vars or {}), **(nq.variables or {}), **(runtime_kwarg or {})}
+            # The stage's text reads its own source-dataset defaults as the lowest layer.
+            stage_vars = {**((source.query_variables if source is not None else fallback_vars) or {}), **layers}
             normed_named[nm] = bind_extension_metrics(
                 query=apply_variables_to_query(query=nq, variables=stage_vars), variables=stage_vars,
             )
             if nm in supplies:
                 supplies[nm] = bound_supply(supplies[nm], variables=stage_vars)
             if source is not None:
-                stage_sources[nm] = _substitute_dataset_sql_surfaces(
-                    dataset=source, variables=stage_vars,
-                    dialect=dialect_for_ds_type(datasource.type),
-                )
+                stage_sources[nm] = bind_dataset(source, layers=layers, bundle=bundle)
         bundle = await self._resolved_bundle(
             bundle.model_copy(update={"stage_source_datasets": stage_sources, "row_supplies": supplies}),
             datasource=datasource,
@@ -1630,7 +1597,7 @@ class SlayerQueryEngine:
             query = _with_default_order(query)
 
         # Plan the DAG (root last) and compose the whole chain as one statement.
-        planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
+        planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle, stage_variables=stage_layers)
         render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
         with collect_stale_spellings() as render_stale_spellings:
             built = build_planned_statement(

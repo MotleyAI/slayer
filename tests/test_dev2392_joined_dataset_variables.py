@@ -45,3 +45,48 @@ async def test_the_populations_defaults_never_reach_a_joined_dataset(backend: st
     customers = customers_dataset().model_copy(update={"query_variables": {"m": 100}})
     got = await _returns_by_region(backend, datasets=_datasets(customers=customers))
     assert (got["EAST"], got["NORTH"]) == (25, None)
+
+
+def _no_default_returns() -> SlayerDataset:
+    return returns_dataset().model_copy(update={"filters": ["amount > {m}"]})
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_named_stage_binds_a_joined_dataset_under_its_own_variables(backend: str) -> None:
+    # Only the stage supplies m.
+    async with seed_engine(backend, datasets=_datasets(returns=_no_default_returns())) as eng:
+        resp = await eng.execute([
+            {"name": "s", "population": "customers", "dimensions": [R],
+             "metrics": [{"metric": "returns.total_returns", "alias": "tr"}], "variables": {"m": 5}},
+            {"population": "s", "dimensions": ["s.region", "s.tr"]},
+        ])
+    got = {r["s.region"]: r["s.tr"] for r in resp.data}
+    assert (got["EAST"], got["NORTH"]) == (25, 10)
+
+
+async def _root_less_stage_returns(backend: str, *, stage_seg: str, root_seg: str) -> list:
+    customers = customers_dataset().model_copy(update={"filters": ["segment != '{seg}'"]})
+    async with seed_engine(backend, datasets=_datasets(customers=customers)) as eng:
+        resp = await eng.execute([
+            {"name": "s", "dimensions": [R], "metrics": [{"metric": "returns.total_returns", "alias": "tr"}],
+             "variables": {"seg": stage_seg}},
+            {"population": "s", "dimensions": ["s.region", "s.tr"], "variables": {"seg": root_seg}},
+        ])
+    return sorted((r["s.region"], r["s.tr"]) for r in resp.data)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_root_less_stages_cells_bind_under_the_stages_variables(backend: str) -> None:
+    got = await _root_less_stage_returns(backend, stage_seg="corporate", root_seg="retail")
+    assert got == await _root_less_stage_returns(backend, stage_seg="corporate", root_seg="corporate")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_spliced_stage_binds_a_joined_dataset_under_its_own_variables(backend: str) -> None:
+    qb = SlayerDataset.model_validate({"name": "qb", "data_source": "test", "source_queries": [
+        {"population": "customers", "dimensions": [R],
+         "metrics": [{"metric": "returns.total_returns", "alias": "tr"}], "variables": {"m": 5}}]})
+    async with seed_engine(backend, datasets=[*_datasets(returns=_returns(query_variables={"m": 20})), qb]) as eng:
+        resp = await run(eng, population="qb", dimensions=["qb.region", "qb.tr"], variables={"m": 20})
+    got = {r["qb.region"]: r["qb.tr"] for r in resp.data}
+    assert (got["EAST"], got["NORTH"]) == (25, 10)
