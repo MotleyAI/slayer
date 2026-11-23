@@ -31,7 +31,7 @@ from tests._usage_reporting_capture import CaptureServer
 if TYPE_CHECKING:
     from tests._otel_helpers import OtelCapture
 
-pytest_plugins = ["tests._sharding", "tests._async_engine_release_law", "pytester"]
+pytest_plugins = ["tests._sharding", "tests._hang_watchdog", "tests._async_engine_release_law", "pytester"]
 
 
 class JaffleGeneratorSpy:
