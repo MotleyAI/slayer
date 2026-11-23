@@ -281,6 +281,17 @@ async def test_a_mixed_predicate_on_split_rows_counts_once(backend: str, dimensi
     assert {r.get(REGION): float(r[REVENUE]) for r in resp.data} == expected
 
 
+@pytest.mark.parametrize("mode", [None, "error"])
+async def test_a_dimension_mixing_home_and_target_counts_once(backend: str, mode: Optional[str]) -> None:
+    # Both of C1's rows give O1 'completed' and O2 'open': each order counts once in its value.
+    mixed = "CASE WHEN customers.region IN ('EAST', 'WEST') THEN orders.status END"
+    async with engine(backend, SPLIT_C1) as eng:
+        resp = await run(eng, dimensions=[{"field": mixed, "alias": "g"}], metrics=[REVENUE],
+                         **({"to_many_handling": mode} if mode else {}))
+    assert {r["g"]: float(r[REVENUE]) for r in resp.data} == {"completed": 150.0, "open": 500.0}
+    assert non_deprecation_warnings(resp) == []
+
+
 def two_branch_datasets() -> list[SlayerDataset]:
     managers = SlayerDataset(name="managers", sql_table="managers", data_source=DS,
                              fields=[DatasetField(name="manager_id", datatype=DataType.STRING, primary_key=True),

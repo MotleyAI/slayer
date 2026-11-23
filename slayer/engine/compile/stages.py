@@ -2364,6 +2364,8 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     # Safe grain S (attributable from R) vs unattributable.
     safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
     unattributable: List[_UnattributableDim] = []
+    # Attributable members mixing an untrusted to-one branch with other reads: associated, never warned.
+    untrusted_mixed: List[_UnattributableDim] = []
     unreadable = False
     for g in requested:
         shared = shared_relationship_key_reroot(
@@ -2376,7 +2378,11 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             safe_pairs.append((g, shared))
         elif g_home is not None and attributable_at_home(g_home):
             check_axis_rebucket(host_key=g, rerooted=g_home, host=host_dataset, root=root_dataset, bundle=bundle)
-            safe_pairs.append((g, g_home))
+            if mixes_untrusted_branch(g_home, root_dataset=home, host_dataset=home, bundle=home_bundle):
+                untrusted_mixed.append(_UnattributableDim(
+                    key=g, name=context.dim_display(g), reason="", routed=g_home))
+            else:
+                safe_pairs.append((g, g_home))
         else:
             unreadable = unreadable or g_home is None
             unattributable.append(_UnattributableDim(
@@ -2431,12 +2437,15 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
                 key=active_td, name=context.dim_display(active_td), reason=broadcast_reason_at_home(td_home),
                 routed=td_home,
             ))
-    # Association only when a DIMENSION is unattributable; attached inputs never need it.
-    associate = policy.associates and bool(unattributable) and not product_associate
+    # Association only when a DIMENSION is unattributable or mixes an untrusted branch; attached inputs never need it.
+    associate = not product_associate and (
+        (policy.associates and bool(unattributable)) or (bool(untrusted_mixed) and not unattributable))
+    if not associate:
+        safe_pairs = [*safe_pairs, *((u.key, u.routed) for u in untrusted_mixed)]
     entity: Optional[_AssociationEntity] = None
     if associate:
         entity = _association_entity(
-            root_dataset=root_dataset, target_path=(), unattributable=unattributable,
+            root_dataset=root_dataset, target_path=(), unattributable=[*unattributable, *untrusted_mixed],
             host_dataset=home, datasets_by_name=home_datasets, bundle=bundle,
         )
     window_td_key: Optional[TimeTruncKey] = None
@@ -2472,7 +2481,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             root_dataset=root_dataset, datasets_by_name=home_datasets,
             host_dataset=home, bundle=home_bundle,
         )
-        associated_metric = None if explicit else alias
+        associated_metric = None if explicit or not unattributable else alias
         associated_dimensions = (
             [] if explicit else [u.name for u in unattributable]
         )
