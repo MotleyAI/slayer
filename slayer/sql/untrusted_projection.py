@@ -8,22 +8,26 @@ Aggregate inputs read across the hop are projected as one matching value per gro
 
 from __future__ import annotations
 
-from typing import Dict, Iterator, List, Optional, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Set, Tuple, TypeVar
 
 from sqlglot import exp
+from sqlglot.expressions.core import Expr
 
 UNTRUSTED_HOP = "slayer_untrusted_hop"
 _DIMENSION_PREFIX = "_slayer_d"
 _COLUMN_PREFIX = "_slayer_c"
 
 
-def mark_untrusted(relation: exp.Expression) -> exp.Expression:
+_E = TypeVar("_E", bound=Expr)
+
+
+def mark_untrusted(relation: _E) -> _E:
     """Mark ``relation`` as the target of an untrusted to-one hop."""
     relation.meta[UNTRUSTED_HOP] = True
     return relation
 
 
-def project_untrusted_hops(statement: exp.Expression) -> exp.Expression:
+def project_untrusted_hops(statement: _E) -> _E:
     """``statement`` with every marked join read through its subtree's distinct projection."""
     for select in list(statement.find_all(exp.Select)):
         while _project_first(select):
@@ -31,11 +35,11 @@ def project_untrusted_hops(statement: exp.Expression) -> exp.Expression:
     return statement
 
 
-def _alias_of(relation: exp.Expression) -> str:
+def _alias_of(relation: Expr) -> str:
     return relation.alias_or_name
 
 
-def _scope_columns(node: exp.Expression, shadowed: frozenset[str] = frozenset()) -> Iterator[exp.Column]:
+def _scope_columns(node: Expr, shadowed: frozenset[str] = frozenset()) -> Iterator[exp.Column]:
     """The columns ``node`` reads in its own scope, plus a nested scope's correlated reads not shadowed by its sources."""
     if isinstance(node, exp.Column):
         if node.table and node.table not in shadowed:
@@ -47,17 +51,17 @@ def _scope_columns(node: exp.Expression, shadowed: frozenset[str] = frozenset())
         yield from _scope_columns(child, shadowed)
 
 
-def _sources(select: exp.Select) -> List[exp.Expression]:
+def _sources(select: exp.Select) -> List[Expr]:
     from_ = select.args.get("from")
     out = [from_.this] if from_ is not None else []
     return out + [j.this for j in select.args.get("joins") or []]
 
 
-def _tables(node: exp.Expression) -> Set[str]:
+def _tables(node: Expr) -> Set[str]:
     return {c.table for c in _scope_columns(node)}
 
 
-def _conjuncts(where: Optional[exp.Where]) -> List[exp.Expression]:
+def _conjuncts(where: Optional[exp.Where]) -> List[Expr]:
     if where is None:
         return []
     return list(where.this.flatten()) if isinstance(where.this, exp.And) else [where.this]
@@ -66,7 +70,7 @@ def _conjuncts(where: Optional[exp.Where]) -> List[exp.Expression]:
 _NULL_TOLERANT = (exp.Is, exp.Coalesce, exp.Case, exp.If, exp.Not, exp.Nullif, exp.Exists)
 
 
-def _pushable(conjunct: exp.Expression, subtree: Set[str]) -> bool:
+def _pushable(conjunct: Expr, subtree: Set[str]) -> bool:
     """A conjunct reading only the subtree that rejects its null-extended rows, so it may filter inside an inner join."""
     tables = _tables(conjunct)
     return bool(tables) and tables <= subtree and not any(conjunct.find_all(*_NULL_TOLERANT)) \
@@ -92,13 +96,13 @@ def _aggregating(select: exp.Select) -> bool:
     return any(_outside_window(a) for e in select.expressions for a in e.find_all(exp.AggFunc))
 
 
-def _outside_window(node: exp.Expression) -> bool:
+def _outside_window(node: Expr) -> bool:
     return not isinstance(node.parent, exp.Window)
 
 
 def _is_input(column: exp.Column, select: exp.Select) -> bool:
     """Read inside an aggregate (not one computed over a window) of this SELECT."""
-    node: Optional[exp.Expression] = column.parent
+    node: Optional[Expr] = column.parent
     while node is not None and node is not select:
         if isinstance(node, exp.Select):
             return False
@@ -130,14 +134,14 @@ class _Projection:
         self.inner_joins = [joins[i] for i in members[1:]]
         self.outer_joins = [j for i, j in enumerate(joins) if i not in members[1:]]
         self.names: Dict[Tuple[str, str], str] = {}
-        self.projected: List[exp.Expression] = []
+        self.projected: List[Expr] = []
 
-    def _outer_parts(self) -> Iterator[exp.Expression]:
+    def _outer_parts(self) -> Iterator[Expr]:
         for key, value in self.select.args.items():
             if key in ("from", "joins", "where"):
                 continue
             for v in value if isinstance(value, list) else [value]:
-                if isinstance(v, exp.Expression):
+                if isinstance(v, Expr):
                     yield v
         for j in self.outer_joins:
             if j is not self.root:
@@ -151,8 +155,8 @@ class _Projection:
         outside = [c for c in conjuncts if not any(c is i for i in inside)]
         dims = self._dimensions()
         self.select.set("where", exp.Where(this=exp.and_(*outside)) if outside else None)
-        group: List[exp.Expression] = []
-        inputs: List[exp.Expression] = []
+        group: List[Expr] = []
+        inputs: List[Expr] = []
         on = self.root.args.get("on")
         dim_names = {name for _, name in dims}
         reads = [c for part in [*self._outer_parts(), *self._where_parts()] for c in _scope_columns(part)
@@ -190,7 +194,7 @@ class _Projection:
             self.root.set("kind", None)
         self.select.set("joins", self.outer_joins)
 
-    def _where_parts(self) -> List[exp.Expression]:
+    def _where_parts(self) -> List[Expr]:
         where = self.select.args.get("where")
         return [where] if where is not None else []
 
@@ -208,12 +212,12 @@ class _Projection:
         column.set("this", exp.to_identifier(name, quoted=quoted))
         column.set("table", exp.to_identifier(self.alias))
 
-    def _dimensions(self) -> List[Tuple[exp.Expression, str]]:
+    def _dimensions(self) -> List[Tuple[Expr, str]]:
         """Each grouped value read only from the subtree, computed inside and read back by name."""
         group = self.select.args.get("group")
         if group is None:
             return []
-        out: List[Tuple[exp.Expression, str]] = []
+        out: List[Tuple[Expr, str]] = []
         for i, g in enumerate(list(group.expressions)):
             tables = _tables(g)
             if not tables or not tables <= self.subtree or any(g.find_all(exp.AggFunc, exp.Window)):
@@ -228,7 +232,7 @@ class _Projection:
         return out
 
     @staticmethod
-    def _replace(part: exp.Expression, target: exp.Expression, replacement: exp.Expression) -> None:
+    def _replace(part: Expr, target: Expr, replacement: Expr) -> None:
         for node in list(part.walk()):
             if node is not part and node.parent is not None and node == target:
                 node.replace(replacement.copy())

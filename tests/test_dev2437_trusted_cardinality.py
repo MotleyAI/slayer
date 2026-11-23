@@ -240,8 +240,10 @@ async def test_error_mode_refuses_an_input_across_an_untrusted_hop(backend: str,
         with pytest.raises(UnsafeRelationshipInputError) as raised:
             await run(eng, dimensions=[REGION], metrics=[{"metric": metric, "alias": "v"}], to_many_handling="error")
     text = str(raised.value)
-    assert "orders" in text and "customers" in text
-    assert "trusted" in text and "enforced" in text.lower()
+    assert "orders" in text
+    assert "customers" in text
+    assert "trusted" in text
+    assert "enforced" in text.lower()
 
 
 @pytest.mark.parametrize("mode", [None, "associate", "error"])

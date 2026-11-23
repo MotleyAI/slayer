@@ -293,8 +293,9 @@ class TestSaveValidation:
         """Spec: models/save-validation › An undeclared enforced key is refused."""
         async with engine("duckdb", CLEAN) as eng:
             await eng.storage.save_dataset(customers_dataset(enforced_keys=[["customer_id"]]))
+            undeclared = customers_dataset(enforced_keys=[["region"]])
             with pytest.raises(Exception, match="region"):  # noqa: PT011 — any typed refusal naming the entry
-                await eng.storage.save_dataset(customers_dataset(enforced_keys=[["region"]]))
+                await eng.storage.save_dataset(undeclared)
             stored = await _stored(eng, "customers", data_source=DS)
         assert stored.enforced_keys == [["customer_id"]]
 
@@ -308,9 +309,9 @@ class TestSaveValidation:
         """Spec: models/save-validation › A query-backed dataset cannot carry enforced keys."""
         async with engine("duckdb", CLEAN) as eng:
             await eng.storage.save_dataset(customers_dataset(enforced_keys=[["customer_id"]]))
+            backed = customers_dataset(name="customers_sql", sql_table=None, **backing, enforced_keys=[["customer_id"]])
             with pytest.raises(Exception):  # noqa: B017, PT011 — any typed refusal
-                await eng.storage.save_dataset(customers_dataset(
-                    name="customers_sql", sql_table=None, **backing, enforced_keys=[["customer_id"]]))
+                await eng.storage.save_dataset(backed)
             assert await eng.storage.get_dataset("customers_sql", data_source=DS) is None
 
     @pytest.mark.parametrize("update", [

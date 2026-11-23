@@ -14,27 +14,27 @@
 
 ## 2. Model surface
 
-- [ ] 2.1 `DatasetRelationship.trusted: bool = False`, `SlayerDataset.enforced_keys: list[list[str]]`; verify model round-trip tests pass
-- [ ] 2.2 Dialect capability `enforces_unique_keys` on every dialect; verify the capability table test
-- [ ] 2.3 Save validation of `enforced_keys` and drop-on-repoint; verify 1.8
+- [x] 2.1 `DatasetRelationship.trusted: bool = False`, `SlayerDataset.enforced_keys: list[list[str]]`; verify model round-trip tests pass
+- [x] 2.2 Dialect capability `enforces_unique_keys` on every dialect; verify the capability table test
+- [x] 2.3 Save validation of `enforced_keys` and drop-on-repoint; verify 1.8
 
 ## 3. Trusted predicate and lowering
 
-- [ ] 3.1 Trusted-hop predicate beside `provably_to_one` (flag, enforced key, constructed keys incl. stage grain, spine, row number, list child's parent hop; inherited edges carry origin trust); verify 1.2
+- [x] 3.1 Trusted-hop predicate beside `provably_to_one` (flag, enforced key, constructed keys incl. stage grain, spine, row number, list child's parent hop; inherited edges carry origin trust); verify 1.2
 - [ ] 3.2 Switch the emission points to it — `discovery.py` host-inline routing, `stages.py` producer dimension split / `_conjunct_disposition` + `fanning_paths` / inline host-locus, `generator.py` `_filtered_dataset`, `relationship_safety.py` routing shortcuts — leaving every typing consumer on `provably_to_one`; verify typing tests unchanged
-- [ ] 3.3 Distinct-projection lowering (B) through the dataset relation door; verify 1.1, 1.3
+- [x] 3.3 Distinct-projection lowering (B) through the dataset relation door; verify 1.1, 1.3
 - [ ] 3.4 Fallback to the association producer (A) without warnings for ineligible cases and aggregate inputs across the hop; `"error"` refusal for inputs; verify 1.3, 1.4
 - [ ] 3.5 Verify 1.5 and the full local test scope; re-bless goldens only where SQL for an unflagged declared hop changes, with owner approval
 
 ## 4. Ingestion, drift, documents, migration
 
-- [ ] 4.1 Ingestion and re-ingestion record enforced keys; verify 1.6
-- [ ] 4.2 Drift rule for vanished enforced keys; verify 1.7
-- [ ] 4.3 SLAYER entry carries `trusted`, `enforced_keys`, unset cardinality; writer `default` predicate fixed; verify 1.9
-- [ ] 4.4 Migrations `SlayerModel` 28→29, `SlayerQuery` 18→19, `Memory` 13→14 (stored-only); verify 1.10
+- [x] 4.1 Ingestion and re-ingestion record enforced keys; verify 1.6
+- [x] 4.2 Drift rule for vanished enforced keys; verify 1.7
+- [x] 4.3 SLAYER entry carries `trusted`, `enforced_keys`, unset cardinality; writer `default` predicate fixed; verify 1.9
+- [x] 4.4 Migrations `SlayerModel` 28→29, `SlayerQuery` 18→19, `Memory` 13→14 (stored-only); verify 1.10
 
 ## 5. Normative docs and user docs
 
-- [ ] 5.1 Apply the approved Axiom 4 and Law 6 wording to `architecture/semantics.arc42.md` verbatim (design.md decision 24); verify `poetry run la-arch-check`
-- [ ] 5.2 Update `docs/concepts/datasets.md`, `semantic-models.md`, `ingestion.md`, `schema-drift.md`, `docs/upgrading/2.0.md`, `docs/osi/osi_export.md`; verify no doc still says declarations are trusted at query time
-- [ ] 5.3 Enforcement bundle green: `la-arch-check`, likec4 validate, `la-typecheck`, ruff
+- [x] 5.1 Apply the approved Axiom 4 and Law 6 wording to `architecture/semantics.arc42.md` verbatim (design.md decision 24); verify `poetry run la-arch-check`
+- [x] 5.2 Update `docs/concepts/datasets.md`, `semantic-models.md`, `ingestion.md`, `schema-drift.md`, `docs/upgrading/2.0.md`, `docs/osi/osi_export.md`; verify no doc still says declarations are trusted at query time
+- [x] 5.3 Enforcement bundle green: `la-arch-check`, likec4 validate, `la-typecheck`, ruff
