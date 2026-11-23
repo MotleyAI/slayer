@@ -2426,6 +2426,8 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
     """The canonical lower-case unit (or ``date_part`` part) word of ``arg``, one of ``words``."""
     accepted = ", ".join(words)
     what = "part" if name == "date_part" else "unit"
+    if name == "date_part" and _bare_part(arg, words=words):
+        arg = Literal(value=arg.name)
     if not (isinstance(arg, Literal) and isinstance(arg.value, str)):
         spelled = keyword_spelling(arg)
         raise ValueError(
@@ -2443,6 +2445,14 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
             f"{arg.value!r}; accepted: {accepted}."
         )
     return word
+
+
+def _bare_part(arg: Any, *, words: Tuple[str, ...]) -> bool:
+    """Whether ``arg`` is an unquoted word naming a date part (or its alias), as ``EXTRACT`` takes it."""
+    if not isinstance(arg, Ref) or arg.quoted or arg.evaluated:
+        return False
+    word = arg.name.lower()
+    return word in words or word in DATE_PART_ALIASES or word in AMBIGUOUS_WEEKDAY_NAMES
 
 
 def _folded(node: Any) -> Any:
