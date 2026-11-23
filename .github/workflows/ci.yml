@@ -63,7 +63,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.14"]
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
 
     steps:
       - uses: actions/checkout@v4
@@ -84,13 +84,34 @@ jobs:
       # The Ossie corpus tests run upstream's validator and portability grader through `uv run`.
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
 
-      - name: Run unit tests (shard ${{ matrix.shard }}/3)
+      - name: Run unit tests (shard ${{ matrix.shard }}/4)
         timeout-minutes: 25
-        # One of three duration-balanced module groups (tests/_sharding.py); -n logical
-        # uses every vCPU (-n auto only the physical cores).
+        # One of four duration-balanced module groups (tests/_sharding.py); -n logical
+        # uses every vCPU (-n auto only the physical cores). The hang watchdog
+        # (tests/_hang_watchdog.py) dumps every process's stacks at 22 minutes.
         run: >-
           poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
-          --shard ${{ matrix.shard }}/3 --store-shard-durations "$RUNNER_TEMP/shard-durations.json"
+          --shard ${{ matrix.shard }}/4 --store-shard-durations "$RUNNER_TEMP/shard-durations.json"
+          --stall-report-after 120 --stack-dump-after 1320 --hang-report-dir "$RUNNER_TEMP/hang-reports"
+          --hard-timeout-grace 30
+
+      - name: Print hang reports
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/hang-reports/*; do
+            [ -e "$f" ] || continue
+            echo "===== $f"
+            cat "$f"
+          done
+
+      - name: Upload hang reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hang-reports-${{ matrix.python-version }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/hang-reports
+          if-no-files-found: ignore
+          retention-days: 14
 
       # Per-module timings that rebalance the shards (refresh steps: tests/_sharding.py).
       - name: Upload shard durations

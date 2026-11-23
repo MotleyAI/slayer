@@ -32,6 +32,7 @@ from slayer.core.errors import (
     NamespaceCollisionError,
     OssieDocumentInvalidError,
     RelationshipTargetCaseError,
+    UnreadableDocumentError,
     SemanticModelsUnsupportedError,
     MemoryNotFoundError,
     DefaultTimeDimensionTypeError,
@@ -296,8 +297,11 @@ def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
 
 
 def _document_name(text: str) -> str:
-    """The ``name`` an Ossie document's text declares."""
-    data = parse_document_text(text)
+    """The ``name`` an Ossie document's text declares; raises ``OssieDocumentInvalidError`` when it does not read."""
+    try:
+        data = parse_document_text(text)
+    except UnreadableDocumentError as exc:
+        raise OssieDocumentInvalidError(name=exc.name or "(unnamed)", reasons=exc.reasons) from exc
     name = data.get("name") if isinstance(data, dict) else None
     if not isinstance(name, str) or not name:
         raise ValueError("The semantic model's content declares no name; pass one")
