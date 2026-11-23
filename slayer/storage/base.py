@@ -491,33 +491,35 @@ def _raw_values(value: Any) -> Any:
     return value
 
 
-def _classes(value: Any) -> Any:
-    """The model classes ``value`` holds directly, in its container shape."""
-    if isinstance(value, BaseModel):
-        return type(value)
-    if isinstance(value, (list, tuple)):
-        return [_classes(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _classes(v) for k, v in value.items()}
-    return None
+def _pairs(held: Any, rebuilt: Any) -> list[tuple[Any, Any]]:
+    """The (held, rebuilt) values one level down: list items, dict entries, or model fields (a dict may rebuild as one)."""
+    if isinstance(rebuilt, BaseModel) and isinstance(held, (BaseModel, dict)):
+        values = held.__dict__ if isinstance(held, BaseModel) else held
+        return [(values.get(n), rebuilt.__dict__.get(n)) for n in type(rebuilt).model_fields if n in values]
+    if isinstance(held, (list, tuple)) and isinstance(rebuilt, (list, tuple)):
+        return list(zip(held, rebuilt))
+    if isinstance(held, dict) and isinstance(rebuilt, dict):
+        return [(held[k], rebuilt[k]) for k in held.keys() & rebuilt.keys()]
+    return []
+
+
+def _wrong_class(held: Any, rebuilt: Any) -> bool:
+    """Whether ``held`` holds a model, directly or below plain values, whose class its rebuild does not give."""
+    if isinstance(held, BaseModel):
+        return type(held) is not type(rebuilt)
+    return any(_wrong_class(h, r) for h, r in _pairs(held, rebuilt))
 
 
 def _check_same_classes(held: Any, rebuilt: Any) -> None:
     """Refuse a model in ``held`` whose class differs from the one its place declares (as ``rebuilt`` holds)."""
-    if isinstance(rebuilt, BaseModel):
+    if isinstance(held, BaseModel) and isinstance(rebuilt, BaseModel):
         cls = type(rebuilt)
         values = {name: held.__dict__.get(name) for name in cls.model_fields}
-        for name, value in values.items():
-            if _classes(value) != _classes(rebuilt.__dict__.get(name)):
-                cls.model_validate(values)  # construction's refusal of the held objects
-                raise TypeError(f"{cls.__name__}.{name} holds a value of another class than it declares")
-            _check_same_classes(value, rebuilt.__dict__.get(name))
-    elif isinstance(rebuilt, (list, tuple)):
-        for h, r in zip(held, rebuilt):
-            _check_same_classes(h, r)
-    elif isinstance(rebuilt, dict):
-        for k, r in rebuilt.items():
-            _check_same_classes(held.get(k), r)
+        if any(_wrong_class(h, r) for h, r in _pairs(held, rebuilt)):
+            cls.model_validate(values)  # construction's refusal of the held objects
+            raise TypeError(f"{cls.__name__} holds a model of another class than it declares")
+    for h, r in _pairs(held, rebuilt):
+        _check_same_classes(h, r)
 
 
 def check_whole(obj: SlayerDataset | DatasourceConfig) -> None:
