@@ -21,7 +21,7 @@ A `SlayerQuery` specifies what data to retrieve from a dataset.
 | `whole_periods_only` | bool | No | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](time.md#whole_periods_only) |
 | `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-dataset-metrics). Omitted (the default) or `associate`: per-cell value over the distinct associated rows; or `error` (refuse). Semi-join-pushed filters are always applied and never error. |
 
-A key a query, refinement or entry does not read is refused with an `UnknownKeyError` naming it, its location and the keys that object takes; a camelCase spelling of a key it takes (`timeDimensions`, `dateRange`) is read as the snake_case key.
+A key a query, refinement or entry does not read is refused with an `UnknownKeyError` naming it, its location and the keys that object takes; a camelCase spelling of a key it takes (`timeDimensions`, `dateRange`) is read as the snake_case key. On a query (not a [refinement](#refining-a-saved-query)), `null` for a setting that cannot be null, such as `whole_periods_only` or `distinct_dimension_values`, means its default.
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
