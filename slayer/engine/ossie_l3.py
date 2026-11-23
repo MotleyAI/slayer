@@ -213,35 +213,37 @@ class _Model(BaseModel):
         return next((m for m in self.metrics if m.name == found), None)
 
     def paths(self, source: str, target: str, *, cap: int = 2) -> List[List[str]]:
-        """Up to ``cap`` paths of Ossie steps ``source → target``, each as its relationships' names."""
+        """Up to ``cap`` paths of Ossie steps ``source → target``, each as its relationships' names; every step taken
+        can still reach ``target`` off the path so far, so the walk expands at most ``cap`` paths' steps."""
         if source == target:
             return [[]]
         out: List[List[str]] = []
-        reaching = self._reaching(target)
 
         def walk(node: str, seen: set[str], names: List[str]) -> None:
             for step in self.steps:
-                if len(out) >= cap or step.source != node or step.target in seen or step.target not in reaching:
+                if len(out) >= cap or step.source != node or step.target in seen:
                     continue
                 if step.target == target:
                     out.append([*names, step.name])
-                else:
+                elif self._reaches(step.target, target, avoiding=seen):
                     walk(step.target, seen | {step.target}, [*names, step.name])
 
-        if source in reaching:
-            walk(source, {source}, [])
+        walk(source, {source}, [])
         return out
 
-    def _reaching(self, target: str) -> set[str]:
-        """The datasets with a path of Ossie steps to ``target``, ``target`` included."""
-        found, frontier = {target}, [target]
+    def _reaches(self, start: str, target: str, *, avoiding: set[str]) -> bool:
+        """Whether a path of Ossie steps leads ``start → target`` through none of ``avoiding``."""
+        found, frontier = {start}, [start]
         while frontier:
             node = frontier.pop()
             for step in self.steps:
-                if step.target == node and step.source not in found:
-                    found.add(step.source)
-                    frontier.append(step.source)
-        return found
+                if step.source != node or step.target in found or step.target in avoiding:
+                    continue
+                if step.target == target:
+                    return True
+                found.add(step.target)
+                frontier.append(step.target)
+        return False
 
 
 def _steps(datasets: Mapping[str, SlayerDataset]) -> List[_Step]:

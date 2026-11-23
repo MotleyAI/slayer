@@ -747,6 +747,15 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerDateOnlyMidnightWarning(w), stacklevel=outside_stacklevel())
 
 
+def _projection_ordered(expected: List[str], rows: List[Dict[str, Any]]) -> List[str]:
+    """The result's columns in projection order, never a row's key order: the expected ones a row carries, then any
+    others it carries."""
+    if not rows:
+        return list(expected)
+    keys = list(rows[0])
+    return [c for c in expected if c in rows[0]] + [k for k in keys if k not in expected]
+
+
 class SlayerResponse(BaseModel):
     """Response from a SLayer query."""
 
@@ -1964,7 +1973,7 @@ class SlayerQueryEngine:
             )
 
         result = await self._run_data_query(prepared=prepared, client=client)
-        columns = prepared.expected_columns if not result.rows else []  # [] triggers auto-derive
+        columns = _projection_ordered(prepared.expected_columns, result.rows)
         response = SlayerResponse(
             data=result.rows, columns=columns, sql=prepared.sql,
             attributes=prepared.attributes, warnings=[*prepared.slack_warnings, *result.warnings],
@@ -2150,7 +2159,7 @@ class SlayerQueryEngine:
             prepared=prepared, client=client, cache=self._cache
         )
         result = await self._run_data_query(prepared=prepared, client=client)
-        columns = prepared.expected_columns if not result.rows else []
+        columns = _projection_ordered(prepared.expected_columns, result.rows)
         response = SlayerResponse(
             data=result.rows, columns=columns, sql=prepared.sql,
             attributes=prepared.attributes, warnings=[*prepared.slack_warnings, *result.warnings],

@@ -61,6 +61,10 @@ A query SHALL reach a reference's anchor from its **reading dataset** as follows
 - **THEN** it sums the spend of each customer billed for an ok order, though the home `customers` reaches `orders` by two routes neither of which is to-one
 
 
+#### Scenario: Two spellings of one column are each routed from the home
+- **WHEN** `orders → customers → regions → managers` and `orders → managers` are many-to-one, and a query with `population: "customers"` measures `sum(customers.orders.amount)` grouped by `customers.regions.managers.name` and `managers.name`, once in each order
+- **THEN** both fail with the same ambiguity error naming the two spellings of `managers` from `orders`, the home: `managers.name` is anchored at `managers`, which `orders` reaches by two to-one paths, whichever dimension is written first
+
 #### Scenario: A reversed to-one hop never makes Ossie's path ambiguous
 - **WHEN** `a → b`, `c → a` and `c → b` are many-to-one, `c`'s primary key is `a_id` so `a` also reaches `c` to-one, and a query without `population` has dimensions `b.name` and `a.id`
 - **THEN** `a` reads `b` over `a → b`, the only path of Ossie steps, and the query returns one row per `a` row with its `b.name`, under every conformance

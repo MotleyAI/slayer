@@ -199,3 +199,19 @@ async def test_an_order_key_beside_an_alias_equal_to_a_field_name(tmp_path: Path
             "dimensions": ["orders.amount"], "metrics": [{"metric": "count(orders.*)", "alias": "amount"}],
             "order": [{"field": key, "direction": "desc"}], "limit": 1})
     assert response.data == expected
+
+
+async def test_labels_hold_when_the_database_returns_keys_out_of_order(tmp_path: Path,
+                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    """The engine reports columns in projection order, so a row's key order never moves a value to another label."""
+    async with fixture_engine(tmp_path, "retail") as engine:
+        run = engine._run_data_query  # noqa: SLF001
+
+        async def reordered(**kwargs: Any) -> Any:
+            result = await run(**kwargs)
+            return result.model_copy(update={"rows": [dict(reversed(list(r.items()))) for r in result.rows]})
+
+        monkeypatch.setattr(engine, "_run_data_query", reordered)
+        response = await strict(engine, {"dimensions": ["customers.region"], "metrics": ["orders.total_revenue"]})
+    assert response.columns == ["region", "total_revenue"]
+    assert sorted((r["region"], r["total_revenue"]) for r in response.data) == [("EAST", 350), ("WEST", 300)]

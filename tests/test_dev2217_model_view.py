@@ -310,3 +310,18 @@ def test_an_unreachable_target_is_settled_without_walking_every_path() -> None:
     left = [f"{x}{i}" for i in range(n - 1) for x in ("a", "c")]
     assert model.paths("n0", f"n{n}", cap=2) == [[*left, f"a{n - 1}", f"c{n - 1}"], [*left, f"b{n - 1}", f"d{n - 1}"]]
     assert time.monotonic() - start < 1
+
+
+def test_a_cycle_back_to_the_source_is_not_walked() -> None:
+    """Diamonds leading back to the source reach the target only through the source, so the walk never enters them."""
+    n = 20
+    steps = []
+    for i in range(n):
+        steps += [_Step(source=f"n{i}", target=f"l{i}", name=f"a{i}"), _Step(source=f"n{i}", target=f"r{i}", name=f"b{i}"),
+                  _Step(source=f"l{i}", target=f"n{i + 1}", name=f"c{i}"),
+                  _Step(source=f"r{i}", target=f"n{i + 1}", name=f"d{i}")]
+    steps += [_Step(source=f"n{n}", target="n0", name="back"), _Step(source="n0", target="goal", name="direct")]
+    model = _Model(data_source=DS, datasets={}, metrics=[], steps=steps)
+    start = time.monotonic()
+    assert model.paths("n0", "goal") == [["direct"]]
+    assert time.monotonic() - start < 1
