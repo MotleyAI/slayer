@@ -507,7 +507,7 @@ def _pairs(held: Any, rebuilt: Any) -> list[tuple[Any, Any]]:
 def _wrong_class(held: Any, rebuilt: Any) -> bool:
     """Whether ``held`` holds a model, directly or below plain values, whose class its rebuild does not give."""
     if isinstance(held, BaseModel):
-        return type(held) is not type(rebuilt)
+        return isinstance(rebuilt, BaseModel) and type(held) is not type(rebuilt)  # a model where none is declared passes
     return any(_wrong_class(h, r) for h, r in _pairs(held, rebuilt))
 
 

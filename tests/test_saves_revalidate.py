@@ -13,6 +13,7 @@ import pytest
 
 import slayer.storage.base as storage_base
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat
 from slayer.core.models import DatasetField, DatasetMetric, DatasourceConfig, SlayerDataset
 from slayer.sql import connection_policy
 from slayer.storage.base import StorageBackend
@@ -114,6 +115,18 @@ class TestModelOfAnotherClass:
         assert refusal(caught.value) == construction_refusal(SlayerDataset, held)
         assert writes == []
         assert await storage.get_dataset("orders", data_source=DS) is None
+
+    @pytest.mark.parametrize("kind", STORAGES)
+    async def test_a_model_held_where_any_value_is_declared_saves(self, kind: str, tmp_path: Path) -> None:
+        storage = await _store(kind, tmp_path)
+        orders = SlayerDataset.model_validate(_orders_data())
+        orders.fields.append(DatasetField(name="shown", meta={"format": NumberFormat()}))
+        await storage.save_dataset(orders)
+        stored = await storage.get_dataset("orders", data_source=DS)
+        assert stored is not None
+        shown = stored.get_field("shown")
+        assert shown is not None
+        assert shown.meta is not None
 
     @pytest.mark.parametrize("kind", STORAGES)
     async def test_a_model_of_another_class_inside_a_plain_entry_refuses_the_save(
