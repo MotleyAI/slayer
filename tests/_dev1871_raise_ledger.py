@@ -63,7 +63,7 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_CI, function="compile_query", exc="ValueError",
          message="compile_query needs an environment produced by elaborate_query (its compile inputs are unset).",
          category="internal", family="internal", user=False, owner="compiler"),
-    _row(module=_EE, function="check_dimension_temporal_axis", exc="TimeAxisError",
+    _row(module=_EE, function="check_temporal_axis", exc="TimeAxisError",
          message="A time-ordered transform evaluates at a grain that does not contain its time axis '…'; a producer bucketed by time joined back on the coarser grain would duplicate result rows."
          + AT + "transform …"
          + SUGGEST + "Include the time key in the aggregate's partition_by= so the transform accumulates within its own grain.",

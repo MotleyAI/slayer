@@ -1,8 +1,8 @@
 """Guard dissolution (design D7/D8) — executed values for the shapes
 the G4/G5/G6/G7 guards, their post-projection twin, and the
-``time_shift``-over-ranked guard reject today, plus the
-``change``/``change_pct``-over-attached internal-error fix (fails today with
-``RenderContextMissingFacilityError``).
+``time_shift``-over-ranked guard reject today, plus ``change``/``change_pct``
+over an attached value (executes when the operand keeps the time axis, else
+``TimeAxisError``).
 
 Scenario coverage map (spec: openspec …/specs/queries/partitioned-aggregates):
   Transform over a bare windowed metric .............. TestWindowedTransforms
@@ -19,6 +19,7 @@ import pytest
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.errors import TimeAxisError
 from slayer.core.query import QueryMetric
 
 from tests._dev1835_fixtures import (
@@ -224,22 +225,31 @@ class TestTemporalOverRanked:
 
 
 class TestChangeOverAttached:
-    """``change``/``change_pct`` over an attached partition-grain value: the
-    region total is constant across a region's buckets, so the only bucket with
-    a previous calendar month sees a difference of exactly 0 — attached-value
-    semantics, distinct from ``change(sum(amount))`` (which gives 40)."""
+    """``change``/``change_pct`` over an attached (region, month) value: only
+    North Feb has a previous calendar month (Jan 30 → Feb 70)."""
 
     @pytest.mark.parametrize(("op", "expected"), [
-        ("change", {("North", "2024-02"): 0.0}),
-        ("change_pct", {("North", "2024-02"): 0.0}),
+        ("change", {("North", "2024-02"): 40.0}),
+        ("change_pct", {("North", "2024-02"): 40.0 / 30.0}),
     ])
     async def test_change_over_partitioned(self, exec_backend, op, expected) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            QueryMetric(metric=f"{op}(sum(orders.amount, partition_by=orders.region))", alias="x"),
+            QueryMetric(
+                metric=f"{op}(sum(orders.amount, partition_by=[orders.region, orders.ordered_at]))", alias="x",
+            ),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),
             ("South", "2024-03"), (None, "2024-03"),
         }
         _assert_map(_by_region_month(resp, "x"), with_nulls(keys, expected))
+
+    @pytest.mark.parametrize("op", ["change", "change_pct"])
+    async def test_change_over_time_less_partition_fails(self, exec_backend, op) -> None:
+        _, engine = exec_backend
+        with pytest.raises(TimeAxisError):
+            await engine.execute(q(
+                dimensions=["orders.region"], time_dimensions=month_td(),
+                metrics=[QueryMetric(metric=f"{op}(sum(orders.amount, partition_by=orders.region))", alias="x")],
+            ))

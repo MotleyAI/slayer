@@ -15,11 +15,12 @@ from tests._dev1836_fixtures import (
     q,
 )
 from tests._dev1868_fixtures import (
-    CHANGE_LAST_BY_REGION_MONTH,
     CM_PART_TIER,
     LAST_REGION,
     LAST_SPEND_BY_REGION,
+    RANK_LAST_BY_REGION,
     RANK_PART_BY_TIER,
+    REGION_MONTHS,
     TIER_MONTHS,
     keyed_by_month,
 )
@@ -56,25 +57,30 @@ class TestTransformOverCrossModelPartitioned:
 
 
 class TestChangeOverCrossModelRanked:
-    async def test_period_over_period_of_the_region_last_value(
-        self, exec_engine,
-    ) -> None:
+    async def test_rank_of_the_region_last_value(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric=f"change({LAST_REGION})", alias="ch"),
-                      QueryMetric(metric=LAST_REGION, alias="l")],
+            metrics=[QueryMetric(metric=f"rank({LAST_REGION}, direction='desc')", alias="r"),
+                     QueryMetric(metric=LAST_REGION, alias="l")],
         ))
         by = keyed_by_month(resp, REGION)
-        assert set(by) == set(CHANGE_LAST_BY_REGION_MONTH)
-        for (region, month), expected in CHANGE_LAST_BY_REGION_MONTH.items():
-            cell = by[(region, month)]["ch"]
-            if expected is None:
-                assert cell is None
-            else:
-                assert float(cell) == pytest.approx(expected)
-            # The inner attached value stays position-parity correct.
-            assert float(by[(region, month)]["l"]) == pytest.approx(
-                LAST_SPEND_BY_REGION[region])
+        assert set(by) == REGION_MONTHS
+        for (region, _month), row in by.items():
+            assert row["r"] == RANK_LAST_BY_REGION[region]
+            assert float(row["l"]) == pytest.approx(LAST_SPEND_BY_REGION[region])
+
+    @pytest.mark.parametrize("position", ["measure", "filter", "order"])
+    async def test_change_of_the_region_last_value_fails(self, exec_engine, position) -> None:
+        change = f"change({LAST_REGION})"
+        kw = {
+            "measure": {"metrics": [QueryMetric(metric=change, alias="ch")]},
+            "filter": {"metrics": [QueryMetric(metric="sum(orders.amount)", alias="s")],
+                       "filter": [f"{change} = 0"]},
+            "order": {"metrics": [QueryMetric(metric="sum(orders.amount)", alias="s")],
+                      "order": [{"field": change, "direction": "asc"}]},
+        }[position]
+        with pytest.raises(TimeAxisError):
+            await exec_engine.execute(q(dimensions=["customers.regions.name"], time_dimensions=month_td(), **kw))
 
 
 class TestTransformFilterAndOrderPositions:
