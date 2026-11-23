@@ -1,0 +1,183 @@
+{
+ "source": "tests/test_model_access.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hr",
+    "extensions": [
+     {
+      "source_name": "hr",
+      "measures": [
+       {
+        "name": "x",
+        "formula": "sum(salary * 2)"
+       }
+      ]
+     }
+    ]
+   },
+   "new": {
+    "population": "hr",
+    "extensions": [
+     {
+      "dataset": "hr",
+      "metrics": [
+       {
+        "name": "x",
+        "expression": "sum(salary * 2)"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "pub",
+    "extensions": [
+     {
+      "source_name": "pub",
+      "joins": [
+       {
+        "target_model": "hr",
+        "join_pairs": [
+         [
+          "id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "new": {
+    "population": "pub",
+    "extensions": [
+     {
+      "dataset": "pub",
+      "relationships": [
+       {
+        "to": "hr",
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "id"
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "time_dimensions": [
+     {
+      "dimension": "hr.hired_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "time_dimensions": [
+     {
+      "field": "hr.hired_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "hr.dept = 'eng'"
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "hr.dept = 'eng'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "hr",
+    "measures": [
+     {
+      "formula": "sum(salary)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "hr",
+    "metrics": [
+     {
+      "metric": "sum(salary)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "measures": [
+     {
+      "formula": "sum(t)"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "metrics": [
+     {
+      "metric": "sum(t)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -19,7 +19,7 @@ from sqlglot.expressions.core import Expr, Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
 
-from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.errors import (
     ExplainUnsupportedError,
     IdentifierCollisionError,
@@ -27,7 +27,7 @@ from slayer.core.errors import (
     ServerVersionError,
     UnsupportedServerFunctionError,
 )
-from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts, nests_into
+from slayer.core.granularity import CustomGranularity, Granularity, bucket_type, granularity_parts, nests_into
 from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastTypeParts, cast_type_parts
 from slayer.core.like_pattern import LikePattern
@@ -160,7 +160,7 @@ def library_refusal(name: str, *, database: str) -> UnsupportedServerFunctionErr
             else f"`{name}()`")
     return UnsupportedServerFunctionError(
         summary=f"{what} is not supported on {database} yet.",
-        suggestion="Express it in the model's own SQL (Column.sql), or run the query on a database that translates it.",
+        suggestion="Express it in the field's own SQL (DatasetField.sql), or run the query on a database that translates it.",
     )
 
 
@@ -360,7 +360,7 @@ def cast_type_of(type_text: str, *, dialect: "SqlDialect") -> tuple[DataType, Op
         built = _read_type(type_text, readers=(reader,))
         if built is not None and not built.is_type(exp.DataType.Type.USERDEFINED):
             return slayer_type_of(built)
-    return DataType.UNKNOWN, None
+    return DataType.OPAQUE, None
 
 
 def _read_type(text: str, *, readers: Sequence[str]) -> Optional[exp.DataType]:
@@ -392,17 +392,17 @@ _CAST_FAMILIES: tuple[frozenset[DType], ...] = (
     frozenset({exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Type.VARIANT}),
 )
 _SLAYER_TYPES: tuple[tuple[frozenset[DType], DataType], ...] = (
-    (frozenset(exp.DataType.INTEGER_TYPES), DataType.INT),
-    (frozenset(exp.DataType.REAL_TYPES), DataType.DOUBLE),
-    (frozenset(exp.DataType.TEXT_TYPES | {exp.DataType.Type.BPCHAR}), DataType.TEXT),
+    (frozenset(exp.DataType.INTEGER_TYPES), DataType.INTEGER),
+    (frozenset(exp.DataType.REAL_TYPES), DataType.FLOAT),
+    (frozenset(exp.DataType.TEXT_TYPES | {exp.DataType.Type.BPCHAR}), DataType.STRING),
     (frozenset({exp.DataType.Type.BOOLEAN}), DataType.BOOLEAN),
     (_DATE_TYPES, DataType.DATE),
-    (_TIMESTAMP_TYPES, DataType.TIMESTAMP),
+    (_TIMESTAMP_TYPES, DataType.DATETIME),
 )
 
 
 def _scalar_slayer_type(data_type: exp.DataType) -> DataType:
-    return next((slayer for family, slayer in _SLAYER_TYPES if data_type.this in family), DataType.UNKNOWN)
+    return next((slayer for family, slayer in _SLAYER_TYPES if data_type.this in family), DataType.OPAQUE)
 
 
 def slayer_type_of(data_type: exp.DataType) -> tuple[DataType, Optional[DataType]]:
@@ -410,7 +410,7 @@ def slayer_type_of(data_type: exp.DataType) -> tuple[DataType, Optional[DataType
     if not data_type.is_type(exp.DataType.Type.ARRAY):
         return _scalar_slayer_type(data_type), None
     element = _element(data_type)
-    return DataType.ARRAY, DataType.UNKNOWN if element is None else _scalar_slayer_type(element)
+    return DataType.ARRAY, DataType.OPAQUE if element is None else _scalar_slayer_type(element)
 
 
 class _CastSignature(BaseModel):
@@ -478,7 +478,7 @@ VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
 
 
 def temporal_type_of(value: date) -> DataType:
-    return DataType.TIMESTAMP if isinstance(value, datetime) else DataType.DATE
+    return DataType.DATETIME if isinstance(value, datetime) else DataType.DATE
 
 
 def _build_covar_decomposition(
@@ -603,6 +603,8 @@ def ascii_lower(name: str) -> str:
 
 #: A list child's element column, as every list relation exposes it.
 LIST_VALUE = "value"
+#: A positioned list relation's element position (``__slayer_`` is reserved: no stored field collides).
+LIST_POSITION = "__slayer_position"
 _UNNESTED = "__slayer_u"
 _EACH = "__slayer_each"
 
@@ -640,6 +642,13 @@ def kept_elements(values: Expression) -> exp.Select:
     unnested = exp.to_identifier(_UNNESTED)
     value = exp.column(LIST_VALUE, table=_UNNESTED)
     return exp.select(value).from_(unnest_elements(values, alias=unnested)).where(is_not_null(value))
+
+
+def ordinal_elements(values: Expression) -> exp.Select:
+    """``SELECT u.value, u.pos FROM UNNEST(values) WITH ORDINALITY AS u(value, pos)``."""
+    unnested = unnest_elements(values, alias=exp.to_identifier(_UNNESTED))
+    unnested.set("offset", exp.to_identifier(LIST_POSITION))
+    return exp.select(exp.column(LIST_VALUE, table=_UNNESTED), exp.column(LIST_POSITION, table=_UNNESTED)).from_(unnested)
 
 
 class ServerProfile(BaseModel):
@@ -913,7 +922,7 @@ class SqlDialect(BaseModel):
     def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
         """``TRY_CAST`` to an integer type: integer text, or an integral number, in the target's range; else NULL.
         ``source``: ``CastKey.numeric_source``."""
-        if source is not DataType.DOUBLE:
+        if kind_of(source) is not TypeKind.DOUBLE:
             return self.build_integer_text_try_cast(as_text(value), to)
         wide = to.this in WIDE_INTEGER_BOUNDS
         low, high = WIDE_INTEGER_BOUNDS.get(to.this, (INT64_BOUNDS[0], INT64_BOUNDS[1] + 1))
@@ -1246,7 +1255,7 @@ class SqlDialect(BaseModel):
     ) -> Expression:
         """``json_value(… RETURNING target)``: the scalar converted, NULL where it cannot convert."""
         text = self.build_json_value(value, path, native)
-        if target is DataType.INT:
+        if target is DataType.INTEGER:
             return self.build_integer_try_cast(text, to, source=None)
         return self.build_try_cast(text, to)
 
@@ -1287,8 +1296,8 @@ class SqlDialect(BaseModel):
         ``e`` read as a number (unconvertible: not an element)."""
         alias = exp.to_identifier(_EACH)
         wanted: Expression = exp.column(LIST_VALUE, table=_EACH)
-        if element is DataType.TEXT:
-            wanted = self.build_try_cast(wanted, self.try_cast_type(exp.DataType.build("DOUBLE"), data_type=DataType.DOUBLE))
+        if element is DataType.STRING:
+            wanted = self.build_try_cast(wanted, self.try_cast_type(exp.DataType.build("DOUBLE"), data_type=DataType.FLOAT))
         found = self.list_contains(values, wanted)
         if fn == "contains_any":
             return self.list_exists(other, alias=alias, element=element, predicate=found)
@@ -1332,14 +1341,18 @@ class SqlDialect(BaseModel):
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier,
         element: Optional[DataType],  # NOSONAR(S1172) — hook parameter read by dialect overrides
-        leading: bool, distinct: bool = False,
+        leading: bool, positioned: bool = False,
     ) -> ListRelation:
-        """The elements of ``values`` (non-NULL; ``distinct``: each once) as ``alias``; ``leading``: the first FROM
-        item (no LATERAL)."""
-        rows = kept_elements(values).distinct() if distinct else kept_elements(values)
+        """The non-NULL elements of ``values`` as ``alias``; ``leading``: the first FROM item (no LATERAL);
+        ``positioned``: each element's position in its list as ``alias.<LIST_POSITION>``."""
+        rows = self.positioned_elements(values) if positioned else kept_elements(values)
         table_alias = exp.TableAlias(this=alias.copy())
         subquery = exp.Subquery(this=rows, alias=table_alias) if leading else None
         return ListRelation(relation=subquery or exp.Lateral(this=exp.Subquery(this=rows), alias=table_alias))
+
+    def positioned_elements(self, values: Expression) -> exp.Select:
+        """``kept_elements(values)`` numbered once per list after NULL removal."""
+        return kept_elements(values).select(self.row_number().as_(exp.to_identifier(LIST_POSITION)))
 
     def list_exists(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
@@ -1354,7 +1367,7 @@ class SqlDialect(BaseModel):
 
     def list_element_type(self, names: Sequence[Any]) -> DataType:  # NOSONAR(S1172) — hook default
         """The element type the ``list_element_types_query`` rows name."""
-        return DataType.UNKNOWN
+        return DataType.OPAQUE
 
     def build_array_literal(self, values: Sequence[Expression]) -> Expression:
         return exp.Array(expressions=[v.copy() for v in values])
@@ -1453,41 +1466,55 @@ class SqlDialect(BaseModel):
         return exp.paren(exp.Or(this=exp.paren(both_known), expression=exp.paren(both_null)))
 
     def build_date_trunc(
-        self,
-        col_expr: Expression,
-        granularity: TimeGranularity,
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``DATE_TRUNC``; other operands are cast to TIMESTAMP so Postgres picks an overload."""
+        """The ``granularity`` bucket of ``col_expr`` (an ``operand``), typed ``bucket_type(operand, granularity)``:
+        ``DATE_TRUNC`` of a TIMESTAMP, a DATE result demoted."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            # Sunday week = Monday week of (col + 1 day), shifted back a day.
-            shifted = self.build_date_add(
-                expr=col_expr, count=exp.Literal.number(1), unit=TimeGranularity.DAY,
-                operand=DataType.TIMESTAMP,
-            )
-            monday = self.build_date_trunc(
-                col_expr=shifted, granularity=TimeGranularity.WEEK,
-            )
-            return self.build_date_add(
-                expr=monday, count=exp.Literal.number(-1), unit=TimeGranularity.DAY,
-                operand=DataType.TIMESTAMP,
-            )
+            return self._sunday_week(col_expr=col_expr, operand=operand)
         gran_str = _GRANULARITY_TO_DATE_TRUNC.get(granularity, granularity.value)
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
-        return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
+        trunc = exp.DateTrunc(this=self._timestamp_operand(col_expr), unit=exp.Literal.string(gran_str))
+        return self.demote_to_date(trunc) if bucket_type(operand, granularity) is DataType.DATE else trunc
 
-    def build_bucket(self, *, col_expr: Expression, granularity: Granularity) -> Expression:
-        """Bucket start of ``col_expr``; custom: last ``origin + k·multiple·base`` at or before it."""
+    def _sunday_week(self, *, col_expr: Expression, operand: DataType) -> Expression:
+        """The Monday week of ``col_expr + 1 day``, a day back."""
+        shifted = self.build_date_add(
+            expr=col_expr, count=exp.Literal.number(1), unit=TimeGranularity.DAY, operand=operand,
+        )
+        monday = self.build_date_trunc(col_expr=shifted, granularity=TimeGranularity.WEEK, operand=operand)
+        return self.build_date_add(
+            expr=monday, count=exp.Literal.number(-1), unit=TimeGranularity.DAY,
+            operand=bucket_type(operand, TimeGranularity.WEEK),
+        )
+
+    def _timestamp_operand(self, expr: Expression) -> Expression:
+        """``expr`` as a TIMESTAMP, an existing TIMESTAMP cast kept."""
+        if isinstance(expr, exp.Cast) and expr.to.this is self.naive_timestamp_type().this:
+            return expr
+        return self.promote_to_timestamp(expr)
+
+    def demote_to_date(self, expr: Expression) -> Expression:
+        """A midnight TIMESTAMP as a DATE."""
+        return exp.Cast(this=expr, to=exp.DataType.build("DATE"))
+
+    def build_bucket(self, *, col_expr: Expression, granularity: Granularity, operand: DataType) -> Expression:
+        """Bucket start of ``col_expr`` (an ``operand``), typed ``bucket_type(operand, granularity)``; custom: the
+        last ``origin + k·multiple·base`` at or before it."""
         if not isinstance(granularity, CustomGranularity):
-            return self.build_date_trunc(col_expr=col_expr, granularity=granularity)
+            return self.build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
+        start = self._custom_bucket(col_expr=col_expr, granularity=granularity)
+        return self.demote_to_date(start) if bucket_type(operand, granularity) is DataType.DATE else start
+
+    def _custom_bucket(self, *, col_expr: Expression, granularity: CustomGranularity) -> Expression:
+        """The custom bucket start of ``col_expr`` as a TIMESTAMP."""
         base, multiple, origin = granularity_parts(granularity)
         ts = self.promote_to_timestamp(col_expr)
-        anchor = self.build_temporal_literal(value=origin, dt=DataType.TIMESTAMP)
+        anchor = self.build_temporal_literal(value=origin, dt=DataType.DATETIME)
 
         def at(count: Expression) -> Expression:
-            return self.build_date_add(expr=anchor, count=count, unit=base, operand=DataType.TIMESTAMP)
+            return self.build_date_add(expr=anchor, count=count, unit=base, operand=DataType.DATETIME)
 
-        crossed = self.build_date_diff(unit=base, start=anchor, end=ts, operand=DataType.TIMESTAMP)
+        crossed = self.build_date_diff(unit=base, start=anchor, end=ts, operand=DataType.DATETIME)
         # Boundaries crossed equal whole periods unless the origin is off the base's own boundaries.
         whole = crossed if nests_into(base, granularity) else exp.Case(ifs=[exp.If(
             this=exp.GT(this=at(crossed), expression=ts.copy()),
@@ -1529,17 +1556,23 @@ class SqlDialect(BaseModel):
     def attach_sequence_setting(self, statement: Expression, *, size: int) -> None:  # NOSONAR(S1172) — no-op hook default
         """Statement-level setting a generated integer sequence of ``size`` rows needs."""
 
-    def bucket_step(self, *, bucket: Expression, count: int, unit: Granularity) -> Expression:
-        """A time bucket moved by ``count`` ``unit`` steps (a custom unit steps ``multiple`` of its base)."""
+    def bucket_step(self, *, bucket: Expression, count: int, unit: Granularity, operand: DataType) -> Expression:
+        """A time bucket (an ``operand``) moved by ``count`` ``unit`` steps (a custom unit steps ``multiple`` of
+        its base)."""
         base, multiple, _ = granularity_parts(unit)
-        return self.bucket_offset(bucket=bucket, count=count * multiple, unit=base)
+        return self.bucket_offset(bucket=bucket, count=count * multiple, unit=base, operand=operand)
+
+    def naive_timestamp_type(self) -> exp.DataType:
+        """SLayer's naive TIMESTAMP as this dialect's type."""
+        return exp.DataType.build("TIMESTAMP")
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         """A DATE value as the dialect's naive timestamp (midnight)."""
-        return exp.Cast(this=expr.copy(), to=exp.DataType.build("TIMESTAMP"))
+        return exp.Cast(this=expr.copy(), to=self.naive_timestamp_type())
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
-        return exp.Cast(this=exp.Literal.string(iso_text(value)), to=exp.DataType.build(dt.value))
+        target = self.naive_timestamp_type() if dt.kind is TypeKind.TIMESTAMP else exp.DataType.build(dt.kind.value)
+        return exp.Cast(this=exp.Literal.string(iso_text(value)), to=target)
 
     def build_temporal_comparison(
         self, *, op: TemporalComparisonOp, operand: Expression, value: date,
@@ -1552,7 +1585,7 @@ class SqlDialect(BaseModel):
         return exp.CurrentDate()
 
     def build_current_timestamp(self) -> Expression:
-        return exp.Cast(this=exp.CurrentTimestamp(), to=exp.DataType.build("TIMESTAMP"))
+        return exp.Cast(this=exp.CurrentTimestamp(), to=self.naive_timestamp_type())
 
     def build_date_part(self, *, part: DatePart, expr: Expression, operand: DataType) -> Expression:
         """``date_part``: an integer; sub-day parts of a DATE are 0."""
@@ -1591,8 +1624,8 @@ class SqlDialect(BaseModel):
             )
         if unit in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
             gap = self._day_gap(
-                start=self.build_date_trunc(col_expr=start.copy(), granularity=unit),
-                end=self.build_date_trunc(col_expr=end.copy(), granularity=unit),
+                start=self.build_date_trunc(col_expr=start.copy(), granularity=unit, operand=operand),
+                end=self.build_date_trunc(col_expr=end.copy(), granularity=unit, operand=operand),
             )
             return self._exact_div(gap, 7)
         if unit is TimeGranularity.DAY:
@@ -1600,8 +1633,8 @@ class SqlDialect(BaseModel):
         if operand is DataType.DATE:
             start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
         gap = self._second_gap(
-            start=self.build_date_trunc(col_expr=start.copy(), granularity=unit),
-            end=self.build_date_trunc(col_expr=end.copy(), granularity=unit),
+            start=self.build_date_trunc(col_expr=start.copy(), granularity=unit, operand=DataType.DATETIME),
+            end=self.build_date_trunc(col_expr=end.copy(), granularity=unit, operand=DataType.DATETIME),
         )
         return gap if unit is TimeGranularity.SECOND else self._exact_div(gap, _UNIT_SECONDS[unit])
 
@@ -1629,16 +1662,13 @@ class SqlDialect(BaseModel):
         """``value / divisor`` for an exact multiple, as an integer."""
         return exp.IntDiv(this=exp.Paren(this=value), expression=exp.Literal.number(divisor))
 
-    def bucket_offset(self, *, bucket: Expression, count: int, unit: TimeGranularity) -> Expression:
-        """A time bucket moved by ``count`` ``unit``s, comparable with ``bucket_comparand`` of a bucket."""
-        return self.build_date_add(
-            expr=self.bucket_comparand(bucket), count=exp.Literal.number(count), unit=unit,
-            operand=DataType.TIMESTAMP,
-        )
+    def bucket_offset(self, *, bucket: Expression, count: int, unit: TimeGranularity, operand: DataType) -> Expression:
+        """A time bucket (an ``operand``) moved by ``count`` ``unit``s."""
+        return self.build_date_add(expr=bucket, count=exp.Literal.number(count), unit=unit, operand=operand)
 
-    def bucket_comparand(self, bucket: Expression) -> Expression:
-        """A time bucket as compared with a ``bucket_offset``."""
-        return bucket
+    def build_temporal_comparands(self, left: Expression, right: Expression) -> tuple[Expression, Expression]:
+        """Two temporal values of one type as a comparison reads them."""
+        return left, right
 
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,
@@ -2116,7 +2146,7 @@ class SqlDialect(BaseModel):
         self, *, columns: Sequence[str], row: Sequence[Any] | None,
     ) -> dict[str, ResultColumnType]:
         """Hook: ``result_census_select``'s row → the result's column types."""
-        return dict.fromkeys(columns, ResultColumnType(type=DataType.TEXT))
+        return dict.fromkeys(columns, ResultColumnType(type=DataType.STRING))
 
     # Structure reflection: the one reader of a live table's columns and keys.
 

@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.keys import SCALAR_SPECS
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.database.client import SlayerSQLClient
@@ -66,40 +66,43 @@ LIB = TableSpec(
         ("x", "DOUBLE"), ("y", "DOUBLE"), ("a", "INT"), ("b", "INT"), ("c", "INT"), ("cp", "INT"),
         ("code", "TEXT"), ("word", "TEXT"), ("tag", "TEXT"), ("notes", "TEXT"), ("prefix", "TEXT"),
         ("payload", "TEXT"), ("num_txt", "TEXT"), ("qty", "INT"), ("ts", "TIMESTAMP"), ("doc", "TEXT"),
-        ("big", "TEXT"),
+        ("big", "TEXT"), ("k", "INT"), ("d", "DECIMAL"), ("e", "DECIMAL"),
     ],
     rows=[
         (1, "ABCDE", "CD", 2, 7, 2, 0.5, 1.0, None, 2, 1, 65, "ab123", "paid", "+1 (555) 01",
-         "paid\nlate", "ab1", P1, "120.5", 3, "2025-03-05 10:00:00", '{"v": null}', "12345678901234567"),
+         "paid\nlate", "ab1", P1, "120.5", 3, "2025-03-05 10:00:00", '{"v": null}', "12345678901234567", 5, 2.5, 0.125),
         (2, "€é", "é", -2, -7, -2, 2.0, -1.0, 3, None, 1, 8364, "ab12", "PAID", "5 USD",
-         "line1\nline2", "zz", '{"a": {}, "qty": "3"}', "99", 0, "2025-03-31 23:59:59", '{}', None),
+         "line1\nline2", "zz", '{"a": {}, "qty": "3"}', "99", 0, "2025-03-31 23:59:59", '{}', None, -5, -2.5, -0.125),
         (3, "a/b/c", "/", 0, 7, 0, -1.0, 0.5, 1, 2, None, 128512, "a_1", "ada", "a@x.org",
-         "nothing", "a_", '{"a": {"b": null}, "qty": "x"}', "abc", 1, "2025-04-01 00:00:00", '{"v": {"k": 1}}', None),
+         "nothing", "a_", '{"a": {"b": null}, "qty": "x"}', "abc", 1, "2025-04-01 00:00:00", '{"v": {"k": 1}}', None, 4, None, None),
         (4, "", "x", 9, -7, 3, 1.0, 1.0, None, None, None, 55296, "abc1", "Ada", "nobody",
-         "paid late", "a_", '{"a": {"b": [1]}}', None, 2, "2024-12-31 12:00:00", '{"v": [1]}', None),
+         "paid late", "a_", '{"a": {"b": [1]}}', None, 2, "2024-12-31 12:00:00", '{"v": [1]}', None, None, None, None),
         (5, None, "a", None, 7, None, None, 1.0, 5, 5, 5, None, None, None, None,
-         None, None, "not json", "3.0", 3, None, '{"v": "x"}', None),
+         None, None, "not json", "3.0", 3, None, '{"v": "x"}', None, None, None, None),
         (6, "Ada Lovelace", "Love", 3, 7, -3, -8.0, None, -1, 0, 1, 1114112, "[ab]1", "123", "15%",
-         "Paid Later", "[a", None, "10", 1, "2025-02-10 08:00:00", '{"v": 0}', None),
+         "Paid Later", "[a", None, "10", 1, "2025-02-10 08:00:00", '{"v": 0}', None, None, None, None),
         (7, "x\U0001F600y", "\U0001F600", -9, -7, 7, -1.5, 2.0, 2, None, None, 57343, "a1", "١٢٣", "150",
-         "x", "%", P7, "1.5", 2, "2025-03-15 00:00:00", '{"v": false}', None),
+         "x", "%", P7, "1.5", 2, "2025-03-15 00:00:00", '{"v": false}', None, None, None, None),
         (8, "ab", "", 1, 0, 1, 0.0, 1.0, None, None, 4, 1114111, "a*?1", "admin", "x",
-         "late paid", "a*", "{}", "1", 1, "2025-01-01 00:00:00", '{"v": "2024-02-29"}', None),
+         "late paid", "a*", "{}", "1", 1, "2025-01-01 00:00:00", '{"v": "2024-02-29"}', None, None, None, None),
         (9, "abc", "z", -1, None, -1, 27.0, -3.0, 0, -3, None, 233, "ab\n", "Adele", "USD USD",
-         "a\nb", None, P9, "02", 2, "2025-06-30 18:30:00", '{"v": "2024-02-29 10:00:00"}', None),
+         "a\nb", None, P9, "02", 2, "2025-06-30 18:30:00", '{"v": "2024-02-29 10:00:00"}', None, None, None, None),
         (10, "Ünïcode", None, 5, 8, 4, 0.25, 0.5, 7, 1, 3, 97, "1_2", "c:\\x1", "",
-         "", "1\\_", P10, "x", None, "2025-03-01 00:00:00", '{"v": 12}', None),
+         "", "1\\_", P10, "x", None, "2025-03-01 00:00:00", '{"v": 12}', None, None, None, None),
     ],
 )
+LIB_DECIMAL = "DECIMAL(10,3)"
 _NAMES = [c for c, _ in LIB.columns]
 ROWS: dict[int, dict[str, Any]] = {r[0]: dict(zip(_NAMES, r)) for r in LIB.rows}
 
 
-def lib_model(*, data_source: str = "test") -> SlayerModel:
-    types = {"INT": DataType.INT, "DOUBLE": DataType.DOUBLE, "TEXT": DataType.TEXT, "TIMESTAMP": DataType.TIMESTAMP}
-    return SlayerModel(
+def lib_dataset(*, data_source: str = "test") -> SlayerDataset:
+    types = {"INT": DataType.INTEGER, "DOUBLE": DataType.FLOAT, "TEXT": DataType.STRING, "TIMESTAMP": DataType.DATETIME,
+             "DECIMAL": DataType.FLOAT}
+    return SlayerDataset(
         name="lib", sql_table="lib", data_source=data_source, default_time_dimension="ts",
-        columns=[Column(name=c, type=types[k], primary_key=c == "id") for c, k in LIB.columns],
+        fields=[DatasetField(name=c, datatype=types[k], primary_key=c == "id", db_type=LIB_DECIMAL if k == "DECIMAL" else None)
+                 for c, k in LIB.columns],
     )
 
 
@@ -245,14 +248,14 @@ class Case(BaseModel):
     values: Optional[dict[int, Any]] = None
     keeps: Optional[frozenset[int]] = None
     variables: Optional[dict[str, Any]] = None
-    model: str = "lib"
+    dataset: str = "lib"
 
     def query(self) -> SlayerQuery:
-        body: dict[str, Any] = {"source_model": self.model, "distinct_dimension_values": False}
+        body: dict[str, Any] = {"population": self.dataset, "distinct_dimension_values": False}
         if self.keeps is not None:
-            body |= {"dimensions": ["id"], "filters": [self.expr]}
+            body |= {"dimensions": [f"{self.dataset}.id"], "filter": [self.expr]}
         else:
-            body |= {"dimensions": ["id", {"expression": self.expr, "name": "v"}]}
+            body |= {"dimensions": [f"{self.dataset}.id", {"field": self.expr, "alias": "v"}]}
         if self.variables:
             body["variables"] = self.variables
         return SlayerQuery.model_validate(body)
@@ -290,66 +293,66 @@ def _month(row: dict[str, Any]) -> Optional[date]:
 def _string_cases() -> list[Case]:
     s = lambda r: r["s"]  # noqa: E731
     return [
-        _v("left|column-count", ["left"], "left(s, n)", every(lambda r: pg_left(r["s"], r["n"]))),
-        _v("left|negative-literal", ["left"], "left(s, -2)", every(lambda r: pg_left(r["s"], -2))),
-        _v("right|column-count", ["right"], "right(s, n)", every(lambda r: pg_right(r["s"], r["n"]))),
-        _v("right|negative-literal", ["right"], "right(s, -1)", every(lambda r: pg_right(r["s"], -1))),
-        _v("starts_with", ["starts_with"], "starts_with(s, 'a/')",
+        _v("left|column-count", ["left"], "left(lib.s, lib.n)", every(lambda r: pg_left(r["s"], r["n"]))),
+        _v("left|negative-literal", ["left"], "left(lib.s, -2)", every(lambda r: pg_left(r["s"], -2))),
+        _v("right|column-count", ["right"], "right(lib.s, lib.n)", every(lambda r: pg_right(r["s"], r["n"]))),
+        _v("right|negative-literal", ["right"], "right(lib.s, -1)", every(lambda r: pg_right(r["s"], -1))),
+        _v("starts_with", ["starts_with"], "starts_with(lib.s, 'a/')",
            every(lambda r: None if r["s"] is None else r["s"].startswith("a/"))),
-        _v("ends_with", ["ends_with"], "ends_with(s, 'c')",
+        _v("ends_with", ["ends_with"], "ends_with(lib.s, 'c')",
            every(lambda r: None if r["s"] is None else r["s"].endswith("c"))),
-        _f("contains|plain-text", ["contains"], "contains(tag, '5%')", [6]),
+        _f("contains|plain-text", ["contains"], "contains(lib.tag, '5%')", [6]),
         # Case and accent near-misses: a case- or accent-insensitive collation would match these.
-        _v("starts_with|case", ["starts_with"], "starts_with(s, 'abc')",
+        _v("starts_with|case", ["starts_with"], "starts_with(lib.s, 'abc')",
            every(lambda r: None if r["s"] is None else r["s"].startswith("abc"))),
-        _v("ends_with|case", ["ends_with"], "ends_with(word, 'A')",
+        _v("ends_with|case", ["ends_with"], "ends_with(lib.word, 'A')",
            every(lambda r: None if r["word"] is None else r["word"].endswith("A"))),
-        _v("contains|case-and-accent", ["contains"], "contains(s, 'e')",
+        _v("contains|case-and-accent", ["contains"], "contains(lib.s, 'e')",
            every(lambda r: None if r["s"] is None else "e" in r["s"])),
-        _v("strpos|case", ["strpos"], "strpos(s, 'cd')", every(lambda r: pg_strpos(r["s"], "cd"))),
-        _v("strpos", ["strpos"], "strpos(s, p)", every(lambda r: pg_strpos(r["s"], r["p"]))),
-        _v("instr", ["instr"], "instr(s, p)", every(lambda r: pg_strpos(r["s"], r["p"]))),
-        _v("position", ["POSITION"], "POSITION(p IN s)", every(lambda r: pg_strpos(r["s"], r["p"]))),
-        _v("lpad|fill", ["lpad"], "lpad(s, 4, '*')", every(lambda r: pg_lpad(r["s"], 4, "*"))),
-        _v("lpad|default-fill", ["lpad"], "lpad(s, 6)", every(lambda r: pg_lpad(r["s"], 6))),
-        _v("lpad|multi-char-fill", ["lpad"], "lpad(s, 7, 'xy')", every(lambda r: pg_lpad(r["s"], 7, "xy"))),
-        _v("lpad|column-count", ["lpad"], "lpad(s, n, '0')", every(lambda r: pg_lpad(r["s"], r["n"], "0"))),
-        _v("rpad|fill", ["rpad"], "rpad(s, 4, '*')", every(lambda r: pg_rpad(r["s"], 4, "*"))),
-        _v("rpad|column-count", ["rpad"], "rpad(s, n, '-')", every(lambda r: pg_rpad(r["s"], r["n"], "-"))),
-        _v("reverse", ["reverse"], "reverse(s)", every(lambda r: None if r["s"] is None else r["s"][::-1])),
-        _v("repeat", ["repeat"], "repeat(s, n)",
+        _v("strpos|case", ["strpos"], "strpos(lib.s, 'cd')", every(lambda r: pg_strpos(r["s"], "cd"))),
+        _v("strpos", ["strpos"], "strpos(lib.s, lib.p)", every(lambda r: pg_strpos(r["s"], r["p"]))),
+        _v("instr", ["instr"], "instr(lib.s, lib.p)", every(lambda r: pg_strpos(r["s"], r["p"]))),
+        _v("position", ["POSITION"], "POSITION(lib.p IN lib.s)", every(lambda r: pg_strpos(r["s"], r["p"]))),
+        _v("lpad|fill", ["lpad"], "lpad(lib.s, 4, '*')", every(lambda r: pg_lpad(r["s"], 4, "*"))),
+        _v("lpad|default-fill", ["lpad"], "lpad(lib.s, 6)", every(lambda r: pg_lpad(r["s"], 6))),
+        _v("lpad|multi-char-fill", ["lpad"], "lpad(lib.s, 7, 'xy')", every(lambda r: pg_lpad(r["s"], 7, "xy"))),
+        _v("lpad|column-count", ["lpad"], "lpad(lib.s, lib.n, '0')", every(lambda r: pg_lpad(r["s"], r["n"], "0"))),
+        _v("rpad|fill", ["rpad"], "rpad(lib.s, 4, '*')", every(lambda r: pg_rpad(r["s"], 4, "*"))),
+        _v("rpad|column-count", ["rpad"], "rpad(lib.s, lib.n, '-')", every(lambda r: pg_rpad(r["s"], r["n"], "-"))),
+        _v("reverse", ["reverse"], "reverse(lib.s)", every(lambda r: None if r["s"] is None else r["s"][::-1])),
+        _v("repeat", ["repeat"], "repeat(lib.s, lib.n)",
            every(lambda r: None if r["s"] is None or r["n"] is None else r["s"] * max(r["n"], 0))),
-        _v("split_part|second", ["split_part"], "split_part(s, '/', 2)",
+        _v("split_part|second", ["split_part"], "split_part(lib.s, '/', 2)",
            every(lambda r: pg_split_part(r["s"], "/", 2))),
-        _v("split_part|last", ["split_part"], "split_part(s, '/', -1)",
+        _v("split_part|last", ["split_part"], "split_part(lib.s, '/', -1)",
            every(lambda r: pg_split_part(r["s"], "/", -1))),
-        _v("split_part|beyond", ["split_part"], "split_part(s, '/', 9)",
+        _v("split_part|beyond", ["split_part"], "split_part(lib.s, '/', 9)",
            every(lambda r: pg_split_part(r["s"], "/", 9))),
-        _v("split_part|beyond-negative", ["split_part"], "split_part(s, '/', -4)",
+        _v("split_part|beyond-negative", ["split_part"], "split_part(lib.s, '/', -4)",
            every(lambda r: pg_split_part(r["s"], "/", -4))),
-        _v("split_part|case", ["split_part"], "split_part(word, 'D', 2)",
+        _v("split_part|case", ["split_part"], "split_part(lib.word, 'D', 2)",
            every(lambda r: pg_split_part(r["word"], "D", 2))),
-        _v("split_part|case-negative", ["split_part"], "split_part(word, 'D', -1)",
+        _v("split_part|case-negative", ["split_part"], "split_part(lib.word, 'D', -1)",
            every(lambda r: pg_split_part(r["word"], "D", -1))),
-        _v("concat_ws|skips-nulls", ["concat_ws"], "concat_ws('-', word, p, code)",
+        _v("concat_ws|skips-nulls", ["concat_ws"], "concat_ws('-', lib.word, lib.p, lib.code)",
            every(lambda r: "-".join(v for v in (r["word"], r["p"], r["code"]) if v is not None))),
-        _v("chr", ["chr"], "chr(cp)", every(lambda r: pg_chr(r["cp"]))),
-        _v("ascii", ["ascii"], "ascii(s)", every(lambda r: pg_ascii(r["s"]))),
-        _v("length|characters", ["length"], "length(s)", every(lambda r: None if s(r) is None else len(s(r)))),
-        _v("substr", ["substr"], "substr(s, 2, 2)", every(lambda r: None if s(r) is None else s(r)[1:3])),
-        _v("substring", ["substring"], "substring(s, 2)", every(lambda r: None if s(r) is None else s(r)[1:])),
-        _v("replace", ["replace"], "replace(code, '_', '-')",
+        _v("chr", ["chr"], "chr(lib.cp)", every(lambda r: pg_chr(r["cp"]))),
+        _v("ascii", ["ascii"], "ascii(lib.s)", every(lambda r: pg_ascii(r["s"]))),
+        _v("length|characters", ["length"], "length(lib.s)", every(lambda r: None if s(r) is None else len(s(r)))),
+        _v("substr", ["substr"], "substr(lib.s, 2, 2)", every(lambda r: None if s(r) is None else s(r)[1:3])),
+        _v("substring", ["substring"], "substring(lib.s, 2)", every(lambda r: None if s(r) is None else s(r)[1:])),
+        _v("replace", ["replace"], "replace(lib.code, '_', '-')",
            every(lambda r: None if r["code"] is None else r["code"].replace("_", "-"))),
-        _v("replace|case", ["replace"], "replace(word, 'A', '_')",
+        _v("replace|case", ["replace"], "replace(lib.word, 'A', '_')",
            every(lambda r: None if r["word"] is None else r["word"].replace("A", "_"))),
-        _v("lower", ["lower"], "lower(word)", every(lambda r: None if r["word"] is None else r["word"].lower())),
-        _v("upper", ["upper"], "upper(word)", every(lambda r: None if r["word"] is None else r["word"].upper())),
-        _v("trim", ["trim", "||"], "trim(' ' || code || ' ')",
+        _v("lower", ["lower"], "lower(lib.word)", every(lambda r: None if r["word"] is None else r["word"].lower())),
+        _v("upper", ["upper"], "upper(lib.word)", every(lambda r: None if r["word"] is None else r["word"].upper())),
+        _v("trim", ["trim", "||"], "trim(' ' || lib.code || ' ')",
            every(lambda r: None if r["code"] is None else r["code"].strip(" "))),
-        _v("ltrim", ["ltrim"], "ltrim(' ' || code)", every(lambda r: r["code"])),
-        _v("rtrim", ["rtrim"], "rtrim(code || ' ')", every(lambda r: r["code"])),
-        _v("concat", ["concat"], "concat(coalesce(word, '?'), '|')", every(lambda r: f"{r['word'] or '?'}|")),
-        _v("concat|number-to-text", ["||"], "qty || '#'", every(lambda r: None if r["qty"] is None else f"{r['qty']}#")),
+        _v("ltrim", ["ltrim"], "ltrim(' ' || lib.code)", every(lambda r: r["code"])),
+        _v("rtrim", ["rtrim"], "rtrim(lib.code || ' ')", every(lambda r: r["code"])),
+        _v("concat", ["concat"], "concat(coalesce(lib.word, '?'), '|')", every(lambda r: f"{r['word'] or '?'}|")),
+        _v("concat|number-to-text", ["||"], "lib.qty || '#'", every(lambda r: None if r["qty"] is None else f"{r['qty']}#")),
     ]
 
 
@@ -360,61 +363,61 @@ def _math_cases() -> list[Case]:
         return every(lambda r: None if x(r) is None else fn(x(r)))
 
     return [
-        _v("div|int", ["div"], "div(i, m)", every(lambda r: pg_div(r["i"], r["m"]))),
-        _v("div|double", ["div"], "div(i + 0.5, m)",
+        _v("div|int", ["div"], "div(lib.i, lib.m)", every(lambda r: pg_div(r["i"], r["m"]))),
+        _v("div|double", ["div"], "div(lib.i + 0.5, lib.m)",
            every(lambda r: None if r["i"] is None else pg_div(r["i"] + 0.5, r["m"]))),
-        _v("pi", ["pi"], "pi() + 0 * id", every(lambda r: math.pi)),
-        _v("sin", ["sin"], "sin(x)", on_x(math.sin)),
-        _v("cos", ["cos"], "cos(x)", on_x(math.cos)),
-        _v("tan", ["tan"], "tan(x)", on_x(math.tan)),
-        _v("asin|domain", ["asin"], "asin(x)", every(lambda r: in_unit(math.asin, r["x"]))),
-        _v("acos|domain", ["acos"], "acos(x)", every(lambda r: in_unit(math.acos, r["x"]))),
-        _v("atan", ["atan"], "atan(x)", on_x(math.atan)),
-        _v("atan2", ["atan2"], "atan2(y, x)",
+        _v("pi", ["pi"], "pi() + 0 * lib.id", every(lambda r: math.pi)),
+        _v("sin", ["sin"], "sin(lib.x)", on_x(math.sin)),
+        _v("cos", ["cos"], "cos(lib.x)", on_x(math.cos)),
+        _v("tan", ["tan"], "tan(lib.x)", on_x(math.tan)),
+        _v("asin|domain", ["asin"], "asin(lib.x)", every(lambda r: in_unit(math.asin, r["x"]))),
+        _v("acos|domain", ["acos"], "acos(lib.x)", every(lambda r: in_unit(math.acos, r["x"]))),
+        _v("atan", ["atan"], "atan(lib.x)", on_x(math.atan)),
+        _v("atan2", ["atan2"], "atan2(lib.y, lib.x)",
            every(lambda r: None if r["x"] is None or r["y"] is None else math.atan2(r["y"], r["x"]))),
-        _v("cbrt", ["cbrt"], "cbrt(x)", every(lambda r: cbrt(r["x"]))),
-        _v("greatest|nulls", ["greatest"], "greatest(a, b, c)", every(lambda r: pg_greatest(r["a"], r["b"], r["c"]))),
-        _v("least|nulls", ["least"], "least(a, b, c)", every(lambda r: pg_least(r["a"], r["b"], r["c"]))),
-        _v("greatest|two", ["greatest"], "greatest(a, b)", every(lambda r: pg_greatest(r["a"], r["b"]))),
-        _v("nullif", ["nullif"], "nullif(qty, 0)", every(lambda r: None if r["qty"] == 0 else r["qty"])),
-        _v("coalesce", ["coalesce"], "coalesce(p, 'zz')", every(lambda r: "zz" if r["p"] is None else r["p"])),
-        _v("ifnull", ["ifnull"], "ifnull(a, -100)", every(lambda r: -100 if r["a"] is None else r["a"])),
-        _v("ln", ["ln", "abs", "+"], "ln(abs(x) + 1)", on_x(lambda v: math.log(abs(v) + 1))),
-        _v("log10", ["log10"], "log10(abs(x) + 1)", on_x(lambda v: math.log10(abs(v) + 1))),
-        _v("log2", ["log2"], "log2(abs(x) + 1)", on_x(lambda v: math.log2(abs(v) + 1))),
-        _v("log|one-arg", ["log"], "log(abs(x) + 1)", on_x(lambda v: math.log10(abs(v) + 1))),
-        _v("log|base", ["log"], "log(2, abs(x) + 1)", on_x(lambda v: math.log2(abs(v) + 1))),
-        _v("exp", ["exp"], "exp(x)", on_x(math.exp)),
-        _v("sqrt", ["sqrt"], "sqrt(abs(x))", on_x(lambda v: math.sqrt(abs(v)))),
-        _v("pow", ["pow"], "pow(x, 2)", on_x(lambda v: v ** 2)),
-        _v("power", ["power"], "power(2, a)", every(lambda r: None if r["a"] is None else 2.0 ** r["a"])),
-        _v("floor", ["floor"], "floor(x)", on_x(math.floor)),
-        _v("ceil", ["ceil"], "ceil(x)", on_x(math.ceil)),
-        _v("ceiling", ["ceiling"], "ceiling(x)", on_x(math.ceil)),
-        _v("round", ["round"], "round(x + 0.1)", on_x(lambda v: float(round(Decimal(str(v + 0.1)))))),
-        _v("round|digits", ["round", "/"], "round(x / 3, 2)",
+        _v("cbrt", ["cbrt"], "cbrt(lib.x)", every(lambda r: cbrt(r["x"]))),
+        _v("greatest|nulls", ["greatest"], "greatest(lib.a, lib.b, lib.c)", every(lambda r: pg_greatest(r["a"], r["b"], r["c"]))),
+        _v("least|nulls", ["least"], "least(lib.a, lib.b, lib.c)", every(lambda r: pg_least(r["a"], r["b"], r["c"]))),
+        _v("greatest|two", ["greatest"], "greatest(lib.a, lib.b)", every(lambda r: pg_greatest(r["a"], r["b"]))),
+        _v("nullif", ["nullif"], "nullif(lib.qty, 0)", every(lambda r: None if r["qty"] == 0 else r["qty"])),
+        _v("coalesce", ["coalesce"], "coalesce(lib.p, 'zz')", every(lambda r: "zz" if r["p"] is None else r["p"])),
+        _v("ifnull", ["ifnull"], "ifnull(lib.a, -100)", every(lambda r: -100 if r["a"] is None else r["a"])),
+        _v("ln", ["ln", "abs", "+"], "ln(abs(lib.x) + 1)", on_x(lambda v: math.log(abs(v) + 1))),
+        _v("log10", ["log10"], "log10(abs(lib.x) + 1)", on_x(lambda v: math.log10(abs(v) + 1))),
+        _v("log2", ["log2"], "log2(abs(lib.x) + 1)", on_x(lambda v: math.log2(abs(v) + 1))),
+        _v("log|one-arg", ["log"], "log(abs(lib.x) + 1)", on_x(lambda v: math.log10(abs(v) + 1))),
+        _v("log|base", ["log"], "log(2, abs(lib.x) + 1)", on_x(lambda v: math.log2(abs(v) + 1))),
+        _v("exp", ["exp"], "exp(lib.x)", on_x(math.exp)),
+        _v("sqrt", ["sqrt"], "sqrt(abs(lib.x))", on_x(lambda v: math.sqrt(abs(v)))),
+        _v("pow", ["pow"], "pow(lib.x, 2)", on_x(lambda v: v ** 2)),
+        _v("power", ["power"], "power(2, lib.a)", every(lambda r: None if r["a"] is None else 2.0 ** r["a"])),
+        _v("floor", ["floor"], "floor(lib.x)", on_x(math.floor)),
+        _v("ceil", ["ceil"], "ceil(lib.x)", on_x(math.ceil)),
+        _v("ceiling", ["ceiling"], "ceiling(lib.x)", on_x(math.ceil)),
+        _v("round", ["round"], "round(lib.x + 0.1)", on_x(lambda v: float(round(Decimal(str(v + 0.1)))))),
+        _v("round|digits", ["round", "/"], "round(lib.x / 3, 2)",
            on_x(lambda v: float(Decimal(str(v / 3)).quantize(Decimal("0.01"))))),
-        _v("sign", ["sign"], "sign(x)", on_x(lambda v: (v > 0) - (v < 0))),
-        _v("trunc", ["trunc"], "trunc(x)", on_x(lambda v: float(math.trunc(v)))),
-        _v("mod|int", ["mod"], "mod(i, 3)", every(lambda r: None if r["i"] is None else int(math.fmod(r["i"], 3)))),
-        _v("mod|double", ["mod"], "mod(x, 0.75)", on_x(lambda v: math.fmod(v, 0.75))),
-        _v("percent|int", ["%"], "i % 3", every(lambda r: None if r["i"] is None else int(math.fmod(r["i"], 3)))),
-        _v("percent|double", ["%"], "x % 2", on_x(lambda v: math.fmod(v, 2))),
-        _v("arith|minus-times", ["-", "*"], "qty * 2 - 1", every(lambda r: None if r["qty"] is None else r["qty"] * 2 - 1)),
+        _v("sign", ["sign"], "sign(lib.x)", on_x(lambda v: (v > 0) - (v < 0))),
+        _v("trunc", ["trunc"], "trunc(lib.x)", on_x(lambda v: float(math.trunc(v)))),
+        _v("mod|int", ["mod"], "mod(lib.i, 3)", every(lambda r: None if r["i"] is None else int(math.fmod(r["i"], 3)))),
+        _v("mod|double", ["mod"], "mod(lib.x, 0.75)", on_x(lambda v: math.fmod(v, 0.75))),
+        _v("percent|int", ["%"], "lib.i % 3", every(lambda r: None if r["i"] is None else int(math.fmod(r["i"], 3)))),
+        _v("percent|double", ["%"], "lib.x % 2", on_x(lambda v: math.fmod(v, 2))),
+        _v("arith|minus-times", ["-", "*"], "lib.qty * 2 - 1", every(lambda r: None if r["qty"] is None else r["qty"] * 2 - 1)),
         # Out of domain: NULL, never an error (``x`` holds 1, 0, -1 and other signs).
-        _v("ln|domain", ["ln"], "ln(x)", every(lambda r: positive(math.log, r["x"]))),
-        _v("log10|domain", ["log10"], "log10(x)", every(lambda r: positive(math.log10, r["x"]))),
-        _v("log2|domain", ["log2"], "log2(x)", every(lambda r: positive(math.log2, r["x"]))),
-        _v("log|one-arg-domain", ["log"], "log(x)", every(lambda r: positive(math.log10, r["x"]))),
-        _v("log|base-literal-domain", ["log"], "log(2, x)", every(lambda r: pg_log(2, r["x"]))),
-        _v("log|base-column-domain", ["log"], "log(x, 8)", every(lambda r: pg_log(r["x"], 8))),
-        _v("sqrt|domain", ["sqrt"], "sqrt(x)", every(lambda r: pg_sqrt(r["x"]))),
-        _v("pow|domain-fraction", ["pow"], "pow(x, 0.5)", every(lambda r: pg_pow(r["x"], 0.5))),
-        _v("pow|domain-integer", ["pow"], "pow(x, 3)", every(lambda r: pg_pow(r["x"], 3))),
-        _v("pow|domain-zero-negative", ["pow"], "pow(x, -1)", every(lambda r: pg_pow(r["x"], -1))),
-        _v("pow|domain-scaled", ["pow"], "pow(x * 16, 0.5)",  # 0.25 * 16 = 4 → 2; -8 * 16 → NULL
+        _v("ln|domain", ["ln"], "ln(lib.x)", every(lambda r: positive(math.log, r["x"]))),
+        _v("log10|domain", ["log10"], "log10(lib.x)", every(lambda r: positive(math.log10, r["x"]))),
+        _v("log2|domain", ["log2"], "log2(lib.x)", every(lambda r: positive(math.log2, r["x"]))),
+        _v("log|one-arg-domain", ["log"], "log(lib.x)", every(lambda r: positive(math.log10, r["x"]))),
+        _v("log|base-literal-domain", ["log"], "log(2, lib.x)", every(lambda r: pg_log(2, r["x"]))),
+        _v("log|base-column-domain", ["log"], "log(lib.x, 8)", every(lambda r: pg_log(r["x"], 8))),
+        _v("sqrt|domain", ["sqrt"], "sqrt(lib.x)", every(lambda r: pg_sqrt(r["x"]))),
+        _v("pow|domain-fraction", ["pow"], "pow(lib.x, 0.5)", every(lambda r: pg_pow(r["x"], 0.5))),
+        _v("pow|domain-integer", ["pow"], "pow(lib.x, 3)", every(lambda r: pg_pow(r["x"], 3))),
+        _v("pow|domain-zero-negative", ["pow"], "pow(lib.x, -1)", every(lambda r: pg_pow(r["x"], -1))),
+        _v("pow|domain-scaled", ["pow"], "pow(lib.x * 16, 0.5)",  # 0.25 * 16 = 4 → 2; -8 * 16 → NULL
            every(lambda r: None if r["x"] is None else pg_pow(r["x"] * 16, 0.5))),
-        _v("power|domain", ["power"], "power(x, y)", every(lambda r: pg_pow(r["x"], r["y"]))),
+        _v("power|domain", ["power"], "power(lib.x, lib.y)", every(lambda r: pg_pow(r["x"], r["y"]))),
     ]
 
 
@@ -427,86 +430,86 @@ def _on_ts(fn: Callable[[datetime], Any]) -> dict[int, Any]:
 
 def _date_cases() -> list[Case]:
     return [
-        _v("date_trunc|month", ["date_trunc"], "date_trunc('month', ts)", every(_month)),
-        _v("date_part", ["date_part"], "date_part('month', ts)", _on_ts(lambda t: t.month)),
-        _v("date_diff", ["date_diff"], "date_diff('day', TIMESTAMP '2025-01-01 00:00:00', ts)",
+        _v("date_trunc|month", ["date_trunc"], "date_trunc('month', lib.ts)", every(_month)),
+        _v("date_part", ["date_part"], "date_part('month', lib.ts)", _on_ts(lambda t: t.month)),
+        _v("date_diff", ["date_diff"], "date_diff('day', TIMESTAMP '2025-01-01 00:00:00', lib.ts)",
            _on_ts(lambda t: (t.date() - date(2025, 1, 1)).days)),
-        _v("date_add", ["date_add"], "date_add(ts, 2, 'day')", _on_ts(lambda t: t + timedelta(days=2))),
-        _v("interval", ["interval"], "ts + interval(1, 'hour')", _on_ts(lambda t: t + timedelta(hours=1))),
-        _f("current_date", ["current_date"], "date_diff('day', ts, current_date()) > 0",
+        _v("date_add", ["date_add"], "date_add(lib.ts, 2, 'day')", _on_ts(lambda t: t + timedelta(days=2))),
+        _v("interval", ["interval"], "lib.ts + interval(1, 'hour')", _on_ts(lambda t: t + timedelta(hours=1))),
+        _f("current_date", ["current_date"], "date_diff('day', lib.ts, current_date()) > 0",
            [rid for rid, r in ROWS.items() if r["ts"] is not None]),
-        _f("now", ["now"], "ts < now()", [rid for rid, r in ROWS.items() if r["ts"] is not None]),
-        _v("iif", ["iif"], "iif(qty > 1, 'many', 'few')",
+        _f("now", ["now"], "lib.ts < now()", [rid for rid, r in ROWS.items() if r["ts"] is not None]),
+        _v("iif", ["iif"], "iif(lib.qty > 1, 'many', 'few')",
            every(lambda r: "many" if r["qty"] is not None and r["qty"] > 1 else "few")),
     ]
 
 
 def _like_cases() -> list[Case]:
     return [
-        _f("like|escaped-underscore", ["LIKE", "like"], r"code LIKE 'a\_%'", [3]),
-        _f("like|underscore-wildcard", ["LIKE"], "code LIKE 'a__1'", [4, 8]),
-        _f("like|bracket-literal", ["LIKE"], "code LIKE '[ab]%'", [6]),
-        _f("like|lone-backslash", ["LIKE"], r"word LIKE 'c:\x%'", [10]),
-        _f("like|escaped-percent", ["LIKE"], r"tag LIKE '%5\%'", [6]),
-        _f("like|escaped-backslash", ["LIKE"], r"word LIKE 'c:\\x%'", [10]),
-        _f("like|column-pattern", ["LIKE", "||"], "code LIKE prefix || '%'", [1, 3, 4, 6, 7, 8, 10]),
-        _f("like|glob-metacharacters", ["LIKE"], "code LIKE 'a*?%'", [8]),
-        _f("like|percent-spans-newline", ["LIKE"], "notes LIKE 'paid%late'", [1, 4]),
-        _f("not-like", ["LIKE"], "code NOT LIKE 'a%'", [6, 10]),
-        _f("ilike|case-insensitive", ["ILIKE", "ilike"], "word ILIKE 'ADA%'", [3, 4]),
-        _f("ilike|escaped-underscore", ["ILIKE"], r"code ILIKE 'A\_%'", [3]),
+        _f("like|escaped-underscore", ["LIKE", "like"], "lib.code LIKE 'a\\_%'", [3]),
+        _f("like|underscore-wildcard", ["LIKE"], "lib.code LIKE 'a__1'", [4, 8]),
+        _f("like|bracket-literal", ["LIKE"], "lib.code LIKE '[ab]%'", [6]),
+        _f("like|lone-backslash", ["LIKE"], "lib.word LIKE 'c:\\x%'", [10]),
+        _f("like|escaped-percent", ["LIKE"], "lib.tag LIKE '%5\\%'", [6]),
+        _f("like|escaped-backslash", ["LIKE"], "lib.word LIKE 'c:\\\\x%'", [10]),
+        _f("like|column-pattern", ["LIKE", "||"], "lib.code LIKE lib.prefix || '%'", [1, 3, 4, 6, 7, 8, 10]),
+        _f("like|glob-metacharacters", ["LIKE"], "lib.code LIKE 'a*?%'", [8]),
+        _f("like|percent-spans-newline", ["LIKE"], "lib.notes LIKE 'paid%late'", [1, 4]),
+        _f("not-like", ["LIKE"], "lib.code NOT LIKE 'a%'", [6, 10]),
+        _f("ilike|case-insensitive", ["ILIKE", "ilike"], "lib.word ILIKE 'ADA%'", [3, 4]),
+        _f("ilike|escaped-underscore", ["ILIKE"], "lib.code ILIKE 'A\\_%'", [3]),
     ]
 
 
 def _regex_cases() -> list[Case]:
     return [
-        _f("regexp_like|partial", ["regexp_like"], "regexp_like(code, '[0-9]{3}')", [1]),
-        _f("regexp_like|case-sensitive", ["regexp_like"], "regexp_like(word, '^paid$')", [1]),
-        _f("regexp_like|flag-i", ["regexp_like"], "regexp_like(word, '^paid$', 'i')", [1, 2]),
-        _f("op|tilde", ["~"], "word ~ '^ad'", [3, 8]),
-        _f("op|tilde-star", ["~*"], "word ~* '^ad'", [3, 4, 8, 9]),
-        _f("op|not-tilde", ["!~"], "word !~ '^ad'", [1, 2, 4, 6, 7, 9, 10]),
-        _f("op|not-tilde-star", ["!~*"], "word !~* '^ad'", [1, 2, 6, 7, 10]),
-        _f("regex|dot-newline", ["regexp_like"], "regexp_like(notes, 'paid.*late')", [1, 4]),
-        _f("regex|dollar-true-end", ["regexp_like"], "regexp_like(code, '^ab$|^a1$')", [7]),
-        _f("regex|dollar-isolated", ["regexp_like"], "regexp_like(code, '^ab$')", []),
-        _f("regex|dollar-before-newline-escape", ["regexp_like"], r"regexp_like(code, '^ab\n?$')", [9]),
-        _f("regex|caret-string-start", ["regexp_like"], "regexp_like(notes, '^late|^line')", [2, 8]),
-        _f("regex|flag-i-trailing-newline", ["regexp_like"], "regexp_like(code, '^AB$|^A1$', 'i')", [7]),
-        _f("regex|newline-escape", ["regexp_like"], r"regexp_like(code, '^ab\n$')", [9]),
-        _f("regex|ascii-digit", ["regexp_like"], r"regexp_like(word, '^\d+$')", [6]),
-        _f("regex|digit-in-brackets", ["regexp_like"], r"regexp_like(code, '^[\d_]+$')", [10]),
-        _f("regex|ascii-word", ["regexp_like"], r"regexp_like(s, '^\w+$')", [1, 8, 9]),
-        _f("regex|space-class", ["regexp_like"], r"regexp_like(notes, 'paid\slate')", [1, 4]),
-        _f("regex|escaped-metachar", ["regexp_like"], r"regexp_like(tag, '\(555\)')", [1]),
-        _f("regex|escaped-star", ["regexp_like"], r"regexp_like(code, 'a\*\?')", [8]),
-        _f("regex|escaped-bracket", ["regexp_like"], r"regexp_like(code, '\[ab\]')", [6]),
-        _f("regex|bounded-repeat", ["regexp_like"], "regexp_like(code, '^[a-z]{1,2}[0-9]{2,}$')", [1, 2]),
-        _f("regex|variable-pattern", ["regexp_like"], "regexp_like(s, {p})", [9], variables={"p": "^a.c$"}),
-        _v("regexp_extract|group", ["regexp_extract"], "regexp_extract(tag, '@(.+)$', 1)", only({3: "x.org"})),
-        _v("regexp_extract|whole", ["regexp_extract"], "regexp_extract(code, '[a-z]+')",
+        _f("regexp_like|partial", ["regexp_like"], "regexp_like(lib.code, '[0-9]{3}')", [1]),
+        _f("regexp_like|case-sensitive", ["regexp_like"], "regexp_like(lib.word, '^paid$')", [1]),
+        _f("regexp_like|flag-i", ["regexp_like"], "regexp_like(lib.word, '^paid$', 'i')", [1, 2]),
+        _f("op|tilde", ["~"], "lib.word ~ '^ad'", [3, 8]),
+        _f("op|tilde-star", ["~*"], "lib.word ~* '^ad'", [3, 4, 8, 9]),
+        _f("op|not-tilde", ["!~"], "lib.word !~ '^ad'", [1, 2, 4, 6, 7, 9, 10]),
+        _f("op|not-tilde-star", ["!~*"], "lib.word !~* '^ad'", [1, 2, 6, 7, 10]),
+        _f("regex|dot-newline", ["regexp_like"], "regexp_like(lib.notes, 'paid.*late')", [1, 4]),
+        _f("regex|dollar-true-end", ["regexp_like"], "regexp_like(lib.code, '^ab$|^a1$')", [7]),
+        _f("regex|dollar-isolated", ["regexp_like"], "regexp_like(lib.code, '^ab$')", []),
+        _f("regex|dollar-before-newline-escape", ["regexp_like"], "regexp_like(lib.code, '^ab\\n?$')", [9]),
+        _f("regex|caret-string-start", ["regexp_like"], "regexp_like(lib.notes, '^late|^line')", [2, 8]),
+        _f("regex|flag-i-trailing-newline", ["regexp_like"], "regexp_like(lib.code, '^AB$|^A1$', 'i')", [7]),
+        _f("regex|newline-escape", ["regexp_like"], "regexp_like(lib.code, '^ab\\n$')", [9]),
+        _f("regex|ascii-digit", ["regexp_like"], "regexp_like(lib.word, '^\\d+$')", [6]),
+        _f("regex|digit-in-brackets", ["regexp_like"], "regexp_like(lib.code, '^[\\d_]+$')", [10]),
+        _f("regex|ascii-word", ["regexp_like"], "regexp_like(lib.s, '^\\w+$')", [1, 8, 9]),
+        _f("regex|space-class", ["regexp_like"], "regexp_like(lib.notes, 'paid\\slate')", [1, 4]),
+        _f("regex|escaped-metachar", ["regexp_like"], "regexp_like(lib.tag, '\\(555\\)')", [1]),
+        _f("regex|escaped-star", ["regexp_like"], "regexp_like(lib.code, 'a\\*\\?')", [8]),
+        _f("regex|escaped-bracket", ["regexp_like"], "regexp_like(lib.code, '\\[ab\\]')", [6]),
+        _f("regex|bounded-repeat", ["regexp_like"], "regexp_like(lib.code, '^[a-z]{1,2}[0-9]{2,}$')", [1, 2]),
+        _f("regex|variable-pattern", ["regexp_like"], "regexp_like(lib.s, {p})", [9], variables={"p": "^a.c$"}),
+        _v("regexp_extract|group", ["regexp_extract"], "regexp_extract(lib.tag, '@(.+)$', 1)", only({3: "x.org"})),
+        _v("regexp_extract|whole", ["regexp_extract"], "regexp_extract(lib.code, '[a-z]+')",
            only({1: "ab", 2: "ab", 3: "a", 4: "abc", 6: "ab", 7: "a", 8: "a", 9: "ab"})),
-        _v("regexp_extract|non-participating-group", ["regexp_extract"], "regexp_extract(code, '(x)?b', 1)",
+        _v("regexp_extract|non-participating-group", ["regexp_extract"], "regexp_extract(lib.code, '(x)?b', 1)",
            only({1: "", 2: "", 4: "", 6: "", 9: ""})),
-        _v("regexp_extract|negated-digit", ["regexp_extract"], r"regexp_extract(word, '\D+')",
+        _v("regexp_extract|negated-digit", ["regexp_extract"], "regexp_extract(lib.word, '\\D+')",
            only({1: "paid", 2: "PAID", 3: "ada", 4: "Ada", 7: "١٢٣", 8: "admin", 9: "Adele", 10: "c:\\x"})),
-        _v("regexp_extract|first-line", ["regexp_extract"], r"regexp_extract(notes, '^[^\n]*')",
+        _v("regexp_extract|first-line", ["regexp_extract"], "regexp_extract(lib.notes, '^[^\\n]*')",
            only({1: "paid", 2: "line1", 3: "nothing", 4: "paid late", 6: "Paid Later", 7: "x", 8: "late paid",
                  9: "a", 10: ""})),
-        _v("regexp_replace|every-match", ["regexp_replace"], "regexp_replace(tag, '[^0-9]', '')",
+        _v("regexp_replace|every-match", ["regexp_replace"], "regexp_replace(lib.tag, '[^0-9]', '')",
            every(lambda r: None if r["tag"] is None else "".join(ch for ch in r["tag"] if ch in "0123456789"))),
-        _v("regexp_replace|groups", ["regexp_replace"], r"regexp_replace(s, '(\w+) (\w+)', '\2, \1')",
+        _v("regexp_replace|groups", ["regexp_replace"], "regexp_replace(lib.s, '(\\w+) (\\w+)', '\\2, \\1')",
            every(lambda r: "Lovelace, Ada" if r["s"] == "Ada Lovelace" else r["s"])),
-        _v("regexp_replace|literal-dollar-amp", ["regexp_replace"], "regexp_replace(tag, 'USD', '$ & co')",
+        _v("regexp_replace|literal-dollar-amp", ["regexp_replace"], "regexp_replace(lib.tag, 'USD', '$ & co')",
            every(lambda r: None if r["tag"] is None else r["tag"].replace("USD", "$ & co"))),
-        _v("regexp_replace|flag-i", ["regexp_replace"], "regexp_replace(word, 'a', 'X', 'i')",
+        _v("regexp_replace|flag-i", ["regexp_replace"], "regexp_replace(lib.word, 'a', 'X', 'i')",
            every(lambda r: None if r["word"] is None else r["word"].replace("a", "X").replace("A", "X"))),
-        _v("regexp_replace|backslash", ["regexp_replace"], r"regexp_replace(word, ':', '\\')",
+        _v("regexp_replace|backslash", ["regexp_replace"], "regexp_replace(lib.word, ':', '\\\\')",
            every(lambda r: None if r["word"] is None else r["word"].replace(":", "\\"))),
         _v("regexp_replace|nine-groups", ["regexp_replace"],
-           r"regexp_replace(s, '^(A)(B)(C)(D)(E)(x)?(x)?(x)?(x)?$', '\9\8\7\6\5\4\3\2\1')",
+           "regexp_replace(lib.s, '^(A)(B)(C)(D)(E)(x)?(x)?(x)?(x)?$', '\\9\\8\\7\\6\\5\\4\\3\\2\\1')",
            every(lambda r: "EDCBA" if r["s"] == "ABCDE" else r["s"])),
-        _v("regexp_replace|empty-group", ["regexp_replace"], r"regexp_replace(code, '(x)?b', '[\1]')",
+        _v("regexp_replace|empty-group", ["regexp_replace"], "regexp_replace(lib.code, '(x)?b', '[\\1]')",
            every(lambda r: None if r["code"] is None else r["code"].replace("b", "[]"))),
     ]
 
@@ -515,34 +518,34 @@ def _json_cases() -> list[Case]:
     ab = {1: "x", 9: NumText(value=1), 10: NumText(value=2.5)}
     flags = {1: "true", 9: "false"}
     return [
-        _v("json_value|scalars-missing-nonscalars", ["json_value"], "json_value(payload, '$.a.b')", only(ab)),
-        _v("json_value|boolean-text", ["json_value"], "json_value(payload, '$.ok')", only(flags)),
-        _v("json_value|index-and-quoted-key", ["json_value"], "json_value(payload, '$.items[1].\"unit price\"')",
+        _v("json_value|scalars-missing-nonscalars", ["json_value"], "json_value(lib.payload, '$.a.b')", only(ab)),
+        _v("json_value|boolean-text", ["json_value"], "json_value(lib.payload, '$.ok')", only(flags)),
+        _v("json_value|index-and-quoted-key", ["json_value"], "json_value(lib.payload, '$.items[1].\"unit price\"')",
            only({7: "9.5"})),
-        _v("json_value|returning-int", ["json_value", "RETURNING"], "json_value(payload, '$.qty' RETURNING INT)",
+        _v("json_value|returning-int", ["json_value", "RETURNING"], "json_value(lib.payload, '$.qty' RETURNING INT)",
            only({1: 2, 2: 3})),
-        _v("json_value|returning-int-zero", ["RETURNING"], "json_value(payload, '$.n' RETURNING INT)",
+        _v("json_value|returning-int-zero", ["RETURNING"], "json_value(lib.payload, '$.n' RETURNING INT)",
            only({1: 0, 9: 12, 10: 7})),
-        _v("json_value|returning-boolean", ["RETURNING"], "json_value(payload, '$.f' RETURNING BOOLEAN)",
+        _v("json_value|returning-boolean", ["RETURNING"], "json_value(lib.payload, '$.f' RETURNING BOOLEAN)",
            only({1: False, 9: True})),
-        _v("json_value|returning-double", ["RETURNING"], "json_value(payload, '$.a.b' RETURNING DOUBLE)",
+        _v("json_value|returning-double", ["RETURNING"], "json_value(lib.payload, '$.a.b' RETURNING DOUBLE)",
            only({9: 1.0, 10: 2.5})),
-        _v("json_value|returning-date", ["RETURNING"], "json_value(payload, '$.d' RETURNING DATE)",
+        _v("json_value|returning-date", ["RETURNING"], "json_value(lib.payload, '$.d' RETURNING DATE)",
            only({10: date(2024, 2, 29)})),
-        _v("json_value|returning-timestamp", ["RETURNING"], "json_value(payload, '$.t' RETURNING TIMESTAMP)",
+        _v("json_value|returning-timestamp", ["RETURNING"], "json_value(lib.payload, '$.t' RETURNING TIMESTAMP)",
            only({10: datetime(2024, 2, 29, 10, 0)})),
-        _v("json_value|returning-text", ["RETURNING"], "json_value(payload, '$.ok' RETURNING TEXT)", only(flags)),
-        _v("json_value|boolean-to-int-is-null", ["RETURNING"], "json_value(payload, '$.ok' RETURNING INT)", only({})),
-        _v("json_value|object-to-int-is-null", ["RETURNING"], "json_value(payload, '$.a' RETURNING INT)", only({})),
-        _v("arrow|postgres-chain", ["->", "->>"], "payload -> 'a' -> 0 ->> 'b'", only({7: "x"})),
-        _v("arrow|mysql-path", ["->>"], "payload ->> '$.a.b'", only(ab)),
-        _v("arrow|key", ["->>"], "payload ->> 'ok'", only(flags)),
-        _v("arrow|precedence", ["->>", "||"], "payload ->> 'ok' || '!'", only({1: "true!", 9: "false!"})),
-        _v("json_extract|object-is-null", ["json_extract"], "json_extract(payload, '$.a')", only({})),
-        _v("json_extract|scalar", ["json_extract"], "json_extract(payload, '$.ok')", only(flags)),
-        _v("json_extract_scalar", ["json_extract_scalar"], "json_extract_scalar(payload, '$.a.b')", only(ab)),
-        _v("json_extract_path_text", ["json_extract_path_text"], "json_extract_path_text(payload, 'a', 'b')", only(ab)),
-        _v("jsonb_extract_path_text", ["jsonb_extract_path_text"], "jsonb_extract_path_text(payload, 'a', 'b')",
+        _v("json_value|returning-text", ["RETURNING"], "json_value(lib.payload, '$.ok' RETURNING TEXT)", only(flags)),
+        _v("json_value|boolean-to-int-is-null", ["RETURNING"], "json_value(lib.payload, '$.ok' RETURNING INT)", only({})),
+        _v("json_value|object-to-int-is-null", ["RETURNING"], "json_value(lib.payload, '$.a' RETURNING INT)", only({})),
+        _v("arrow|postgres-chain", ["->", "->>"], "lib.payload -> 'a' -> 0 ->> 'b'", only({7: "x"})),
+        _v("arrow|mysql-path", ["->>"], "lib.payload ->> '$.a.b'", only(ab)),
+        _v("arrow|key", ["->>"], "lib.payload ->> 'ok'", only(flags)),
+        _v("arrow|precedence", ["->>", "||"], "lib.payload ->> 'ok' || '!'", only({1: "true!", 9: "false!"})),
+        _v("json_extract|object-is-null", ["json_extract"], "json_extract(lib.payload, '$.a')", only({})),
+        _v("json_extract|scalar", ["json_extract"], "json_extract(lib.payload, '$.ok')", only(flags)),
+        _v("json_extract_scalar", ["json_extract_scalar"], "json_extract_scalar(lib.payload, '$.a.b')", only(ab)),
+        _v("json_extract_path_text", ["json_extract_path_text"], "json_extract_path_text(lib.payload, 'a', 'b')", only(ab)),
+        _v("jsonb_extract_path_text", ["jsonb_extract_path_text"], "jsonb_extract_path_text(lib.payload, 'a', 'b')",
            only(ab)),
     ]
 
@@ -577,41 +580,50 @@ RETURNING_GRID: dict[str, dict[int, Any]] = {
 
 def _returning_cases() -> list[Case]:
     return [_v(f"json_value|returning-grid-{target.lower()}", ["RETURNING"],
-               f"json_value(doc, '$.v' RETURNING {target})", only(expected))
+               f"json_value(lib.doc, '$.v' RETURNING {target})", only(expected))
             for target, expected in RETURNING_GRID.items()]
 
 
 def _coercion_cases() -> list[Case]:
     return [
-        _f("coerce|gt-literal", [">"], "num_txt > 100", _txt_keeps(lambda v, r: v > 100)),
-        _f("coerce|eq-column", ["="], "num_txt = qty", _txt_keeps(lambda v, r: r["qty"] is not None and v == r["qty"])),
-        _f("coerce|lt-numeric-not-lexicographic", ["<"], "num_txt < 9", _txt_keeps(lambda v, r: v < 9)),
-        _f("coerce|le", ["<="], "num_txt <= 10", _txt_keeps(lambda v, r: v <= 10)),
-        _f("coerce|ge", [">="], "num_txt >= 99", _txt_keeps(lambda v, r: v >= 99)),
-        _f("coerce|ne", ["<>"], "num_txt <> 1", _txt_keeps(lambda v, r: v != 1)),
-        _f("coerce|in", ["IN"], "num_txt IN (1, 2)", _txt_keeps(lambda v, r: v in (1.0, 2.0))),
-        _f("coerce|between", ["BETWEEN"], "num_txt BETWEEN 1 AND 10", _txt_keeps(lambda v, r: 1 <= v <= 10)),
-        _f("coerce|is-distinct-from", ["IS DISTINCT FROM"], "num_txt IS DISTINCT FROM 99",
+        _f("coerce|gt-literal", [">"], "lib.num_txt > 100", _txt_keeps(lambda v, r: v > 100)),
+        _f("coerce|eq-column", ["="], "lib.num_txt = lib.qty", _txt_keeps(lambda v, r: r["qty"] is not None and v == r["qty"])),
+        _f("coerce|lt-numeric-not-lexicographic", ["<"], "lib.num_txt < 9", _txt_keeps(lambda v, r: v < 9)),
+        _f("coerce|le", ["<="], "lib.num_txt <= 10", _txt_keeps(lambda v, r: v <= 10)),
+        _f("coerce|ge", [">="], "lib.num_txt >= 99", _txt_keeps(lambda v, r: v >= 99)),
+        _f("coerce|ne", ["<>"], "lib.num_txt <> 1", _txt_keeps(lambda v, r: v != 1)),
+        _f("coerce|in", ["IN"], "lib.num_txt IN (1, 2)", _txt_keeps(lambda v, r: v in (1.0, 2.0))),
+        _f("coerce|between", ["BETWEEN"], "lib.num_txt BETWEEN 1 AND 10", _txt_keeps(lambda v, r: 1 <= v <= 10)),
+        _f("coerce|is-distinct-from", ["IS DISTINCT FROM"], "lib.num_txt IS DISTINCT FROM 99",
            keeps(lambda r: num_text(r["num_txt"]) != 99)),
-        _f("coerce|literal-text", [">"], "qty > '1'", keeps(lambda r: r["qty"] is not None and r["qty"] > 1)),
-        _v("coerce|times", ["*"], "num_txt * 2", _on_txt(lambda v, r: v * 2)),
-        _v("coerce|plus-column", ["+"], "num_txt + qty", _on_txt(lambda v, r: None if r["qty"] is None else v + r["qty"])),
-        _v("coerce|minus", ["-"], "num_txt - 1", _on_txt(lambda v, r: v - 1)),
-        _v("coerce|divide", ["/"], "num_txt / 2", _on_txt(lambda v, r: v / 2)),
-        _v("coerce|modulo", ["%"], "num_txt % 7", _on_txt(lambda v, r: math.fmod(v, 7))),
-        _f("coerce|exact-bigint", ["="], "TRY_CAST(big AS BIGINT) = 12345678901234567", [1]),
-        _f("coerce|exact-bigint-off-by-one", ["="], "TRY_CAST(big AS BIGINT) = 12345678901234568", []),
-        _v("coerce|boolean-stays-numeric", ["*"], "(qty > 1) * 2",
+        _f("coerce|literal-text", [">"], "lib.qty > '1'", keeps(lambda r: r["qty"] is not None and r["qty"] > 1)),
+        _v("coerce|times", ["*"], "lib.num_txt * 2", _on_txt(lambda v, r: v * 2)),
+        _v("coerce|plus-column", ["+"], "lib.num_txt + lib.qty", _on_txt(lambda v, r: None if r["qty"] is None else v + r["qty"])),
+        _v("coerce|minus", ["-"], "lib.num_txt - 1", _on_txt(lambda v, r: v - 1)),
+        _v("coerce|divide", ["/"], "lib.num_txt / 2", _on_txt(lambda v, r: v / 2)),
+        _v("coerce|modulo", ["%"], "lib.num_txt % 7", _on_txt(lambda v, r: math.fmod(v, 7))),
+        _f("coerce|exact-bigint", ["="], "TRY_CAST(lib.big AS BIGINT) = 12345678901234567", [1]),
+        _f("coerce|exact-bigint-off-by-one", ["="], "TRY_CAST(lib.big AS BIGINT) = 12345678901234568", []),
+        _v("coerce|boolean-stays-numeric", ["*"], "(lib.qty > 1) * 2",
            every(lambda r: None if r["qty"] is None else 2 * int(r["qty"] > 1))),
-        _v("coerce|greatest", ["greatest"], "greatest(num_txt, 5)",
+        _v("coerce|greatest", ["greatest"], "greatest(lib.num_txt, 5)",
            every(lambda r: pg_greatest(num_text(r["num_txt"]), 5))),
-        _v("coerce|least", ["least"], "least(num_txt, 5)", every(lambda r: pg_least(num_text(r["num_txt"]), 5))),
+        _v("coerce|least", ["least"], "least(lib.num_txt, 5)", every(lambda r: pg_least(num_text(r["num_txt"]), 5))),
+    ]
+
+
+def _numeric_semantics_cases() -> list[Case]:
+    """True division of INT operands; two-argument ``round`` ties on DECIMAL away from zero."""
+    return [
+        _v("divide|int-operands", ["/"], "lib.k / 2", only({1: 2.5, 2: -2.5, 3: 2.0})),
+        _v("round|decimal-tie-scale-0", ["round"], "round(lib.d, 0)", only({1: 3, 2: -3})),
+        _v("round|decimal-tie-scale-2", ["round"], "round(lib.e, 2)", only({1: 0.13, 2: -0.13})),
     ]
 
 
 def library_cases() -> list[Case]:
     return [*_string_cases(), *_math_cases(), *_date_cases(), *_like_cases(), *_regex_cases(),
-            *_json_cases(), *_returning_cases(), *_coercion_cases()]
+            *_json_cases(), *_returning_cases(), *_coercion_cases(), *_numeric_semantics_cases()]
 
 
 def required_names() -> frozenset[str]:
@@ -651,11 +663,11 @@ def assert_cell(actual: Any, expected: Any, *, where: str) -> None:
 
 def assert_case(data: list[dict[str, Any]], case: Case) -> None:
     if case.keeps is not None:
-        got = {int(r[f"{case.model}.id"]) for r in data}
+        got = {int(r[f"{case.dataset}.id"]) for r in data}
         assert got == set(case.keeps), f"{case.case_id}: kept {sorted(got)}, expected {sorted(case.keeps)}"
         return
     assert case.values is not None
-    got = {int(r[f"{case.model}.id"]): r[f"{case.model}.v"] for r in data}
+    got = {int(r[f"{case.dataset}.id"]): r["v"] for r in data}
     assert set(got) == set(case.values), f"{case.case_id}: row ids {sorted(got)}"
     for rid, expected in case.values.items():
         assert_cell(got[rid], expected, where=f"{case.case_id} id={rid}")
@@ -663,18 +675,18 @@ def assert_case(data: list[dict[str, Any]], case: Case) -> None:
 
 def lib_query(*dims: Any, **kw: Any) -> SlayerQuery:
     """A row-level ``lib`` query: ``id`` plus ``dims`` (an expression string becomes the ``v`` dimension)."""
-    dimensions: list[Any] = ["id"] + [{"expression": d, "name": "v"} if isinstance(d, str) else d for d in dims]
-    return SlayerQuery.model_validate({"source_model": "lib", "distinct_dimension_values": False,
+    dimensions: list[Any] = ["lib.id"] + [{"field": d, "alias": "v"} if isinstance(d, str) else d for d in dims]
+    return SlayerQuery.model_validate({"population": "lib", "distinct_dimension_values": False,
                                        "dimensions": dimensions, **kw})
 
 
-async def emit_lib(query: SlayerQuery, *, dialect: str, models: Optional[list[SlayerModel]] = None) -> str:
+async def emit_lib(query: SlayerQuery, *, dialect: str, datasets: Optional[list[SlayerDataset]] = None) -> str:
     """Dry-run SQL for a ``lib`` query on ``dialect`` (asserts it parses there)."""
-    return await emit(query, dialect=dialect, models=models or [lib_model()])
+    return await emit(query, dialect=dialect, datasets=datasets or [lib_dataset()])
 
 
 def lib_values(resp: SlayerResponse, name: str = "v") -> dict[int, Any]:
-    return {int(r["lib.id"]): r[f"lib.{name}"] for r in resp.data}
+    return {int(r["lib.id"]): r[name] for r in resp.data}
 
 
 def lib_ids(resp: SlayerResponse) -> set[int]:
@@ -707,19 +719,26 @@ async def run_case(engine: SlayerQueryEngine, case: Case) -> None:
 # Seeding
 # --------------------------------------------------------------------------- #
 @contextlib.asynccontextmanager
-async def lib_engine(backend: str, *, models: Optional[list[SlayerModel]] = None) -> AsyncGenerator[SlayerQueryEngine]:
+async def lib_engine(backend: str, *, datasets: Optional[list[SlayerDataset]] = None) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, [LIB]), models=models or [lib_model()],
+        dialect=backend, seed=lambda p: seed_backend(backend, p, [LIB]), datasets=datasets or [lib_dataset()],
     ) as (engine, _db):
         yield engine
 
 
+_SERVER_DECIMAL = {
+    "postgres": "NUMERIC(10,3)", "mysql": "DECIMAL(10,3)", "clickhouse": "Nullable(Decimal(10,3))",
+    "tsql": "DECIMAL(10,3)", "trino": "DECIMAL(10,3)", "snowflake": "NUMBER(10,3)", "bigquery": "NUMERIC",
+}
 SERVER_LIB_TYPES: dict[str, dict[str, str]] = {
-    **SERVER_TYPES,
-    "postgres": {**SERVER_TYPES["postgres"], "TIMESTAMP": "TIMESTAMP"},
-    "mysql": {**SERVER_TYPES["mysql"], "TIMESTAMP": "DATETIME"},
-    "snowflake": {"INT": "NUMBER(38,0)", "DOUBLE": "FLOAT", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP_NTZ"},
-    "bigquery": {"INT": "INT64", "DOUBLE": "FLOAT64", "TEXT": "STRING", "TIMESTAMP": "DATETIME"},
+    dialect: {**types, "DECIMAL": _SERVER_DECIMAL[dialect]}
+    for dialect, types in {
+        **SERVER_TYPES,
+        "postgres": {**SERVER_TYPES["postgres"], "TIMESTAMP": "TIMESTAMP"},
+        "mysql": {**SERVER_TYPES["mysql"], "TIMESTAMP": "DATETIME"},
+        "snowflake": {"INT": "NUMBER(38,0)", "DOUBLE": "FLOAT", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP_NTZ"},
+        "bigquery": {"INT": "INT64", "DOUBLE": "FLOAT64", "TEXT": "STRING", "TIMESTAMP": "DATETIME"},
+    }.items()
 }
 _TEMPORAL_PREFIX = {"trino": "TIMESTAMP", "bigquery": "DATETIME"}
 _SUFFIX = {"clickhouse": " ENGINE = MergeTree ORDER BY tuple()"}
@@ -767,18 +786,18 @@ DOCS_S = {1: "x", 2: None, 3: None, 4: None, 5: None}
 DOCS_A_INT = {1: 1, 2: 2, 3: None, 4: None, 5: None}
 
 
-async def check_native_json(engine: SlayerQueryEngine, *, model: str = "docs", column: str = "payload") -> None:
+async def check_native_json(engine: SlayerQueryEngine, *, dataset: str = "docs", field: str = "payload") -> None:
     """``json_value`` over an ingested native-JSON column: TEXT and ``RETURNING INT`` reads."""
     for expr, expected in (
-        (f"json_value({column}, '$.s')", DOCS_S),
-        (f"json_value({column}, '$.a' RETURNING INT)", DOCS_A_INT),
-        (f"{column} ->> 's'", DOCS_S),
+        (f"json_value({dataset}.{field}, '$.s')", DOCS_S),
+        (f"json_value({dataset}.{field}, '$.a' RETURNING INT)", DOCS_A_INT),
+        (f"{dataset}.{field} ->> 's'", DOCS_S),
     ):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": model, "distinct_dimension_values": False,
-            "dimensions": ["id", {"expression": expr, "name": "v"}],
+            "population": dataset, "distinct_dimension_values": False,
+            "dimensions": [f"{dataset}.id", {"field": expr, "alias": "v"}],
         }))
-        got = {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+        got = {int(r[f"{dataset}.id"]): r["v"] for r in resp.data}
         assert set(got) == set(expected), (expr, resp.sql)
         for rid, value in expected.items():
             assert_cell(got[rid], value, where=f"{expr} id={rid}")
@@ -869,14 +888,14 @@ def stored_contractors(storage: ListStorage = ListStorage()) -> list[dict[str, A
     return [{k: store(v) if k in LIST_COLUMNS else v for k, v in row.items()} for row in CONTRACTORS]
 
 
-def contractors_model(*, data_source: str = "test", sql_table: str = "contractors", keyed: bool = True) -> SlayerModel:
-    scalars = {"INT": DataType.INT, "TEXT": DataType.TEXT}
+def contractors_dataset(*, data_source: str = "test", sql_table: str = "contractors", keyed: bool = True) -> SlayerDataset:
+    scalars = {"INT": DataType.INTEGER, "TEXT": DataType.STRING}
     columns = [
-        Column(name=c, type=DataType.ARRAY, element_type=scalars[k[:-2]]) if k.endswith("[]")
-        else Column(name=c, type=scalars[k], primary_key=keyed and c == "id")
+        DatasetField(name=c, datatype=DataType.ARRAY, element_type=scalars[k[:-2]]) if k.endswith("[]")
+        else DatasetField(name=c, datatype=scalars[k], primary_key=keyed and c == "id")
         for c, k in CONTRACTOR_COLUMNS
     ]
-    return SlayerModel(name="contractors", sql_table=sql_table, data_source=data_source, columns=columns)
+    return SlayerDataset(name="contractors", sql_table=sql_table, data_source=data_source, fields=columns)
 
 
 # The list functions' meaning: a list's elements are its non-NULL elements.
@@ -918,11 +937,11 @@ def list_cases(storage: ListStorage = ListStorage()) -> list[Case]:
     rows = {r["id"]: r for r in stored_contractors(storage)}
 
     def v(case_id: str, covers: Iterable[str], expr: str, fn: Callable[[dict[str, Any]], Any], **kw: Any) -> Case:
-        return Case(model="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
+        return Case(dataset="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
                     values={rid: fn(r) for rid, r in rows.items()}, **kw)
 
     def f(case_id: str, covers: Iterable[str], expr: str, fn: Callable[[dict[str, Any]], Any], **kw: Any) -> Case:
-        return Case(model="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
+        return Case(dataset="contractors", case_id=f"list|{case_id}", covers=tuple(covers), expr=expr,
                     keeps=frozenset(rid for rid, r in rows.items() if fn(r) is True), **kw)
 
     def length_plus_one(r: dict[str, Any]) -> Optional[int]:
@@ -930,54 +949,54 @@ def list_cases(storage: ListStorage = ListStorage()) -> list[Case]:
         return None if n is None else n + 1
 
     return [
-        v("contains", ["contains"], "contains(skills, 'go')", lambda r: list_contains(r["skills"], "go")),
-        v("contains-column-value", ["contains"], "contains(skills, pick)",
+        v("contains", ["contains"], "contains(contractors.skills, 'go')", lambda r: list_contains(r["skills"], "go")),
+        v("contains-column-value", ["contains"], "contains(contractors.skills, contractors.pick)",
           lambda r: list_contains(r["skills"], r["pick"])),
-        v("contains-numbers", ["contains"], "contains(scores, 9)", lambda r: list_contains(r["scores"], 9)),
-        v("contains-text-literal-on-numbers", ["contains"], "contains(scores, '5')",
+        v("contains-numbers", ["contains"], "contains(contractors.scores, 9)", lambda r: list_contains(r["scores"], 9)),
+        v("contains-text-literal-on-numbers", ["contains"], "contains(contractors.scores, '5')",
           lambda r: list_contains(r["scores"], 5)),
-        f("contains-filter", ["contains"], "contains(skills, 'go')", lambda r: list_contains(r["skills"], "go")),
-        f("not-contains", ["contains"], "NOT contains(skills, 'go')",
+        f("contains-filter", ["contains"], "contains(contractors.skills, 'go')", lambda r: list_contains(r["skills"], "go")),
+        f("not-contains", ["contains"], "NOT contains(contractors.skills, 'go')",
           lambda r: list_contains(r["skills"], "go") is False),
-        f("contains-text-unchanged", ["contains"], "contains(team, 'A')", lambda r: "A" in r["team"]),
-        v("contains_any", ["contains_any"], "contains_any(skills, ['go', 'sql'])",
+        f("contains-text-unchanged", ["contains"], "contains(contractors.team, 'A')", lambda r: "A" in r["team"]),
+        v("contains_any", ["contains_any"], "contains_any(contractors.skills, ['go', 'sql'])",
           lambda r: list_contains_any(r["skills"], ["go", "sql"])),
-        v("contains_any-numbers", ["contains_any"], "contains_any(scores, [1, 9])",
+        v("contains_any-numbers", ["contains_any"], "contains_any(contractors.scores, [1, 9])",
           lambda r: list_contains_any(r["scores"], [1, 9])),
-        v("contains_any-list-column", ["contains_any"], "contains_any(skills, required)",
+        v("contains_any-list-column", ["contains_any"], "contains_any(contractors.skills, contractors.required)",
           lambda r: list_contains_any(r["skills"], r["required"])),
-        v("contains_any-mixed-numbers", ["contains_any"], "contains_any(scores, [2.5, 9])",
+        v("contains_any-mixed-numbers", ["contains_any"], "contains_any(contractors.scores, [2.5, 9])",
           lambda r: list_contains_any(r["scores"], [Decimal("2.5"), 9])),
-        v("contains_any-text-list-on-numbers", ["contains_any"], "contains_any(scores, codes)",
+        v("contains_any-text-list-on-numbers", ["contains_any"], "contains_any(contractors.scores, contractors.codes)",
           lambda r: list_contains_any(r["scores"], as_numbers(r["codes"]))),
-        v("contains_any-empty", ["contains_any"], "contains_any(skills, [])",
+        v("contains_any-empty", ["contains_any"], "contains_any(contractors.skills, [])",
           lambda r: list_contains_any(r["skills"], [])),
-        f("contains_any-variable", ["contains_any"], "contains_any(skills, {wanted})",
+        f("contains_any-variable", ["contains_any"], "contains_any(contractors.skills, {wanted})",
           lambda r: list_contains_any(r["skills"], ["rust", "go"]), variables={"wanted": ["rust", "go"]}),
-        f("contains_any-empty-variable", ["contains_any"], "contains_any(skills, {wanted})",
+        f("contains_any-empty-variable", ["contains_any"], "contains_any(contractors.skills, {wanted})",
           lambda r: list_contains_any(r["skills"], []), variables={"wanted": []}),
-        v("contains_all", ["contains_all"], "contains_all(skills, ['go', 'sql'])",
+        v("contains_all", ["contains_all"], "contains_all(contractors.skills, ['go', 'sql'])",
           lambda r: list_contains_all(r["skills"], ["go", "sql"])),
-        v("contains_all-null-element", ["contains_all"], "contains_all(skills, ['sql'])",
+        v("contains_all-null-element", ["contains_all"], "contains_all(contractors.skills, ['sql'])",
           lambda r: list_contains_all(r["skills"], ["sql"])),
-        v("contains_all-list-column", ["contains_all"], "contains_all(skills, required)",
+        v("contains_all-list-column", ["contains_all"], "contains_all(contractors.skills, contractors.required)",
           lambda r: list_contains_all(r["skills"], r["required"])),
-        v("contains_all-mixed-numbers", ["contains_all"], "contains_all(scores, [3, 2.5])",
+        v("contains_all-mixed-numbers", ["contains_all"], "contains_all(contractors.scores, [3, 2.5])",
           lambda r: list_contains_all(r["scores"], [3, Decimal("2.5")])),
-        v("contains_all-text-list-on-numbers", ["contains_all"], "contains_all(scores, codes)",
+        v("contains_all-text-list-on-numbers", ["contains_all"], "contains_all(contractors.scores, contractors.codes)",
           lambda r: list_contains_all(r["scores"], as_numbers(r["codes"]))),
-        v("contains_all-empty", ["contains_all"], "contains_all(skills, [])",
+        v("contains_all-empty", ["contains_all"], "contains_all(contractors.skills, [])",
           lambda r: list_contains_all(r["skills"], [])),
-        f("contains_all-variable", ["contains_all"], "contains_all(skills, {wanted})",
+        f("contains_all-variable", ["contains_all"], "contains_all(contractors.skills, {wanted})",
           lambda r: list_contains_all(r["skills"], ["go", "sql"]), variables={"wanted": ["go", "sql"]}),
-        f("contains_all-empty-variable", ["contains_all"], "contains_all(skills, {wanted})",
+        f("contains_all-empty-variable", ["contains_all"], "contains_all(contractors.skills, {wanted})",
           lambda r: list_contains_all(r["skills"], []), variables={"wanted": []}),
-        v("length", ["length"], "length(skills)", lambda r: list_length(r["skills"])),
-        v("length-null-elements", ["length"], "length(scores)", lambda r: list_length(r["scores"])),
-        v("length-arithmetic", ["length", "+"], "length(skills) + 1", length_plus_one),
-        v("length-text-unchanged", ["length"], "length(name)", lambda r: len(r["name"])),
-        f("is-null", ["IS NULL"], "skills IS NULL", lambda r: r["skills"] is None),
-        f("is-not-null", ["IS NULL"], "skills IS NOT NULL", lambda r: r["skills"] is not None),
+        v("length", ["length"], "length(contractors.skills)", lambda r: list_length(r["skills"])),
+        v("length-null-elements", ["length"], "length(contractors.scores)", lambda r: list_length(r["scores"])),
+        v("length-arithmetic", ["length", "+"], "length(contractors.skills) + 1", length_plus_one),
+        v("length-text-unchanged", ["length"], "length(contractors.name)", lambda r: len(r["name"])),
+        f("is-null", ["IS NULL"], "contractors.skills IS NULL", lambda r: r["skills"] is None),
+        f("is-not-null", ["IS NULL"], "contractors.skills IS NOT NULL", lambda r: r["skills"] is not None),
     ]
 
 
@@ -1007,18 +1026,18 @@ def seed_contractors(backend: str, db_path: str, *, extra: Iterable[str] = ()) -
 
 
 @contextlib.asynccontextmanager
-async def contractors_engine(backend: str = "duckdb", *, models: Optional[list[SlayerModel]] = None,
+async def contractors_engine(backend: str = "duckdb", *, datasets: Optional[list[SlayerDataset]] = None,
                              extra: Iterable[str] = ()) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_contractors(backend, p, extra=extra),
-        models=models or [contractors_model()],
+        datasets=datasets or [contractors_dataset()],
     ) as (engine, _db):
         yield engine
 
 
-async def emit_contractors(query: SlayerQuery, *, dialect: str, models: Optional[list[SlayerModel]] = None) -> str:
+async def emit_contractors(query: SlayerQuery, *, dialect: str, datasets: Optional[list[SlayerDataset]] = None) -> str:
     """Dry-run SQL for a ``contractors`` query on ``dialect`` (asserts it parses there)."""
-    return await emit(query, dialect=dialect, models=models or [contractors_model()])
+    return await emit(query, dialect=dialect, datasets=datasets or [contractors_dataset()])
 
 
 _SERVER_LIST_TYPES: dict[str, dict[str, str]] = {

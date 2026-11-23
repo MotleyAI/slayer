@@ -1,4 +1,4 @@
-"""Tests for slayer.facade.catalog_sql — DuckDB-backed catalog SQL executor (DEV-1558).
+"""Tests for slayer.facade.catalog_sql — DuckDB-backed catalog SQL executor.
 
 Replaces canned-row catalog matching with arbitrary SQL execution against an
 in-memory DuckDB materialising the catalog corpus. These tests pin the corpus
@@ -17,7 +17,7 @@ import sqlglot
 from pydantic import BaseModel
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog,
@@ -46,43 +46,43 @@ def _parse(sql: str):
 
 
 def _demo_catalog() -> FacadeCatalog:
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
         description="Demo orders table",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE, description="Revenue cents"),
-            Column(name="status", type=DataType.TEXT, label="Status"),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT, description="Revenue cents"),
+            DatasetField(name="status", datatype=DataType.STRING, label="Status"),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
-        measures=[
-            ModelMeasure(
-                name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE,
+        metrics=[
+            DatasetMetric(
+                name="aov", expression="sum(revenue) / count(*)", datatype=DataType.FLOAT,
                 description="Average order value",
             ),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers",
         data_source="jaffle",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
     # Production builds catalogs grouped by postgres_schema (default "public"),
     # so the demo catalog uses the same path — datasource "jaffle" folds under
     # schema "public".
     return build_catalog_grouped_by_schema(
-        models_by_datasource={"jaffle": [orders, customers]}
+        datasets_by_datasource={"jaffle": [orders, customers]}
     )
 
 
-# DEV-1815: building a CatalogSqlExecutor materialises an in-memory DuckDB
+# Building a CatalogSqlExecutor materialises an in-memory DuckDB
 # (37 table creates + bulk inserts). The default demo catalog is deterministic
 # and every query here is read-only, so reuse one executor per datasource across
 # the ~80 default-catalog tests instead of rebuilding it each call. Tests that
@@ -110,7 +110,7 @@ def _run(sql: str, *, executor: CatalogSqlExecutor | None = None) -> RowBatch:
     return ex.execute(parsed=_parse(sql), sql=sql)
 
 
-# --- DEV-1815 reuse guard ---------------------------------------------------
+# --- Executor reuse guard ---------------------------------------------------
 
 
 def test_dev1815_demo_executor_built_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,24 +202,24 @@ def test_pg_tables_one_row_per_table_typed_model() -> None:
 
 
 def test_view_typed_models_surface_as_pg_views() -> None:
-    """Codex review: SQL-backed models (``table_type='VIEW'``) must
+    """Codex review: SQL-backed datasets (``table_type='VIEW'``) must
     surface as views to view-aware clients — emitted with
     ``relkind='v'`` in ``pg_class`` AND one row in ``pg_views``. They
     are NOT in ``pg_tables`` (M1)."""
-    sql_model = SlayerModel(
+    sql_model = SlayerDataset(
         name="custom_view", data_source="jaffle", sql="SELECT 1 AS id",
-        columns=[Column(name="id", type=DataType.INT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER)],
     )
-    cat = build_catalog_grouped_by_schema(models_by_datasource={"jaffle": [sql_model]})
+    cat = build_catalog_grouped_by_schema(datasets_by_datasource={"jaffle": [sql_model]})
     relations = {r.name: r for r in build_catalog_relations(cat)}
-    # pg_tables filters out VIEW-typed models (M1).
+    # pg_tables filters out VIEW-typed datasets (M1).
     assert relations["pg_tables"].rows == []
     # pg_matviews unused — materialized-view abstraction not implemented.
     assert relations["pg_matviews"].rows == []
-    # pg_class advertises relkind='v' for VIEW-typed models.
+    # pg_class advertises relkind='v' for VIEW-typed datasets.
     cls_row = next(r for r in relations["pg_class"].rows if r["relname"] == "custom_view")
     assert cls_row["relkind"] == "v"
-    # pg_views has one row per VIEW-typed model.
+    # pg_views has one row per VIEW-typed dataset.
     view_rows = relations["pg_views"].rows
     assert len(view_rows) == 1
     assert view_rows[0]["viewname"] == "custom_view"
@@ -227,7 +227,7 @@ def test_view_typed_models_surface_as_pg_views() -> None:
 
 
 def test_table_typed_models_stay_as_pg_class_r() -> None:
-    """Regression: normal ``sql_table``-mode models stay relkind='r' and
+    """Regression: normal ``sql_table``-mode datasets stay relkind='r' and
     do not bleed into pg_views."""
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
     for row in relations["pg_class"].rows:
@@ -340,7 +340,7 @@ def test_is_catalog_only_false_for_user_model() -> None:
 
 
 def test_is_catalog_only_false_for_mixed() -> None:
-    # FROM a catalog table joined to a user model is NOT catalog-only.
+    # FROM a catalog table joined to a user dataset is NOT catalog-only.
     sql = "SELECT * FROM pg_catalog.pg_class c JOIN orders o ON c.relname = o.status"
     assert is_catalog_only(_parse(sql)) is False
 
@@ -357,7 +357,7 @@ def test_is_catalog_only_skips_cte_names() -> None:
 
 
 def test_is_catalog_only_cte_body_user_table_still_false() -> None:
-    # A CTE that references a user model in its body — outer 'x' is exempt
+    # A CTE that references a user dataset in its body — outer 'x' is exempt
     # because it's CTE-defined, but the CTE BODY's reference to `orders`
     # must still disqualify (otherwise an exemption-everything implementation
     # would mark all unknown refs as catalog-only).
@@ -373,8 +373,8 @@ def test_is_catalog_only_unknown_table_false() -> None:
 
 @pytest.mark.parametrize("name", ["columns", "tables", "schemata"])
 def test_is_catalog_only_bare_info_schema_names_disallowed(name: str) -> None:
-    # DEV-1558 Codex review: bare info-schema names like `columns` /
-    # `tables` shadow user models with the same name. Only the qualified
+    # Bare info-schema names like `columns` /
+    # `tables` shadow user datasets with the same name. Only the qualified
     # form `information_schema.columns` routes to the catalog executor;
     # bare `columns` flows down to the regular SLayer translator.
     assert is_catalog_only(_parse(f"SELECT * FROM {name}")) is False
@@ -558,7 +558,7 @@ def test_tableless_context_function_routes_to_executor_via_translator(sql: str) 
     siblings) are parsed by sqlglot as bare Column refs without a
     FROM clause. The translator must classify them as catalog-only
     (via is_catalog_only) so they reach the executor instead of
-    falling through to the SLayer model-query path with a 'no FROM
+    falling through to the SLayer dataset-query path with a 'no FROM
     clause' error."""
     parsed = _parse(sql)
     assert is_catalog_only(parsed) is True
@@ -576,7 +576,7 @@ def test_information_schema_qualified_column_projection_resolves() -> None:
     )
     assert batch.rows
     cols = {r["column_name"] for r in batch.rows}
-    # The demo catalog's ``orders`` model defines four dimension columns;
+    # The demo catalog's ``orders`` dataset defines four dimension fields;
     # all four must surface so a partial qualifier-strip would fail loudly.
     assert {"id", "revenue", "status", "ordered_at"} <= cols
 
@@ -729,17 +729,17 @@ def test_current_schemas_non_first_index_returns_null() -> None:
 
 
 def test_is_schemata_folds_datasources_to_public_by_default() -> None:
-    """DEV-1594: datasources without a custom ``postgres_schema`` fold into a
+    """Datasources without a custom ``postgres_schema`` fold into a
     single ``public`` schema, so ``information_schema.schemata`` has one row
     even when multiple datasources back the catalog."""
-    cat = build_catalog_grouped_by_schema(models_by_datasource={
-        "dsA": [SlayerModel(
+    cat = build_catalog_grouped_by_schema(datasets_by_datasource={
+        "dsA": [SlayerDataset(
             name="t1", data_source="dsA", sql_table="t1",
-            columns=[Column(name="x", type=DataType.INT)],
+            fields=[DatasetField(name="x", datatype=DataType.INTEGER)],
         )],
-        "dsB": [SlayerModel(
+        "dsB": [SlayerDataset(
             name="t2", data_source="dsB", sql_table="t2",
-            columns=[Column(name="y", type=DataType.INT)],
+            fields=[DatasetField(name="y", datatype=DataType.INTEGER)],
         )],
     })
     relations = {r.name: r for r in build_catalog_relations(cat, datasource="dsX")}
@@ -752,14 +752,14 @@ def test_is_schemata_lists_custom_postgres_schemas() -> None:
     """A datasource with a custom ``postgres_schema`` surfaces as its own
     schema row alongside ``public``."""
     cat = build_catalog_grouped_by_schema(
-        models_by_datasource={
-            "dsA": [SlayerModel(
+        datasets_by_datasource={
+            "dsA": [SlayerDataset(
                 name="t1", data_source="dsA", sql_table="t1",
-                columns=[Column(name="x", type=DataType.INT)],
+                fields=[DatasetField(name="x", datatype=DataType.INTEGER)],
             )],
-            "dsB": [SlayerModel(
+            "dsB": [SlayerDataset(
                 name="t2", data_source="dsB", sql_table="t2",
-                columns=[Column(name="y", type=DataType.INT)],
+                fields=[DatasetField(name="y", datatype=DataType.INTEGER)],
             )],
         },
         schema_by_datasource={"dsB": "warehouse"},
@@ -879,7 +879,7 @@ def test_executor_distinguishes_duplicate_output_column_names() -> None:
 
 def test_is_metrics_emits_jdbc_type_names() -> None:
     """The SLayer ``INFORMATION_SCHEMA.METRICS`` extension preserves the
-    JDBC-style type contract from the pre-DEV-1558 ``match_info_schema``
+    JDBC-style type contract from the former ``match_info_schema``
     path (DOUBLE / BIGINT / TIMESTAMP rather than Postgres-internal
     float8 / int8 / timestamp)."""
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
@@ -1017,18 +1017,18 @@ def test_result_types_within_six_datatypes() -> None:
         "DATE '2026-01-01' AS dt, TIMESTAMP '2026-01-01' AS ts, 'x' AS t"
     )
     type_by_name = {c.name: c.type for c in batch.columns}
-    assert type_by_name["i"] == DataType.INT
-    assert type_by_name["d"] == DataType.DOUBLE
+    assert type_by_name["i"] == DataType.INTEGER
+    assert type_by_name["d"] == DataType.FLOAT
     assert type_by_name["b"] == DataType.BOOLEAN
     assert type_by_name["dt"] == DataType.DATE
-    assert type_by_name["ts"] == DataType.TIMESTAMP
-    assert type_by_name["t"] == DataType.TEXT
+    assert type_by_name["ts"] == DataType.DATETIME
+    assert type_by_name["t"] == DataType.STRING
 
 
 def test_unmapped_duckdb_type_falls_back_to_text() -> None:
     batch = _run("SELECT CAST('00000000-0000-0000-0000-000000000000' AS UUID) AS u")
     # UUID isn't one of the six coarse types → falls back to TEXT.
-    assert batch.columns[0].type == DataType.TEXT
+    assert batch.columns[0].type == DataType.STRING
 
 
 # --- error handling ---------------------------------------------------------
@@ -1072,29 +1072,29 @@ def test_executor_for_returns_same_instance_for_identical_catalog() -> None:
 def test_executor_for_invalidates_on_catalog_change() -> None:
     cat1 = _demo_catalog()
     a = executor_for(cat1)
-    # Add a new model and rebuild — same datasource, but with an additional table.
-    extended = build_catalog(models_by_datasource={"jaffle": [
-        SlayerModel(
+    # Add a new dataset and rebuild — same datasource, but with an additional table.
+    extended = build_catalog(datasets_by_datasource={"jaffle": [
+        SlayerDataset(
             name="orders", data_source="jaffle", sql_table="orders",
             description="Demo orders table",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="revenue", type=DataType.DOUBLE),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="ordered_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             ],
-            measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE)],
+            metrics=[DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.FLOAT)],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="customers", data_source="jaffle", sql_table="customers",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="payments", data_source="jaffle", sql_table="payments",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         ),
     ]})
     b = executor_for(extended)
@@ -1103,26 +1103,26 @@ def test_executor_for_invalidates_on_catalog_change() -> None:
 
 def test_executor_for_distinguishes_column_order() -> None:
     """CR review: column position drives ``attnum`` / ``ordinal_position``
-    / ``pg_description.objsubid``, so reordering a model's columns under
+    / ``pg_description.objsubid``, so reordering a dataset's fields under
     the same name set MUST produce a new executor — otherwise the cache
     serves stale catalog metadata."""
-    model_a = SlayerModel(
+    model_a = SlayerDataset(
         name="t", data_source="ds_order_test", sql_table="t",
-        columns=[
-            Column(name="x", type=DataType.INT),
-            Column(name="y", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="x", datatype=DataType.INTEGER),
+            DatasetField(name="y", datatype=DataType.STRING),
         ],
     )
-    model_b = SlayerModel(
+    model_b = SlayerDataset(
         name="t", data_source="ds_order_test", sql_table="t",
-        columns=[
+        fields=[
             # Same column names, swapped order.
-            Column(name="y", type=DataType.TEXT),
-            Column(name="x", type=DataType.INT),
+            DatasetField(name="y", datatype=DataType.STRING),
+            DatasetField(name="x", datatype=DataType.INTEGER),
         ],
     )
-    cat_a = build_catalog(models_by_datasource={"ds_order_test": [model_a]})
-    cat_b = build_catalog(models_by_datasource={"ds_order_test": [model_b]})
+    cat_a = build_catalog(datasets_by_datasource={"ds_order_test": [model_a]})
+    cat_b = build_catalog(datasets_by_datasource={"ds_order_test": [model_b]})
     assert executor_for(cat_a) is not executor_for(cat_b)
 
 
@@ -1130,18 +1130,18 @@ def test_executor_for_evicts_at_four_entries() -> None:
     # Build 6 distinct catalogs (different data source names) and confirm FIFO.
     instances = []
     for idx in range(6):
-        cat = build_catalog(models_by_datasource={f"ds{idx}": [
-            SlayerModel(
+        cat = build_catalog(datasets_by_datasource={f"ds{idx}": [
+            SlayerDataset(
                 name="t", data_source=f"ds{idx}", sql_table="t",
-                columns=[Column(name="x", type=DataType.INT)],
+                fields=[DatasetField(name="x", datatype=DataType.INTEGER)],
             ),
         ]})
         instances.append(executor_for(cat))
     # First two should have been evicted; re-fetching them returns NEW instances.
-    cat0 = build_catalog(models_by_datasource={"ds0": [
-        SlayerModel(
+    cat0 = build_catalog(datasets_by_datasource={"ds0": [
+        SlayerDataset(
             name="t", data_source="ds0", sql_table="t",
-            columns=[Column(name="x", type=DataType.INT)],
+            fields=[DatasetField(name="x", datatype=DataType.INTEGER)],
         ),
     ]})
     refetched_0 = executor_for(cat0)
@@ -1264,8 +1264,8 @@ class TestCatalogExtensibilityHook:
         custom = CatalogRelation(
             name="pg_roles",
             columns=[
-                FacadeColumn(name="oid", type=DataType.INT),
-                FacadeColumn(name="rolname", type=DataType.TEXT),
+                FacadeColumn(name="oid", type=DataType.INTEGER),
+                FacadeColumn(name="rolname", type=DataType.STRING),
                 FacadeColumn(name="rolcanlogin", type=DataType.BOOLEAN),
             ],
             rows=[
@@ -1283,7 +1283,7 @@ class TestCatalogExtensibilityHook:
     def test_extra_relations_adds_new_table_when_no_default(self) -> None:
         custom = CatalogRelation(
             name="pg_extension",  # not in defaults
-            columns=[FacadeColumn(name="extname", type=DataType.TEXT)],
+            columns=[FacadeColumn(name="extname", type=DataType.STRING)],
             rows=[{"extname": "plpgsql"}],
         )
         relations = build_catalog_relations(
@@ -1301,7 +1301,7 @@ class TestCatalogExtensibilityHook:
         assert a is b  # cached default
         custom = CatalogRelation(
             name="pg_roles",
-            columns=[FacadeColumn(name="rolname", type=DataType.TEXT)],
+            columns=[FacadeColumn(name="rolname", type=DataType.STRING)],
             rows=[{"rolname": "tenant_a"}],
         )
         with_extras = executor_for(cat, datasource="jaffle", extra_relations=[custom])
@@ -1312,7 +1312,7 @@ class TestCatalogExtensibilityHook:
         run against the catalog DuckDB sees the new rows."""
         custom = CatalogRelation(
             name="pg_roles",
-            columns=[FacadeColumn(name="rolname", type=DataType.TEXT)],
+            columns=[FacadeColumn(name="rolname", type=DataType.STRING)],
             rows=[{"rolname": "tenant_a"}, {"rolname": "tenant_b"}],
         )
         ex = executor_for(_demo_catalog(), datasource="jaffle", extra_relations=[custom])
@@ -1423,9 +1423,9 @@ class TestRegclassMapCustomSchema:
     def test_regclass_map_includes_real_schema_qualified_form(self) -> None:
         # Build a catalog whose datasource has a custom postgres_schema.
         cat = build_catalog_grouped_by_schema(
-            models_by_datasource={"hr": [
-                SlayerModel(name="employees", data_source="hr", sql_table="employees",
-                            columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
+            datasets_by_datasource={"hr": [
+                SlayerDataset(name="employees", data_source="hr", sql_table="employees",
+                            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)]),
             ]},
             schema_by_datasource={"hr": "people"},
         )
@@ -1461,13 +1461,13 @@ class TestPublicSchemaFallbackGuard:
     def test_public_fallback_rejected_with_multiple_schemas(self) -> None:
         """Isolation: with two datasources / two schemas, ``public.X``
         can't reach across — caller must qualify with the real schema."""
-        cat_a = build_catalog(models_by_datasource={"sales": [
-            SlayerModel(name="orders", data_source="sales", sql_table="orders",
-                        columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
+        cat_a = build_catalog(datasets_by_datasource={"sales": [
+            SlayerDataset(name="orders", data_source="sales", sql_table="orders",
+                        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)]),
         ]})
-        cat_b = build_catalog(models_by_datasource={"hr": [
-            SlayerModel(name="people", data_source="hr", sql_table="people",
-                        columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
+        cat_b = build_catalog(datasets_by_datasource={"hr": [
+            SlayerDataset(name="people", data_source="hr", sql_table="people",
+                        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)]),
         ]})
         # Merge them into one multi-schema catalog (mimics the
         # postgres_schema-per-datasource layout).
@@ -1640,7 +1640,7 @@ class TestPgCollationAndTypcollation:
             "(SELECT oid FROM pg_catalog.pg_class WHERE relname = 'orders')"
         )
         batch = _run(sql)
-        # Rows returned — one per column of the orders model.
+        # Rows returned — one per column of the orders dataset.
         assert len(batch.rows) > 0
         # The correlated attcollation sub-select is NULL for every row
         # (every column uses the default collation).

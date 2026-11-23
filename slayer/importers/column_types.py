@@ -1,4 +1,4 @@
-"""Imported column types: the database's first, then the source's declared type, then the aggregation's."""
+"""Imported field types: the database's first, then the source's declared type, then the aggregation's."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.qualify_columns import qualify_columns
 from sqlglot.schema import MappingSchema
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, NUMERIC_DATATYPES, TEMPORAL_DATATYPES, finer_datatype
 from slayer.live_schema.ingestion import introspect_table_columns
 from slayer.live_schema.schema_scope import live_name, table_live_parts, table_schema_ref
 from slayer.importers.physical import PhysicalIndex, case_insensitive, live_exact_name
@@ -33,16 +33,16 @@ def declared_type(text: str, *, dialect: str | None) -> Typed | None:
         found = slayer_type_of(exp.DataType.build(text, dialect=dialect))
     except (SqlglotError, ValueError):
         return None
-    return None if found[0] is DataType.UNKNOWN else found
+    return None if found[0].is_opaque else (finer_datatype(found[0], text), found[1])
 
 
 def implied_type(agg: str) -> Typed | None:
     """The type an aggregation implies of its input: numeric for ``sum``-like, ``TEXT`` for a count."""
     if agg == "sum_boolean":
-        return DataType.INT, None
+        return DataType.INTEGER, None
     if agg in _NUMERIC_AGGS:
-        return DataType.DOUBLE, None
-    return (DataType.TEXT, None) if agg in _COUNT_AGGS else None
+        return DataType.FLOAT, None
+    return (DataType.STRING, None) if agg in _COUNT_AGGS else None
 
 
 def refused_over_list(agg: str) -> bool:
@@ -50,32 +50,33 @@ def refused_over_list(agg: str) -> bool:
     return agg != "count"
 
 
-_FAMILIES = ({DataType.INT, DataType.DOUBLE}, {DataType.DATE, DataType.TIMESTAMP})
+_FAMILIES = (NUMERIC_DATATYPES, TEMPORAL_DATATYPES)
 
 
 def contradicts(declared: Typed, live: Typed) -> bool:
     """Whether a live type contradicts a declared one (``INT`` vs ``DOUBLE``, ``DATE`` vs ``TIMESTAMP`` agree)."""
     if declared[0] is DataType.ARRAY or live[0] is DataType.ARRAY:
-        return declared != live and not (declared[0] is live[0] and DataType.UNKNOWN in (declared[1], live[1]))
+        return declared != live and not (declared[0] is live[0] and any(
+            e is not None and e.is_opaque for e in (declared[1], live[1])))
     return declared[0] is not live[0] and not any({declared[0], live[0]} <= family for family in _FAMILIES)
 
 
 def offline_note(reason: str) -> str:
-    return f"Column types were not checked against the database ({reason}); re-import against a reachable " \
+    return f"Field types were not checked against the database ({reason}); re-import against a reachable " \
            f"datasource to type them from the live schema."
 
 
-def untyped_message(measure: str, *, agg: str, column: str) -> str:
-    return (f"Measure {measure!r} was dropped: {agg} needs the type of {column!r}, which no datasource or "
+def untyped_message(metric: str, *, agg: str, field: str) -> str:
+    return (f"Metric {metric!r} was dropped: {agg} needs the type of {field!r}, which no datasource or "
             f"declaration gives; re-import against a reachable datasource or declare the type.")
 
 
-def list_refusal(measure: str, *, agg: str, column: str) -> str:
-    return f"Measure {measure!r} was dropped: {agg} over the list (ARRAY) column {column!r} is not supported."
+def list_refusal(metric: str, *, agg: str, field: str) -> str:
+    return f"Metric {metric!r} was dropped: {agg} over the list (ARRAY) field {field!r} is not supported."
 
 
-def contradiction_note(column: str, *, declared: Typed, live: Typed) -> str:
-    return (f"Column {column!r} declares {_shown(declared)} but the live column is {_shown(live)}; using "
+def contradiction_note(field: str, *, declared: Typed, live: Typed) -> str:
+    return (f"Field {field!r} declares {_shown(declared)} but the live column is {_shown(live)}; using "
             f"{_shown(live)}.")
 
 
@@ -148,7 +149,7 @@ async def _query_labels(*, client: SqlClient, query: exp.Query, dialect: SqlDial
 
 def _typed(found: ResultColumnType) -> Typed:
     if found.type is DataType.ARRAY:
-        return DataType.ARRAY, found.element_type or DataType.UNKNOWN
+        return DataType.ARRAY, found.element_type or DataType.OPAQUE
     return found.type, None
 
 
@@ -180,7 +181,7 @@ class LiveSource:
         """Whether ``ident`` names an output label a query source holds more than once."""
         return self._label_key(ident) in self._duplicated
 
-    def column(self, physical: exp.Identifier | str) -> Typed | None:
+    def field(self, physical: exp.Identifier | str) -> Typed | None:
         """The live type of the one physical column ``physical`` names; ``None`` for none or several."""
         found = self._index.live_names(exp.to_identifier(physical) if isinstance(physical, str) else physical)
         return self._by_exact[found[0]] if len(found) == 1 else None
@@ -194,7 +195,7 @@ class LiveSource:
         found = self.probed(expr)
         if found is None:
             return None
-        return (DataType.ARRAY, DataType.UNKNOWN) if found.type is DataType.ARRAY else (found.type, None)
+        return (DataType.ARRAY, DataType.OPAQUE) if found.type is DataType.ARRAY else (found.type, None)
 
 
 class LiveDatasource:

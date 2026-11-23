@@ -14,14 +14,12 @@ from typing import Any
 import pytest
 
 from slayer.async_utils import run_sync
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.database import engine_factory
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema import ingestion, schema_drift
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import OSIDocument
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._compat_helpers import future_warnings, recorded
 from tests._gateway_harness import (
@@ -30,7 +28,7 @@ from tests._gateway_harness import (
     GatewayFactory,
     backend_of,
     no_direct_access,
-    orders_model,
+    orders_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
@@ -41,20 +39,12 @@ ORDERS_PROJECT = DbtProject(
     semantic_models=[], metrics=[],
     regular_models=[DbtRegularModel(name="orders", schema_name="main", alias="orders", description="Orders")],
 )
-ORDERS_OSI = OSIDocument.model_validate({
-    "version": "0.2.0.dev0", "name": "shop",
-    "datasets": [{
-        "name": "orders", "source": "orders",
-        "fields": [{"name": "status", "expression": {"sql": "status"}},
-                   {"name": "big", "expression": {"sql": "amount * 2"}}],
-    }],
-})
-COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 
 
 
-def _dumps(models: list[SlayerModel]) -> list[dict]:
-    return [m.model_dump(mode="json") for m in sorted(models, key=lambda m: m.name)]
+def _dumps(datasets: list[SlayerDataset]) -> list[dict]:
+    return [m.model_dump(mode="json") for m in sorted(datasets, key=lambda m: m.name)]
 
 
 @contextlib.contextmanager
@@ -69,7 +59,7 @@ def _engine(base: Path, *, datasource: DatasourceConfig, **kwargs: Any) -> Gener
 
 
 def _stored(engine: SlayerQueryEngine) -> list[dict]:
-    models, _ = engine.run_sync(engine.storage.load_models(data_source=DS_NAME))
+    models, _ = engine.run_sync(engine.storage.load_datasets(data_source=DS_NAME))
     return _dumps(models)
 
 
@@ -104,7 +94,7 @@ _NO_CLIENT: dict[str, Callable[[DatasourceConfig, YAMLStorage], Any]] = {
     "ingest": lambda ds, _store: ingestion.ingest_datasource(ds),  # pyright: ignore[reportCallIssue]
     "report": lambda ds, _store: ingestion.ingest_datasource_report(ds),  # pyright: ignore[reportCallIssue]
     "idempotent": lambda ds, store: run_sync(ingestion.ingest_datasource_idempotent(datasource=ds, storage=store)),  # pyright: ignore[reportCallIssue]
-    "validate": lambda ds, _store: run_sync(schema_drift.validate_datasource(datasource=ds, models=[orders_model()])),  # pyright: ignore[reportCallIssue]
+    "validate": lambda ds, _store: run_sync(schema_drift.validate_datasource(datasource=ds, datasets=[orders_dataset()])),  # pyright: ignore[reportCallIssue]
 }
 
 
@@ -121,10 +111,10 @@ def test_a_call_without_a_client_is_refused(form: str, tmp_path: Path) -> None:
 async def test_validate_datasource_takes_no_sql_clients(sqlite_shop: DatasourceConfig, tmp_path: Path) -> None:
     engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "store")))
     try:
-        models, client = [orders_model()], engine.client_for(sqlite_shop)
+        models, client = [orders_dataset()], engine.client_for(sqlite_shop)
         with recorded(), pytest.raises(TypeError):
             await schema_drift.validate_datasource(
-                datasource=sqlite_shop, models=models, client=client, sql_clients={},  # pyright: ignore[reportCallIssue]
+                datasource=sqlite_shop, datasets=models, client=client, sql_clients={},  # pyright: ignore[reportCallIssue]
             )
     finally:
         await engine.aclose()
@@ -146,36 +136,27 @@ def test_a_scope_error_fails_before_reading(sqlite_shop: DatasourceConfig, tmp_p
 # --------------------------------------------------------------------------- #
 # Converters
 # --------------------------------------------------------------------------- #
-def _client_converter(kind: str, *, dialect: str | None) -> Any:
-    if kind == "dbt":
-        return DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_models=True)
-    return OsiToSlayerConverter(documents=[ORDERS_OSI], data_source=DS_NAME, target_dialect=dialect)
+def _client_converter() -> DbtToSlayerConverter:
+    return DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_datasets=True)
 
-@pytest.mark.parametrize("kind", ["dbt", "osi"])
-def test_a_positional_converter_argument_is_refused(kind: str) -> None:
-    converter, source = (DbtToSlayerConverter, ORDERS_PROJECT) if kind == "dbt" else (OsiToSlayerConverter, [ORDERS_OSI])
+def test_a_positional_converter_argument_is_refused() -> None:
     with recorded(), pytest.raises(TypeError):
-        converter(source, DS_NAME, True)  # pyright: ignore[reportCallIssue, reportArgumentType]
+        DbtToSlayerConverter(ORDERS_PROJECT, DS_NAME, True)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
-@pytest.mark.parametrize("kind", ["dbt", "osi"])
-def test_a_converter_takes_no_sa_engine(kind: str) -> None:
-    converter: Any = DbtToSlayerConverter if kind == "dbt" else OsiToSlayerConverter
-    source = {"project": ORDERS_PROJECT} if kind == "dbt" else {"documents": [ORDERS_OSI]}
+def test_a_converter_takes_no_sa_engine() -> None:
+    converter: Any = DbtToSlayerConverter
     with recorded(), pytest.raises(TypeError):
-        converter(**source, data_source=DS_NAME, sa_engine=None)
+        converter(project=ORDERS_PROJECT, data_source=DS_NAME, sa_engine=None)
 
 
-@pytest.mark.parametrize("kind", ["dbt", "osi"])
-async def test_convert_reads_only_the_collected_metadata(
-    kind: str, sqlite_shop: DatasourceConfig, tmp_path: Path,
-) -> None:
+async def test_convert_reads_only_the_collected_metadata(sqlite_shop: DatasourceConfig, tmp_path: Path) -> None:
     factory = GatewayFactory()
     engine = SlayerQueryEngine(
         storage=await shop_storage(str(tmp_path / "store"), datasource=sqlite_shop), client_factory=factory,
     )
     try:
-        converter = _client_converter(kind, dialect=sqlite_shop.type)
+        converter = _client_converter()
         await converter.collect_metadata(client=engine.client_for(sqlite_shop))
         collected = len(factory.all_calls())
         with no_direct_access(backends=[backend_of(sqlite_shop)]) as guard:
@@ -186,7 +167,7 @@ async def test_convert_reads_only_the_collected_metadata(
     assert collected
     assert len(factory.all_calls()) == collected
     assert guard.attempts == []
-    assert result.models
+    assert result.datasets
 
 
 # --------------------------------------------------------------------------- #
@@ -201,11 +182,10 @@ def test_client_supplied_forms_are_silent(shop: DatasourceConfig, tmp_path: Path
             engine.run_sync(ingestion.ingest_datasource_async(shop, client=client))
             engine.run_sync(ingestion.ingest_datasource_report_async(shop, client=client))
             engine.run_sync(ingestion.ingest_datasource_idempotent(datasource=shop, storage=engine.storage, client=client))
-            engine.run_sync(schema_drift.validate_datasource(datasource=shop, models=[orders_model()], client=client))
-            for kind in ("dbt", "osi"):
-                converter = _client_converter(kind, dialect=shop.type)
-                engine.run_sync(converter.collect_metadata(client=client))
-                converter.convert()
+            engine.run_sync(schema_drift.validate_datasource(datasource=shop, datasets=[orders_dataset()], client=client))
+            converter = _client_converter()
+            engine.run_sync(converter.collect_metadata(client=client))
+            converter.convert()
     assert future_warnings(caught) == []
 
 
@@ -221,10 +201,10 @@ def test_a_client_survives_a_sync_ingestion(shop: DatasourceConfig, tmp_path: Pa
         client = engine.client_for(shop)
         models = ingestion.ingest_datasource(shop, client=client)
         for model in models:
-            engine.run_sync(engine.storage.save_model(model))
+            engine.run_sync(engine.storage.save_dataset(model))
         response = engine.execute_sync(COUNT_ORDERS)
         assert engine.client_for(shop) is client
-    assert response.data == [{"orders.n": 4}]
+    assert response.data == [{"n": 4}]
 
 
 def test_the_async_entry_points_still_read_as_coroutine_functions() -> None:

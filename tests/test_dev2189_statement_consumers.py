@@ -24,7 +24,7 @@ from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 from slayer.sql.physical_tables import physical_tables
 from tests._dev2120_fixtures import emit_contractors
-from tests._dev2137_fixtures import all_models, measure, query
+from tests._dev2137_fixtures import all_datasets, metric, query
 from tests._dev2189_fixtures import (
     EMITTED_DIALECTS,
     POLICIES,
@@ -100,7 +100,7 @@ async def test_policy_hop_tables_count_for_refresh_keys() -> None:
 # --------------------------------------------------------------------------- #
 # Result columns
 # --------------------------------------------------------------------------- #
-JOINED_KEYS = ["orders.customers.name", "orders.customers.regions.name", "orders.amount_sum"]
+JOINED_KEYS = ["customers.name", "customers.regions.name", "orders.amount_sum"]
 
 
 @pytest.mark.parametrize("policy", [None, "join_multi_hop"])
@@ -135,7 +135,7 @@ LONG = "a" * 70
 @pytest.mark.parametrize("policy", [None, "join_multi_hop"])
 async def test_length_fitted_result_names_come_back_canonical(policy: Optional[str]) -> None:
     long_query = SlayerQuery.model_validate({
-        "source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "sum(amount)", "name": LONG}],
+        "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "sum(orders.amount)", "alias": LONG}],
     })
     async with emission_engine("postgres") as (base, _):
         engine = SlayerQueryEngine(storage=base.storage, policy=POLICIES[policy] if policy else None)
@@ -146,7 +146,7 @@ async def test_length_fitted_result_names_come_back_canonical(policy: Optional[s
     assert response.sql is not None
     emitted = parsed_query(response.sql, dialect="postgres").named_selects
     assert all(len(name.encode()) <= 63 for name in emitted)
-    assert response.columns == ["orders.status", f"orders.{LONG}"]
+    assert response.columns == ["orders.status", LONG]
 
 
 async def test_executed_rows_carry_the_canonical_keys_in_projection_order() -> None:
@@ -169,21 +169,21 @@ def _profile(version: tuple[int, int]):
 
 
 #: Unnests ``skills`` and filters through a correlated semi-join in the same SELECT.
-UNNEST_BESIDE_SEMI_JOIN = query(dimensions=["team"], filters=["assignments.id = 1"],
-                                measures=[measure("count(skills.*)", "n")])
+UNNEST_BESIDE_SEMI_JOIN = query(dimensions=["contractors.team"], filter=["assignments.id = 1"],
+                                metrics=[metric("count(contractors.skills.*)", "n")])
 
 
 async def test_unnest_beside_a_semi_join_is_refused_before_25_8(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SlayerSQLClient, "server_profile", _profile((25, 4)))
-    models = all_models()
+    models = all_datasets()
     with pytest.raises(SlayerError, match="25.8") as exc:
-        await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", models=models)
+        await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", datasets=models)
     assert "ARRAY JOIN" in str(exc.value)
 
 
 async def test_unnest_beside_a_semi_join_runs_from_25_8(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SlayerSQLClient, "server_profile", _profile((25, 8)))
-    assert await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", models=all_models())
+    assert await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", datasets=all_datasets())
 
 
 _EXISTS = "EXISTS(SELECT 1 FROM a WHERE a.c = p.id)"

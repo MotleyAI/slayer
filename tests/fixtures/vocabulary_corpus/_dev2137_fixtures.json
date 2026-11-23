@@ -1,0 +1,81 @@
+{
+ "source": "tests/_dev2137_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "contractors",
+    "join_pairs": [
+     [
+      "contractor_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "contractors",
+    "from_columns": [
+     "contractor_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "assignments",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "contractors.skills.value = 'sql'"
+    ]
+   },
+   "new": {
+    "population": "assignments",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "contractors.skills.value = 'sql'"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 213,
+   "reason": "not fully literal"
+  }
+ ]
+}

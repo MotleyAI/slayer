@@ -1,0 +1,99 @@
+{
+ "source": "tests/test_dev1743_join_alias_registry.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "host",
+    "dimensions": [
+     "chain_val",
+     "direct_val"
+    ]
+   },
+   "new": {
+    "population": "host",
+    "dimensions": [
+     "chain_val",
+     "direct_val"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "host",
+    "dimensions": [
+     "direct_val"
+    ],
+    "measures": [
+     "count(*)"
+    ],
+    "order": [
+     {
+      "column": "a.b.val",
+      "direction": "asc"
+     }
+    ]
+   },
+   "new": {
+    "population": "host",
+    "dimensions": [
+     "direct_val"
+    ],
+    "metrics": [
+     "count(*)"
+    ],
+    "order": [
+     {
+      "field": "a.b.val",
+      "direction": "asc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name",
+     "customers.regions.name"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name",
+     "customers.regions.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "host",
+    "dimensions": [
+     "a.b.val"
+    ],
+    "measures": [
+     "count(a__b.*)"
+    ]
+   },
+   "new": {
+    "population": "host",
+    "dimensions": [
+     "a.b.val"
+    ],
+    "metrics": [
+     "count(a__b.*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  }
+ ]
+}

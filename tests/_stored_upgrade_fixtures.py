@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 import yaml
 
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerResponse
 from slayer.storage.base import StorageBackend
@@ -192,9 +192,9 @@ async def raw_store(
     models: Sequence[dict] = (), memories: Sequence[dict] = (), raw_rows: Sequence[tuple[str, str]] = (),
     extra_datasources: Sequence[DatasourceConfig] = (),
 ) -> StorageBackend:
-    """A YAML or SQLite store whose models/memories are written verbatim (never validated).
+    """A YAML or SQLite store whose datasets/memories are written verbatim (never validated).
 
-    ``raw_rows`` are ``(name, text)`` model payloads written byte-for-byte (corrupt documents); a model is stored
+    ``raw_rows`` are ``(name, text)`` dataset payloads written byte-for-byte (corrupt documents); a dataset is stored
     under its own ``data_source`` (default ``DS``).
     """
     os.makedirs(base, exist_ok=True)
@@ -241,7 +241,7 @@ def _write_text(*, path: str, text: str) -> None:
 
 
 def stored_bytes(*, backend: str, base: str, name: str) -> str:
-    """The persisted model payload exactly as stored."""
+    """The persisted dataset payload exactly as stored."""
     if backend == "yaml":
         with open(yaml_model_path(base=base, name=name), encoding="utf-8") as f:  # NOSONAR(S7493) — test read
             return f.read()
@@ -250,14 +250,14 @@ def stored_bytes(*, backend: str, base: str, name: str) -> str:
     return row[0]
 
 
-def column_of(model: SlayerModel, name: str) -> Column:
-    by_name = {c.name: c for c in model.columns}
+def field_of(dataset: SlayerDataset, name: str) -> DatasetField:
+    by_name = {c.name: c for c in dataset.fields}
     assert name in by_name, sorted(by_name)
     return by_name[name]
 
 
 async def raw_doc(storage: StorageBackend, name: str) -> dict:
-    doc = await storage._load_raw_model_dict(name=name, data_source=DS)
+    doc = await storage._load_raw_dataset_dict(name=name, data_source=DS)
     assert doc is not None
     return doc
 
@@ -271,16 +271,16 @@ async def run(storage: StorageBackend, query: SlayerQuery | dict, *, dry_run: bo
         return await engine.execute(q, dry_run=dry_run)
 
 
-def measure_total(resp: SlayerResponse, *, measure: str) -> float:
-    """Sum of the ``measure`` column (matched by suffix) over every row."""
+def metric_total(resp: SlayerResponse, *, metric: str) -> float:
+    """Sum of the ``metric`` column (matched by suffix) over every row."""
     if not resp.data:
         return 0.0
-    key = next(k for k in resp.data[0] if k == measure or k.endswith(f".{measure}") or k.endswith(f"_{measure}"))
+    key = next(k for k in resp.data[0] if k == metric or k.endswith(f".{metric}") or k.endswith(f"_{metric}"))
     return sum(float(r[key]) for r in resp.data if r[key] is not None)
 
 
 def by_dimension(resp: SlayerResponse, *, dim_suffix: str) -> dict:
-    """``{dimension value: float(other column)}`` for a one-dimension, one-measure result."""
+    """``{dimension value: float(other column)}`` for a one-dimension, one-metric result."""
     row = resp.data[0]
     dim = next(k for k in row if k.endswith(dim_suffix))
     val = next(k for k in row if k != dim)

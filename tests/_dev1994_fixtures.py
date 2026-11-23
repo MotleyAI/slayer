@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column, ModelJoin, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -84,7 +84,7 @@ ORDERS_BY_MONTH = {
     "2023-12": 0, "2024-01": 3, "2024-02": 3, "2024-04": 1, "2024-05": 0, "2024-06": 2,
 }
 CUMSUM_BY_MONTH = {
-    "2023-12": 0, "2024-01": 3, "2024-02": 6, "2024-04": 7, "2024-05": 7, "2024-06": 9,
+    "2023-12": None, "2024-01": 3, "2024-02": 6, "2024-04": 7, "2024-05": None, "2024-06": 9,
 }
 #: ``time_shift(…, -1)``: NULL where the prior month is absent (Nov-23, Mar-24).
 SHIFTED_BY_MONTH: Dict[str, Optional[int]] = {
@@ -101,57 +101,57 @@ def query(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def m(formula: str, name: str) -> Dict[str, str]:
-    return {"formula": formula, "name": name}
+def m(expression: str, name: str) -> Dict[str, str]:
+    return {"metric": expression, "alias": name}
 
 
 # --------------------------------------------------------------------------- #
-# Models.
+# Datasets.
 # --------------------------------------------------------------------------- #
-def regions_model(*, aggregations: Sequence[Aggregation] = ()) -> SlayerModel:
-    return SlayerModel(
+def regions_dataset(*, aggregations: Sequence[Aggregation] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         aggregations=list(aggregations),
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
 
-def customers_model(*, aggregations: Sequence[Aggregation] = ()) -> SlayerModel:
-    return SlayerModel(
+def customers_dataset(*, aggregations: Sequence[Aggregation] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         default_time_dimension="signup_date",
         aggregations=list(aggregations),
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="signup_date", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="signup_date", datatype=DataType.DATE),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def orders_model(*, aggregations: Sequence[Aggregation] = ()) -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, aggregations: Sequence[Aggregation] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="order_date",
         aggregations=list(aggregations),
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="order_date", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="order_date", datatype=DataType.DATE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
-def dev1994_models() -> List[SlayerModel]:
-    return [regions_model(), customers_model(), orders_model()]
+def dev1994_datasets() -> List[SlayerDataset]:
+    return [regions_dataset(), customers_dataset(), orders_dataset()]
 
 
 # --------------------------------------------------------------------------- #
@@ -192,13 +192,13 @@ def seed_duckdb(db_path: str) -> None:
 
 @asynccontextmanager
 async def dev1994_engine(
-    dialect: str, *, models: Optional[List[SlayerModel]] = None,
+    dialect: str, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=dev1994_models() if models is None else models,
+        dialect=dialect, seed=seed, datasets=dev1994_datasets() if datasets is None else datasets,
     ) as (engine, _):
         yield engine
 

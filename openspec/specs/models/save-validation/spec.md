@@ -89,7 +89,7 @@ skipped.
 
 #### Scenario: A placeholder only in a column expression does not skip the model-SQL check
 
-- **WHEN** a raw-`sql` model whose `sql` is static but a `Column.sql` contains a
+- **WHEN** a raw-`sql` model whose `sql` is static but a `DatasetField.sql` contains a
   `{var}` placeholder is saved, and the static `sql` is invalid for the backend
 - **THEN** the model `sql` is still trial-executed and the invalid SQL is
   rejected
@@ -116,7 +116,7 @@ trial-execute, preserving their existing save behavior.
 
 The save-time SQL check SHALL run at every door that creates or edits a model
 through the engine — the REST create/update endpoints, the CLI create command,
-and the MCP `create_model` and `edit_model` tools. Direct ingestion / YAML-load
+and the MCP `create_dataset` and `edit_dataset` tools. Direct ingestion / YAML-load
 persistence SHALL remain out of scope and unaffected.
 
 #### Scenario: REST create with invalid SQL is rejected
@@ -127,13 +127,13 @@ persistence SHALL remain out of scope and unaffected.
 
 #### Scenario: MCP create_model with invalid SQL is rejected
 
-- **WHEN** the MCP `create_model` tool is called with a raw-`sql` model whose SQL
+- **WHEN** the MCP `create_dataset` tool is called with a raw-`sql` model whose SQL
   is invalid for a reachable datasource
 - **THEN** the tool returns an error message and the model is not persisted
 
 #### Scenario: MCP edit_model changing sql to invalid is rejected and leaves the original intact
 
-- **WHEN** the MCP `edit_model` tool changes a model's `sql` to SQL invalid for a
+- **WHEN** the MCP `edit_dataset` tool changes a model's `sql` to SQL invalid for a
   reachable datasource
 - **THEN** the tool returns an error message and the previously-persisted model
   is left unchanged
@@ -146,7 +146,7 @@ persistence SHALL remain out of scope and unaffected.
 ### Requirement: Aggregation formulas are parse-checked at save time
 
 When a model is saved through any engine create or edit door, every model-defined
-aggregation `formula` SHALL be parsed with its placeholders replaced, in the model's
+aggregation `expression` SHALL be parsed with its placeholders replaced, in the model's
 datasource dialect (sqlglot's generic dialect when the datasource cannot be resolved —
 the check is never skipped). A formula that does not parse, or that places a placeholder
 in a non-expression position, SHALL fail the save with an error naming the model and the
@@ -160,7 +160,7 @@ Ingestion / YAML-load persistence SHALL remain out of scope.
 #### Scenario: Unparseable formula blocks the save
 
 - **WHEN** a model declaring an aggregation with formula `SUM({value}` is saved through the
-  MCP `create_model` tool
+  MCP `create_dataset` tool
 - **THEN** the tool returns an error naming the model and the aggregation
 - **AND** the model is not persisted
 
@@ -179,20 +179,20 @@ Ingestion / YAML-load persistence SHALL remain out of scope.
 
 #### Scenario: Edit introducing a broken formula leaves the original intact
 
-- **WHEN** the MCP `edit_model` tool changes an aggregation's formula to `SUM({value}`
+- **WHEN** the MCP `edit_dataset` tool changes an aggregation's formula to `SUM({value}`
 - **THEN** the tool returns an error and the previously-persisted model is unchanged
 
 ### Requirement: MCP create_model accepts model-defined aggregations
 
-The MCP `create_model` tool SHALL accept an optional `aggregations` list of aggregation
-definitions (the same shape `edit_model` upserts), persisting them on the created model
+The MCP `create_dataset` tool SHALL accept an optional `aggregations` list of aggregation
+definitions (the same shape `edit_dataset` upserts), persisting them on the created model
 subject to the same save-time checks. Combining `aggregations` with `query` SHALL be
 rejected like the other table-model parameters.
 
 #### Scenario: Custom aggregation declared at creation
 
-- **WHEN** `create_model` is called with a table model and an aggregation
-  `{"name": "sum_sq", "formula": "SUM({value} * {value})"}`
+- **WHEN** `create_dataset` is called with a table model and an aggregation
+  `{"name": "sum_sq", "expression": "SUM({value} * {value})"}`
 - **THEN** the model is persisted with that aggregation and a query using
   `sum_sq(amount)` succeeds
 
@@ -256,3 +256,18 @@ SHALL run read-only where the dialect supports it and SHALL always roll back.
 - **WHEN** a raw-`sql` model is trial-executed at save time
 - **THEN** the probe runs in a rolled-back transaction (read-only where the
   dialect supports it), so nothing it runs is committed
+
+### Requirement: Saves judge what they add or change
+A save through SLayer SHALL apply its save-time checks to every definition the save adds or changes, and SHALL run the broken-dependents analysis over every stored definition that depends on what changed, as saves do today. A definition the save neither adds nor changes, and which depends on nothing the save changes, SHALL NOT be judged, so a stored definition that fails every query (allowed in a user-written document, `models/semantic-model-documents` › Entities SLayer cannot evaluate yet still load) never blocks an unrelated save. A definition SLayer is asked to add or change that is guaranteed to fail every query SHALL be refused, whether or not Ossie defines it.
+
+#### Scenario: An unrelated edit beside a windowed metric
+- **WHEN** a stored document holds a model-scoped metric using `OVER`, and `edit_dataset` changes the description of one of its datasets
+- **THEN** the save succeeds and the windowed metric is unchanged
+
+#### Scenario: Authoring a windowed metric is refused
+- **WHEN** `edit_semantic_model` adds a model-scoped metric whose expression uses `OVER`
+- **THEN** the save fails with a typed error naming the metric and the window function
+
+#### Scenario: Renaming a referenced field warns about dependents
+- **WHEN** a save renames the document field `orders.amount` that a model-scoped metric reads
+- **THEN** the save reports the metric as a broken dependent, exactly as a save of a standalone dataset reports broken dependents today

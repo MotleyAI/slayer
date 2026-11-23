@@ -1,0 +1,21 @@
+{
+ "source": "tests/test_osi_upstream_examples.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "gross_revenue"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "gross_revenue"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

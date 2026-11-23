@@ -1,5 +1,5 @@
 """Direct unit tests for the empty-string-to-non-text-column classifier
-that powers DEV-1570's Bind-time rewrite.
+that powers the Bind-time rewrite.
 
 The classifier returns the subset of $N indices whose AST occurrences land
 in a comparison / IN / BETWEEN predicate against a column that resolves
@@ -9,10 +9,12 @@ if ANY occurrence of $N targets a non-text column, $N is in the result set.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.facade.catalog import build_catalog
 from slayer.pg_facade.connection import (
     PUBLIC_SCHEMA,
@@ -24,30 +26,30 @@ from slayer.pg_facade.connection import (
 # --- fixtures ---------------------------------------------------------------
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="is_paid", type=DataType.BOOLEAN),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="is_paid", datatype=DataType.BOOLEAN),
         ],
     )
 
 
-def _customers_model() -> SlayerModel:
-    return SlayerModel(
+def _customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         data_source="jaffle",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -55,7 +57,7 @@ def _customers_model() -> SlayerModel:
 @pytest.fixture
 def catalog():
     return build_catalog(
-        models_by_datasource={PUBLIC_SCHEMA: [_orders_model(), _customers_model()]},
+        datasets_by_datasource={PUBLIC_SCHEMA: [_orders_dataset(), _customers_dataset()]},
     )
 
 
@@ -170,7 +172,7 @@ def test_join_on_predicate_classified(column_type_index):
     assert _classify(sql, column_type_index, [1]) == {1}
 
 
-# --- user model tables (public schema) --------------------------------------
+# --- user dataset tables (public schema) ------------------------------------
 
 
 def test_user_model_int_pk_classified_via_public_qualifier(column_type_index):
@@ -424,25 +426,25 @@ def test_classifier_does_not_raise_on_unexpected_shapes(column_type_index):
 def test_column_type_index_includes_pg_catalog_tables(column_type_index):
     """The index must surface pg_catalog tables so the classifier resolves
     `pg_catalog.X.Y` refs."""
-    assert column_type_index.get(("pg_catalog", "pg_description", "objsubid")) == DataType.INT
-    assert column_type_index.get(("pg_catalog", "pg_description", "description")) == DataType.TEXT
+    assert column_type_index.get(("pg_catalog", "pg_description", "objsubid")) == DataType.INTEGER
+    assert column_type_index.get(("pg_catalog", "pg_description", "description")) == DataType.STRING
 
 
 def test_column_type_index_includes_information_schema_tables(column_type_index):
     """`_is_columns` builder maps to SQL-visible `information_schema.columns`.
     Codex finding #4: the index key must use the SQL-visible name, not the
     builder-internal `_is_columns`."""
-    assert column_type_index.get(("information_schema", "columns", "ordinal_position")) == DataType.INT
-    assert column_type_index.get(("information_schema", "columns", "column_name")) == DataType.TEXT
+    assert column_type_index.get(("information_schema", "columns", "ordinal_position")) == DataType.INTEGER
+    assert column_type_index.get(("information_schema", "columns", "column_name")) == DataType.STRING
     # The internal builder name must NOT be a key.
     assert ("information_schema", "_is_columns", "ordinal_position") not in column_type_index
 
 
 def test_column_type_index_includes_user_models_under_public(column_type_index):
-    assert column_type_index.get(("public", "orders", "id")) == DataType.INT
-    assert column_type_index.get(("public", "orders", "status")) == DataType.TEXT
+    assert column_type_index.get(("public", "orders", "id")) == DataType.INTEGER
+    assert column_type_index.get(("public", "orders", "status")) == DataType.STRING
     assert column_type_index.get(("public", "orders", "is_paid")) == DataType.BOOLEAN
-    assert column_type_index.get(("public", "orders", "ordered_at")) == DataType.TIMESTAMP
+    assert column_type_index.get(("public", "orders", "ordered_at")) == DataType.DATETIME
 
 
 # --- Parenthesised parameters (Codex CX-1) ---------------------------------
@@ -540,26 +542,24 @@ def test_between_with_no_whitespace_after_and_classified(column_type_index):
 
 
 def test_case_distinct_collision_keeps_first_and_warns(caplog):
-    """``id INT`` plus ``"ID" TEXT`` on the same model would collide under
+    """``id INT`` plus ``"ID" TEXT`` on the same dataset would collide under
     case-folded indexing — last-writer-wins would silently swap the type and
     let the empty-string rewrite mis-fire. _record_column_type keeps the
     first entry and warns once."""
-    import logging
-
-    model = SlayerModel(
+    model = SlayerDataset(
         name="case_distinct",
         data_source="jaffle",
         sql_table="case_distinct",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="ID", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="ID", datatype=DataType.STRING),
         ],
     )
-    catalog = build_catalog(models_by_datasource={PUBLIC_SCHEMA: [model]})
+    catalog = build_catalog(datasets_by_datasource={PUBLIC_SCHEMA: [model]})
     with caplog.at_level(logging.WARNING, logger="slayer.pg_facade.connection"):
         idx = _build_column_type_index(catalog=catalog, datasource="jaffle")
     # First-writer-wins: `id` INT is inserted first.
-    assert idx.get(("public", "case_distinct", "id")) == DataType.INT
+    assert idx.get(("public", "case_distinct", "id")) == DataType.INTEGER
     # The collision was warned about.
     assert any(
         "case-distinct collision" in rec.message for rec in caplog.records

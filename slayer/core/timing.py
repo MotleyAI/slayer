@@ -7,7 +7,7 @@ When enabled, wrap a request in :func:`open_query_profile` and bracket
 sub-stages with :func:`start` / :func:`record`; one summary line is logged at
 INFO on scope exit, e.g.::
 
-    slayer.timing query: resolve_model=2.1 resolve_datasource=1.4 enrich=0.8 \
+    slayer.timing query: resolve_dataset=2.1 resolve_datasource=1.4 enrich=0.8 \
         generate_sql=3.2 execute=774.1 connect=254.6 set_timeout=251.1 \
         query=268.4 total=782.9 ms
 

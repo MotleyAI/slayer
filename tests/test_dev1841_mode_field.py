@@ -13,7 +13,7 @@ from tests._deprecated_input_helpers import deprecations, recorded
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -30,7 +30,7 @@ class TestModeField:
         with pytest.raises(ValueError) as ei:
             _q(to_many_handling="partition")
         msg = str(ei.value)
-        assert "broadcast" in msg
+        assert "broadcast" not in msg
         assert "associate" in msg
         assert "error" in msg
 

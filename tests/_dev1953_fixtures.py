@@ -8,11 +8,12 @@ from typing import Callable, Dict, Optional, Tuple
 
 import pytest
 
-from tests._dev1847_fixtures import SPEND_BAND_EXPR, ModelMeasure, _SALES_ROWS_WIDE
+from tests._dev1847_fixtures import SPEND_BAND_EXPR, _SALES_ROWS_WIDE
+from slayer.core.query import QueryMetric
 
-UREG = {"expression": "upper(region)", "name": "ureg"}
-BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
-AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
+UREG = {"field": "upper(sales.region)", "alias": "ureg"}
+BAND = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
+AMOUNT = QueryMetric(metric="sum(sales.amount)", alias="a")
 
 
 def cell_totals(key: Callable[[tuple], Tuple]) -> Dict[Tuple, Optional[float]]:

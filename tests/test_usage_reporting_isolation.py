@@ -32,7 +32,7 @@ from tests._usage_reporting_helpers import (
     usage,
 )
 
-_QUERY = {"source_model": "orders", "measures": ["sum(amount)"]}
+_QUERY = {"population": "orders", "metrics": ["sum(orders.amount)"]}
 
 
 @pytest.fixture
@@ -43,10 +43,10 @@ def store(usage_reporting_env) -> str:
 
 def _commands(store: str) -> list[list[str]]:
     return [
-        ["models", "--storage", store, "list"],
+        ["datasets", "--storage", store, "list"],
         ["query", json.dumps(_QUERY), "--storage", store],
-        ["query", json.dumps({"source_model": "no_such_model", "measures": ["count(*)"]}), "--storage", store],
-        ["models", "--storage", store, "show", "no_such_model"],
+        ["query", json.dumps({"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}), "--storage", store],
+        ["datasets", "--storage", store, "show", "no_such_dataset"],
     ]
 
 
@@ -218,7 +218,7 @@ def _run_slayer_timing_exit_wait(
 def test_stalled_send_delays_exit_by_at_most_about_a_second(
     store: str, usage_reporting_env, tmp_path: Path,
 ) -> None:
-    args = ["models", "--storage", store, "list"]
+    args = ["datasets", "--storage", store, "list"]
     run_slayer(args, env=usage_reporting_env.subprocess_env())
     make_due()
     usage_reporting_env.capture.behaviour.delay = 10
@@ -230,12 +230,12 @@ def test_stalled_send_delays_exit_by_at_most_about_a_second(
     assert exit_wait < 2.0
 
     usage_reporting_env.set_now(now_utc() + datetime.timedelta(days=1))
-    assert usage(show(), "cli:models.list")["ok"] == 2
+    assert usage(show(), "cli:datasets.list")["ok"] == 2
 
 
 def test_first_run_notice_and_send_never_touch_stdout(store: str, usage_reporting_env) -> None:
     settings.config_path().unlink()
-    args = ["models", "--storage", store, "list"]
+    args = ["datasets", "--storage", store, "list"]
     first_run = run_slayer(args, env=usage_reporting_env.subprocess_env())
     off = run_slayer(args, env=usage_reporting_env.subprocess_env(SLAYER_USAGE_REPORTING="off"))
     assert (first_run.returncode, first_run.stdout) == (off.returncode, off.stdout)

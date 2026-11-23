@@ -36,28 +36,28 @@ def _counts(found: QueryFeatures) -> dict[str, Counter[str]]:
             "functions": Counter(found.functions), "flags": Counter(found.flags)}
 
 
-def _measures(*formulas: str) -> QueryFeatures:
-    return query_features({"source_model": "m", "measures": list(formulas)})
+def _metrics(*expressions: str) -> QueryFeatures:
+    return query_features({"population": "m", "metrics": list(expressions)})
 
 
 def _filters(*filters: str) -> QueryFeatures:
-    return query_features({"source_model": "m", "measures": ["count(*)"], "filters": list(filters)})
+    return query_features({"population": "m", "metrics": ["count(m.*)"], "filter": list(filters)})
 
 
 # --------------------------------------------------------------------------- #
-# Formula → counts
+# Expression → counts
 # --------------------------------------------------------------------------- #
-#: ``(measure formula, aggregations, transforms, functions, flags)``.
-MEASURE_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
+#: ``(metric expression, aggregations, transforms, functions, flags)``.
+METRIC_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
     ("sum(x)::int", ["sum"], [], [], ["cast"]),
     ("CAST(avg(y) AS DOUBLE)", ["avg"], [], [], ["cast"]),
     ("TRY_CAST(sum(y) AS INT)", ["sum"], [], [], ["try_cast"]),
     ("count(*) FILTER (WHERE z > 0)", ["count"], [], [], ["aggregate_filter"]),
     ("sum(x) FILTER (WHERE lower(y) = 'a')", ["sum"], [], ["lower"], ["aggregate_filter"]),
     ("count(DISTINCT x)", ["count_distinct"], [], [], []),
-    ("array_length(tags)", ["custom"], [], [], []),
+    ("array_size(tags)", ["custom"], [], [], []),
     ("dsum(amount)", ["custom"], [], [], []),
-    ("sum(amount)", ["sum"], [], [], []),
+    ("sum(orders.amount)", ["sum"], [], [], []),
     ("time_shift(sum(amount), -1)", ["sum"], ["time_shift"], [], []),
     ("cumsum(sum(x)) / count(*)", ["sum", "count"], ["cumsum"], [], []),
     ("collect(city)", ["collect"], [], [], []),
@@ -71,11 +71,11 @@ MEASURE_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
 ]
 
 
-@pytest.mark.parametrize(("formula", "aggregations", "transforms", "functions", "flags"), MEASURE_TABLE,
-                         ids=[row[0] for row in MEASURE_TABLE])
+@pytest.mark.parametrize(("formula", "aggregations", "transforms", "functions", "flags"), METRIC_TABLE,
+                         ids=[row[0] for row in METRIC_TABLE])
 def test_measure_formula_counts(formula: str, aggregations: list[str], transforms: list[str],
                                 functions: list[str], flags: list[str]) -> None:
-    assert _counts(_measures(formula)) == {
+    assert _counts(_metrics(formula)) == {
         "aggregations": Counter(aggregations), "transforms": Counter(transforms),
         "functions": Counter(functions), "flags": Counter(flags)}
 
@@ -122,14 +122,14 @@ def test_a_spelling_counts_its_arguments_once() -> None:
 
 
 def test_library_functions_by_name_scenario() -> None:
-    found = query_features({"source_model": "m", "measures": ["count(*)"], "filters": [
-        "lower(name) = 'a'", "regexp_like(name, 'a')", "payload ->> 'k' = 'v'", "contains_any(skills, ['go'])"]})
+    found = query_features({"population": "m", "metrics": ["count(m.*)"], "filter": [
+        "lower(m.name) = 'a'", "regexp_like(m.name, 'a')", "m.payload ->> 'k' = 'v'", "contains_any(m.skills, ['go'])"]})
     assert Counter(found.functions) == Counter(["lower", "regexp_like", "json_value", "contains_any"])
     assert "list_literal" in found.flags
 
 
 def test_grammar_forms_scenario() -> None:
-    found = _measures("sum(x)::int", "CAST(avg(y) AS DOUBLE)", "count(*) FILTER (WHERE z > 0)", "count(DISTINCT x)")
+    found = _metrics("sum(x)::int", "CAST(avg(y) AS DOUBLE)", "count(*) FILTER (WHERE z > 0)", "count(DISTINCT x)")
     assert Counter(found.aggregations) == Counter(["sum", "avg", "count", "count_distinct"])
     assert Counter(found.flags) == Counter({"cast": 2, "aggregate_filter": 1})
 
@@ -145,26 +145,26 @@ def test_unparseable_expression_contributes_no_names() -> None:
 # --------------------------------------------------------------------------- #
 def test_every_position_is_read() -> None:
     found = query_features({
-        "source_model": "orders",
-        "dimensions": [{"name": "c", "expression": "upper(city)"}],
-        "time_dimensions": [{"dimension": "coalesce(shipped_at, ordered_at)", "granularity": "month"}],
-        "measures": ["sum(amount)"],
-        "filters": ["length(name) > 3"],
-        "order": [{"column": "abs(rate)", "direction": "asc"}],
+        "population": "orders",
+        "dimensions": [{"alias": "c", "field": "upper(orders.city)"}],
+        "time_dimensions": [{"field": "coalesce(orders.shipped_at, orders.ordered_at)", "granularity": "month"}],
+        "metrics": ["sum(orders.amount)"],
+        "filter": ["length(orders.name) > 3"],
+        "order": [{"field": "abs(orders.rate)", "direction": "asc"}],
     })
     assert Counter(found.functions) == Counter(["upper", "coalesce", "length", "abs"])
 
 
 def test_plain_dimension_expression_is_read() -> None:
-    found = query_features({"source_model": "orders", "dimensions": ["lower(city)"], "measures": ["count(*)"]})
+    found = query_features({"population": "orders", "dimensions": ["lower(orders.city)"], "metrics": ["count(orders.*)"]})
     assert Counter(found.functions) == Counter(["lower"])
 
 
 def test_every_stage_is_read() -> None:
     found = query_features([
-        {"name": "s1", "source_model": "orders", "dimensions": [{"name": "c", "expression": "upper(city)"}],
-         "measures": [{"formula": "sum(amount)", "name": "rev"}]},
-        {"source_model": "s1", "measures": ["max(abs(rev))"]},
+        {"name": "s1", "population": "orders", "dimensions": [{"alias": "c", "field": "upper(orders.city)"}],
+         "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]},
+        {"population": "s1", "metrics": ["max(abs(s1.rev))"]},
     ])
     assert Counter(found.functions) == Counter(["upper", "abs"])
     assert Counter(found.aggregations) == Counter(["sum", "max"])
@@ -172,18 +172,18 @@ def test_every_stage_is_read() -> None:
 
 
 @pytest.mark.parametrize("body", [
-    {"dimensions": [{"name": "m", "expression": "month(ordered_at)"}], "measures": ["count(*)"]},
-    {"measures": ["count(*)"], "filters": ["year(ordered_at) = 2024"]},
+    {"dimensions": [{"alias": "m", "field": "month(ordered_at)"}], "metrics": ["count(*)"]},
+    {"metrics": ["count(*)"], "filter": ["year(ordered_at) = 2024"]},
 ])
 def test_extraction_calls_count_as_date_part(body: dict[str, Any]) -> None:
-    found = query_features({"source_model": "orders", **body})
+    found = query_features({"population": "orders", **body})
     assert Counter(found.aggregations) == Counter(["count"])
     assert found.functions == ["date_part"]
 
 
 def test_date_trunc_granularity_call_is_not_counted() -> None:
     found = query_features({
-        "source_model": "orders", "measures": ["count(*)"], "filters": ["date_trunc('month', ordered_at) = '2024-01-01'"],
+        "population": "orders", "metrics": ["count(orders.*)"], "filter": ["date_trunc('month', orders.ordered_at) = '2024-01-01'"],
     })
     assert Counter(found.aggregations) == Counter(["count"])
     assert found.functions == []
@@ -234,8 +234,8 @@ def store(usage_reporting_env) -> str:
 
 
 def test_report_counts_functions_and_new_flags(store: str) -> None:
-    cli(["query", json.dumps({"source_model": "orders", "measures": ["sum(amount)::int"],
-                              "filters": ["lower(status) = 'paid'"]}), "--storage", store])
+    cli(["query", json.dumps({"population": "orders", "metrics": ["sum(orders.amount)::int"],
+                              "filter": ["lower(orders.status) = 'paid'"]}), "--storage", store])
     features = show()["features"]
     assert features["functions"] == {"lower": 1}
     assert features["flags"]["cast"] == 1
@@ -244,11 +244,11 @@ def test_report_counts_functions_and_new_flags(store: str) -> None:
 def test_sent_report_carries_no_function_shaped_sentinel(usage_reporting_env) -> None:
     quiet_config()
     sentinel_store = build_sentinel_storage(usage_reporting_env.root)
-    query = {"source_model": f"{SENT}_model", "measures": [f"{SENT}_agg({SENT}_col)"],
-             "filters": [f"{SENT}_fn({SENT}_col) > 0", f"lower({SENT}_col) = '{SENT}'", f"x::{SENT}"]}
+    query = {"population": f"{SENT}_model", "metrics": [f"{SENT}_agg({SENT}_col)"],
+             "filter": [f"{SENT}_fn({SENT}_col) > 0", f"lower({SENT}_col) = '{SENT}'", f"x::{SENT}"]}
     cli(["query", json.dumps(query), "--storage", sentinel_store])
     make_due()
-    cli(["models", "--storage", sentinel_store, "list"])
+    cli(["datasets", "--storage", sentinel_store, "list"])
     (request,) = usage_reporting_env.capture.wait_for(count=1)
     assert_no_sentinel(request.body)
     assert set(request.json()["properties"]["features"].get("functions", {})) <= SCALAR_FUNCTIONS

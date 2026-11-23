@@ -1,0 +1,130 @@
+{
+ "source": "tests/test_dev1954_canonical_paths.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ],
+    "name": "hr2"
+   },
+   "new": {
+    "to": "regions",
+    "name": "hr2",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customers.regions.founded_at",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "customers.regions.founded_at",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customers.regions.rname",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "customers.regions.rname",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customers.hr.rname",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "customers.hr.rname",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(customers.regions.founded_at)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(customers.regions.founded_at)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(customers.hr.founded_at)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(customers.hr.founded_at)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wpop(amount)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wpop(amount)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wpop(amount, weight=customers.hr.pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wpop(amount, weight=customers.hr.pop)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.regions.maxpop",
+    "name": "m"
+   },
+   "new": {
+    "expression": "customers.regions.maxpop",
+    "name": "m"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 275,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  }
+ ]
+}

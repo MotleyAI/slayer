@@ -23,10 +23,10 @@ from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -36,24 +36,24 @@ async def _seed(storage: YAMLStorage) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="sqlite", database=":memory:")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
         description="One row per placed order.",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(
-                name="amount", sql="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(
+                name="amount", expression="amount", datatype=DataType.FLOAT,
                 description="Order total in USD.",
             ),
-            Column(
-                name="customer_id", sql="customer_id", type=DataType.INT,
+            DatasetField(
+                name="customer_id", expression="customer_id", datatype=DataType.INTEGER,
                 description="FK to customers.",
             ),
         ],
-        measures=[ModelMeasure(name="aov", formula="sum(amount) / count(*)")],
-        aggregations=[Aggregation(name="big", formula="MAX({col})")],
+        metrics=[DatasetMetric(name="aov", expression="sum(amount) / count(*)")],
+        aggregations=[Aggregation(name="big", expression="MAX({col})")],
     ))
     await storage.set_datasource_priority(["mydb"])
 
@@ -89,11 +89,11 @@ class TestMcpSurface:
             server, name="inspect",
             arguments={
                 "reference": "mydb.orders.amount",
-                "entity_type": "column",
+                "entity_type": "field",
                 "compact": False,
             },
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
 
 # ---------------------------------------------------------------------------
@@ -124,19 +124,19 @@ class TestRestSurface:
             "/inspect",
             json={
                 "reference": "mydb.orders.amount",
-                "entity_type": "column",
+                "entity_type": "field",
                 "compact": False,
             },
         )
         assert r.status_code == 200
-        assert "Column: mydb.orders.amount" in r.json()["result"]
+        assert "Field: mydb.orders.amount" in r.json()["result"]
 
     def test_inspect_json_format(self, rest_client: TestClient) -> None:
         r = rest_client.post(
             "/inspect",
             json={
                 "reference": "mydb.orders.amount",
-                "entity_type": "column",
+                "entity_type": "field",
                 "compact": False,
                 "format": "json",
             },
@@ -157,7 +157,7 @@ class TestRestSurface:
             "/inspect",
             json={
                 "reference": "mydb.orders",
-                "entity_type": "model",
+                "entity_type": "dataset",
                 "bogus": 1,
             },
         )
@@ -180,7 +180,7 @@ def cli_storage() -> Iterator[YAMLStorage]:
 def _inspect_args(**overrides) -> SimpleNamespace:
     base = {
         "reference": "mydb.orders.amount",
-        "entity_type": "column",
+        "entity_type": "field",
         "compact": False,
         "format": "markdown",
         "num_rows": 3,
@@ -199,7 +199,7 @@ class TestCliSurface:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             _run_inspect(args=_inspect_args(), storage=cli_storage)
-        assert "Column: mydb.orders.amount" in buf.getvalue()
+        assert "Field: mydb.orders.amount" in buf.getvalue()
 
     def test_run_inspect_not_found_prints_string(
         self, cli_storage: YAMLStorage
@@ -239,16 +239,16 @@ class TestSlayerClientSurface:
     async def test_inspect_async_local(self, client_storage: YAMLStorage) -> None:
         client = SlayerClient(storage=client_storage)
         out = await client.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
     def test_inspect_sync_local(self, client_storage: YAMLStorage) -> None:
         client = SlayerClient(storage=client_storage)
         out = client.inspect_sync(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
     def test_inspect_sync_remote_posts_body(
         self, monkeypatch: pytest.MonkeyPatch
@@ -263,16 +263,16 @@ class TestSlayerClientSurface:
 
         monkeypatch.setattr(client, "_request_sync", _fake_request_sync)
         out = client.inspect_sync(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
         )
         assert out == "REMOTE RENDER"
         assert captured["path"] == "/inspect"
         assert captured["json"]["reference"] == "mydb.orders.amount"
-        assert captured["json"]["entity_type"] == "column"
+        assert captured["json"]["entity_type"] == "field"
 
 
 # ===========================================================================
-# DEV-1612: reference accepts str | list[str] (batched single-kind lookup)
+# Reference accepts str | list[str] (batched single-kind lookup)
 # ===========================================================================
 
 _BLOCK_SEP = "\n\n---\n\n"
@@ -287,7 +287,7 @@ class TestMcpBatch:
             server, name="inspect",
             arguments={
                 "reference": ["mydb.orders.amount", "mydb.orders.customer_id"],
-                "entity_type": "column",
+                "entity_type": "field",
                 "compact": False,
             },
         )
@@ -303,7 +303,7 @@ class TestMcpBatch:
             server, name="inspect",
             arguments={
                 "reference": ["mydb.orders.amount", "mydb.orders.customer_id"],
-                "entity_type": "column",
+                "entity_type": "field",
                 "compact": False,
                 "format": "json",
             },
@@ -342,7 +342,7 @@ class TestMcpBatch:
             server, name="inspect",
             arguments={
                 "reference": ["mydb.orders.amount", "mydb.orders.nope"],
-                "entity_type": "column",
+                "entity_type": "field",
                 "compact": False,
                 "format": "json",
             },
@@ -359,7 +359,7 @@ class TestRestBatch:
             "/inspect",
             json={
                 "reference": ["mydb.orders.amount", "mydb.orders.customer_id"],
-                "entity_type": "column",
+                "entity_type": "field",
                 "compact": False,
             },
         )
@@ -375,7 +375,7 @@ class TestRestBatch:
             "/inspect",
             json={
                 "reference": ["mydb.orders.amount", "mydb.orders.customer_id"],
-                "entity_type": "column",
+                "entity_type": "field",
                 "compact": False,
                 "format": "json",
             },
@@ -398,7 +398,7 @@ class TestRestBatch:
             "/inspect",
             json={
                 "reference": ["mydb.orders.amount"],
-                "entity_type": "column",
+                "entity_type": "field",
                 "compact": False,
                 "format": "json",
             },
@@ -411,14 +411,14 @@ class TestRestBatch:
     def test_empty_list_is_400(self, rest_client: TestClient) -> None:
         r = rest_client.post(
             "/inspect",
-            json={"reference": [], "entity_type": "column"},
+            json={"reference": [], "entity_type": "field"},
         )
         assert r.status_code == 400
 
     def test_non_string_member_is_422(self, rest_client: TestClient) -> None:
         r = rest_client.post(
             "/inspect",
-            json={"reference": ["mydb.orders.amount", 1], "entity_type": "column"},
+            json={"reference": ["mydb.orders.amount", 1], "entity_type": "field"},
         )
         assert r.status_code == 422
 
@@ -436,7 +436,7 @@ class TestCliBatch:
                 storage=cli_storage,
             )
         out = buf.getvalue()
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
         assert "## mydb.orders.amount" not in out
 
     def test_run_inspect_multi_positional_is_batch(
@@ -457,7 +457,7 @@ class TestCliBatch:
     def test_parser_accepts_multiple_positionals(
         self, cli_storage: YAMLStorage, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # End-to-end: ``slayer inspect c1 c2 --type column`` must parse two
+        # End-to-end: ``slayer inspect c1 c2 --type field`` must parse two
         # positionals (nargs="+") and batch them.
         storage_dir = os.path.join(str(tmp_path), "store")
         os.makedirs(storage_dir, exist_ok=True)
@@ -466,7 +466,7 @@ class TestCliBatch:
         argv = [
             "slayer", "inspect",
             "mydb.orders.amount", "mydb.orders.customer_id",
-            "--type", "column", "--storage", storage_dir,
+            "--type", "field", "--storage", storage_dir,
         ]
         monkeypatch.setattr(sys, "argv", argv)
         buf = io.StringIO()
@@ -484,7 +484,7 @@ class TestSlayerClientBatch:
         client = SlayerClient(storage=client_storage)
         out = await client.inspect(
             reference=["mydb.orders.amount", "mydb.orders.customer_id"],
-            entity_type="column", compact=False,
+            entity_type="field", compact=False,
         )
         assert "## mydb.orders.amount" in out
         assert "## mydb.orders.customer_id" in out
@@ -495,7 +495,7 @@ class TestSlayerClientBatch:
         client = SlayerClient(storage=client_storage)
         out = client.inspect_sync(
             reference=["mydb.orders.amount", "mydb.orders.customer_id"],
-            entity_type="column", compact=False,
+            entity_type="field", compact=False,
         )
         assert "## mydb.orders.amount" in out
         assert "## mydb.orders.customer_id" in out
@@ -514,7 +514,7 @@ class TestSlayerClientBatch:
         monkeypatch.setattr(client, "_request_sync", _fake_request_sync)
         out = client.inspect_sync(
             reference=["mydb.orders.amount", "mydb.orders.customer_id"],
-            entity_type="column", compact=False,
+            entity_type="field", compact=False,
         )
         assert out == "REMOTE BATCH"
         # The list is carried through to the HTTP body verbatim.
@@ -536,7 +536,7 @@ class TestSlayerClientBatch:
         monkeypatch.setattr(client, "_request", _fake_request)
         out = await client.inspect(
             reference=["mydb.orders.amount", "mydb.orders.customer_id"],
-            entity_type="column", compact=False,
+            entity_type="field", compact=False,
         )
         assert out == "REMOTE BATCH ASYNC"
         assert captured["json"]["reference"] == [

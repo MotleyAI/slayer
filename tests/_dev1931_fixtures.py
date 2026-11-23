@@ -11,83 +11,83 @@ from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    SlayerDataset,
 )
 
-from tests._dev1832_fixtures import dev1832_models
+from tests._dev1832_fixtures import dev1832_datasets
 
 
-def _model(models: List[SlayerModel], name: str) -> SlayerModel:
-    return next(m for m in models if m.name == name)
+def _dataset(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
+    return next(m for m in datasets if m.name == name)
 
 
-def dev1931_models() -> List[SlayerModel]:
+def dev1931_datasets() -> List[SlayerDataset]:
     """DEV-1832 Graph A + the DEV-1931 custom aggregations. Host first (orders)."""
-    models = dev1832_models()
-    cust = _model(models=models, name="customers")
+    models = dev1832_datasets()
+    cust = _dataset(datasets=models, name="customers")
     cust.aggregations.extend([
         Aggregation(
-            name="wsum_host", formula="SUM({value} * {weight})",
+            name="wsum_host", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="orders.amount")]),
         Aggregation(
-            name="wsum_host_expr", formula="SUM({value} * {weight})",
+            name="wsum_host_expr", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="orders.amount * 1")]),
         Aggregation(
-            name="wsum_mixed", formula="SUM({value} * {weight})",
+            name="wsum_mixed", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="spend + orders.amount")]),
         Aggregation(
-            name="wsum_regions_pop", formula="SUM({value} * {weight})",
+            name="wsum_regions_pop", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="regions.pop")]),
         # Bare owner-local; also reused over a multi-leaf expression source.
         Aggregation(
-            name="wsum_bare", formula="SUM({value} * {weight})",
+            name="wsum_bare", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="spend")]),
         # Unreachable from both owner and root → fail closed.
         Aggregation(
-            name="wsum_nowhere", formula="SUM({value} * {weight})",
+            name="wsum_nowhere", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="nowhere.col")]),
         # regions resolves from the owner, plans is missing on it → fail closed.
         Aggregation(
-            name="wsum_partial", formula="SUM({value} * {weight})",
+            name="wsum_partial", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="regions.plans.fee")]),
     ])
-    regions = _model(models=models, name="regions")
+    regions = _dataset(datasets=models, name="regions")
     # F1: w1 widens the home to customers; w2 (`bad_pop`) crosses the fanning hop.
     regions.aggregations.append(Aggregation(
-        name="wfan_widen", formula="SUM({value} * {w1} * {w2})",
+        name="wfan_widen", expression="SUM({value} * {w1} * {w2})",
         params=[AggregationParam(name="w1", sql="customers.spend"),
                 AggregationParam(name="w2", sql="bad_pop")]))
     return models
 
 
-def ambiguous_owner_models() -> List[SlayerModel]:
+def ambiguous_owner_datasets() -> List[SlayerDataset]:
     """``o → ag`` via two parallel edges (ambiguous); ``r → ag`` clean. ``wscore``
     (on ``o``) defaults to ``ag.score`` — ambiguous from ``o``, must fail closed,
     never re-anchor at ``r`` where ``ag`` is cleanly reachable."""
-    r = SlayerModel(
+    r = SlayerDataset(
         name="r", data_source="test", sql_table="r",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="o_id", type=DataType.INT),
-                 Column(name="ag_id", type=DataType.INT)],
-        joins=[ModelJoin(target_model="o", join_pairs=[["o_id", "id"]]),
-               ModelJoin(target_model="ag", join_pairs=[["ag_id", "id"]])])
-    o = SlayerModel(
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="o_id", datatype=DataType.INTEGER),
+                 DatasetField(name="ag_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="o", from_columns=["o_id"], to_columns=["id"]),
+               DatasetRelationship(to="ag", from_columns=["ag_id"], to_columns=["id"])])
+    o = SlayerDataset(
         name="o", data_source="test", sql_table="o",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="a1", type=DataType.INT),
-                 Column(name="a2", type=DataType.INT),
-                 Column(name="val", type=DataType.DOUBLE)],
-        joins=[ModelJoin(target_model="ag", join_pairs=[["a1", "id"]]),
-               ModelJoin(target_model="ag", join_pairs=[["a2", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="a1", datatype=DataType.INTEGER),
+                 DatasetField(name="a2", datatype=DataType.INTEGER),
+                 DatasetField(name="val", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="ag", from_columns=["a1"], to_columns=["id"]),
+               DatasetRelationship(to="ag", from_columns=["a2"], to_columns=["id"])],
         aggregations=[Aggregation(
-            name="wscore", formula="SUM({value} * {weight})",
+            name="wscore", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="ag.score")])])
-    ag = SlayerModel(
+    ag = SlayerDataset(
         name="ag", data_source="test", sql_table="ag",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="score", type=DataType.DOUBLE)])
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="score", datatype=DataType.FLOAT)])
     return [r, o, ag]
 
 

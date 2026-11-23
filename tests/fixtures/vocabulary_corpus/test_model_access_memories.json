@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_model_access_memories.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hr",
+    "measures": [
+     {
+      "formula": "sum(salary)"
+     }
+    ]
+   },
+   "new": {
+    "population": "hr",
+    "metrics": [
+     {
+      "metric": "sum(salary)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  }
+ ]
+}

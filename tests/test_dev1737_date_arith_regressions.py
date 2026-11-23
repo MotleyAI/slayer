@@ -5,20 +5,21 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.field_expression import DialectEntry, ExpressionObject
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from tests._dev1737_fixtures import BACKENDS, TableSpec, exec_engine
 from tests._engine_helpers import _engine_generate
 
 
-def _ev_model() -> SlayerModel:
-    return SlayerModel(
+def _ev_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="ts", type=DataType.TIMESTAMP),
-            Column(name="d", type=DataType.DATE),
-            Column(name="v", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="ts", datatype=DataType.DATETIME),
+            DatasetField(name="d", datatype=DataType.DATE),
+            DatasetField(name="v", datatype=DataType.FLOAT),
         ],
     )
 
@@ -28,10 +29,10 @@ def _ev(rows: list[tuple]) -> TableSpec:
 
 
 async def _run(backend: str, rows: list[tuple], query: dict, *, width: int) -> dict[str, object]:
-    async with exec_engine(backend, tables=[_ev(rows)], models=[_ev_model()]) as engine:
-        resp = await engine.execute(SlayerQuery.model_validate({"source_model": "ev", **query}))
-    dim = next(k for k in resp.columns if k not in ("ev.v_sum", "ev.x"))
-    return {str(r[dim])[:width]: r["ev.x"] for r in resp.data}
+    async with exec_engine(backend, tables=[_ev(rows)], datasets=[_ev_dataset()]) as engine:
+        resp = await engine.execute(SlayerQuery.model_validate({"population": "ev", **query}))
+    dim = next(k for k in resp.columns if k not in ("ev.v_sum", "x"))
+    return {str(r[dim])[:width]: r["x"] for r in resp.data}
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -42,8 +43,8 @@ async def test_hourly_time_shift(backend: str) -> None:
         (3, "2024-01-01 12:30:00", "2024-01-01", 4.0),
     ]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "ts", "granularity": "hour"}],
-        "measures": ["sum(v)", {"formula": "time_shift(sum(v), -1, 'hour')", "name": "x"}],
+        "time_dimensions": [{"field": "ev.ts", "granularity": "hour"}],
+        "metrics": ["sum(ev.v)", {"metric": "time_shift(sum(ev.v), -1, 'hour')", "alias": "x"}],
     }, width=16)
     assert got == {"2024-01-01 10:00": None, "2024-01-01 11:00": 1.0, "2024-01-01 12:00": 2.0}
 
@@ -56,8 +57,8 @@ async def test_month_shift_of_month_end_daily_bucket(backend: str) -> None:
         (3, "2024-03-31 09:00:00", "2024-03-31", 1.0),
     ]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "d", "granularity": "day"}],
-        "measures": ["sum(v)", {"formula": "time_shift(sum(v), -1, 'month')", "name": "x"}],
+        "time_dimensions": [{"field": "ev.d", "granularity": "day"}],
+        "metrics": ["sum(ev.v)", {"metric": "time_shift(sum(ev.v), -1, 'month')", "alias": "x"}],
     }, width=10)
     assert got == {"2024-02-29": None, "2024-03-02": None, "2024-03-31": 10.0}
 
@@ -71,8 +72,8 @@ async def test_one_month_window_ending_at_month_end(backend: str) -> None:
         (4, "2024-03-30 09:00:00", "2024-03-30", 1000.0),
     ]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "d", "granularity": "day"}],
-        "measures": [{"formula": "sum(v, window='1m')", "name": "x"}],
+        "time_dimensions": [{"field": "ev.d", "granularity": "day"}],
+        "metrics": [{"metric": "sum(ev.v, window='1m')", "alias": "x"}],
     }, width=10)
     assert got["2024-03-30"] == 1110.0
     assert got["2024-03-01"] == 111.0
@@ -85,8 +86,8 @@ async def test_sub_day_window_part_before_a_day_part_keeps_its_time(backend: str
         (2, "2024-03-03 09:00:00", "2024-03-03", 100.0),
     ]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "d", "granularity": "day"}],
-        "measures": [{"formula": "sum(v, window='6h1d')", "name": "x"}],
+        "time_dimensions": [{"field": "ev.d", "granularity": "day"}],
+        "metrics": [{"metric": "sum(ev.v, window='6h1d')", "alias": "x"}],
     }, width=10)
     # [03-04 00:00 - 6h - 1d, 03-04 00:00) starts at 03-02 18:00, excluding 03-02.
     assert got["2024-03-03"] == 100.0
@@ -102,27 +103,34 @@ async def test_consecutive_periods_over_date_column(
 ) -> None:
     rows = [(i, f"{d} 09:00:00", d, 1.0) for i, d in enumerate(dates, start=1)]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "d", "granularity": granularity}],
-        "measures": [{"formula": "consecutive_periods(sum(v) > 0)", "name": "x"}],
+        "time_dimensions": [{"field": "ev.d", "granularity": granularity}],
+        "metrics": [{"metric": "consecutive_periods(sum(ev.v) > 0)", "alias": "x"}],
     }, width=width)
     assert [got[d[:width]] for d in dates] == [1, 2, 1, 2]
 
 
-@pytest.mark.parametrize("dim", ["d", "d_expr", "ts"])  # DATE, DATETIME and TIMESTAMP buckets
-@pytest.mark.parametrize("formula,comparison", [
-    ("consecutive_periods(sum(v) > 0)",
-     "CAST(`_cp_prev_ev___x` AS DATETIME) = DATETIME_ADD(CAST(`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH)"),
-    ("time_shift(sum(v), -1, 'month')",
-     "DATETIME_ADD(CAST(base.`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH) "
-     "IS NOT DISTINCT FROM CAST(shifted_x.`ev___{dim}` AS DATETIME)"),
+@pytest.mark.parametrize("dim,moved", [
+    ("ev.d", "DATE_ADD({alias}, INTERVAL -1 MONTH)"),
+    ("ev.d_expr", "DATE_ADD({alias}, INTERVAL -1 MONTH)"),
+    ("ev.ts", "DATETIME_ADD(CAST({alias} AS DATETIME), INTERVAL -1 MONTH)"),
 ])
-async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str, comparison: str) -> None:
-    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as DATETIME.
-    model = _ev_model()
-    model.columns.append(Column(name="d_expr", sql="DATE(ts)", type=DataType.DATE))
+@pytest.mark.parametrize("formula,comparison", [
+    ("consecutive_periods(sum(ev.v) > 0)", "`_cp_prev_x` = {moved}"),
+    ("time_shift(sum(ev.v), -1, 'month')", "{moved_base} IS NOT DISTINCT FROM shifted_x.`{leaf}`"),
+])
+async def test_bigquery_bucket_comparisons_keep_the_bucket_type(
+    dim: str, moved: str, formula: str, comparison: str,
+) -> None:
+    # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; a bucket meets its neighbour in its own type.
+    model = _ev_dataset()
+    model.fields.append(DatasetField(name="d_expr", expression=ExpressionObject(dialects=[DialectEntry(dialect="BIGQUERY", expression="DATE(ts)")]), datatype=DataType.DATE))
     sql = await _engine_generate(query=SlayerQuery.model_validate({
-        "source_model": "ev",
-        "time_dimensions": [{"dimension": dim, "granularity": "month"}],
-        "measures": [{"formula": formula, "name": "x"}],
-    }), model=model, dialect="bigquery", validate=False)
-    assert comparison.format(dim=dim) in sql
+        "population": "ev",
+        "time_dimensions": [{"field": dim, "granularity": "month"}],
+        "metrics": [{"metric": formula, "alias": "x"}],
+    }), dataset=model, dialect="bigquery", validate=False)
+    leaf = dim.split(".")[-1]
+    expected = comparison.format(
+        leaf=leaf, moved=moved.format(alias=f"`ev___{leaf}`"), moved_base=moved.format(alias=f"base.`ev___{leaf}`"),
+    )
+    assert expected in " ".join(sql.split()), sql

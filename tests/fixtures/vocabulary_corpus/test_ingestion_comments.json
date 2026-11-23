@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_ingestion_comments.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 570,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 576,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 581,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 587,
+   "reason": "not fully literal"
+  }
+ ]
+}

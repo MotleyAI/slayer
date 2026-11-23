@@ -1,0 +1,113 @@
+{
+ "source": "tests/test_dev2070_expression_auto_names.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "regions",
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     "sum(iif(customers.orders.order_date >= '2024-02-01', 1, 0))"
+    ]
+   },
+   "new": {
+    "population": "regions",
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     "sum(iif(customers.orders.order_date >= '2024-02-01', 1, 0))"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "sum(iif(ordered_at >= 'last month', 1, 0))"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "sum(iif(ordered_at >= 'last month', 1, 0))"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.regions.name"
+    ],
+    "measures": [
+     "sum(customers.spend - 1)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.regions.name"
+    ],
+    "metrics": [
+     "sum(customers.spend - 1)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "name": "s",
+    "dimensions": [
+     "buyer.regions.name"
+    ],
+    "measures": [
+     "sum(buyer.spend - 1)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "name": "s",
+    "dimensions": [
+     "buyer.regions.name"
+    ],
+    "metrics": [
+     "sum(buyer.spend - 1)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 122,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 245,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 265,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 279,
+   "reason": "not fully literal"
+  }
+ ]
+}

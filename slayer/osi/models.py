@@ -6,18 +6,23 @@ semantic model; ``legacy`` marks a model split out of a ``semantic_model``
 wrapper by the parser.
 """
 
-from typing import Any, Optional, Union
+from typing import Any, Optional, Self, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from slayer.core.enums import DataType
+from slayer.core.ossie_expression import OSIExpression, OSINonportableExtension
 
-OSSIE_DATATYPES: dict[str, DataType] = {
-    "String": DataType.TEXT, "Integer": DataType.INT, "Decimal": DataType.DOUBLE,
-    "Float": DataType.DOUBLE, "Boolean": DataType.BOOLEAN, "Date": DataType.DATE,
-    "DateTime": DataType.TIMESTAMP, "DateTimeTz": DataType.TIMESTAMP,
-    "Time": DataType.UNKNOWN, "Opaque": DataType.UNKNOWN,
-}
+#: Ossie's datatype names, each SLayer's value of the same name.
+OSSIE_DATATYPES: dict[str, DataType] = {t.value: t for t in DataType if t is not DataType.ARRAY}
 TEMPORAL_DATATYPES = frozenset({"Date", "Time", "DateTime", "DateTimeTz"})
 
 
@@ -35,38 +40,37 @@ class OSIAIContextObject(BaseModel):
 OSIAIContext = Union[str, OSIAIContextObject]
 
 
-class OSICustomExtension(BaseModel):
-    """Vendor-specific metadata as a serialized JSON string."""
+class _Extensible(BaseModel):
+    """An entity carrying ``nonportable_extensions``; legacy ``custom_extensions`` entries are appended, marked."""
 
-    model_config = ConfigDict(extra="ignore")
+    nonportable_extensions: Optional[list[OSINonportableExtension]] = None
+    _legacy_key: bool = PrivateAttr(default=False)
 
-    vendor_name: str
-    data: str
+    @property
+    def legacy_key(self) -> bool:
+        """Whether the input carried ``custom_extensions``, even an empty one."""
+        return self._legacy_key
 
-
-class OSIDialectExpression(BaseModel):
-    """Expression in one dialect; ``dialect`` is any non-blank token."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    dialect: str
-    expression: str
-
-    @field_validator("dialect")
+    @model_validator(mode="wrap")
     @classmethod
-    def _non_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("dialect must be a non-blank string")
-        return v
-
-
-class OSIExpression(BaseModel):
-    """Portable ``sql`` (OSSIE_SQL_2026) and/or per-dialect entries."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    sql: Optional[str] = None
-    dialects: list[OSIDialectExpression] = []
+    def _read_legacy_key(cls, data: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
+        if not isinstance(data, dict) or "custom_extensions" not in data:
+            return handler(data)
+        data = dict(data)
+        legacy = data.pop("custom_extensions")
+        if legacy is None:
+            legacy = []
+        current = data.get("nonportable_extensions")
+        if current is None:
+            current = []
+        if not isinstance(legacy, list) or not isinstance(current, list):
+            raise ValueError("custom_extensions and nonportable_extensions must be lists")
+        data["nonportable_extensions"] = [*current, *legacy]
+        entity = handler(data)
+        for entry in (entity.nonportable_extensions or [])[len(current):]:
+            entry._legacy = True
+        entity._legacy_key = True
+        return entity
 
 
 class OSIDimension(BaseModel):
@@ -77,7 +81,7 @@ class OSIDimension(BaseModel):
     is_time: Optional[bool] = None
 
 
-class OSIField(BaseModel):
+class OSIField(_Extensible):
     """Row-level attribute for grouping, filtering, and metric expressions."""
 
     model_config = ConfigDict(extra="ignore")
@@ -89,10 +93,9 @@ class OSIField(BaseModel):
     description: Optional[str] = None
     datatype: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIMetric(BaseModel):
+class OSIMetric(_Extensible):
     """Quantitative measure defined on business data (raw SQL aggregation)."""
 
     model_config = ConfigDict(extra="ignore")
@@ -102,10 +105,9 @@ class OSIMetric(BaseModel):
     description: Optional[str] = None
     datatype: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIDataset(BaseModel):
+class OSIDataset(_Extensible):
     """Logical dataset representing a business entity (fact or dimension table)."""
 
     model_config = ConfigDict(extra="ignore")
@@ -118,10 +120,9 @@ class OSIDataset(BaseModel):
     ai_context: Optional[OSIAIContext] = None
     fields: Optional[list[OSIField]] = None
     metrics: Optional[list[OSIMetric]] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIRelationship(BaseModel):
+class OSIRelationship(_Extensible):
     """Foreign key relationship between datasets (``from`` = many, ``to`` = one)."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -132,10 +133,9 @@ class OSIRelationship(BaseModel):
     from_columns: list[str]
     to_columns: list[str]
     ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIDocument(BaseModel):
+class OSIDocument(_Extensible):
     """One semantic model; ``legacy`` is set by the parser for wrapper-split models."""
 
     model_config = ConfigDict(extra="ignore")
@@ -147,7 +147,6 @@ class OSIDocument(BaseModel):
     datasets: list[OSIDataset]
     relationships: Optional[list[OSIRelationship]] = None
     metrics: Optional[list[OSIMetric]] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
     legacy: bool = False
 
     @field_validator("version", mode="before")

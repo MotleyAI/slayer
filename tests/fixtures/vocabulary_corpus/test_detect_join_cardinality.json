@@ -1,0 +1,330 @@
+{
+ "source": "tests/test_detect_join_cardinality.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "cart_lines",
+    "join_pairs": [
+     [
+      "id",
+      "cart_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "cart_lines",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "cart_id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "right_m",
+    "join_pairs": [
+     [
+      "k",
+      "k"
+     ]
+    ]
+   },
+   "new": {
+    "to": "right_m",
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "k"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "empty_tgt",
+    "join_pairs": [
+     [
+      "k",
+      "k"
+     ]
+    ]
+   },
+   "new": {
+    "to": "empty_tgt",
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "k"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "empty_tgt",
+    "join_pairs": [
+     [
+      "k",
+      "k"
+     ]
+    ]
+   },
+   "new": {
+    "to": "empty_tgt",
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "k"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "k",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "ck_parent",
+    "join_pairs": [
+     [
+      "a",
+      "a"
+     ],
+     [
+      "b",
+      "b"
+     ]
+    ]
+   },
+   "new": {
+    "to": "ck_parent",
+    "from_columns": [
+     "a",
+     "b"
+    ],
+    "to_columns": [
+     "a",
+     "b"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "ck",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "ck"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "carts",
+    "join_pairs": [
+     [
+      "cart_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "carts",
+    "from_columns": [
+     "cart_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "a",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "a"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "empty_tgt",
+    "join_pairs": [
+     [
+      "k",
+      "k"
+     ]
+    ]
+   },
+   "new": {
+    "to": "empty_tgt",
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "k"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 281,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 295,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 338,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 363,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 499,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 500,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 500,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 622,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 import yaml
@@ -15,15 +15,16 @@ from slayer import cli
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import DefaultTimeDimensionTypeError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtMeasure, DbtMetric, DbtProject, DbtSemanticModel
+from slayer.ingest_report import ConversionResult
 from slayer.mcp.server import create_mcp_server
 from slayer.search.service import SearchService
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._cli_inprocess import run_cli_in_process
-from tests._dev2015_fixtures import GRANULARITIES, GRANULARITY_NAMES, returns_model, spine_engine, spine_models
+from tests._dev2015_fixtures import GRANULARITIES, GRANULARITY_NAMES, returns_dataset, spine_engine, spine_datasets
 
 
 async def _call(server, *, name: str, arguments: dict[str, Any]) -> str:
@@ -34,8 +35,8 @@ async def _call(server, *, name: str, arguments: dict[str, Any]) -> str:
 async def _spine_storage(base_dir: str) -> YAMLStorage:
     storage = YAMLStorage(base_dir=base_dir)
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-    for model in spine_models():
-        await storage.save_model(model, _validate=False)
+    for model in spine_datasets():
+        await storage.save_dataset(model, _validate=False)
     return storage
 
 
@@ -44,17 +45,17 @@ def _granularity_dump(cfg: DatasourceConfig) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# The spine is a built-in model on every listing surface
+# The spine is a built-in dataset on every listing surface
 # ---------------------------------------------------------------------------
 
 class TestSpineListedWithItsWiredModels:
     async def test_mcp_listing_and_inspection(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
         server = create_mcp_server(storage=storage)
-        summary = await _call(server, name="models_summary", arguments={"datasource_name": "test"})
+        summary = await _call(server, name="datasets_summary", arguments={"datasource_name": "test"})
         assert "time_spine" in summary
         text = await _call(server, name="inspect", arguments={
-            "entity_type": "model", "reference": "time_spine", "compact": False,
+            "entity_type": "dataset", "reference": "time_spine", "compact": False,
         })
         assert "timestamp" in text
         assert "built-in" in text.lower()
@@ -65,62 +66,62 @@ class TestSpineListedWithItsWiredModels:
     async def test_listing_marks_it_built_in_and_points_at_inspect(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
         server = create_mcp_server(storage=storage)
-        summary = await _call(server, name="models_summary", arguments={"datasource_name": "test"})
+        summary = await _call(server, name="datasets_summary", arguments={"datasource_name": "test"})
         spine_block = summary[summary.index("## `time_spine`"):]
-        assert "Built-in virtual model" in spine_block
-        assert "inspect(reference='test.time_spine', entity_type='model')" in spine_block
+        assert "Built-in virtual dataset" in spine_block
+        assert "inspect(reference='test.time_spine', entity_type='dataset')" in spine_block
         assert "order_date" not in spine_block
         detail = await _call(server, name="inspect", arguments={
-            "entity_type": "model", "reference": "test.time_spine", "compact": False,
+            "entity_type": "dataset", "reference": "test.time_spine", "compact": False,
         })
         assert "orders via order_date" in detail
 
     async def test_search_finds_the_spine(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
         response = await SearchService(storage=storage).search(question="time spine calendar", max_results=20)
-        assert any(h.kind == "model" and "time_spine" in h.id for h in response.results)
+        assert any(h.kind == "dataset" and "time_spine" in h.id for h in response.results)
 
     def test_rest_listing(self) -> None:
         storage = asyncio.run(_spine_storage(tempfile.mkdtemp()))
         client = TestClient(create_app(storage=storage))
-        names = {m["name"] for m in client.get("/models", params={"data_source": "test"}).json()}
+        names = {m["name"] for m in client.get("/datasets", params={"data_source": "test"}).json()}
         assert "time_spine" in names
-        model = client.get("/models/time_spine", params={"data_source": "test"})
+        model = client.get("/datasets/time_spine", params={"data_source": "test"})
         assert model.status_code == 200
-        assert [c["name"] for c in model.json()["columns"]] == ["timestamp"]
+        assert [c["name"] for c in model.json()["fields"]] == ["timestamp"]
 
     def test_rest_unknown_datasource_has_no_spine(self) -> None:
         storage = asyncio.run(_spine_storage(tempfile.mkdtemp()))
         client = TestClient(create_app(storage=storage))
-        assert client.get("/models", params={"data_source": "missing"}).json() == []
-        assert client.get("/models/time_spine", params={"data_source": "missing"}).status_code == 404
+        assert client.get("/datasets", params={"data_source": "missing"}).json() == []
+        assert client.get("/datasets/time_spine", params={"data_source": "missing"}).status_code == 404
 
     def test_cli_listing(self) -> None:
         base = tempfile.mkdtemp()
         asyncio.run(_spine_storage(base))
-        result = run_cli_in_process(["models", "--storage", base, "list"])
+        result = run_cli_in_process(["datasets", "--storage", base, "list"])
         assert result.returncode == 0, result.stderr
         assert "time_spine" in result.stdout
 
     def test_cli_show(self) -> None:
         base = tempfile.mkdtemp()
         asyncio.run(_spine_storage(base))
-        result = run_cli_in_process(["models", "--storage", base, "show", "time_spine"])
+        result = run_cli_in_process(["datasets", "--storage", base, "show", "time_spine"])
         assert result.returncode == 0, result.stdout + result.stderr
         assert "timestamp" in result.stdout
 
 
 # ---------------------------------------------------------------------------
-# A declared default_time_dimension must name a date or time column; the reserved name
+# A declared default_time_dimension must name a date or time field; the reserved name
 # fails the same way on every save surface
 # ---------------------------------------------------------------------------
 
-def _bad_default(name: str = "returns_by_amount") -> SlayerModel:
-    return returns_model(default_time_dimension="amount").model_copy(update={"name": name})
+def _bad_default(name: str = "returns_by_amount") -> SlayerDataset:
+    return returns_dataset(default_time_dimension="amount").model_copy(update={"name": name})
 
 
 def _stored_default(storage: YAMLStorage, name: str) -> Any:
-    model = asyncio.run(storage.get_model(name, data_source="test"))
+    model = asyncio.run(storage.get_dataset(name, data_source="test"))
     return None if model is None else model.default_time_dimension
 
 
@@ -129,33 +130,33 @@ class TestDeclaredDefaultTimeDimensionType:
         storage = await _spine_storage(tempfile.mkdtemp())
         model = _bad_default()
         with pytest.raises(DefaultTimeDimensionTypeError) as exc:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "returns_by_amount" in str(exc.value)
         assert "amount" in str(exc.value)
-        assert await storage.get_model("returns_by_amount", data_source="test") is None
+        assert await storage.get_dataset("returns_by_amount", data_source="test") is None
 
     async def test_text_rejected_and_temporal_accepted(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
-        text = SlayerModel(name="by_text", sql_table="returns", data_source="test",
-                           default_time_dimension="day_text", columns=[Column(name="day_text")])
+        text = SlayerDataset(name="by_text", sql_table="returns", data_source="test",
+                           default_time_dimension="day_text", fields=[DatasetField(name="day_text")])
         with pytest.raises(DefaultTimeDimensionTypeError):
-            await storage.save_model(text)
-        for column_type in (DataType.DATE, DataType.TIMESTAMP):
-            model = SlayerModel(name=f"by_{column_type.value.lower()}", sql_table="returns", data_source="test",
-                                default_time_dimension="day", columns=[Column(name="day", type=column_type)])
-            await storage.save_model(model)
-            stored = await storage.get_model(model.name, data_source="test")
+            await storage.save_dataset(text)
+        for column_type in (DataType.DATE, DataType.DATETIME):
+            model = SlayerDataset(name=f"by_{column_type.value.lower()}", sql_table="returns", data_source="test",
+                                default_time_dimension="day", fields=[DatasetField(name="day", datatype=column_type)])
+            await storage.save_dataset(model)
+            stored = await storage.get_dataset(model.name, data_source="test")
             assert stored is not None
             assert stored.default_time_dimension == "day"
 
     async def test_mcp_edit_model(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
         server = create_mcp_server(storage=storage)
-        text = await _call(server, name="edit_model", arguments={
-            "model_name": "returns", "default_time_dimension": "amount",
+        text = await _call(server, name="edit_dataset", arguments={
+            "dataset_name": "returns", "default_time_dimension": "amount",
         })
         assert "amount" in text
-        stored = await storage.get_model("returns", data_source="test")
+        stored = await storage.get_dataset("returns", data_source="test")
         assert stored is not None
         assert stored.default_time_dimension is None
 
@@ -163,7 +164,7 @@ class TestDeclaredDefaultTimeDimensionType:
     def test_rest_create(self, name) -> None:
         storage = asyncio.run(_spine_storage(tempfile.mkdtemp()))
         resp = TestClient(create_app(storage=storage)).post(
-            "/models", json=_bad_default(name).model_dump(mode="json"),
+            "/datasets", json=_bad_default(name).model_dump(mode="json"),
         )
         assert resp.status_code == 400, resp.text
         assert name in resp.json()["detail"]
@@ -176,7 +177,7 @@ class TestDeclaredDefaultTimeDimensionType:
         storage = asyncio.run(_spine_storage(base))
         path = tmp_path / "model.yaml"
         path.write_text(yaml.safe_dump(_bad_default(name).model_dump(mode="json")))
-        result = run_cli_in_process(["models", "--storage", base, "create", str(path)])
+        result = run_cli_in_process(["datasets", "--storage", base, "create", str(path)])
         assert result.returncode == 1, result.stdout + result.stderr
         assert name in result.stderr
         if name != "time_spine":
@@ -254,7 +255,7 @@ class TestGranularitiesRoundTrip:
         assert stored is not None
         assert [g["name"] for g in _granularity_dump(stored)] == list(GRANULARITY_NAMES)
 
-    def test_cli_create_demo(self, monkeypatch) -> None:
+    def test_cli_create_demo(self, monkeypatch: pytest.MonkeyPatch) -> None:
         base = tempfile.mkdtemp()
         monkeypatch.setattr(cli, "build_jaffle_shop", lambda **_: False)
         result = run_cli_in_process([
@@ -282,9 +283,9 @@ def _dbt_project(field: str, value: Any) -> DbtProject:
     )
 
 
-def _converted_measure(result, name: str):
-    for model in result.models:
-        for measure in model.measures:
+def _converted_metric(result: ConversionResult, name: str) -> Optional[DatasetMetric]:
+    for model in result.datasets:
+        for measure in model.metrics:
             if measure.name == name:
                 return measure
     return None
@@ -293,16 +294,16 @@ def _converted_measure(result, name: str):
 class TestDbtImporter:
     def test_fill_nulls_with_becomes_coalesce(self) -> None:
         result = DbtToSlayerConverter(project=_dbt_project("fill_nulls_with", 0), data_source="test").convert()
-        measure = _converted_measure(result, "gap_filled_rev")
+        measure = _converted_metric(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.formula.replace(" ", "") == "coalesce(sum(amount),0)"
+        assert measure.text.replace(" ", "") == "coalesce(sum(amount),0)"
         assert not any(e.metric_name == "gap_filled_rev" for e in result.unconverted_metrics)
 
     def test_join_to_timespine_is_accepted_with_a_note(self) -> None:
         result = DbtToSlayerConverter(project=_dbt_project("join_to_timespine", True), data_source="test").convert()
-        measure = _converted_measure(result, "gap_filled_rev")
+        measure = _converted_metric(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.formula.replace(" ", "") == "sum(amount)"
+        assert measure.text.replace(" ", "") == "sum(amount)"
         notes = [e for e in (*result.unconverted_metrics, *result.warnings) if e.metric_name == "gap_filled_rev"]
         assert notes
         assert all(e.severity == "info" for e in notes)
@@ -314,8 +315,8 @@ async def test_spine_query_through_mcp(backend) -> None:
     async with spine_engine(backend) as eng:
         server = create_mcp_server(storage=eng.storage)
         text = await _call(server, name="query", arguments={"query": {
-            "measures": [{"formula": "sum(orders.amount)", "name": "o"}],
-            "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month",
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "o"}],
+            "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month",
                                  "date_range": ["2025-01-01", "2025-03-31"]}],
         }})
     assert "2025-03" in text

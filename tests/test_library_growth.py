@@ -19,7 +19,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations
 from tests._granularity_rename_fixtures import DS as GRANULARITY_DS
 from tests._granularity_rename_fixtures import EXPECTED_BUCKETS, bucket_totals, granularity_store, renamed
-from tests._library_names_fixtures import SUM_A, agg, measure, stored_engine, t_doc, value
+from tests._library_names_fixtures import SUM_A, agg, metric, stored_engine, t_doc, value
 from tests._stored_upgrade_fixtures import DS
 
 #: Every name the library reserved when this guard was written. Extend it only together with the rule below.
@@ -55,7 +55,7 @@ PINNED: dict[str, frozenset[str]] = {
     "reserved": frozenset(),
 }
 
-#: A model's own definition shadows these, so a new name in them needs no migration.
+#: A dataset's own definition shadows these, so a new name in them needs no migration.
 SHADOWABLE = frozenset({"functions", "spellings"})
 
 #: A newly reserved name outside ``SHADOWABLE`` → the ``(entity, source_version)`` migration that renames it in stores.
@@ -121,15 +121,15 @@ _FUNCTION_NAMES = sorted(SCALAR_FUNCTIONS | SCALAR_SPELLINGS)
 @pytest.fixture(scope="module")
 async def aggregation_engine() -> AsyncGenerator[SlayerQueryEngine]:
     docs = [t_doc(name=f"t_{name}", aggregations=[agg(name)]) for name in _FUNCTION_NAMES]
-    async with stored_engine(models=docs) as engine:
+    async with stored_engine(datasets=docs) as engine:
         yield engine
 
 
 class TestStoredAggregations:
     @pytest.mark.parametrize("name", _FUNCTION_NAMES)
     async def test_named_after_a_function(self, aggregation_engine: SlayerQueryEngine, name: str) -> None:
-        assert await aggregation_engine.storage.get_model(f"t_{name}", data_source=DS) is not None
-        resp = await aggregation_engine.execute({"source_model": f"t_{name}", "measures": [measure(f"{name}(a)")]})
+        assert await aggregation_engine.storage.get_dataset(f"t_{name}", data_source=DS) is not None
+        resp = await aggregation_engine.execute({"population": f"t_{name}", "metrics": [metric(f"{name}(t_{name}.a)")]})
         assert float(value(resp)) == SUM_A
 
 

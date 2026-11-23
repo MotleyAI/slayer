@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.11 — the total-routing invariant (design D7, F9).
+"""The total-routing invariant (design D7, F9).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Every aggregate has
 exactly one disposition"; …/specs/queries/computed-dimensions — "Grain
@@ -15,17 +15,18 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1836_fixtures import (
-    ModelMeasure,
-    dev1836_models,
+    dev1836_datasets,
     make_exec_engine,
     q,
 )
 from slayer.engine.compile import stages
 
 LOCAL_BAND = {
-    "expression": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
-    "name": "band",
+    "field": "CASE WHEN sum(orders.amount, partition_by=orders.channel) > 30 THEN 1 ELSE 0 END",
+    "alias": "band",
 }
 
 
@@ -42,10 +43,10 @@ async def exec_backend(request):
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1836_models()
+    models = dev1836_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
@@ -53,8 +54,8 @@ class TestExplicitRejections:
     async def test_bare_aggregate_in_dimension_is_rejected(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=[{"expression": "sum(amount)", "name": "d"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            dimensions=[{"field": "sum(orders.amount)", "alias": "d"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         with pytest.raises(expected_exception=ValueError, match="partition_by") as ei:
             await engine.execute(query)
@@ -62,29 +63,29 @@ class TestExplicitRejections:
         assert "__regroup__" not in str(ei.value)
 
     async def test_aggregate_over_attached_value_executes(self, exec_backend):
-        """Legal since DEV-1847 (shape B): a measure partitioned by an
+        """Legal (shape B): a metric partitioned by an
         attach-carrying computed dimension equals its band's group total."""
         _, engine = exec_backend
         query = q(
             dimensions=[LOCAL_BAND],
-            measures=[ModelMeasure(formula="sum(amount, partition_by=band)",
-                                   name="x"),
-                      ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=band)",
+                                   alias="x"),
+                      QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         assert resp.data
         for row in resp.data:
-            assert float(row["orders.x"]) == float(row["orders.s"])
+            assert float(row["x"]) == float(row["s"])
 
     def test_migrated_cm_still_renders_in_a_cte_body(self):
-        """A plain cross-model measure renders inside a CTE body today; the
-        migration onto the primitive must not drop it into the DEV-1838 arm."""
+        """A plain cross-dataset metric renders inside a CTE body today; the
+        migration onto the primitive must not drop it into the CTE-body arm."""
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["customers.tier"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(customers.spend)", name="cm"),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ), bundle=bundle)
         generator = SQLGenerator(dialect="postgres")
@@ -99,14 +100,14 @@ class TestTotalRoutingInvariant:
     """F9/D7 — a simulated discovery gap surfaces as an explicit planner
     error, never as a silently dropped value."""
 
-    def test_unrouted_aggregate_raises_explicit_planner_error(self, monkeypatch):
+    def test_unrouted_aggregate_raises_explicit_planner_error(self, monkeypatch: pytest.MonkeyPatch):
         """Blind the combined-producer discovery to every partitioned leaf: the
         post-discovery invariant must catch the now-undisposed aggregate."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
-            dimensions=["status"],
-            measures=[ModelMeasure(formula="sum(amount, partition_by=channel)",
-                                   name="pt")],
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.channel)",
+                                   alias="pt")],
         )
         bundle = _bundle()
         # D7: a raise, not an assert — AssertionError must not be the vehicle.
@@ -117,16 +118,16 @@ class TestTotalRoutingInvariant:
         assert "aggregat" in message or "pt" in message, message
 
     def test_blinded_cross_model_discovery_hits_the_dedicated_invariant(
-        self, monkeypatch,
+        self, monkeypatch: pytest.MonkeyPatch,
     ):
         """Task 7.1 — the D7 invariant itself, not a coincidental backstop.
-        Blind the CROSS-MODEL discovery: the un-desugared cross-model aggregate
+        Blind the CROSS-DATASET discovery: the un-desugared cross-dataset aggregate
         must be caught by ``_assert_total_routing`` with the explicit
         no-disposition error, not fall through to the legacy dispatch."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
-            dimensions=["status"],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="cm")],
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="cm")],
         )
         bundle = _bundle()
         with pytest.raises(expected_exception=ValueError, match="no routing disposition"):
@@ -134,22 +135,22 @@ class TestTotalRoutingInvariant:
 
     @pytest.mark.parametrize("role_kwargs", [
         pytest.param(
-            {"filters": ["sum(customers.spend) > 100"]}, id="filter-only",
+            {"filter": ["sum(customers.spend) > 100"]}, id="filter-only",
         ),
         pytest.param(
-            {"order": [{"column": "sum(customers.spend)", "direction": "desc"}]},
+            {"order": [{"field": "sum(customers.spend)", "direction": "desc"}]},
             id="order-only",
         ),
     ])
     def test_blinded_discovery_catches_filter_and_order_leaves(
-        self, monkeypatch, role_kwargs,
+        self, monkeypatch: pytest.MonkeyPatch, role_kwargs,
     ):
-        """The invariant walks filters and orders too — a hidden cross-model
+        """The invariant walks filters and orders too — a hidden cross-dataset
         leaf in either role must not survive blinded discovery."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
-            dimensions=["status"],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             **role_kwargs,
         )
         bundle = _bundle()
@@ -163,13 +164,13 @@ class TestNoSilentDrops:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(customers.spend)", name="cm"),
-                ModelMeasure(formula="sum(customers.spend) / sum(amount)",
-                             name="ratio"),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
+                QueryMetric(metric="sum(customers.spend) / sum(orders.amount)",
+                             alias="ratio"),
             ],
         ))
         for row in resp.data:
-            for col in ("orders.m", "orders.cm", "orders.ratio"):
+            for col in ("m", "cm", "ratio"):
                 assert col in row, col

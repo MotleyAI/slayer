@@ -20,15 +20,16 @@ from slayer.engine.population.inference import evaluate_candidates, infer_popula
 
 from tests._dev1866_fixtures import (
     DS_CHAIN,
-    chain_models_by_name,
+    chain_datasets_by_name,
     make_chain_exec_engine,
 )
 from tests._dev1871_fixtures import (
     DS_LIT,
-    fanroute_models_by_name,
-    lit_models_by_name,
+    fanroute_datasets_by_name,
+    lit_datasets_by_name,
     make_routing_storage,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture
@@ -58,7 +59,7 @@ class TestShortFormParity:
             query=SlayerQuery(dimensions=["orders.status", "customers.regions.name"]),
             storage=storage,
         )
-        assert short.model_name == full.model_name == "orders"
+        assert short.dataset_name == full.dataset_name == "orders"
         assert short.data_source == DS_CHAIN
 
     async def test_raw_row_mode_routes_identically(self, storage) -> None:
@@ -69,33 +70,28 @@ class TestShortFormParity:
             ),
             storage=storage,
         )
-        assert choice.model_name == "orders"
+        assert choice.dataset_name == "orders"
 
 
-class TestLiteralPrecedence:
-    """Spec: Literal resolution beats short-form reinterpretation."""
+class TestToOnePathPrecedence:
+    """Spec: an anchor is reached by its only to-one path."""
 
-    async def test_direct_edge_is_never_reinterpreted_through_a_route(
-        self, storage
-    ) -> None:
-        """stores' direct unknown-cardinality edge to plants is used literally;
-        the to-one route via hub must not be substituted for it."""
-        models = lit_models_by_name()
+    async def test_anchor_takes_its_only_to_one_path(self, storage) -> None:
+        """stores' direct unknown-cardinality edge to plants does not compete with the to-one route via hub."""
+        models = lit_datasets_by_name()
         assert short_form_route_or_none(
-            root=models["stores"], target_model="plants", models_by_name=models,
+            root=models["stores"], target_dataset="plants", datasets_by_name=models,
         ) == ["hub", "plants"]
 
-        query = SlayerQuery(dimensions=["stores.kind", "plants.name"])
-        with pytest.raises(PopulationInferenceError) as ei:
-            await infer_population(query=query, storage=storage)
-        assert ei.value.reason is PopulationErrorReason.NO_VIABLE_CANDIDATE
+        choice = await infer_population(query=SlayerQuery(dimensions=["stores.kind", "plants.name"]), storage=storage)
+        assert choice.dataset_name == "stores"
 
     async def test_full_routed_path_resolves_the_same_query(self, storage) -> None:
         choice = await infer_population(
             query=SlayerQuery(dimensions=["stores.kind", "hub.plants.name"]),
             storage=storage,
         )
-        assert choice.model_name == "stores"
+        assert choice.dataset_name == "stores"
         assert choice.data_source == DS_LIT
 
 
@@ -108,9 +104,9 @@ class TestFanningRoute:
         """Binding routes firm → desks (unique route, fans out at office →
         desks); determination must reject it — and the full-path spelling
         fails identically."""
-        models = fanroute_models_by_name()
+        models = fanroute_datasets_by_name()
         assert short_form_route_or_none(
-            root=models["firm"], target_model="desks", models_by_name=models,
+            root=models["firm"], target_dataset="desks", datasets_by_name=models,
         ) is not None
 
         for dims in (
@@ -129,10 +125,10 @@ class TestVerdictConsistency:
     either spelling — pinned at the probe-verdict level."""
 
     def test_unreachable_verdict_matches_between_spellings(self) -> None:
-        models = fanroute_models_by_name()
+        models = fanroute_datasets_by_name()
         for item in ("firm.title", "office.firm.title"):
             verdict = evaluate_candidates(
-                items=[item], candidates=["desks"], models_by_name=models,
+                items=[item], candidates=["desks"], datasets_by_name=models,
             )[0]
             assert not verdict.viable
             assert verdict.unreachable_items == [item]
@@ -157,11 +153,11 @@ class TestRoutedHops:
         """Spec: hops are counted along the selected route (orders reaches
         regions.name in 2 routed hops; customers literally in 1; regions in 0)."""
         verdicts = {
-            v.model_name: v
+            v.dataset_name: v
             for v in evaluate_candidates(
                 items=["regions.name"],
                 candidates=["customers", "orders", "regions"],
-                models_by_name=chain_models_by_name(),
+                datasets_by_name=chain_datasets_by_name(),
             )
         }
         assert all(v.viable for v in verdicts.values())
@@ -174,11 +170,11 @@ class TestInferenceBindingAgreement:
     """Spec (dotted-dimension-routing): Inference and binding agree on a routed short form."""
 
     async def test_rootless_routed_short_form_matches_explicit_twin(
-        self, chain_engine
+        self, chain_engine: SlayerQueryEngine
     ) -> None:
         rootless = SlayerQuery(dimensions=["orders.status", "regions.name"])
         explicit = SlayerQuery(
-            source_model="orders", dimensions=["orders.status", "regions.name"],
+            population="orders", dimensions=["orders.status", "regions.name"],
         )
         r = await chain_engine.execute(rootless)
         e = await chain_engine.execute(explicit)

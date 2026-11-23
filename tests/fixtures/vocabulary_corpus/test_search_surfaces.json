@@ -1,0 +1,42 @@
+{
+ "source": "tests/test_search_surfaces.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 250,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 252,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 366,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 368,
+   "reason": "not fully literal"
+  }
+ ]
+}

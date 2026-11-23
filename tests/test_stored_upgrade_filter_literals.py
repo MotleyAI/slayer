@@ -6,6 +6,7 @@ import copy
 
 import pytest
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
@@ -16,7 +17,7 @@ from tests._stored_upgrade_fixtures import (
     DS,
     customers_v10,
     in_datasource,
-    measure_total,
+    metric_total,
     memory_v2,
     orders_v10,
     query_backed_v10,
@@ -44,9 +45,13 @@ LEGACY_FRAGMENTS = ("Z'", "+02:00", "/")
 
 VERBATIM_CASES = [
     pytest.param("status = '2024/01/01'", id="text-column"),
-    pytest.param("ordered_at IN ('2024/01/01', status)", id="mixed-in"),
     pytest.param("missing_col >= '2024-01-01T00:00:00Z'", id="unresolvable"),
 ]
+#: Each verbatim case as it loads: qualified by its population, its literal untouched.
+VERBATIM_LOADED = {
+    "status = '2024/01/01'": "orders.status = '2024/01/01'",
+    "missing_col >= '2024-01-01T00:00:00Z'": "orders.missing_col >= '2024-01-01T00:00:00Z'",
+}
 
 
 @pytest.fixture
@@ -66,10 +71,10 @@ async def _store(*, tmp_path, ds: DatasourceConfig, backend: str, filters: list[
                            models=[orders_v10(), customers_v10(), qb])
 
 
-async def _loaded_filters(storage) -> list[str]:
-    model = await storage.get_model("rev_f", data_source=DS)
+async def _loaded_filters(storage: StorageBackend) -> list[str]:
+    model = await storage.get_dataset("rev_f", data_source=DS)
     assert model is not None
-    return list((model.source_queries or [])[0].filters or [])
+    return list((model.source_queries or [])[0].filter or [])
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -78,14 +83,15 @@ async def test_legacy_literal_against_temporal_column_runs(tmp_path, shop_ds, ba
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend=backend, filters=[stored_filter])
     [loaded] = await _loaded_filters(storage)
     assert not [frag for frag in LEGACY_FRAGMENTS if frag in loaded], loaded
-    resp = await run(storage, {"source_model": "rev_f", "measures": ["sum(rev)"]})
-    assert measure_total(resp, measure="rev_sum") == expected
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
+    assert metric_total(resp, metric="rev_sum") == expected
 
 
 async def test_repair_keeps_the_rest_of_the_filter_verbatim(tmp_path, shop_ds):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml",
                            filters=["ordered_at >= '2024-01-01T00:00:00Z' and like(status, 'n%')"])
-    assert await _loaded_filters(storage) == ["ordered_at >= '2024-01-01T00:00:00' and like(status, 'n%')"]
+    assert await _loaded_filters(storage) == [
+        "orders.ordered_at >= '2024-01-01T00:00:00' and like(orders.status, 'n%')"]
 
 
 @pytest.mark.parametrize(("stored_filter", "repaired"), [
@@ -109,13 +115,20 @@ async def test_every_operator_layout_is_repaired_exactly(tmp_path, shop_ds, stor
 @pytest.mark.parametrize("stored_filter", VERBATIM_CASES)
 async def test_non_temporal_or_unresolvable_comparison_stays_verbatim(tmp_path, shop_ds, stored_filter):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", filters=[stored_filter])
-    assert await _loaded_filters(storage) == [stored_filter]
+    assert await _loaded_filters(storage) == [VERBATIM_LOADED[stored_filter]]
+
+
+async def test_mixed_in_list_refuses_to_load(tmp_path, shop_ds):
+    storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml",
+                           filters=["ordered_at IN ('2024/01/01', status)"])
+    with pytest.raises(StoredDocumentLoadError):
+        await _loaded_filters(storage)
 
 
 async def test_text_column_comparison_keeps_its_rows(tmp_path, shop_ds):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", filters=["status = '2024/01/01'"])
-    resp = await run(storage, {"source_model": "rev_f", "measures": ["sum(rev)"]})
-    assert measure_total(resp, measure="rev_sum") == 60.0
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
+    assert metric_total(resp, metric="rev_sum") == 60.0
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -126,10 +139,10 @@ async def test_memory_query_filter_literal_is_repaired(tmp_path, shop_ds, backen
                               memories=[memory_v2(memory_id="m_filter", query=query)])
     mem = await storage.get_memory("m_filter")
     assert mem.query is not None
-    [loaded] = mem.query.filters or []
+    [loaded] = mem.query.filter or []
     assert "+02:00" not in loaded
     resp = await run(storage, mem.query)
-    assert measure_total(resp, measure="rev") == 150.0
+    assert metric_total(resp, metric="rev") == 150.0
 
 
 # --------------------------------------------------------------------------- #
@@ -198,8 +211,8 @@ async def test_routed_reference_literal_is_repaired_and_runs(
 ):
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend, models=models(), stage=stage)
     assert await _loaded_filters(storage) == [repaired]
-    resp = await run(storage, {"source_model": "rev_f", "measures": ["sum(rev)"]})
-    assert measure_total(resp, measure="rev_sum") == expected
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
+    assert metric_total(resp, metric="rev_sum") == expected
 
 
 async def test_routed_text_column_stays_verbatim_and_keeps_its_rows(tmp_path, regions_ds):
@@ -207,8 +220,8 @@ async def test_routed_text_column_stays_verbatim_and_keeps_its_rows(tmp_path, re
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend="yaml", models=_routed_models(),
                                   stage=stage)
     assert await _loaded_filters(storage) == ["regions.label = '2024/01/01'"]
-    resp = await run(storage, {"source_model": "rev_f", "measures": ["sum(rev)"]})
-    assert measure_total(resp, measure="rev_sum") == 120.0
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
+    assert metric_total(resp, metric="rev_sum") == 120.0
 
 
 async def test_ambiguous_short_form_route_and_routed_text_column_stay_verbatim(tmp_path, regions_ds):
@@ -233,8 +246,8 @@ async def test_unloadable_model_does_not_block_an_unrelated_repair(tmp_path, reg
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend,
                                   models=[*_routed_models(), broken], stage=stage)
     assert await _loaded_filters(storage) == ["regions.opened_on >= '2024-01-01'"]
-    resp = await run(storage, {"source_model": "rev_f", "measures": ["sum(rev)"]})
-    assert measure_total(resp, measure="rev_sum") == AMOUNT_OPENED_SINCE_2024
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
+    assert metric_total(resp, metric="rev_sum") == AMOUNT_OPENED_SINCE_2024
 
 
 def _case_sensitive_models() -> list[dict]:
@@ -248,8 +261,8 @@ async def test_double_quoted_hop_and_leaf_are_repaired(tmp_path, regions_ds, bac
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend=backend,
                                   models=_case_sensitive_models(), stage=stage)
     assert await _loaded_filters(storage) == ['"Regions"."Opened_On" >= \'2024-01-01\'']
-    resp = await run(storage, {"source_model": "rev_f", "measures": ["sum(rev)"]})
-    assert measure_total(resp, measure="rev_sum") == AMOUNT_OPENED_SINCE_2024
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
+    assert metric_total(resp, metric="rev_sum") == AMOUNT_OPENED_SINCE_2024
 
 
 @pytest.mark.parametrize("stored", [
@@ -275,9 +288,9 @@ async def test_sibling_stage_host_bare_reference_stays_verbatim_and_extension_ho
     qb = query_backed_v10(name="rev_s", stages=[base, outer])
     storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=regions_ds,
                               models=[*_routed_models(), qb])
-    model = await storage.get_model("rev_s", data_source=DS)
+    model = await storage.get_dataset("rev_s", data_source=DS)
     assert model is not None
-    assert (model.source_queries or [])[-1].filters == [
+    assert (model.source_queries or [])[-1].filter == [
         "ordered_at >= '2024/01/01'", "customers.signed_up_at >= '2024-01-01T00:00:00'"]
 
 
@@ -297,8 +310,8 @@ async def test_memory_short_form_routed_literal_is_repaired(tmp_path, regions_ds
                               models=_routed_models(), memories=[_routed_memory()])
     mem = await storage.get_memory("m_routed")
     assert mem.query is not None
-    assert mem.query.filters == ["regions.opened_on >= '2024-01-01'"]
-    assert measure_total(await run(storage, mem.query), measure="rev") == AMOUNT_OPENED_SINCE_2024
+    assert mem.query.filter == ["regions.opened_on >= '2024-01-01'"]
+    assert metric_total(await run(storage, mem.query), metric="rev") == AMOUNT_OPENED_SINCE_2024
 
 
 @pytest.fixture
@@ -326,10 +339,10 @@ async def test_memory_repair_follows_the_datasource_priority(tmp_path, two_regio
     mem = await storage.get_memory("m_routed")
     assert mem.query is not None
     if not repaired:
-        assert mem.query.filters == [ROUTED_MEMORY_FILTER]
+        assert mem.query.filter == [ROUTED_MEMORY_FILTER]
         return
-    assert mem.query.filters == ["regions.opened_on >= '2024-01-01'"]
-    assert measure_total(await run(storage, mem.query), measure="rev") == AMOUNT_OPENED_SINCE_2024
+    assert mem.query.filter == ["regions.opened_on >= '2024-01-01'"]
+    assert metric_total(await run(storage, mem.query), metric="rev") == AMOUNT_OPENED_SINCE_2024
 
 
 # --------------------------------------------------------------------------- #
@@ -346,7 +359,7 @@ def _hygiene_models() -> list[dict]:
 async def _load_recording_raw_reads(storage: StorageBackend, *, reverse: bool) -> list[tuple[dict, dict]]:
     """Load every model concurrently (identities reversed when ``reverse``); each raw read and a snapshot of it."""
     reads: list[tuple[dict, dict]] = []
-    load_raw, identities = storage._load_raw_model_dict, storage._list_all_model_identities
+    load_raw, identities = storage._load_raw_dataset_dict, storage._list_all_dataset_identities
 
     async def recording_load_raw(*, name: str, data_source: str) -> dict | None:
         doc = await load_raw(name=name, data_source=data_source)
@@ -358,9 +371,9 @@ async def _load_recording_raw_reads(storage: StorageBackend, *, reverse: bool) -
         found = sorted(await identities())
         return found[::-1] if reverse else found
 
-    storage._load_raw_model_dict = recording_load_raw  # type: ignore[method-assign]
-    storage._list_all_model_identities = ordered_identities  # type: ignore[method-assign]
-    _, failures = await storage.load_models(data_source=DS)
+    storage._load_raw_dataset_dict = recording_load_raw  # type: ignore[method-assign]
+    storage._list_all_dataset_identities = ordered_identities  # type: ignore[method-assign]
+    _, failures = await storage.load_datasets(data_source=DS)
     assert not failures
     return reads
 

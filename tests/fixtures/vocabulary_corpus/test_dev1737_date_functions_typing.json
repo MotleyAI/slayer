@@ -1,0 +1,625 @@
+{
+ "source": "tests/test_dev1737_date_functions_typing.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(date_part('year', amount))",
+    "name": "y"
+   },
+   "new": {
+    "expression": "max(date_part('year', amount))",
+    "name": "y"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "date_add(max(order_date), max(status), 'day')",
+    "name": "m"
+   },
+   "new": {
+    "expression": "date_add(max(order_date), max(status), 'day')",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "date_add(max(order_date), max(sla_days), 'month')",
+    "name": "m"
+   },
+   "new": {
+    "expression": "date_add(max(order_date), max(sla_days), 'month')",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "created_at",
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "created_at",
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     {
+      "expression": "date_part('year', created_at)",
+      "name": "y"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(n)",
+      "name": "n_total"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     {
+      "field": "date_part('year', created_at)",
+      "alias": "y"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(n)",
+      "alias": "n_total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(created_at)",
+      "name": "last_at"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(created_at)",
+      "alias": "last_at"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "status"
+    ],
+    "filters": [
+     "date_diff('day', last_at, now()) > 0"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "status"
+    ],
+    "filter": [
+     "date_diff('day', last_at, now()) > 0"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "filters": [
+     "date_part('year', status) = 1"
+    ],
+    "measures": [
+     {
+      "formula": "sum(n)",
+      "name": "n_total"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "filter": [
+     "date_part('year', status) = 1"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(n)",
+      "alias": "n_total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "date_part('month', created_at)",
+      "name": "m"
+     },
+     {
+      "expression": "date_add(order_date, 1, 'month')",
+      "name": "due"
+     },
+     {
+      "expression": "date_add(order_date, 2, 'hour')",
+      "name": "due_at"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "date_diff('day', min(created_at), max(created_at))",
+      "name": "span"
+     },
+     {
+      "formula": "date_add(max(order_date), 1, 'month')",
+      "name": "next_due"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "date_part('month', created_at)",
+      "alias": "m"
+     },
+     {
+      "field": "date_add(order_date, 1, 'month')",
+      "alias": "due"
+     },
+     {
+      "field": "date_add(order_date, 2, 'hour')",
+      "alias": "due_at"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "date_diff('day', min(created_at), max(created_at))",
+      "alias": "span"
+     },
+     {
+      "metric": "date_add(max(order_date), 1, 'month')",
+      "alias": "next_due"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "status",
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "date_add(max(customers.signup_date), 1, 'day')",
+      "name": "joined_due"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "status",
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "metric": "date_add(max(customers.signup_date), 1, 'day')",
+      "alias": "joined_due"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     {
+      "expression": "date_part('year', created_at)",
+      "name": "y"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "max(joined_due)",
+      "name": "due"
+     },
+     {
+      "formula": "date_diff('day', max(joined_due), max(created_at))",
+      "name": "lag_days"
+     },
+     {
+      "formula": "date_add(max(created_at), 1, 'hour')",
+      "name": "next_at"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     {
+      "field": "date_part('year', created_at)",
+      "alias": "y"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "max(joined_due)",
+      "alias": "due"
+     },
+     {
+      "metric": "date_diff('day', max(joined_due), max(created_at))",
+      "alias": "lag_days"
+     },
+     {
+      "metric": "date_add(max(created_at), 1, 'hour')",
+      "alias": "next_at"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "status",
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "max(order_date)",
+      "name": "od"
+     },
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "status",
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "metric": "max(order_date)",
+      "alias": "od"
+     },
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "max(od)",
+      "name": "o"
+     },
+     {
+      "formula": "sum(n)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "metric": "max(od)",
+      "alias": "o"
+     },
+     {
+      "metric": "sum(n)",
+      "alias": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "status",
+     "order_date"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "status",
+     "order_date"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "max(date_add(order_date, 1, 'day'))",
+      "name": "next_day"
+     },
+     {
+      "formula": "min(coalesce(order_date, current_date()))",
+      "name": "first_day"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "metric": "max(date_add(order_date, 1, 'day'))",
+      "alias": "next_day"
+     },
+     {
+      "metric": "min(coalesce(order_date, current_date()))",
+      "alias": "first_day"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s2",
+    "source_model": "s1",
+    "dimensions": [
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "sum(n)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "name": "s2",
+    "population": "s1",
+    "dimensions": [
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(n)",
+      "alias": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "date_add(order_date, 1, 'month')",
+      "name": "due"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "date_add(order_date, 1, 'month')",
+      "alias": "due"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "date_part('month', created_at)",
+      "name": "m"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "date_part('month', created_at)",
+      "alias": "m"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "n"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 468,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 477,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 491,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 504,
+   "reason": "not fully literal"
+  }
+ ]
+}

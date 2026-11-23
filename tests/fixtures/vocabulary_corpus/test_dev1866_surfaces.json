@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_dev1866_surfaces.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 56,
+   "reason": "unclassifiable"
+  }
+ ]
+}

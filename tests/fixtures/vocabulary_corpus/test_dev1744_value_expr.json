@@ -1,0 +1,466 @@
+{
+ "source": "tests/test_dev1744_value_expr.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "sum_sq",
+    "formula": "SUM({value} * {value})"
+   },
+   "new": {
+    "name": "sum_sq",
+    "expression": "SUM({value} * {value})"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "ifnull(sum(amount), 0)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "ifnull(sum(amount), 0)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) - sum(qty)",
+    "name": "d"
+   },
+   "new": {
+    "expression": "sum(amount) - sum(qty)",
+    "name": "d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum_sq(amount)",
+    "name": "ss"
+   },
+   "new": {
+    "expression": "sum_sq(amount)",
+    "name": "ss"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(qty)",
+    "name": "q"
+   },
+   "new": {
+    "expression": "sum(qty)",
+    "name": "q"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "la"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "la"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "ifnull(last(amount), 0)",
+    "name": "la"
+   },
+   "new": {
+    "expression": "ifnull(last(amount), 0)",
+    "name": "la"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(gold_amount)",
+    "name": "g"
+   },
+   "new": {
+    "expression": "sum(gold_amount)",
+    "name": "g"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(gold_amount)",
+    "name": "g"
+   },
+   "new": {
+    "expression": "sum(gold_amount)",
+    "name": "g"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(gold_amount)",
+    "name": "g"
+   },
+   "new": {
+    "expression": "sum(gold_amount)",
+    "name": "g"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1, 'month')",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1, 'month')",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1035,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1042,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1043,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1044,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1045,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1046,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1047,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1070,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1085,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1098,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1210,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1213,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1214,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1219,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1223,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1224,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1225,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1226,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1227,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1228,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1231,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1272,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1298,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1319,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1322,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1809,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1885,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1906,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2003,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2025,
+   "reason": "not fully literal"
+  }
+ ]
+}

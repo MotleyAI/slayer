@@ -9,16 +9,16 @@ from __future__ import annotations
 
 import re
 
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev1740_fixtures import cm_cte_bodies, gen
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
-BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _count_isolated_ctes(sql: str) -> int:
@@ -29,9 +29,9 @@ def _count_isolated_ctes(sql: str) -> int:
 class TestFilterRoutingAcrossStageBoundary:
     async def test_base_row_filter_pushed_computed_predicate_not(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["band == 1", "status == 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="band_total")],
+            dimensions=["orders.region", {"field": BAND, "alias": "band"}],
+            filter=["band == 1", "orders.status == 'ok'"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="band_total")],
         ))
         cte = cm_cte_bodies(sql)
         # The base-row predicate reaches the partition CTE (DEV-1739 rule)...
@@ -43,21 +43,21 @@ class TestFilterRoutingAcrossStageBoundary:
 
 class TestOneStagePerDistinctPartitionSet:
     async def test_two_distinct_sets_emit_two_ctes(self) -> None:
-        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
-                "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
+        band = ("CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
+                "AND sum(orders.amount, partition_by=orders.region) > 10000 THEN 1 ELSE 0 END")
         sql = await gen(_q(
-            dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert _count_isolated_ctes(sql) == 2
 
     async def test_repeated_aggregate_dedups_to_one_cte(self) -> None:
         # The same partitioned aggregate referenced twice must intern to ONE
         # synthesized stage (dedup by AggregateKey identity).
-        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
-                "THEN sum(amount, partition_by=city) ELSE 0 END")
+        band = ("CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
+                "THEN sum(orders.amount, partition_by=orders.city) ELSE 0 END")
         sql = await gen(_q(
-            dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert _count_isolated_ctes(sql) == 1

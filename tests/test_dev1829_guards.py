@@ -4,7 +4,7 @@ The deferred-shape guards (window= / first / last / nested-transform /
 in-filter) must fire on the ORIGINAL value-key trees, BEFORE the generalized
 regroup desugar substitutes partitioned aggregates away — otherwise a substituted
 placeholder would hide the shape and the guard would silently pass. Pinned both
-directions: a guarded partitioned-measure filter still raises even with a
+directions: a guarded partitioned-metric filter still raises even with a
 legitimate computed-dimension regroup active, and a legitimate computed-dimension
 filter is NOT wrongly rejected by the reordered guard.
 """
@@ -13,31 +13,31 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev1739_fixtures import cm_cte_bodies, gen, month_td
 
 # A computed dimension over a city-partitioned aggregate → legitimate ROW attach.
-BAND_CITY = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
+BAND_CITY = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 class TestDeferredMeasureShapesStillRaise:
-    """Each deferred partitioned-MEASURE shape raises the pinned error
+    """Each deferred partitioned-METRIC shape raises the pinned error
     after the migration (the guard runs on the pre-substitution snapshot)."""
 
     async def test_window_plus_partition_lifted(self) -> None:
-        # A LOCAL window=+partition_by measure renders via a
+        # A LOCAL window=+partition_by metric renders via a
         # windowed producer at the (partition ∪ active-TD) grain (D5); executed
         # values in test_dev1824_partitioned_execution.py::TestWindowPlusPartition.
         q = _q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="sum(amount, window='90d', partition_by=region)",
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            metrics=[QueryMetric(
+                metric="sum(orders.amount, window='90d', partition_by=orders.region)",
             )],
         )
         assert "__regroup__" not in await gen(q)
@@ -48,8 +48,8 @@ class TestDeferredMeasureShapesStillRaise:
         # producer computes the ranked pick at the partition grain and attaches.
         # (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
-            dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=f"{agg}(amount, partition_by=region)")],
+            dimensions=["orders.region", "orders.city"],
+            metrics=[QueryMetric(metric=f"{agg}(orders.amount, partition_by=orders.region)")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -59,9 +59,9 @@ class TestDeferredMeasureShapesStillRaise:
         # runs at the query grain over the attached value; it no longer raises.
         # (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="cumsum(sum(amount, partition_by=region))",
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            metrics=[QueryMetric(
+                metric="cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at]))",
             )],
         )
         assert "__regroup__" not in await gen(q)
@@ -71,25 +71,25 @@ class TestDeferredMeasureShapesStillRaise:
         # combined producer + outer WHERE (executed values in
         # tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned).
         q = _q(
-            dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", "orders.city"],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         assert "__regroup__" not in await gen(q)
 
 
 class TestSharedAggregateRowPlusCombined:
     """A partitioned aggregate used BOTH inside a computed dimension (row attach)
-    AND as a selected measure (combined attach). This coexistence is
+    AND as a selected metric (combined attach). This coexistence is
     lifted: discovery keeps it in BOTH sets, and it ships as duplicate
     producers (D10 — cross-phase dedup is Stage 2)."""
 
     async def test_same_key_as_dimension_and_measure(self) -> None:
-        band = "CASE WHEN sum(amount, partition_by=region) > 5000 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 5000 THEN 1 ELSE 0 END"
         q = _q(
-            dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(
-                formula="sum(amount, partition_by=region)", name="region_total",
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
+            metrics=[QueryMetric(
+                metric="sum(orders.amount, partition_by=orders.region)", alias="region_total",
             )],
         )
         # Renders with both a row and a combined attach; no placeholder leaks.
@@ -98,15 +98,15 @@ class TestSharedAggregateRowPlusCombined:
 
 class TestGrainGuardsPreserved:
     """The grain guards (``ValueError``) must survive the migration —
-    a partitioned MEASURE key stays STRICT (must be a query dimension), and the
-    kept cross-model narrow path (D2) still rejects an out-of-grain partition."""
+    a partitioned METRIC key stays STRICT (must be a query dimension), and the
+    kept cross-dataset narrow path (D2) still rejects an out-of-grain partition."""
 
     async def test_non_dimension_partition_key_raises(self) -> None:
-        # A measure's partition_by must be a query dimension; the generalized
+        # A metric's partition_by must be a query dimension; the generalized
         # discovery must NOT relax this to the computed-dimension leniency.
         q = _q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount, partition_by=city)")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.city)")],
         )
         with pytest.raises(
             ValueError, match=r"partition_by.*not a query dimension",
@@ -116,11 +116,11 @@ class TestGrainGuardsPreserved:
 
     async def test_cross_model_partition_outside_grain_raises(self) -> None:
         # An explicit partition key must be attributable from the
-        # aggregate's root — `region` is a host column, unreachable from customers.
+        # aggregate's root — `region` is a host field, unreachable from customers.
         q = _q(
-            dimensions=["region", "customers.tier"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, partition_by=region)",
+            dimensions=["orders.region", "customers.tier"],
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=orders.region)",
             )],
             to_many_handling="broadcast",
         )
@@ -141,9 +141,9 @@ class TestGuardOrderingWithActiveRegroup:
         # (combined producer, partition_by=region, outer WHERE); both render with
         # no placeholder leak.
         q = _q(
-            dimensions=["region", {"expression": BAND_CITY, "name": "band"}],
-            filters=["sum(amount, partition_by=region) > 50"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", {"field": BAND_CITY, "alias": "band"}],
+            filter=["sum(orders.amount, partition_by=orders.region) > 50"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -151,9 +151,9 @@ class TestGuardOrderingWithActiveRegroup:
         # The reverse direction: a final-only filter over the computed dimension
         # is legitimate and must NOT be rejected by the reordered guard.
         q = _q(
-            dimensions=["region", {"expression": BAND_CITY, "name": "band"}],
-            filters=["band == 1"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", {"field": BAND_CITY, "alias": "band"}],
+            filter=["band == 1"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(q)
         assert "SELECT" in sql

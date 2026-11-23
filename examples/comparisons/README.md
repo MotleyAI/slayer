@@ -22,8 +22,8 @@ The Node versions are pinned exactly in each `package.json` and `package-lock.js
 |---|---|
 | `dataset.sql` | The shared dataset: `regions`, `customers`, `orders`, `returns`, `events` and the `orders_flat` view |
 | `probes.yaml` | One entry per probe, with one block per engine (field reference at the top of the file) |
-| `slayer/models/` | SLayer models, including the saved query-backed `monthly_rev` and `avg_customer_rev` |
-| `slayer/extra_models/` | SLayer models saved only for the probes that name them (`extra_models`), since they add join cycles |
+| `slayer/models/` | SLayer datasets, including the saved query-backed `monthly_rev` and `avg_customer_rev` |
+| `slayer/extra_datasets/` | SLayer datasets saved only for the probes that name them (`extra_datasets`), since they add relationship cycles |
 | `malloy/model.malloy` | Malloy sources; each probe's query is appended to it |
 | `cube/model/` | Cube base cubes: plain dimensions, base measures and joins |
 | `cube/model_declared/` | Cube multi-stage measures, rolling windows and `sub_query` dimensions, layered on `cube/model/` |
@@ -51,6 +51,8 @@ Each runner seeds a fresh DuckDB file in a temp directory and computes the groun
 pins "now" at 2025-07-15 12:00 for relative time filters and the time spine's default upper bound, and defines two
 datasource granularities: `fiscal_year` (12 months from 2024-04-01) and `quarter_hour`. Probes with `steps` (rows
 C24–C29) instead drive SLayer's MCP server on their own copy of the database, with the embedding search channel off.
+Probes with `osi_roundtrip` (row C23) export the probe models with `slayer export-osi`, re-import them with
+`slayer import-osi` into a fresh store, and check the re-imported models, a query on them, or the export report.
 
 ## Running
 
@@ -137,8 +139,8 @@ compares them directly.
 
 **SLayer**
 
-None open. Orphan orders (NULL `customer_id`) land in the NULL-region cell by design, since a cross-model aggregate
-is a field of a model keyed on the query grain (`Q8c`, `B1`, `B1-assoc`, `C20-spine-per-group`).
+None open. Orphan orders (NULL `customer_id`) land in the NULL-region cell by design, since a cross-dataset aggregate
+is a field of a dataset keyed on the query grain (`Q8c`, `B1`, `B1-assoc`, `C20-spine-per-group`).
 
 **Malloy**
 

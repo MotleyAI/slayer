@@ -1,0 +1,27 @@
+{
+ "source": "tests/test_law_no_emitted_reparse.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

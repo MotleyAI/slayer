@@ -21,6 +21,7 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.types import CallToolResult
 from pydantic import BaseModel, ValidationError
 
 from scripts.doc_examples import REPO_ROOT, DocQuery, load_page
@@ -171,14 +172,14 @@ def rows_failure(text: str) -> str | None:
 
 
 def joins_failure(text: str) -> str | None:
-    """Why ``text`` is not a model whose ``joins_to`` has every required join; ``None`` when it is."""
+    """Why ``text`` is not a dataset whose ``relationships_to`` has every required relationship; ``None`` when it is."""
     try:
         payload: Any = json.loads(text)
     except ValueError:
         return f"response is not JSON: {text[:200]!r}"
-    joins = payload.get("joins_to") if isinstance(payload, dict) else None
+    joins = payload.get("relationships_to") if isinstance(payload, dict) else None
     if not isinstance(joins, list):
-        return f"response has no joins_to list: {text[:200]!r}"
+        return f"response has no relationships_to list: {text[:200]!r}"
     missing = [j for j in REQUIRED_JOINS if j not in joins]
     return f"orders does not join to {', '.join(missing)}" if missing else None
 
@@ -202,7 +203,7 @@ def cli_leg(opts: Options, queries: list[DocQuery], *, leg: Path) -> list[GateFa
         if reason is not None:
             failures.append(GateFailure("cli query", f"README.md:{q.line}: {reason}"))
     try:
-        result = _run([slayer, "inspect", "orders", "--type", "model", "--format", "json"], check="cli joins", leg=leg)
+        result = _run([slayer, "inspect", "orders", "--type", "dataset", "--format", "json"], check="cli joins", leg=leg)
     except GateFailure as failure:
         return [*failures, failure]
     reason = _error(result) if result.returncode != 0 else joins_failure(result.stdout)
@@ -211,7 +212,7 @@ def cli_leg(opts: Options, queries: list[DocQuery], *, leg: Path) -> list[GateFa
     return failures
 
 
-def _tool_text(result: Any) -> str:
+def _tool_text(result: CallToolResult) -> str:
     """The single text content item of a successful tool result."""
     texts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
     if result.isError:
@@ -255,7 +256,7 @@ async def _mcp_checks(
             failures.append(GateFailure("mcp query", f"README.md:{q.line}: {reason}"))
     try:
         text = await _call(session, opts, tool="inspect",
-                           arguments={"entity_type": "model", "reference": "orders", "format": "json"})
+                           arguments={"entity_type": "dataset", "reference": "orders", "format": "json"})
         reason = joins_failure(text)
     except Exception as exc:  # noqa: BLE001
         reason = f"{type(exc).__name__}: {exc}"

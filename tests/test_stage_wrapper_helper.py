@@ -1,7 +1,7 @@
 """Shared ``build_flat_rename_wrapper`` helper.
 
 Both the multi-stage CTE chaining in ``generate_planned_stages`` AND the
-``_expand_query_backed_model`` virtual-model wrap call it.
+``_expand_query_backed_dataset`` virtual-dataset wrap call it.
 
 The helper takes no planner shapes — pure (stage, source_relation, inner,
 expected_columns, dialect) -> sqlglot.expression. Stage rename wrapper

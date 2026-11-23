@@ -1,0 +1,156 @@
+{
+ "source": "tests/test_dev2169_dialect_library_support.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "lib",
+    "dimensions": [
+     "id",
+     "num_txt"
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "lib",
+    "dimensions": [
+     "id",
+     "num_txt"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "num_txt > 100"
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "num_txt > 100"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(num_txt * 2)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(num_txt * 2)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "num_txt * 2"
+   },
+   "new": {
+    "field": "num_txt * 2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(skills.*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(skills.*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "assignments",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "contractors.skills.value = 'sql'"
+    ]
+   },
+   "new": {
+    "population": "assignments",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "contractors.skills.value = 'sql'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "contractors",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "contains(skills, 'go')"
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "contractors",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "contains(skills, 'go')"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "collect(city)",
+    "name": "c"
+   },
+   "new": {
+    "expression": "collect(city)",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "collect(skills.value)",
+    "name": "c"
+   },
+   "new": {
+    "expression": "collect(skills.value)",
+    "name": "c"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 439,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 476,
+   "reason": "not fully literal"
+  }
+ ]
+}

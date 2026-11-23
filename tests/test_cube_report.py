@@ -1,10 +1,12 @@
-"""Tests for the Cube conversion report shapes (slayer/cube/report.py).
-
-DEV-1608 §10.
-"""
+"""Tests for the Cube conversion report shapes (slayer/cube/report.py)."""
 
 import json
 
+import pytest
+from pydantic import ValidationError
+
+from slayer.cube.converter import CubeToSlayerConverter
+from slayer.cube.models import CubeCube, CubeDimension, CubeProject, CubeView, CubeViewCubeRef
 from slayer.cube.report import (
     CubeConversionIssue,
     CubeConversionReport,
@@ -46,7 +48,7 @@ def test_report_filters_by_category_and_severity():
 def test_report_has_no_errors_when_all_info_or_warning():
     report = CubeConversionReport()
     report.add(CubeConversionIssue(
-        category=CubeIssueCategory.SEGMENT_AS_COLUMN, severity="info", message="x"))
+        category=CubeIssueCategory.SEGMENT_AS_FIELD, severity="info", message="x"))
     assert not report.has_errors
 
 
@@ -60,14 +62,14 @@ def test_result_json_round_trips():
                 message="pre_aggregations dropped",
                 raw="name: main",
             )],
-            model_count=3,
+            dataset_count=3,
             hidden_count=1,
             view_count=1,
         )
     )
     blob = result.model_dump_json()
     parsed = json.loads(blob)
-    assert parsed["report"]["model_count"] == 3
+    assert parsed["report"]["dataset_count"] == 3
     assert parsed["report"]["issues"][0]["category"] == "unmapped_infra"
 
     # Re-validate from the JSON to confirm the categories survive the round-trip.
@@ -78,11 +80,22 @@ def test_result_json_round_trips():
     assert restored.report.issues[0].raw == "name: main"
 
 
-def test_converter_derives_report_counts():
-    """The converter must populate model/hidden/view counts on the report."""
-    from slayer.cube.converter import CubeToSlayerConverter
-    from slayer.cube.models import CubeCube, CubeDimension, CubeProject, CubeView, CubeViewCubeRef
+def test_segment_category_serialises_as_segment_as_field():
+    report = CubeConversionReport(issues=[CubeConversionIssue(
+        category=CubeIssueCategory.SEGMENT_AS_FIELD, severity="info", message="x")])
+    parsed = json.loads(CubeConversionResult(report=report).model_dump_json())
+    assert parsed["report"]["issues"][0]["category"] == "segment_as_field"
 
+
+def test_old_segment_category_value_is_rejected():
+    blob = json.dumps({"report": {"issues": [
+        {"category": "segment_as_column", "severity": "info", "message": "x"}]}})
+    with pytest.raises(ValidationError):
+        CubeConversionResult.model_validate_json(blob)
+
+
+def test_converter_derives_report_counts():
+    """The converter must populate dataset/hidden/view counts on the report."""
     project = CubeProject(
         cubes=[
             CubeCube(name="orders", sql_table="public.orders",
@@ -94,6 +107,6 @@ def test_converter_derives_report_counts():
             CubeViewCubeRef(join_path="orders", includes=["id"])])],
     )
     result = CubeToSlayerConverter(project=project, data_source="ds").convert()
-    assert result.report.model_count == len(result.models)
+    assert result.report.dataset_count == len(result.datasets)
     assert result.report.hidden_count == 1
     assert result.report.view_count == 1

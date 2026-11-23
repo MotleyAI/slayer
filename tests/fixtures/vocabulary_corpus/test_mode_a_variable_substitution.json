@@ -1,0 +1,1580 @@
+{
+ "source": "tests/test_mode_a_variable_substitution.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "US"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "US"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(scaled)"
+     }
+    ],
+    "variables": {
+     "mult": 2
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(scaled)"
+     }
+    ],
+    "variables": {
+     "mult": 2
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(scaled)"
+     }
+    ],
+    "variables": {
+     "mult": 1
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(scaled)"
+     }
+    ],
+    "variables": {
+     "mult": 1
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(region_amount)"
+     }
+    ],
+    "variables": {
+     "region": "US"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(region_amount)"
+     }
+    ],
+    "variables": {
+     "region": "US"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "floored",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "floor": 100
+    }
+   },
+   "new": {
+    "population": "floored",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "floor": 100
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "status = '{v}'"
+    ],
+    "variables": {
+     "v": "a\\b"
+    }
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "status = '{v}'"
+    ],
+    "variables": {
+     "v": "a\\b"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "status": "O'Brien"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "status": "O'Brien"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     },
+     {
+      "formula": "count(customers.id)"
+     }
+    ],
+    "variables": {
+     "floor": 100
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     },
+     {
+      "metric": "count(customers.id)"
+     }
+    ],
+    "variables": {
+     "floor": 100
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     },
+     {
+      "formula": "count(customers.id)"
+     }
+    ],
+    "variables": {
+     "floor": 100
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     },
+     {
+      "metric": "count(customers.id)"
+     }
+    ],
+    "variables": {
+     "floor": 100
+    }
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(customers.scaled)"
+     }
+    ],
+    "variables": {
+     "mult": 2
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(customers.scaled)"
+     }
+    ],
+    "variables": {
+     "mult": 2
+    }
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev",
+    "formula": "sum(amount) + {mult}"
+   },
+   "new": {
+    "name": "rev",
+    "expression": "sum(amount) + {mult}"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "agg",
+    "formula": "SUM({expr}) * {mult}"
+   },
+   "new": {
+    "name": "agg",
+    "expression": "SUM({expr}) * {mult}"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region = '{region}'"
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region = '{region}'"
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "status = '{status}'"
+    ],
+    "variables": {
+     "status": "O'Brien"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "status = '{status}'"
+    ],
+    "variables": {
+     "status": "O'Brien"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "EU"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "CA"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "region": "CA"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(scaled)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(scaled)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "floored",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   },
+   "new": {
+    "population": "floored",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "other": "x"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "regions": [
+      "US",
+      "CA"
+     ]
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "regions": [
+      "US",
+      "CA"
+     ]
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "regions": [
+      "EU"
+     ]
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "regions": [
+      "EU"
+     ]
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "regions": [
+      "US"
+     ]
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "regions": [
+      "US"
+     ]
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "regions": [
+      "x') OR ('1'='1"
+     ]
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "variables": {
+     "regions": [
+      "x') OR ('1'='1"
+     ]
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region in ({regions})"
+    ],
+    "variables": {
+     "regions": [
+      "US",
+      "CA"
+     ]
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region in ({regions})"
+    ],
+    "variables": {
+     "regions": [
+      "US",
+      "CA"
+     ]
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region in ({regions})"
+    ],
+    "variables": {
+     "regions": [
+      "EU"
+     ]
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region in ({regions})"
+    ],
+    "variables": {
+     "regions": [
+      "EU"
+     ]
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region not in ({regions})"
+    ],
+    "variables": {
+     "regions": [
+      "US"
+     ]
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region not in ({regions})"
+    ],
+    "variables": {
+     "regions": [
+      "US"
+     ]
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "region in ({regions})"
+    ],
+    "variables": {
+     "regions": [
+      "EU",
+      "CA"
+     ]
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "region in ({regions})"
+    ],
+    "variables": {
+     "regions": [
+      "EU",
+      "CA"
+     ]
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "status in ({statuses})"
+    ],
+    "variables": {
+     "statuses": [
+      "O'Brien"
+     ]
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "status in ({statuses})"
+    ],
+    "variables": {
+     "statuses": [
+      "O'Brien"
+     ]
+    }
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 153,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 190,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 227,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 236,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 237,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 238,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 259,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 277,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 284,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 338,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 339,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 340,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 415,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 421,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 423,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 440,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 445,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 446,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 447,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 469,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 474,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 475,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 476,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 481,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 495,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 501,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 502,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 503,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 528,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 533,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 534,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 539,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 556,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 562,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 563,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 564,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 580,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 588,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 589,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 590,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 595,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 614,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 619,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 620,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 623,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 629,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 630,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 631,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 716,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 721,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 722,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 724,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 727,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 732,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 733,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 734,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 782,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 787,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 788,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 812,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 916,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 922,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 923,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 931,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 964,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 968,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 978,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 984,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 985,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1008,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1013,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1014,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1015,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1016,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1059,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1065,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1066,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1067,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1117,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1142,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1173,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1175,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1210,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1217,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1218,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1219,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1233,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1240,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1242,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1361,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1362,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1363,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1460,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1465,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1466,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1467,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1468,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1675,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1679,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1738,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1744,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1745,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1746,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1752,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1783,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1788,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1843,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1848,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1849,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1850,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1863,
+   "reason": "not fully literal"
+  }
+ ]
+}

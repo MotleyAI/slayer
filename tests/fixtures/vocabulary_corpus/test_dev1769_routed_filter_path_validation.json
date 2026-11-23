@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_dev1769_routed_filter_path_validation.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.regions.population)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.regions.population)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,15 +1,15 @@
-"""DEV-1705 Stage 1 — unit tests for the ``assert_scope_closed`` scope validator.
+"""Unit tests for the ``assert_scope_closed`` scope validator.
 
 These tests pin the validator's *contract* against hand-written SQL strings that
 faithfully mirror the shapes the typed-pipeline generator emits (host base,
 first/last ranked subquery, forward ``_cm_*`` CTE + combined SELECT, host-rooted
 ``_fm_`` / windowed ``_wm_`` legacy shapes, ``time_shift`` CTE pair, RLS-wrapped
-correlated ``EXISTS``). They are intentionally decoupled from the generator (J3=C
-in the DEV-1705 spec) so they never break when a later stage — or Stage 11's
+correlated ``EXISTS``). They are intentionally decoupled from the generator
+so they never break when a later stage — or Stage 11's
 legacy deletion — changes what the generator emits: the validator must keep
 closing/flagging *these SQL shapes* regardless of who produces them.
 
-Two closure laws (DEV-1703 Law-2 / the ``assert_scope_closed`` contract):
+Two closure laws (Law 2 / the ``assert_scope_closed`` contract):
   C1 — every table qualifier referenced in a scope binds to that scope's own
        FROM/JOIN sources (or a visible CTE).
   C2 — a reference resolving into another SELECT scope must name a column that
@@ -63,9 +63,9 @@ FROM (
 GROUP BY DATE_TRUNC('MONTH', orders.created_at)
 """.strip()
 
-# forward cross-model ``_cm_*`` CTE + combined SELECT. The combined SELECT names
+# forward cross-dataset ``_cm_*`` CTE + combined SELECT. The combined SELECT names
 # only projected columns of ``_base`` / ``_cm_customers``.
-SQL_CROSS_MODEL_CM = """
+SQL_CROSS_DATASET_CM = """
 WITH _base AS (
   SELECT orders.status AS "orders.status", SUM(orders.revenue) AS "orders.revenue_sum"
   FROM orders AS orders
@@ -104,7 +104,7 @@ SELECT sjoin_x."orders.created_at", sjoin_x."orders.revenue_sum", sjoin_x."order
 FROM sjoin_x
 """.strip()
 
-# Legacy host-rooted filtered-measure ``_fm_`` shape (J3=C: validator must close
+# Legacy host-rooted filtered-metric ``_fm_`` shape (J3=C: validator must close
 # it even though the typed pipeline re-expresses it as a ``_cm_`` w/ cte_root_model).
 SQL_LEGACY_FM = """
 WITH _fm_paid AS (
@@ -121,7 +121,7 @@ LEFT JOIN _fm_paid ON orders.status = _fm_paid."orders.status"
 GROUP BY orders.status, _fm_paid."orders.paid_revenue_sum"
 """.strip()
 
-# Legacy windowed-measure ``_wm_`` range-join shape (the intended Stage-10 typed
+# Legacy windowed-metric ``_wm_`` range-join shape (the intended Stage-10 typed
 # shape too — validator must close it now via hand-written SQL).
 SQL_LEGACY_WM = """
 WITH _wm_orders__revenue_90d AS (
@@ -138,7 +138,7 @@ SELECT _wm_orders__revenue_90d."orders.status",
 FROM _wm_orders__revenue_90d
 """.strip()
 
-# Mixed-case / reserved-word quoted identifiers (DEV-1686 parity).
+# Mixed-case / reserved-word quoted identifiers.
 SQL_QUOTED_MIXED_CASE = """
 SELECT "Orders"."Grant" AS "Orders.Grant", SUM("Orders"."Revenue") AS "Orders.Revenue_sum"
 FROM "Orders" AS "Orders"
@@ -165,7 +165,7 @@ class TestClosedShapesPass:
         [
             SQL_HOST_BASE,
             SQL_FIRST_LAST_RANKED,
-            SQL_CROSS_MODEL_CM,
+            SQL_CROSS_DATASET_CM,
             SQL_TIME_SHIFT,
             SQL_LEGACY_FM,
             SQL_LEGACY_WM,
@@ -178,10 +178,10 @@ class TestClosedShapesPass:
 
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb", "mysql", "snowflake"])
     def test_closed_sql_across_dialects(self, dialect: str) -> None:
-        assert_scope_closed(SQL_CROSS_MODEL_CM, dialect=dialect)
+        assert_scope_closed(SQL_CROSS_DATASET_CM, dialect=dialect)
 
     def test_quoted_mixed_case_qualifiers_close(self) -> None:
-        # DEV-1686: reserved-word / mixed-case quoted identifiers must not
+        # Reserved-word / mixed-case quoted identifiers must not
         # be miscompared (no false positive from naive casefolding).
         assert_scope_closed(SQL_QUOTED_MIXED_CASE, dialect="postgres")
 
@@ -234,7 +234,7 @@ class TestLeaksRaise:
             assert_scope_closed(sql)
 
     def test_dev1531_first_last_out_of_scope_source_ref(self) -> None:
-        # The canonical DEV-1531 leak: the outer aggregate body references
+        # The canonical leak: the outer aggregate body references
         # ``regions.population`` (a further-join column) that lives only inside
         # the ranked subquery and is NOT projected out of it.
         sql = """
@@ -340,7 +340,7 @@ GROUP BY orders.status
 """.strip()
 
     def test_rls_correlation_accepted_without_the_allowlist(self) -> None:
-        # DEV-1840 made the validator correlation-aware: a qualifier bound in
+        # The validator is correlation-aware: a qualifier bound in
         # an ancestor scope resolves through an expression-subquery boundary,
         # so the ``_rls_src`` correlation passes even in pre-RLS mode.
         assert_scope_closed(self.RLS_WRAPPED)
@@ -402,7 +402,7 @@ class TestBestEffortLimitations:
 
 
 # --------------------------------------------------------------------------- #
-# BigQuery parse carve-out REMOVED (DEV-1713 Stage 9). Finalised BigQuery
+# BigQuery parse carve-out REMOVED. Finalised BigQuery
 # naming/mangling collapses dotted aliases to ``___`` before validation, so
 # sqlglot no longer raises ``TypeError`` on real BigQuery output — the
 # ``_SQLGLOT_TYPEERROR_DIALECTS`` skip-set is gone and every dialect (BigQuery
@@ -412,7 +412,7 @@ class TestBestEffortLimitations:
 class TestBigQueryParseCarveOutRemoved:
     @pytest.mark.parametrize("dialect", ["bigquery", "tsql", "postgres"])
     def test_typeerror_propagates_for_every_dialect(
-        self, monkeypatch, dialect: str,
+        self, monkeypatch: pytest.MonkeyPatch, dialect: str,
     ) -> None:
         def _boom(*_args, **_kwargs):
             raise TypeError("sqlglot quirk")
@@ -429,21 +429,21 @@ class TestBigQueryParseCarveOutRemoved:
 class TestEnvGatedRuntimeHook:
     LEAKY = "WITH c AS (SELECT t1.x AS x FROM t1 AS t1) SELECT t1.y FROM c"
 
-    def test_disabled_when_env_unset(self, monkeypatch) -> None:
+    def test_disabled_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SLAYER_VALIDATE_SCOPES", raising=False)
         maybe_validate_scopes(self.LEAKY)  # no-op, must not raise
 
-    def test_enabled_when_env_truthy(self, monkeypatch) -> None:
+    def test_enabled_when_env_truthy(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
         with pytest.raises(ScopeLeakError):
             maybe_validate_scopes(self.LEAKY)
 
     @pytest.mark.parametrize("falsy", ["0", "", "false", "no"])
-    def test_disabled_for_falsy_values(self, monkeypatch, falsy: str) -> None:
+    def test_disabled_for_falsy_values(self, monkeypatch: pytest.MonkeyPatch, falsy: str) -> None:
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", falsy)
         maybe_validate_scopes(self.LEAKY)  # no-op
 
-    def test_read_at_call_time_not_import_time(self, monkeypatch) -> None:
+    def test_read_at_call_time_not_import_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Toggling after import must take effect immediately.
         monkeypatch.delenv("SLAYER_VALIDATE_SCOPES", raising=False)
         maybe_validate_scopes(self.LEAKY)  # off
@@ -451,13 +451,13 @@ class TestEnvGatedRuntimeHook:
         with pytest.raises(ScopeLeakError):
             maybe_validate_scopes(self.LEAKY)  # on
 
-    def test_closed_sql_passes_when_enabled(self, monkeypatch) -> None:
+    def test_closed_sql_passes_when_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
-        maybe_validate_scopes(SQL_CROSS_MODEL_CM)  # closed ⇒ no raise
+        maybe_validate_scopes(SQL_CROSS_DATASET_CM)  # closed ⇒ no raise
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1935: a derived table nested in an expression subquery correlates to the
+# A derived table nested in an expression subquery correlates to the
 # subquery's ancestors (the semi-join spine), never to its sibling FROM items.
 # --------------------------------------------------------------------------- #
 SQL_SPINE_CORRELATED = """

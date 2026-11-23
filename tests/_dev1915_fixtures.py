@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1915 — a trailing ``window=`` on every aggregation.
+"""Shared fixtures for a trailing ``window=`` on every aggregation.
 
 Underscore-prefixed so pytest skips collection (mirrors ``tests/_dev1836_fixtures.py``,
 whose dual-engine shape this follows). One hand-computed dataset seeded into
@@ -15,7 +15,7 @@ orders (id, customer_id, amount, qty, created_at, updated_at, region):
    3  c3  300  3  2024-02-15  NULL        EU
    4  c4  400  4  2024-03-15  2024-03-25  EU
    5  c4  300  5  2024-03-20  2024-03-16  US
-customers (id, spend, signup_at, tier, discount):   [the DEV-1836 seed + discount]
+customers (id, spend, signup_at, tier, discount):   [the ``_dev1836_fixtures`` seed + discount]
    1  100  2024-01-05  gold    0.1
    2  150  2024-02-10  silver  0.2
    3   60  2024-03-15  gold    0.5
@@ -40,43 +40,44 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
+from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers; customers → orders is the inverted
-# fan-out orientation (DEV-1853) the probes cross.
+# Datasets — orders (host) → customers; customers → orders is the inverted
+# fan-out orientation the probes cross.
 # --------------------------------------------------------------------------- #
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
         aggregations=[
             # Custom aggregation with literal defaults (lo=0, hi=1000).
             Aggregation(
                 name="trimmed_mean",
-                formula="AVG(CASE WHEN {value} BETWEEN {lo} AND {hi} THEN {value} END)",
+                expression="AVG(CASE WHEN {value} BETWEEN {lo} AND {hi} THEN {value} END)",
                 params=[
                     AggregationParam(name="lo", sql="0"),
                     AggregationParam(name="hi", sql="1000"),
@@ -86,58 +87,58 @@ def orders_model() -> SlayerModel:
     )
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         default_time_dimension="signup_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="discount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
         ],
         aggregations=[
-            # Custom aggregation whose definition default names a target column.
+            # Custom aggregation whose definition default names a target field.
             Aggregation(
-                name="disc_spend", formula="SUM({value} * {d})",
+                name="disc_spend", expression="SUM({value} * {d})",
                 params=[AggregationParam(name="d", sql="discount")],
             ),
             # A custom agg on customers whose param can be overridden by a root
-            # (orders) column, widening the home above the source (def-owner test).
+            # (orders) field, widening the home above the source (def-owner test).
             Aggregation(
-                name="wprod", formula="SUM({value} * {w})",
+                name="wprod", expression="SUM({value} * {w})",
                 params=[AggregationParam(name="w", sql="1")],
             ),
         ],
     )
 
 
-def dev1915_models() -> List[SlayerModel]:
+def dev1915_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model()]
+    return [orders_dataset(), customers_dataset()]
 
 
 # --------------------------------------------------------------------------- #
 # Query shorthands.
 # --------------------------------------------------------------------------- #
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "created_at") -> List[TimeDimension]:
+def month_td(field: str = "orders.created_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=column,
+        field=field,
         granularity=TimeGranularity.MONTH,
     )]
 
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb",
               validate: bool = False) -> str:
-    models = dev1915_models()
+    models = dev1915_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=validate,
     )
 
@@ -181,7 +182,7 @@ COUNT_BY_REGION_90D = {
     ("EU", "2024-03"): 2, ("US", "2024-03"): 2,
 }
 
-#: Cross-model, rooted at orders over customers.signup_at (window='1y').
+#: Cross-dataset, rooted at orders over customers.signup_at (window='1y').
 CM_COUNT_1Y = {"2024-01": 1, "2024-02": 2, "2024-03": 4}
 CM_LAST_1Y = {"2024-01": 100.0, "2024-02": 150.0, "2024-03": 40.0}
 #: disc_spend = SUM(spend * discount) over the interval customers.
@@ -191,7 +192,7 @@ DISC_SPEND_1Y = {"2024-01": 10.0, "2024-02": 40.0, "2024-03": 110.0}
 #: is empty: counts 0, everything else NULL, every bucket still returned.
 EMPTY_MONTHS = ["2024-01", "2024-02", "2024-03"]
 
-#: measure-filtered: amount:count(window='90d') >= 3 keeps Feb (3) and Mar (4).
+#: metric-filtered: amount:count(window='90d') >= 3 keeps Feb (3) and Mar (4).
 FILTER_COUNT_GE3_MONTHS = ["2024-02", "2024-03"]
 #: order-only: amount:max(window='90d') desc → Mar 400, Feb 300, Jan 200.
 ORDER_MAX_DESC_MONTHS = ["2024-03", "2024-02", "2024-01"]
@@ -254,7 +255,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1915_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1915_datasets()) as (engine, _db):
         yield engine
 
 
@@ -272,9 +273,9 @@ def rows_by(resp, *keys) -> dict:
     return out
 
 
-def by_month(resp, value_key: str) -> dict:
-    """``{month: value}`` for a single windowed measure grouped by the time bucket."""
-    time_key = next(k for k in resp.columns if k.endswith("created_at")
+def by_month(resp: SlayerResponse, value_key: str) -> dict:
+    """``{month: value}`` for a single windowed metric grouped by the time bucket."""
+    time_key = next(k for k in resp.columns if k.endswith("orders.created_at")
                     or k.endswith("signup_at"))
     return {month_key(r[time_key]): r[value_key] for r in resp.data}
 
@@ -285,7 +286,7 @@ def broadcast_warnings(resp) -> list:
 
 
 __all__ = [
-    "orders_model", "customers_model", "dev1915_models",
+    "orders_dataset", "customers_dataset", "dev1915_datasets",
     "q", "gen", "month_td", "month_key", "rows_by", "by_month",
     "broadcast_warnings",
     "make_exec_engine",
@@ -299,7 +300,7 @@ __all__ = [
     "CM_COUNT_1Y", "CM_LAST_1Y", "DISC_SPEND_1Y",
     "EMPTY_MONTHS", "FILTER_COUNT_GE3_MONTHS", "ORDER_MAX_DESC_MONTHS",
     "_ORDERS_ROWS", "_CUSTOMERS_ROWS",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension",
-    "TimeGranularity", "ModelJoin", "Column", "SlayerModel", "DataType",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension",
+    "TimeGranularity", "DatasetRelationship", "DatasetField", "SlayerDataset", "DataType",
     "Aggregation", "AggregationParam",
 ]

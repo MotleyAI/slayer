@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1900_fixtures import dev1900_models
+from tests._dev1900_fixtures import dev1900_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 from slayer.core.query import SlayerQuery
@@ -19,10 +19,10 @@ from slayer.core.query import SlayerQuery
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1900_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_MODEL_SETS = {"dev1900": dev1900_models}
-_REAGG_GOOD = ("weighted_avg(sum(amount, partition_by=customers.regions.id), "
+_DATASET_SETS = {"dev1900": dev1900_datasets}
+_REAGG_GOOD = ("weighted_avg(sum(orders.amount, partition_by=customers.regions.id), "
                "weight=customers.regions.derived_pop)")
-_REAGG_BAD = ("weighted_avg(sum(amount, partition_by=customers.regions.id), "
+_REAGG_BAD = ("weighted_avg(sum(orders.amount, partition_by=customers.regions.id), "
               "weight=customers.regions.bad_pop)")
 
 
@@ -31,40 +31,40 @@ def _cases() -> dict:
         # fanning/* — must fail closed after the change (today: multiplying SQL).
         "fanning/cross_model_kwarg": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula":
+            "kw": {"metrics": [{"metric":
                 "weighted_avg(customers.spend, weight=customers.regions.bad_pop)",
-                "name": "w"}]}},
+                "alias": "w"}]}},
         "fanning/local_kwarg": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula":
-                "weighted_avg(amount, weight=customers.regions.bad_pop)", "name": "w"}]}},
+            "kw": {"metrics": [{"metric":
+                "weighted_avg(orders.amount, weight=customers.regions.bad_pop)", "alias": "w"}]}},
         "fanning/definition_default": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": "wsumx(customers.spend)", "name": "w"}]}},
+            "kw": {"metrics": [{"metric": "wsumx(customers.spend)", "alias": "w"}]}},
         "fanning/reagg_param": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": _REAGG_BAD, "name": "w"}]}},
+            "kw": {"metrics": [{"metric": _REAGG_BAD, "alias": "w"}]}},
         "fanning/dim_error_mode": {
             "models": "dev1900", "source": "orders", "mode": "error",
             "kw": {"dimensions": ["customers.regions.bad_pop"],
-                   "measures": [{"formula": "sum(amount)", "name": "amt"}]}},
+                   "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}]}},
         "fanning/pop_filter_derived": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": "sum(amount)", "name": "amt"}],
-                   "filters": ["customers.regions.bad_pop > 0"]}},
+            "kw": {"metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}],
+                   "filter": ["customers.regions.bad_pop > 0"]}},
         # positive/* — cross no fanning hop; byte-identical SQL through the change.
         "positive/reagg_derived_pop": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": _REAGG_GOOD, "name": "ra"}]}},
+            "kw": {"metrics": [{"metric": _REAGG_GOOD, "alias": "ra"}]}},
         "positive/to_one_filter": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": "sum(amount)", "name": "amt"}],
-                   "filters": ["customers.tier = 'gold'"]}},
+            "kw": {"metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}],
+                   "filter": ["customers.tier = 'gold'"]}},
         "positive/assoc_region_name": {
             "models": "dev1900", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["customers.regions.name"], "measures": [
-                {"formula": "sum(amount)", "name": "amt"},
-                {"formula": "sum(customers.spend)", "name": "csp"}]}},
+            "kw": {"dimensions": ["customers.regions.name"], "metrics": [
+                {"metric": "sum(orders.amount)", "alias": "amt"},
+                {"metric": "sum(customers.spend)", "alias": "csp"}]}},
     }
 
 
@@ -77,14 +77,14 @@ FAIL_CLOSED = {
 
 
 async def _generate_one(case, dialect: str):
-    models = _MODEL_SETS[case["models"]]()
+    models = _DATASET_SETS[case["models"]]()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
-        query = SlayerQuery(source_model=case["source"], **kw)
+        query = SlayerQuery(population=case["source"], **kw)
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

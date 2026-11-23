@@ -1,6 +1,6 @@
 """The query idioms the MCP surface documents, and a seeded DuckDB engine to run them.
 
-Underscore-prefixed so pytest skips collection. Joins: ``orders.customer_id →
+Underscore-prefixed so pytest skips collection. Relationships: ``orders.customer_id →
 customers.id``, ``customers.region_id → regions.id`` (reverse traversal is automatic).
 
 regions:   1 North | 2 South | 3 East | 4 West
@@ -17,7 +17,7 @@ every ordering customer has both statuses, so their credit (600) attributes to e
 ``with_namesake`` adds customer 6 Alice R1 0 and order 12 (6, paid, 2025-07-01, 40).
 ``with_last_year`` adds orders 13 (Bob, paid, 2024-01-05, 8) and 14 (Carol, open, 2024-06-30, 12).
 
-Child dataset (``make_child_engine``): ``orders`` and ``returns`` both join ``customers``.
+Child dataset (``make_child_engine``): ``orders`` and ``returns`` both relate to ``customers``.
 
 regions:   1 North | 2 South
 customers: 1 Alice R1 | 2 Bob R1 | 3 Carol R2 | 4 Dan (no region; omitted when ``with_regionless=False``)
@@ -29,7 +29,7 @@ events (id, kind), joined to nothing: 1 a | 2 b | 3 a | 4 c | 5 a | 6 b
 Orders: Alice 30, Bob 35, Carol 40, Dan 50, parentless 13; total 168. Returns: Alice 7, Carol 8; total 15.
 By region: North 65, South 40, NULL 63 (Dan + parentless).
 
-Items dataset (``make_items_engine``), one model ``items``:
+Items dataset (``make_items_engine``), one dataset ``items``:
 
 items (id, code, flag, status, tags):
    1 A123  true  paid    [x, y] | 2 A12  false NULL    [x] | 3 B123 NULL paid [y]
@@ -43,8 +43,8 @@ from typing import Any, AsyncIterator, Callable
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import seeded_exec_engine
@@ -53,34 +53,34 @@ from tests._engine_helpers import seeded_exec_engine
 # --------------------------------------------------------------------------- #
 # Documented example texts — each must appear verbatim in its owning description
 # --------------------------------------------------------------------------- #
-SHARE_OF_GROUP = "sum(amount) / sum(amount, partition_by=customers.regions.name)"
-SHARE_OF_TOTAL = "sum(amount) / sum(amount, partition_by=[])"
-TRAILING_WINDOW = "count_distinct(customer_id, window='90d')"
+SHARE_OF_GROUP = "sum(orders.amount) / sum(orders.amount, partition_by=customers.regions.name)"
+SHARE_OF_TOTAL = "sum(orders.amount) / sum(orders.amount, partition_by=[])"
+TRAILING_WINDOW = "count_distinct(orders.customer_id, window='90d')"
 NESTED = (
-    "avg(sum(amount, partition_by=[customers.regions.name, customers.id]), "
+    "avg(sum(orders.amount, partition_by=[customers.regions.name, customers.id]), "
     "partition_by=[customers.regions.name])"
 )
-SPEND_BAND = "iif(sum(amount, partition_by=customers.id) > 150, 'high', 'low')"
-CHANGE = "change(sum(amount))"
-CHANGE_PCT = "change_pct(sum(amount))"
-TIME_SHIFT = "time_shift(sum(amount), -1)"
-CUMSUM = "cumsum(sum(amount))"
-CROSS_MODEL = "sum(customers.credit)"
-RANK_FILTER = "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1"
+SPEND_BAND = "iif(sum(orders.amount, partition_by=customers.id) > 150, 'high', 'low')"
+CHANGE = "change(sum(orders.amount))"
+CHANGE_PCT = "change_pct(sum(orders.amount))"
+TIME_SHIFT = "time_shift(sum(orders.amount), -1)"
+CUMSUM = "cumsum(sum(orders.amount))"
+CROSS_DATASET = "sum(customers.credit)"
+RANK_FILTER = "rank(sum(orders.amount), partition_by=customers.regions.name, direction='desc') <= 1"
 ANTI_JOIN = "orders.id is null"
-ORDER_UNDISPLAYED = '{"column": "sum(amount)", "direction": "desc"}'
+ORDER_UNDISPLAYED = '{"field": "sum(orders.amount)", "direction": "desc"}'
 POPULATION_COUNT = "count(customers.orders.id)"
 CONDITIONAL = "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))"
-STAGE_COLUMN = "customers__regions__name"
-SPINE_TIME_DIMENSION = '{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"}'
-SPINE_MEASURE = "sum(orders.amount)"
+STAGE_FIELD = "customers__regions__name"
+SPINE_TIME_DIMENSION = '{"field": "time_spine.timestamp", "granularity": "month", "date_range": "2025"}'
+SPINE_METRIC = "sum(orders.amount)"
 SECOND_CHILD = "sum(returns.amount)"
-AGG_FILTER = "count(*) FILTER (WHERE status = 'paid')"
-IN_LIST_VARIABLE = "status in ({statuses})"
-CROSS_MODEL_RATIO = "sum(orders.amount) / count(*)"
-#: Guidance marker for an aggregate over a model no join path reaches; owned by ``measures``.
-UNRELATED_MODEL = "no join path reaches"
-UNRELATED_RATIO = "count(events.id) / count(*)"
+AGG_FILTER = "count(orders.*) FILTER (WHERE orders.status = 'paid')"
+IN_LIST_VARIABLE = "items.status in ({statuses})"
+CROSS_DATASET_RATIO = "sum(orders.amount) / count(customers.*)"
+#: Guidance marker for an aggregate over a dataset no relationship path reaches; owned by ``metrics``.
+UNRELATED_DATASET = "no relationship path reaches"
+UNRELATED_RATIO = "count(events.id) / count(customers.*)"
 
 # Guidance markers
 STAGE_NOT_NEEDED = "A STAGE IS NOT NEEDED"
@@ -90,68 +90,68 @@ ONE_QUERY = "ONE QUESTION = ONE QUERY"
 FAN_OUT = "NEVER fans out or double counts"
 PER_QUERY_EXPRESSION = "in the position that uses it"
 
-#: Example text or schema-owned marker → (owning $defs model, field) in the query tool's input schema.
+#: Example text or schema-owned marker → (owning $defs class, field) in the query tool's input schema.
 EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
-    SHARE_OF_GROUP: ("SlayerQuery", "measures"),
-    SHARE_OF_TOTAL: ("SlayerQuery", "measures"),
-    TRAILING_WINDOW: ("SlayerQuery", "measures"),
-    NESTED: ("SlayerQuery", "measures"),
+    SHARE_OF_GROUP: ("SlayerQuery", "metrics"),
+    SHARE_OF_TOTAL: ("SlayerQuery", "metrics"),
+    TRAILING_WINDOW: ("SlayerQuery", "metrics"),
+    NESTED: ("SlayerQuery", "metrics"),
     SPEND_BAND: ("SlayerQuery", "dimensions"),
-    CHANGE: ("SlayerQuery", "measures"),
-    CHANGE_PCT: ("SlayerQuery", "measures"),
-    TIME_SHIFT: ("SlayerQuery", "measures"),
-    CUMSUM: ("SlayerQuery", "measures"),
-    CROSS_MODEL: ("SlayerQuery", "measures"),
-    RANK_FILTER: ("SlayerQuery", "filters"),
-    ANTI_JOIN: ("SlayerQuery", "filters"),
+    CHANGE: ("SlayerQuery", "metrics"),
+    CHANGE_PCT: ("SlayerQuery", "metrics"),
+    TIME_SHIFT: ("SlayerQuery", "metrics"),
+    CUMSUM: ("SlayerQuery", "metrics"),
+    CROSS_DATASET: ("SlayerQuery", "metrics"),
+    RANK_FILTER: ("SlayerQuery", "filter"),
+    ANTI_JOIN: ("SlayerQuery", "filter"),
     ORDER_UNDISPLAYED: ("SlayerQuery", "order"),
-    POPULATION_COUNT: ("SlayerQuery", "source_model"),
-    CONDITIONAL: ("SlayerQuery", "source_model"),
-    STAGE_COLUMN: ("SlayerQuery", "name"),
+    POPULATION_COUNT: ("SlayerQuery", "population"),
+    CONDITIONAL: ("SlayerQuery", "population"),
+    STAGE_FIELD: ("SlayerQuery", "name"),
     SPINE_TIME_DIMENSION: ("SlayerQuery", "time_dimensions"),
-    SECOND_CHILD: ("SlayerQuery", "measures"),
-    CROSS_MODEL_RATIO: ("SlayerQuery", "measures"),
+    SECOND_CHILD: ("SlayerQuery", "metrics"),
+    CROSS_DATASET_RATIO: ("SlayerQuery", "metrics"),
     STAGE_NOT_NEEDED: ("SlayerQuery", "name"),
     STAGE_NEEDED: ("SlayerQuery", "name"),
     READABLE_LABEL: ("SlayerQuery", "dimensions"),
-    AGG_FILTER: ("SlayerQuery", "measures"),
+    AGG_FILTER: ("SlayerQuery", "metrics"),
     IN_LIST_VARIABLE: ("SlayerQuery", "variables"),
-    PER_QUERY_EXPRESSION: ("SlayerQuery", "source_model"),
+    PER_QUERY_EXPRESSION: ("SlayerQuery", "population"),
 }
 
 
 # --------------------------------------------------------------------------- #
-# Models + seed
+# Datasets + seed
 # --------------------------------------------------------------------------- #
-def idiom_models(*, data_source: str = "test") -> list[SlayerModel]:
+def idiom_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name="orders", sql_table="orders", data_source=data_source,
             default_time_dimension="order_date",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="order_date", type=DataType.DATE),
-                Column(name="amount", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="order_date", datatype=DataType.DATE),
+                DatasetField(name="amount", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="customers", sql_table="customers", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
-                Column(name="region_id", type=DataType.INT),
-                Column(name="credit", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
+                DatasetField(name="credit", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="regions", sql_table="regions", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         ),
     ]
@@ -220,55 +220,55 @@ def _idiom_seed(*, dialect: str, with_namesake: bool, with_last_year: bool) -> C
 
 async def make_idiom_engine(
     *, dialect: str = "duckdb", with_namesake: bool = False, with_last_year: bool = False,
-    models: list[SlayerModel] | None = None,
+    datasets: list[SlayerDataset] | None = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
-    """The idiom dataset on ``sqlite`` or ``duckdb``; ``models`` replaces :func:`idiom_models`."""
+    """The idiom dataset on ``sqlite`` or ``duckdb``; ``datasets`` replaces :func:`idiom_datasets`."""
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     async with seeded_exec_engine(
         dialect=dialect,
         seed=_idiom_seed(dialect=dialect, with_namesake=with_namesake, with_last_year=with_last_year),
-        models=idiom_models() if models is None else models,
+        datasets=idiom_datasets() if datasets is None else datasets,
     ) as (engine, _):
         yield engine
 
 
-def _child_models(*, data_source: str = "test") -> list[SlayerModel]:
-    def child(name: str) -> SlayerModel:
-        return SlayerModel(
+def _child_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
+    def child(name: str) -> SlayerDataset:
+        return SlayerDataset(
             name=name, sql_table=name, data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
 
     return [
         child("orders"),
         child("returns"),
-        SlayerModel(
+        SlayerDataset(
             name="customers", sql_table="customers", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
-                Column(name="region_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
             ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="regions", sql_table="regions", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="events", sql_table="events", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="kind", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="kind", datatype=DataType.STRING),
             ],
         ),
     ]
@@ -302,20 +302,20 @@ def _child_seed(*, with_regionless: bool) -> Callable[[str], None]:
 async def make_child_engine(*, with_regionless: bool = True) -> AsyncIterator[SlayerQueryEngine]:
     pytest.importorskip("duckdb")
     async with seeded_exec_engine(
-        dialect="duckdb", seed=_child_seed(with_regionless=with_regionless), models=_child_models(),
+        dialect="duckdb", seed=_child_seed(with_regionless=with_regionless), datasets=_child_datasets(),
     ) as (engine, _):
         yield engine
 
 
-def _items_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def _items_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="items", sql_table="items", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="code", type=DataType.TEXT),
-            Column(name="flag", type=DataType.BOOLEAN),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="tags", type=DataType.ARRAY, element_type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="code", datatype=DataType.STRING),
+            DatasetField(name="flag", datatype=DataType.BOOLEAN),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.STRING),
         ],
     )
 
@@ -334,20 +334,20 @@ def _items_seed(db_path: str) -> None:
 
 async def make_items_engine() -> AsyncIterator[SlayerQueryEngine]:
     pytest.importorskip("duckdb")
-    async with seeded_exec_engine(dialect="duckdb", seed=_items_seed, models=[_items_model()]) as (engine, _):
+    async with seeded_exec_engine(dialect="duckdb", seed=_items_seed, datasets=[_items_dataset()]) as (engine, _):
         yield engine
 
 
-def rows_by(resp: Any, *, key: str) -> dict[Any, dict[str, Any]]:
-    """Result rows keyed by the column whose name ends with ``key``."""
-    col = next(c for c in resp.columns if c.endswith(key))
+def rows_by(resp: SlayerResponse, *, key: str) -> dict[Any, dict[str, Any]]:
+    """Result rows keyed by the column whose name ends with ``key`` (a bare alias key matches ``.alias``)."""
+    col = next(c for c in resp.columns if c.endswith(key) or c == key.lstrip("."))
     out = {str(r[col])[:7] if "date" in col else r[col]: r for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for {key}"
     return out
 
 
 def value(row: dict[str, Any], suffix: str) -> Any:
-    """The one value in ``row`` whose column name ends with ``suffix``."""
-    hits = [v for k, v in row.items() if k.endswith(suffix)]
+    """The one value in ``row`` whose column name ends with ``suffix`` (a bare alias key matches ``.alias``)."""
+    hits = [v for k, v in row.items() if k.endswith(suffix) or k == suffix.lstrip(".")]
     assert len(hits) == 1, (suffix, list(row))
     return hits[0]

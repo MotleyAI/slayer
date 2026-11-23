@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dev1958_shifted_leaf_grain.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 192,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 193,
+   "reason": "not fully literal"
+  }
+ ]
+}

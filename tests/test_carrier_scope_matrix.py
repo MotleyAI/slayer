@@ -10,14 +10,14 @@
 
 Plus the two flagged semantic pins — **F1** (1:N crossing aggregates keep
 multiply-per-match) and **F4** (a host-local filter semi-joins into the scalar
-cross-model CTE) — as SQL-shape assertions here; their executed-value
+cross-dataset CTE) — as SQL-shape assertions here; their executed-value
 counterparts live in ``tests/integration/test_integration_duckdb.py``. And the
 **RLS × isolation-CTE** cells, which exercise the validator's post-RLS
 ``allow_rls_correlation`` allowlist against the session-policy transform.
 
-Carriers exercised: aggregate source (ColumnKey / ColumnSqlKey), explicit-time
-positional arg, ``Column.filter``, derived + time dimensions, WHERE filters
-(typed + Mode-A), model filters, order refs. Scopes: host base ``_base``,
+Carriers exercised: aggregate source (FieldKey / FieldSqlKey), explicit-time
+positional arg, ``DatasetField.filter``, derived + time dimensions, WHERE filters
+(typed + Mode-A), dataset filters, order refs. Scopes: host base ``_base``,
 first/last ranked subquery, forward ``_cm_*`` CTE, ``time_shift`` CTE, windowed
 producer CTE. ``_fm_``/``_wm_`` legacy scope shapes get direct validator
 coverage in ``tests/test_scope_check.py`` (hand-written SQL).
@@ -31,14 +31,14 @@ import pytest
 import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.policy import (
     ColumnFilterRuleset,
     JoinFilterRule,
     JoinFilterRuleset,
     SessionPolicy,
 )
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.dialects import get_dialect
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.sql.session_policy import apply_session_policy
@@ -48,54 +48,54 @@ _ALWAYS = lambda *_args, **_kw: True  # noqa: E731 — RLS has_column probe stub
 
 
 # --------------------------------------------------------------------------- #
-# Model builders — the orders → customers → regions chain.
+# Dataset builders — the orders → customers → regions chain.
 # --------------------------------------------------------------------------- #
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="population", sql="population", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _customers(extra=None) -> SlayerModel:
+def _customers(extra=None) -> SlayerDataset:
     cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-        Column(name="balance", sql="balance", type=DataType.DOUBLE),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+        DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
     ]
     cols += extra or []
-    return SlayerModel(
-        name="customers", sql_table="customers", data_source="test", columns=cols,
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    return SlayerDataset(
+        name="customers", sql_table="customers", data_source="test", fields=cols,
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def _orders(*, extra=None, filters=None) -> SlayerModel:
+def _orders(*, extra=None, filters=None) -> SlayerDataset:
     cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="status", sql="status", type=DataType.TEXT),
-        Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-        Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP),
-        Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-        Column(name="amount", sql="amount", type=DataType.DOUBLE),
-        Column(name="balance", sql="balance", type=DataType.DOUBLE),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="status", expression="status", datatype=DataType.STRING),
+        DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+        DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME),
+        DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+        DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
     ]
     cols += extra or []
-    return SlayerModel(
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        default_time_dimension="created_at", columns=cols,
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        default_time_dimension="created_at", fields=cols,
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         filters=filters or [],
     )
 
 
-async def _gen(query, model, *, extra_models=None, dialect="postgres") -> str:
+async def _gen(query, dataset, *, extra_datasets=None, dialect="postgres") -> str:
     return await _engine_generate(
-        query=query, model=model, extra_models=extra_models or [], dialect=dialect,
+        query=query, dataset=dataset, extra_datasets=extra_datasets or [], dialect=dialect,
     )
 
 
@@ -124,9 +124,9 @@ def _cte_body(sql: str, cte_name_pattern: str) -> str:
 class TestScopeClosureInvariant:
     async def test_host_base_agg_source_columnkey(self) -> None:
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
         sql = await _gen(query, _orders())
         assert "GROUP BY" in sql
@@ -135,29 +135,29 @@ class TestScopeClosureInvariant:
 
     async def test_host_base_where_filter_typed(self) -> None:
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
-            filters=["amount > 100"],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
+            filter=["orders.amount > 100"],
         )
         sql = await _gen(query, _orders())
         assert "WHERE" in sql
         assert_scope_closed(sql)
 
     async def test_host_base_where_filter_mode_a_crosses_join(self) -> None:
-        # A Mode-A WHERE filter that crosses the orders→customers join pulls the
+        # A Mode-A WHERE filter that crosses the orders→customers relationship pulls the
         # LEFT JOIN into the host base scope; still closed.
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
-            filters=["customers.region_id > 0"],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
+            filter=["customers.region_id > 0"],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         assert "LEFT JOIN customers" in sql
         assert_scope_closed(sql)
 
     async def test_host_base_model_filter(self) -> None:
         query = SlayerQuery(
-            source_model="orders", measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         sql = await _gen(query, _orders(filters=["amount > 0"]))
         assert "WHERE" in sql
@@ -165,20 +165,20 @@ class TestScopeClosureInvariant:
 
     async def test_cross_model_cm_cte_agg_source(self) -> None:
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.balance)")],
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
-        assert "_cm_" in sql  # forward cross-model CTE scope
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
+        assert "_cm_" in sql  # forward cross-dataset CTE scope
         assert_scope_closed(sql)
 
     async def test_first_last_ranked_explicit_time_arg(self) -> None:
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at", granularity=TimeGranularity.MONTH)],
-            measures=[ModelMeasure(formula="last(balance, ordered_at)")],
+                field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            metrics=[QueryMetric(metric="last(orders.balance, orders.ordered_at)")],
         )
         sql = await _gen(query, _orders())
         assert "_cm_" in sql  # ranked producer under the uniform _cm_ scope
@@ -188,12 +188,12 @@ class TestScopeClosureInvariant:
 
     async def test_time_shift_cte(self) -> None:
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at", granularity=TimeGranularity.MONTH)],
-            measures=[
-                ModelMeasure(formula="sum(amount)"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+                field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -202,25 +202,25 @@ class TestScopeClosureInvariant:
 
     async def test_order_ref_by_measure(self) -> None:
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
-            dimensions=[ColumnRef(name="status")],
-            order=[OrderItem(column="rev", direction="desc")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem(field="rev", direction="desc")],
         )
         sql = await _gen(query, _orders())
         assert "ORDER BY" in sql
         assert_scope_closed(sql)
 
     async def test_column_filter_carrier_host_base(self) -> None:
-        # A per-measure Column.filter (local) on the host base scope.
+        # A per-metric DatasetField.filter (local) on the host base scope.
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(active_amount)")],
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(orders.active_amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
         model = _orders(extra=[
-            Column(name="active_amount", sql="amount", filter="status = 'active'",
-                   type=DataType.DOUBLE),
+            DatasetField(name="active_amount", expression="amount", filter="status = 'active'",
+                   datatype=DataType.FLOAT),
         ])
         sql = await _gen(query, model)
         assert "CASE" in sql  # filtered aggregate renders CASE WHEN
@@ -229,11 +229,11 @@ class TestScopeClosureInvariant:
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb", "mysql"])
     async def test_cross_model_closed_across_dialects(self, dialect: str) -> None:
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.balance)")],
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()],
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()],
                          dialect=dialect)
         assert_scope_closed(sql, dialect=dialect)
 
@@ -243,16 +243,16 @@ class TestScopeClosureInvariant:
 # --------------------------------------------------------------------------- #
 class TestSemanticPinsSqlShape:
     async def test_f4_scalar_cross_model_agg_semi_joins_host_local_filter(self) -> None:
-        # No dimensions ⇒ scalar cross-model aggregate. The
+        # No dimensions ⇒ scalar cross-dataset aggregate. The
         # host-local filter (orders.status='paid') restricts the target-rooted
         # _cm_ CTE's population via a correlated EXISTS — never via a
         # cardinality-changing join of the CTE body.
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.balance)")],
-            filters=["status = 'paid'"],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            filter=["orders.status = 'paid'"],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
         assert "EXISTS" in cm_body.upper(), cm_body
         assert "paid" in cm_body, (
@@ -266,11 +266,11 @@ class TestSemanticPinsSqlShape:
         # (the structural basis of the F1 decision). Executed-value behavior is
         # pinned in test_integration_duckdb.py::TestF1F4SemanticValues.
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.balance)")],
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
         assert "SUM(" in cm_body.upper()
         assert "EXISTS" not in cm_body.upper(), cm_body
@@ -284,18 +284,18 @@ class TestSemanticPinsSqlShape:
 # the _rls_src correlated-EXISTS allowlist).
 # --------------------------------------------------------------------------- #
 class TestRlsIsolationCte:
-    async def _cross_model_sql(self) -> str:
+    async def _cross_dataset_sql(self) -> str:
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.balance)")],
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         assert "_cm_" in sql
         return sql
 
     async def test_column_ruleset_over_isolation_cte_closed(self) -> None:
-        sql = await self._cross_model_sql()
+        sql = await self._cross_dataset_sql()
         assert_scope_closed(sql)  # pre-RLS
         wrapped = apply_session_policy(
             sqlglot.parse_one(sql, dialect="postgres"), sql_dialect=get_dialect("postgres"),
@@ -308,7 +308,7 @@ class TestRlsIsolationCte:
         assert_scope_closed(wrapped, allow_rls_correlation=True)
 
     async def test_join_ruleset_correlated_exists_needs_allowlist(self) -> None:
-        sql = await self._cross_model_sql()
+        sql = await self._cross_dataset_sql()
         wrapped = apply_session_policy(
             sqlglot.parse_one(sql, dialect="postgres"), sql_dialect=get_dialect("postgres"),
             policy=SessionPolicy(ruleset=JoinFilterRuleset(
@@ -328,50 +328,50 @@ class TestRlsIsolationCte:
 
 
 # --------------------------------------------------------------------------- #
-# Layer 2 — scope pins. Rich cross-model / first-last / windowed coverage
+# Layer 2 — scope pins. Rich cross-dataset / first-last / windowed coverage
 # lives in tests/test_sql_generator.py.
 # --------------------------------------------------------------------------- #
 class TestScopeDefectPins:
     async def test_windowed_measure_emits_wm_cte(self) -> None:
-        # Duration-windowed measures emit a range-join producer CTE under the
+        # Duration-windowed metrics emit a range-join producer CTE under the
         # `_cm_` producer scope. Rich coverage lives in
         # tests/test_sql_generator.py (TestFields / TestWindowedMeasureGuards)
         # and tests/integration/test_integration_windowed_measures.py.
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at", granularity=TimeGranularity.MONTH)],
-            measures=[ModelMeasure(formula="sum(amount, window='90d')", name="rev_w")],
+                field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="rev_w")],
         )
         sql = await _gen(query, _orders())
         assert "_cm_" in sql  # windowed producer under the uniform _cm_ scope
 
     async def test_cross_model_source_crosses_further_join(self) -> None:
         customers = _customers(extra=[
-            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.deep_pop)")],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(customers.deep_pop)")],
         )
-        sql = await _gen(query, _orders(), extra_models=[customers, _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[customers, _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
         assert "LEFT JOIN regions AS regions" in cm_body
 
     async def test_time_shift_cross_model_partition(self) -> None:
-        # The shifted CTE is a ScopeFrame that pulls the join a cross-model
+        # The shifted CTE is a ScopeFrame that pulls the join a cross-dataset
         # partition crosses. Rich coverage lives in
         # tests/test_dev1474_time_shift_cross_model_partition.py.
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="created_at", granularity=TimeGranularity.MONTH)],
-            dimensions=[ColumnRef(name="customers.region_id")],
-            measures=[
-                ModelMeasure(formula="sum(amount)"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+                field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            dimensions=[QueryDimension(field="customers.region_id")],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         assert "shifted_" in sql
         assert_scope_closed(sql)

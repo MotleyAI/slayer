@@ -16,15 +16,15 @@ The two producers are independent (``SQLGenerator._full_alias_for_slot`` and
 ``response_meta._slot_result_keys``); asserting both is what makes this a
 contract rather than a snapshot.
 
-Families covered: ordinary, joined dimensions, cross-model aggregates,
-windowed measures, hidden / order-only slots, parametric aggregates (including
-the DELIBERATE cross-model kwarg-suffix divergence), and the internal-vs-public
+Families covered: ordinary, joined dimensions, cross-dataset aggregates,
+windowed metrics, hidden / order-only slots, parametric aggregates (including
+the DELIBERATE cross-dataset kwarg-suffix divergence), and the internal-vs-public
 identifier separation (``naming.result_key`` dotted keys vs ``naming.flat_name``
 ``__`` inner-stage bind names).
 
 Column ORDER is pinned as it is TODAY. A later PR in the chain switches
 projection to declaration order, which deliberately changes it for some
-cross-model / windowed shapes; the affected assertions here are re-surfaced for
+cross-dataset / windowed shapes; the affected assertions here are re-surfaced for
 approval in that PR. Until then, a failing order assertion is a real regression
 rather than expected churn.
 
@@ -42,13 +42,12 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -102,52 +101,52 @@ async def engine(tmp_path) -> SlayerQueryEngine:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="regions",
             sql_table="regions",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region_id", type=DataType.INT),
-                Column(name="revenue", type=DataType.DOUBLE),
-                Column(name="signup_at", type=DataType.TIMESTAMP),
-                Column(
-                    name="rev_x2", sql="revenue * 2", type=DataType.DOUBLE,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="signup_at", datatype=DataType.DATETIME),
+                DatasetField(
+                    name="rev_x2", expression="revenue * 2", datatype=DataType.FLOAT,
                 ),
             ],
-            joins=[
-                ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
             default_time_dimension="created_at",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="created_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
             ],
-            joins=[
-                ModelJoin(
-                    target_model="customers", join_pairs=[["customer_id", "id"]],
+            relationships=[
+                DatasetRelationship(
+                    to="customers", from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
@@ -181,28 +180,28 @@ async def _assert_result_keys(
     )
     # Every declared attribute must be a real projected column (no drift
     # between the two independent key producers).
-    attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
+    attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.metrics)
     assert attr_keys <= set(resp.columns), (attr_keys, resp.columns)
 
 
 # ===========================================================================
-# 1 — Ordinary: local dimensions + local measures + star count.
+# 1 — Ordinary: local dimensions + local metrics + star count.
 # ===========================================================================
 
 
 class TestOrdinaryResultKeys:
     async def test_local_dims_and_measures(self, engine) -> None:
-        """``<relation>.<column>`` for dimensions; ``<relation>.<measure>_<agg>``
+        """``<relation>.<field>`` for dimensions; ``<relation>.<metric>_<agg>``
         for aggregates; ``count(*)`` collapses the star to a leading underscore
         (``orders._count``). Order follows the query's declaration order."""
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="sum(amount)"),
-                    ModelMeasure(formula="count(*)"),
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[
+                    QueryMetric(metric="sum(orders.amount)"),
+                    QueryMetric(metric="count(orders.*)"),
                 ],
             ),
             ["orders.status", "orders.amount_sum", "orders._count"],
@@ -214,29 +213,29 @@ class TestOrdinaryResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.amount)", alias="revenue")],
             ),
-            ["orders.status", "orders.revenue"],
+            ["orders.status", "revenue"],
         )
 
     async def test_time_dimension_key_has_no_granularity_suffix(
         self, engine,
     ) -> None:
-        """A time dimension keys off the bare column — the granularity lives in
+        """A time dimension keys off the bare field — the granularity lives in
         the emitted DATE_TRUNC, never in the result key."""
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[ModelMeasure(formula="count(*)")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             ),
             ["orders.created_at", "orders._count"],
         )
@@ -252,11 +251,11 @@ class TestJoinedDimensionResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="customers.region_id")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[QueryDimension(field="customers.region_id")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             ),
-            ["orders.customers.region_id", "orders._count"],
+            ["customers.region_id", "orders._count"],
         )
 
     async def test_multi_hop_joined_dimension(self, engine) -> None:
@@ -264,45 +263,45 @@ class TestJoinedDimensionResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="customers.regions.name")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[QueryDimension(field="customers.regions.name")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             ),
-            ["orders.customers.regions.name", "orders._count"],
+            ["customers.regions.name", "orders._count"],
         )
 
     async def test_joined_derived_dimension(self, engine) -> None:
-        """A DERIVED joined column (``Column.sql`` set — a ``ColumnSqlKey``)
-        keys identically to a base joined column."""
+        """A DERIVED joined field (``DatasetField.sql`` set — a ``FieldSqlKey``)
+        keys identically to a base joined field."""
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="customers.rev_x2")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[QueryDimension(field="customers.rev_x2")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             ),
-            ["orders.customers.rev_x2", "orders._count"],
+            ["customers.rev_x2", "orders._count"],
         )
 
 
 # ===========================================================================
-# 3 — Cross-model aggregates.
+# 3 — Cross-dataset aggregates.
 # ===========================================================================
 
 
 class TestCrossModelResultKeys:
     async def test_cross_model_aggregate_keeps_path(self, engine) -> None:
-        """A cross-model measure keys as
-        ``<relation>.<path>.<canonical_agg_name>`` — the join path is part of
+        """A cross-dataset metric keys as
+        ``<relation>.<path>.<canonical_agg_name>`` — the relationship path is part of
         the public key, not just of the internal CTE name."""
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(customers.revenue)")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(customers.revenue)")],
             ),
-            ["orders.status", "orders.customers.revenue_sum"],
+            ["orders.status", "customers.revenue_sum"],
         )
 
     async def test_cross_model_star_count_keeps_path(self, engine) -> None:
@@ -311,57 +310,57 @@ class TestCrossModelResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="count(customers.*)")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(customers.*)")],
             ),
-            ["orders.status", "orders.customers._count"],
+            ["orders.status", "customers._count"],
         )
 
     async def test_local_and_cross_model_measures_together(self, engine) -> None:
-        """Mixed local + cross-model: both key forms coexist, in declaration
+        """Mixed local + cross-dataset: both key forms coexist, in declaration
         order. (The declaration-order projection change may reorder this
         shape in a later PR — re-approved
         there.)"""
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="sum(amount)"),
-                    ModelMeasure(formula="sum(customers.revenue)"),
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[
+                    QueryMetric(metric="sum(orders.amount)"),
+                    QueryMetric(metric="sum(customers.revenue)"),
                 ],
             ),
             [
                 "orders.status",
                 "orders.amount_sum",
-                "orders.customers.revenue_sum",
+                "customers.revenue_sum",
             ],
         )
 
 
 # ===========================================================================
-# 4 — Windowed measures (the ``window=`` reserved kwarg).
+# 4 — Windowed metrics (the ``window=`` reserved kwarg).
 # ===========================================================================
 
 
 class TestWindowedResultKeys:
     async def test_duration_windowed_measure_key(self, engine) -> None:
-        """A duration-windowed measure keys off the canonical aggregate name
+        """A duration-windowed metric keys off the canonical aggregate name
         INCLUDING the window kwarg suffix, so two different windows over the
-        same column do not collide."""
+        same field do not collide."""
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[ModelMeasure(formula="sum(amount, window='90d')")],
+                metrics=[QueryMetric(metric="sum(orders.amount, window='90d')")],
             ),
             ["orders.created_at", "orders.amount_sum_window_90d"],
         )
@@ -374,16 +373,16 @@ class TestWindowedResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[
-                    ModelMeasure(formula="sum(amount, window='90d')"),
-                    ModelMeasure(formula="sum(amount, window='30d')"),
+                metrics=[
+                    QueryMetric(metric="sum(orders.amount, window='90d')"),
+                    QueryMetric(metric="sum(orders.amount, window='30d')"),
                 ],
             ),
             [
@@ -400,7 +399,7 @@ class TestWindowedResultKeys:
 
 
 class TestHiddenAndOrderOnlySlots:
-    """Ordering a GROUPED query by an ungrouped raw column
+    """Ordering a GROUPED query by an ungrouped raw field
     makes the planner materialise a hidden ``MAX(...)`` wrap slot. That slot
     must drive ORDER BY without ever surfacing as a public result key."""
 
@@ -408,12 +407,12 @@ class TestHiddenAndOrderOnlySlots:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
                 order=[
                     OrderItem(
-                        column=ColumnRef(name="created_at"), direction="desc",
+                        field="orders.created_at", direction="desc",
                     ),
                 ],
             ),
@@ -432,12 +431,12 @@ class TestHiddenAndOrderOnlySlots:
         """
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
                 order=[
                     OrderItem(
-                        column=ColumnRef(name="created_at"), direction="desc",
+                        field="orders.created_at", direction="desc",
                     ),
                 ],
             )
@@ -446,7 +445,7 @@ class TestHiddenAndOrderOnlySlots:
 
 
 # ===========================================================================
-# 6 — Parametric aggregates, incl. the cross-model kwarg-suffix divergence.
+# 6 — Parametric aggregates, incl. the cross-dataset kwarg-suffix divergence.
 # ===========================================================================
 
 
@@ -457,9 +456,9 @@ class TestParametricResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="percentile(amount, p=0.9)")],
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="percentile(orders.amount, p=0.9)")],
             ),
             ["orders.status", "orders.amount_percentile_p_0_9"],
         )
@@ -470,11 +469,11 @@ class TestParametricResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="percentile(amount, p=0.5)"),
-                    ModelMeasure(formula="percentile(amount, p=0.9)"),
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[
+                    QueryMetric(metric="percentile(orders.amount, p=0.5)"),
+                    QueryMetric(metric="percentile(orders.amount, p=0.9)"),
                 ],
             ),
             [
@@ -490,7 +489,7 @@ class TestParametricResultKeys:
         """The DELIBERATE divergence.
 
         The deleted legacy enrichment path dropped the kwarg suffix from
-        cross-model parametric aggregates, which made two variants collide on
+        cross-dataset parametric aggregates, which made two variants collide on
         one CTE alias. The typed pipeline RETAINS the suffix: correctness over
         bit-identical legacy output. This test pins the retention as intended
         behavior so a future "restore parity" change has to argue with a test
@@ -499,17 +498,17 @@ class TestParametricResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="percentile(customers.revenue, p=0.5)"),
-                    ModelMeasure(formula="percentile(customers.revenue, p=0.9)"),
+                population="orders",
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[
+                    QueryMetric(metric="percentile(customers.revenue, p=0.5)"),
+                    QueryMetric(metric="percentile(customers.revenue, p=0.9)"),
                 ],
             ),
             [
                 "orders.status",
-                "orders.customers.revenue_percentile_p_0_5",
-                "orders.customers.revenue_percentile_p_0_9",
+                "customers.revenue_percentile_p_0_5",
+                "customers.revenue_percentile_p_0_9",
             ],
         )
 
@@ -526,30 +525,30 @@ class TestIdentifierSeparation:
     shape a past bug produced."""
 
     async def test_no_flattened_key_leaks_from_a_joined_query(
-        self, engine,
+        self, engine: SlayerQueryEngine,
     ) -> None:
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 dimensions=[
-                    ColumnRef(name="customers.regions.name"),
-                    ColumnRef(name="customers.rev_x2"),
+                    QueryDimension(field="customers.regions.name"),
+                    QueryDimension(field="customers.rev_x2"),
                 ],
-                measures=[ModelMeasure(formula="sum(customers.revenue)")],
+                metrics=[QueryMetric(metric="sum(customers.revenue)")],
             )
         )
         for key in list(resp.columns) + list(resp.data[0].keys()):
             assert "__" not in key, f"inner-stage flat name leaked publicly: {key}"
 
-    async def test_public_keys_are_dotted_not_flattened(self, engine) -> None:
+    async def test_public_keys_are_dotted_not_flattened(self, engine: SlayerQueryEngine) -> None:
         """The positive form of the same contract: the dotted key is present
         AND its flattened twin is absent."""
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="customers.regions.name")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[QueryDimension(field="customers.regions.name")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
             )
         )
-        assert "orders.customers.regions.name" in resp.columns
+        assert "customers.regions.name" in resp.columns
         assert "orders.customers__regions__name" not in resp.columns

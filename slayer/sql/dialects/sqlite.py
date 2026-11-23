@@ -19,7 +19,8 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
-from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.enums import DataType, DatePart, TEMPORAL_DATATYPES, TimeGranularity, TypeKind
+from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath
 from slayer.core.like_pattern import LikePattern, LikeWildcard, parse_like
 from slayer.core.regex_pattern import RegexGroupRef, RegexPattern, RegexReplacement, parse_replacement
@@ -87,10 +88,10 @@ class StorageCensus(BaseModel):
         """With no text or blob stored: DOUBLE on a real or fractional value, INT when an unsaturated sample
         holds integers only, else ``None`` (saturated, or no non-NULL value)."""
         if self.n_real or self.n_non_integral:
-            return DataType.DOUBLE
+            return DataType.FLOAT
         if self.n_rows > cap or not self.n_non_null:
             return None
-        return DataType.INT
+        return DataType.INTEGER
 
 
 def _count_where(condition: Expr) -> Expression:
@@ -120,8 +121,8 @@ def census_counts(value: Expression) -> list[Expression]:
 def _census_verdict(census: StorageCensus) -> DataType:
     """A result column's type: stored text or blob, or no value, is TEXT; a saturated integer sample DOUBLE."""
     if census.n_text or census.n_blob or not census.n_non_null:
-        return DataType.TEXT
-    return census.numeric_verdict(cap=PROBE_SCAN_CAP) or DataType.DOUBLE
+        return DataType.STRING
+    return census.numeric_verdict(cap=PROBE_SCAN_CAP) or DataType.FLOAT
 
 
 def rewrite_sqlite_json_extract(node: Expression) -> Expression:
@@ -139,13 +140,15 @@ def rewrite_sqlite_json_extract(node: Expression) -> Expression:
         je.replace(_to_anonymous(je))
 
 
-def _strftime(fmt: str, col_expr: Expression) -> exp.Anonymous:
-    return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string(fmt), col_expr.copy()])
+def _strftime(fmt: str, col_expr: Expression, *modifiers: str) -> exp.Anonymous:
+    return exp.Anonymous(this="STRFTIME", expressions=[
+        exp.Literal.string(fmt), col_expr.copy(), *(exp.Literal.string(m) for m in modifiers),
+    ])
 
 
-def _normalised_timestamp(expr: Expression) -> Expression:
-    """``expr`` as ``YYYY-MM-DD HH:MM:SS.SSS`` text, whatever ISO spelling it is stored in."""
-    return exp.Anonymous(this="STRFTIME", expressions=[exp.Literal.string("%Y-%m-%d %H:%M:%f"), expr])
+def _timestamp_text(expr: Expression) -> Expression:
+    """``expr`` as ``YYYY-MM-DD HH:MM:SS.ffffff`` text through the registered UDF (``%f`` keeps only milliseconds)."""
+    return exp.Anonymous(this="slayer_timestamp_text", expressions=[expr])
 
 
 def _strftime_int(fmt: str, col_expr: Expression) -> Expression:
@@ -410,6 +413,12 @@ def _parse_sqlite_temporal(value) -> Optional[datetime]:
         return None
 
 
+def _slayer_timestamp_text(value) -> Optional[str]:
+    """Stored date / timestamp text as ``YYYY-MM-DD HH:MM:SS.ffffff``; NULL when it is not ISO temporal text."""
+    moment = _parse_sqlite_temporal(value)
+    return None if moment is None else moment.isoformat(sep=" ", timespec="microseconds")
+
+
 def _slayer_date_add(ts, n, unit):
     """``ts`` moved by ``n`` ``unit``s, month-based moves clamped at month-end; NULL on NULL / malformed input."""
     moment = _parse_sqlite_temporal(ts)
@@ -482,13 +491,13 @@ def _slayer_try_cast(text, target):
     if text is None:
         return None
     kind = DataType(target)
-    if kind is DataType.INT:
+    if kind is DataType.INTEGER:
         return _slayer_try_integer(text, _INT64_MIN, _INT64_MAX)
-    if kind is DataType.DOUBLE:
+    if kind.kind is TypeKind.DOUBLE:
         return _try_double(text)
     if kind is DataType.BOOLEAN:
         return _try_boolean(text)
-    if kind in (DataType.DATE, DataType.TIMESTAMP):
+    if kind in TEMPORAL_DATATYPES:
         return _try_temporal(text, kind)
     return text
 
@@ -612,6 +621,7 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     dbapi_connection.create_function("pow", 2, _pow)
     dbapi_connection.create_function("power", 2, _pow)
     dbapi_connection.create_function("slayer_date_add", 3, _slayer_date_add)
+    dbapi_connection.create_function("slayer_timestamp_text", 1, _slayer_timestamp_text, deterministic=True)
     dbapi_connection.create_function("slayer_try_cast", 2, _slayer_try_cast)
     dbapi_connection.create_function("slayer_try_cast", 3, _slayer_try_integer)
 
@@ -712,6 +722,12 @@ def _unique_sets(connection: CatalogConnection | None, *, table: str, schema: st
         if members and all(cid >= 0 and column is not None for cid, column in members):
             sets.append([column for _, column in members])
     return sets
+
+
+_DATE_CAST_TYPES = frozenset({exp.DataType.Type.DATE, exp.DataType.Type.DATE32})
+_PLAIN_TIMESTAMP_CASTS = frozenset({
+    exp.DataType.Type.TIMESTAMP, exp.DataType.Type.DATETIME, exp.DataType.Type.TIMESTAMPNTZ,
+})
 
 
 class SqliteDialect(SqlDialect):
@@ -880,17 +896,17 @@ class SqliteDialect(SqlDialect):
         kind, read = self._json_parts(value, path)
         from_text = (exp.EQ(this=kind.copy(), expression=lit("text")), self.build_try_cast(read.copy(), to))
         direct: list = []
-        if target is DataType.INT:
+        if target is DataType.INTEGER:
             from_text = (from_text[0], self.build_integer_try_cast(read.copy(), to, source=None))
             direct = [(exp.EQ(this=kind.copy(), expression=lit("integer")),
-                       self.build_integer_try_cast(read.copy(), to, source=DataType.INT))]
-        elif target is DataType.DOUBLE:
+                       self.build_integer_try_cast(read.copy(), to, source=DataType.INTEGER))]
+        elif target.kind is TypeKind.DOUBLE:
             direct = [(exp.In(this=kind.copy(), expressions=[lit("integer"), lit("real")]),
                        exp.Cast(this=read.copy(), to=exp.DataType.build("REAL")))]
         elif target is DataType.BOOLEAN:
             direct = [(exp.EQ(this=kind.copy(), expression=lit("true")), lit(1)),
                       (exp.EQ(this=kind.copy(), expression=lit("false")), lit(0))]
-        elif target is DataType.TEXT:
+        elif target is DataType.STRING:
             return self.build_json_value(value, path, native)
         return case((anon("JSON_VALID", value), case(*direct, from_text)))
 
@@ -898,9 +914,22 @@ class SqliteDialect(SqlDialect):
         text = lit(path.text)
         return anon("JSON_TYPE", value, text), anon("JSON_EXTRACT", value, text)
 
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """No time-of-day type, and a timestamp only unzoned and without precision: SQLite keeps none of them."""
+        t = data_type.this
+        if t in exp.DataType.TEMPORAL_TYPES and t not in _DATE_CAST_TYPES:
+            return t in _PLAIN_TIMESTAMP_CASTS and not data_type.expressions
+        return super().cast_type_supported(data_type)
+
+    def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """A timestamp cast converts as ``TRY_CAST`` does: a plain cast collapses a date text to its year."""
+        if to.this in _PLAIN_TIMESTAMP_CASTS:
+            return self.build_try_cast(value, to)
+        return super().build_cast(value, to)
+
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
         """No DATE / TIMESTAMP cast: under numeric affinity it collapses a text date to its year."""
-        if dt in (DataType.DATE, DataType.TIMESTAMP):
+        if dt in TEMPORAL_DATATYPES:
             return None
         return dt
 
@@ -921,20 +950,17 @@ class SqliteDialect(SqlDialect):
         return exp.Is(this=left, expression=right)
 
     def build_date_trunc(
-        self,
-        col_expr: Expression,
-        granularity: TimeGranularity,
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """SQLite has no DATE_TRUNC: STRFTIME, a CASE for quarter, a weekday modifier for week."""
-        if granularity == TimeGranularity.WEEK_SUNDAY:
-            return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity,
-            )
+        """STRFTIME text, ``YYYY-MM-DD`` for a DATE bucket and ``YYYY-MM-DD HH:MM:SS`` for a TIMESTAMP one,
+        whatever the stored spelling; a CASE for quarter, a weekday modifier for week."""
+        midnight = "" if bucket_type(operand, granularity) is DataType.DATE else " 00:00:00"
+        day = f"%Y-%m-%d{midnight}"
         if granularity == TimeGranularity.WEEK:
-            # weekday 0 = Sunday; back up to the preceding Monday.
-            return exp.Anonymous(this="DATE", expressions=[
-                col_expr.copy(), exp.Literal.string("weekday 0"), exp.Literal.string("-6 days"),
-            ])
+            # weekday 0 = Sunday on or after; back up to that week's Monday.
+            return _strftime(day, col_expr, "weekday 0", "-6 days")
+        if granularity == TimeGranularity.WEEK_SUNDAY:
+            return super().build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
         if granularity == TimeGranularity.QUARTER:
             return exp.DPipe(this=_strftime("%Y-", col_expr), expression=exp.Case(
                 ifs=[
@@ -943,21 +969,28 @@ class SqliteDialect(SqlDialect):
                             this=exp.Cast(this=_strftime("%m", col_expr), to=exp.DataType.build("INTEGER")),
                             expression=exp.Literal.number(last_month),
                         ),
-                        true=exp.Literal.string(start),
+                        true=exp.Literal.string(start + midnight),
                     )
                     for last_month, start in ((3, "01-01"), (6, "04-01"), (9, "07-01"))
                 ],
-                default=exp.Literal.string("10-01"),
+                default=exp.Literal.string("10-01" + midnight),
             ))
         fmt_map = {
-            TimeGranularity.YEAR: "%Y-01-01",
-            TimeGranularity.MONTH: "%Y-%m-01",
-            TimeGranularity.DAY: "%Y-%m-%d",
+            TimeGranularity.YEAR: f"%Y-01-01{midnight}",
+            TimeGranularity.MONTH: f"%Y-%m-01{midnight}",
+            TimeGranularity.DAY: day,
             TimeGranularity.HOUR: "%Y-%m-%d %H:00:00",
             TimeGranularity.MINUTE: "%Y-%m-%d %H:%M:00",
             TimeGranularity.SECOND: "%Y-%m-%d %H:%M:%S",
         }
         return _strftime(fmt_map[granularity], col_expr)
+
+    def demote_to_date(self, expr: Expression) -> Expression:
+        return exp.Anonymous(this="DATE", expressions=[expr])
+
+    def build_temporal_comparands(self, left: Expression, right: Expression) -> tuple[Expression, Expression]:
+        """Both sides as microsecond ISO text: equal instants compare equal whatever their stored spelling."""
+        return _timestamp_text(left), _timestamp_text(right)
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         return exp.Anonymous(this="DATETIME", expressions=[expr.copy()])
@@ -973,14 +1006,14 @@ class SqliteDialect(SqlDialect):
         self, *, op: TemporalComparisonOp, operand: Expression, value: date,
     ) -> Expression:
         """A midnight ``>=`` / ``<`` bound compares as date text (sargable); anything else
-        normalises both sides to millisecond ISO text, independent of the stored spelling."""
+        compares as microsecond ISO text, independent of the stored spelling."""
         day = value.date() if isinstance(value, datetime) else value
-        midnight = value == day or value == datetime(day.year, day.month, day.day)
-        if op in (">=", "<") and midnight:
+        instant = value if isinstance(value, datetime) else datetime(day.year, day.month, day.day)
+        if op in (">=", "<") and instant.time() == datetime.min.time():
             return COMPARISON_NODES[op](this=operand, expression=exp.Literal.string(day.isoformat()))
         return COMPARISON_NODES[op](
-            this=_normalised_timestamp(operand),
-            expression=_normalised_timestamp(exp.Literal.string(iso_text(value))),
+            this=_timestamp_text(operand),
+            expression=exp.Literal.string(instant.isoformat(sep=" ", timespec="microseconds")),
         )
 
     def _date_part(self, part: DatePart, expr: Expression) -> Expression:

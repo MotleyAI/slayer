@@ -6,12 +6,12 @@ A ``Retriever`` is one ranking channel. The orchestrator (see
 calls each one's :meth:`Retriever.retrieve` in parallel, and fuses the
 returned rankings via RRF. Concrete retrievers also own their own
 persistence — write-side hooks (``upsert_memory``,
-``refresh_model_subtree``, ``refresh_datasource``, plus the three
+``refresh_dataset_subtree``, ``refresh_datasource``, plus the three
 ``delete_*`` futures) default to no-op on the ABC; the embedding
 retriever overrides the create/refresh ones to maintain its sidecar
 table. The ``delete_*`` hooks default to no-op for every shipping
 retriever this PR — :class:`StorageBackend` owns embedding-row cascade
-transactionally with the model/datasource/memory row delete; the
+transactionally with the dataset/datasource/memory row delete; the
 hooks live on the ABC so future persistent retrievers (e.g.
 persistent tantivy) can override them without an ABC change.
 
@@ -27,9 +27,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from collections.abc import Sequence
+
 from pydantic import BaseModel, Field
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.memories.models import Memory
 from slayer.search.index import Corpus
 
@@ -44,7 +46,7 @@ class RetrievalResult(BaseModel):
       tantivy hit text in ``MemoryHit.text`` instead of always
       falling back to ``Memory.learning``.
     * ``entity_ranking`` — canonical entity ids best-first
-      (``"<ds>"`` / ``"<ds>.<model>"`` / ``"<ds>.<model>.<leaf>"``).
+      (``"<ds>"`` / ``"<ds>.<dataset>"`` / ``"<ds>.<dataset>.<leaf>"``).
     * ``warnings`` — per-call warnings the orchestrator should
       surface to the caller (e.g. "embedding channel skipped:
       query embedding failed").
@@ -86,16 +88,22 @@ class Retriever(ABC):
     async def upsert_memory(self, memory: Memory) -> list[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         return []
 
-    async def refresh_model_subtree(self, model: SlayerModel) -> list[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
+    async def refresh_dataset_subtree(self, dataset: SlayerDataset) -> list[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         return []
 
     async def refresh_datasource(  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         self,
         *,
         name: str,
-        models: list[SlayerModel],
+        datasets: list[SlayerDataset],
         description: str | None = None,
     ) -> list[str]:
+        return []
+
+    async def refresh_documents(  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
+        self, documents: Sequence[tuple[str, str, str]],
+    ) -> list[str]:
+        """Refresh semantic models and model-scoped metrics, as ``(canonical, kind, text)``."""
         return []
 
     # ------------------------------------------------------------------
@@ -103,7 +111,7 @@ class Retriever(ABC):
     #
     # All three shipping retrievers no-op these hooks this PR.
     # :class:`StorageBackend` owns embedding-row cascade transactionally
-    # with the model / datasource / memory row delete. The hooks live
+    # with the dataset / datasource / memory row delete. The hooks live
     # on the ABC so future persistent retrievers (persistent tantivy,
     # third-party vector DBs) can override them without an ABC change.
     # ------------------------------------------------------------------
@@ -111,7 +119,7 @@ class Retriever(ABC):
     async def delete_memory(self, memory_id: str) -> None:  # NOSONAR(S7503) — async signature required by Retriever ABC; future persistent retrievers will override with truly-async hooks
         return None
 
-    async def delete_model(  # NOSONAR(S7503) — async signature required by Retriever ABC; future persistent retrievers will override with truly-async hooks
+    async def delete_dataset(  # NOSONAR(S7503) — async signature required by Retriever ABC; future persistent retrievers will override with truly-async hooks
         self, *, data_source: str, name: str,
     ) -> None:
         return None

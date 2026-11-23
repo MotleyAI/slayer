@@ -8,7 +8,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from tests._dev1471_fixtures import (
     BACKENDS,
@@ -16,20 +16,20 @@ from tests._dev1471_fixtures import (
     MONTHLY_ROWS as _MONTHLY,
     date_str,
     make_engine,
-    orders_model,
+    orders_dataset,
     orders_table_spec,
-    region_chain_models,
+    region_chain_datasets,
     region_chain_tables,
 )
 
 TG = TimeGranularity
 
 
-async def _exec_outer(backend: str, tmp: str, outer: SlayerQuery, *, tables=None, models=None, inner=None):
+async def _exec_outer(backend: str, tmp: str, outer: SlayerQuery, *, tables=None, datasets=None, inner=None):
     engine = await make_engine(
         backend, base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
-        tables=tables or [orders_table_spec(_MONTHLY)], models=models or [orders_model()],
+        tables=tables or [orders_table_spec(_MONTHLY)], datasets=datasets or [orders_dataset()],
     )
     return await engine.execute(query=[inner or _INNER, outer])
 
@@ -41,16 +41,16 @@ def _by_month(data: list[dict], value_key: str) -> dict:
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_time_shift_over_stage_time_dimension(backend: str) -> None:
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
-        "measures": [
-            {"formula": "sum(rev)"},
-            {"formula": "time_shift(sum(rev), -1, 'month')", "name": "prev"},
+        "population": "s1",
+        "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
+        "metrics": [
+            {"metric": "sum(s1.rev)"},
+            {"metric": "time_shift(sum(s1.rev), -1, 'month')", "alias": "prev"},
         ],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)
-    assert _by_month(resp.data, "s1.prev") == {
+    assert _by_month(resp.data, "prev") == {
         "2025-01-01": None, "2025-02-01": 100.0, "2025-03-01": 200.0, "2025-04-01": 300.0,
     }
 
@@ -58,19 +58,19 @@ async def test_time_shift_over_stage_time_dimension(backend: str) -> None:
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_change_and_cumsum_over_stage_time_dimension(backend: str) -> None:
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
-        "measures": [
-            {"formula": "change(sum(rev))", "name": "chg"},
-            {"formula": "cumsum(sum(rev))", "name": "cum"},
+        "population": "s1",
+        "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
+        "metrics": [
+            {"metric": "change(sum(s1.rev))", "alias": "chg"},
+            {"metric": "cumsum(sum(s1.rev))", "alias": "cum"},
         ],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)
-    assert _by_month(resp.data, "s1.chg") == {
+    assert _by_month(resp.data, "chg") == {
         "2025-01-01": None, "2025-02-01": 100.0, "2025-03-01": 100.0, "2025-04-01": 100.0,
     }
-    assert _by_month(resp.data, "s1.cum") == {
+    assert _by_month(resp.data, "cum") == {
         "2025-01-01": 100.0, "2025-02-01": 300.0, "2025-03-01": 600.0, "2025-04-01": 1000.0,
     }
 
@@ -78,29 +78,29 @@ async def test_change_and_cumsum_over_stage_time_dimension(backend: str) -> None
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_last_over_stage_time_dimension(backend: str) -> None:
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
-        "measures": [{"formula": "last(sum(rev))", "name": "lst"}],
+        "population": "s1",
+        "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
+        "metrics": [{"metric": "last(sum(s1.rev))", "alias": "lst"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)
-    assert set(_by_month(resp.data, "s1.lst").values()) == {400.0}
+    assert set(_by_month(resp.data, "lst").values()) == {400.0}
 
 
-# A model holding exactly the inner stage's monthly rows — the spec's reference
+# A dataset holding exactly the inner stage's monthly rows — the spec's reference
 # for "identical to the same shapes evaluated over a model-backed dataset".
-def _monthly_model() -> SlayerModel:
-    return SlayerModel(
+def _monthly_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="monthly", sql_table="monthly", data_source="ds",
         default_time_dimension="month_ts",
-        columns=[
-            Column(name="month_ts", sql="month_ts", type=DataType.TIMESTAMP),
-            Column(name="rev", sql="rev", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="month_ts", expression="month_ts", datatype=DataType.DATETIME),
+            DatasetField(name="rev", expression="rev", datatype=DataType.FLOAT),
         ],
     )
 
 
-_MONTHLY_MODEL_TABLE = {
+_MONTHLY_DATASET_TABLE = {
     "name": "monthly",
     "columns": [("month_ts", "TIMESTAMP"), ("rev", "DOUBLE")],
     "rows": [("2025-01-01", 100.0), ("2025-02-01", 200.0), ("2025-03-01", 300.0), ("2025-04-01", 400.0)],
@@ -109,29 +109,31 @@ _MONTHLY_MODEL_TABLE = {
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_windowed_aggregate_over_stage_time_dimension(backend: str) -> None:
-    """rev:sum(window='60d') on the stage bucket equals the model-backed evaluation
+    """rev:sum(window='60d') on the stage bucket equals the dataset-backed evaluation
     over a dataset holding the same monthly rows (transforms spec equivalence)."""
-    windowed = [{"formula": "sum(rev, window='60d')", "name": "win"}]
+    def windowed(pop: str) -> list:
+        return [{"metric": f"sum({pop}.rev, window='60d')", "alias": "win"}]
+
     stage_outer = SlayerQuery.model_validate({
-        "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
-        "measures": windowed,
+        "population": "s1",
+        "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
+        "metrics": windowed("s1"),
     })
     model_query = SlayerQuery.model_validate({
-        "source_model": "monthly",
-        "time_dimensions": [TimeDimension(dimension="month_ts", granularity=TG.MONTH)],
-        "measures": windowed,
+        "population": "monthly",
+        "time_dimensions": [TimeDimension(field="monthly.month_ts", granularity=TG.MONTH)],
+        "metrics": windowed("monthly"),
     })
     with tempfile.TemporaryDirectory() as tmp:
         stage_resp = await _exec_outer(backend, tmp, stage_outer)
         model_engine = await make_engine(
             backend, base_dir=os.path.join(tmp, "model_store"),
             db_path=os.path.join(tmp, f"m.{backend}"),
-            tables=[_MONTHLY_MODEL_TABLE], models=[_monthly_model()],
+            tables=[_MONTHLY_DATASET_TABLE], datasets=[_monthly_dataset()],
         )
         model_resp = await model_engine.execute(model_query)
-    stage = _by_month(stage_resp.data, "s1.win")
-    model = {date_str(r["monthly.month_ts"]): r["monthly.win"] for r in model_resp.data}
+    stage = _by_month(stage_resp.data, "win")
+    model = {date_str(r["monthly.month_ts"]): r["win"] for r in model_resp.data}
     assert stage == model
     assert model  # guard against an empty-vs-empty false pass
 
@@ -144,30 +146,30 @@ async def test_time_shift_over_multi_hop_flat_time_dimension(backend: str) -> No
         orders=[(1000, 100), (1001, 100), (1002, 101), (1003, 102), (1004, 102), (1005, 102)],
     )
     inner = SlayerQuery.model_validate({
-        "name": "s1", "source_model": "orders",
+        "name": "s1", "population": "orders",
         "time_dimensions": [TimeDimension(
-            dimension="customers.regions.last_activity_at", granularity=TG.MONTH,
+            field="customers.regions.last_activity_at", granularity=TG.MONTH,
         )],
-        "measures": [{"formula": "count(*)", "name": "n"}],
+        "metrics": [{"metric": "count(orders.*)", "alias": "n"}],
     })
     col = "customers__regions__last_activity_at"
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension=col, granularity=TG.MONTH)],
-        "measures": [
-            {"formula": "sum(n)"},
-            {"formula": "time_shift(sum(n), -1, 'month')", "name": "prev"},
+        "population": "s1",
+        "time_dimensions": [TimeDimension(field=f"s1.{col}", granularity=TG.MONTH)],
+        "metrics": [
+            {"metric": "sum(s1.n)"},
+            {"metric": "time_shift(sum(s1.n), -1, 'month')", "alias": "prev"},
         ],
     })
     with tempfile.TemporaryDirectory() as tmp:
-        resp = await _exec_outer(backend, tmp, outer, tables=tables, models=region_chain_models(), inner=inner)
-    prev = {date_str(r[f"s1.{col}"]): r["s1.prev"] for r in resp.data}
+        resp = await _exec_outer(backend, tmp, outer, tables=tables, datasets=region_chain_datasets(), inner=inner)
+    prev = {date_str(r[f"s1.{col}"]): r["prev"] for r in resp.data}
     assert prev == {"2025-01-01": None, "2025-02-01": 2, "2025-03-01": 1}
 
 
-# --- two stage time dimensions need main_time_dimension ---
-# NOTE: spec scenario names created_at month+year (one column); same-column
-# selection is deferred (DEV-1925), so this uses two distinct columns.
+# --- two stage time dimensions: main_time_dimension, else the surviving default ---
+# NOTE: spec scenario names created_at month+year (one field); same-field
+# selection is deferred (DEV-1925), so this uses two distinct fields.
 # shipped_at is constant so ``change`` over the created_at axis is unambiguous
 # and differs from the shipped_at axis (which would be all-NULL, one bucket).
 _TWO_TD_ROWS = [
@@ -176,9 +178,9 @@ _TWO_TD_ROWS = [
     (3, 102, 400.0, "N", "2025-03-15", "2025-06-01"),
 ]
 _TWO_TD_INNER = SlayerQuery.model_validate({
-    "name": "s1", "source_model": "orders",
-    "dimensions": ["created_at", "shipped_at"],
-    "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    "name": "s1", "population": "orders",
+    "dimensions": ["orders.created_at", "orders.shipped_at"],
+    "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
 })
 
 
@@ -186,41 +188,44 @@ async def _two_td_engine(backend: str, tmp: str):
     return await make_engine(
         backend, base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
-        tables=[orders_table_spec(_TWO_TD_ROWS)], models=[orders_model()],
+        tables=[orders_table_spec(_TWO_TD_ROWS)], datasets=[orders_dataset()],
     )
 
 
-async def test_two_stage_time_dimensions_without_main_raise() -> None:
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_two_stage_time_dimensions_without_main_default_to_the_surviving_axis(backend: str) -> None:
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
+        "population": "s1",
         "time_dimensions": [
-            TimeDimension(dimension="created_at", granularity=TG.MONTH),
-            TimeDimension(dimension="shipped_at", granularity=TG.MONTH),
+            TimeDimension(field="s1.created_at", granularity=TG.MONTH),
+            TimeDimension(field="s1.shipped_at", granularity=TG.MONTH),
         ],
-        "measures": [{"formula": "change(sum(rev))", "name": "chg"}],
+        "metrics": [{"metric": "change(sum(s1.rev))", "alias": "chg"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
-        engine = await _two_td_engine("sqlite", tmp)
-        with pytest.raises(ValueError, match="unambiguous time dimension"):
-            await engine.execute(query=[_TWO_TD_INNER, outer], dry_run=True)
+        engine = await _two_td_engine(backend, tmp)
+        resp = await engine.execute(query=[_TWO_TD_INNER, outer])
+    # orders' default created_at survives in s1, so it breaks the tie (time-spine spec).
+    chg = {date_str(r["s1.created_at"]): r["chg"] for r in resp.data}
+    assert chg == {"2025-01-01": None, "2025-02-01": 150.0, "2025-03-01": 150.0}
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_main_time_dimension_selects_stage_axis(backend: str) -> None:
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
+        "population": "s1",
         "time_dimensions": [
-            TimeDimension(dimension="created_at", granularity=TG.MONTH),
-            TimeDimension(dimension="shipped_at", granularity=TG.MONTH),
+            TimeDimension(field="s1.created_at", granularity=TG.MONTH),
+            TimeDimension(field="s1.shipped_at", granularity=TG.MONTH),
         ],
-        "main_time_dimension": "created_at",
-        "measures": [{"formula": "change(sum(rev))", "name": "chg"}],
+        "main_time_dimension": "s1.created_at",
+        "metrics": [{"metric": "change(sum(s1.rev))", "alias": "chg"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _two_td_engine(backend, tmp)
         resp = await engine.execute(query=[_TWO_TD_INNER, outer])
     # change over the created_at axis (shipped_at constant ⇒ shipped axis would be all NULL).
-    chg = {date_str(r["s1.created_at"]): r["s1.chg"] for r in resp.data}
+    chg = {date_str(r["s1.created_at"]): r["chg"] for r in resp.data}
     assert chg == {"2025-01-01": None, "2025-02-01": 150.0, "2025-03-01": 150.0}
 
 
@@ -228,10 +233,10 @@ async def test_main_time_dimension_selects_stage_axis(backend: str) -> None:
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_order_by_stage_bucket(backend: str) -> None:
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
-        "measures": [{"formula": "sum(rev)"}],
-        "order": [OrderItem.model_validate({"column": "date_trunc('month', created_at)", "direction": "desc"})],
+        "population": "s1",
+        "time_dimensions": [TimeDimension(field="s1.created_at", granularity=TG.MONTH)],
+        "metrics": [{"metric": "sum(s1.rev)"}],
+        "order": [OrderItem.model_validate({"field": "date_trunc('month', s1.created_at)", "direction": "desc"})],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)
@@ -242,12 +247,12 @@ async def test_order_by_stage_bucket(backend: str) -> None:
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_two_granularities_of_one_stage_column(backend: str) -> None:
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
+        "population": "s1",
         "time_dimensions": [
-            TimeDimension(dimension="created_at", granularity=TG.MONTH),
-            TimeDimension(dimension="created_at", granularity=TG.YEAR),
+            TimeDimension(field="s1.created_at", granularity=TG.MONTH),
+            TimeDimension(field="s1.created_at", granularity=TG.YEAR),
         ],
-        "measures": [{"formula": "sum(rev)"}],
+        "metrics": [{"metric": "sum(s1.rev)"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec_outer(backend, tmp, outer)

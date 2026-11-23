@@ -53,9 +53,9 @@ class TestCursorDescriptionDelegatesToDialect:
     @pytest.mark.parametrize(
         "code,expected",
         [
-            (0, DataType.INT),        # FIXED
-            (2, DataType.TEXT),       # TEXT
-            (8, DataType.TIMESTAMP),  # TIMESTAMP_NTZ
+            (0, DataType.INTEGER),        # FIXED
+            (2, DataType.STRING),       # TEXT
+            (8, DataType.DATETIME),  # TIMESTAMP_NTZ
             (13, DataType.BOOLEAN),   # BOOLEAN
         ],
     )
@@ -64,7 +64,7 @@ class TestCursorDescriptionDelegatesToDialect:
 
     @pytest.mark.parametrize("code", [16, 999])
     def test_unknown_snowflake_code_defaults_to_text(self, code: int) -> None:
-        assert _probe_code(code) == ResultColumnType(type=DataType.TEXT)
+        assert _probe_code(code) == ResultColumnType(type=DataType.STRING)
 
 
 # ---------------------------------------------------------------------------

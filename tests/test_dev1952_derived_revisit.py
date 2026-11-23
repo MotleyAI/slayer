@@ -1,11 +1,12 @@
-"""DEV-1952 — a derived ``Column.sql`` / ``Column.filter`` whose join path revisits
-a model already on it is a typed circular refusal, not a silent ``0.0``.
+"""A derived ``DatasetField.sql`` / ``DatasetField.filter`` whose
+relationship path revisits a dataset already on it is a typed circular refusal,
+not a silent ``0.0``.
 
-The shared walker (``core/join_walker.py::walk``) raises ``CircularJoinPathError``
+The shared walker (``core/relationship_walker.py::walk``) raises ``CircularRelationshipPathError``
 on a revisit (``None`` now means only an unknown/unloaded hop); best-effort
 consumers catch it and keep today's answer, while the two doors that classify a
-user-typed definition fail closed. Save time rejects the model with
-``DerivedColumnCircularError`` from both save doors; query time refuses a stored
+user-typed definition fail closed. Save time rejects the dataset with
+``DerivedFieldCircularError`` from both save doors; query time refuses a stored
 circular definition in every position with the base class; the binder's
 query-typed circular refusal adopts the same class.
 
@@ -19,35 +20,36 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core import errors as core_errors
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import (
-    AmbiguousJoinPathError,
-    CircularJoinPathError,
-    DerivedColumnAmbiguousError,
-    DerivedColumnCircularError,
-    DerivedColumnFanningError,
+    AmbiguousRelationshipPathError,
+    CircularRelationshipPathError,
+    DerivedFieldAmbiguousError,
+    DerivedFieldCircularError,
+    DerivedFieldFanningError,
     SlayerError,
-    UnresolvableDimensionJoinError,
+    UnresolvableDimensionRelationshipError,
 )
-from slayer.core.join_walker import terminal_model, walk
+from slayer.core.field_expression import DialectEntry, ExpressionObject
+from slayer.core.relationship_walker import terminal_dataset, walk
 from slayer.core.keys import Grain
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
-from slayer.core.scope import ModelScope
-from slayer.engine.cardinality import join_safety
+from slayer.core.query import QueryMetric, SlayerQuery
+from slayer.core.scope import DatasetScope
+from slayer.engine.cardinality import relationship_safety
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _canonical_path
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.param_binding import resolve_default_qualifier_path
-from slayer.sql.column_expansion import (
+from slayer.sql.field_expansion import (
     _lenient_path,
     _resolve_qualifiers,
     resolve_ref_target,
@@ -56,59 +58,59 @@ from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1832_fixtures import make_exec_engine as _dev1832_make_engine
 from tests._dev1832_fixtures import orders_q as _dev1931_orders_q
-from tests._dev1853_fixtures import chain_models
+from tests._dev1853_fixtures import chain_datasets
 from tests._dev1900_fixtures import make_exec_engine as _dev1900_make_engine
 from tests._dev1900_fixtures import orders_q as _dev1900_orders_q
-from tests._dev1931_fixtures import dev1931_models
+from tests._dev1931_fixtures import dev1931_datasets
 from tests._engine_helpers import seeded_exec_engine
 
 DS = "ds"
 
 
 # --------------------------------------------------------------------------- #
-# Save-time model builders (``regions ← customers ← orders``; spend on customers,
+# Save-time dataset builders (``regions ← customers ← orders``; spend on customers,
 # so ``regions.customers.spend`` from customers revisits customers).
 # --------------------------------------------------------------------------- #
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source=DS, sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="pop", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="pop", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _customers(*, cols: tuple[Column, ...] = (), joins: tuple[ModelJoin, ...] = ()) -> SlayerModel:
-    return SlayerModel(
+def _customers(*, cols: tuple[DatasetField, ...] = (), relationships: tuple[DatasetRelationship, ...] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
             *cols,
         ],
-        joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                      cardinality=JoinCardinality.MANY_TO_ONE),
-            *joins,
+        relationships=[
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
+                      cardinality=RelationshipCardinality.MANY_TO_ONE),
+            *relationships,
         ],
     )
 
 
-def _orders(*, cols: tuple[Column, ...] = ()) -> SlayerModel:
-    return SlayerModel(
+def _orders(*, cols: tuple[DatasetField, ...] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             *cols,
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                         cardinality=JoinCardinality.MANY_TO_ONE)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
+                         cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
 
@@ -122,52 +124,52 @@ def _storage(tmp_path) -> YAMLStorage:
 class TestErrorVocabulary:
     def test_circular_error_fields_and_message(self) -> None:
         # Distinct synthetic values so each message clause is pinned individually.
-        exc = CircularJoinPathError(
-            reference="A.B.leaf", root_model="ROOT",
+        exc = CircularRelationshipPathError(
+            reference="A.B.leaf", root_dataset="ROOT",
             revisited="REV", hop="HOP", via="VIA",
         )
         assert isinstance(exc, ValueError)
         assert isinstance(exc, SlayerError)
         assert exc.reference == "A.B.leaf"
-        assert exc.root_model == "ROOT"
+        assert exc.root_dataset == "ROOT"
         assert exc.revisited == "REV"
         assert exc.hop == "HOP"
         assert exc.via == "VIA"
         msg = str(exc)
-        assert "Circular join detected resolving 'A.B.leaf' from 'ROOT'" in msg
-        assert "hop 'HOP' revisits model 'REV'" in msg
+        assert "Circular relationship path detected resolving 'A.B.leaf' from 'ROOT'" in msg
+        assert "hop 'HOP' revisits dataset 'REV'" in msg
 
     def test_circular_error_names_the_column_when_set(self) -> None:
-        exc = CircularJoinPathError(
-            reference="A.B.leaf", root_model="ROOT", revisited="REV",
-            hop="HOP", via="VIA", column="revisit_spend",
+        exc = CircularRelationshipPathError(
+            reference="A.B.leaf", root_dataset="ROOT", revisited="REV",
+            hop="HOP", via="VIA", field="revisit_spend",
         )
-        assert exc.column == "revisit_spend"
+        assert exc.field == "revisit_spend"
         assert "revisit_spend" in str(exc)
 
     def test_derived_error_is_a_circular_error_with_remedy(self) -> None:
-        exc = DerivedColumnCircularError(
-            column="revisit_spend",
-            reference="regions.customers.spend", root_model="customers",
+        exc = DerivedFieldCircularError(
+            field="revisit_spend",
+            reference="regions.customers.spend", root_dataset="customers",
             revisited="customers", hop="customers", via="regions",
         )
-        assert isinstance(exc, CircularJoinPathError)
+        assert isinstance(exc, CircularRelationshipPathError)
         assert isinstance(exc, SlayerError)
         assert isinstance(exc, ValueError)
-        assert exc.column == "revisit_spend"
-        assert exc.model == "customers"
+        assert exc.field == "revisit_spend"
+        assert exc.dataset == "customers"
         assert exc.reference == "regions.customers.spend"
-        assert exc.root_model == "customers"
+        assert exc.root_dataset == "customers"
         assert exc.revisited == "customers"
         assert exc.hop == "customers"
         assert exc.via == "regions"
         msg = str(exc)
-        assert "Derived column 'revisit_spend' on model 'customers'" in msg
+        assert "Derived field 'revisit_spend' on dataset 'customers'" in msg
         assert "references 'regions.customers.spend'" in msg
-        assert "revisits model 'customers'" in msg
-        assert "not a column of 'customers'" in msg
-        # Both remedy arms: reference the column directly, or aggregate on the via.
-        assert "Reference the column on 'customers'" in msg
+        assert "revisits dataset 'customers'" in msg
+        assert "not a field of 'customers'" in msg
+        # Both remedy arms: reference the field directly, or aggregate on the via.
+        assert "Reference the field on 'customers'" in msg
         assert "declare the aggregate on 'regions'" in msg
         assert "reaches 'customers'" in msg
 
@@ -177,56 +179,52 @@ class TestErrorVocabulary:
 # (tasks 2.1, 2.2, 2.4). The consumer guards already pass pre-fix (``walk``
 # returns ``None``); they fail only if a consumer forgets to catch the new raise.
 # --------------------------------------------------------------------------- #
-def _chain() -> dict[str, SlayerModel]:
-    return {m.name: m for m in chain_models()}
+def _chain() -> dict[str, SlayerDataset]:
+    return {m.name: m for m in chain_datasets()}
 
 
-def _self_join_model() -> SlayerModel:
-    """A model carrying a named ``parent`` self-join edge, built via
-    ``model_construct`` to bypass ``SlayerModel._reject_self_joins`` — a real
-    self-join is rejected at construction, so save/query paths never see one;
-    this exercises the walker's first-hop revisit guard in isolation."""
-    return SlayerModel.model_construct(
+def _self_relationship_dataset() -> SlayerDataset:
+    """A dataset carrying a named ``parent`` self-relationship edge."""
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="parent_id", type=DataType.INT),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="parent_id", datatype=DataType.INTEGER),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["parent_id", "id"]],
-                         name="parent", cardinality=JoinCardinality.MANY_TO_ONE)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["parent_id"], to_columns=["id"],
+                         name="parent", cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
 
 class TestWalkerRaisesOnRevisit:
     def test_walk_raises_with_all_fields(self) -> None:
         models = _chain()
-        with pytest.raises(CircularJoinPathError) as ei:
+        with pytest.raises(CircularRelationshipPathError) as ei:
             walk(root=models["regions"], path=("customers", "regions"),
-                 models_by_name=models)
+                 datasets_by_name=models)
         exc = ei.value
         assert exc.revisited == "regions"
         assert exc.hop == "regions"
         assert exc.via == "customers"
-        assert exc.root_model == "regions"
+        assert exc.root_dataset == "regions"
         assert exc.reference == "customers.regions"
 
     def test_walk_returns_none_on_unknown_token(self) -> None:
         models = _chain()
         assert walk(root=models["orders"], path=("nope",),
-                    models_by_name=models) is None
+                    datasets_by_name=models) is None
 
     def test_self_join_first_hop_raises(self) -> None:
-        model = _self_join_model()
-        with pytest.raises(CircularJoinPathError) as ei:
-            walk(root=model, path=("parent",), models_by_name={"customers": model})
-        assert ei.value.hop == "parent"
-        assert ei.value.revisited == "customers"
+        model = _self_relationship_dataset()
+        with pytest.raises(getattr(core_errors, "SelfRelationshipTraversalError"),
+                           match="(?i)self-relationships are not traversable"):
+            walk(root=model, path=("parent",), datasets_by_name={"customers": model})
 
     def test_terminal_model_catches_revisit_to_none(self) -> None:
         models = _chain()
-        assert terminal_model(root=models["regions"], path=("customers", "regions"),
-                              models_by_name=models) is None
+        assert terminal_dataset(root=models["regions"], path=("customers", "regions"),
+                              datasets_by_name=models) is None
 
 
 class TestBestEffortConsumersUnchanged:
@@ -234,91 +232,91 @@ class TestBestEffortConsumersUnchanged:
 
     def test_safe_reachable_false(self) -> None:
         models = _chain()
-        assert join_safety.safe_reachable(
+        assert relationship_safety.safe_reachable(
             root=models["regions"], path=("customers", "regions"),
-            models_by_name=models) is False
+            datasets_by_name=models) is False
 
     def test_reverse_route_steps_back_along_the_composed_path(self) -> None:
         models = _chain()
-        assert join_safety._route_via_common_prefix(
+        assert relationship_safety._route_via_common_prefix(
             host_name="regions", target_path=("customers", "regions"),
-            host_path=(), models_by_name=models) == ("customers", "regions")
+            host_path=(), datasets_by_name=models) == ("customers", "regions")
 
     def test_route_via_common_prefix_steps_back_along_the_composed_path(self) -> None:
         # A composed target path is followed (revisits are frame-local), never raises.
         models = _chain()
-        assert join_safety._route_via_common_prefix(
+        assert relationship_safety._route_via_common_prefix(
             host_name="regions", target_path=("customers", "regions"),
-            host_path=("name",), models_by_name=models) == ("customers", "regions", "name")
+            host_path=("name",), datasets_by_name=models) == ("customers", "regions", "name")
 
     def test_hop_walk_reason_names_the_fanning_hop(self) -> None:
         models = _chain()
-        assert join_safety._hop_walk_reason(
-            root_model=models["regions"], path=("customers", "regions"),
-            models_by_name=models) == "crosses a fanning or unproven join hop to customers"
+        assert relationship_safety._hop_walk_reason(
+            root_dataset=models["regions"], path=("customers", "regions"),
+            datasets_by_name=models) == "crosses a fanning or unproven relationship hop to customers"
 
     def test_path_grain_determined_false(self) -> None:
         models = _chain()
-        assert join_safety._path_grain_determined(
+        assert relationship_safety._path_grain_determined(
             path=("customers", "regions"), grain=Grain(keys=frozenset()),
-            host_model=models["regions"], models_by_name=models) is False
+            host_dataset=models["regions"], datasets_by_name=models) is False
 
     def test_attributable_from_root_false(self) -> None:
         models = _chain()
         # A composed via-host reroot path that revisits stays unattributable (False),
         # never a raise — the reroot machinery relies on this answer.
-        assert join_safety.attributable_from_root(
+        assert relationship_safety.attributable_from_root(
             host_path=("regions",), target_path=("customers",),
-            root_model=models["orders"], models_by_name=models,
+            root_dataset=models["orders"], datasets_by_name=models,
             host_name="customers") is False
 
     def test_resolve_ref_target_none(self) -> None:
         models = _chain()
         assert resolve_ref_target(
-            qualifiers=("customers", "regions"), source_model=models["regions"],
-            models_by_name=models) is None
+            qualifiers=("customers", "regions"), source_dataset=models["regions"],
+            datasets_by_name=models) is None
 
     def test_resolve_default_qualifier_path_cancels(self) -> None:
-        # The definition-default door resolves through the cancelling walk
-        # (DEV-1908): a revisiting default cancels back to the dataset on the
+        # The definition-default door resolves through the cancelling walk:
+        # a revisiting default cancels back to the dataset on the
         # path and never surfaces the circular signal.
         models = _chain()
         assert resolve_default_qualifier_path(
             qualifiers=("customers", "regions"), leaf="pop",
-            root_model=models["regions"], owner_path=(), models_by_name=models) == ()
+            root_dataset=models["regions"], owner_path=(), datasets_by_name=models) == ()
         assert resolve_default_qualifier_path(
             qualifiers=("customers", "regions"), leaf="pop",
-            root_model=models["orders"], owner_path=("customers", "regions"),
-            models_by_name=models) == ("customers", "regions")
+            root_dataset=models["orders"], owner_path=("customers", "regions"),
+            datasets_by_name=models) == ("customers", "regions")
 
     def test_lenient_scanner_none(self) -> None:
         models = _chain()
         assert _lenient_path(
-            qualifiers=("customers", "regions"), source_model=models["regions"],
-            owner_alias="regions", models_by_name=models) is None
+            qualifiers=("customers", "regions"), source_dataset=models["regions"],
+            owner_alias="regions", datasets_by_name=models) is None
 
     def test_canonical_path_returns_input(self) -> None:
         models = _chain()
         assert _canonical_path(
             ("customers", "regions"), root=models["regions"],
-            models_by_name=models) == ("customers", "regions")
+            datasets_by_name=models) == ("customers", "regions")
 
 
 class TestExpansionDoorRevisit:
     """The strict expansion door re-raises a revisit with the complete pre-strip
-    reference and the column whether it surfaces from the direct walk or from the
+    reference and the field whether it surfaces from the direct walk or from the
     legacy ``a__b`` split-alias probe (which walks the naive split)."""
 
     def test_legacy_split_alias_revisit_keeps_full_spelling(self) -> None:
         models = {m.name: m for m in (_regions(), _customers())}
-        with pytest.raises(CircularJoinPathError) as ei:
+        with pytest.raises(CircularRelationshipPathError) as ei:
             _resolve_qualifiers(
                 qualifiers=("regions__customers",), leaf="spend",
-                source_model=models["customers"], owner_alias="customers",
-                models_by_name=models, column="rc")
+                source_dataset=models["customers"], owner_alias="customers",
+                datasets_by_name=models, field="rc")
         exc = ei.value
         assert exc.reference == "regions__customers.spend"
-        assert exc.column == "rc"
+        assert exc.field == "rc"
         assert exc.revisited == "customers"
 
 
@@ -328,16 +326,16 @@ class TestExpansionDoorRevisit:
 class TestSaveTimeStorageDoor:
     async def test_sql_revisit_rejected(self, tmp_path) -> None:
         storage = _storage(tmp_path)
-        await storage.save_model(_regions())
-        model = _customers(cols=(Column(
-            name="revisit_spend", type=DataType.DOUBLE, sql="regions.customers.spend"),))
-        with pytest.raises(DerivedColumnCircularError) as ei:
-            await storage.save_model(model)
+        await storage.save_dataset(_regions())
+        model = _customers(cols=(DatasetField(
+            name="revisit_spend", datatype=DataType.FLOAT, expression="regions.customers.spend"),))
+        with pytest.raises(DerivedFieldCircularError) as ei:
+            await storage.save_dataset(model)
         exc = ei.value
-        assert isinstance(exc, CircularJoinPathError)
+        assert isinstance(exc, CircularRelationshipPathError)
         assert isinstance(exc, ValueError)
-        assert exc.column == "revisit_spend"
-        assert exc.model == "customers"
+        assert exc.field == "revisit_spend"
+        assert exc.dataset == "customers"
         assert exc.reference == "regions.customers.spend"
         assert exc.revisited == "customers"
         assert exc.hop == "customers"
@@ -345,34 +343,34 @@ class TestSaveTimeStorageDoor:
 
     async def test_filter_revisit_rejected(self, tmp_path) -> None:
         storage = _storage(tmp_path)
-        await storage.save_model(_regions())
-        model = _customers(cols=(Column(
-            name="rc", type=DataType.DOUBLE, sql="spend",
+        await storage.save_dataset(_regions())
+        model = _customers(cols=(DatasetField(
+            name="rc", datatype=DataType.FLOAT, expression="spend",
             filter="regions.customers.spend > 0"),))
-        with pytest.raises(DerivedColumnCircularError) as ei:
-            await storage.save_model(model)
+        with pytest.raises(DerivedFieldCircularError) as ei:
+            await storage.save_dataset(model)
         assert ei.value.reference == "regions.customers.spend"
         assert ei.value.revisited == "customers"
 
     async def test_revisit_declared_on_querying_model(self, tmp_path) -> None:
         storage = _storage(tmp_path)
-        await storage.save_model(_regions())
-        await storage.save_model(_customers())
-        model = _orders(cols=(Column(
-            name="rc", type=DataType.DOUBLE, sql="customers.regions.customers.spend"),))
-        with pytest.raises(DerivedColumnCircularError) as ei:
-            await storage.save_model(model)
+        await storage.save_dataset(_regions())
+        await storage.save_dataset(_customers())
+        model = _orders(cols=(DatasetField(
+            name="rc", datatype=DataType.FLOAT, expression="customers.regions.customers.spend"),))
+        with pytest.raises(DerivedFieldCircularError) as ei:
+            await storage.save_dataset(model)
         assert ei.value.revisited == "customers"
         assert ei.value.hop == "customers"
         assert ei.value.via == "regions"
 
     async def test_leading_declaring_qualifier_keeps_full_spelling(self, tmp_path) -> None:
         storage = _storage(tmp_path)
-        await storage.save_model(_regions())
-        model = _customers(cols=(Column(
-            name="rc", type=DataType.DOUBLE, sql="customers.regions.customers.spend"),))
-        with pytest.raises(DerivedColumnCircularError) as ei:
-            await storage.save_model(model)
+        await storage.save_dataset(_regions())
+        model = _customers(cols=(DatasetField(
+            name="rc", datatype=DataType.FLOAT, expression="customers.regions.customers.spend"),))
+        with pytest.raises(DerivedFieldCircularError) as ei:
+            await storage.save_dataset(model)
         assert ei.value.reference == "customers.regions.customers.spend"
         assert ei.value.revisited == "customers"
         assert ei.value.hop == "customers"
@@ -380,94 +378,94 @@ class TestSaveTimeStorageDoor:
 
     async def test_to_one_round_trip_is_circular(self, tmp_path) -> None:
         storage = _storage(tmp_path)
-        a = SlayerModel(
+        a = SlayerDataset(
             name="a", data_source=DS, sql_table="a",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="y", type=DataType.DOUBLE),
-                Column(name="rt", type=DataType.DOUBLE, sql="b.a.y"),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="y", datatype=DataType.FLOAT),
+                DatasetField(name="rt", datatype=DataType.FLOAT, expression="b.a.y"),
             ],
-            joins=[ModelJoin(target_model="b", join_pairs=[["id", "id"]],
-                             cardinality=JoinCardinality.ONE_TO_ONE)],
+            relationships=[DatasetRelationship(to="b", from_columns=["id"], to_columns=["id"],
+                             cardinality=RelationshipCardinality.ONE_TO_ONE)],
         )
-        b = SlayerModel(
+        b = SlayerDataset(
             name="b", data_source=DS, sql_table="b",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         )
-        await storage.save_model(b)
-        with pytest.raises(DerivedColumnCircularError) as ei:
-            await storage.save_model(a)
+        await storage.save_dataset(b)
+        with pytest.raises(DerivedFieldCircularError) as ei:
+            await storage.save_dataset(a)
         assert ei.value.revisited == "a"
 
     async def test_revisit_beats_earlier_fanning_hop(self, tmp_path) -> None:
         storage = _storage(tmp_path)
-        line_items = SlayerModel(
+        line_items = SlayerDataset(
             name="line_items", data_source=DS, sql_table="line_items",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="order_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="order_id", datatype=DataType.INTEGER),
             ],
         )
-        await storage.save_model(line_items)
-        orders = SlayerModel(
+        await storage.save_dataset(line_items)
+        orders = SlayerDataset(
             name="orders", data_source=DS, sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="bf", type=DataType.DOUBLE, sql="line_items.orders.amount"),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="bf", datatype=DataType.FLOAT, expression="line_items.orders.amount"),
             ],
-            joins=[ModelJoin(
-                target_model="line_items", join_pairs=[["id", "order_id"]],
-                cardinality=JoinCardinality.ONE_TO_MANY)],
+            relationships=[DatasetRelationship(
+                to="line_items", from_columns=["id"], to_columns=["order_id"],
+                cardinality=RelationshipCardinality.ONE_TO_MANY)],
         )
-        with pytest.raises(DerivedColumnCircularError) as ei:
-            await storage.save_model(orders)
+        with pytest.raises(DerivedFieldCircularError) as ei:
+            await storage.save_dataset(orders)
         # Circular, not fanning — the revisit precedes the fanning verdict.
-        assert not isinstance(ei.value, DerivedColumnFanningError)
+        assert not isinstance(ei.value, DerivedFieldFanningError)
         assert ei.value.revisited == "orders"
 
     async def test_known_but_unloaded_intermediate_skipped(self, tmp_path) -> None:
         # ``regions`` is not loaded, so the revisit is unprovable and the save
         # succeeds (the query-time door stays the check).
         storage = _storage(tmp_path)
-        model = _customers(cols=(Column(
-            name="revisit_spend", type=DataType.DOUBLE, sql="regions.customers.spend"),))
-        await storage.save_model(model)  # must not raise
-        assert await storage.get_model("customers", data_source=DS) is not None
+        model = _customers(cols=(DatasetField(
+            name="revisit_spend", datatype=DataType.FLOAT, expression="regions.customers.spend"),))
+        await storage.save_dataset(model)  # must not raise
+        assert await storage.get_dataset("customers", data_source=DS) is not None
 
     async def test_validate_false_still_saves(self, tmp_path) -> None:
         storage = _storage(tmp_path)
-        await storage.save_model(_regions())
-        model = _customers(cols=(Column(
-            name="revisit_spend", type=DataType.DOUBLE, sql="regions.customers.spend"),))
-        await storage.save_model(model, _validate=False)  # migration write-back path
-        assert await storage.get_model("customers", data_source=DS) is not None
+        await storage.save_dataset(_regions())
+        model = _customers(cols=(DatasetField(
+            name="revisit_spend", datatype=DataType.FLOAT, expression="regions.customers.spend"),))
+        await storage.save_dataset(model, _validate=False)  # migration write-back path
+        assert await storage.get_dataset("customers", data_source=DS) is not None
 
     async def test_ambiguous_hop_on_revisit_path_rejected(self, tmp_path) -> None:
         # Two parallel customers→regions edges make the leading `regions` hop
         # ambiguous: rejected as ambiguous before the revisit is judged.
         storage = _storage(tmp_path)
-        await storage.save_model(_regions())
-        model = SlayerModel(
+        await storage.save_dataset(_regions())
+        model = SlayerDataset(
             name="customers", data_source=DS, sql_table="customers",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region_id", type=DataType.INT),
-                Column(name="spend", type=DataType.DOUBLE),
-                Column(name="revisit_spend", type=DataType.DOUBLE,
-                       sql="regions.customers.spend"),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
+                DatasetField(name="spend", datatype=DataType.FLOAT),
+                DatasetField(name="revisit_spend", datatype=DataType.FLOAT,
+                       expression="regions.customers.spend"),
             ],
-            joins=[
-                ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                          name="r1", cardinality=JoinCardinality.MANY_TO_ONE),
-                ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                          name="r2", cardinality=JoinCardinality.MANY_TO_ONE),
+            relationships=[
+                DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
+                          name="r1", cardinality=RelationshipCardinality.MANY_TO_ONE),
+                DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
+                          name="r2", cardinality=RelationshipCardinality.MANY_TO_ONE),
             ],
         )
-        with pytest.raises(DerivedColumnAmbiguousError) as ei:
-            await storage.save_model(model)
-        assert isinstance(ei.value, AmbiguousJoinPathError)
-        assert not isinstance(ei.value, CircularJoinPathError)
+        with pytest.raises(DerivedFieldAmbiguousError) as ei:
+            await storage.save_dataset(model)
+        assert isinstance(ei.value, AmbiguousRelationshipPathError)
+        assert not isinstance(ei.value, CircularRelationshipPathError)
         assert "revisit_spend" in str(ei.value)
         assert "regions.customers.spend" in str(ei.value)
 
@@ -479,18 +477,18 @@ class TestSaveTimeEngineDoor:
     async def test_engine_save_door_rejects_identically(self, tmp_path) -> None:
         storage = _storage(tmp_path)
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
-        await storage.save_model(_regions())
-        model = _customers(cols=(Column(
-            name="revisit_spend", type=DataType.DOUBLE, sql="regions.customers.spend"),))
-        with pytest.raises(DerivedColumnCircularError) as storage_ei:
-            await storage.save_model(model)
+        await storage.save_dataset(_regions())
+        model = _customers(cols=(DatasetField(
+            name="revisit_spend", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),))
+        with pytest.raises(DerivedFieldCircularError) as storage_ei:
+            await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
-        with pytest.raises(DerivedColumnCircularError) as engine_ei:
-            await engine.save_model(model)
+        with pytest.raises(DerivedFieldCircularError) as engine_ei:
+            await engine.save_dataset(model)
         storage_exc, engine_exc = storage_ei.value, engine_ei.value
         for exc in (storage_exc, engine_exc):
-            assert exc.column == "revisit_spend"
-            assert exc.model == "customers"
+            assert exc.field == "revisit_spend"
+            assert exc.dataset == "customers"
             assert exc.reference == "regions.customers.spend"
             assert exc.revisited == "customers"
             assert exc.hop == "customers"
@@ -500,40 +498,40 @@ class TestSaveTimeEngineDoor:
     async def test_transitive_revisit_names_the_inner_column(self, tmp_path) -> None:
         # ``chain`` (declared first, so the engine expands it before the inner one)
         # references the revisiting ``revisit_spend``. Both doors name the inner
-        # column that actually revisits, with an identical message — the engine
-        # must not attribute the cycle to the outer referring column.
+        # field that actually revisits, with an identical message — the engine
+        # must not attribute the cycle to the outer referring field.
         storage = _storage(tmp_path)
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
-        await storage.save_model(_regions())
+        await storage.save_dataset(_regions())
         model = _customers(cols=(
-            Column(name="chain", type=DataType.DOUBLE, sql="revisit_spend * 2"),
-            Column(name="revisit_spend", type=DataType.DOUBLE,
-                   sql="regions.customers.spend"),
+            DatasetField(name="chain", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="customers.revisit_spend * 2")])),
+            DatasetField(name="revisit_spend", datatype=DataType.FLOAT,
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),
         ))
-        with pytest.raises(DerivedColumnCircularError) as storage_ei:
-            await storage.save_model(model)
+        with pytest.raises(DerivedFieldCircularError) as storage_ei:
+            await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
-        with pytest.raises(DerivedColumnCircularError) as engine_ei:
-            await engine.save_model(model)
+        with pytest.raises(DerivedFieldCircularError) as engine_ei:
+            await engine.save_dataset(model)
         storage_exc, engine_exc = storage_ei.value, engine_ei.value
         for exc in (storage_exc, engine_exc):
-            assert exc.column == "revisit_spend"
+            assert exc.field == "revisit_spend"
             assert exc.reference == "regions.customers.spend"
             assert exc.revisited == "customers"
         assert str(storage_exc) == str(engine_exc)
 
     async def test_model_filter_surface_propagates_base_error(self, tmp_path) -> None:
-        # A model-level filter that revisits propagates the base error, not the
-        # derived-column one (it is not a column surface).
+        # A dataset-level filter that revisits propagates the base error, not the
+        # derived-field one (it is not a field surface).
         storage = _storage(tmp_path)
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
-        await storage.save_model(_regions())
+        await storage.save_dataset(_regions())
         engine = SlayerQueryEngine(storage=storage)
         model = _customers().model_copy(
             update={"filters": ["regions.customers.spend > 0"]})
-        with pytest.raises(CircularJoinPathError) as ei:
-            await engine.save_model(model)
-        assert not isinstance(ei.value, DerivedColumnCircularError)
+        with pytest.raises(CircularRelationshipPathError) as ei:
+            await engine.save_dataset(model)
+        assert not isinstance(ei.value, DerivedFieldCircularError)
         assert ei.value.revisited == "customers"
 
 
@@ -572,76 +570,76 @@ def _seed_duckdb(db_path: str) -> None:
     con.close()
 
 
-def _revisit_query_models() -> list[SlayerModel]:
+def _revisit_query_datasets() -> list[SlayerDataset]:
     """One rich graph; the query selects the circular definition under test."""
     customers = _customers(
         cols=(
-            Column(name="revisit_spend", type=DataType.DOUBLE, sql="regions.customers.spend"),
-            Column(name="revisit_lead", type=DataType.DOUBLE,
-                   sql="customers.regions.customers.spend"),
-            Column(name="chain", type=DataType.DOUBLE, sql="revisit_spend * 2"),
-            Column(name="filt_revisit", type=DataType.DOUBLE, sql="spend",
+            DatasetField(name="revisit_spend", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.customers.spend"), DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),
+            DatasetField(name="revisit_lead", datatype=DataType.FLOAT,
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.regions.customers.spend"), DialectEntry(dialect="SQLITE", expression="customers.regions.customers.spend")])),
+            DatasetField(name="chain", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.revisit_spend * 2"), DialectEntry(dialect="SQLITE", expression="customers.revisit_spend * 2")])),
+            DatasetField(name="filt_revisit", datatype=DataType.FLOAT, expression="spend",
                    filter="regions.customers.spend > 0"),
         ),
     )
     return [_regions(), customers, _orders()]
 
 
-def _unresolved_query_models() -> list[SlayerModel]:
+def _unresolved_query_datasets() -> list[SlayerDataset]:
     """``ghost`` is declared but never saved — its path is refused as unresolvable
     before it could revisit."""
     customers = _customers(
-        cols=(Column(name="ghost_spend", type=DataType.DOUBLE,
-                     sql="ghost.customers.spend"),),
-        joins=(ModelJoin(target_model="ghost", join_pairs=[["region_id", "id"]]),),
+        cols=(DatasetField(name="ghost_spend", datatype=DataType.FLOAT,
+                     expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="ghost.customers.spend"), DialectEntry(dialect="SQLITE", expression="ghost.customers.spend")])),),
+        relationships=(DatasetRelationship(to="ghost", from_columns=["region_id"], to_columns=["id"]),),
     )
     return [_regions(), customers, _orders()]
 
 
-async def _make_engine(dialect: str, models: list[SlayerModel]):
+async def _make_engine(dialect: str, datasets: list[SlayerDataset]):
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=models, datasource=DS, validate=False,
+        dialect=dialect, seed=seed, datasets=datasets, datasource=DS, validate=False,
     ) as (engine, _db):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def qengine(request):
-    async for e in _make_engine(request.param, _revisit_query_models()):
+    async for e in _make_engine(request.param, _revisit_query_datasets()):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unresolved_engine(request):
-    async for e in _make_engine(request.param, _unresolved_query_models()):
+    async for e in _make_engine(request.param, _unresolved_query_datasets()):
         yield e
 
 
 def _cust_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "customers")
+    kw.setdefault("population", "customers")
     return SlayerQuery(**kw)
 
 
 def _orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 async def _assert_circular(
     engine, query: SlayerQuery, *,
     reference: str | None = "regions.customers.spend", revisited: str | None = "customers",
-) -> CircularJoinPathError:
+) -> CircularRelationshipPathError:
     """Refused with the circular error before any SQL runs — never a value, a
     ``no such column``, or the literal reference text."""
-    with pytest.raises(CircularJoinPathError) as ei:
+    with pytest.raises(CircularRelationshipPathError) as ei:
         await engine.execute(query)
     exc = ei.value
     msg = str(exc)
-    assert "Circular join" in msg
-    assert "revisits model" in msg
+    assert "Circular relationship path" in msg
+    assert "revisits dataset" in msg
     assert "no such column" not in msg.lower()
     if reference is not None:
         assert exc.reference == reference
@@ -653,68 +651,68 @@ async def _assert_circular(
 class TestQueryTimeBackstop:
     async def test_aggregated_across_to_one_hop(self, qengine) -> None:
         await _assert_circular(qengine, _orders_q(
-            measures=[ModelMeasure(formula="sum(customers.revisit_spend)", name="w")]))
+            metrics=[QueryMetric(metric="sum(customers.revisit_spend)", alias="w")]))
 
     async def test_aggregated_on_declaring_model(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            measures=[ModelMeasure(formula="sum(revisit_spend)", name="w")]))
+            metrics=[QueryMetric(metric="sum(customers.revisit_spend)", alias="w")]))
 
     async def test_as_dimension(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            dimensions=["revisit_spend"],
-            measures=[ModelMeasure(formula="sum(spend)", name="s")]))
+            dimensions=["customers.revisit_spend"],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")]))
 
     async def test_in_filter(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            measures=[ModelMeasure(formula="sum(spend)", name="s")],
-            filters=["revisit_spend > 0"]))
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")],
+            filter=["customers.revisit_spend > 0"]))
 
     async def test_raw_row_mode(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            dimensions=["revisit_spend"], distinct_dimension_values=False))
+            dimensions=["customers.revisit_spend"], distinct_dimension_values=False))
 
     async def test_through_a_derived_chain(self, qengine) -> None:
         exc = await _assert_circular(qengine, _cust_q(
-            measures=[ModelMeasure(formula="sum(chain)", name="w")]))
-        assert exc.column == "revisit_spend"  # the innermost expanded definition
+            metrics=[QueryMetric(metric="sum(customers.chain)", alias="w")]))
+        assert exc.field == "revisit_spend"  # the innermost expanded definition
 
     async def test_filter_kind_definition(self, qengine) -> None:
         # reference comes from the filter fragment, proving the filter surface.
         await _assert_circular(qengine, _cust_q(
-            measures=[ModelMeasure(formula="sum(filt_revisit)", name="w")]))
+            metrics=[QueryMetric(metric="sum(customers.filt_revisit)", alias="w")]))
 
     async def test_leading_host_qualifier_keeps_full_spelling(self, qengine) -> None:
         # The door keeps the complete pre-strip reference (leading host qualifier).
         await _assert_circular(
-            qengine, _cust_q(measures=[ModelMeasure(formula="sum(revisit_lead)", name="w")]),
+            qengine, _cust_q(metrics=[QueryMetric(metric="sum(customers.revisit_lead)", alias="w")]),
             reference="customers.regions.customers.spend")
 
     async def test_refused_before_sql_executes(self, qengine) -> None:
         # dry_run builds SQL but does not execute it — a raise here proves the
         # refusal is at compile time, before any SQL runs.
-        query = _cust_q(measures=[ModelMeasure(formula="sum(revisit_spend)", name="w")])
-        with pytest.raises(CircularJoinPathError):
+        query = _cust_q(metrics=[QueryMetric(metric="sum(customers.revisit_spend)", alias="w")])
+        with pytest.raises(CircularRelationshipPathError):
             await qengine.execute(query, dry_run=True)
 
     async def test_query_typed_spelling_same_class(self, qengine) -> None:
         # The binder builds its own reference fields; pin only the class, the
-        # revisited model, and that the message names the circular path.
+        # revisited dataset, and that the message names the circular path.
         exc = await _assert_circular(
-            qengine, _orders_q(measures=[ModelMeasure(
-                formula="sum(customers.regions.customers.spend)", name="w")]),
+            qengine, _orders_q(metrics=[QueryMetric(
+                metric="sum(customers.regions.customers.spend)", alias="w")]),
             reference=None)
         assert "customers.regions.customers" in str(exc)
         # The query-typed refusal is the base class, not the save-time derived one.
-        assert not isinstance(exc, DerivedColumnCircularError)
+        assert not isinstance(exc, DerivedFieldCircularError)
 
     async def test_unresolved_model_refused_as_unresolvable(self, unresolved_engine) -> None:
-        query = _cust_q(dimensions=["ghost_spend"],
-                        measures=[ModelMeasure(formula="sum(spend)", name="s")])
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        query = _cust_q(dimensions=["customers.ghost_spend"],
+                        metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")])
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await unresolved_engine.execute(query)
         msg = str(ei.value)
         assert "ghost" in msg
-        assert not isinstance(ei.value, CircularJoinPathError)
+        assert not isinstance(ei.value, CircularRelationshipPathError)
 
 
 # --------------------------------------------------------------------------- #
@@ -724,36 +722,36 @@ class TestQueryTimeBackstop:
 class TestBinderParity:
     async def test_query_typed_revisit_raises_circular_class(self, qengine) -> None:
         exc = await _assert_circular(
-            qengine, _orders_q(measures=[ModelMeasure(
-                formula="sum(customers.regions.customers.spend)", name="w")]),
+            qengine, _orders_q(metrics=[QueryMetric(
+                metric="sum(customers.regions.customers.spend)", alias="w")]),
             reference=None)
-        assert isinstance(exc, CircularJoinPathError)
+        assert isinstance(exc, CircularRelationshipPathError)
         assert isinstance(exc, ValueError)
         # The binder adopts the base class, not the save-time derived subclass.
-        assert not isinstance(exc, DerivedColumnCircularError)
+        assert not isinstance(exc, DerivedFieldCircularError)
 
     def test_leading_self_prefix_keeps_full_spelling(self) -> None:
-        # C14's ``_strip_self_prefix`` drops a leading same-model prefix for
+        # C14's ``_strip_self_prefix`` drops a leading same-dataset prefix for
         # resolution, but the circular error keeps the complete reference as
         # spelled (bound directly, before the query layer's own prefix strip).
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=_orders(), referenced_models=[_customers(), _regions()])
+            population=_orders(), referenced_datasets=[_customers(), _regions()])
         parsed = parse_expr("orders.customers.regions.customers.spend")
-        scope = ModelScope(source_model=_orders())
-        with pytest.raises(CircularJoinPathError) as ei:
+        scope = DatasetScope(population=_orders())
+        with pytest.raises(CircularRelationshipPathError) as ei:
             bind_expr(parsed, scope=scope, bundle=bundle)
         exc = ei.value
         assert exc.reference == "orders.customers.regions.customers.spend"
         assert exc.revisited == "customers"
-        assert not isinstance(exc, DerivedColumnCircularError)
+        assert not isinstance(exc, DerivedFieldCircularError)
 
 
 # --------------------------------------------------------------------------- #
 # Section G — behaviour-unchanged regressions (design Risks): a composed via-host
 # reroot path still resolves by association (never a new raise), and definition
-# defaults still resolve owner-first with root fallback. Reuse the DEV-1900 /
-# DEV-1931 graphs and their oracles; these pass before and after the fix.
+# defaults still resolve owner-first with root fallback. Reuse the ``_dev1900_fixtures`` /
+# ``_dev1931_fixtures`` graphs and their oracles; these pass before and after the fix.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def reroot_engine(request):
@@ -763,7 +761,7 @@ async def reroot_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def default_engine(request):
-    async for e in _dev1832_make_engine(request=request, models=dev1931_models()):
+    async for e in _dev1832_make_engine(request=request, datasets=dev1931_datasets()):
         yield e
 
 
@@ -772,20 +770,20 @@ class TestViaHostRerootUnchanged:
         # `sum(customers.spend, partition_by=status)` from orders exercises
         # reroot_from_root / attributable_from_root over a composed via-host path.
         resp = await reroot_engine.execute(_dev1900_orders_q(
-            dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, partition_by=status)", name="w")],
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=orders.status)", alias="w")],
             to_many_handling="associate"))
-        got = {r["orders.status"]: r["orders.w"] for r in resp.data}
+        got = {r["orders.status"]: r["w"] for r in resp.data}
         assert got == pytest.approx({"new": 290.0, "ok": 420.0})
 
 
 class TestDefinitionDefaultsUnchanged:
     @staticmethod
-    async def _value(engine, formula: str) -> float:
+    async def _value(engine, expression: str) -> float:
         resp = await engine.execute(
-            _dev1931_orders_q(measures=[ModelMeasure(formula=formula, name="w")]))
-        return float(resp.data[0]["orders.w"])
+            _dev1931_orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
+        return float(resp.data[0]["w"])
 
     async def test_scalar_default_matches_explicit(self, default_engine) -> None:
         explicit = await self._value(

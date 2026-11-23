@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_ingestion_views.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 274,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 280,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 281,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 293,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 297,
+   "reason": "not fully literal"
+  }
+ ]
+}

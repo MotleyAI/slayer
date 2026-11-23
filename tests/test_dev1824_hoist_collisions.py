@@ -15,11 +15,12 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1824_fixtures import (
-    ModelMeasure,
     REGION_LAST,
     SlayerQuery,
     gen,
@@ -64,10 +65,10 @@ def _assert_flat_and_unique(
 #: Two ranked producers (partition sets {region} and {city}) — identical
 #: internal CTE shapes that must hoist under distinct names.
 TWO_PRODUCERS = dict(
-    dimensions=["region", "city"],
-    measures=[
-        ModelMeasure(formula="last(amount, partition_by=region)", name="a"),
-        ModelMeasure(formula="last(amount, partition_by=city)", name="b"),
+    dimensions=["orders.region", "orders.city"],
+    metrics=[
+        QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="a"),
+        QueryMetric(metric="last(orders.amount, partition_by=orders.city)", alias="b"),
     ],
 )
 
@@ -88,8 +89,8 @@ class TestSiblingProducers:
         }
         assert len(by) == 5
         for (region, city), r in by.items():
-            assert float(r["orders.a"]) == pytest.approx(REGION_LAST[region])
-            assert float(r["orders.b"]) == pytest.approx(city_last[city])
+            assert float(r["a"]) == pytest.approx(REGION_LAST[region])
+            assert float(r["b"]) == pytest.approx(city_last[city])
 
 
 class TestThreeLevelNesting:
@@ -97,20 +98,20 @@ class TestThreeLevelNesting:
     #: transform-bearing dimension producer, a windowed producer, and a ranked
     #: producer in one query.
     CBAND = (
-        "CASE WHEN cumsum(sum(amount, partition_by=[region, ordered_at])) > 50 "
+        "CASE WHEN cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) > 50 "
         "THEN 1 ELSE 0 END"
     )
 
     def _query(self):
         return q(
-            dimensions=["region", {"expression": self.CBAND, "name": "cband"}],
+            dimensions=["orders.region", {"field": self.CBAND, "alias": "cband"}],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(
-                    formula="sum(amount, window='90d', partition_by=region)", name="w",
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(
+                    metric="sum(orders.amount, window='90d', partition_by=orders.region)", alias="w",
                 ),
-                ModelMeasure(formula="last(amount, partition_by=region)", name="l"),
+                QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="l"),
             ],
         )
 
@@ -126,7 +127,7 @@ class TestThreeLevelNesting:
         resp = await exec_engine.execute(self._query())
         got = {
             (r["orders.region"], month_key(r["orders.ordered_at"])):
-                (int(r["orders.cband"]), float(r["orders.s"]))
+                (int(r["cband"]), float(r["s"]))
             for r in resp.data
         }
         assert got == {
@@ -148,34 +149,34 @@ class TestCaseFoldingDialect:
 LONG_PREFIX = "metric_" + "x" * 60
 
 
-def _long_names_model() -> SlayerModel:
-    return SlayerModel(
+def _long_names_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="t", data_source="test", sql_table="t",
         default_time_dimension="at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="grp", type=DataType.TEXT),
-            Column(name="at", type=DataType.TIMESTAMP),
-            Column(name=f"{LONG_PREFIX}_alpha", type=DataType.DOUBLE),
-            Column(name=f"{LONG_PREFIX}_beta", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="grp", datatype=DataType.STRING),
+            DatasetField(name="at", datatype=DataType.DATETIME),
+            DatasetField(name=f"{LONG_PREFIX}_alpha", datatype=DataType.FLOAT),
+            DatasetField(name=f"{LONG_PREFIX}_beta", datatype=DataType.FLOAT),
         ],
     )
 
 
 class TestTruncatingDialect:
     async def test_fitted_producer_names_do_not_collide(self) -> None:
-        model = _long_names_model()
+        model = _long_names_dataset()
         query = SlayerQuery(
-            source_model=model.name,
-            dimensions=["grp"],
-            measures=[
-                ModelMeasure(
-                    formula=f"last({LONG_PREFIX}_alpha, partition_by=grp)", name="a",
+            population=model.name,
+            dimensions=["t.grp"],
+            metrics=[
+                QueryMetric(
+                    metric=f"last(t.{LONG_PREFIX}_alpha, partition_by=t.grp)", alias="a",
                 ),
-                ModelMeasure(
-                    formula=f"last({LONG_PREFIX}_beta, partition_by=[])", name="b",
+                QueryMetric(
+                    metric=f"last(t.{LONG_PREFIX}_beta, partition_by=[])", alias="b",
                 ),
             ],
         )
-        sql = await _engine_generate(query=query, model=model, dialect="postgres")
+        sql = await _engine_generate(query=query, dataset=model, dialect="postgres")
         _assert_flat_and_unique(sql, dialect="postgres", max_ident_bytes=63)

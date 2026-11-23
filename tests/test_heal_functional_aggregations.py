@@ -10,7 +10,8 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError, UnknownFunctionError
-from slayer.core.models import Column
+from slayer.core.field_expression import DialectEntry, ExpressionObject
+from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import AggCall, Cmp, Literal, Ref, parse_expr
@@ -19,11 +20,11 @@ from tests._engine_helpers import _engine_generate
 from tests._query_heal_fixtures import (
     BACKENDS,
     assert_equivalent,
-    customers_model,
+    customers_dataset,
     heal_engine,
-    order_items_model,
-    orders_model,
-    products_model,
+    order_items_dataset,
+    orders_dataset,
+    products_dataset,
     table,
 )
 
@@ -37,8 +38,8 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
         yield eng
 
 
-def by_region(*measures: str) -> dict[str, Any]:
-    return {"source_model": "orders", "dimensions": ["region"], "measures": list(measures)}
+def by_region(*metrics: str) -> dict[str, Any]:
+    return {"population": "orders", "dimensions": ["orders.region"], "metrics": list(metrics)}
 
 
 class TestUnknownFunction:
@@ -60,8 +61,8 @@ class TestUnknownFunction:
 
     def test_construction_time_custom_filter_deferred(self) -> None:
         query = SlayerQuery.model_validate(
-            {"source_model": "orders", "measures": ["count(*)"], "filters": ["my_agg(amount) > 0"]})
-        assert query.filters == ["my_agg(amount) > 0"]
+            {"population": "orders", "metrics": ["count(*)"], "filter": ["my_agg(amount) > 0"]})
+        assert query.filter == ["my_agg(amount) > 0"]
 
 
 class TestCountDistinctParse:
@@ -115,7 +116,7 @@ class TestCountDistinctExecuted:
 
     async def test_expression_with_partition(self, engine: SlayerQueryEngine) -> None:
         def query(formula: str) -> dict[str, Any]:
-            return {"source_model": "orders", "dimensions": ["region", "status"], "measures": [formula]}
+            return {"population": "orders", "dimensions": ["region", "status"], "metrics": [formula]}
 
         await assert_equivalent(
             engine, query("count(distinct coalesce(customer_id, 0), partition_by=region)"),
@@ -123,11 +124,11 @@ class TestCountDistinctExecuted:
         )
 
     async def test_mode_a_distinct_unchanged(self) -> None:
-        orders = orders_model()
-        orders.columns.append(Column(name="n_customers", sql="COUNT(DISTINCT customer_id)", type=DataType.INT))
+        orders = orders_dataset()
+        orders.fields.append(DatasetField(name="n_customers", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="COUNT(DISTINCT customer_id)")]), datatype=DataType.INTEGER))
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"source_model": "orders", "measures": ["max(n_customers)"]}),
-            model=orders, extra_models=[customers_model(), order_items_model(), products_model()],
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(n_customers)"]}),
+            dataset=orders, extra_datasets=[customers_dataset(), order_items_dataset(), products_dataset()],
         )
         assert "COUNT(DISTINCT" in sql.upper()
 
@@ -196,7 +197,7 @@ class TestMethodCallExecuted:
             await engine.execute(query)
 
     async def test_date_part_callee_shows_functional_spelling(self, engine: SlayerQueryEngine) -> None:
-        query = {"source_model": "orders", "dimensions": ["order_items.month(created_at)"],
-                 "measures": ["count(order_items.*)"]}
+        query = {"population": "orders", "dimensions": ["order_items.month(created_at)"],
+                 "metrics": ["count(order_items.*)"]}
         with pytest.raises((ValueError, SlayerError), match=re.escape("month(order_items.created_at)")):
             await engine.execute(query)

@@ -2,7 +2,7 @@
 
 Covers the behaviour added alongside slayer.dbt.sql_resolver: when a
 semantic_model points at a regular dbt model with raw SQL on disk, the
-resulting SlayerModel carries sql= (the resolved SELECT) instead of
+resulting SlayerDataset carries sql= (the resolved SELECT) instead of
 sql_table=. Semantic models pointing at source tables (no .sql file)
 keep sql_table= exactly as before.
 """
@@ -34,7 +34,7 @@ class TestSemanticOverSource:
             regular_models=[],
         )
         result = DbtToSlayerConverter(project=project, data_source="db").convert()
-        m = next(m for m in result.models if m.name == "orders")
+        m = next(m for m in result.datasets if m.name == "orders")
         assert m.sql_table == "orders"
         assert m.sql is None
 
@@ -49,7 +49,7 @@ class TestSemanticOverRegularModel:
             ],
         )
         result = DbtToSlayerConverter(project=project, data_source="db").convert()
-        m = next(m for m in result.models if m.name == "orders")
+        m = next(m for m in result.datasets if m.name == "orders")
         assert m.sql_table is None
         assert m.sql == "select id from raw_orders"
 
@@ -67,7 +67,7 @@ class TestSemanticOverRegularModel:
             ],
         )
         result = DbtToSlayerConverter(project=project, data_source="db").convert()
-        m = next(m for m in result.models if m.name == "claim_policy_bridge")
+        m = next(m for m in result.datasets if m.name == "claim_policy_bridge")
         assert m.sql_table is None
         assert m.sql is not None
         # refs to sources become bare names
@@ -89,7 +89,7 @@ class TestSemanticOverRegularModel:
             ],
         )
         result = DbtToSlayerConverter(project=project, data_source="db", target_dialect="duckdb").convert()
-        m = next(m for m in result.models if m.name == "bridge")
+        m = next(m for m in result.datasets if m.name == "bridge")
         assert m.sql is not None
         # Caller alias ``c`` directly follows the inlined ``claim`` subquery;
         # the innermost ``Claim`` (source) is a bare table reference.
@@ -124,7 +124,7 @@ class TestEndToEndFromDisk:
         project = parse_dbt_project(str(tmp_path))
         result = DbtToSlayerConverter(project=project, data_source="db").convert()
 
-        m = next(m for m in result.models if m.name == "orders")
+        m = next(m for m in result.datasets if m.name == "orders")
         assert m.sql_table is None
         assert m.sql is not None
         assert "config" not in m.sql

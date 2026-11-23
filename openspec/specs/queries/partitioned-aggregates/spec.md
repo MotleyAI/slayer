@@ -28,19 +28,23 @@ An aggregation SHALL accept `partition_by=` and `window=` together. The value is
 - THEN ranking still uses the model's resolved ranking time column, not the partition key
 
 ### Requirement: Partitioned aggregates nested inside transforms
-A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates at its operand grain — the attached aggregate's `partition_by=`, else the query grain (Axiom 11.1) — and the measure consumer broadcasts the result onto the query grain (Axiom 11.4); it MUST never fail with an internal error.
+A transform SHALL accept a partitioned aggregate as its input when used as a measure — rank-family transforms and temporal transforms (`time_shift`, `change`, `change_pct`, `lag`, `lead`, `cumsum`, `consecutive_periods`) alike. The transform evaluates over its operand's domain — the attached aggregate's cells at its `partition_by=` grain, else at the query grain (Axiom 11.1; `queries/transforms` › Transforms evaluate over their operand's domain) — and the measure consumer broadcasts the result onto the query grain (Axiom 11.4); it MUST never fail with an internal error.
 
 #### Scenario: Running total of partition-grain values
 - WHEN a query selects dimensions `[region, city, date_trunc('month', ordered_at)]` and the measure `cumsum(sum(revenue, partition_by=[region, ordered_at]))`
-- THEN each row's value is the cumulative sum across months, within the row's non-time dimensions, of the attached region-month totals, verified by executed values
+- THEN the running total accumulates the region-month totals across months within each region (the operand's non-time grain), each `(region, city, month)` row carrying its region-month value, verified by executed values
 
 #### Scenario: Ranking result rows by an attached total
 - WHEN a query selects the measure `rank(sum(revenue, partition_by=region), direction='desc')`
-- THEN result rows are ranked by their attached region total at the query grain
+- THEN the regions are ranked by their totals and each row carries its region's rank: `rank(sum(amount, partition_by=region))` over the `sales` fixture by `[region, city]` reads ranks 1 to 4 over the four regions with a total, Void's all-NULL total ranking NULL, never ranks over the city rows
 
 #### Scenario: Change over a partitioned aggregate executes
 - WHEN a query selects `change(sum(amount, partition_by=region))` or `change_pct(sum(amount, partition_by=region))` over a month time dimension
 - THEN the query executes with the hand-computed bucket-over-previous-bucket difference (or ratio) of the attached value, instead of failing with an internal rendering error
+
+#### Scenario: Ranking partition cells of a computed band
+- WHEN a `sales` query by `[spend_band, city]` selects `rank(sum(amount, partition_by=spend_band), direction='desc')`
+- THEN the bands are ranked among themselves and `lo` reads 2 on each of its cities
 
 ### Requirement: Filters referencing partitioned aggregates
 Query filters SHALL be able to reference partitioned aggregates. Such predicates type as measures: they apply after attachment, prune result rows, and MUST NOT alter the aggregate values of surviving rows. Each top-level conjunct of a filter types independently as a field (aggregate-free after reference resolution) or a measure (legal as a declared measure in the same query); a conjunct valid as neither fails with a clear typing error naming both failed typings.
@@ -140,7 +144,7 @@ A partitioned measure SHALL be usable in the same query as `time_shift`, `change
 - THEN it groups by the query's dimensions and shifted time bucket only, and joins back on exactly that grain
 
 ### Requirement: Grain-union broadcasting across consumption contexts
-An arithmetic expression combining aggregates at different declared partition grains SHALL be well-defined at the union of those grains: each aggregate is computed at its own declared grain and broadcast over the grain keys it lacks. The expression SHALL be consumable at any grain refining the union — as a measure, the query grain — with every operand broadcast to the consuming rows; combining aggregates at different grains is never, by itself, an error. A transform over such an expression used as a measure SHALL evaluate at the query grain over the broadcast operands. Filter conjuncts referencing such expressions apply after attachment and MUST NOT alter surviving rows' values.
+An arithmetic expression combining aggregates at different declared partition grains SHALL be well-defined at the union of those grains: each aggregate is computed at its own declared grain and broadcast over the grain keys it lacks. The expression SHALL be consumable at any grain refining the union — as a measure, the query grain — with every operand broadcast to the consuming rows; combining aggregates at different grains is never, by itself, an error. A transform over such an expression SHALL evaluate over the union grain's domain and broadcast its result onto the consuming rows. Filter conjuncts referencing such expressions apply after attachment and MUST NOT alter surviving rows' values.
 
 #### Scenario: Mixed-grain arithmetic as a measure
 - WHEN a query over dimensions `[region, city]` selects the measure `sum(a, partition_by=region) - sum(b, partition_by=city)`
@@ -156,7 +160,7 @@ An arithmetic expression combining aggregates at different declared partition gr
 
 #### Scenario: Transform over mixed-grain arithmetic as a measure
 - WHEN a query selects the measure `rank(sum(a, partition_by=region) - sum(b, partition_by=city), direction='desc')`
-- THEN result rows are ranked at the query grain by the broadcast difference, and adding the measure changes no other column's values
+- THEN the `(region, city)` cells are ranked by the difference and each row carries its cell's rank, and adding the measure changes no other column's values
 
 #### Scenario: Filter over mixed-grain arithmetic
 - WHEN a query filters on `sum(a, partition_by=region) - sum(b, partition_by=city) > 0`
@@ -255,7 +259,7 @@ attributes at the declared grain by distinct-entity association (per
   correct executed values and no warning
 
 ### Requirement: Combined-consumer partition keys are query dimensions
-Every explicit partition key of a partitioned aggregate consumed in a combined position — as a non-dimension measure, inside an arithmetic / scalar-call composite or transform used as a measure, as a raw ORDER BY target, or as a filter-only reference — SHALL be a query dimension or a time dimension's source column (rewritten to its truncated bucket), for local and cross-model aggregates alike. A violation SHALL fail at plan time with a clear error naming the offending key and the remedy, never with an internal join-back failure. A partitioned aggregate consumed only inside computed dimensions or as a re-aggregation operand keeps the finer-grain exemption (its partition set declares an internal producer grain; the outer aggregation is the combined consumer and carries the rule). A filter or ORDER BY reference to a computed dimension's own aggregate is a row-scope reference, legal at any partition grain: such a filter restricts the aggregated population per base row at the partition grain, and MAY therefore change surviving groups' aggregate values — unlike a combined-scope partitioned-aggregate filter, which only prunes result rows. Whether a filter conjunct or order target is a combined consumer SHALL be decided by its position typing (field vs measure) — a measure-typed conjunct that also references a computed dimension's own aggregate is a combined consumer of that aggregate. A sub-expression equal to a computed dimension's entire expression is instead that dimension's value in every position, measures included — except a transform-bearing computed dimension in measure position, which keeps its query-grain evaluation — (per `queries/positions` › A dimension value reads the dimension's grouped value in every position), and is not a combined consumer of its partition keys; an aggregate nested inside a computed dimension's band or transform remains a combined consumer wherever else it is referenced. The rule SHALL apply identically to the explicit outer partition keys of a re-aggregation: a re-aggregation consumed only inside computed dimensions keeps the finer-grain exemption, and one consumed in any combined position carries the rule; the error SHALL name the consuming position (measure, filter or order), never a dimension.
+Every explicit partition key of a partitioned aggregate consumed in a combined position — as a non-dimension measure, inside an arithmetic / scalar-call composite or transform used as a measure, as a raw ORDER BY target, or as a filter-only reference — SHALL be a query dimension or a time dimension's source column (rewritten to its truncated bucket), for local and cross-model aggregates alike. A violation SHALL fail at plan time with a clear error naming the offending key and the remedy, never with an internal join-back failure. A partitioned aggregate consumed only inside computed dimensions or as a re-aggregation operand keeps the finer-grain exemption (its partition set declares an internal producer grain; the outer aggregation is the combined consumer and carries the rule). A filter or ORDER BY reference to a computed dimension's own aggregate is a row-scope reference, legal at any partition grain: such a filter restricts the aggregated population per base row at the partition grain, and MAY therefore change surviving groups' aggregate values — unlike a combined-scope partitioned-aggregate filter, which only prunes result rows. Whether a filter conjunct or order target is a combined consumer SHALL be decided by its position typing (field vs measure) — a measure-typed conjunct that also references a computed dimension's own aggregate is a combined consumer of that aggregate. A sub-expression equal to a computed dimension's entire expression is instead that dimension's value in every position, measures included, a transform-bearing one too (per `queries/positions` › A dimension value reads the dimension's grouped value in every position), and is not a combined consumer of its partition keys; an aggregate nested inside a computed dimension's band or transform remains a combined consumer wherever else it is referenced. The rule SHALL apply identically to the explicit outer partition keys of a re-aggregation: a re-aggregation consumed only inside computed dimensions keeps the finer-grain exemption, and one consumed in any combined position carries the rule; the error SHALL name the consuming position (measure, filter or order), never a dimension.
 
 #### Scenario: Keyless dual-role measure fails cleanly, local and cross-model alike
 - WHEN the same partitioned aggregate — local or cross-model — is consumed inside a computed dimension's band or transform and selected as a measure while a partition key is not among the query dimensions
@@ -600,11 +604,8 @@ the transform consumes the attached value like any local partitioned input. This
 ranked inners (`first`/`last`) and holds in measure, filter, and order positions.
 
 #### Scenario: Transform over a cross-model partitioned sum executes
-- **WHEN** a query selects `cumsum(sum(customers.spend, partition_by=region))` over a month
-  time dimension with `region` among the query dimensions
-- **THEN** the cumulative series accumulates the per-region cross-model totals, correct by
-  hand-computed executed values on SQLite and DuckDB — never the former
-  not-yet-supported error
+- **WHEN** a query selects `rank(sum(customers.spend, partition_by=region), direction='desc')` with `region` among the query dimensions, and another selects `cumsum(sum(customers.spend, partition_by=region))` over a month time dimension
+- **THEN** the rank orders the regions by their cross-model totals, correct by hand-computed executed values on SQLite and DuckDB; the `cumsum` fails with the typed time-axis error whose remedy adds the time key to `partition_by`, in measure, filter and order positions alike, as in dimension position
 
 #### Scenario: Transform over a cross-model ranked partitioned aggregate executes
 - **WHEN** a query selects `change(last(customers.spend, partition_by=region))` over a month
@@ -849,8 +850,8 @@ combined-consumer partition-key rule exactly as the source's constituents are; t
 association and trailing-window kernels pick it once per cell exactly like an
 aggregate-valued parameter; and a transform nested inside an attached aggregate
 parameter resolves bottom-up like any nested attached input. The
-parameter's producer is computed at the parameter's OWN home — the deepest
-dataset determining the parameter's own inputs, resolved bottom-up — at its own
+parameter's producer is computed at the parameter's OWN home (Axiom 2, resolved
+bottom-up from the parameter's own inputs) — at its own
 declared grain, and its value attached into the aggregation's input relation
 per home row of the aggregation, in every `to_many_handling` mode, null-safely
 on the producer's complete grain; the attachment is well-defined only when the

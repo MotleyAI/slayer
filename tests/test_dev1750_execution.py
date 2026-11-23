@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1750_fixtures import (
-    ModelMeasure,
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
@@ -38,8 +39,8 @@ async def exec_engine(request):
         yield engine
 
 
-def _q(*, measures, dimensions=None, to_many_handling=None) -> SlayerQuery:
-    kw = dict(source_model="orders", time_dimensions=month_td(), measures=measures)
+def _q(*, metrics, dimensions=None, to_many_handling=None) -> SlayerQuery:
+    kw = dict(population="orders", time_dimensions=month_td(), metrics=metrics)
     if dimensions is not None:
         kw["dimensions"] = dimensions
     if to_many_handling is not None:
@@ -55,29 +56,29 @@ def _by_month(resp) -> dict:
 
 
 class TestShapeALocalTimeShift:
-    """(a) local ``time_shift(sum(amount))`` beside a cross-model sibling."""
+    """(a) local ``time_shift(sum(amount))`` beside a cross-dataset sibling."""
 
     async def test_prev_amount_sum_and_sibling(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q(measures=[
-            ModelMeasure(formula="sum(customers.spend)", name="cm"),
-            ModelMeasure(formula="sum(amount)", name="s"),
-            ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="sum(orders.amount)", alias="s"),
+            QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
         ], to_many_handling="broadcast"))
         by = _by_month(resp)
         # Local sum per month.
-        assert float(by["2024-01"]["orders.s"]) == pytest.approx(15.0)
-        assert float(by["2024-02"]["orders.s"]) == pytest.approx(24.0)
-        assert float(by["2024-03"]["orders.s"]) == pytest.approx(18.0)
+        assert float(by["2024-01"]["s"]) == pytest.approx(15.0)
+        assert float(by["2024-02"]["s"]) == pytest.approx(24.0)
+        assert float(by["2024-03"]["s"]) == pytest.approx(18.0)
         # Prior-month sum; Jan (earliest) has none.
-        assert by["2024-01"]["orders.prev"] is None
-        assert float(by["2024-02"]["orders.prev"]) == pytest.approx(15.0)
-        assert float(by["2024-03"]["orders.prev"]) == pytest.approx(24.0)
-        # The cross-model sibling is unaffected by the shift: customers.spend:sum
+        assert by["2024-01"]["prev"] is None
+        assert float(by["2024-02"]["prev"]) == pytest.approx(15.0)
+        assert float(by["2024-03"]["prev"]) == pytest.approx(24.0)
+        # The cross-dataset sibling is unaffected by the shift: customers.spend:sum
         # has no shared grain with the month axis, so it broadcasts the
         # all-customers total (100 + 200 + 50 = 350) across every month — the
         # same value the shift machinery must not perturb.
-        assert float(by["2024-01"]["orders.cm"]) == pytest.approx(350.0)
-        assert float(by["2024-03"]["orders.cm"]) == pytest.approx(350.0)
+        assert float(by["2024-01"]["cm"]) == pytest.approx(350.0)
+        assert float(by["2024-03"]["cm"]) == pytest.approx(350.0)
 
 
 class TestShapeBHostRootedCrossingFragment:
@@ -86,61 +87,61 @@ class TestShapeBHostRootedCrossingFragment:
     ``regions`` (Part 1). A missing join → the SQL does not bind at all."""
 
     async def test_prev_weighted_scaled_sum(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q(measures=[
-            ModelMeasure(formula="wscaled_sum(amount)", name="w"),
-            ModelMeasure(formula="time_shift(wscaled_sum(amount), -1)", name="prev"),
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="wscaled_sum(orders.amount)", alias="w"),
+            QueryMetric(metric="time_shift(wscaled_sum(orders.amount), -1)", alias="prev"),
         ]))
         by = _by_month(resp)
-        assert float(by["2024-01"]["orders.w"]) == pytest.approx(35.0)
-        assert float(by["2024-02"]["orders.w"]) == pytest.approx(48.0)
-        assert float(by["2024-03"]["orders.w"]) == pytest.approx(46.0)
-        assert by["2024-01"]["orders.prev"] is None
-        assert float(by["2024-02"]["orders.prev"]) == pytest.approx(35.0)
-        assert float(by["2024-03"]["orders.prev"]) == pytest.approx(48.0)
+        assert float(by["2024-01"]["w"]) == pytest.approx(35.0)
+        assert float(by["2024-02"]["w"]) == pytest.approx(48.0)
+        assert float(by["2024-03"]["w"]) == pytest.approx(46.0)
+        assert by["2024-01"]["prev"] is None
+        assert float(by["2024-02"]["prev"]) == pytest.approx(35.0)
+        assert float(by["2024-03"]["prev"]) == pytest.approx(48.0)
 
     async def test_sibling_local_sum_not_multiplied_by_fragment_join(
         self, exec_engine
     ) -> None:
         """A local ``sum(amount)`` beside the crossing wscaled shift must keep its
         true per-month value — the fragment's 1:N-safe join lives only in the
-        crossing measure's own CTEs, never multiplying the sibling."""
-        resp = await exec_engine.execute(_q(measures=[
-            ModelMeasure(formula="sum(amount)", name="s"),
-            ModelMeasure(formula="time_shift(wscaled_sum(amount), -1)", name="prev"),
+        crossing metric's own CTEs, never multiplying the sibling."""
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="sum(orders.amount)", alias="s"),
+            QueryMetric(metric="time_shift(wscaled_sum(orders.amount), -1)", alias="prev"),
         ]))
         by = _by_month(resp)
-        assert float(by["2024-01"]["orders.s"]) == pytest.approx(15.0)
-        assert float(by["2024-02"]["orders.s"]) == pytest.approx(24.0)
-        assert float(by["2024-03"]["orders.s"]) == pytest.approx(18.0)
+        assert float(by["2024-01"]["s"]) == pytest.approx(15.0)
+        assert float(by["2024-02"]["s"]) == pytest.approx(24.0)
+        assert float(by["2024-03"]["s"]) == pytest.approx(18.0)
 
 
 class TestChangeDesugars:
-    """``change`` = current − prior. With a LOCAL inner beside a cross-model
+    """``change`` = current − prior. With a LOCAL inner beside a cross-dataset
     sibling (the shape the guard lift naturally enables — the chain's outer
     arithmetic-materialization step renders the subtraction), it must produce the
     period-over-period delta."""
 
     async def test_change_of_local_with_cross_model_sibling(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q(measures=[
-            ModelMeasure(formula="sum(customers.spend)", name="cm"),
-            ModelMeasure(formula="change(sum(amount))", name="delta"),
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="change(sum(orders.amount))", alias="delta"),
         ]))
         by = _by_month(resp)
-        assert by["2024-01"]["orders.delta"] is None
-        assert float(by["2024-02"]["orders.delta"]) == pytest.approx(24.0 - 15.0)
-        assert float(by["2024-03"]["orders.delta"]) == pytest.approx(18.0 - 24.0)
+        assert by["2024-01"]["delta"] is None
+        assert float(by["2024-02"]["delta"]) == pytest.approx(24.0 - 15.0)
+        assert float(by["2024-03"]["delta"]) == pytest.approx(18.0 - 24.0)
 
     async def test_change_pct_of_local_with_cross_model_sibling(self, exec_engine) -> None:
         """``change_pct`` = (current − prior) / prior — pins the outer
         arithmetic-materialization step, not just CTE creation."""
-        resp = await exec_engine.execute(_q(measures=[
-            ModelMeasure(formula="sum(customers.spend)", name="cm"),
-            ModelMeasure(formula="change_pct(sum(amount))", name="pct"),
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="change_pct(sum(orders.amount))", alias="pct"),
         ]))
         by = _by_month(resp)
-        assert by["2024-01"]["orders.pct"] is None
-        assert float(by["2024-02"]["orders.pct"]) == pytest.approx((24.0 - 15.0) / 15.0)
-        assert float(by["2024-03"]["orders.pct"]) == pytest.approx((18.0 - 24.0) / 24.0)
+        assert by["2024-01"]["pct"] is None
+        assert float(by["2024-02"]["pct"]) == pytest.approx((24.0 - 15.0) / 15.0)
+        assert float(by["2024-03"]["pct"]) == pytest.approx((18.0 - 24.0) / 24.0)
 
 
 class TestChangeOverCrossingFragmentInner:
@@ -153,50 +154,53 @@ class TestChangeOverCrossingFragmentInner:
         """The gap is lifted: the crossing-fragment inner desugars
         onto a host-rooted producer, so ``change`` composes with the correct
         month-over-month deltas (48−35, 46−48 from the dataset recap)."""
-        resp = await exec_engine.execute(_q(measures=[
-            ModelMeasure(formula="change(wscaled_sum(amount))", name="delta"),
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="change(wscaled_sum(orders.amount))", alias="delta"),
         ]))
         by = _by_month(resp)
-        assert by["2024-01"]["orders.delta"] is None
-        assert float(by["2024-02"]["orders.delta"]) == pytest.approx(13.0)
-        assert float(by["2024-03"]["orders.delta"]) == pytest.approx(-2.0)
+        assert by["2024-01"]["delta"] is None
+        assert float(by["2024-02"]["delta"]) == pytest.approx(13.0)
+        assert float(by["2024-03"]["delta"]) == pytest.approx(-2.0)
 
     async def test_change_pct_of_wscaled_composes(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q(measures=[
-            ModelMeasure(formula="change_pct(wscaled_sum(amount))", name="delta"),
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="change_pct(wscaled_sum(orders.amount))", alias="delta"),
         ]))
         by = _by_month(resp)
-        assert by["2024-01"]["orders.delta"] is None
-        assert float(by["2024-02"]["orders.delta"]) == pytest.approx(13.0 / 35.0)
-        assert float(by["2024-03"]["orders.delta"]) == pytest.approx(-2.0 / 48.0)
+        assert by["2024-01"]["delta"] is None
+        assert float(by["2024-02"]["delta"]) == pytest.approx(13.0 / 35.0)
+        assert float(by["2024-03"]["delta"]) == pytest.approx(-2.0 / 48.0)
 
 
 class TestSiblingProtectionUnderFanOut:
-    """The crossing measure's join is 1:N (``orders → line_items``). If it leaked
+    """The crossing metric's relationship is 1:N (``orders → line_items``). If it leaked
     into the host base, a sibling ``sum(amount)`` would be MULTIPLIED by the
-    line-item count. Isolation keeps the fan-out inside the crossing measure's
+    line-item count. Isolation keeps the fan-out inside the crossing metric's
     own CTEs, so the sibling stays true — a claim only a fan-out dataset can
     actually test (Codex F1)."""
 
-    async def test_one_to_many_fragment_fails_closed(
+    async def test_one_to_many_fragment_homes_on_line_items(
         self, exec_engine
     ) -> None:
-        """Class-(d) crossed-argument ledger row: the 1:N
-        ``line_items`` param fanned the SUM silently — now a hard error naming
-        the hop and the remedy. Sibling protection under fan-out survives as a
-        structural property of producer isolation, pinned by the proven-hop
-        shapes above."""
-        query = _q(measures=[
-            ModelMeasure(formula="sum(amount)", name="s"),
-            ModelMeasure(formula="liscaled_sum(amount)", name="li"),
-            ModelMeasure(
-                formula="time_shift(liscaled_sum(amount), -1)", name="prev"),
-        ])
-        with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(query)
-        message = str(ei.value)
-        assert "line_items" in message
-        assert any(w in message.lower() for w in ("cardinality", "unique", "declare"))
+        """The 1:N ``line_items`` param homes the SUM on ``line_items``, which determines
+        ``orders.amount``; the sibling ``sum(amount)`` is not multiplied by the fan-out."""
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="sum(orders.amount)", alias="s"),
+            QueryMetric(metric="liscaled_sum(orders.amount)", alias="li"),
+            QueryMetric(
+                metric="time_shift(liscaled_sum(orders.amount), -1)", alias="prev"),
+        ]))
+        plain = await exec_engine.execute(_q(metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")]))
+        from_line_items = await exec_engine.execute(SlayerQuery.model_validate({
+            "population": "line_items", "time_dimensions": month_td("orders.ordered_at"),
+            "metrics": [{"metric": "sum(orders.amount * line_items.factor)", "alias": "li"}],
+        }))
+        by = _by_month(resp)
+        assert {k: float(r["s"]) for k, r in by.items()} == {
+            k: float(r["s"]) for k, r in _by_month(plain).items()}
+        expected = {month_key(r["orders.ordered_at"]): float(r["li"])
+                    for r in from_line_items.data}
+        assert {k: float(r["li"]) for k, r in by.items()} == expected
 
 
 class TestConsecutivePeriodsExecution:
@@ -205,26 +209,26 @@ class TestConsecutivePeriodsExecution:
 
     async def test_cp_varying_predicate_with_cross_model_sibling(self, exec_engine) -> None:
         # amount:sum > 20 → Jan 15=F, Feb 24=T, Mar 18=F → streak 0,1,0.
-        resp = await exec_engine.execute(_q(measures=[
-            ModelMeasure(formula="sum(customers.spend)", name="cm"),
-            ModelMeasure(formula="consecutive_periods(sum(amount) > 20)", name="streak"),
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="consecutive_periods(sum(orders.amount) > 20)", alias="streak"),
         ]))
         by = _by_month(resp)
-        assert int(by["2024-01"]["orders.streak"]) == 0
-        assert int(by["2024-02"]["orders.streak"]) == 1
-        assert int(by["2024-03"]["orders.streak"]) == 0
+        assert int(by["2024-01"]["streak"]) == 0
+        assert int(by["2024-02"]["streak"]) == 1
+        assert int(by["2024-03"]["streak"]) == 0
 
     async def test_cp_over_target_grain_inner(self, exec_engine) -> None:
         # customers.spend:sum > 0 holds every month → cumulative streak 1,2,3.
         # This is the shape that stays GUARDED for time_shift but renders for cp.
-        resp = await exec_engine.execute(_q(measures=[
-            ModelMeasure(formula="consecutive_periods(sum(customers.spend) > 0)",
-                         name="streak"),
+        resp = await exec_engine.execute(_q(metrics=[
+            QueryMetric(metric="consecutive_periods(sum(customers.spend) > 0)",
+                         alias="streak"),
         ]))
         by = _by_month(resp)
-        assert int(by["2024-01"]["orders.streak"]) == 1
-        assert int(by["2024-02"]["orders.streak"]) == 2
-        assert int(by["2024-03"]["orders.streak"]) == 3
+        assert int(by["2024-01"]["streak"]) == 1
+        assert int(by["2024-02"]["streak"]) == 2
+        assert int(by["2024-03"]["streak"]) == 3
 
 
 class TestNullDimPartitionSurvival:
@@ -238,10 +242,10 @@ class TestNullDimPartitionSurvival:
         #   'hold': Mar (o4 10)=10
         #   NULL  : Feb (o5 4)=4,  Mar (o6 8)=8
         resp = await exec_engine.execute(_q(
-            dimensions=["status"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+            dimensions=["orders.status"],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         ))
         by = {
@@ -251,8 +255,8 @@ class TestNullDimPartitionSurvival:
         # NULL-status: Feb=4 has no prior (Jan NULL group empty) → None;
         # Mar=8's prior is Feb's NULL-group 4 — found only via a null-safe
         # join-back on the NULL status grain.
-        assert float(by[(None, "2024-02")]["orders.s"]) == pytest.approx(4.0)
-        assert float(by[(None, "2024-03")]["orders.prev"]) == pytest.approx(4.0)
+        assert float(by[(None, "2024-02")]["s"]) == pytest.approx(4.0)
+        assert float(by[(None, "2024-03")]["prev"]) == pytest.approx(4.0)
 
 
 class TestDateRangeFrameBoundOmitted:
@@ -263,20 +267,20 @@ class TestDateRangeFrameBoundOmitted:
     async def test_feb_prev_reads_january_outside_range(self, exec_engine) -> None:
         # Restrict to Feb–Mar; Feb's prior (January) is outside the range but the
         # shifted CTE reads raw, so Feb.prev = Jan's 15 (local sum). A sibling
-        # cross-model measure keeps the query on the cross-model chain.
+        # cross-dataset metric keeps the query on the cross-dataset chain.
         resp = await exec_engine.execute(SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-03-31"],
             )],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
-                ModelMeasure(formula="sum(customers.spend)", name="cm"),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ))
         by = _by_month(resp)
         assert "2024-01" not in by, "January must be filtered out of the result"
-        assert float(by["2024-02"]["orders.prev"]) == pytest.approx(15.0)
+        assert float(by["2024-02"]["prev"]) == pytest.approx(15.0)

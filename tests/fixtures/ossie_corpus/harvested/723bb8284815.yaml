@@ -1,0 +1,15 @@
+version: 0.3.0.dev0
+name: m
+datasets:
+- name: orders
+  source: db.s.orders
+  nonportable_extensions:
+  - vendor_name: DB_VENDOR
+    data:
+      yes_flag: true
+      no_flag: false
+      truth: true
+      falsehood: false
+      octal: 8
+      scientific: 1e3
+      quoted_date: '2024-01-01'

@@ -1,0 +1,269 @@
+{
+ "source": "tests/test_dev1891_internal_identifier_fit.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(s)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(s)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "extwide",
+    "formula": "sum(wide)"
+   },
+   "new": {
+    "name": "extwide",
+    "expression": "sum(wide)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "extwide",
+    "name": "w"
+   },
+   "new": {
+    "expression": "extwide",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(wide)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(wide)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(w)",
+    "name": "tw"
+   },
+   "new": {
+    "expression": "sum(w)",
+    "name": "tw"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(wide)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(wide)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(wide)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(wide)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "dims",
+    "join_pairs": [
+     [
+      "dim_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "dims",
+    "from_columns": [
+     "dim_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(dims.wide)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(dims.wide)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 213,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 307,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 308,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 309,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 319,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 322,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 327,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 334,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 346,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 356,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 358,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 362,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 373,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 375,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 380,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 389,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 393,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 394,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 395,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 396,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 399,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 409,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 411,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 420,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 423,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 424,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 431,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 443,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 445,
+   "reason": "not fully literal"
+  }
+ ]
+}

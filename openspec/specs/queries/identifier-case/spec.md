@@ -48,7 +48,7 @@ Result keys, join aliases and result names SHALL carry the declared spelling of 
 
 #### Scenario: Dimension key uses the declared spelling
 - **WHEN** a query rooted at `orders` has dimension `CUSTOMERS.REGION`
-- **THEN** its result key is `orders.customers.region`
+- **THEN** its result key is `customers.region`
 
 ### Requirement: Saves never introduce a case collision
 A save of a model, datasource or saved query SHALL be refused with a typed error naming both names when it introduces two names in one namespace (model names in a datasource, a model's columns and saved measures, its join names, its model aggregations, the stage names of a query list, a query's result names) that are equal case-insensitively and are not both present in the persisted document of the same identity. A new document has no persisted collisions. A collision present in the persisted document SHALL keep loading and saving; it SHALL produce a structured warning naming both names on load, on save, and on every query response that reads the model.
@@ -73,7 +73,7 @@ A save of a model, datasource or saved query SHALL be refused with a typed error
 A query (or each query of a query list) whose result names, after resolution, include two that are equal case-insensitively but differ in spelling SHALL fail before SQL is generated, on every dialect, with a typed error naming both. Saved queries that already hold such names SHALL keep running.
 
 #### Scenario: Two measures named by case
-- **WHEN** a query has the measures `{"formula": "sum(amount)", "name": "Total"}` and `{"formula": "count(*)", "name": "total"}`
+- **WHEN** a query has the measures `{"metric": "sum(amount)", "alias": "Total"}` and `{"metric": "count(*)", "alias": "total"}`
 - **THEN** it fails with the typed error naming `Total` and `total`, on every dialect
 
 ### Requirement: Ingestion keeps case-only-distinct columns apart
@@ -86,3 +86,42 @@ When a table being ingested has physical columns whose names are equal case-inse
 #### Scenario: Suffix already taken
 - **WHEN** a table with columns `Foo`, `foo` and `foo_2` is ingested, and then ingested again
 - **THEN** the model has columns `Foo`, `foo_3` (reading `foo`) and `foo_2`, the same both times
+
+### Requirement: A stored join target names its model's exact spelling
+A stored join's `to` SHALL reach only the model of its datasource spelled exactly as written; it SHALL never carry a spelling that reaches a model only case-insensitively. Saving a model SHALL be refused with a typed error naming the model, the join, the written target and the declared spelling when a join target names no model of the datasource exactly but equals exactly one case-insensitively; when it equals several case-insensitively and none exactly, the save SHALL fail with the typed ambiguity error naming every candidate, also when the target is unchanged from the stored document. Saving a model SHALL be refused with a typed error naming the peer model, its join and the spelling to change when the model's name differs only in case from a join target of another model of its datasource; the remedy is to respell that join first. A target naming no model in any case SHALL still be accepted. Through a non-bypass access-filtered store, both checks SHALL read the caller's visible models, a rejection that only hidden models cause SHALL surface as the hidden-content conflict error naming no hidden model, and the case-only target error SHALL take precedence over the unknown-join-target error. On load, a stored model below schema version 25 SHALL have each join target that names no model exactly but equals exactly one stored model of its datasource case-insensitively (Unicode case folding) rewritten to that model's name before its join keys are repaired, and SHALL be written back at the current version; an ambiguous or unmatched target SHALL be left unchanged. A query whose join walk follows a stored target that equals several models case-insensitively and none exactly SHALL fail with the typed ambiguity error naming every candidate.
+
+#### Scenario: A case-only target is refused naming the declared spelling
+- **WHEN** a datasource stores a model `Customers` and a model `orders` is saved with a join whose `to` is `customers`
+- **THEN** the save fails with the typed error naming `orders`, the join, `customers` and `Customers`, and nothing is stored
+
+#### Scenario: The target saved second is refused
+- **WHEN** a model `orders` with a join to `customers` is stored while no model of that name exists, and a model `Customers` is then saved
+- **THEN** the second save fails with the typed error naming `orders`, its join and the spelling `customers`, and saving `orders` with its join respelled to `Customers` first lets `Customers` save
+
+#### Scenario: An ambiguous target is refused
+- **WHEN** a datasource already stores both `Customers` and `CUSTOMERS` and a model `orders` is saved with a join to `customers`, including when its stored document already holds that join
+- **THEN** the save fails with the ambiguity error naming `Customers` and `CUSTOMERS`
+
+#### Scenario: A Unicode case fold is a case-only target
+- **WHEN** a datasource stores a model `straße` and a model `orders` is saved with a join to `STRASSE`
+- **THEN** the save fails with the typed error naming `STRASSE` and `straße`
+
+#### Scenario: A dangling target is accepted
+- **WHEN** a model `orders` is saved with a join to `suppliers` and no model of the datasource equals `suppliers` in any case
+- **THEN** the save succeeds and the join is stored unchanged
+
+#### Scenario: A stored case-only target is repaired on load
+- **WHEN** a store written before schema version 25 holds `orders` joined to `customers` and a model `Customers`, and a query rooted at `orders` groups by `customers.name` and counts rows
+- **THEN** `orders` loads with the join target `Customers`, is written back at the current version, the query returns one row per customer name, and a second load reads the stored document unchanged
+
+#### Scenario: Repair precedes join-key repair
+- **WHEN** a store written before schema version 25 holds `orders` joined to `customers` through a physical key spelling that only the target's columns declare, and a model `Customers`
+- **THEN** `orders` loads with the target `Customers`, its join keys rewritten to the target's column names and declared as on any legacy model, and a query through the join returns the joined rows on both the YAML and the SQLite store
+
+#### Scenario: An ambiguous stored target fails closed at query time
+- **WHEN** a store written before schema version 25 holds `orders` joined to `customers` and both `Customers` and `CUSTOMERS`, and a query rooted at `orders` reads `customers.name`
+- **THEN** `orders` loads with the target unchanged and the query fails with the ambiguity error naming `Customers` and `CUSTOMERS`
+
+#### Scenario: A hidden peer's case-only target is not revealed
+- **WHEN** through an access-filtered store that hides `orders` (which joins `customers`), a caller saves a model `Customers`
+- **THEN** the save fails with the hidden-content conflict error, which does not name `orders`

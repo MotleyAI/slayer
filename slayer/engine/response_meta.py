@@ -7,24 +7,26 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field as PydanticField
+from pydantic import BaseModel, Field as PydanticField, ModelWrapValidatorHandler, model_validator
 from sqlglot.expressions.core import Expr
 from sqlglot.expressions.query import Query
+from typing_extensions import deprecated
 
 from slayer.core.enums import AggregationValueClass, DataType, classify_aggregation
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.join_walker import model_column_type, resolved_terminal
+from slayer.core.relationship_walker import dataset_field_type, resolved_terminal
 from slayer.core.keys import (
     AggregateKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     Phase,
     StarKey,
     TimeTruncKey,
     aggregation_source_type,
 )
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
+from slayer.core.vocabulary import RESPONSE_ATTRIBUTE_KEYS, attribute_used, renamed_input
 from slayer.ir.planned import PlannedQuery, ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.naming import expression_source_leaf, next_slot_result_key
@@ -37,22 +39,39 @@ class FieldMetadata(BaseModel):
 
 class ResponseAttributes(BaseModel):
     dimensions: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
-    measures: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
+    metrics: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler[ResponseAttributes]) -> ResponseAttributes:
+        return renamed_input(data, handler, RESPONSE_ATTRIBUTE_KEYS, stored=False)
 
     def get(self, column: str) -> Optional[FieldMetadata]:
-        return self.dimensions.get(column) or self.measures.get(column)
+        return self.dimensions.get(column) or self.metrics.get(column)
+
+    @property
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self) -> Dict[str, FieldMetadata]:
+        attribute_used(self, old="measures", new="metrics")
+        return self.metrics
+
+    @measures.setter
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self, value: Dict[str, FieldMetadata]) -> None:
+        attribute_used(self, old="measures", new="metrics")
+        self.metrics = value
 
 
 def _infer_aggregated_format(
-    model: SlayerModel,
-    measure_name: str,
+    dataset: SlayerDataset,
+    metric_name: str,
     aggregation: str,
     source_type: Optional[DataType] = None,
 ) -> Optional[NumberFormat]:
-    """Display NumberFormat for an aggregated measure; ``source_type`` defaults to the column's type."""
-    source_col = model.get_column(measure_name)
-    source_type = source_type or (source_col.type if source_col is not None else None)
-    cls = classify_aggregation(measure_name=measure_name, aggregation=aggregation, source_type=source_type)
+    """Display NumberFormat for an aggregated metric; ``source_type`` defaults to the field's type."""
+    source_col = dataset.get_field(metric_name)
+    source_type = source_type or (source_col.datatype if source_col is not None else None)
+    cls = classify_aggregation(metric_name=metric_name, aggregation=aggregation, source_type=source_type)
     if cls is AggregationValueClass.COUNT:
         return NumberFormat(type=NumberFormatType.INTEGER)
     if cls is AggregationValueClass.FLOAT_PLAIN:
@@ -92,96 +111,96 @@ def projection_result_keys(*, root_planned: PlannedQuery) -> List[str]:
     return [rk for _, rk in _projected_slot_keys(root_planned=root_planned)]
 
 
-def _model_for_path(
+def _dataset_for_path(
     *, bundle: ResolvedSourceBundle, path: Tuple[str, ...]
-) -> Optional[SlayerModel]:
-    """The model a bound (possibly composed) join ``path`` lands on; the host source model
+) -> Optional[SlayerDataset]:
+    """The dataset a bound (possibly composed) relationship ``path`` lands on; the host source dataset
     for an empty or unresolvable path."""
-    current = bundle.source_model
+    current = bundle.population
     if not path or current is None:
         return current
-    return resolved_terminal(root=current, path=path, models_by_name=bundle.models_by_name) or current
+    return resolved_terminal(root=current, path=path, datasets_by_name=bundle.datasets_by_name) or current
 
 
-def _column_for_row_slot(
+def _field_for_row_slot(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
-) -> Optional[Column]:
-    """The source ``Column`` backing a ROW slot, for label / format lookup."""
+) -> Optional[DatasetField]:
+    """The source ``DatasetField`` backing a ROW slot, for label / format lookup."""
     key = slot.key
     if isinstance(key, TimeTruncKey):
         key = key.source
-    if isinstance(key, ColumnKey):
-        model = _model_for_path(bundle=bundle, path=key.path)
+    if isinstance(key, FieldKey):
+        dataset = _dataset_for_path(bundle=bundle, path=key.path)
         leaf = key.leaf
-    elif isinstance(key, ColumnSqlKey):
-        model = bundle.get_referenced_model(key.model) or bundle.source_model
-        leaf = key.column_name
+    elif isinstance(key, FieldSqlKey):
+        dataset = bundle.get_referenced_dataset(key.dataset) or bundle.population
+        leaf = key.field_name
     else:
         return None
-    if model is None:
+    if dataset is None:
         return None
-    return model.get_column(leaf)
+    return dataset.get_field(leaf)
 
 
-def _owning_model_for_agg_source(*, src, bundle: ResolvedSourceBundle):
-    """The model that owns an aggregate's source column."""
-    if isinstance(src, ColumnSqlKey):
-        return bundle.get_referenced_model(src.model) or bundle.source_model
-    return _model_for_path(bundle=bundle, path=getattr(src, "path", ()))
+def _owning_dataset_for_agg_source(*, src, bundle: ResolvedSourceBundle):
+    """The dataset that owns an aggregate's source field."""
+    if isinstance(src, FieldSqlKey):
+        return bundle.get_referenced_dataset(src.dataset) or bundle.population
+    return _dataset_for_path(bundle=bundle, path=getattr(src, "path", ()))
 
 
-def _measure_format(
+def _metric_format(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
 ) -> Optional[NumberFormat]:
-    """Number format for a measure slot; non-aggregate slots default to FLOAT."""
+    """Number format for a metric slot; non-aggregate slots default to FLOAT."""
     key = slot.key
     if isinstance(key, AggregateKey):
         src = key.source
         if isinstance(src, StarKey):
-            measure_name: Optional[str] = "*"
+            metric_name: Optional[str] = "*"
         elif isinstance(src, EXPRESSION_SOURCE_KINDS):
             # An expression source classifies by its aggregation's
-            # value class alone (the derived leaf is never a real column, so
+            # value class alone (the derived leaf is never a real field, so
             # PRESERVING inherits nothing — plain numeric by default).
-            measure_name = expression_source_leaf(src)
+            metric_name = expression_source_leaf(src)
         else:
-            measure_name = getattr(src, "leaf", None) or getattr(
-                src, "column_name", None
+            metric_name = getattr(src, "leaf", None) or getattr(
+                src, "field_name", None
             )
-        model = _owning_model_for_agg_source(src=src, bundle=bundle)
-        if measure_name is None or model is None:
+        dataset = _owning_dataset_for_agg_source(src=src, bundle=bundle)
+        if metric_name is None or dataset is None:
             return NumberFormat(type=NumberFormatType.FLOAT)
-        root = bundle.source_model
-        column_type = model_column_type(model=root, models_by_name=bundle.models_by_name) if root else None
+        root = bundle.population
+        field_type = dataset_field_type(dataset=root, datasets_by_name=bundle.datasets_by_name) if root else None
         return _infer_aggregated_format(
-            model=model, measure_name=measure_name, aggregation=key.agg,
-            source_type=aggregation_source_type(src, column_type=column_type) if column_type else None,
+            dataset=dataset, metric_name=metric_name, aggregation=key.agg,
+            source_type=aggregation_source_type(src, field_type=field_type) if field_type else None,
         )
     return NumberFormat(type=NumberFormatType.FLOAT)
 
 
-def _measure_label(
+def _metric_label(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
 ) -> Optional[str]:
-    """Label for a measure slot; inherits the source column's label when the slot has none."""
+    """Label for a metric slot; inherits the source field's label when the slot has none."""
     if slot.label:
         return slot.label
     key = slot.key
     if isinstance(key, AggregateKey):
         src = key.source
-        if isinstance(src, (ColumnKey, ColumnSqlKey)):
-            model = _owning_model_for_agg_source(src=src, bundle=bundle)
+        if isinstance(src, (FieldKey, FieldSqlKey)):
+            dataset = _owning_dataset_for_agg_source(src=src, bundle=bundle)
             leaf = getattr(src, "leaf", None) or getattr(
-                src, "column_name", None,
+                src, "field_name", None,
             )
-            if model is not None and leaf is not None:
-                col = model.get_column(leaf)
+            if dataset is not None and leaf is not None:
+                col = dataset.get_field(leaf)
                 if col is not None:
                     return col.label
     return None
 
 
-def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classification (dimension vs measure, TimeTruncKey, label/format lookup) over one candidate-slot loop; complexity is inherent to the projection-to-metadata mapping and pre-dates this change. Splitting the loop body out would scatter the shared public_keys / source_relation state without improving readability.
+def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classification (dimension vs metric, TimeTruncKey, label/format lookup) over one candidate-slot loop; complexity is inherent to the projection-to-metadata mapping and pre-dates this change. Splitting the loop body out would scatter the shared public_keys / source_relation state without improving readability.
     *,
     root_planned: PlannedQuery,
     bundle: ResolvedSourceBundle,
@@ -197,7 +216,7 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
     public_keys = set(expected_columns)
 
     dim_meta: Dict[str, FieldMetadata] = {}
-    measure_meta: Dict[str, FieldMetadata] = {}
+    metric_meta: Dict[str, FieldMetadata] = {}
 
     # A combined regroup attach substitutes each consumed aggregate for a
     # reserved-leaf placeholder; map it back so its label/format resolve.
@@ -211,11 +230,11 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
     for slot, rk in slot_keys:
         if rk not in public_keys:
             continue
-        # A combined regroup attach is a ROW-phase placeholder but is a measure.
+        # A combined regroup attach is a ROW-phase placeholder but is a metric.
         original = placeholder_original.get(slot.key)
         is_combined_placeholder = original is not None
         if slot.phase == Phase.ROW and not is_combined_placeholder:
-            col = _column_for_row_slot(slot=slot, bundle=bundle)
+            col = _field_for_row_slot(slot=slot, bundle=bundle)
             label = slot.label or (col.label if col else None)
             if isinstance(slot.key, TimeTruncKey):
                 # Time dimensions carry a label only.
@@ -226,13 +245,13 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
             if label or fmt:
                 dim_meta[rk] = FieldMetadata(label=label, format=fmt)
         else:
-            measure_slot = (
+            metric_slot = (
                 slot.model_copy(update={"key": original})
                 if is_combined_placeholder else slot
             )
-            fmt = _measure_format(slot=measure_slot, bundle=bundle)
-            label = _measure_label(slot=measure_slot, bundle=bundle)
+            fmt = _metric_format(slot=metric_slot, bundle=bundle)
+            label = _metric_label(slot=metric_slot, bundle=bundle)
             if label or fmt:
-                measure_meta[rk] = FieldMetadata(label=label, format=fmt)
+                metric_meta[rk] = FieldMetadata(label=label, format=fmt)
 
-    return ResponseAttributes(dimensions=dim_meta, measures=measure_meta), expected_columns
+    return ResponseAttributes(dimensions=dim_meta, metrics=metric_meta), expected_columns

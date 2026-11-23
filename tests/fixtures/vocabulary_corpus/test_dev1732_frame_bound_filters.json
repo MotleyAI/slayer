@@ -1,0 +1,202 @@
+{
+ "source": "tests/test_dev1732_frame_bound_filters.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "rev_90d"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "rev_90d"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "rev_90d"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "rev_90d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(revenue, window='30d')",
+    "name": "rev_30d"
+   },
+   "new": {
+    "expression": "avg(revenue, window='30d')",
+    "name": "rev_30d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'month')",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'month')",
+    "name": "prev"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 329,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 330,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 331,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 333,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 334,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 335,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 348,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 349,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 350,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 351,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 359,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 362,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 363,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 374,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 582,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 634,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 661,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 775,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 805,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 832,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 923,
+   "reason": "not fully literal"
+  }
+ ]
+}

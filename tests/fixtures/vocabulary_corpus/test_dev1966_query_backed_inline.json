@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dev1966_query_backed_inline.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "mm",
+    "formula": "sum(rev)"
+   },
+   "new": {
+    "name": "mm",
+    "expression": "sum(rev)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 132,
+   "reason": "unclassifiable"
+  }
+ ]
+}

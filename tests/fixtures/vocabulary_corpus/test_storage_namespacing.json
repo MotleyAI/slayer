@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_storage_namespacing.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  }
+ ]
+}

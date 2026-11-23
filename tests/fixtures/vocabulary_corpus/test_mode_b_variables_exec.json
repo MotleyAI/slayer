@@ -1,0 +1,313 @@
+{
+ "source": "tests/test_mode_b_variables_exec.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) * {k}",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) * {k}",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "amount_sum_k",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "amount_sum_k",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) * {k}",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) * {k}",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     "sum(amount) * {k}"
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     "sum(amount) * {k}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "measures": [
+     "sum(amount_sum_k)"
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "metrics": [
+     "sum(amount_sum_k)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     "amt_scaled"
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     "amt_scaled"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "measures": [
+     "sum(amt_scaled)"
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "metrics": [
+     "sum(amt_scaled)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount) * {k}"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount) * {k}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "amount * {k}"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "amount * {k}"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     "sum(amount)"
+    ],
+    "order": [
+     {
+      "column": "sum(amount) * {k}"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     "sum(amount)"
+    ],
+    "order": [
+     {
+      "field": "sum(amount) * {k}"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount) * {? {k} ?}"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount) * {? {k} ?}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     {
+      "expression": "amount * {? {k} ?}",
+      "name": "d"
+     }
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     {
+      "field": "amount * {? {k} ?}",
+      "alias": "d"
+     }
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     "sum(amount) * {k}"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     "sum(amount) * {k}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "amount * {k}"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "amount * {k}"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     "sum(amount)"
+    ],
+    "order": [
+     {
+      "column": "sum(amount) * {k}"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     "sum(amount)"
+    ],
+    "order": [
+     {
+      "field": "sum(amount) * {k}"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount)"
+    ],
+    "filters": [
+     "amount > {k}"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount)"
+    ],
+    "filter": [
+     "amount > {k}"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 42,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 186,
+   "reason": "not fully literal"
+  }
+ ]
+}

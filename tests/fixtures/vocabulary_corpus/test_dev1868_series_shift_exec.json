@@ -1,0 +1,239 @@
+{
+ "source": "tests/test_dev1868_series_shift_exec.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue) + sum(regions.factor), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue) + sum(regions.factor), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue) + sum(regions.factor), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue) + sum(regions.factor), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue) in (100, 999), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue) in (100, 999), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue) > 80, -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue) > 80, -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(revenue) > 100)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "change(sum(revenue) > 100)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue) > 80, -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue) > 80, -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue) / sum(qty), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue) / sum(qty), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(cumsum(sum(revenue)), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(cumsum(sum(revenue)), -1, 'month')",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(cumsum(sum(revenue)), -1, 'month')",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue) * weight, -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue) * weight, -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(store in ('A', 'B'), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(store in ('A', 'B'), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(cumsum(weight), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(cumsum(weight), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue) + cumsum(weight), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue) + cumsum(weight), -1)",
+    "name": "t"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 229,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 231,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,39 @@
+{
+ "source": "tests/test_dev1829_producer_naming.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region)",
+    "name": "region_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) / sum(amount, partition_by=region)",
+    "name": "sh"
+   },
+   "new": {
+    "expression": "sum(amount) / sum(amount, partition_by=region)",
+    "name": "sh"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(ok_amount, partition_by=region)",
+    "name": "o"
+   },
+   "new": {
+    "expression": "sum(ok_amount, partition_by=region)",
+    "name": "o"
+   }
+  }
+ ],
+ "skipped": []
+}

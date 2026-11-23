@@ -20,6 +20,7 @@ import slayer.cli
 from slayer import usage_reporting
 from slayer.api.server import create_app
 from slayer.core.enums import BUILTIN_AGGREGATIONS, ALL_TRANSFORMS
+from slayer.core.names import spelled_name
 from slayer.flight.translator import TranslationError
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -160,7 +161,8 @@ def test_every_mcp_tool_has_a_vocabulary_token(tmp_path: Path) -> None:
 
 def test_every_rest_route_has_a_vocabulary_token(tmp_path: Path) -> None:
     app = create_app(storage=YAMLStorage(base_dir=str(tmp_path)))
-    paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
+    # A deprecated route counts as its replacement.
+    paths = {route.path for route in app.routes if isinstance(route, APIRoute) and not route.deprecated}
     assert {f"rest:{path}" for path in paths} <= usage_key_vocabulary()
 
 
@@ -188,23 +190,23 @@ def sentinel_store(usage_reporting_env) -> str:
 
 def test_cli_arguments_and_names_never_leave(sentinel_store: str, usage_reporting_env) -> None:
     query = {
-        "source_model": f"{SENT}_model",
-        "dimensions": [{"expression": f"{SENT}_col * 2", "name": SENT}],
-        "measures": [f"{SENT}_agg({SENT}_col)", {"formula": f"sum({SENT}_col)", "name": f"{SENT}_m"}],
-        "filters": [f"{SENT}_col > 0 or '{HOSTILE}' == 'x'"],
+        "population": f"{SENT}_model",
+        "dimensions": [{"field": f"{SENT}_model.{SENT}_col * 2", "alias": SENT}],
+        "metrics": [f"{SENT}_agg({SENT}_model.{SENT}_col)", {"metric": f"sum({SENT}_model.{SENT}_col)", "alias": f"{SENT}_m"}],
+        "filter": [f"{SENT}_model.{SENT}_col > 0 or '{HOSTILE}' == 'x'"],
     }
     runs = [
         ["query", json.dumps(query), "--storage", sentinel_store],
-        ["query", json.dumps({**query, "source_model": HOSTILE}), "--storage", sentinel_store],
+        ["query", json.dumps({**query, "population": HOSTILE}), "--storage", sentinel_store],
         ["query", HOSTILE, "--storage", sentinel_store],
-        ["models", "--storage", sentinel_store, "show", HOSTILE],
-        ["models", "--storage", sentinel_store, "list"],
+        ["datasets", "--storage", sentinel_store, "show", HOSTILE],
+        ["datasets", "--storage", sentinel_store, "list"],
         ["datasources", "--storage", sentinel_store, "list"],
         ["datasources", "--storage", sentinel_store, "show", f"{SENT}_ds"],
         ["memory", "--storage", sentinel_store, "save", "--learning", HOSTILE, "--entities", f"{SENT}_ds.{SENT}_model"],
         ["inspect", f"{SENT}_model", "--type", "model", "--storage", sentinel_store],
         ["search", "--question", HOSTILE, "--storage", sentinel_store],
-        ["recommend-root-model", f"{SENT}_model.{SENT}_col", "--storage", sentinel_store],
+        ["recommend-population", f"{SENT}_model.{SENT}_col", "--storage", sentinel_store],
     ]
     for args in runs:
         cli(args)
@@ -217,11 +219,11 @@ async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) 
     client = Implementation(name=HOSTILE, version=HOSTILE)
     async with create_connected_server_and_client_session(server, client_info=client) as session:
         await session.call_tool("query", {"query": {
-            "source_model": f"{SENT}_model",
-            "measures": [f"{SENT}_agg({SENT}_col)"],
-            "filters": [f"'{HOSTILE}' == '{HOSTILE}'"],
+            "population": f"{SENT}_model",
+            "metrics": [f"{SENT}_agg({SENT}_model.{SENT}_col)"],
+            "filter": [f"'{HOSTILE}' == '{HOSTILE}'"],
         }})
-        await session.call_tool("inspect", {"entity_type": "model", "reference": HOSTILE, "compact": False})
+        await session.call_tool("inspect", {"entity_type": "dataset", "reference": HOSTILE, "compact": False})
         await session.call_tool("save_memory", {"learning": HOSTILE, "linked_entities": [f"{SENT}_ds.{SENT}_model"]})
         await session.call_tool("search", {"question": HOSTILE})
         await session.call_tool("describe_datasource", {"name": HOSTILE})
@@ -233,11 +235,11 @@ async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) 
 def test_rest_paths_bodies_and_errors_never_leave(sentinel_store: str) -> None:
     usage_reporting.start()
     client = TestClient(create_app(storage=YAMLStorage(base_dir=sentinel_store)))
-    client.get(f"/models/{SENT}_model")
-    client.get(f"/models/{SENT}missing")
+    client.get(f"/datasets/{SENT}_model")
+    client.get(f"/datasets/{SENT}missing")
     client.get(f"/{SENT}/unmatched")
-    client.post("/query", json={"source_model": f"{SENT}_model", "measures": [f"{SENT}_agg({SENT}_col)"]})
-    client.post("/query", json={"source_model": HOSTILE, "measures": ["count(*)"]})
+    client.post("/query", json={"population": f"{SENT}_model", "metrics": [f"{SENT}_agg({SENT}_model.{SENT}_col)"]})
+    client.post("/query", json={"population": HOSTILE, "metrics": [f"count({spelled_name(HOSTILE)}.*)"]})
     client.post(f"/mcp/messages/?session_id={SENT}", json={"x": HOSTILE})
     end_process()
     assert_clean_everywhere()
@@ -282,10 +284,10 @@ def test_flight_sql_never_leaves(usage_reporting_env) -> None:
 
 
 def test_sent_report_never_carries_a_sentinel(sentinel_store: str, usage_reporting_env) -> None:
-    cli(["query", json.dumps({"source_model": HOSTILE, "measures": ["count(*)"]}), "--storage", sentinel_store])
-    cli(["models", "--storage", sentinel_store, "show", HOSTILE])
+    cli(["query", json.dumps({"population": HOSTILE, "metrics": [f"count({spelled_name(HOSTILE)}.*)"]}), "--storage", sentinel_store])
+    cli(["datasets", "--storage", sentinel_store, "show", HOSTILE])
     make_due()
-    cli(["models", "--storage", sentinel_store, "list"])
+    cli(["datasets", "--storage", sentinel_store, "list"])
     requests = usage_reporting_env.capture.wait_for(count=1)
     assert len(requests) == 1
     assert_no_sentinel(requests[0].body)
@@ -357,13 +359,13 @@ def _batch(*rows: tuple[str, str, int]) -> Batch:
     })
 
 
-def test_schema_version_is_2(usage_reporting_env) -> None:
+def test_schema_version_is_3(usage_reporting_env) -> None:
     quiet_config()
     usage_reporting.start()
     usage_reporting.record(surface="mcp", token="query")
     end_process()
-    assert SCHEMA_VERSION == 2
-    assert show()["schema"] == 2
+    assert SCHEMA_VERSION == 3
+    assert show()["schema"] == 3
 
 
 def test_first_query_ok_is_a_date_or_null() -> None:
@@ -416,8 +418,8 @@ async def test_new_fields_never_carry_a_sentinel(sentinel_store: str) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=sentinel_store), _seed_help=False)
     client = Implementation(name=HOSTILE, version=HOSTILE)
     async with create_connected_server_and_client_session(server, client_info=client) as session:
-        await session.call_tool("query", {"query": {"source_model": f"{SENT}_model", "measures": [f"sum({SENT}_col)"]}})
-        await session.call_tool("query", {"query": {"source_model": HOSTILE, "measures": ["count(*)"]}})
+        await session.call_tool("query", {"query": {"population": f"{SENT}_model", "metrics": [f"sum({SENT}_model.{SENT}_col)"]}})
+        await session.call_tool("query", {"query": {"population": HOSTILE, "metrics": [f"count({spelled_name(HOSTILE)}.*)"]}})
     end_process()
     report = show()
     assert report["first_query_ok"]

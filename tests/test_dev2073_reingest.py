@@ -1,10 +1,11 @@
-"""Re-ingest reconciles FK edges datasource-wide, converges from partial saves, guards the edge namespace."""
+"""Re-ingest reconciles FK edges datasource-wide, converges from partial saves, lets a dataset share an edge's name."""
 
 from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.relationship_walker import resolve_hop
 
 from tests._dev2073_fixtures import (
     BILLING_SHIPPING,
@@ -41,10 +42,10 @@ class TestReingestAddsFks:
             edges = await lv.edges()
             assert edges[("coupon_usages", "transactions", (("transaction_id", "id"),))] == "transaction"
             assert edges[("transactions", "coupon_usages", (("coupon_usage_id", "id"),))] == "coupon_usage"
-            assert addition_for(result, "coupon_usages").new_joins == ["transactions"]
-            named = {n for a in result.additions for n in a.named_joins}
+            assert addition_for(result, "coupon_usages").new_relationships == ["transactions"]
+            named = {n for a in result.additions for n in a.named_relationships}
             assert named == {"coupon_usage", "transaction"}
-            assert addition_for(result, "transactions").named_joins == ["coupon_usage"]
+            assert addition_for(result, "transactions").named_relationships == ["coupon_usage"]
 
     async def test_second_fk_to_a_joined_target_merges_with_new_columns(self) -> None:
         async with live(BILLING_V1) as lv:
@@ -54,32 +55,32 @@ class TestReingestAddsFks:
             result = await lv.ingest()
 
             assert result.errors == []
-            orders = await lv.model("orders")
-            assert "note" in {c.name for c in orders.columns}
-            assert {j.name for j in orders.joins} == {"billing_address", "shipping_address"}
+            orders = await lv.dataset("orders")
+            assert "note" in {c.name for c in orders.fields}
+            assert {j.name for j in orders.relationships} == {"billing_address", "shipping_address"}
             addition = addition_for(result, "orders")
-            assert "note" in addition.new_columns
-            assert addition.new_joins == ["shipping_address"]
-            assert set(addition.named_joins) == {"billing_address", "shipping_address"}
+            assert "note" in addition.new_fields
+            assert addition.new_relationships == ["shipping_address"]
+            assert set(addition.named_relationships) == {"billing_address", "shipping_address"}
 
     async def test_unchanged_reingest_saves_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async with live(TWO_CYCLE + BILLING_SHIPPING) as lv:
             await lv.ingest()
             before = await lv.edges()
             saves: list[str] = []
-            original = lv.storage.save_model
+            original = lv.storage.save_dataset
 
             async def spy(model, *args, **kwargs):
                 saves.append(model.name)
                 return await original(model, *args, **kwargs)
 
-            monkeypatch.setattr(lv.storage, "save_model", spy)
+            monkeypatch.setattr(lv.storage, "save_dataset", spy)
             result = await lv.ingest()
 
             assert result.errors == []
             assert saves == []
             assert all(
-                not (a.created or a.new_columns or a.new_joins or a.named_joins)
+                not (a.created or a.new_fields or a.new_relationships or a.named_relationships)
                 for a in result.additions
             )
             assert await lv.edges() == before
@@ -93,10 +94,10 @@ async def _ingest_v1_then_upgrade(lv: Live) -> None:
 async def _snapshot(lv: Live) -> dict[str, tuple]:
     return {
         name: (
-            sorted(c.name for c in m.columns),
-            sorted((j.target_model, j.name, str(j.join_pairs), str(j.cardinality)) for j in m.joins),
+            sorted(c.name for c in m.fields),
+            sorted((j.to, j.name, str(j.column_pairs), str(j.cardinality)) for j in m.relationships),
         )
-        for name, m in (await lv.models()).items()
+        for name, m in (await lv.datasets()).items()
     }
 
 
@@ -107,14 +108,14 @@ class TestReingestConvergesFromAPartialSave:
         schema = COUPONS_V1 + BILLING_V1
         async with live(schema) as lv:
             await _ingest_v1_then_upgrade(lv)
-            original = lv.storage.save_model
+            original = lv.storage.save_dataset
             counted: list[str] = []
 
             async def count(model, *args, **kwargs):
                 counted.append(model.name)
                 return await original(model, *args, **kwargs)
 
-            monkeypatch.setattr(lv.storage, "save_model", count)
+            monkeypatch.setattr(lv.storage, "save_dataset", count)
             await lv.ingest()
             expected = await _snapshot(lv)
         assert len(counted) >= 3
@@ -122,7 +123,7 @@ class TestReingestConvergesFromAPartialSave:
         for failing_index in range(len(counted)):
             async with live(schema) as lv:
                 await _ingest_v1_then_upgrade(lv)
-                original = lv.storage.save_model
+                original = lv.storage.save_dataset
                 calls = {"n": 0}
 
                 async def fail_once(model, *args, _original=original, _calls=calls, _k=failing_index, **kwargs):
@@ -131,47 +132,51 @@ class TestReingestConvergesFromAPartialSave:
                         raise RuntimeError("injected save failure")
                     return await _original(model, *args, **kwargs)
 
-                monkeypatch.setattr(lv.storage, "save_model", fail_once)
+                monkeypatch.setattr(lv.storage, "save_dataset", fail_once)
                 try:
                     await lv.ingest()
                 except RuntimeError:
                     pass
-                monkeypatch.setattr(lv.storage, "save_model", original)
+                monkeypatch.setattr(lv.storage, "save_dataset", original)
 
                 await lv.ingest()
 
                 assert await _snapshot(lv) == expected, failing_index
 
 
-class TestEdgeNamesAndModelNamesShareANamespace:
-    async def test_new_table_named_like_a_stored_edge_is_skipped(self) -> None:
+class TestEdgeNamesMayEqualDatasetNames:
+    async def test_new_table_named_like_a_stored_edge_is_ingested(self) -> None:
         async with live(CHAIN) as lv:
             await lv.ingest()
-            orders = await lv.model("orders")
-            named = [j.model_copy(update={"name": "returns"}) for j in orders.joins]
-            await lv.storage.save_model(orders.model_copy(update={"joins": named}))
+            orders = await lv.dataset("orders")
+            named = [j.model_copy(update={"name": "returns"}) for j in orders.relationships]
+            await lv.storage.save_dataset(orders.model_copy(update={"relationships": named}))
             lv.run("CREATE TABLE returns (id INTEGER PRIMARY KEY, reason TEXT);")
 
             result = await lv.ingest()
 
-            assert await lv.storage.get_model("returns", data_source=DS) is None
-            skipped = [s for s in result.skipped if s.table_name == "returns"]
-            assert len(skipped) == 1
-            assert "returns" in skipped[0].reason
-            assert "orders" in skipped[0].reason
+            assert result.errors == []
+            assert await lv.storage.get_dataset("returns", data_source=DS) is not None
+            assert [s for s in result.skipped if s.table_name == "returns"] == []
+            by_name = await lv.datasets()
+            hop = resolve_hop(current=by_name["orders"], token="returns", datasets_by_name=by_name)
+            assert hop is not None
+            assert (hop.name, hop.to) == ("returns", "customers")
 
-    async def test_saving_a_model_named_like_a_stored_edge_is_rejected(self) -> None:
+    async def test_saving_a_dataset_named_like_a_stored_edge_saves(self) -> None:
         async with live(CHAIN) as lv:
             await lv.ingest()
-            orders = await lv.model("orders")
-            named = [j.model_copy(update={"name": "returns"}) for j in orders.joins]
-            await lv.storage.save_model(orders.model_copy(update={"joins": named}))
+            orders = await lv.dataset("orders")
+            named = [j.model_copy(update={"name": "returns"}) for j in orders.relationships]
+            await lv.storage.save_dataset(orders.model_copy(update={"relationships": named}))
 
-            returns = SlayerModel(
+            returns = SlayerDataset(
                 name="returns", data_source=DS, sql_table="returns",
-                columns=[Column(name="id", primary_key=True)],
+                fields=[DatasetField(name="id", primary_key=True)],
             )
-            with pytest.raises(ValueError, match="returns") as exc:
-                await lv.storage.save_model(returns)
-            assert "orders" in str(exc.value)
-            assert await lv.storage.get_model("returns", data_source=DS) is None
+            await lv.storage.save_dataset(returns)
+            assert await lv.storage.get_dataset("returns", data_source=DS) is not None
+            by_name = await lv.datasets()
+            hop = resolve_hop(current=by_name["orders"], token="returns", datasets_by_name=by_name)
+            assert hop is not None
+            assert (hop.name, hop.to) == ("returns", "customers")

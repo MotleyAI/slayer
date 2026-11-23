@@ -27,8 +27,8 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 
@@ -41,79 +41,79 @@ ALL_IDS = frozenset({1, 2, 3, 4, 5})
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
-def orders_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="city", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="discount", type=DataType.DOUBLE),
-            Column(name="price", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.INT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="created_txt", type=DataType.TEXT),
-            Column(name="code", type=DataType.TEXT),
-            Column(name="customer_name", type=DataType.TEXT),
-            Column(name="note", type=DataType.TEXT),
-            Column(name="path", type=DataType.TEXT),
-            Column(name="order total", sql="order_total", type=DataType.DOUBLE),
-            Column(name="payload", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.INTEGER),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="created_txt", datatype=DataType.STRING),
+            DatasetField(name="code", datatype=DataType.STRING),
+            DatasetField(name="customer_name", datatype=DataType.STRING),
+            DatasetField(name="note", datatype=DataType.STRING),
+            DatasetField(name="path", datatype=DataType.STRING),
+            DatasetField(name="order total", expression="order_total", datatype=DataType.FLOAT),
+            DatasetField(name="payload", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         aggregations=[
-            Aggregation(name="wsum", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight", sql="quantity")]),
-            Aggregation(name="rows", formula="COUNT(*)"),
-            Aggregation(name="per_order", formula="SUM({value}) / COUNT(DISTINCT id)"),
+            Aggregation(name="rows", expression="COUNT(*)"),
+            Aggregation(name="per_order", expression="SUM({value}) / COUNT(DISTINCT id)"),
         ],
-        measures=[ModelMeasure(name="paid_rows", formula="rows(amount) FILTER (WHERE status = 'paid')")],
+        metrics=[DatasetMetric(name="paid_rows", expression="rows(amount) FILTER (WHERE status = 'paid')")],
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="Region", type=DataType.TEXT),
-            Column(name="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="Region", datatype=DataType.STRING),
+            DatasetField(name="tier", datatype=DataType.STRING),
         ],
-        aggregations=[Aggregation(name="rows", formula="COUNT(*)")],
+        aggregations=[Aggregation(name="rows", expression="COUNT(*)")],
     )
 
 
-def balances_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def balances_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="balances", sql_table="balances", data_source=data_source,
         default_time_dimension="updated_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="balance", type=DataType.DOUBLE),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 
 
-def dev2101_models(*, data_source: str = "test") -> list[SlayerModel]:
-    return [orders_model(data_source=data_source), customers_model(data_source=data_source),
-            balances_model(data_source=data_source)]
+def dev2101_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
+    return [orders_dataset(data_source=data_source), customers_dataset(data_source=data_source),
+            balances_dataset(data_source=data_source)]
 
 
 # --------------------------------------------------------------------------- #
 # Data
 # --------------------------------------------------------------------------- #
-ORDER_COLUMNS = (
+ORDER_FIELDS = (
     "id", "customer_id", "region", "city", "status", "amount", "discount", "price", "quantity",
     "created_at", "order_date", "created_txt", "code", "customer_name", "note", "path", "order_total", "payload",
 )
@@ -129,9 +129,9 @@ ORDER_ROWS: list[tuple[Any, ...]] = [
     (5, 3, None, "Rome", "void", None, 2.0, 1.0, 4, "2024-03-15 08:00:00", "2024-03-15", None,
      None, "Lee", "x", "y", None, None),
 ]
-CUSTOMER_COLUMNS = ("id", "name", "Region", "tier")
+CUSTOMER_FIELDS = ("id", "name", "Region", "tier")
 CUSTOMER_ROWS: list[tuple[Any, ...]] = [(1, "A", "North", "gold"), (2, "B", "South", "silver"), (3, "C", None, "gold")]
-BALANCE_COLUMNS = ("id", "customer_id", "balance", "updated_at", "status")
+BALANCE_FIELDS = ("id", "customer_id", "balance", "updated_at", "status")
 BALANCE_ROWS: list[tuple[Any, ...]] = [
     (1, 1, 100.0, "2024-01-01 00:00:00", "active"),
     (2, 1, 150.0, "2024-02-01 00:00:00", "active"),
@@ -141,9 +141,9 @@ BALANCE_ROWS: list[tuple[Any, ...]] = [
     (6, 2, 80.0, "2024-03-15 00:00:00", "active"),
 ]
 TABLES = {
-    "orders": (ORDER_COLUMNS, ORDER_ROWS),
-    "customers": (CUSTOMER_COLUMNS, CUSTOMER_ROWS),
-    "balances": (BALANCE_COLUMNS, BALANCE_ROWS),
+    "orders": (ORDER_FIELDS, ORDER_ROWS),
+    "customers": (CUSTOMER_FIELDS, CUSTOMER_ROWS),
+    "balances": (BALANCE_FIELDS, BALANCE_ROWS),
 }
 
 #: Per-dialect (text, double, timestamp, identifier quote) spellings for the DDL.
@@ -201,7 +201,7 @@ async def engine_for(dialect: str) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev2101_models()) as (engine, _):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev2101_datasets()) as (engine, _):
         yield engine
 
 
@@ -216,75 +216,75 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 # --------------------------------------------------------------------------- #
 #: Row-level predicates and the order ids each keeps.
 PREDICATES: list[tuple[str, frozenset[int]]] = [
-    ("status = 'paid'", frozenset({1, 2, 4})),
-    ("status <> 'paid'", frozenset({3, 5})),
-    ("amount != 10", frozenset({2, 3, 4})),
-    ("discount IS NULL", frozenset({1, 4})),
-    ("discount IS NOT NULL", frozenset({2, 3, 5})),
-    ("region is None", frozenset({5})),
-    ("region IN ('EU', 'XX')", frozenset({1, 2})),
-    ("region NOT IN ('EU')", frozenset({3, 4})),
-    ("status = 'paid' AND amount > 15", frozenset({2, 4})),
-    ("status = 'void' OR amount < 15", frozenset({1, 5})),
-    ("NOT status = 'paid'", frozenset({3, 5})),
-    ("note LIKE 'we%'", frozenset({1, 2})),
-    ("note NOT LIKE 'we%'", frozenset({3, 5})),
-    ("lower(trim(note)) LIKE 'we like%'", frozenset({1, 2})),
-    ("note ILIKE 'WE LIKE%'", frozenset({1, 2})),
-    ("note NOT ILIKE 'we like%'", frozenset({3, 5})),
-    ("amount BETWEEN 10 AND 20", frozenset({1, 2})),
-    ("amount NOT BETWEEN 10 AND 20", frozenset({3, 4})),
-    ("region IS DISTINCT FROM 'EU'", frozenset({3, 4, 5})),
-    ("region IS NOT DISTINCT FROM 'EU'", frozenset({1, 2})),
-    ("region IS NOT DISTINCT FROM NULL", frozenset({5})),
-    ("(amount > 15) IS TRUE", frozenset({2, 3, 4})),
-    ("(amount > 15) IS NOT TRUE", frozenset({1, 5})),
-    ("(amount > 15) IS FALSE", frozenset({1})),
-    ("(amount > 15) IS NOT FALSE", frozenset({2, 3, 4, 5})),
-    ("status || '-' || region = 'paid-EU'", frozenset({1, 2})),
-    ("CAST(quantity AS TEXT) = '2'", frozenset({2, 4})),
-    ("quantity::text = '2'", frozenset({2, 4})),
-    ("EXTRACT(month FROM created_at) = 2", frozenset({3, 4})),
-    ("created_at > TIMESTAMP '2024-02-01 00:00:00'", frozenset({3, 4, 5})),
-    ("order_date >= DATE '2024-02-25'", frozenset({4, 5})),
-    ("order_date + INTERVAL '7 days' > DATE '2024-03-01'", frozenset({4, 5})),
-    ("order_date + INTERVAL '7' DAY > DATE '2024-03-01'", frozenset({4, 5})),
-    ("order_date + INTERVAL 7 DAY > DATE '2024-03-01'", frozenset({4, 5})),
-    ("order_date < CURRENT_DATE", ALL_IDS),
-    ("created_at < CURRENT_TIMESTAMP", ALL_IDS),
-    ("SUBSTRING(status FROM 1 FOR 3) = 'pai'", frozenset({1, 2, 4})),
-    ("POSITION('n' IN status) > 0", frozenset({3})),
-    ("customer_name = 'O''Brien'", frozenset({1})),
-    (r"path = 'C:\temp'", frozenset({1})),
-    ('"order total" >= 300', frozenset({3, 4})),
-    ("-amount < -25", frozenset({3, 4})),
-    ("quantity % 2 = 1", frozenset({1, 3})),
-    ("amount % 20 = 10", frozenset({1, 3})),
-    ("amount ** 2 > 500", frozenset({3, 4})),
-    ("CASE WHEN status = 'paid' THEN amount ELSE 0 END > 15", frozenset({2, 4})),
-    ("CASE status WHEN 'void' THEN 1 ELSE 0 END = 1", frozenset({5})),
+    ("orders.status = 'paid'", frozenset({1, 2, 4})),
+    ("orders.status <> 'paid'", frozenset({3, 5})),
+    ("orders.amount != 10", frozenset({2, 3, 4})),
+    ("orders.discount IS NULL", frozenset({1, 4})),
+    ("orders.discount IS NOT NULL", frozenset({2, 3, 5})),
+    ("orders.region is None", frozenset({5})),
+    ("orders.region IN ('EU', 'XX')", frozenset({1, 2})),
+    ("orders.region NOT IN ('EU')", frozenset({3, 4})),
+    ("orders.status = 'paid' AND orders.amount > 15", frozenset({2, 4})),
+    ("orders.status = 'void' OR orders.amount < 15", frozenset({1, 5})),
+    ("NOT orders.status = 'paid'", frozenset({3, 5})),
+    ("orders.note LIKE 'we%'", frozenset({1, 2})),
+    ("orders.note NOT LIKE 'we%'", frozenset({3, 5})),
+    ("lower(trim(orders.note)) LIKE 'we like%'", frozenset({1, 2})),
+    ("orders.note ILIKE 'WE LIKE%'", frozenset({1, 2})),
+    ("orders.note NOT ILIKE 'we like%'", frozenset({3, 5})),
+    ("orders.amount BETWEEN 10 AND 20", frozenset({1, 2})),
+    ("orders.amount NOT BETWEEN 10 AND 20", frozenset({3, 4})),
+    ("orders.region IS DISTINCT FROM 'EU'", frozenset({3, 4, 5})),
+    ("orders.region IS NOT DISTINCT FROM 'EU'", frozenset({1, 2})),
+    ("orders.region IS NOT DISTINCT FROM NULL", frozenset({5})),
+    ("(orders.amount > 15) IS TRUE", frozenset({2, 3, 4})),
+    ("(orders.amount > 15) IS NOT TRUE", frozenset({1, 5})),
+    ("(orders.amount > 15) IS FALSE", frozenset({1})),
+    ("(orders.amount > 15) IS NOT FALSE", frozenset({2, 3, 4, 5})),
+    ("orders.status || '-' || orders.region = 'paid-EU'", frozenset({1, 2})),
+    ("CAST(orders.quantity AS TEXT) = '2'", frozenset({2, 4})),
+    ("orders.quantity::text = '2'", frozenset({2, 4})),
+    ("EXTRACT(month FROM orders.created_at) = 2", frozenset({3, 4})),
+    ("orders.created_at > TIMESTAMP '2024-02-01 00:00:00'", frozenset({3, 4, 5})),
+    ("orders.order_date >= DATE '2024-02-25'", frozenset({4, 5})),
+    ("orders.order_date + INTERVAL '7 days' > DATE '2024-03-01'", frozenset({4, 5})),
+    ("orders.order_date + INTERVAL '7' DAY > DATE '2024-03-01'", frozenset({4, 5})),
+    ("orders.order_date + INTERVAL 7 DAY > DATE '2024-03-01'", frozenset({4, 5})),
+    ("orders.order_date < CURRENT_DATE", ALL_IDS),
+    ("orders.created_at < CURRENT_TIMESTAMP", ALL_IDS),
+    ("SUBSTRING(orders.status FROM 1 FOR 3) = 'pai'", frozenset({1, 2, 4})),
+    ("POSITION('n' IN orders.status) > 0", frozenset({3})),
+    ("orders.customer_name = 'O''Brien'", frozenset({1})),
+    ("orders.path = 'C:\\temp'", frozenset({1})),
+    ('orders."order total" >= 300', frozenset({3, 4})),
+    ("-orders.amount < -25", frozenset({3, 4})),
+    ("orders.quantity % 2 = 1", frozenset({1, 3})),
+    ("orders.amount % 20 = 10", frozenset({1, 3})),
+    ("orders.amount ** 2 > 500", frozenset({3, 4})),
+    ("CASE WHEN orders.status = 'paid' THEN orders.amount ELSE 0 END > 15", frozenset({2, 4})),
+    ("CASE orders.status WHEN 'void' THEN 1 ELSE 0 END = 1", frozenset({5})),
 ]
 PRED_IDS = [p for p, _ in PREDICATES]
 
 #: Row-level value forms and each order's value.
 VALUES: list[tuple[str, dict[int, Any]]] = [
-    ("status || '-' || region", {1: "paid-EU", 2: "paid-EU", 3: "Pending-US", 4: "paid-US", 5: None}),
-    ("CAST(quantity AS TEXT)", {1: "1", 2: "2", 3: "3", 4: "2", 5: "4"}),
-    ("quantity::text", {1: "1", 2: "2", 3: "3", 4: "2", 5: "4"}),
-    ("EXTRACT(month FROM created_at)", {1: 1, 2: 1, 3: 2, 4: 2, 5: 3}),
-    ("SUBSTRING(status FROM 2 FOR 3)", {1: "aid", 2: "aid", 3: "end", 4: "aid", 5: "oid"}),
-    ("POSITION('a' IN status)", {1: 2, 2: 2, 3: 0, 4: 2, 5: 0}),
-    ("quantity % 3", {1: 1, 2: 2, 3: 0, 4: 2, 5: 1}),
-    ("amount % 7", {1: 3, 2: 6, 3: 2, 4: 5, 5: None}),
-    ("amount ** 2", {1: 100, 2: 400, 3: 900, 4: 1600, 5: None}),
-    ("CASE WHEN amount > 15 THEN 'big' ELSE 'small' END", {1: "small", 2: "big", 3: "big", 4: "big", 5: "small"}),
-    ("date_diff('day', DATE '2024-01-01', order_date)", {1: 4, 2: 19, 3: 40, 4: 55, 5: 74}),
+    ("orders.status || '-' || orders.region", {1: "paid-EU", 2: "paid-EU", 3: "Pending-US", 4: "paid-US", 5: None}),
+    ("CAST(orders.quantity AS TEXT)", {1: "1", 2: "2", 3: "3", 4: "2", 5: "4"}),
+    ("orders.quantity::text", {1: "1", 2: "2", 3: "3", 4: "2", 5: "4"}),
+    ("EXTRACT(month FROM orders.created_at)", {1: 1, 2: 1, 3: 2, 4: 2, 5: 3}),
+    ("SUBSTRING(orders.status FROM 2 FOR 3)", {1: "aid", 2: "aid", 3: "end", 4: "aid", 5: "oid"}),
+    ("POSITION('a' IN orders.status)", {1: 2, 2: 2, 3: 0, 4: 2, 5: 0}),
+    ("orders.quantity % 3", {1: 1, 2: 2, 3: 0, 4: 2, 5: 1}),
+    ("orders.amount % 7", {1: 3, 2: 6, 3: 2, 4: 5, 5: None}),
+    ("orders.amount ** 2", {1: 100, 2: 400, 3: 900, 4: 1600, 5: None}),
+    ("CASE WHEN orders.amount > 15 THEN 'big' ELSE 'small' END", {1: "small", 2: "big", 3: "big", 4: "big", 5: "small"}),
+    ("date_diff('day', DATE '2024-01-01', orders.order_date)", {1: 4, 2: 19, 3: 40, 4: 55, 5: 74}),
 ]
 VALUE_IDS = [v for v, _ in VALUES]
 DATE_VALUES: list[tuple[str, dict[int, str]]] = [
-    ("order_date + INTERVAL '1 month'", {1: "2024-02-05", 2: "2024-02-20", 3: "2024-03-10", 4: "2024-03-25",
+    ("orders.order_date + INTERVAL '1 month'", {1: "2024-02-05", 2: "2024-02-20", 3: "2024-03-10", 4: "2024-03-25",
                                          5: "2024-04-15"}),
-    ("order_date - INTERVAL 2 DAY", {1: "2024-01-03", 2: "2024-01-18", 3: "2024-02-08", 4: "2024-02-23",
+    ("orders.order_date - INTERVAL 2 DAY", {1: "2024-01-03", 2: "2024-01-18", 3: "2024-02-08", 4: "2024-02-23",
                                      5: "2024-03-13"}),
 ]
 
@@ -293,30 +293,30 @@ DATE_VALUES: list[tuple[str, dict[int, str]]] = [
 # Query shorthands and readers
 # --------------------------------------------------------------------------- #
 def q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+    return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(formula: str, name: str = "v") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
-def ids(resp: SlayerResponse, *, model: str = "orders") -> set[int]:
-    return {int(r[f"{model}.id"]) for r in resp.data}
+def ids(resp: SlayerResponse, *, dataset: str = "orders") -> set[int]:
+    return {int(r[f"{dataset}.id"]) for r in resp.data}
 
 
-def ordered_ids(resp: SlayerResponse, *, model: str = "orders") -> list[int]:
-    return [int(r[f"{model}.id"]) for r in resp.data]
+def ordered_ids(resp: SlayerResponse, *, dataset: str = "orders") -> list[int]:
+    return [int(r[f"{dataset}.id"]) for r in resp.data]
 
 
-def by_key(resp: SlayerResponse, key: str, value: str = "v", *, model: str = "orders") -> dict:
-    out = {r[f"{model}.{key}"]: r[f"{model}.{value}"] for r in resp.data}
+def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str | None = "orders") -> dict:
+    out = {r[key if dataset is None else f"{dataset}.{key}"]: r[value] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {key}"
     return out
 
 
-def single(resp: SlayerResponse, name: str = "v", *, model: str = "orders") -> Any:
+def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{model}.{name}"]
+    return resp.data[0][name]
 
 
 def num(value: Any) -> float | None:
@@ -328,11 +328,11 @@ def day(value: Any) -> str | None:
     return None if value is None else str(value)[:10]
 
 
-async def emit(query: SlayerQuery, *, dialect: str, models: Iterable[SlayerModel] | None = None,
+async def emit(query: SlayerQuery, *, dialect: str, datasets: Iterable[SlayerDataset] | None = None,
                datasource_fields: dict | None = None) -> str:
-    """Dry-run SQL for ``query`` over the dev2101 models on ``dialect`` (asserts it parses there)."""
-    first, *rest = list(models) if models is not None else dev2101_models()
-    return await _engine_generate(query=query, model=first, extra_models=rest, dialect=dialect,
+    """Dry-run SQL for ``query`` over the dev2101 datasets on ``dialect`` (asserts it parses there)."""
+    first, *rest = list(datasets) if datasets is not None else dev2101_datasets()
+    return await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect,
                                   datasource_fields=datasource_fields)
 
 
@@ -357,14 +357,14 @@ CITY_ORDER = {
 
 def discount_rows_query(*, direction: str, nulls: str) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "orders", "dimensions": ["id"], "distinct_dimension_values": False,
-        "order": [{"column": "discount", "direction": direction, "nulls": nulls}, {"column": "id"}],
+        "population": "orders", "dimensions": ["orders.id"], "distinct_dimension_values": False,
+        "order": [{"field": "orders.discount", "direction": direction, "nulls": nulls}, {"field": "orders.id"}],
     })
 
 
 def hidden_max_query(*, direction: str, nulls: str) -> SlayerQuery:
-    return q(dimensions=["city"], order=[
-        {"column": "max(discount)", "direction": direction, "nulls": nulls}, {"column": "city"},
+    return q(dimensions=["orders.city"], order=[
+        {"field": "max(orders.discount)", "direction": direction, "nulls": nulls}, {"field": "orders.city"},
     ])
 
 
@@ -397,19 +397,19 @@ def seed_server(cursor: Any, *, dialect: str) -> None:
 async def check_server_forms(engine: SlayerQueryEngine) -> None:
     """Every SQL-form predicate as a filter, and the forms the spec pins on every Tier-1 dialect."""
     for pred, expected in PREDICATES:
-        resp = await engine.execute(q(dimensions=["id"], filters=[pred]))
+        resp = await engine.execute(q(dimensions=["orders.id"], filter=[pred]))
         assert ids(resp) == expected, (pred, resp.sql)
     for expr, values in VALUES:
-        resp = await engine.execute(q(dimensions=["id", {"expression": expr, "name": "x"}]))
+        resp = await engine.execute(q(dimensions=["orders.id", {"field": expr, "alias": "x"}]))
         got = {int(k): (v if v is None or isinstance(v, str) else float(v)) for k, v in by_key(resp, "id", "x").items()}
         want = {k: (v if v is None or isinstance(v, str) else float(v)) for k, v in values.items()}
         assert got == want, (expr, resp.sql)
-    assert num(single(await engine.execute(q(measures=[m("min(-7 % 3)")])))) == -1
+    assert num(single(await engine.execute(q(metrics=[m("min(-7 % 3)")])))) == -1
 
 
 async def check_try_cast(engine: SlayerQueryEngine, *, nulls_invalid: bool = True) -> None:
     """``TRY_CAST(code AS INT)``: 12 / NULL / NULL / 7 / NULL; ``nulls_invalid=False`` expects the database's error."""
-    query = q(dimensions=["id", {"expression": "TRY_CAST(code AS INT)", "name": "x"}])
+    query = q(dimensions=["orders.id", {"field": "TRY_CAST(orders.code AS INT)", "alias": "x"}])
     if not nulls_invalid:
         sql = (await engine.execute(query, dry_run=True)).sql or ""
         assert "PG_INPUT_IS_VALID" not in sql.upper(), sql
@@ -422,18 +422,18 @@ async def check_try_cast(engine: SlayerQueryEngine, *, nulls_invalid: bool = Tru
 
 
 async def check_filtered_aggregations(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(dimensions=["region"], measures=[m("count(*) FILTER (WHERE status = 'paid')")]))
+    resp = await engine.execute(q(dimensions=["orders.region"], metrics=[m("count(orders.*) FILTER (WHERE orders.status = 'paid')")]))
     assert {k: num(v) for k, v in by_key(resp, "region").items()} == {"EU": 2, "US": 1, None: 0}, resp.sql
-    resp = await engine.execute(q(measures=[m("weighted_avg(price, weight=quantity) FILTER (WHERE status = 'paid')")]))
+    resp = await engine.execute(q(metrics=[m("weighted_avg(orders.price, weight=orders.quantity) FILTER (WHERE orders.status = 'paid')")]))
     assert num(single(resp)) == pytest.approx(3.6), resp.sql
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "balances", "dimensions": ["customer_id"],
-        "measures": [{"formula": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
+        "population": "balances", "dimensions": ["balances.customer_id"],
+        "metrics": [{"metric": "last(balances.balance, balances.updated_at) FILTER (WHERE balances.status = 'active')", "alias": "v"}],
     }))
-    assert {int(k): num(v) for k, v in by_key(resp, "customer_id", model="balances").items()} == {1: 150.0, 2: 80.0}
+    assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 150.0, 2: 80.0}
 
 
-#: Custom aggregations FILTERed to the paid rows: (formula, by region, ungrouped).
+#: Custom aggregations FILTERed to the paid rows: (expression, by region, ungrouped).
 CUSTOM_PAID: list[tuple[str, dict[Any, float | None], float]] = [
     ("rows(amount)", {"EU": 2, "US": 1, None: None}, 3),
     ("per_order(amount)", {"EU": 15, "US": 40, None: None}, 70 / 3),
@@ -441,13 +441,13 @@ CUSTOM_PAID: list[tuple[str, dict[Any, float | None], float]] = [
 
 
 async def check_filtered_custom_aggregations(engine: SlayerQueryEngine) -> None:
-    """A FILTERed custom aggregation restricts every row its formula reads, inline and as a saved measure."""
+    """A FILTERed custom aggregation restricts every row its expression reads, inline and as a saved metric."""
     for formula, by_region, total in CUSTOM_PAID:
         measure = m(f"{formula} FILTER (WHERE status = 'paid')")
-        resp = await engine.execute(q(dimensions=["region"], measures=[measure]))
+        resp = await engine.execute(q(dimensions=["orders.region"], metrics=[measure]))
         got = {k: num(v) for k, v in by_key(resp, "region").items()}
         assert got == pytest.approx(by_region), (formula, resp.sql)
-        assert num(single(await engine.execute(q(measures=[measure])))) == pytest.approx(total), formula
-    resp = await engine.execute(q(dimensions=["region"], measures=["paid_rows"]))
-    assert {k: num(v) for k, v in by_key(resp, "region", "paid_rows").items()} == {"EU": 2, "US": 1, None: None}
-    assert num(single(await engine.execute(q(measures=["paid_rows"])), "paid_rows")) == 3
+        assert num(single(await engine.execute(q(metrics=[measure])))) == pytest.approx(total), formula
+    resp = await engine.execute(q(dimensions=["orders.region"], metrics=["orders.paid_rows"]))
+    assert {k: num(v) for k, v in by_key(resp, "region", "orders.paid_rows").items()} == {"EU": 2, "US": 1, None: None}
+    assert num(single(await engine.execute(q(metrics=["orders.paid_rows"])), "orders.paid_rows")) == 3

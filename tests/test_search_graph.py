@@ -15,6 +15,7 @@ import asyncio
 import os
 import tempfile
 from collections.abc import AsyncIterator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -23,12 +24,13 @@ import pytest_asyncio
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
+from slayer.search import graph as search_graph
 from slayer.search.graph import (
     _validate_cypher,
     build_graph,
@@ -39,6 +41,7 @@ from slayer.search.graph import (
 from slayer.search.service import SearchResponse, SearchService
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._loop_gated_stub import gated
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +51,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 @pytest_asyncio.fixture
 async def rich_storage() -> AsyncIterator[YAMLStorage]:
-    """2 datasources, 3 models (joins, measures, custom aggregations), 4
+    """2 datasources, 3 datasets (relationships, metrics, custom aggregations), 4
     memories — including one memory→memory cross-reference."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
@@ -60,28 +63,28 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
             DatasourceConfig(name="analytics", type="sqlite", database=":memory:")
         )
 
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="shop",
                 description="Order transactions",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(
+                fields=[
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(
                         name="amount",
-                        sql="amount",
-                        type=DataType.DOUBLE,
+                        expression="amount",
+                        datatype=DataType.FLOAT,
                         label="Order amount",
                         description="Net order value in USD",
                     ),
-                    Column(name="status", sql="status", type=DataType.TEXT),
-                    Column(name="customer_id", type=DataType.INT, hidden=True),
+                    DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                    DatasetField(name="customer_id", datatype=DataType.INTEGER, hidden=True),
                 ],
-                measures=[
-                    ModelMeasure(
+                metrics=[
+                    DatasetMetric(
                         name="total_revenue",
-                        formula="sum(amount)",
+                        expression="sum(amount)",
                         label="Total revenue",
                         description="Sum of order amounts",
                     )
@@ -89,48 +92,48 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 aggregations=[
                     Aggregation(
                         name="weighted_avg",
-                        formula="SUM({col} * weight) / SUM(weight)",
+                        expression="SUM({col} * weight) / SUM(weight)",
                     )
                 ],
-                joins=[
-                    ModelJoin(
-                        target_model="customers",
-                        join_pairs=[["customer_id", "id"]],
+                relationships=[
+                    DatasetRelationship(
+                        to="customers",
+                        from_columns=["customer_id"], to_columns=["id"],
                     )
                 ],
             )
         )
 
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="shop",
                 description="Customer master data",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(name="email", sql="email", type=DataType.TEXT),
-                    Column(name="region", sql="region", type=DataType.TEXT),
+                fields=[
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="email", expression="email", datatype=DataType.STRING),
+                    DatasetField(name="region", expression="region", datatype=DataType.STRING),
                 ],
             )
         )
 
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="events",
                 sql_table="events",
                 data_source="analytics",
                 description="Clickstream events",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(
-                        name="event_type", sql="event_type", type=DataType.TEXT
+                fields=[
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(
+                        name="event_type", expression="event_type", datatype=DataType.STRING
                     ),
                 ],
             )
         )
 
-        # 4 memories: 2 tagged on shop columns, 1 on analytics model,
+        # 4 memories: 2 tagged on shop fields, 1 on analytics dataset,
         # 1 with a memory→memory cross-reference.
         mem1 = await storage.save_memory(
             learning="Orders with status=cancelled must be excluded from revenue.",
@@ -155,20 +158,20 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
 
 @pytest_asyncio.fixture
 async def shop_only_storage() -> AsyncIterator[YAMLStorage]:
-    """Minimal shop datasource with one model — used for fingerprint/cache tests."""
+    """Minimal shop datasource with one dataset — used for fingerprint/cache tests."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(
             DatasourceConfig(name="shop", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="shop",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -184,6 +187,27 @@ async def shop_only_storage() -> AsyncIterator[YAMLStorage]:
 def test_is_available_returns_bool() -> None:
     result = is_available()
     assert isinstance(result, bool)
+
+
+@pytest.mark.parametrize("value", [True, False])
+async def test_is_available_async_honours_a_stub_off_the_loop(
+    monkeypatch: pytest.MonkeyPatch, value: bool,
+) -> None:
+    check = gated(fn=lambda: value)
+    monkeypatch.setattr(search_graph, "is_available", check)
+    assert await search_graph.is_available_async() is value
+    check.assert_loop_stayed_free()
+
+
+async def test_get_filtered_ids_availability_check_keeps_the_loop_free(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    check = gated()
+    monkeypatch.setattr(search_graph, "is_available", check)
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="requires LadybugDB"):
+        await get_filtered_ids("MATCH (n:Dataset) RETURN n.id AS id", storage)
+    check.assert_loop_stayed_free()
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +242,7 @@ async def test_yaml_storage_fingerprint_changes_after_delete(
     shop_only_storage: YAMLStorage,
 ) -> None:
     fp_before = await shop_only_storage.graph_fingerprint()
-    await shop_only_storage.delete_model("orders", data_source="shop")
+    await shop_only_storage.delete_dataset("orders", data_source="shop")
     fp_after = await shop_only_storage.graph_fingerprint()
     assert fp_after != fp_before
 
@@ -248,12 +272,12 @@ async def test_sqlite_storage_fingerprint_changes_after_write() -> None:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="m",
                 sql_table="m",
                 data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             )
         )
         fp_before = await storage.graph_fingerprint()
@@ -307,7 +331,7 @@ async def test_graph_datasource_node_count(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_graph_model_node_count(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model) RETURN m.id AS id", rich_storage
+        "MATCH (m:Dataset) RETURN m.id AS id", rich_storage
     )
     assert len(ids) == 3
     assert "shop.orders" in ids
@@ -319,7 +343,7 @@ async def test_graph_model_node_count(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_graph_column_node_count(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:ModelColumn) RETURN c.id AS id", rich_storage
+        "MATCH (c:DatasetField) RETURN c.id AS id", rich_storage
     )
     # orders: 3, customers: 3, events: 2 → 8 total
     assert len(ids) == 8
@@ -329,7 +353,7 @@ async def test_graph_column_node_count(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_graph_measure_node_count(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (ms:Measure) RETURN ms.id AS id", rich_storage
+        "MATCH (ms:Metric) RETURN ms.id AS id", rich_storage
     )
     assert len(ids) == 1
     assert "shop.orders.total_revenue" in ids
@@ -366,18 +390,18 @@ async def test_memory_node_learning_property(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_column_node_data_type_property(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:ModelColumn {data_type: 'DOUBLE'}) RETURN c.id AS id",
+        "MATCH (c:DatasetField {data_type: 'Float'}) RETURN c.id AS id",
         rich_storage,
     )
     assert "shop.orders.amount" in ids
-    assert "shop.orders.status" not in ids  # TEXT, not DOUBLE
+    assert "shop.orders.status" not in ids  # String, not Float
 
 
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 @pytest.mark.asyncio
 async def test_model_description_property(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model) WHERE m.description CONTAINS 'Order' "
+        "MATCH (m:Dataset) WHERE m.description CONTAINS 'Order' "
         "RETURN m.id AS id",
         rich_storage,
     )
@@ -385,7 +409,7 @@ async def test_model_description_property(rich_storage: YAMLStorage) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1549 round 6: Memory.description and Datasource.description
+# Memory.description and Datasource.description
 # expose the new fields on the graph so cypher_filter can match them.
 # ---------------------------------------------------------------------------
 
@@ -403,9 +427,9 @@ async def descriptions_storage() -> AsyncIterator[YAMLStorage]:
             database=":memory:",
             description="warehouse_reconciliation_alpha unique term",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         await storage.save_memory(
             learning="orders body",
@@ -448,21 +472,21 @@ async def test_datasource_description_property(
 async def test_aggregation_description_property(
     rich_storage: YAMLStorage,
 ) -> None:
-    """DEV-1549 (round-7 codex): Aggregation nodes carry their
+    """Aggregation nodes carry their
     ``description`` so cypher_filter can match on aggregation
-    descriptions in parity with model/column/measure."""
+    descriptions in parity with dataset/field/metric."""
     # The rich_storage fixture seeds shop.orders with a custom
     # aggregation ``weighted_avg`` that has no description; create a
-    # second, described aggregation on the same model to exercise the
-    # description column.
-    orders = await rich_storage.get_model("orders", data_source="shop")
+    # second, described aggregation on the same dataset to exercise the
+    # description property.
+    orders = await rich_storage.get_dataset("orders", data_source="shop")
     assert orders is not None
     orders.aggregations.append(Aggregation(
         name="distinctive_agg",
-        formula="SUM({col})",
+        expression="SUM({col})",
         description="aggregation_token_omega unique description term",
     ))
-    await rich_storage.save_model(orders)
+    await rich_storage.save_dataset(orders)
     clear_cache()  # invalidate the prior graph build
 
     ids = await get_filtered_ids(
@@ -482,7 +506,7 @@ async def test_aggregation_description_property(
 @pytest.mark.asyncio
 async def test_mentions_memory_to_column(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Memory)-[:MENTIONS]->(c:ModelColumn {id: 'shop.orders.amount'}) "
+        "MATCH (m:Memory)-[:MENTIONS]->(c:DatasetField {id: 'shop.orders.amount'}) "
         "RETURN m.id AS id",
         rich_storage,
     )
@@ -493,7 +517,7 @@ async def test_mentions_memory_to_column(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_mentions_memory_to_model(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Memory)-[:MENTIONS]->(e:Model {id: 'analytics.events'}) "
+        "MATCH (m:Memory)-[:MENTIONS]->(e:Dataset {id: 'analytics.events'}) "
         "RETURN m.id AS id",
         rich_storage,
     )
@@ -523,19 +547,19 @@ async def test_mentions_memory_to_datasource(rich_storage: YAMLStorage) -> None:
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 @pytest.mark.asyncio
 async def test_mentions_memory_to_measure(rich_storage: YAMLStorage) -> None:
-    """MENTIONS to a Measure node (memory entity tag at measure level)."""
+    """MENTIONS to a Metric node (memory entity tag at metric level)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-                measures=[ModelMeasure(name="rev", formula="sum(id)")],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+                metrics=[DatasetMetric(name="rev", expression="sum(id)")],
             )
         )
         await storage.save_memory(
@@ -544,7 +568,7 @@ async def test_mentions_memory_to_measure(rich_storage: YAMLStorage) -> None:
         clear_cache()
 
         ids = await get_filtered_ids(
-            "MATCH (m:Memory)-[:MENTIONS]->(ms:Measure) RETURN m.id AS id",
+            "MATCH (m:Memory)-[:MENTIONS]->(ms:Metric) RETURN m.id AS id",
             storage,
         )
         assert len(ids) == 1
@@ -578,7 +602,7 @@ async def test_memory_id_stored_as_canonical_form(rich_storage: YAMLStorage) -> 
 @pytest.mark.asyncio
 async def test_contains_datasource_to_model(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS]->(m:Model) "
+        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS]->(m:Dataset) "
         "RETURN m.id AS id",
         rich_storage,
     )
@@ -589,7 +613,7 @@ async def test_contains_datasource_to_model(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_contains_model_to_column(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model {id: 'shop.orders'})-[:CONTAINS]->(c:ModelColumn) "
+        "MATCH (m:Dataset {id: 'shop.orders'})-[:CONTAINS]->(c:DatasetField) "
         "RETURN c.id AS id",
         rich_storage,
     )
@@ -600,7 +624,7 @@ async def test_contains_model_to_column(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_contains_model_to_measure(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model {id: 'shop.orders'})-[:CONTAINS]->(ms:Measure) "
+        "MATCH (m:Dataset {id: 'shop.orders'})-[:CONTAINS]->(ms:Metric) "
         "RETURN ms.id AS id",
         rich_storage,
     )
@@ -611,7 +635,7 @@ async def test_contains_model_to_measure(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_contains_model_to_aggregation(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model {id: 'shop.orders'})-[:CONTAINS]->(a:Aggregation) "
+        "MATCH (m:Dataset {id: 'shop.orders'})-[:CONTAINS]->(a:Aggregation) "
         "RETURN a.id AS id",
         rich_storage,
     )
@@ -624,7 +648,7 @@ async def test_contains_multi_hop_datasource_to_column(
     rich_storage: YAMLStorage,
 ) -> None:
     ids = await get_filtered_ids(
-        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*2]->(c:ModelColumn) "
+        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*2]->(c:DatasetField) "
         "RETURN c.id AS id",
         rich_storage,
     )
@@ -634,7 +658,7 @@ async def test_contains_multi_hop_datasource_to_column(
 
 
 # ---------------------------------------------------------------------------
-# JOINS edges (requires ladybug)
+# RELATIONSHIPS edges (requires ladybug)
 # ---------------------------------------------------------------------------
 
 
@@ -642,7 +666,7 @@ async def test_contains_multi_hop_datasource_to_column(
 @pytest.mark.asyncio
 async def test_joins_model_to_model(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model {id: 'shop.orders'})-[:JOINS]->(t:Model) "
+        "MATCH (m:Dataset {id: 'shop.orders'})-[:RELATIONSHIPS]->(t:Dataset) "
         "RETURN t.id AS id",
         rich_storage,
     )
@@ -658,23 +682,23 @@ async def test_joins_model_to_model(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_multi_label_union_column_and_measure(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (n:ModelColumn:Measure) RETURN n.id AS id", rich_storage
+        "MATCH (n:DatasetField:Metric) RETURN n.id AS id", rich_storage
     )
-    assert "shop.orders.amount" in ids          # Column
-    assert "shop.orders.total_revenue" in ids   # Measure
+    assert "shop.orders.amount" in ids          # DatasetField
+    assert "shop.orders.total_revenue" in ids   # Metric
 
 
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 @pytest.mark.asyncio
 async def test_multi_label_all_data_model_entities(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (n:Datasource:Model:ModelColumn:Measure:Aggregation) RETURN n.id AS id",
+        "MATCH (n:Datasource:Dataset:DatasetField:Metric:Aggregation) RETURN n.id AS id",
         rich_storage,
     )
     assert "shop" in ids                        # Datasource
-    assert "shop.orders" in ids                 # Model
-    assert "shop.orders.amount" in ids          # Column
-    assert "shop.orders.total_revenue" in ids   # Measure
+    assert "shop.orders" in ids                 # Dataset
+    assert "shop.orders.amount" in ids          # DatasetField
+    assert "shop.orders.total_revenue" in ids   # Metric
     assert "shop.orders.weighted_avg" in ids    # Aggregation
     assert not any(id_.startswith("memory:") for id_ in ids)
 
@@ -692,20 +716,20 @@ async def test_hidden_column_excluded_from_graph() -> None:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="ds",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="internal_flag", type=DataType.TEXT, hidden=True),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="internal_flag", datatype=DataType.STRING, hidden=True),
                 ],
             )
         )
         clear_cache()
         all_cols = await get_filtered_ids(
-            "MATCH (c:ModelColumn) RETURN c.id AS id", storage
+            "MATCH (c:DatasetField) RETURN c.id AS id", storage
         )
         assert "ds.orders.internal_flag" not in all_cols
         assert "ds.orders.id" in all_cols
@@ -719,28 +743,28 @@ async def test_hidden_model_excluded_from_graph() -> None:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="visible",
                 sql_table="visible",
                 data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             )
         )
-        await storage.save_model(
-            SlayerModel(
-                name="hidden_model",
+        await storage.save_dataset(
+            SlayerDataset(
+                name="hidden_dataset",
                 sql_table="hidden_table",
                 data_source="ds",
                 hidden=True,
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             )
         )
         clear_cache()
         ids = await get_filtered_ids(
-            "MATCH (m:Model) RETURN m.id AS id", storage
+            "MATCH (m:Dataset) RETURN m.id AS id", storage
         )
-        assert "ds.hidden_model" not in ids
+        assert "ds.hidden_dataset" not in ids
         assert "ds.visible" in ids
 
 
@@ -755,7 +779,7 @@ async def test_cache_hit_does_not_rebuild(shop_only_storage: YAMLStorage) -> Non
 
     with patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build:
         await get_filtered_ids(
-            "MATCH (m:Model) RETURN m.id AS id", shop_only_storage
+            "MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage
         )
         await get_filtered_ids(
             "MATCH (d:Datasource) RETURN d.id AS id", shop_only_storage
@@ -769,7 +793,7 @@ async def test_cache_miss_after_storage_write(shop_only_storage: YAMLStorage) ->
 
     with patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build:
         await get_filtered_ids(
-            "MATCH (m:Model) RETURN m.id AS id", shop_only_storage
+            "MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage
         )
         first_count = mock_build.call_count
 
@@ -795,12 +819,12 @@ async def test_two_storage_paths_use_independent_caches() -> None:
             await s.save_datasource(
                 DatasourceConfig(name=ds_name, type="sqlite", database=":memory:")
             )
-            await s.save_model(
-                SlayerModel(
+            await s.save_dataset(
+                SlayerDataset(
                     name="m",
                     sql_table="m",
                     data_source=ds_name,
-                    columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                    fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
                 )
             )
         clear_cache()
@@ -832,7 +856,7 @@ async def test_concurrent_rebuild_rebuilds_once(
     clear_cache()
     with patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build:
         await asyncio.gather(
-            get_filtered_ids("MATCH (m:Model) RETURN m.id AS id", shop_only_storage),
+            get_filtered_ids("MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage),
             get_filtered_ids("MATCH (d:Datasource) RETURN d.id AS id", shop_only_storage),
         )
         assert mock_build.call_count == 1
@@ -844,7 +868,7 @@ async def test_inaccessible_fingerprint_triggers_rebuild(
     shop_only_storage: YAMLStorage,
 ) -> None:
 
-    await get_filtered_ids("MATCH (m:Model) RETURN m.id AS id", shop_only_storage)
+    await get_filtered_ids("MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage)
 
     with (
         patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build,
@@ -854,7 +878,7 @@ async def test_inaccessible_fingerprint_triggers_rebuild(
             side_effect=OSError("disk read failed"),
         ),
     ):
-        await get_filtered_ids("MATCH (m:Model) RETURN m.id AS id", shop_only_storage)
+        await get_filtered_ids("MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage)
         assert mock_build.call_count == 1
 
 
@@ -867,15 +891,15 @@ def test_validate_cypher_accepts_match_return() -> None:
 
     _validate_cypher("MATCH (m:Memory) RETURN m.id AS id")
     _validate_cypher(
-        "MATCH (m:Memory)-[:MENTIONS]->(e:ModelColumn) WHERE e.id = 'x' RETURN m.id AS id"
+        "MATCH (m:Memory)-[:MENTIONS]->(e:DatasetField) WHERE e.id = 'x' RETURN m.id AS id"
     )
     _validate_cypher(
-        "MATCH (e:ModelColumn)<-[:CONTAINS*1..3]-(d:Datasource) RETURN e.id AS id"
+        "MATCH (e:DatasetField)<-[:CONTAINS*1..3]-(d:Datasource) RETURN e.id AS id"
     )
 
 
 def test_validate_cypher_accepts_leading_whitespace_and_case_variants() -> None:
-    """The MATCH-prefix allowlist (DEV-1464) is case-insensitive and
+    """The MATCH-prefix allowlist is case-insensitive and
     tolerates leading whitespace."""
 
     _validate_cypher("  MATCH (m:Memory) RETURN m.id AS id")
@@ -903,7 +927,7 @@ def test_validate_cypher_accepts_leading_whitespace_and_case_variants() -> None:
         "MATCH (m:Memory) RETURN m.id",
         # Multiple statements
         "MATCH (m:Memory) RETURN m.id AS id; MATCH (n) RETURN n.id AS id",
-        # DEV-1464 / Codex round-2 finding: the validator was an
+        # Codex round-2 finding: the validator was an
         # under-constrained denylist. Non-mutating but still-dangerous
         # Kuzu clauses (LOAD FROM file, UNWIND scan, IMPORT/EXPORT,
         # INSTALL/LOAD extension) used to pass the mutation-keyword
@@ -936,7 +960,7 @@ def test_validate_cypher_rejects_invalid(bad_cypher: str) -> None:
 @pytest.mark.asyncio
 async def test_cypher_property_filter(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:ModelColumn {id: 'shop.orders.amount'}) RETURN c.id AS id",
+        "MATCH (c:DatasetField {id: 'shop.orders.amount'}) RETURN c.id AS id",
         rich_storage,
     )
     assert ids == {"shop.orders.amount"}
@@ -948,12 +972,12 @@ async def test_cypher_path_traversal_memories_of_model(
     rich_storage: YAMLStorage,
 ) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Memory)-[:MENTIONS]->(e:ModelColumn) "
+        "MATCH (m:Memory)-[:MENTIONS]->(e:DatasetField) "
         "WHERE e.id STARTS WITH 'shop.orders.' "
         "RETURN m.id AS id",
         rich_storage,
     )
-    # Only mem1 mentions shop.orders.* columns
+    # Only mem1 mentions shop.orders.* fields
     assert len(ids) == 1
 
 
@@ -1118,7 +1142,7 @@ async def test_ladybug_not_installed_without_filter_no_warning(
 async def test_candidate_ids_narrow_memory_corpus_seen_by_retrievers(
     rich_storage: YAMLStorage,
 ) -> None:
-    """Under the DEV-1514 retriever-orchestrator model, candidate_ids
+    """Under the retriever-orchestrator model, candidate_ids
     is not threaded into each retriever's ``retrieve`` call. Instead,
     the orchestrator pre-filters ``all_memories`` against the allowlist
     BEFORE fan-out so each retriever sees only the surviving memory
@@ -1174,7 +1198,7 @@ async def test_candidate_ids_results_are_exact_subset_of_cypher_output(
     Cypher — no memory outside the candidate set must surface."""
     # Cypher: only the memory that mentions shop.orders.amount
     cypher = (
-        "MATCH (m:Memory)-[:MENTIONS]->(c:ModelColumn {id: 'shop.orders.amount'}) "
+        "MATCH (m:Memory)-[:MENTIONS]->(c:DatasetField {id: 'shop.orders.amount'}) "
         "RETURN m.id AS id"
     )
     expected_candidates = await get_filtered_ids(cypher, rich_storage)
@@ -1207,13 +1231,13 @@ async def test_cypher_filter_and_datasource_are_intersected(
     rich_storage: YAMLStorage,
 ) -> None:
     service = SearchService(storage=rich_storage)
-    # Cypher returns memories mentioning shop columns; datasource='analytics'
+    # Cypher returns memories mentioning shop fields; datasource='analytics'
     # scopes the corpus → intersection is empty
     response = await service.search(
         entities=["shop.orders.amount"],
         datasource="analytics",
         cypher_filter=(
-            "MATCH (m:Memory)-[:MENTIONS]->(c:ModelColumn) "
+            "MATCH (m:Memory)-[:MENTIONS]->(c:DatasetField) "
             "WHERE c.id STARTS WITH 'shop.' "
             "RETURN m.id AS id"
         ),
@@ -1278,7 +1302,7 @@ def test_validate_cypher_accepts_mutation_keyword_in_string_literal() -> None:
     )
     # Double-quoted literal with DROP.
     _validate_cypher(
-        'MATCH (c:ModelColumn) WHERE c.description = "drop rate" RETURN c.id AS id'
+        'MATCH (c:DatasetField) WHERE c.description = "drop rate" RETURN c.id AS id'
     )
 
 
@@ -1288,7 +1312,7 @@ def test_validate_cypher_still_rejects_bare_mutation_keyword() -> None:
     embedded-mutation case (query starts with MATCH but smuggles a SET
     after) is the one that exercises the keyword denylist directly; the
     bare-CALL case is now caught one layer earlier by the
-    must-start-with-MATCH allowlist (DEV-1464 round 2)."""
+    must-start-with-MATCH allowlist."""
 
     with pytest.raises(ValueError, match="mutation keyword"):
         _validate_cypher("MATCH (m:Memory) SET m.x = 1 RETURN m.id AS id")

@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_search_service_orchestration.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  }
+ ]
+}

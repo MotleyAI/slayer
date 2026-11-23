@@ -1,0 +1,28 @@
+{
+ "source": "tests/test_mcp_query_arg_errors.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "name": "a",
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 15,
+   "reason": "not a standalone query: ValidationError"
+  }
+ ]
+}

@@ -1,7 +1,7 @@
 # Importing Cube definitions
 
 SLayer can import [Cube](https://cube.dev) (Cube.js / Cube.dev) data models —
-cubes and views, in **YAML or JavaScript** — and convert them to SLayer models.
+cubes and views, in **YAML or JavaScript** — and convert them to SLayer datasets.
 The conversion works offline (data types then come from Cube's declared dimension /
 measure types) and types from the live schema when `--datasource` resolves. Everything that
 can't be mapped cleanly is captured in a structured JSON report rather than
@@ -15,10 +15,10 @@ slayer import-cube ./cube_project --datasource my_postgres --storage ./slayer_da
 
 This recursively reads every `.yml`/`.yaml` **and `.js`** file under the path
 (skipping `node_modules` / `target`), extracts `cubes:` / `views:` (YAML) and
-`cube('Name', {...})` / `view(...)` calls (JavaScript), writes SLayer model files
+`cube('Name', {...})` / `view(...)` calls (JavaScript), writes SLayer dataset files
 to the storage directory, and writes `cube_import_report.json` next to it.
 
-`--datasource` is just the SLayer datasource name to file the models under — it
+`--datasource` is just the SLayer datasource name to file the datasets under — it
 does not need to exist or be reachable. After importing, run `slayer ingest`
 against a live connection to profile sample values and refine numeric types.
 
@@ -30,9 +30,9 @@ against a live connection to profile sample values and refine numeric types.
 
 ## What gets converted
 
-### Cubes → models
+### Cubes → datasets
 
-Each cube becomes one `SlayerModel` anchored on its `sql_table` (or `sql`).
+Each cube becomes one `SlayerDataset` anchored on its `sql_table` (or `sql`).
 
 | Cube | SLayer |
 |------|--------|
@@ -43,51 +43,53 @@ Each cube becomes one `SlayerModel` anchored on its `sql_table` (or `sql`).
 | `meta` (incl. `ai_context`) | `meta` |
 | `title` | `meta.cube_title` |
 
-### Measures → columns + measures
+### Measures → fields + metrics
 
 Cube bakes the aggregation into each measure; SLayer separates the row-level
-expression (a `Column`) from the named aggregation (a `ModelMeasure`).
+expression (a `DatasetField`) from the named aggregation (a `DatasetMetric`).
 
 ```yaml
 # Cube
 measures:
   - { name: total_revenue, type: sum, sql: "{CUBE}.amount" }
 # SLayer
-columns:
-  - { name: amount, type: DOUBLE }
-measures:
-  - { name: total_revenue, formula: "sum(amount)" }
+fields:
+  - { name: amount, datatype: Float }
+metrics:
+  - { name: total_revenue, expression: "sum(amount)" }
 ```
 
 - `count` with no `sql` → `count(*)`; `count_distinct_approx` stays `count_distinct_approx`.
-- Conditional `filters:` become a `CASE WHEN` on the `filter` of a hidden `<measure>_col` column, shared by
+- Conditional `filters:` become a `CASE WHEN` on the `filter` of a hidden `<measure>_col` field, shared by
   measures with the same expression, filter and type.
 - A finite trailing `rolling_window` becomes a windowed aggregation
   (`sum(amount, window='30d')`).
 - Calculated measures (`type: number/string/time/boolean`) referencing other
-  measures become a `ModelMeasure` formula (`{revenue} / {count}` → `revenue / count`).
+  measures become a `DatasetMetric` expression (`{revenue} / {count}` → `revenue / count`).
 - A calculated measure with SQL aggregates (`SUM({CUBE}.amount) FILTER (WHERE {CUBE}.status = 'paid') / COUNT(*)`)
-  is translated: a bare operand aggregates its column, any other operand and a `FILTER` go to a hidden column
+  is translated: a bare operand aggregates its field, any other operand and a `FILTER` go to a hidden field
   holding Cube's SQL, and a window function, an undeclared member or an operand reading another cube drops
   the measure with a report.
 - `format` maps to `NumberFormat` (`percent`, `currency`, `number`).
 
-### Dimensions → columns
+### Dimensions → fields
 
-`string`→`TEXT`, `number`→`DOUBLE`, `boolean`→`BOOLEAN`, `time`→`TIMESTAMP`.
+`string`→`String`, `number`→`Float`, `boolean`→`Boolean`, `time`→`DateTime`.
 `primary_key: true` carries over. A `case:` dimension becomes a `CASE WHEN`
-column.
+field.
 
 `{CUBE}.x` always reads the physical column `x`, `{customers}.x` reads the physical column `x` of the joined cube
 `customers` (a cube that is not joined drops the member with a report), and `{orders.member}` inside cube `orders`
-means `{member}`; a
-member whose SQL reads a physical column another member's name holds, or transforms the physical column of its own name
-(`status: UPPER({CUBE}.status)`), is dropped with a report, as is an unquoted reserved word (`{CUBE}.from`; write
-`{CUBE}."from"`).
+means `{member}`, written into the field as the path `orders.member`. A member's SQL becomes the field's entry for
+the datasource's dialect (one column becomes the `expression` shorthand), so it reads the physical columns whatever
+members the cube declares (`status: UPPER({CUBE}.status)` upper-cases the physical `status`). A measure, join key or
+other cube's reference that needs a physical column no member reads bare gets one hidden field reading it, named
+`<column>_raw` (`_raw_2`, … when taken). An unquoted reserved word (`{CUBE}.from`; write `{CUBE}."from"`) is dropped
+with a report.
 
-Column types come from the live datasource when `--datasource` resolves (a list column as a list of its element
+Field types come from the live datasource when `--datasource` resolves (a list column as a list of its element
 type), else from an explicit dimension `type` or the measure's aggregation; an aggregation SLayer refuses over a
-list, or a `min`/`max` over a column nothing types, drops the measure with a report, and an offline import notes
+list, or a `min`/`max` over a field nothing types, drops the measure with a report, and an offline import notes
 that types were not checked against the database.
 
 Unquoted names in a cube's SQL (`sql_table`, `sql`, member, join and `FILTER_PARAMS` SQL) are read as the datasource's
@@ -95,37 +97,37 @@ database reads them, so on Postgres, Redshift, Snowflake and Oracle `Sales.Order
 stored as `sales.orderitems` and `orderamount` (quoted names, string literals and comments are kept as written), and an
 import whose datasource is not configured is refused when its SQL holds an unquoted name with an upper-case letter.
 
-### Joins
+### Joins → relationships
 
 A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes
-`join_pairs` naming the columns that read each side (a `{cube}.col` operand reads the physical column, through a hidden column when no member reads it; a `{cube.member}` operand names that member, which must be a base column; a physical column another member's name holds drops the join). Composite
-(`AND`-joined) keys are supported. All joins emit as `LEFT`. When a Cube schema
+`from_columns` / `to_columns` naming the fields that read each side (a `{cube}.col` operand reads the physical column, through a hidden field when no member reads it; a `{cube.member}` operand names that member, which must read one column bare with no filter). Composite
+(`AND`-joined) keys are supported. All relationships emit as `LEFT`. When a Cube schema
 declares both directions of one relationship (`orders belongs_to customers` and
 `customers has_many orders` over the same columns), the importer keeps a single
-edge — the to-one declaration — since SLayer traverses every join
-[in both directions](../concepts/models.md#bidirectional-traversal);
+edge — the to-one declaration — since SLayer traverses every relationship
+[in both directions](../concepts/datasets.md#bidirectional-traversal);
 contradicting declarations import as two edges and surface as an ambiguous hop.
 
-### Segments → boolean columns
+### Segments → boolean fields
 
-Each segment becomes a boolean column carrying the predicate, so it stays
-filterable (`completed = true`) and group-able.
+Each segment becomes a boolean field carrying the predicate, so it stays
+filterable (`orders.completed = true`) and group-able.
 
-### Views → facade models
+### Views → facade datasets
 
-A Cube view (which owns no table) becomes a thin model anchored on its
-`join_path` root cube: included dimensions become derived columns
-(`sql: "customers.name"`), and included measures become local or cross-model
-`ModelMeasure`s that reference the measure's **underlying column** — a joined
+A Cube view (which owns no table) becomes a thin dataset anchored on its
+`join_path` root cube: included dimensions become derived fields
+(`sql: "customers.name"`), and included measures become local or cross-dataset
+`DatasetMetric`s that reference the measure's **underlying field** — a joined
 measure `revenue` with `sql: {CUBE}.amount` becomes `sum(customers.amount)`, not
 `sum(customers.revenue)`. `prefix: true` prepends the cube name, and
-`default_filters` become model filters.
+`default_filters` become dataset filters.
 
 ### `extends`
 
 Cube inheritance is **flattened** at import time — a child inherits the parent's
 members (child wins on conflicts), and abstract bases (`public: false`) are
-emitted as hidden models.
+emitted as hidden datasets.
 
 ### JavaScript configs
 
@@ -141,7 +143,7 @@ Member keys are accepted in either `camelCase` (`primaryKey`) or `snake_case`
 Anything **dynamic** — a helper call (`sql: buildSql()`), a spread (`...base`), a
 bare identifier reference (`sql: someConst`), or a computed key — can't be
 resolved offline. The affected member is skipped with a report issue and the rest
-of the cube still converts (one bad dimension does not sink the model). The parser
+of the cube still converts (one bad dimension does not sink the dataset). The parser
 targets ES2017; a config using newer syntax is reported rather than crashing. One
 Stage-1 gap: a JS **view** whose `join_path` is written as a bare cube identifier
 (`join_path: Orders`) rather than a string is skipped — write it as a string
@@ -151,7 +153,7 @@ Stage-1 gap: a JS **view** whose `join_path` is written as a bare cube identifie
 
 Cube's `FILTER_PARAMS.<cube>.<member>.filter(...)` renders a member's filter when
 the caller supplies one, else the neutral `1 = 1`. SLayer represents this with
-[`{variable}` substitution](../concepts/models.md#variables-in-model-sql):
+[`{variable}` substitution](../concepts/datasets.md#variables-in-dataset-sql):
 
 - **String form** `.filter('col')` → an optional block `{? col IN ({member}) ?}`
   — the caller passes a list (`{"brand": ["Acme", "Zeta"]}`), a bare scalar
@@ -164,7 +166,7 @@ the caller supplies one, else the neutral `1 = 1`. SLayer represents this with
 
 #### Scalars are accepted for the string form
 
-The general [`{variable}` rule](../concepts/models.md#variables-in-model-sql) puts
+The general [`{variable}` rule](../concepts/datasets.md#variables-in-dataset-sql) puts
 quoting on whoever writes the template — a scalar string substitutes *unquoted*,
 which is what makes `amount >= {floor}` and `'{d}'::TIMESTAMP` both expressible.
 That rule assumes an author who can see the SQL position, and the importer's
@@ -180,8 +182,8 @@ string `member` (the shape the importer always writes), so unrelated `meta`
 that happens to reuse the `cube_variables` key is never mistaken for generated
 SQL. In `IN (...)` position a scalar and a one-element list mean
 the same thing, so `{"brand": "Acme"}` and `{"brand": ["Acme"]}` are equivalent.
-This applies **only** to variables a model declares that way — hand-written
-model SQL keeps the author-written-quotes convention unchanged. An **empty list**
+This applies **only** to variables a dataset declares that way — hand-written
+dataset SQL keeps the author-written-quotes convention unchanged. An **empty list**
 still raises (`IN ()` is invalid SQL); to mean "no filter", omit the variable and
 let the block collapse.
 
@@ -189,7 +191,7 @@ Whether a pushdown is **required** (bare `{var}`, omitting it raises a clear err
 or **optional** (wrapped in a block) is decided by the referenced member's
 `meta.required`: a truthy value ⇒ required. Pass `--ignore-required-meta` to emit
 every pushdown as optional (literal Cube semantics) instead. Each emitted variable
-is listed in the report (`filter_params_variable`), and the model stashes the
+is listed in the report (`filter_params_variable`), and the dataset stashes the
 member/required/kind/description of each variable under `meta.cube_variables`.
 
 Two pushdown shapes are representable in Stage 1: the **string form** (set
@@ -223,7 +225,7 @@ cube's other members still convert.
 
 ## The report
 
-`CubeConversionResult` carries the emitted `models` and a `CubeConversionReport`
+`CubeConversionResult` carries the emitted `datasets` and a `CubeConversionReport`
 of categorized issues (each with a category, severity, the owning cube/view/member,
 a message, and the raw Cube fragment when useful). The CLI always writes it to
 `cube_import_report.json` (override with `--report PATH`) and prints a summary
@@ -238,10 +240,10 @@ Arguments:
   cube_project_path     Path to the Cube project (or its model directory)
 
 Options:
-  --datasource NAME     SLayer datasource name for the imported models (required)
+  --datasource NAME     SLayer datasource name for the imported datasets (required)
   --storage PATH        Storage directory / .db file (default: platform path)
   --report PATH         JSON report path (default: <storage>/cube_import_report.json)
-  --include-hidden      Also print hidden (public: false) models in the summary
+  --include-hidden      Also print hidden (public: false) datasets in the summary
   --ignore-required-meta  Emit every FILTER_PARAMS pushdown as optional (ignore
                           member meta.required)
 ```

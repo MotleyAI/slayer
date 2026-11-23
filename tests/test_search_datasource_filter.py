@@ -1,4 +1,4 @@
-"""DEV-1409: ``datasource`` filter on ``search``.
+"""``datasource`` filter on ``search``.
 
 When a caller passes ``datasource=X`` the three retrieval channels
 pre-filter their corpora to that one datasource:
@@ -25,28 +25,28 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend, resolve_storage
 
 
 @pytest_asyncio.fixture
 async def storage_two_datasources() -> AsyncIterator[StorageBackend]:
-    """Two datasources, two models each, plus memories that span them."""
+    """Two datasources, two datasets each, plus memories that span them."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
         for ds_name in ("prod", "staging"):
             await storage.save_datasource(DatasourceConfig(
                 name=ds_name, type="sqlite", database=":memory:",
             ))
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source=ds_name,
                 description=f"{ds_name} orders fact table",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE,
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="amount", datatype=DataType.FLOAT,
                            description=f"{ds_name} order amount"),
                 ],
             ))
@@ -169,7 +169,7 @@ async def test_filter_excludes_other_datasource_entity_hits(
     service: SearchService,
 ) -> None:
     """Channel 2 (tantivy) must only surface entities rooted at the
-    filtered datasource. The two ``orders`` models share the same name
+    filtered datasource. The two ``orders`` datasets share the same name
     but live in different datasources."""
     response = await service.search(
         question="orders amount",
@@ -180,7 +180,7 @@ async def test_filter_excludes_other_datasource_entity_hits(
     # All entity hits must be rooted at 'prod' (exact or dotted descendant).
     for cid in canonical_ids:
         assert cid == "prod" or cid.startswith("prod.")
-    # The staging.orders model MUST NOT surface.
+    # The staging.orders dataset MUST NOT surface.
     assert "staging.orders" not in canonical_ids
     assert "staging.orders.amount" not in canonical_ids
 
@@ -275,21 +275,21 @@ async def test_none_datasource_is_no_filter(
 
 
 # ---------------------------------------------------------------------------
-# Edge: known datasource with zero models / zero matching memories
+# Edge: known datasource with zero datasets / zero matching memories
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_empty_datasource_returns_empty_response(
 ) -> None:
-    """A known datasource that has no models and no memories tagged at
+    """A known datasource that has no datasets and no memories tagged at
     it returns an empty SearchResponse without raising."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
         await storage.save_datasource(DatasourceConfig(
             name="empty_ds", type="sqlite", database=":memory:",
         ))
-        # No models, no memories.
+        # No datasets, no memories.
         svc = SearchService(storage=storage)
         response = await svc.search(
             question="anything",
@@ -299,7 +299,7 @@ async def test_empty_datasource_returns_empty_response(
         memory_hits = [h for h in response.results if h.kind == "memory"]
         assert memory_hits == []
         # Entity ranking may include the datasource doc itself, depending
-        # on whether build_in_memory_corpus indexes empty-model datasources.
+        # on whether build_in_memory_corpus indexes empty-dataset datasources.
         # Either way: zero hits from a non-existent datasource.
         for hit in response.results:
             if hit.kind != "memory":

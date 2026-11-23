@@ -1,0 +1,42 @@
+{
+ "source": "tests/pg_facade/test_connection.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2379,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2382,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2383,
+   "reason": "not fully literal"
+  }
+ ]
+}

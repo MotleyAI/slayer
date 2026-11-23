@@ -1,4 +1,4 @@
-"""DEV-1908 — reverse-hop cancellation for definition defaults.
+"""Reverse-hop cancellation for definition defaults.
 
 A definition default whose qualifier names a dataset already on the query's path
 to the owner cancels the path back to that dataset (`a.b.a ≡ a`), reading its row
@@ -12,10 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import UnresolvableDimensionJoinError
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.keys import AggregateKey
-from slayer.core.models import ModelMeasure
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
 
@@ -26,7 +25,6 @@ from tests._dev1908_fixtures import (
     CANCEL_FORWARD_POP,
     DOUBLE_CANCEL,
     EVENTS_CANCEL,
-    ColumnRef,
     ORACLE_LITERALS,
     SECOND_ORDER,
     SELF,
@@ -37,7 +35,7 @@ from tests._dev1908_fixtures import (
     _seed_sqlite,
     bundle1908,
     derive_oracles,
-    dev1908_models,
+    dev1908_datasets,
     make_exec_engine,
     month_key,
     orders_q,
@@ -47,31 +45,31 @@ from tests._dev1908_fixtures import (
 
 
 def _cells(resp) -> dict:
-    """`{dimension-value tuple: measure value}` over a response's rows."""
-    return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"): r["orders.w"]
+    """`{dimension-value tuple: metric value}` over a response's rows."""
+    return {tuple(v for k, v in sorted(r.items()) if k != "w"): r["w"]
             for r in resp.data}
 
 
-def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
-    """`home_path` of a measure's outer aggregate over the DEV-1908 graph."""
+def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
+    """`home_path` of a metric's outer aggregate over the ``_dev1908_fixtures`` graph."""
     elab = elaborate_query(
         query=orders_q(dimensions=dimensions or [],
-                       measures=[ModelMeasure(formula=formula, name="m")]),
+                       metrics=[QueryMetric(metric=expression, alias="m")]),
         bundle=bundle1908())
     assert elab.prebound is not None
-    root = elab.prebound.declared_measures[-1].bound.value_key
+    root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
     term = elab.terms[root]
     assert isinstance(term, Aggregate), term
     return term.home_path
 
 
-async def _gen(formula: str, *, source_model="orders", **kw) -> str:
-    models = dev1908_models()
+async def _gen(expression: str, *, source_dataset="orders", **kw) -> str:
+    models = dev1908_datasets()
     return await _engine_generate(
-        query=SlayerQuery(source_model=source_model,
-                          measures=[ModelMeasure(formula=formula, name="w")], **kw),
-        model=models[0], extra_models=models[1:], dialect="sqlite", validate=False)
+        query=SlayerQuery(population=source_dataset,
+                          metrics=[QueryMetric(metric=expression, alias="w")], **kw),
+        dataset=models[0], extra_datasets=models[1:], dialect="sqlite", validate=False)
 
 
 def test_oracles_re_derive_from_the_raw_rows():
@@ -107,8 +105,8 @@ class TestHomePaths:
         assert _home_path("wsum_cust_plan_fee(customers.regions.pop)") == ("customers",)
 
     def test_owner_at_root_self_name_homes_at_root_pin(self):
-        assert _home_path("wself(amount)") == ()
-        assert _home_path("wself_expr(amount)") == ()
+        assert _home_path("wself(orders.amount)") == ()
+        assert _home_path("wself_expr(orders.amount)") == ()
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -117,10 +115,10 @@ async def engine(request):
         yield e
 
 
-async def _value(engine, formula: str) -> float:
+async def _value(engine, expression: str) -> float:
     resp = await engine.execute(
-        orders_q(measures=[ModelMeasure(formula=formula, name="w")]))
-    return float(resp.data[0]["orders.w"])
+        orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
+    return float(resp.data[0]["w"])
 
 
 class TestExecutedValues:
@@ -181,9 +179,9 @@ class TestExecutedValues:
 
     async def test_owner_at_root_self_name_pin(self, engine):
         for agg in ("wself", "wself_expr"):
-            explicit = await _value(engine, f"{agg}(amount, weight=cost)")
+            explicit = await _value(engine, f"{agg}(orders.amount, weight=orders.cost)")
             assert explicit == pytest.approx(SELF)
-            default = await _value(engine, f"{agg}(amount)")
+            default = await _value(engine, f"{agg}(orders.amount)")
             assert default == pytest.approx(explicit)
 
 
@@ -191,25 +189,25 @@ class TestExecutedValues:
 async def test_ship_region_extension_edge_name_spelling_survives(dialect):
     # An inline ModelExtension names the regions hop `ship_region`; the default
     # cancels to that spelling (ship_region.pop), matching the explicit twin. Each
-    # query runs on its own engine (an extension mutates the shared stored model).
+    # query runs on its own engine (an extension mutates the shared stored dataset).
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
 
     async def run(formula: str) -> tuple[float, str]:
         async with seeded_exec_engine(
-            dialect=dialect, seed=seed, models=dev1908_models()) as (e, _db):
-            query = SlayerQuery(source_model="orders", extensions=[ship_region_extension()],
-                                measures=[ModelMeasure(formula=formula, name="w")])
+            dialect=dialect, seed=seed, datasets=dev1908_datasets()) as (e, _db):
+            query = SlayerQuery(population="orders", extensions=[ship_region_extension()],
+                                metrics=[QueryMetric(metric=formula, alias="w")])
             resp = await e.execute(query)
             dry = await e.execute(query, dry_run=True)
             assert dry.sql is not None
-            return float(resp.data[0]["orders.w"]), dry.sql
+            return float(resp.data[0]["w"]), dry.sql
 
     ev, explicit_sql = await run(
-        "wsum_region_pop(ship_region.countries.gdp, weight=ship_region.pop)")
+        "wsum_region_pop(orders.ship_region.countries.gdp, weight=orders.ship_region.pop)")
     assert ev == pytest.approx(SINGLE_CANCEL)
-    dv, default_sql = await run("wsum_region_pop(ship_region.countries.gdp)")
+    dv, default_sql = await run("wsum_region_pop(orders.ship_region.countries.gdp)")
     assert dv == pytest.approx(ev)
     # Spelling survives: the default reads pop through the ship_region-joined
     # regions, never a second `regions` join (which the current fan renders).
@@ -225,12 +223,12 @@ class TestKernelExpressionDefaults:
         # engine's current state, so a later execute would otherwise mask it).
         base = "wsum_region_pop_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
-            dimensions=["status"], to_many_handling="associate",
-            measures=[ModelMeasure(formula=base, name="w")])))
+            dimensions=["orders.status"], to_many_handling="associate",
+            metrics=[QueryMetric(metric=base, alias="w")])))
         explicit = _cells(await engine.execute(orders_q(
-            dimensions=["status"], to_many_handling="associate",
-            measures=[ModelMeasure(formula=f"{base[:-1]}, weight=customers.regions.pop)",
-                                   name="w")])))
+            dimensions=["orders.status"], to_many_handling="associate",
+            metrics=[QueryMetric(metric=f"{base[:-1]}, weight=customers.regions.pop)",
+                                   alias="w")])))
         assert default == explicit
         assert {k[0]: float(v) for k, v in default.items()} == ASSOC_EXPR
 
@@ -238,18 +236,18 @@ class TestKernelExpressionDefaults:
         base = "wsum_cust_spend2_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula=f"{base[:-1]}, window='1y')", name="w")])))
+            metrics=[QueryMetric(metric=f"{base[:-1]}, window='1y')", alias="w")])))
         explicit = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(
-                formula=f"{base[:-1]}, window='1y', weight=customers.spend)", name="w")])))
+            metrics=[QueryMetric(
+                metric=f"{base[:-1]}, window='1y', weight=customers.spend)", alias="w")])))
         assert default == explicit
         months = {month_key(k[0]): float(v) for k, v in default.items()
                   if k[0] is not None}
         assert months == WINDOW_EXPR
 
     async def test_second_order_root_frame_expression_default_pin(self, engine):
-        inner = "sum(amount, partition_by=customers.regions.id)"
+        inner = "sum(orders.amount, partition_by=customers.regions.id)"
         default = await _value(engine, f"wavg_pop_expr({inner})")
         explicit = await _value(
             engine, f"wavg_pop_expr({inner}, weight=customers.regions.pop)")
@@ -260,11 +258,11 @@ class TestKernelExpressionDefaults:
 class TestStageQueryUnaffected:
     async def test_two_stage_query_has_no_model_host(self, engine):
         """A later stage aggregating a stage's output resolves no definition
-        default (a stage has no model host) — executes exactly as before."""
-        stage1 = orders_q(name="stage1", dimensions=["status"],
-                          measures=[ModelMeasure(formula="sum(amount)", name="amount_sum")])
-        root = SlayerQuery(source_model="stage1", dimensions=[ColumnRef(name="status")],
-                           measures=[ModelMeasure(formula="max(amount_sum)", name="mx")])
+        default (a stage has no dataset host) — executes exactly as before."""
+        stage1 = orders_q(name="stage1", dimensions=["orders.status"],
+                          metrics=[QueryMetric(metric="sum(orders.amount)", alias="amount_sum")])
+        root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="stage1.status")],
+                           metrics=[QueryMetric(metric="max(stage1.amount_sum)", alias="mx")])
         resp = await engine.execute([stage1, root])
         vals = sorted(float(next(v for k, v in r.items() if "mx" in k))
                       for r in resp.data)
@@ -291,30 +289,29 @@ class TestCancelThenFanningHop:
         assert plain == pytest.approx(explicit)
 
 
+class TestReverseHopNotOnThePath:
+    async def test_reverse_hop_default_homes_on_customers(self):
+        # Rooted at regions, `customers` is not on the path: nothing cancels, the
+        # default homes on customers, and it plans exactly as its explicit twin.
+        default = await _gen("wsum_cust_spend(regions.pop)", source_dataset="regions")
+        explicit = await _gen("wsum_cust_spend(regions.pop, weight=customers.spend)", source_dataset="regions")
+        assert default == explicit
+
+
 class TestFailClosed:
     async def test_cancel_then_miss_fails_closed(self):
         # D3: `regions` cancels, then `plans` misses (not a hop from regions) —
         # never re-anchored at the root.
-        with pytest.raises(UnresolvableDimensionJoinError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await _gen("wsum_cancel_miss(customers.regions.countries.gdp)")
 
     async def test_second_order_nowhere_default_raises_unresolvable(self):
-        with pytest.raises(UnresolvableDimensionJoinError, match="(?i)nowhere"):
-            await _gen("wnowhere(sum(amount, partition_by=status))")
+        with pytest.raises(UnresolvableDimensionRelationshipError, match="(?i)nowhere"):
+            await _gen("wnowhere(sum(orders.amount, partition_by=orders.status))")
 
     async def test_query_typed_revisit_raises_circular_join(self):
-        # DEV-1952 owns the model-SQL derived-column revisit; only the query-typed
+        # test_dev1952_derived_revisit owns the dataset-SQL derived-field revisit; only the query-typed
         # revisit is pinned here.
         with pytest.raises(ValueError, match="(?i)circular"):
             await _gen("sum(customers.regions.customers.spend)")
 
-    @pytest.mark.parametrize("formula", [
-        "wsum_cust_spend(pop)",
-        "wsum_cust_spend(pop, weight=customers.spend)"])
-    async def test_reverse_hop_not_on_the_path_stays_refused(self, formula):
-        # Rooted at regions, `customers` is not on the path: nothing cancels, and
-        # BOTH the default and its explicit twin fail with the same input-safety
-        # error naming customers.
-        with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
-            await _gen(formula, source_model="regions")
-        assert "customers" in str(ei.value)

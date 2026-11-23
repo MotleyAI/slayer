@@ -10,8 +10,9 @@ import json
 import os
 import socket
 import threading
+import warnings
 import weakref
-from collections.abc import Iterator
+from collections.abc import Generator
 from types import SimpleNamespace
 
 import pyarrow.flight as fl
@@ -62,7 +63,7 @@ from tests.pg_facade.test_connection import (
     _terminate,
 )
 
-_QUERY = {"source_model": "orders", "measures": ["sum(amount)"]}
+_QUERY = {"population": "orders", "metrics": ["sum(orders.amount)"]}
 _PG_QUERY = "SELECT revenue_sum FROM orders"
 _FLIGHT_QUERY = "SELECT revenue_sum FROM jaffle.orders"
 
@@ -84,12 +85,12 @@ def started(usage_reporting_env) -> None:
 
 def test_cli_leaf_tokens(store: str) -> None:
     cli(["query", json.dumps(_QUERY), "--storage", store])
-    cli(["models", "--storage", store, "list"])
+    cli(["datasets", "--storage", store, "list"])
     cli(["datasources", "--storage", store, "list"])
     cli(["datasources", "--storage", store, "list"])
     report = show()
     assert usage(report, "cli:query") == {"ok": 1, "errors": {}}
-    assert usage(report, "cli:models.list") == {"ok": 1, "errors": {}}
+    assert usage(report, "cli:datasets.list") == {"ok": 1, "errors": {}}
     assert usage(report, "cli:datasources.list") == {"ok": 2, "errors": {}}
 
 
@@ -97,7 +98,7 @@ def test_cli_leaf_tokens(store: str) -> None:
     ["query"],
     ["--help"],
     ["query", "--help"],
-    ["models", "--bogus"],
+    ["datasets", "--bogus"],
     ["inspect", "x", "--type", "not-a-kind"],
     [],
 ])
@@ -119,10 +120,10 @@ def test_parse_error_exits_before_any_usage_reporting(usage_reporting_env) -> No
 
 
 def test_cli_failure_counted_as_error(store: str) -> None:
-    cli(["query", json.dumps({"source_model": "no_such_model", "measures": ["count(*)"]}), "--storage", store])
-    cli(["models", "--storage", store, "show", "no_such_model"])
+    cli(["query", json.dumps({"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}), "--storage", store])
+    cli(["datasets", "--storage", store, "show", "no_such_dataset"])
     report = show()
-    for key in ("cli:query", "cli:models.show"):
+    for key in ("cli:query", "cli:datasets.show"):
         entry = usage(report, key)
         assert entry["ok"] == 0
         assert sum(entry["errors"].values()) == 1
@@ -140,7 +141,7 @@ async def test_mcp_tool_calls_counted_once_each(store: str, started) -> None:
     async with create_connected_server_and_client_session(server) as session:
         await session.call_tool("list_datasources", {})
         await session.call_tool("list_datasources", {})
-        await session.call_tool("inspect", {"entity_type": "model", "reference": "no_such_model", "compact": False})
+        await session.call_tool("inspect", {"entity_type": "dataset", "reference": "no_such_dataset", "compact": False})
     end_process()
     report = show()
     assert usage(report, "mcp:list_datasources") == {"ok": 2, "errors": {}}
@@ -221,14 +222,27 @@ def test_mcp_tool_schemas_identical_with_usage_reporting_on_and_off(store: str) 
 def test_rest_counts_route_templates(store: str, started) -> None:
     client = TestClient(create_app(storage=YAMLStorage(base_dir=store)))
     assert client.get("/health").status_code == 200
-    client.get("/models/orders")
-    client.get("/models/no_such_model")
+    client.get("/datasets/orders")
+    client.get("/datasets/no_such_dataset")
     assert client.post("/query", json=_QUERY).status_code == 200
     end_process()
     report = show()
     assert usage(report, "rest:/health") == {"ok": 1, "errors": {}}
-    assert total(usage(report, "rest:/models/{name}")) == 2
+    assert total(usage(report, "rest:/datasets/{name}")) == 2
     assert usage(report, "rest:/query")["ok"] == 1
+
+
+def test_a_pre_2_0_route_counts_as_its_replacement(store: str, started) -> None:
+    client = TestClient(create_app(storage=YAMLStorage(base_dir=store)))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        client.get("/models/orders")
+        client.get("/models")
+    end_process()
+    report = show()
+    assert total(usage(report, "rest:/datasets/{name}")) == 1
+    assert total(usage(report, "rest:/datasets")) == 1
+    assert not [key for key in report["usage"] if "models" in key]
 
 
 def test_rest_unmatched_maps_to_a_fixed_token(store: str, started) -> None:
@@ -258,7 +272,7 @@ def test_rest_mount_requests_not_counted_as_rest(store: str, started) -> None:
 
 
 @contextlib.contextmanager
-def _serve(app) -> Iterator[str]:
+def _serve(app) -> Generator[str, None, None]:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -362,7 +376,7 @@ async def test_pg_engine_error_counted(started) -> None:
 # --- MCP sessions -----------------------------------------------------------------------------------
 
 
-_FAILING_QUERY = {"source_model": "no_such_model", "measures": ["count(*)"]}
+_FAILING_QUERY = {"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}
 _T0 = datetime.datetime(2026, 5, 4, 12, 0, tzinfo=datetime.timezone.utc)
 
 
@@ -579,17 +593,17 @@ def _unavailable() -> Exception:
 
 _DB_FAILURE_CALLS = [
     ("query", (SlayerQueryEngine, "execute"), {"query": _QUERY}),
-    ("create_model", (SlayerQueryEngine, "save_model"),
-     {"name": "m", "sql_table": "orders", "data_source": "test", "columns": [{"name": "id", "sql": "id", "type": "number"}]}),
-    ("create_model", (SlayerQueryEngine, "create_model_from_query"), {"name": "m", "query": _QUERY}),
-    ("validate_models", (SlayerQueryEngine, "validate_models"), {}),
-    ("ingest_datasource_models", (engine_ingestion, "ingest_datasource_idempotent"), {"datasource_name": "test"}),
+    ("create_dataset", (SlayerQueryEngine, "save_dataset"),
+     {"name": "m", "sql_table": "orders", "data_source": "test", "fields": [{"name": "id", "expression": "id", "datatype": "number"}]}),
+    ("create_dataset", (SlayerQueryEngine, "create_dataset_from_query"), {"name": "m", "query": _QUERY}),
+    ("validate_datasets", (SlayerQueryEngine, "validate_datasets"), {}),
+    ("ingest_datasource", (engine_ingestion, "ingest_datasource_idempotent"), {"datasource_name": "test"}),
 ]
 
 
 @pytest.mark.parametrize("failure", [_operational, _unavailable], ids=["sqlalchemy", "client"])
 @pytest.mark.parametrize(("tool", "target", "arguments"), _DB_FAILURE_CALLS,
-                         ids=["query", "create_model_table", "create_model_query", "validate_models", "ingest"])
+                         ids=["query", "create_model_table", "create_model_query", "validate_datasets", "ingest"])
 async def test_mcp_database_failure_counted_with_a_database_token(
     store: str, started, monkeypatch: pytest.MonkeyPatch,
     tool: str, target: tuple[object, str], arguments: dict, failure,

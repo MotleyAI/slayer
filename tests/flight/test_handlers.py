@@ -19,6 +19,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 import pyarrow as pa
 import pyarrow.flight as fl
@@ -27,7 +28,7 @@ from google.protobuf.any_pb2 import Any as PbAny
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import SlayerResponse
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.catalog import CATALOG_NAME
@@ -40,6 +41,7 @@ from slayer.flight.handlers import (
     decode_ticket,
 )
 from slayer.flight.translator import InfoSchemaResult, ProbeResult, TranslationError
+from tests._arrow_types import ArrowSchema, ArrowTable
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "capture-latest.jsonl"
@@ -51,22 +53,22 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "capture-latest.jsonl"
 class _FakeStorage:
     """Minimal async StorageBackend stand-in for tests."""
 
-    def __init__(self, models_by_ds: dict[str, list[SlayerModel]]) -> None:
-        self._by_ds = models_by_ds
+    def __init__(self, datasets_by_ds: dict[str, list[SlayerDataset]]) -> None:
+        self._by_ds = datasets_by_ds
 
     async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — must match async interface (called via await in production)
         return list(self._by_ds.keys())
 
-    async def list_models(self, *, data_source: str | None = None) -> list[str]:  # NOSONAR(S7503) — must match async interface (called via await in production)
+    async def list_datasets(self, *, data_source: str | None = None) -> list[str]:  # NOSONAR(S7503) — must match async interface (called via await in production)
         return [m.name for m in self._by_ds.get(data_source or "", [])]
 
-    async def get_model(self, *, name: str, data_source: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
+    async def get_dataset(self, *, name: str, data_source: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
         for m in self._by_ds.get(data_source or "", []):
             if m.name == name:
                 return m
         return None
 
-    async def load_models(self, *, data_source: str | None = None, exclude: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
+    async def load_datasets(self, *, data_source: str | None = None, exclude: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
         return [m for m in self._by_ds.get(data_source or "", []) if m.name != exclude], []
 
 
@@ -84,21 +86,21 @@ class _FakeEngine:
         return run_sync(workflow)
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 
 
 def _make_handlers(*, response: SlayerResponse | None = None) -> FlightHandlers:
-    storage = _FakeStorage({"jaffle": [_orders_model()]})
+    storage = _FakeStorage({"jaffle": [_orders_dataset()]})
     if response is None:
         response = SlayerResponse(data=[], columns=[])
     engine = _FakeEngine(response=response, storage=storage)
@@ -147,7 +149,7 @@ def test_get_table_types_returns_three_rows() -> None:
 
 def test_get_primary_keys_empty_well_typed() -> None:
     handlers = _make_handlers()
-    table = handlers.handle_get_primary_keys()
+    table: ArrowTable = handlers.handle_get_primary_keys()
     assert table.num_rows == 0
     assert "column_name" in table.schema.names
     assert table.schema.field("key_sequence").type == pa.int32()
@@ -226,7 +228,7 @@ def test_create_prepared_statement_for_probe_returns_canned_schema() -> None:
     bytes_out = handlers.handle_create_prepared_statement(cmd)
     response = _unpack_prepared_statement_result(bytes_out)
     reader = pa.ipc.open_stream(pa.BufferReader(response.dataset_schema))
-    schema = reader.schema
+    schema: ArrowSchema = reader.schema
     assert schema.field("1").type == pa.int64()
 
 
@@ -326,7 +328,8 @@ def test_get_flight_info_for_probe_builds_canned_schema() -> None:
     handlers = _make_handlers()
     descriptor = fl.FlightDescriptor.for_command(b"")
     info = handlers.get_flight_info_for_sql(descriptor, "SELECT 1")
-    assert info.schema.field("1").type == pa.int64()
+    info_schema = cast(ArrowSchema, info.schema)
+    assert info_schema.field("1").type == pa.int64()
     # Ticket is Any-wrapped TicketStatementQuery containing the original SQL.
     endpoint = info.endpoints[0]
     ticket_bytes = endpoint.ticket.ticket
@@ -369,7 +372,7 @@ class _OverlapEngine(_FakeEngine):
     """Records the peak number of engine workflows running at once."""
 
     def __init__(self, *, response: SlayerResponse) -> None:
-        super().__init__(response=response, storage=_FakeStorage({"jaffle": [_orders_model()]}))
+        super().__init__(response=response, storage=_FakeStorage({"jaffle": [_orders_dataset()]}))
         self._guard = threading.Lock()
         self.active = 0
         self.peak = 0
@@ -405,7 +408,7 @@ def test_catalog_loading_runs_as_an_engine_workflow() -> None:
 
 
 def test_catalog_reads_the_engine_storage_view() -> None:
-    engine = _FakeEngine(response=SlayerResponse(data=[], columns=[]), storage=_FakeStorage({"hr": [_orders_model()]}))
+    engine = _FakeEngine(response=SlayerResponse(data=[], columns=[]), storage=_FakeStorage({"hr": [_orders_dataset()]}))
     handlers = FlightHandlers(engine=engine)  # type: ignore[arg-type]
     assert [s.name for s in handlers._build_catalog().schemas] == ["hr"]
 

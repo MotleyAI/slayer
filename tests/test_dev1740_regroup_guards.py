@@ -1,4 +1,4 @@
-"""DEV-1740 Part B2 — guards. A dimension expression over an aggregate must be
+"""Part B2 — guards. A dimension expression over an aggregate must be
 explicit and in-scope; deferred shapes raise loudly (never degrade).
 """
 
@@ -9,13 +9,13 @@ import re
 import pytest
 
 from slayer.core.errors import DistinctDimensionValuesError
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev1740_fixtures import gen, month_td
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -23,11 +23,11 @@ class TestPartitionByRequired:
     async def test_aggregate_without_partition_by_raises_directive(self) -> None:
         q = _q(
             dimensions=[
-                "region",
-                {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
-                 "name": "band"},
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount) > 5000 THEN 1 ELSE 0 END",
+                 "alias": "band"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(q)
@@ -38,17 +38,17 @@ class TestPartitionByRequired:
 class TestAggregateReferencingDimGenerates:
     async def test_valid_partitioned_dim_desugars_to_regroup(self) -> None:
         # A plain partitioned aggregate inside a dimension is the valid
-        # aggregate-then-regroup case (B2) — the DEV-1825 regroup primitive
-        # isolates it in a `_cm_` producer CTE. (The DEV-1739 measures-only
+        # aggregate-then-regroup case (B2) — the regroup primitive
+        # isolates it in a `_cm_` producer CTE. (The metrics-only
         # "not a query dimension" guard must NOT fire — city is a legal finer
         # grain.)
         q = _q(
             dimensions=[
-                "region",
-                {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 "
-                               "THEN 1 ELSE 0 END", "name": "band"},
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
+                               "THEN 1 ELSE 0 END", "alias": "band"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         sql = await gen(q)
         assert "_cm_" in sql
@@ -56,16 +56,16 @@ class TestAggregateReferencingDimGenerates:
 
 class TestDeferredShapesRaiseDev1824:
     async def test_transform_in_dimension_expression(self) -> None:
-        # DEV-1868 residue split: an ungrained aggregate under a dimension
+        # An ungrained aggregate under a dimension
         # transform is a permanent type rule (ValueError, no issue ref).
         q = _q(
             dimensions=[
-                "region",
-                {"expression": "CASE WHEN cumsum(sum(amount)) > 5000 THEN 1 ELSE 0 END",
-                 "name": "x"},
+                "orders.region",
+                {"field": "CASE WHEN cumsum(sum(orders.amount)) > 5000 THEN 1 ELSE 0 END",
+                 "alias": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         with pytest.raises(ValueError) as ei:
             await gen(q)
@@ -73,17 +73,17 @@ class TestDeferredShapesRaiseDev1824:
         assert not re.search(r"DEV-\d+", str(ei.value))
 
     async def test_window_plus_partition_in_dimension_expression_lifted(self) -> None:
-        # DEV-1824 (task 3.7 / D5) — window=+partition_by inside a dimension is
+        # A window=+partition_by inside a dimension is
         # lifted: the row-attach producer synthesizes the active-TD grain.
         # (Executed values: test_dev1824_computed_dim_execution.py::TestWindowInDimension.)
         q = _q(
             dimensions=[
-                "region",
-                {"expression": "CASE WHEN sum(amount, window='90d', partition_by=city) "
-                               "> 5000 THEN 1 ELSE 0 END", "name": "x"},
+                "orders.region",
+                {"field": "CASE WHEN sum(orders.amount, window='90d', partition_by=orders.city) "
+                               "> 5000 THEN 1 ELSE 0 END", "alias": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -91,17 +91,17 @@ class TestDeferredShapesRaiseDev1824:
     async def test_first_last_partition_in_dimension_expression_lifted(
         self, agg: str,
     ) -> None:
-        # DEV-1824 (task 3.7) — a LOCAL first/last with partition_by inside a
-        # dimension expression renders (measure⇔dimension symmetry): the
+        # A LOCAL first/last with partition_by inside a
+        # dimension expression renders (metric⇔dimension symmetry): the
         # row-attach producer collapses to a ranked CTE at the partition grain.
         # (Executed values: test_dev1824_computed_dim_execution.py.)
         q = _q(
             dimensions=[
-                "region",
-                {"expression": f"CASE WHEN {agg}(amount, partition_by=city) > 5000 "
-                               "THEN 1 ELSE 0 END", "name": "x"},
+                "orders.region",
+                {"field": f"CASE WHEN {agg}(orders.amount, partition_by=orders.city) > 5000 "
+                               "THEN 1 ELSE 0 END", "alias": "x"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -110,8 +110,8 @@ class TestDistinctDimensionValuesRejection:
     async def test_aggregate_dim_rejected_in_raw_rows_mode(self) -> None:
         q = _q(
             dimensions=[
-                {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 "
-                               "THEN 1 ELSE 0 END", "name": "band"},
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
+                               "THEN 1 ELSE 0 END", "alias": "band"},
             ],
             distinct_dimension_values=False,
         )

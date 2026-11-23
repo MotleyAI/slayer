@@ -1,0 +1,90 @@
+{
+ "source": "tests/test_dev1842_naming.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "customers.aov"
+   },
+   "new": {
+    "metric": "customers.aov"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.aov",
+    "name": "myaov"
+   },
+   "new": {
+    "expression": "customers.aov",
+    "name": "myaov"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.typed_aov",
+    "name": "ta"
+   },
+   "new": {
+    "expression": "customers.typed_aov",
+    "name": "ta"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.aov",
+    "name": "af"
+   },
+   "new": {
+    "expression": "customers.aov",
+    "name": "af"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend) / count(customers.*)",
+    "name": "af"
+   },
+   "new": {
+    "expression": "sum(customers.spend) / count(customers.*)",
+    "name": "af"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.aov",
+    "name": "af"
+   },
+   "new": {
+    "expression": "customers.aov",
+    "name": "af"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend) / count(customers.*)",
+    "name": "af"
+   },
+   "new": {
+    "expression": "sum(customers.spend) / count(customers.*)",
+    "name": "af"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  }
+ ]
+}

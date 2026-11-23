@@ -1,0 +1,159 @@
+{
+ "source": "tests/test_dev1934_save_time_formula.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "masked",
+    "formula": "SUM({value}) # {mask}",
+    "params": [
+     {
+      "name": "mask",
+      "sql": "1"
+     }
+    ]
+   },
+   "new": {
+    "name": "masked",
+    "expression": "SUM({value}) # {mask}",
+    "params": [
+     {
+      "name": "mask",
+      "sql": "1"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum_sq(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum_sq(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "last",
+    "formula": "MAX({value})"
+   },
+   "new": {
+    "name": "last",
+    "expression": "MAX({value})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 180,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 200,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 216,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 217,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 231,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 244,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 277,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 288,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 331,
+   "reason": "not a standalone dataset: ValidationError"
+  },
+  {
+   "line": 332,
+   "reason": "not a standalone dataset: ValidationError"
+  },
+  {
+   "line": 358,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 365,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 447,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -21,7 +21,8 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.enums import DataType, DatePart, NUMERIC_DATATYPES, TimeGranularity
+from slayer.core.granularity import bucket_type
 from slayer.core.errors import ReadOnlyConnectionError, UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
@@ -69,7 +70,7 @@ if TYPE_CHECKING:
 _MYSQL_8_0 = (8, 0, 0)
 _MYSQL_8_0_21 = (8, 0, 21)
 _VERSION = re.compile(r"\s*(\d+)\.(\d+)(?:\.(\d+))?")
-_NUMBERS = frozenset({DataType.INT, DataType.DOUBLE})
+_NUMBERS = NUMERIC_DATATYPES
 _GATED_FUNCTIONS = REGEX_LIBRARY | {"json_value"}
 
 # The session read-only from connect, through the drivers' one init statement.
@@ -289,9 +290,9 @@ class MysqlDialect(SqlDialect):
         if not isinstance(code, int):
             return None
         if code == _TINY:
-            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.INT, db_type=f"TINYINT({length})")
+            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.INTEGER, db_type=f"TINYINT({length})")
         if code == _BIT:
-            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.TEXT, db_type=f"BIT({length})")
+            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.STRING, db_type=f"BIT({length})")
         if code in _DECIMALS:
             # Length counts the sign (assumed: the row has no UNSIGNED flag) and, at a positive scale, the point.
             precision = max(1, (length or 0) - 1 - (1 if scale else 0))
@@ -335,13 +336,19 @@ class MysqlDialect(SqlDialect):
             exp.EQ(this=exp.var("cte_max_recursion_depth"), expression=exp.Literal.number(size + 1)),
         ])]))
 
-    def build_date_trunc(self, col_expr: Expression, granularity: TimeGranularity) -> Expression:
-        """Sub-day units via ``DATE_FORMAT``: sqlglot renders them all as ``DATE(t)``."""
+    def build_date_trunc(
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
+    ) -> Expression:
+        """Sub-day units via ``DATE_FORMAT`` (sqlglot renders them all as ``DATE(t)``); a TIMESTAMP bucket is a
+        ``DATETIME`` (a coarser truncation returns a DATE)."""
         fmt = _SUB_DAY_TRUNC_FORMATS.get(granularity)
-        if fmt is None:
-            return super().build_date_trunc(col_expr=col_expr, granularity=granularity)
-        formatted = exp.Anonymous(this="DATE_FORMAT", expressions=[col_expr.copy(), exp.Literal.string(fmt)])
-        return exp.Cast(this=formatted, to=exp.DataType.build("DATETIME"))
+        if fmt is not None:
+            formatted = exp.Anonymous(this="DATE_FORMAT", expressions=[col_expr.copy(), exp.Literal.string(fmt)])
+            return exp.Cast(this=formatted, to=exp.DataType.build("DATETIME"))
+        trunc = super().build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
+        if bucket_type(operand, granularity) is DataType.DATE:
+            return trunc
+        return exp.Cast(this=trunc, to=exp.DataType.build("DATETIME"))
 
     def _date_part(self, part: DatePart, expr: Expression) -> Expression:
         """Named functions: ``WEEK(x, 3)`` is ISO, ``WEEKDAY`` counts from Monday=0."""
@@ -443,6 +450,6 @@ class MariadbDialect(MysqlDialect):
             raise UnsupportedServerFunctionError(
                 summary="TRY_CAST to a number (and comparing or computing text with numbers) is not supported on "
                 "MariaDB yet.",
-                suggestion="Run it on MySQL, or express it in the model's own SQL (Column.sql).",
+                suggestion="Run it on MySQL, or express it in the field's own SQL (DatasetField.sql).",
             )
         return super().build_try_cast(value, to)

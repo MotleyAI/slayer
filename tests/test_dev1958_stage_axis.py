@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1832_fixtures import (
-    ModelMeasure,
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
@@ -28,18 +29,18 @@ async def exec_engine(request):
 
 
 async def test_shifted_share_over_stage_time_dimension(exec_engine) -> None:
-    inner = monthly_q(name="s1", dimensions=["region"], time_dimensions=month_td(),
-                      measures=[ModelMeasure(formula="sum(amount)", name="rev")])
+    inner = monthly_q(name="s1", dimensions=["monthly.region"], time_dimensions=month_td("monthly"),
+                      metrics=[QueryMetric(metric="sum(monthly.amount)", alias="rev")])
     outer = SlayerQuery.model_validate({
-        "source_model": "s1", "dimensions": ["region"],
-        "time_dimensions": [TimeDimension(dimension="ordered_at",
+        "population": "s1", "dimensions": ["s1.region"],
+        "time_dimensions": [TimeDimension(field="s1.ordered_at",
                                           granularity=TimeGranularity.MONTH,
                                           date_range=["2024-02-01", "2024-03-31"])],
-        "measures": [ModelMeasure(
-            formula="time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
-            name="t")]})
+        "metrics": [QueryMetric(
+            metric="time_shift(sum(s1.rev) / sum(s1.rev, partition_by=[s1.ordered_at]), -1)",
+            alias="t")]})
     resp = await exec_engine.execute([inner, outer])
-    got = {(r["s1.region"], month_key(r["s1.ordered_at"])): r["s1.t"] for r in resp.data}
+    got = {(r["s1.region"], month_key(r["s1.ordered_at"])): r["t"] for r in resp.data}
     assert set(got) == set(EXPECTED)
     for cell, want in EXPECTED.items():
         if want is None:

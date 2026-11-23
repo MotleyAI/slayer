@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.deprecation import warn_deprecated
+from slayer.core.deprecation import outside_stacklevel, warn_deprecated
 from slayer.core.warnings import DeprecatedSpellingWarning
 
 LegacyKind = Literal["==", "is None", "is not None", "bare None", "list after IN", "method-call"]
@@ -56,29 +56,45 @@ def emit_deprecations(found: Dict[str, LegacySpan]) -> List[DeprecatedSpellingWa
 def _emit(span: LegacySpan) -> DeprecatedSpellingWarning:
     if span.kind == "==":
         warn_deprecated("The comparison `==` is deprecated and removed in SLayer 3.0; write `=`.", removal="3.0",
-                        stacklevel=4)
+                        stacklevel=outside_stacklevel())
     elif span.kind == "is None":
         warn_deprecated("`is None` is deprecated and removed in SLayer 3.0; write `IS NULL`.", removal="3.0",
-                        stacklevel=4)
+                        stacklevel=outside_stacklevel())
     elif span.kind == "is not None":
         warn_deprecated("`is not None` is deprecated and removed in SLayer 3.0; write `IS NOT NULL`.", removal="3.0",
-                        stacklevel=4)
+                        stacklevel=outside_stacklevel())
     elif span.kind == "bare None":
         warn_deprecated("A bare None is deprecated and removed in SLayer 3.0; write `NULL`.", removal="3.0",
-                        stacklevel=4)
+                        stacklevel=outside_stacklevel())
     elif span.kind == "list after IN":
         warn_deprecated("A [ … ] list after IN is deprecated and removed in SLayer 3.0; write a parenthesised "
-                        "list ( … ).", removal="3.0", stacklevel=4)
+                        "list ( … ).", removal="3.0", stacklevel=outside_stacklevel())
     else:
         warn_deprecated(f"The method-call form `{span.written}` is deprecated and removed in SLayer 3.0; write "
-                        f"`{span.twin}`.", removal="3.0", stacklevel=4)
+                        f"`{span.twin}`.", removal="3.0", stacklevel=outside_stacklevel())
     return DeprecatedSpellingWarning(spelling=span.kind, written=span.written, canonical=span.twin)
 
 
-def outermost(spans: Iterable[LegacySpan]) -> List[LegacySpan]:
+class TextSpan(Protocol):
+    """A span of text to replace by its ``twin``."""
+
+    @property
+    def start(self) -> int: ...
+
+    @property
+    def end(self) -> int: ...
+
+    @property
+    def twin(self) -> str: ...
+
+
+_Span = TypeVar("_Span", bound=TextSpan)
+
+
+def outermost(spans: Iterable[_Span]) -> List[_Span]:
     """The spans no other span contains, in text order."""
     ordered = sorted(spans, key=lambda s: (s.start, -s.end))
-    out: List[LegacySpan] = []
+    out: List[_Span] = []
     for span in ordered:
         if out and span.start < out[-1].end:
             continue
@@ -86,7 +102,7 @@ def outermost(spans: Iterable[LegacySpan]) -> List[LegacySpan]:
     return out
 
 
-def rewrite_spans(text: str, spans: Iterable[LegacySpan]) -> str:
+def rewrite_spans(text: str, spans: Iterable[TextSpan]) -> str:
     """``text`` with each outermost span replaced by its twin, the rest byte-identical."""
     out: List[str] = []
     cursor = 0

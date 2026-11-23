@@ -1,0 +1,55 @@
+{
+ "source": "tests/test_dev2172_list_dimensions.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "twins",
+    "dimensions": [
+     "name",
+     "skills"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "twins",
+    "dimensions": [
+     "name",
+     "skills"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "assignments",
+    "dimensions": [
+     "id",
+     "contractors.skills"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "assignments",
+    "dimensions": [
+     "id",
+     "contractors.skills"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "skills",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "skills",
+    "direction": "asc"
+   }
+  }
+ ],
+ "skipped": []
+}

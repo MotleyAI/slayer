@@ -1,7 +1,7 @@
-"""Tests for Cube views → SLayer facade models (slayer/cube/converter.py).
+"""Tests for Cube views → SLayer facade datasets (slayer/cube/converter.py).
 
-Facade measures reference the underlying
-Column (not the Cube measure name); facade source mirrors the root cube's mode.
+Facade metrics reference the underlying
+field (not the Cube measure name); facade source mirrors the root cube's mode.
 """
 
 from slayer.cube.models import (
@@ -15,7 +15,7 @@ from slayer.cube.models import (
 )
 from slayer.cube.report import CubeIssueCategory
 from slayer.core.syntax import AggCall, DottedRef, Ref, parse_expr
-from tests._cube_helpers import column, convert, measure, meta
+from tests._cube_helpers import field_of, convert, metric, meta
 
 
 def _orders_customers_cubes(*, orders_sql_mode: bool = False) -> list[CubeCube]:
@@ -58,15 +58,15 @@ def test_view_facade_model_basic_shape():
     view = models["orders_overview"]
     assert view.sql_table == "public.orders"        # rooted on orders
     assert meta(view)["cube_kind"] == "view"
-    # join to customers present on the facade
-    assert any(j.target_model == "customers" for j in view.joins)
+    # relationship to customers present on the facade
+    assert any(j.to == "customers" for j in view.relationships)
 
 
 def test_view_root_dimension_is_local_derived_column():
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
     view = models["orders_overview"]
-    assert view.get_column("status") is not None
+    assert view.get_field("status") is not None
 
 
 def test_view_prefixed_joined_dimension_references_joined_column():
@@ -74,40 +74,40 @@ def test_view_prefixed_joined_dimension_references_joined_column():
     models, _ = convert(project)
     view = models["orders_overview"]
     # prefix: true → "<cube>_<member>" (Cube prepends the cube name verbatim).
-    col = column(view, "customers_name")
+    col = field_of(view, "customers_name")
     assert col.sql == "customers.name"
 
 
 def test_view_root_measure_carries_underlying_column():
-    """A root-cube measure re-export needs the underlying column on
+    """A root-cube measure re-export needs the underlying field on
     the facade, referenced by `<agg>(<col>)` (NOT the measure name)."""
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
     view = models["orders_overview"]
-    m = measure(view, "total_revenue")
-    parsed = parse_expr(m.formula)
-    assert isinstance(parsed, AggCall), m.formula
+    m = metric(view, "total_revenue")
+    parsed = parse_expr(m.text)
+    assert isinstance(parsed, AggCall), m.expression
     source = parsed.source
-    assert isinstance(source, (Ref, DottedRef)), m.formula
+    assert isinstance(source, (Ref, DottedRef)), m.expression
     col_ref = ".".join(source.parts) if isinstance(source, DottedRef) else source.name
-    assert view.get_column(col_ref) is not None  # underlying column copied onto facade
-    assert m.formula.startswith("sum(")
+    assert view.get_field(col_ref) is not None  # underlying field copied onto facade
+    assert m.text.startswith("sum(")
 
 
 def test_view_joined_measure_is_cross_model_underlying_column_ref():
     """Joined-cube measure → `<agg>(customers.<underlying_col>)`
-    (the underlying column `ltv`, never the measure name `lifetime_value`)."""
+    (the underlying field `ltv`, never the measure name `lifetime_value`)."""
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
     view = models["orders_overview"]
-    m = measure(view, "customers_lifetime_value")  # prefix: "<cube>_<member>"
-    assert m.formula == "sum(customers.ltv)"
+    m = metric(view, "customers_lifetime_value")  # prefix: "<cube>_<member>"
+    assert m.expression == "sum(customers.ltv)"
 
 
 def test_view_count_measure_maps_to_star_count():
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
-    assert measure(models["orders_overview"], "count").formula == "count(*)"
+    assert metric(models["orders_overview"], "count").expression == "count(*)"
 
 
 def test_view_reexport_keeps_rolling_window():
@@ -124,7 +124,7 @@ def test_view_reexport_keeps_rolling_window():
         CubeViewCubeRef(join_path="orders.customers", prefix=True, includes=["ltv_30d"]),
     ])
     models, _ = convert(CubeProject(cubes=cubes, views=[view]))
-    formulas = {m.name: m.formula for m in models["orders_overview"].measures}
+    formulas = {m.name: m.expression for m in models["orders_overview"].metrics}
     assert formulas == {
         "rev_30d": "sum(amount, window='30d')",
         "count_7d": "count(*, window='7d')",
@@ -167,8 +167,8 @@ def test_view_excludes_drops_member():
     ])
     project = CubeProject(cubes=_orders_customers_cubes(), views=[view])
     models, _ = convert(project)
-    assert models["ov"].get_column("status") is None
-    assert models["ov"].get_measure("total_revenue") is not None
+    assert models["ov"].get_field("status") is None
+    assert models["ov"].get_metric("total_revenue") is not None
 
 
 def test_view_includes_star_takes_all_members():
@@ -178,9 +178,9 @@ def test_view_includes_star_takes_all_members():
     project = CubeProject(cubes=_orders_customers_cubes(), views=[view])
     models, _ = convert(project)
     ov = models["ov"]
-    assert ov.get_column("status") is not None
-    assert ov.get_measure("total_revenue") is not None
-    assert ov.get_measure("count") is not None
+    assert ov.get_field("status") is not None
+    assert ov.get_metric("total_revenue") is not None
+    assert ov.get_metric("count") is not None
 
 
 def test_view_include_entry_without_name_reported():
@@ -193,7 +193,7 @@ def test_view_include_entry_without_name_reported():
     ])
     project = CubeProject(cubes=_orders_customers_cubes(), views=[view])
     models, report = convert(project)
-    assert models["ov"].get_column("status") is not None
+    assert models["ov"].get_field("status") is not None
     parse_errors = [i for i in report.issues
                     if i.category == CubeIssueCategory.PARSE_ERROR]
     assert len(parse_errors) == 2  # one for {"alias": ...}, one for {}
@@ -244,8 +244,8 @@ def test_view_extends_flattens_member_lists():
     project = CubeProject(cubes=_orders_customers_cubes(), views=[base, child])
     models, _ = convert(project)
     child_model = models["child_view"]
-    assert child_model.get_column("status") is not None        # inherited
-    assert child_model.get_measure("total_revenue") is not None  # own
+    assert child_model.get_field("status") is not None        # inherited
+    assert child_model.get_metric("total_revenue") is not None  # own
 
 
 def test_view_star_skips_private_member():
@@ -256,8 +256,8 @@ def test_view_star_skips_private_member():
     view = CubeView(name="ov", cubes=[CubeViewCubeRef(join_path="orders", includes="*")])
     project = CubeProject(cubes=cubes, views=[view])
     models, _ = convert(project)
-    assert models["ov"].get_column("internal_flag") is None
-    assert models["ov"].get_column("status") is not None
+    assert models["ov"].get_field("internal_flag") is None
+    assert models["ov"].get_field("status") is not None
 
 
 def test_view_default_filter_escapes_single_quotes():
@@ -276,8 +276,8 @@ def test_view_object_form_includes_reports_override():
         includes=[{"name": "status", "format": "upper"}, "total_revenue"])])
     project = CubeProject(cubes=_orders_customers_cubes(), views=[view])
     models, report = convert(project)
-    assert models["ov"].get_column("status") is not None       # name still extracted
-    assert models["ov"].get_measure("total_revenue") is not None
+    assert models["ov"].get_field("status") is not None       # name still extracted
+    assert models["ov"].get_metric("total_revenue") is not None
     assert any(i.category == CubeIssueCategory.UNMAPPED_INFRA for i in report.issues)
 
 
@@ -288,9 +288,9 @@ def test_view_calc_measure_reexport_reported():
     view = CubeView(name="ov", cubes=[CubeViewCubeRef(join_path="orders", includes=["aov"])])
     project = CubeProject(cubes=cubes, views=[view])
     models, report = convert(project)
-    # A calculated measure can't be re-exported as a facade cross-model measure
+    # A calculated measure can't be re-exported as a facade cross-dataset metric
     # in Stage 1 → reported, not silently skipped.
-    assert models["ov"].get_measure("aov") is None
+    assert models["ov"].get_metric("aov") is None
     assert any(i.category == CubeIssueCategory.COMPLEX_MEASURE for i in report.issues)
 
 
@@ -314,9 +314,9 @@ def test_view_facade_declares_the_join_key():
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
     view = models["orders_overview"]
-    (join,) = [j for j in view.joins if j.target_model == "customers"]
-    assert join.join_pairs == [["customer_id", "id"]]
-    col = column(view, "customer_id")
+    (join,) = [j for j in view.relationships if j.to == "customers"]
+    assert join.column_pairs == [("customer_id", "id")]
+    col = field_of(view, "customer_id")
     assert col is not None
     assert col.is_base
     assert col.hidden is True

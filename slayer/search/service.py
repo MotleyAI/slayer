@@ -2,7 +2,7 @@
 
 A search validates inputs, resolves entities leniently (failures warn), applies the optional
 ``cypher_filter`` allowlist to every channel before the ``max_results`` cap, surfaces user-named
-entities as themselves, fans out to retrievers in parallel and refreshes surfaced column samples.
+entities as themselves, fans out to retrievers in parallel and refreshes surfaced field samples.
 Retriever rankings are never truncated, so changing ``max_results`` never reorders hits. Writes fan
 out to every retriever with failures isolated as warnings; deletes stay with ``StorageBackend``.
 """
@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+import yaml
 from pydantic import BaseModel, Field
 
-from slayer.core.errors import AmbiguousModelError, EntityResolutionError
-from slayer.core.models import SlayerModel
+from slayer.core.errors import AmbiguousDatasetError, EntityResolutionError
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.engine.profiling import ensure_samples_fresh, refresh_table_backed_model_sampled
+from slayer.engine.profiling import ensure_samples_fresh, refresh_table_backed_dataset_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.models import Memory
@@ -28,12 +30,15 @@ from slayer.memories.resolver import (
     resolve_entity,
 )
 from slayer.search import graph as _search_graph
+from slayer.search.cypher_labels import renamed_labels
 from slayer.search.cypher_naive import parse_naive_label_filter as _parse_naive_cypher
 from slayer.search.index import Corpus, build_in_memory_corpus
 from slayer.search.render import (
-    collect_model_entity_pairs,
+    collect_dataset_entity_pairs,
+    render_model_scoped_metric_text,
+    render_semantic_model_text,
     compact_description_from_learning,
-    render_column_text,
+    render_field_text,
     render_datasource_pair,
 )
 from slayer.search.retriever import RetrievalResult, Retriever
@@ -58,8 +63,8 @@ _RRF_K = 60
 
 class SearchHit(BaseModel):
     """A unified search result. ``kind`` is ``"memory"`` for
-    memories, or the entity kind string (``"datasource"``, ``"model"``,
-    ``"column"``, ``"measure"``, ``"aggregation"``) for entity hits.
+    memories, or the entity kind string (``"datasource"``, ``"dataset"``,
+    ``"field"``, ``"metric"``, ``"aggregation"``) for entity hits.
 
     ``id`` is the raw storage id for memories (suitable for
     ``forget_memory(id=hit.id)``) and the canonical entity string for
@@ -103,7 +108,7 @@ class LookupFound(BaseModel):
 
 class LookupHidden(BaseModel):
     """The canonical resolved but is gated by a ``hidden`` flag (on the
-    model or on the column). ``reason`` is a short human-readable hint
+    dataset or on the field). ``reason`` is a short human-readable hint
     used to compose the caller-facing warning."""
 
     reason: str
@@ -111,7 +116,7 @@ class LookupHidden(BaseModel):
 
 class LookupMissing(BaseModel):
     """The canonical resolved at ``_resolve_inputs`` time but the
-    underlying datasource / model / leaf is no longer present at lookup
+    underlying datasource / dataset / leaf is no longer present at lookup
     time (race between resolve and lookup, or the entity was deleted)."""
 
     pass
@@ -413,40 +418,40 @@ async def _lookup_bare_datasource_canonical(
     known = await storage.list_datasources()
     if ds not in known:
         return LookupMissing()
-    models = failures.skip(await storage.load_models(data_source=ds))
+    datasets = failures.skip(await storage.load_datasets(data_source=ds))
     cfg = await storage.get_datasource(ds)
     ds_description = cfg.description if cfg is not None else None
     pair = render_datasource_pair(
-        name=ds, models=models, description=ds_description,
+        name=ds, datasets=datasets, description=ds_description,
     )
     return LookupFound(
         kind=pair.kind, text=pair.text, description=pair.description,
     )
 
 
-async def _lookup_model_or_leaf_canonical(
+async def _lookup_dataset_or_leaf_canonical(
     *,
     canonical: str,
     ds: str,
-    model_name: str,
+    dataset_name: str,
     leaf: str | None,
     storage: StorageBackend,
 ) -> LookupResult:
-    """Render a ``<ds>.<model>[.<leaf>]`` canonical, or report it hidden / missing."""
-    model = await storage.get_model_or_builtin(model_name, data_source=ds)
-    if model is None:
+    """Render a ``<ds>.<dataset>[.<leaf>]`` canonical, or report it hidden / missing."""
+    dataset = await storage.get_dataset_or_builtin(dataset_name, data_source=ds)
+    if dataset is None:
         return LookupMissing()
-    if model.hidden:
-        return LookupHidden(reason="hidden model")
-    for re in collect_model_entity_pairs(model=model):
+    if dataset.hidden:
+        return LookupHidden(reason="hidden dataset")
+    for re in collect_dataset_entity_pairs(dataset=dataset):
         if re.canonical_id == canonical:
             return LookupFound(
                 kind=re.kind, text=re.text, description=re.description,
             )
     if leaf is not None:
-        for column in model.columns:
-            if column.name == leaf and column.hidden:
-                return LookupHidden(reason="hidden column")
+        for field in dataset.fields:
+            if field.name == leaf and field.hidden:
+                return LookupHidden(reason="hidden field")
     return LookupMissing()
 
 
@@ -471,32 +476,32 @@ async def _lookup_named_entity(
         return await _lookup_bare_datasource_canonical(
             ds=segments[0], storage=storage, failures=failures or DocumentLoadFailures(),
         )
-    return await _lookup_model_or_leaf_canonical(
+    return await _lookup_dataset_or_leaf_canonical(
         canonical=canonical,
         ds=segments[0],
-        model_name=segments[1],
+        dataset_name=segments[1],
         leaf=segments[2] if len(segments) >= 3 else None,
         storage=storage,
     )
 
 
-# --- Column-hit refresh helpers ---
+# --- Field-hit refresh helpers ---
 
 
-def _group_column_hits(
+def _group_field_hits(
     results: list[SearchHit],
 ) -> dict[tuple[str, str], list[tuple[int, SearchHit, str]]]:
-    """Group column hits by ``(data_source, model)`` as ``(result_index, hit, column_name)`` tuples."""
+    """Group field hits by ``(data_source, dataset)`` as ``(result_index, hit, column_name)`` tuples."""
     groups: dict[tuple[str, str], list[tuple[int, SearchHit, str]]] = {}
     for idx, hit in enumerate(results):
-        if hit.kind != "column":
+        if hit.kind != "field":
             continue
         segments = hit.id.split(".")
         if len(segments) != 3:
             continue
-        data_source, model_name, column_name = segments
-        groups.setdefault((data_source, model_name), []).append(
-            (idx, hit, column_name)
+        data_source, dataset_name, field_name = segments
+        groups.setdefault((data_source, dataset_name), []).append(
+            (idx, hit, field_name)
         )
     return groups
 
@@ -514,7 +519,7 @@ class SearchService:
         engine: SlayerQueryEngine | None = None,
         retrievers: list[Retriever] | None = None,
     ) -> None:
-        """``engine`` is optional; without one the post-fusion column-hit refresh is a no-op."""
+        """``engine`` is optional; without one the post-fusion field-hit refresh is a no-op."""
         self._storage = storage
         self._engine = engine
         self._retrievers: list[Retriever] = (
@@ -534,28 +539,28 @@ class SearchService:
     def retrievers(self) -> list[Retriever]:
         return self._retrievers
 
-    async def _refresh_stale_column_hits(
+    async def _refresh_stale_field_hits(
         self,
         *,
         results: list[SearchHit],
         compact: bool = True,
     ) -> list[SearchHit]:
-        """Refresh column hits per ``(data_source, model)`` group, models in parallel.
+        """Refresh field hits per ``(data_source, dataset)`` group, datasets in parallel.
 
         Under ``compact=True`` only ``description`` is refreshed; ``text`` stays ``""``.
         """
         assert self._engine is not None  # caller-guarded
-        groups = _group_column_hits(results)
+        groups = _group_field_hits(results)
         if not groups:
             return results
         refreshed_by_idx: dict[int, SearchHit] = {}
         await asyncio.gather(*[
             self._refresh_group_worker(
-                ds_name=ds, model_name=model_name,
+                ds_name=ds, dataset_name=dataset_name,
                 members=members, refreshed_by_idx=refreshed_by_idx,
                 compact=compact,
             )
-            for (ds, model_name), members in groups.items()
+            for (ds, dataset_name), members in groups.items()
         ])
         if not refreshed_by_idx:
             return results
@@ -567,42 +572,42 @@ class SearchService:
         self,
         *,
         ds_name: str,
-        model_name: str,
+        dataset_name: str,
         members: list[tuple[int, SearchHit, str]],
         refreshed_by_idx: dict[int, SearchHit],
         compact: bool = True,
     ) -> None:
-        """Profile one model's column hits in a single owner call; write changed hits into ``refreshed_by_idx``."""
+        """Profile one dataset's field hits in a single owner call; write changed hits into ``refreshed_by_idx``."""
         assert self._engine is not None  # caller-guarded
         try:
-            model = await self._storage.get_model(
-                model_name, data_source=ds_name,
+            dataset = await self._storage.get_dataset(
+                dataset_name, data_source=ds_name,
             )
         except Exception as exc:  # NOSONAR(S112) — best-effort
             logger.warning(
-                "search refresh: failed to load model %s.%s: %s",
-                ds_name, model_name, exc,
+                "search refresh: failed to load dataset %s.%s: %s",
+                ds_name, dataset_name, exc,
             )
             return
-        if model is None:
+        if dataset is None:
             return
         hits = [
-            (idx, hit, col) for idx, hit, column_name in members
-            if (col := model.get_column(column_name)) is not None
+            (idx, hit, col) for idx, hit, field_name in members
+            if (col := dataset.get_field(field_name)) is not None
         ]
         if not hits:
             return
         outcome = await ensure_samples_fresh(
-            model=model, columns=[col for _, _, col in hits],
+            dataset=dataset, fields=[col for _, _, col in hits],
             engine=self._engine, storage=self._storage,
         )
         scoped = self._engine.policy is not None
-        for (idx, hit, col), fresh in zip(hits, outcome.columns, strict=True):
+        for (idx, hit, col), fresh in zip(hits, outcome.fields, strict=True):
             if fresh is col and not scoped:
                 continue
             update: dict[str, Any] = {"description": fresh.description}
             if not compact:
-                update["text"] = render_column_text(model=model, column=fresh)
+                update["text"] = render_field_text(dataset=dataset, field=fresh)
             refreshed_by_idx[idx] = hit.model_copy(update=update)
 
     # --- Read side ---
@@ -707,14 +712,15 @@ class SearchService:
 
         corpus: Corpus | None = None
         if question_active:
-            all_models, datasources, datasource_descriptions = (
+            all_datasets, datasources, datasource_descriptions = (
                 await self._collect_index_corpus(datasource=datasource, failures=failures)
             )
             corpus = build_in_memory_corpus(
                 memories=all_memories,
-                models=all_models,
+                datasets=all_datasets,
                 datasources=datasources,
                 datasource_descriptions=datasource_descriptions,
+                extra_pairs=await self._document_pairs(datasource),
             )
 
         if candidate_ids is not None:
@@ -810,7 +816,7 @@ class SearchService:
         )
 
         if self._engine is not None:
-            all_hits = await self._refresh_stale_column_hits(
+            all_hits = await self._refresh_stale_field_hits(
                 results=all_hits, compact=compact,
             )
         return SearchResponse(
@@ -838,7 +844,9 @@ class SearchService:
         """
         if cypher_filter is None:
             return None, None, None
-        if _search_graph.is_available():
+        cypher_filter, renamed = renamed_labels(cypher_filter)
+        warnings.extend(w.human_message() for w in renamed)
+        if await _search_graph.is_available_async():
             candidate_ids = await _search_graph.get_filtered_ids(
                 cypher=cypher_filter, storage=self._storage, failures=failures,
             )
@@ -920,30 +928,41 @@ class SearchService:
             invoke=lambda r: r.upsert_memory(memory),
         )
 
-    async def refresh_model_subtree(
-        self, model: SlayerModel,
+    async def refresh_dataset_subtree(
+        self, dataset: SlayerDataset,
     ) -> list[str]:
         return await self._fan_out_with_isolation(
-            hook_name="refresh_model_subtree",
-            invoke=lambda r: r.refresh_model_subtree(model),
+            hook_name="refresh_dataset_subtree",
+            invoke=lambda r: r.refresh_dataset_subtree(dataset),
         )
 
     async def refresh_datasource(
         self,
         *,
         name: str,
-        models: list[SlayerModel],
+        datasets: list[SlayerDataset],
         description: str | None = None,
     ) -> list[str]:
-        return await self._fan_out_with_isolation(
+        documents = [(canonical, kind, text) for canonical, kind, text, _ in await self._document_pairs(name)]
+        warnings = await self._fan_out_with_isolation(
             hook_name="refresh_datasource",
             invoke=lambda r: r.refresh_datasource(
-                name=name, models=models, description=description,
+                name=name, datasets=datasets, description=description,
             ),
+        )
+        return warnings + await self._fan_out_with_isolation(
+            hook_name="refresh_documents", invoke=lambda r: r.refresh_documents(documents),
+        )
+
+    async def refresh_documents(self, data_source: str) -> list[str]:
+        """Refresh ``data_source``'s semantic models and model-scoped metrics in every retriever."""
+        documents = [(canonical, kind, text) for canonical, kind, text, _ in await self._document_pairs(data_source)]
+        return await self._fan_out_with_isolation(
+            hook_name="refresh_documents", invoke=lambda r: r.refresh_documents(documents),
         )
 
     async def _fan_out_with_isolation(
-        self, *, hook_name: str, invoke,
+        self, *, hook_name: str, invoke: Callable[[Retriever], Awaitable[list[str]]],
     ) -> list[str]:
         """Call ``invoke`` on each retriever in order; failures become prefixed warnings."""
         warnings: list[str] = []
@@ -990,7 +1009,7 @@ class SearchService:
                     result = await resolve_entity(
                         raw=raw, storage=self._storage,
                     )
-                except (EntityResolutionError, AmbiguousModelError) as exc:
+                except (EntityResolutionError, AmbiguousDatasetError) as exc:
                     warnings.append(f"entity {raw!r} dropped: {exc}")
                     continue
                 canonical.extend(result.canonical_forms)
@@ -1000,7 +1019,7 @@ class SearchService:
                 extraction = await extract_entities_from_query(
                     query=_coerce_query(query), storage=self._storage,
                 )
-            except (EntityResolutionError, AmbiguousModelError) as exc:
+            except (EntityResolutionError, AmbiguousDatasetError) as exc:
                 warnings.append(f"query input dropped: {exc}")
             else:
                 canonical.extend(extraction.canonical_forms)
@@ -1089,11 +1108,12 @@ class SearchService:
             await self._collect_datasource_canonicals(datasource=datasource)
         )
         canonicals.update(
-            await self._collect_model_subtree_canonicals(
+            await self._collect_dataset_subtree_canonicals(
                 datasource=datasource, failures=failures,
             )
         )
         canonicals.update(_collect_memory_canonicals(all_memories))
+        canonicals.update(pair[0] for pair in await self._document_pairs(datasource))
         return canonicals
 
     async def _collect_datasource_canonicals(
@@ -1104,22 +1124,22 @@ class SearchService:
             names = [d for d in names if d == datasource]
         return set(names)
 
-    async def _collect_model_subtree_canonicals(
+    async def _collect_dataset_subtree_canonicals(
         self, *, datasource: str | None, failures: DocumentLoadFailures,
     ) -> set:
         out: set = {
-            f"{ds}.{name}" for ds, name in await self._storage._list_all_model_identities()
+            f"{ds}.{name}" for ds, name in await self._storage._list_all_dataset_identities()
             if datasource is None or ds == datasource
         }
-        for model in failures.skip(await self._storage.load_models(data_source=datasource)):
-            ds, name = model.data_source, model.name
-            for column in model.columns:
-                out.add(f"{ds}.{name}.{column.name}")
-            for measure in model.measures:
-                if measure.name is None:
+        for dataset in failures.skip(await self._storage.load_datasets(data_source=datasource)):
+            ds, name = dataset.data_source, dataset.name
+            for field in dataset.fields:
+                out.add(f"{ds}.{name}.{field.name}")
+            for metric in dataset.metrics:
+                if metric.name is None:
                     continue
-                out.add(f"{ds}.{name}.{measure.name}")
-            for agg in model.aggregations:
+                out.add(f"{ds}.{name}.{metric.name}")
+            for agg in dataset.aggregations:
                 out.add(f"{ds}.{name}.{agg.name}")
         return out
 
@@ -1139,7 +1159,7 @@ class SearchService:
                 await extract_entities_from_query(
                     query=mem.query, storage=self._storage,
                 )
-            except (EntityResolutionError, AmbiguousModelError) as exc:
+            except (EntityResolutionError, AmbiguousDatasetError) as exc:
                 out.append(
                     f"example_query {_MEMORY_PREFIX}{hit.id}: attached "
                     f"query has stale references ({exc}); re-save to clean."
@@ -1169,11 +1189,29 @@ class SearchService:
                 await extract_entities_from_query(
                     query=mem.query, storage=self._storage,
                 )
-            except (EntityResolutionError, AmbiguousModelError) as exc:
+            except (EntityResolutionError, AmbiguousDatasetError) as exc:
                 out.append(
                     f"example_query {_MEMORY_PREFIX}{memory_id}: attached "
                     f"query has stale references ({exc}); re-save to clean."
                 )
+        return out
+
+    async def _document_pairs(self, datasource: str | None) -> list[tuple[str, str, str, str | None]]:
+        """``(canonical, kind, text, description)`` of each stored document and model-scoped metric (of
+        ``datasource`` when given)."""
+        out: list[tuple[str, str, str, str | None]] = []
+        documents = await self._storage.list_semantic_models(data_source=datasource)
+        for ds in sorted({ds for ds, _ in documents}):
+            for _, name in [d for d in documents if d[0] == ds]:
+                text = await self._storage.get_semantic_model_text(name, data_source=ds)
+                document = yaml.safe_load(text) if text else {}
+                document = document if isinstance(document, dict) else {}
+                out.append((f"{ds}.{name}", "semantic_model",
+                            render_semantic_model_text(data_source=ds, name=name, document=document),
+                            document.get("description")))
+            for metric in await self._storage.list_model_scoped_metrics(ds):
+                out.append((f"{ds}.{metric.name}", "metric", render_model_scoped_metric_text(metric=metric),
+                            metric.description))
         return out
 
     async def _collect_index_corpus(
@@ -1181,19 +1219,19 @@ class SearchService:
         *,
         failures: DocumentLoadFailures,
         datasource: str | None = None,
-    ) -> tuple[list[SlayerModel], list[str], dict[str, str | None]]:
-        """Return ``(models, datasources, {ds_name: description})`` for the corpus build."""
+    ) -> tuple[list[SlayerDataset], list[str], dict[str, str | None]]:
+        """Return ``(datasets, datasources, {ds_name: description})`` for the corpus build."""
         datasources = await self._storage.list_datasources()
         if datasource is not None:
             datasources = [d for d in datasources if d == datasource]
-        models = failures.skip(await self._storage.load_models(data_source=datasource))
+        datasets = failures.skip(await self._storage.load_datasets(data_source=datasource))
         for ds_name in datasources:
-            models.extend(await self._storage.builtin_models(ds_name))
+            datasets.extend(await self._storage.builtin_datasets(ds_name))
         descriptions: dict[str, str | None] = {}
         for ds_name in datasources:
             cfg = await self._storage.get_datasource(ds_name)
             descriptions[ds_name] = cfg.description if cfg is not None else None
-        return models, datasources, descriptions
+        return datasets, datasources, descriptions
 
 
 async def handle_edit_refresh(
@@ -1201,22 +1239,22 @@ async def handle_edit_refresh(
     engine: SlayerQueryEngine,
     storage: StorageBackend,
     data_source: str,
-    model_name: str,
-    changed_columns: set[str],
-    model_level_change: bool,
+    dataset_name: str,
+    changed_fields: set[str],
+    dataset_level_change: bool,
 ) -> list[str]:
-    """``edit_model`` refresh: re-sample changed columns (all on a model-level change), then re-embed; failures warn."""
-    model = await storage.get_model(name=model_name, data_source=data_source)
-    if model is None:
-        return [f"model {model_name!r} not found in datasource {data_source!r}"]
-    only = None if model_level_change else changed_columns
-    warnings = await refresh_table_backed_model_sampled(
-        model=model, engine=engine, storage=storage, only_columns=only,
+    """``edit_dataset`` refresh: re-sample changed fields (all on a dataset-level change), then re-embed; failures warn."""
+    dataset = await storage.get_dataset(name=dataset_name, data_source=data_source)
+    if dataset is None:
+        return [f"dataset {dataset_name!r} not found in datasource {data_source!r}"]
+    only = None if dataset_level_change else changed_fields
+    warnings = await refresh_table_backed_dataset_sampled(
+        dataset=dataset, engine=engine, storage=storage, only_fields=only,
     )
-    # Reload so the embedding text matches the refreshed model's content_hash.
-    reloaded = await storage.get_model(name=model_name, data_source=data_source)
+    # Reload so the embedding text matches the refreshed dataset's content_hash.
+    reloaded = await storage.get_dataset(name=dataset_name, data_source=data_source)
     if reloaded is not None:
-        warnings.extend(await SearchService(storage=storage).refresh_model_subtree(reloaded))
+        warnings.extend(await SearchService(storage=storage).refresh_dataset_subtree(reloaded))
     return warnings
 
 

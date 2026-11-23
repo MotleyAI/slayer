@@ -1,4 +1,4 @@
-"""Reachability and shortest routes over the bidirectional join multigraph (``slayer.core.join_search``).
+"""Reachability and shortest routes over the two-way relationship multigraph (``slayer.core.relationship_search``).
 
 Every declared edge is traversable in both directions and parallel edges between
 one pair are distinct routes. ``shortest_route`` returns the executable hop-token
@@ -10,43 +10,43 @@ unnamed parallel edges is not executable.
 from __future__ import annotations
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.join_search import reachable, shortest_route
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.relationship_search import reachable, shortest_route
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 
 
-def _m(name: str, joins: list[ModelJoin] | None = None) -> SlayerModel:
-    return SlayerModel(
+def _m(name: str, relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         data_source="mydb",
         sql_table=name,
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="x_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="x_id", datatype=DataType.INTEGER),
         ],
-        joins=joins or [],
+        relationships=relationships or [],
     )
 
 
-def _left(target: str) -> ModelJoin:
-    return ModelJoin(target_model=target, join_pairs=[["x_id", "id"]], join_type=JoinType.LEFT)
+def _left(target: str) -> DatasetRelationship:
+    return DatasetRelationship(to=target, from_columns=["x_id"], to_columns=["id"], join_type=JoinType.LEFT)
 
 
-def _inner(target: str) -> ModelJoin:
-    return ModelJoin(target_model=target, join_pairs=[["x_id", "id"]], join_type=JoinType.INNER)
+def _inner(target: str) -> DatasetRelationship:
+    return DatasetRelationship(to=target, from_columns=["x_id"], to_columns=["id"], join_type=JoinType.INNER)
 
 
-def _by(models: list[SlayerModel]) -> dict[str, SlayerModel]:
-    return {m.name: m for m in models}
+def _by(datasets: list[SlayerDataset]) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in datasets}
 
 
-def _reach(models: list[SlayerModel], root: str) -> set[str]:
-    by = _by(models)
-    return set(reachable(root=by[root], models_by_name=by))
+def _reach(datasets: list[SlayerDataset], root: str) -> set[str]:
+    by = _by(datasets)
+    return set(reachable(root=by[root], datasets_by_name=by))
 
 
-def _path(models: list[SlayerModel], root: str, target: str) -> list[str] | None:
-    by = _by(models)
-    route = shortest_route(root=by[root], target=target, models_by_name=by)
+def _path(datasets: list[SlayerDataset], root: str, target: str) -> list[str] | None:
+    by = _by(datasets)
+    route = shortest_route(root=by[root], target=target, datasets_by_name=by)
     return None if route is None else list(route.tokens)
 
 
@@ -75,7 +75,7 @@ class TestReachability:
         assert _reach(models, "order_items") == {"order_items", "orders"}
 
     def test_edge_to_unknown_target_is_skipped(self) -> None:
-        # Join target not in the loaded model set → edge dropped, no crash.
+        # Relationship target not in the loaded dataset set → edge dropped, no crash.
         models = [_m("orders", [_left("missing")])]
         assert _reach(models, "orders") == {"orders"}
 

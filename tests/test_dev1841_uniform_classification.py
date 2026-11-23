@@ -1,5 +1,5 @@
 """Local aggregates over a fanning dimension route
-through the same attribution classification as cross-model ones, in every
+through the same attribution classification as cross-dataset ones, in every
 consumer role. The naive join-multiplied value must be unrepresentable.
 
 Spec: openspec …/specs/queries/semantics — "No double counting" (local
@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 
 from tests._dev1841_fixtures import (
     ASSOC_LOCAL_SPEND_BY_STATUS,
     LOCAL_OK_FAN_DEFECT,
     LOCAL_SPEND_TOTAL,
-    ModelMeasure,
     associated_warnings,
     broadcast_warnings,
     cust_q,
@@ -26,7 +25,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-SP = ModelMeasure(formula="sum(spend)", name="sp")
+SP = QueryMetric(metric="sum(customers.spend)", alias="sp")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -36,15 +35,15 @@ async def exec_backend(request):
 
 
 def _ok(resp) -> float:
-    return float(status_key(resp, root="customers")[("ok",)]["customers.sp"])
+    return float(status_key(resp)[("ok",)]["sp"])
 
 
 class TestBroadcastModeNeverMultiplies:
     async def test_dimensionless_total_is_all_customers(self, exec_backend):
         """Sanity oracle: the fan-free local total sums every customer once."""
         _, engine = exec_backend
-        resp = await engine.execute(cust_q(measures=[SP]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(
+        resp = await engine.execute(cust_q(metrics=[SP]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(
             LOCAL_SPEND_TOTAL)
 
     async def test_broadcast_mode_broadcasts_and_warns(self, exec_backend):
@@ -53,10 +52,10 @@ class TestBroadcastModeNeverMultiplies:
         never the fanned figure."""
         _, engine = exec_backend
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[SP],
+            cust_q(dimensions=["orders.status"], metrics=[SP],
                    to_many_handling="broadcast"))
-        by = status_key(resp, root="customers")
-        vals = {k: float(v["customers.sp"]) for k, v in by.items()}
+        by = status_key(resp)
+        vals = {k: float(v["sp"]) for k, v in by.items()}
         assert vals[("ok",)] == pytest.approx(vals[("new",)])  # broadcast
         assert vals[("ok",)] != pytest.approx(LOCAL_OK_FAN_DEFECT)
         assert vals[("ok",)] != pytest.approx(ASSOC_LOCAL_SPEND_BY_STATUS["ok"])
@@ -69,29 +68,29 @@ class TestAssociateGivesDistinctEntityValue:
         value; c1 counts once in ok."""
         _, engine = exec_backend
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[SP],
+            cust_q(dimensions=["orders.status"], metrics=[SP],
                    to_many_handling="associate"))
-        by = status_key(resp, root="customers")
+        by = status_key(resp)
         for status, spend in ASSOC_LOCAL_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["customers.sp"]) == pytest.approx(spend)
+            assert float(by[(status,)]["sp"]) == pytest.approx(spend)
         assert _ok(resp) != pytest.approx(LOCAL_OK_FAN_DEFECT)
         assert associated_warnings(resp)
 
 
 class TestEveryConsumerRoleAvoidsTheFan:
     """Scenario: fanned local aggregates are caught in every consumer context —
-    each resolves per the mode exactly as a directly selected measure."""
+    each resolves per the mode exactly as a directly selected metric."""
 
     async def test_arithmetic_composite_leaf(self, exec_backend):
         _, engine = exec_backend
-        composite = ModelMeasure(formula="sum(spend) + 1", name="sp1")
+        composite = QueryMetric(metric="sum(customers.spend) + 1", alias="sp1")
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[composite],
+            cust_q(dimensions=["orders.status"], metrics=[composite],
                    to_many_handling="associate"))
-        by = status_key(resp, root="customers")
-        assert float(by[("ok",)]["customers.sp1"]) == pytest.approx(
+        by = status_key(resp)
+        assert float(by[("ok",)]["sp1"]) == pytest.approx(
             ASSOC_LOCAL_SPEND_BY_STATUS["ok"] + 1)
-        assert float(by[("ok",)]["customers.sp1"]) != pytest.approx(
+        assert float(by[("ok",)]["sp1"]) != pytest.approx(
             LOCAL_OK_FAN_DEFECT + 1)
 
     async def test_aggregate_phase_filter_only(self, exec_backend):
@@ -99,13 +98,13 @@ class TestEveryConsumerRoleAvoidsTheFan:
         threshold sees 420, not the fanned 520 that would keep ok anyway — a
         threshold BELOW the fan but ABOVE the true value discriminates."""
         _, engine = exec_backend
-        star = ModelMeasure(formula="count(*)", name="n")
+        star = QueryMetric(metric="count(customers.*)", alias="n")
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[star],
-                   filters=["sum(spend) > 450"],
+            cust_q(dimensions=["orders.status"], metrics=[star],
+                   filter=["sum(customers.spend) > 450"],
                    to_many_handling="associate"))
         # Correct ok=420 fails > 450 → ok dropped; a fanned 520 would keep it.
-        keys = set(status_key(resp, root="customers"))
+        keys = set(status_key(resp))
         assert ("ok",) not in keys
 
     async def test_order_context(self, exec_backend):
@@ -113,8 +112,8 @@ class TestEveryConsumerRoleAvoidsTheFan:
         not the fan: the ok cell carries 420, never the multiplied 520."""
         _, engine = exec_backend
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[SP],
-                   order=[OrderItem.model_validate({"column": "sum(spend)", "direction": "desc"})],
+            cust_q(dimensions=["orders.status"], metrics=[SP],
+                   order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
                    to_many_handling="associate"))
         # ok / new / a NULL-status cell for orderless c7 (rooted at customers).
         assert len(resp.data) == 3

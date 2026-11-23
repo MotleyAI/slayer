@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -91,14 +91,14 @@ def _ev_rows(*, sep: str = " ") -> list[tuple]:
     ]
 
 
-_EV_COLUMNS = [
+_EV_FIELDS = [
     ("id", "INT"), ("ts", "TIMESTAMP"), ("d", "DATE"), ("shipped_at", "TIMESTAMP"),
     ("code", "TEXT"), ("amount", "DOUBLE"), ("customer_id", "INT"), ("raw_ts", "TEXT"),
 ]
 
-EV = TableSpec(name="ev", columns=_EV_COLUMNS, rows=_ev_rows())
+EV = TableSpec(name="ev", columns=_EV_FIELDS, rows=_ev_rows())
 # SQLite ``T``-separated timestamp storage (DuckDB normalises on insert).
-EV_T = TableSpec(name="ev_t", columns=_EV_COLUMNS, rows=_ev_rows(sep="T"))
+EV_T = TableSpec(name="ev_t", columns=_EV_FIELDS, rows=_ev_rows(sep="T"))
 
 # SQLite date-only, space-, ``T``- and millisecond-spelled text in one TIMESTAMP column.
 MIXED = TableSpec(
@@ -116,60 +116,60 @@ CUSTOMERS = TableSpec(
 )
 
 
-def _ev_columns() -> list[Column]:
+def _ev_fields() -> list[DatasetField]:
     return [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="ts", type=DataType.TIMESTAMP),
-        Column(name="d", type=DataType.DATE),
-        Column(name="shipped_at", type=DataType.TIMESTAMP),
-        Column(name="code", type=DataType.TEXT),
-        Column(name="amount", type=DataType.DOUBLE),
-        Column(name="customer_id", type=DataType.INT),
-        Column(name="raw_ts"),  # untyped
-        Column(name="ts_copy", sql="ts", type=DataType.TIMESTAMP),  # derived
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="ts", datatype=DataType.DATETIME),
+        DatasetField(name="d", datatype=DataType.DATE),
+        DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+        DatasetField(name="code", datatype=DataType.STRING),
+        DatasetField(name="amount", datatype=DataType.FLOAT),
+        DatasetField(name="customer_id", datatype=DataType.INTEGER),
+        DatasetField(name="raw_ts"),  # untyped
+        DatasetField(name="ts_copy", expression="ts", datatype=DataType.DATETIME),  # derived
     ]
 
 
-def ev_model(*, name: str = "ev", table: str = "ev") -> SlayerModel:
-    return SlayerModel(
+def ev_dataset(*, name: str = "ev", table: str = "ev") -> SlayerDataset:
+    return SlayerDataset(
         name=name, sql_table=table, data_source="test", default_time_dimension="ts",
-        columns=_ev_columns(),
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        fields=_ev_fields(),
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
 
 
-def mixed_model() -> SlayerModel:
-    return SlayerModel(
+def mixed_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="mixed", sql_table="mixed", data_source="test",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="ts", type=DataType.TIMESTAMP)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="ts", datatype=DataType.DATETIME)],
     )
 
 
-def daily_stage_model() -> SlayerModel:
-    """A multi-stage (``source_queries``) model with a TIMESTAMP stage column ``ts``."""
-    return SlayerModel(
+def daily_stage_dataset() -> SlayerDataset:
+    """A multi-stage (``source_queries``) dataset with a TIMESTAMP stage column ``ts``."""
+    return SlayerDataset(
         name="daily", data_source="test",
         source_queries=[SlayerQuery.model_validate({
-            "source_model": "ev",
-            "time_dimensions": [{"dimension": "ts", "granularity": "day"}],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "population": "ev",
+            "time_dimensions": [{"field": "ev.ts", "granularity": "day"}],
+            "metrics": [{"metric": "sum(ev.amount)", "alias": "rev"}],
         })],
     )
 
 
-def all_models() -> list[SlayerModel]:
+def all_datasets() -> list[SlayerDataset]:
     return [
-        ev_model(), ev_model(name="ev_t", table="ev_t"), customers_model(), mixed_model(), daily_stage_model(),
+        ev_dataset(), ev_dataset(name="ev_t", table="ev_t"), customers_dataset(), mixed_dataset(), daily_stage_dataset(),
     ]
 
 
@@ -181,7 +181,7 @@ async def tp_engine(
     seeded = list(tables) if tables is not None else [EV, CUSTOMERS, MIXED] + ([EV_T] if backend == "sqlite" else [])
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, seeded),
-        models=all_models(), clock=clock if clock is not None else PinnedClock(),
+        datasets=all_datasets(), clock=clock if clock is not None else PinnedClock(),
     ) as (engine, _db):
         yield engine
 
@@ -218,40 +218,40 @@ def bucket_text(value: Any) -> str:
 # Query helpers
 # ---------------------------------------------------------------------------
 
-async def ids(engine: SlayerQueryEngine, *filters: str, model: str = "ev", **extra: Any) -> set[int]:
-    """Row ids of ``model`` passing ``filters`` (plus any extra query fields)."""
+async def ids(engine: SlayerQueryEngine, *filters: str, dataset: str = "ev", **extra: Any) -> set[int]:
+    """Row ids of ``dataset`` passing ``filters`` (plus any extra query fields)."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": model, "dimensions": ["id"], "filters": list(filters), **extra,
+        "population": dataset, "dimensions": [f"{dataset}.id"], "filter": list(filters), **extra,
     }))
-    return {int(r[f"{model}.id"]) for r in resp.data}
+    return {int(r[f"{dataset}.id"]) for r in resp.data}
 
 
 async def ids_with_range(
-    engine: SlayerQueryEngine, date_range: Any, *, column: str = "ts", granularity: str = "second",
-    model: str = "ev",
+    engine: SlayerQueryEngine, date_range: Any, *, field: str = "ts", granularity: str = "second",
+    dataset: str = "ev",
 ) -> set[int]:
-    """Row ids counted under a time dimension on ``column`` carrying ``date_range``."""
+    """Row ids counted under a time dimension on ``field`` carrying ``date_range``."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": model, "dimensions": ["id"],
-        "time_dimensions": [{"dimension": column, "granularity": granularity, "date_range": date_range}],
+        "population": dataset, "dimensions": ["ev.id"],
+        "time_dimensions": [{"field": f"{dataset}.{field}", "granularity": granularity, "date_range": date_range}],
     }))
-    return {int(r[f"{model}.id"]) for r in resp.data}
+    return {int(r[f"{dataset}.id"]) for r in resp.data}
 
 
 async def monthly(
-    engine: SlayerQueryEngine, *, measures: list[Any], filters: Optional[list[str]] = None,
-    date_range: Any = None, whole_periods_only: bool = False, column: str = "ts", model: str = "ev",
+    engine: SlayerQueryEngine, *, metrics: list[Any], filters: Optional[list[str]] = None,
+    date_range: Any = None, whole_periods_only: bool = False, field: str = "ts", dataset: str = "ev",
 ) -> dict[str, dict[str, Any]]:
-    """Monthly buckets → {measure name: value}."""
-    td: dict[str, Any] = {"dimension": column, "granularity": "month"}
+    """Monthly buckets → {metric name: value}."""
+    td: dict[str, Any] = {"field": f"{dataset}.{field}", "granularity": "month"}
     if date_range is not None:
         td["date_range"] = date_range
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": model, "measures": measures, "time_dimensions": [td],
-        "filters": filters or [], "whole_periods_only": whole_periods_only,
+        "population": dataset, "metrics": metrics, "time_dimensions": [td],
+        "filter": filters or [], "whole_periods_only": whole_periods_only,
     }))
-    names = [m["name"] if isinstance(m, dict) else m for m in measures]
+    names = [m["alias"] if isinstance(m, dict) else m for m in metrics]
     return {
-        month_key(r[f"{model}.{column}"]): {n: r[f"{model}.{n}"] for n in names}
+        month_key(r[f"{dataset}.{field}"]): {n: r[n] for n in names}
         for r in resp.data
     }

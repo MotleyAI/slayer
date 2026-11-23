@@ -79,10 +79,10 @@
                   "gross"
                 ]
               },
-              "custom_extensions": [
+              "nonportable_extensions": [
                 {
                   "vendor_name": "SNOWFLAKE",
-                  "data": "{\"unit\": \"usd\"}"
+                  "data": {"unit": "usd"}
                 }
               ]
             },

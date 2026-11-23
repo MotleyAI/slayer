@@ -16,9 +16,10 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
-from tests._dev1739_fixtures import dev1739_models
+from slayer.core.query import QueryMetric
+
+from tests._dev1739_fixtures import dev1739_datasets
 from tests._law_harness import (
-    ModelMeasure,
     make_law_engine,
     month_key,
     month_td,
@@ -44,7 +45,7 @@ def _keyed_engine(resp, *, with_month: bool) -> dict:
         key: tuple = (row["orders.region"],)
         if with_month:
             key += (month_key(row["orders.ordered_at"]),)
-        out[key] = float(row["orders.m"])
+        out[key] = float(row["m"])
     assert len(out) == len(resp.data), "duplicate group keys"
     return out
 
@@ -52,13 +53,13 @@ def _keyed_engine(resp, *, with_month: bool) -> dict:
 class TestAssocInline:
     async def _assert_matches_oracle(self, law_backend, *, with_month: bool):
         dialect, engine, db_path = law_backend
-        kwargs: dict = {"dimensions": ["region"]}
+        kwargs: dict = {"dimensions": ["orders.region"]}
         if with_month:
             kwargs["time_dimensions"] = month_td()
         resp = await engine.execute(q(
             **kwargs,
-            filters=["customers.tier = 'gold'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            filter=["customers.tier = 'gold'"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ))
         month_col = f", {_MONTH_EXPR[dialect]}" if with_month else ""
         oracle = raw_rows(dialect=dialect, db_path=db_path, sql=(
@@ -87,14 +88,14 @@ class TestAssocInline:
 class TestFusionParity:
     @staticmethod
     def _planned():
-        models = dev1739_models()
+        models = dev1739_datasets()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=models[0], referenced_models=list(models[1:]),
+            population=models[0], referenced_datasets=list(models[1:]),
         )
         query = q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         return plan_query(query=query, bundle=bundle), bundle
 

@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_storage_sampled.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  }
+ ]
+}

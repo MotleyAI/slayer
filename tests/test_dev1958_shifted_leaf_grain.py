@@ -9,9 +9,10 @@ import re
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1832_fixtures import (
-    ModelMeasure,
-    dev1832_models,
+    dev1832_datasets,
     TimeDimension,
     TimeGranularity,
     gen,
@@ -21,7 +22,7 @@ from tests._dev1832_fixtures import (
     monthly_q,
 )
 
-SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
+SHARE = "sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.ordered_at])"
 N, S, W = "North", "South", "West"
 JAN, FEB, MAR = "2024-01", "2024-02", "2024-03"
 #: Every (region, month) cell of the unfiltered query / the Feb–Mar date range.
@@ -51,32 +52,32 @@ async def exec_engine(request):
         yield engine
 
 
-def _filtered_models() -> list:
-    """``monthly`` with the model-level filter ``amount > 5`` (drops South Jan and West Feb)."""
-    models = dev1832_models()
-    next(m for m in models if m.name == "monthly").filters.append("amount > 5")
+def _filtered_datasets() -> list:
+    """``monthly`` with the dataset-level filter ``amount > 5`` (drops South Jan and West Feb)."""
+    models = dev1832_datasets()
+    next(m for m in models if m.name == "monthly").filters.append("monthly.amount > 5")
     return models
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def filtered_engine(request):
-    async for engine in make_exec_engine(request, models=_filtered_models()):
+    async for engine in make_exec_engine(request, datasets=_filtered_datasets()):
         yield engine
 
 
 def _dr_td() -> list:
-    return [TimeDimension(dimension="ordered_at",
+    return [TimeDimension(field="monthly.ordered_at",
                           granularity=TimeGranularity.MONTH,
                           date_range=["2024-02-01", "2024-03-31"])]
 
 
-def _q(formula: str, *, date_range: bool = False, **kw):
-    kw.setdefault("dimensions", ["region"])
-    return monthly_q(time_dimensions=_dr_td() if date_range else month_td(),
-                     measures=[ModelMeasure(formula=formula, name="t")], **kw)
+def _q(expression: str, *, date_range: bool = False, **kw):
+    kw.setdefault("dimensions", ["monthly.region"])
+    return monthly_q(time_dimensions=_dr_td() if date_range else month_td("monthly"),
+                     metrics=[QueryMetric(metric=expression, alias="t")], **kw)
 
 
-def _cells(resp, name: str = "monthly.t") -> dict:
+def _cells(resp, name: str = "t") -> dict:
     out = {(r["monthly.region"], month_key(r["monthly.ordered_at"])): r[name]
            for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one cell"
@@ -111,24 +112,24 @@ class TestPartitionedLeafKeepsItsGrain:
 
     async def test_single_partitioned_leaf_in_trivial_composite(self, exec_engine) -> None:
         resp = await exec_engine.execute(
-            _q("time_shift(sum(amount, partition_by=[ordered_at]) / 2, -1)"))
+            _q("time_shift(sum(monthly.amount, partition_by=[monthly.ordered_at]) / 2, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=HALF_MONTH_TOTAL)
 
     async def test_all_time_grained_leaves_shift_at_the_operand_grain(self, exec_engine) -> None:
-        p = "sum(amount, partition_by=[ordered_at])"
+        p = "sum(monthly.amount, partition_by=[monthly.ordered_at])"
         resp = await exec_engine.execute(_q(f"time_shift({p} + {p}, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=DOUBLE_MONTH_TOTAL)
 
     async def test_non_time_partition_is_constant_along_the_axis(self, exec_engine) -> None:
         resp = await exec_engine.execute(
-            _q("time_shift(sum(amount) / sum(amount, partition_by=[region]), -1)"))
+            _q("time_shift(sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.region]), -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=REGION_TOTAL_SHARE)
 
     async def test_reaggregation_over_shifted_composite(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            "avg(time_shift(sum(amount, partition_by=[region, ordered_at]) "
-            "/ sum(amount, partition_by=[ordered_at]), -1))", dimensions=[]))
-        got = {month_key(r["monthly.ordered_at"]): r["monthly.t"] for r in resp.data}
+            "avg(time_shift(sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at]) "
+            "/ sum(monthly.amount, partition_by=[monthly.ordered_at]), -1))", dimensions=[]))
+        got = {month_key(r["monthly.ordered_at"]): r["t"] for r in resp.data}
         assert set(got) == set(REAGG_BY_MONTH)
         for month, want in REAGG_BY_MONTH.items():
             if want is None:
@@ -140,62 +141,62 @@ class TestPartitionedLeafKeepsItsGrain:
 class TestFrameRule:
     async def test_bare_partitioned_leaf_reaches_outside_date_range(self, exec_engine) -> None:
         resp = await exec_engine.execute(
-            _q("time_shift(sum(amount, partition_by=[ordered_at]), -1)", date_range=True))
+            _q("time_shift(sum(monthly.amount, partition_by=[monthly.ordered_at]), -1)", date_range=True))
         # West Feb is not pinned by the scenario.
         _assert_cells(_cells(resp), cells=DR_CELLS, expected=DR_MONTH_TOTAL,
                       unpinned=frozenset({(W, FEB)}))
 
     async def test_bare_ranked_leaf_reaches_outside_date_range(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q("time_shift(last(amount), -1)", date_range=True))
+        resp = await exec_engine.execute(_q("time_shift(last(monthly.amount), -1)", date_range=True))
         _assert_cells(_cells(resp), cells=DR_CELLS, expected=DR_LAST)
 
     async def test_bare_windowed_leaf_reaches_outside_date_range(self, exec_engine) -> None:
         resp = await exec_engine.execute(
-            _q("time_shift(sum(amount, window='90d'), -1)", date_range=True))
+            _q("time_shift(sum(monthly.amount, window='90d'), -1)", date_range=True))
         _assert_cells(_cells(resp), cells=DR_CELLS, expected=DR_WINDOW)
 
     async def test_non_time_partition_keeps_in_frame_value(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            "time_shift(sum(amount) / sum(amount, partition_by=[region]), -1)",
+            "time_shift(sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.region]), -1)",
             date_range=True))
         _assert_cells(_cells(resp), cells=DR_CELLS, expected=DR_IN_FRAME_REGION_SHARE)
 
     async def test_model_filter_applies_to_shifted_evaluation(self, filtered_engine) -> None:
         resp = await filtered_engine.execute(
-            _q("time_shift(sum(amount, partition_by=[ordered_at]), -1)", date_range=True))
+            _q("time_shift(sum(monthly.amount, partition_by=[monthly.ordered_at]), -1)", date_range=True))
         _assert_cells(_cells(resp), cells={(N, FEB), (N, MAR), (S, FEB)},
                       expected={(N, FEB): 10.0, (S, FEB): 10.0, (N, MAR): 35.0})
 
     async def test_population_predicate_conjoined_with_frame_bound(self, exec_engine) -> None:
         """Regression guard: already correct before the producer rewrite."""
         resp = await exec_engine.execute(_q(
-            "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
-            filters=["ordered_at >= '2024-02-01' and region = 'North'"]))
+            "time_shift(sum(monthly.amount) + sum(monthly.amount, partition_by=[monthly.ordered_at]), -1)",
+            filter=["monthly.ordered_at >= '2024-02-01' and monthly.region = 'North'"]))
         _assert_cells(_cells(resp), cells={(N, FEB), (N, MAR)},
                       expected={(N, FEB): 20.0, (N, MAR): 40.0})
 
 
 class TestRankedAndWindowedLeavesInComposite:
     async def test_ranked_leaf_executes(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q("time_shift(last(amount) / 2, -1)"))
+        resp = await exec_engine.execute(_q("time_shift(last(monthly.amount) / 2, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=HALF_LAST)
 
     async def test_windowed_leaf_keeps_its_window(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q("time_shift(sum(amount, window='90d') / 2, -1)"))
+        resp = await exec_engine.execute(_q("time_shift(sum(monthly.amount, window='90d') / 2, -1)"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=HALF_WINDOW)
 
 
 class TestSharedShiftedRelation:
     def _two_offsets(self):
         return monthly_q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=f"time_shift({SHARE}, -1)", name="t1"),
-                      ModelMeasure(formula=f"time_shift({SHARE}, -2)", name="t2")])
+            dimensions=["monthly.region"], time_dimensions=month_td("monthly"),
+            metrics=[QueryMetric(metric=f"time_shift({SHARE}, -1)", alias="t1"),
+                      QueryMetric(metric=f"time_shift({SHARE}, -2)", alias="t2")])
 
     async def test_two_offsets_values(self, exec_engine) -> None:
         resp = await exec_engine.execute(self._two_offsets())
-        _assert_cells(_cells(resp, "monthly.t1"), cells=ALL_CELLS, expected=SHIFTED_SHARE)
-        _assert_cells(_cells(resp, "monthly.t2"), cells=ALL_CELLS, expected=TWO_BACK_SHARE)
+        _assert_cells(_cells(resp, "t1"), cells=ALL_CELLS, expected=SHIFTED_SHARE)
+        _assert_cells(_cells(resp, "t2"), cells=ALL_CELLS, expected=TWO_BACK_SHARE)
 
     async def test_two_offsets_read_one_shifted_relation(self) -> None:
         sql = await gen(self._two_offsets())
@@ -204,11 +205,11 @@ class TestSharedShiftedRelation:
 
     async def test_bare_partitioned_leaf_computes_one_producer(self) -> None:
         """Without a frame mask the shift interns with the base's own producer."""
-        sql = await gen(_q("time_shift(sum(amount, partition_by=[ordered_at]), -1)"))
+        sql = await gen(_q("time_shift(sum(monthly.amount, partition_by=[monthly.ordered_at]), -1)"))
         assert len(set(re.findall(r"\b(_cm_\w+) AS \(", sql))) == 1, sql
 
 
 class TestUnalignedShift:
     async def test_reads_bucket_containing_offset_instant(self, exec_engine) -> None:
-        resp = await exec_engine.execute(_q("time_shift(sum(amount), -1, 'day')"))
+        resp = await exec_engine.execute(_q("time_shift(sum(monthly.amount), -1, 'day')"))
         _assert_cells(_cells(resp), cells=ALL_CELLS, expected=DAY_BACK)

@@ -1,6 +1,6 @@
-"""DEV-1829 (F1 / D4) — the combined regroup producer names its output aggregate
+"""F1 / D4 — the combined regroup producer names its output aggregate
 by the CONSUMER's public alias when the partitioned aggregate is a directly-named
-measure, and by the CANONICAL alias when it is a composite leaf. Byte-level across
+metric, and by the CANONICAL alias when it is a composite leaf. Byte-level across
 the five golden dialects; this is the naming the byte-identical ``local/*`` goldens
 depend on."""
 
@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev1739_fixtures import cm_cte_bodies, gen
 
@@ -18,15 +18,15 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def _has_output_alias(body: str, leaf: str) -> bool:
-    """Whether ``body`` projects ``orders.<leaf>`` as a column alias, robust to
-    per-dialect quoting (``"orders.x"`` / ``[orders___x]`` / `` `orders___x` ``)."""
+    """Whether ``body`` projects ``<leaf>`` as a column alias, robust to
+    per-dialect quoting (``"x"`` / ``[x]`` / `` `x` ``)."""
     return re.search(
-        rf'AS\s+["\[`]orders[._]{{1,3}}{re.escape(leaf)}["\]`]', body,
+        rf'AS\s+["\[`]{re.escape(leaf)}["\]`]', body,
     ) is not None
 
 
@@ -34,9 +34,9 @@ def _has_output_alias(body: str, leaf: str) -> bool:
 class TestProducerOutputAlias:
     async def test_named_measure_uses_public_alias(self, dialect: str) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
-            measures=[ModelMeasure(
-                formula="sum(amount, partition_by=region)", name="region_rev",
+            dimensions=["orders.region", "orders.city"],
+            metrics=[QueryMetric(
+                metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -46,9 +46,9 @@ class TestProducerOutputAlias:
 
     async def test_composite_leaf_uses_canonical_alias(self, dialect: str) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
-            measures=[ModelMeasure(
-                formula="sum(amount) / sum(amount, partition_by=region)", name="sh",
+            dimensions=["orders.region", "orders.city"],
+            metrics=[QueryMetric(
+                metric="sum(orders.amount) / sum(orders.amount, partition_by=orders.region)", alias="sh",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -60,12 +60,12 @@ class TestProducerOutputAlias:
 
 @pytest.mark.parametrize("dialect", DIALECTS)
 async def test_filtered_measure_predicate_lives_in_producer(dialect: str) -> None:
-    # The measure's ``Column.filter`` (CASE WHEN status='ok') renders inside the
-    # producer CTE, at the partition grain — unchanged from the DEV-1739 path.
+    # The metric's ``DatasetField.filter`` (CASE WHEN status='ok') renders inside the
+    # producer CTE, at the partition grain.
     sql = await gen(_q(
-        dimensions=["region", "city"],
-        measures=[ModelMeasure(
-            formula="sum(ok_amount, partition_by=region)", name="o",
+        dimensions=["orders.region", "orders.city"],
+        metrics=[QueryMetric(
+            metric="sum(orders.ok_amount, partition_by=orders.region)", alias="o",
         )],
     ), dialect=dialect)
     body = cm_cte_bodies(sql)

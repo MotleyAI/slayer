@@ -1,0 +1,328 @@
+{
+ "source": "tests/_dataset_access_fixtures.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "hr_salary_total",
+    "formula": "sum(hr.salary)"
+   },
+   "new": {
+    "name": "hr_salary_total",
+    "expression": "sum(hr.salary)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "ghost",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "ghost",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hr",
+    "dimensions": [
+     "dept"
+    ],
+    "measures": [
+     {
+      "formula": "sum(salary)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "hr",
+    "dimensions": [
+     "dept"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(salary)",
+      "alias": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hr_summary",
+    "measures": [
+     {
+      "formula": "sum(total)",
+      "name": "grand"
+     }
+    ]
+   },
+   "new": {
+    "population": "hr_summary",
+    "metrics": [
+     {
+      "metric": "sum(total)",
+      "alias": "grand"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "dimensions": [
+     "hr.dept"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "amt"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "dimensions": [
+     "hr.dept"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "amt"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "dimensions": [
+     "id"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "amt"
+     }
+    ],
+    "order": [
+     {
+      "column": "hr.salary",
+      "direction": "desc"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "dimensions": [
+     "id"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "amt"
+     }
+    ],
+    "order": [
+     {
+      "field": "hr.salary",
+      "direction": "desc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "amt"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "amt"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "dimensions": [
+     "hr.dept"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "dimensions": [
+     "hr.dept"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "pay",
+    "dimensions": [
+     "hr.dept"
+    ],
+    "measures": [
+     {
+      "formula": "sum(gross)"
+     }
+    ]
+   },
+   "new": {
+    "population": "pay",
+    "dimensions": [
+     "hr.dept"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(gross)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 137,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 138,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 149,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 150,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 172,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 180,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 312,
+   "reason": "unclassifiable"
+  }
+ ]
+}

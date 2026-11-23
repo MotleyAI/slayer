@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_dev1832_golden_sql.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,50 @@
+{
+ "source": "tests/test_dev1841_uniform_classification.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend) + 1",
+    "name": "sp1"
+   },
+   "new": {
+    "expression": "sum(spend) + 1",
+    "name": "sp1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(spend)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(spend)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": []
+}

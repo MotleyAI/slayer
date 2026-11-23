@@ -45,8 +45,8 @@ class TestRegularModelsOptIn:
 
     Plain `parse_dbt_project(path)` should NOT call load_or_generate_manifest,
     which can invoke `dbt parse` (slow) and fail noisily without dbt-core.
-    The manifest is only needed when --include-hidden-models is set, so
-    parse_dbt_project gates it on include_regular_models=True.
+    The manifest is only needed when --include-hidden-datasets is set, so
+    parse_dbt_project gates it on include_regular_datasets=True.
     """
 
     def test_default_does_not_load_manifest(self, tmp_path) -> None:
@@ -89,7 +89,7 @@ class TestRegularModelsOptIn:
         with patch(
             "slayer.dbt.parser.load_or_generate_manifest", return_value=None
         ) as mock_load:
-            parse_dbt_project(str(tmp_path), include_regular_models=True)
+            parse_dbt_project(str(tmp_path), include_regular_datasets=True)
 
         mock_load.assert_called_once_with(str(tmp_path))
 
@@ -199,7 +199,7 @@ class TestParseDbtProject:
         assert m.name == "completed_amount"
         assert m.type == "simple"
         assert m.label == "Completed Amount"
-        # DEV-1595: type_params.measure is now a DbtMetricInputMeasure object
+        # type_params.measure is now a DbtMetricInputMeasure object
         # (string shorthand coerced via before-validator); name lives on .name.
         assert m.type_params.measure_name == "total_amount"
         assert "Dimension" in (m.filter or "")
@@ -253,7 +253,7 @@ class TestParseDbtProject:
 
 class TestParseDbtProjectSqlFiles:
     """.sql file scanning is always on — populates DbtRegularModel.raw_code
-    so the converter can inline regular-model SQL into SlayerModel.sql.
+    so the converter can inline regular-model SQL into SlayerDataset.sql.
     """
 
     def test_populates_raw_code_from_sql_files(self, tmp_path) -> None:
@@ -300,7 +300,7 @@ class TestParseDbtProjectRegularModels:
         # code path; without it, the manifest isn't loaded at all (B6-2).
         # The dbt_project_dir fixture writes YAMLs only — no .sql files — so
         # regular_models stays empty.
-        project = parse_dbt_project(str(dbt_project_dir), include_regular_models=True)
+        project = parse_dbt_project(str(dbt_project_dir), include_regular_datasets=True)
         assert project.regular_models == []
 
     def test_populates_regular_models_from_manifest(self, dbt_project_dir) -> None:
@@ -335,7 +335,7 @@ class TestParseDbtProjectRegularModels:
         }
         (target / "manifest.json").write_text(json.dumps(manifest_payload))
 
-        project = parse_dbt_project(str(dbt_project_dir), include_regular_models=True)
+        project = parse_dbt_project(str(dbt_project_dir), include_regular_datasets=True)
         assert len(project.regular_models) == 1
         rm = project.regular_models[0]
         assert rm.name == "raw_events"

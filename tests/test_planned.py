@@ -18,11 +18,11 @@ from slayer.core.enums import DataType
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Phase,
     StarKey,
 )
-from slayer.core.scope import StageColumn, StageSchema
+from slayer.core.scope import StageField, StageSchema
 from slayer.ir.bound import BoundExpr
 from slayer.ir.planned import (
     MaskEntry,
@@ -45,8 +45,8 @@ _BASE = Stage(kind=StageKind.BASE)
 
 class TestValueSlot:
     def test_minimal(self):
-        key = ColumnKey(path=(), leaf="status")
-        s = ValueSlot(id="s1", key=key, declared_name="status", phase=Phase.ROW)
+        key = FieldKey(path=(), leaf="status")
+        s = ValueSlot(type=DataType.INTEGER, id="s1", key=key, declared_name="status", phase=Phase.ROW)
         assert s.id == "s1"
         assert s.key == key
         assert s.declared_name == "status"
@@ -54,10 +54,10 @@ class TestValueSlot:
         assert s.public_aliases == []
         assert s.hidden is False
         assert s.label is None
-        assert s.type is None
+        assert s.type is DataType.INTEGER
 
     def test_with_metadata(self):
-        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
         s = ValueSlot(
             id="a1",
             key=key,
@@ -66,18 +66,18 @@ class TestValueSlot:
             public_aliases=["revenue_sum"],
             phase=Phase.AGGREGATE,
             label="Total revenue",
-            type=DataType.DOUBLE,
+            type=DataType.FLOAT,
         )
         assert s.public_name == "revenue_sum"
         assert s.public_aliases == ["revenue_sum"]
         assert s.label == "Total revenue"
-        assert s.type is DataType.DOUBLE
+        assert s.type is DataType.FLOAT
 
     def test_hidden_no_public_alias(self):
         # Order-only / filter-only refs intern as hidden slots with no
         # public alias (P11).
-        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
-        s = ValueSlot(
+        key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
+        s = ValueSlot(type=DataType.INTEGER,
             id="h1",
             key=key,
             declared_name="_h_revenue_sum",
@@ -89,11 +89,11 @@ class TestValueSlot:
         assert s.public_aliases == []
 
     def test_multi_alias(self):
-        # P4: two measures with the same structural key but different
+        # P4: two metrics with the same structural key but different
         # declared `name`s share one slot internally; both aliases appear
         # in the public projection.
-        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
-        s = ValueSlot(
+        key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
+        s = ValueSlot(type=DataType.INTEGER,
             id="m1",
             key=key,
             declared_name="revenue_sum",
@@ -104,9 +104,9 @@ class TestValueSlot:
         assert s.public_aliases == ["rev", "revenue_sum"]
 
     def test_hidden_with_public_name_rejected(self):
-        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
         with pytest.raises(ValueError, match="hidden but carries"):
-            ValueSlot(
+            ValueSlot(type=DataType.INTEGER,
                 id="h",
                 key=key,
                 declared_name="_h",
@@ -116,9 +116,9 @@ class TestValueSlot:
             )
 
     def test_hidden_with_public_aliases_rejected(self):
-        key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
         with pytest.raises(ValueError, match="hidden but carries"):
-            ValueSlot(
+            ValueSlot(type=DataType.INTEGER,
                 id="h",
                 key=key,
                 declared_name="_h",
@@ -134,9 +134,9 @@ class TestValueSlot:
         # ``sql_text`` cache field is gone (rendering walks the
         # ``value_key`` against the slot registry instead of a
         # cached string).
-        key = ColumnKey(path=(), leaf="status")
+        key = FieldKey(path=(), leaf="status")
         expr = BoundExpr(value_key=key)
-        s = ValueSlot(
+        s = ValueSlot(type=DataType.INTEGER,
             id="s1",
             key=key,
             declared_name="status",
@@ -178,8 +178,8 @@ class TestMaskEntry:
         assert m.stratum == 0
 
     def test_measure_mask(self):
-        m = MaskEntry(slot_id="s2", typing=MaskTyping.MEASURE, stratum=1)
-        assert m.typing is MaskTyping.MEASURE
+        m = MaskEntry(slot_id="s2", typing=MaskTyping.METRIC, stratum=1)
+        assert m.typing is MaskTyping.METRIC
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +239,9 @@ class TestOrderEntry:
 
 class TestPlannedQuery:
     def test_minimal_zero_dimension_count(self):
-        # The simplest possible PlannedQuery: just *:count on a model.
+        # The simplest possible PlannedQuery: just *:count on a dataset.
         agg_key = AggregateKey(source=StarKey(), agg="count")
-        slot = ValueSlot(
+        slot = ValueSlot(type=DataType.INTEGER,
             id="a1",
             key=agg_key,
             declared_name="_count",
@@ -267,8 +267,8 @@ class TestPlannedQuery:
         assert pq.stage_schema is None
 
     def test_with_dimension_and_filter(self):
-        dim_key = ColumnKey(path=(), leaf="status")
-        dim_slot = ValueSlot(
+        dim_key = FieldKey(path=(), leaf="status")
+        dim_slot = ValueSlot(type=DataType.INTEGER,
             id="d1",
             key=dim_key,
             declared_name="status",
@@ -277,8 +277,8 @@ class TestPlannedQuery:
             phase=Phase.ROW,
             stage=_BASE,
         )
-        agg_key = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
-        agg_slot = ValueSlot(
+        agg_key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
+        agg_slot = ValueSlot(type=DataType.INTEGER,
             id="a1",
             key=agg_key,
             declared_name="revenue_sum",
@@ -288,7 +288,7 @@ class TestPlannedQuery:
             stage=_BASE,
         )
         mask_key = ArithmeticKey(op="!=", operands=(dim_key, dim_key))
-        mask_slot = ValueSlot(
+        mask_slot = ValueSlot(type=DataType.INTEGER,
             id="m1",
             key=mask_key,
             declared_name="__slayer_mask_0",
@@ -310,10 +310,10 @@ class TestPlannedQuery:
 
     def test_with_combined_expression(self):
         # An ArithmeticKey-keyed slot at aggregate phase (max of operands).
-        a = AggregateKey(source=ColumnKey(path=(), leaf="rev"), agg="sum")
+        a = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
         b = AggregateKey(source=StarKey(), agg="count")
         arith = ArithmeticKey(op="/", operands=(a, b))
-        slot = ValueSlot(
+        slot = ValueSlot(type=DataType.INTEGER,
             id="e1",
             key=arith,
             declared_name="aov",
@@ -331,7 +331,7 @@ class TestPlannedQuery:
         # against it (P6).
         ss = StageSchema(
             relation_name="stage_a",
-            columns=[StageColumn(name="rev", sql_alias="rev")],
+            fields=[StageField(name="rev", sql_alias="rev", datatype=DataType.FLOAT)],
         )
         pq = PlannedQuery(source_relation="orders", stage_schema=ss)
         assert pq.stage_schema is ss

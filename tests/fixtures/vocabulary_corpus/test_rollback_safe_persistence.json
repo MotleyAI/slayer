@@ -1,0 +1,42 @@
+{
+ "source": "tests/test_rollback_safe_persistence.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "revenue",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "revenue",
+    "expression": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  }
+ ]
+}

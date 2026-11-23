@@ -15,7 +15,7 @@ from pathlib import Path
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import SlayerQuery, TimeDimension
 
-from tests._dev1832_fixtures import dev1832_models
+from tests._dev1832_fixtures import dev1832_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -23,13 +23,13 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1942_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(dimension="ordered_at",
+_MONTH_TD = [TimeDimension(field="monthly.ordered_at",
                            granularity=TimeGranularity.MONTH)]
-_X = "sum(amount, partition_by=[region, ordered_at])"
-_STANDALONE = f"min({_X}, partition_by=region)"
-_MIXED = f"sum(amount * min({_X}, partition_by=region))"
-_POP_MIXED = "sum(spend * avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier))"
-_POP_AVG = "avg(sum(spend, partition_by=[tier, plan_code]), partition_by=tier)"
+_X = "sum(monthly.amount, partition_by=[monthly.region, monthly.ordered_at])"
+_STANDALONE = f"min({_X}, partition_by=monthly.region)"
+_MIXED = f"sum(monthly.amount * min({_X}, partition_by=monthly.region))"
+_POP_MIXED = "sum(customers.spend * avg(sum(customers.spend, partition_by=[customers.tier, customers.plan_code]), partition_by=customers.tier))"
+_POP_AVG = "avg(sum(customers.spend, partition_by=[customers.tier, customers.plan_code]), partition_by=customers.tier)"
 _OK = "orders.status = 'ok'"
 
 
@@ -38,38 +38,38 @@ def _cases() -> dict:
         # dual_phase/* — the standalone+mixed collision; records a raise today.
         "dual_phase/measure": {
             "source": "monthly", "mode": None,
-            "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _STANDALONE, "name": "a"},
-                                {"formula": _MIXED, "name": "b"}]}},
+            "kw": {"dimensions": ["monthly.region"], "time_dimensions": _MONTH_TD,
+                   "metrics": [{"metric": _STANDALONE, "alias": "a"},
+                                {"metric": _MIXED, "alias": "b"}]}},
         "dual_phase/filter_position": {
             "source": "monthly", "mode": None,
-            "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _MIXED, "name": "b"}],
-                   "filters": [f"{_STANDALONE} > 5"]}},
+            "kw": {"dimensions": ["monthly.region"], "time_dimensions": _MONTH_TD,
+                   "metrics": [{"metric": _MIXED, "alias": "b"}],
+                   "filter": [f"{_STANDALONE} > 5"]}},
         "dual_phase/order_position": {
             "source": "monthly", "mode": None,
-            "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _STANDALONE, "name": "a"},
-                                {"formula": _MIXED, "name": "b"}],
-                   "order": [{"column": _STANDALONE, "direction": "desc"}]}},
+            "kw": {"dimensions": ["monthly.region"], "time_dimensions": _MONTH_TD,
+                   "metrics": [{"metric": _STANDALONE, "alias": "a"},
+                                {"metric": _MIXED, "alias": "b"}],
+                   "order": [{"field": _STANDALONE, "direction": "desc"}]}},
         "dual_phase/with_transform": {
             "source": "monthly", "mode": None,
-            "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _STANDALONE, "name": "a"},
-                                {"formula": _MIXED, "name": "b"},
-                                {"formula": "cumsum(sum(amount))", "name": "c"}]}},
+            "kw": {"dimensions": ["monthly.region"], "time_dimensions": _MONTH_TD,
+                   "metrics": [{"metric": _STANDALONE, "alias": "a"},
+                                {"metric": _MIXED, "alias": "b"},
+                                {"metric": "cumsum(sum(monthly.amount))", "alias": "c"}]}},
         # population/* — the fanning-hop population filter over a mixed constituent.
         "population/mixed_reagg_constituent": {
             "source": "customers", "mode": None,
-            "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": _POP_MIXED, "name": "m"}],
-                   "filters": [_OK]}},
+            "kw": {"dimensions": ["customers.tier"],
+                   "metrics": [{"metric": _POP_MIXED, "alias": "m"}],
+                   "filter": [_OK]}},
         "population/dual_phase_with_filter": {
             "source": "customers", "mode": None,
-            "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": _POP_AVG, "name": "a"},
-                                {"formula": _POP_MIXED, "name": "m"}],
-                   "filters": [_OK]}},
+            "kw": {"dimensions": ["customers.tier"],
+                   "metrics": [{"metric": _POP_AVG, "alias": "a"},
+                                {"metric": _POP_MIXED, "alias": "m"}],
+                   "filter": [_OK]}},
     }
 
 
@@ -82,16 +82,16 @@ FAIL_CLOSED = {
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1832_models()
+    models = dev1832_datasets()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
-        query = SlayerQuery(source_model=case["source"], **kw)
+        query = SlayerQuery(population=case["source"], **kw)
         root = next(m for m in models if m.name == case["source"])
         return await _engine_generate(
-            query=query, model=root,
-            extra_models=[m for m in models if m.name != case["source"]],
+            query=query, dataset=root,
+            extra_datasets=[m for m in models if m.name != case["source"]],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

@@ -38,10 +38,10 @@ FINISHERS = render_law.FINISHERS
 #: Value-layer renders of user fragments; not recorded until they are AST too.
 VALUE_LAYER_EXEMPT = render_law.VALUE_LAYER_EXEMPT
 
-#: The OSI importer's renders of an author's expression (its persisted column SQL, its extension digest).
+#: The OSI importer's renders of an author's expression (its persisted field SQL, its extension digest).
 AUTHORING_RENDERS: tuple[tuple[str, str], ...] = (
-    ("slayer.osi.dialects", "render"),
-    ("slayer.osi.slayer_extension", "_normalized"),
+    ("slayer.sql.ossie_dialects", "render"),
+    ("slayer.sql.ossie_dialects", "_normalized"),
 )
 
 GUARD_MARK = "__emitted_reparse_law__"

@@ -1,0 +1,79 @@
+{
+ "source": "tests/test_division_by_zero.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount) / count(*)",
+      "name": "avg_amount"
+     },
+     {
+      "formula": "count(id) / count(*)",
+      "name": "share"
+     }
+    ],
+    "filters": [
+     "status = 'none'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount) / count(*)",
+      "alias": "avg_amount"
+     },
+     {
+      "metric": "count(id) / count(*)",
+      "alias": "share"
+     }
+    ],
+    "filter": [
+     "status = 'none'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount) / 2",
+      "name": "half"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount) / 2",
+      "alias": "half"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  }
+ ]
+}

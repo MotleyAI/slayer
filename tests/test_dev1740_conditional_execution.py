@@ -1,8 +1,8 @@
-"""DEV-1740 Part A — conditionals executed on SQLite AND DuckDB.
+"""Part A — conditionals executed on SQLite AND DuckDB.
 
-A conditional over an aggregate is a POST/AGGREGATE-phase measure (it bands
+A conditional over an aggregate is a POST/AGGREGATE-phase metric (it bands
 whole groups); nested conditionals give an ordinal. A CASE living in a
-``Column.sql`` (Mode-A raw SQL) must keep working — pinned so Part A does not
+``DatasetField.sql`` (Mode-A raw SQL) must keep working — pinned so Part A does not
 regress the existing escape hatch. Expectations are hand-computed from
 ``tests/_dev1740_fixtures.py``.
 """
@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
-from slayer.core.query import ModelExtension, ModelMeasure, SlayerQuery
+from slayer.core.models import DatasetField
+from slayer.core.query import DatasetExtension, QueryMetric, SlayerQuery
 
 from tests._dev1740_fixtures import (
     REGION_SUM,
@@ -21,9 +21,10 @@ from tests._dev1740_fixtures import (
     make_exec_engine,
     month_key,
     month_td,
-    orders_model,
+    orders_dataset,
     rows_by,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -33,7 +34,7 @@ async def exec_engine(request):
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -41,56 +42,56 @@ class TestConditionalMeasureOverAggregate:
     async def test_simple_band_over_group_total(self, exec_engine) -> None:
         # EU total 14000 >= 10000 -> 1 ; US total 8000 -> 0.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="rev"),
-                ModelMeasure(
-                    formula="CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
-                    name="big",
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="rev"),
+                QueryMetric(
+                    metric="CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0 END",
+                    alias="big",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert float(by[("EU",)]["orders.rev"]) == pytest.approx(REGION_SUM["EU"])
-        assert int(by[("EU",)]["orders.big"]) == 1
-        assert int(by[("US",)]["orders.big"]) == 0
+        assert float(by[("EU",)]["rev"]) == pytest.approx(REGION_SUM["EU"])
+        assert int(by[("EU",)]["big"]) == 1
+        assert int(by[("US",)]["big"]) == 0
 
     async def test_nested_conditional_is_an_ordinal(self, exec_engine) -> None:
         # EU 14000 -> 2 ; US 8000 -> 1.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(
-                    formula=(
-                        "CASE WHEN sum(amount) >= 14000 THEN 2 "
-                        "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END"
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(
+                    metric=(
+                        "CASE WHEN sum(orders.amount) >= 14000 THEN 2 "
+                        "WHEN sum(orders.amount) >= 8000 THEN 1 ELSE 0 END"
                     ),
-                    name="tier",
+                    alias="tier",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert int(by[("EU",)]["orders.tier"]) == 2
-        assert int(by[("US",)]["orders.tier"]) == 1
+        assert int(by[("EU",)]["tier"]) == 2
+        assert int(by[("US",)]["tier"]) == 1
 
     async def test_iif_spelling_matches_case(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="iif(sum(amount) >= 10000, 1, 0)", name="big"),
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(metric="iif(sum(orders.amount) >= 10000, 1, 0)", alias="big"),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert int(by[("EU",)]["orders.big"]) == 1
-        assert int(by[("US",)]["orders.big"]) == 0
+        assert int(by[("EU",)]["big"]) == 1
+        assert int(by[("US",)]["big"]) == 0
 
 
 class TestConditionalInFilter:
     async def test_case_predicate_removes_a_group(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            filters=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
-            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
+            dimensions=["orders.region"],
+            filter=["CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0 END == 1"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
         regions = {r["orders.region"] for r in resp.data}
         assert regions == {"EU"}
@@ -100,52 +101,52 @@ class TestNullBranchKeepsValue:
     async def test_null_else_yields_null_not_dropped(self, exec_engine) -> None:
         # US falls to the (missing) ELSE -> NULL, but the US row must remain.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="rev"),
-                ModelMeasure(
-                    formula="CASE WHEN sum(amount) >= 10000 THEN 1 END", name="big",
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="rev"),
+                QueryMetric(
+                    metric="CASE WHEN sum(orders.amount) >= 10000 THEN 1 END", alias="big",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
         assert set(by) == {("EU",), ("US",)}
-        assert int(by[("EU",)]["orders.big"]) == 1
-        assert by[("US",)]["orders.big"] is None
+        assert int(by[("EU",)]["big"]) == 1
+        assert by[("US",)]["big"] is None
 
 
 class TestBranchTypingThroughPlanning:
     async def test_incomparable_branches_raise_naming_both_types(self) -> None:
         # THEN 'big' (TEXT) vs ELSE 0 (INT) — a plan-time error naming both.
         q = _q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(
-                    formula="CASE WHEN sum(amount) >= 100 THEN 'big' ELSE 0 END",
-                    name="bad",
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(
+                    metric="CASE WHEN sum(orders.amount) >= 100 THEN 'big' ELSE 0 END",
+                    alias="bad",
                 ),
             ],
         )
         with pytest.raises(ValueError) as ei:
             await gen(q)
         msg = str(ei.value).upper()
-        assert "TEXT" in msg
-        assert "INT" in msg
+        assert "STRING" in msg
+        assert "INTEGER" in msg
 
     async def test_numeric_widened_branches_execute(self, exec_engine) -> None:
         # INT / DOUBLE branches widen to DOUBLE and execute cleanly.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(
-                    formula="CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0.5 END",
-                    name="w",
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(
+                    metric="CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0.5 END",
+                    alias="w",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert float(by[("EU",)]["orders.w"]) == pytest.approx(1.0)
-        assert float(by[("US",)]["orders.w"]) == pytest.approx(0.5)
+        assert float(by[("EU",)]["w"]) == pytest.approx(1.0)
+        assert float(by[("US",)]["w"]) == pytest.approx(0.5)
 
 
 class TestOrderByCaseComposite:
@@ -153,9 +154,9 @@ class TestOrderByCaseComposite:
         # ORDER BY a CASE composite that is NOT projected — it must get a hidden
         # slot and sort correctly. EU total 17000 > 12000 → 0 (first); US → 1.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
-            order=[{"column": "CASE WHEN sum(amount) > 12000 THEN 0 ELSE 1 END",
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
+            order=[{"field": "CASE WHEN sum(orders.amount) > 12000 THEN 0 ELSE 1 END",
                     "direction": "asc"}],
         ))
         regions = [r["orders.region"] for r in resp.data]
@@ -164,18 +165,18 @@ class TestOrderByCaseComposite:
 
 class TestConditionalOverCrossModelAggregate:
     async def test_case_over_joined_measure(self, exec_engine) -> None:
-        # CASE over a cross-model aggregate (customers.spend:sum lives in a _cm_
+        # CASE over a cross-dataset aggregate (customers.spend:sum lives in a _cm_
         # CTE). By tier: gold=150 → 0, silver=500 → 1.
         resp = await exec_engine.execute(_q(
             dimensions=["customers.tier"],
-            measures=[
-                ModelMeasure(
-                    formula="CASE WHEN sum(customers.spend) > 300 THEN 1 ELSE 0 END",
-                    name="b",
+            metrics=[
+                QueryMetric(
+                    metric="CASE WHEN sum(customers.spend) > 300 THEN 1 ELSE 0 END",
+                    alias="b",
                 ),
             ],
         ))
-        by = {r["orders.customers.tier"]: int(r["orders.b"]) for r in resp.data}
+        by = {r["customers.tier"]: int(r["b"]) for r in resp.data}
         assert by == {"gold": 0, "silver": 1}
 
 
@@ -184,34 +185,34 @@ class TestConditionalNestedInScalarCall:
         # An iif as a scalar-call arg must render (not be mistaken for
         # a literal) and its inner aggregate must be discovered.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(
-                    formula="coalesce(iif(sum(amount) >= 10000, 1, 0), -1)",
-                    name="c",
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(
+                    metric="coalesce(iif(sum(orders.amount) >= 10000, 1, 0), -1)",
+                    alias="c",
                 ),
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert int(by[("EU",)]["orders.c"]) == 1
-        assert int(by[("US",)]["orders.c"]) == 0
+        assert int(by[("EU",)]["c"]) == 1
+        assert int(by[("US",)]["c"]) == 0
 
 
 class TestCaseInModelFormula:
     async def test_case_in_a_model_measure_formula(self, exec_engine) -> None:
-        # A CASE living in a model-level measure formula (added via extension),
-        # referenced by name — pins "valid in model formulas".
+        # A CASE living in a dataset-level metric expression (added via extension),
+        # referenced by name — pins "valid in dataset expressions".
         resp = await exec_engine.execute(SlayerQuery(
-            source_model="orders",
-            extensions=[ModelExtension.model_validate({
-                "source_name": "orders",
-                "measures": [{
-                    "formula": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
+            population="orders",
+            extensions=[DatasetExtension.model_validate({
+                "dataset": "orders",
+                "metrics": [{
+                    "expression": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
                     "name": "big",
                 }],
             })],
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="big")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="orders.big")],
         ))
         by = rows_by(resp, "orders.region")
         assert int(by[("EU",)]["orders.big"]) == 1
@@ -222,8 +223,8 @@ class TestIifWrongArityAtBind:
     async def test_two_arg_iif_raises_naming_iif(self) -> None:
         # Arity is enforced by the generic scalar path at bind time (3, 3).
         q = _q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="iif(sum(amount) >= 10000, 1)", name="b")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="iif(sum(orders.amount) >= 10000, 1)", alias="b")],
         )
         with pytest.raises(ValueError, match=r"iif"):
             await gen(q)
@@ -231,16 +232,16 @@ class TestIifWrongArityAtBind:
 
 class TestConditionalFilterPullsJoin:
     async def test_case_over_joined_column_in_filter(self, exec_engine) -> None:
-        # A ROW-phase CASE over a JOINED column in a filter must pull the
+        # A ROW-phase CASE over a JOINED field in a filter must pull the
         # customers join (gold customers 1 & 3 → orders 1, 2, 5, 6 — all EU).
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            filters=["CASE WHEN customers.tier = 'gold' THEN 1 ELSE 0 END == 1"],
-            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
+            dimensions=["orders.region"],
+            filter=["CASE WHEN customers.tier = 'gold' THEN 1 ELSE 0 END == 1"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
         by = rows_by(resp, "orders.region")
         assert set(by) == {("EU",)}
-        assert float(by[("EU",)]["orders.rev"]) == pytest.approx(8000.0)
+        assert float(by[("EU",)]["rev"]) == pytest.approx(8000.0)
 
 
 class TestConditionalOverTransform:
@@ -250,14 +251,14 @@ class TestConditionalOverTransform:
         # Feb 14000, Mar 1800 → change NULL, +4800, -12200 → up 0, 1, 0.
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(
-                    formula="CASE WHEN change(sum(amount)) > 0 THEN 1 ELSE 0 END",
-                    name="up",
+            metrics=[
+                QueryMetric(
+                    metric="CASE WHEN change(sum(orders.amount)) > 0 THEN 1 ELSE 0 END",
+                    alias="up",
                 ),
             ],
         ))
-        by = {month_key(r["orders.ordered_at"]): int(r["orders.up"])
+        by = {month_key(r["orders.ordered_at"]): int(r["up"])
               for r in resp.data}
         assert by == {"2024-01": 0, "2024-02": 1, "2024-03": 0}
 
@@ -269,36 +270,36 @@ class TestChangeOverComputedDimension:
         # band0 monthly sums: Jan 9200, Feb 8000, Mar 1800 → change NULL,
         # -1200, -6200; band1: Feb 6000 → change NULL (no band1 January).
         resp = await exec_engine.execute(_q(
-            dimensions=[{"expression": "CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
-                         "name": "band"}],
+            dimensions=[{"field": "CASE WHEN orders.amount > 5000 THEN 1 ELSE 0 END",
+                         "alias": "band"}],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="rev"),
-                ModelMeasure(formula="change(sum(amount))", name="chg"),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="rev"),
+                QueryMetric(metric="change(sum(orders.amount))", alias="chg"),
             ],
         ))
-        by = {(int(r["orders.band"]), month_key(r["orders.ordered_at"])): r
+        by = {(int(r["band"]), month_key(r["orders.ordered_at"])): r
               for r in resp.data}
-        assert by[(0, "2024-01")]["orders.chg"] is None
-        assert float(by[(0, "2024-02")]["orders.chg"]) == pytest.approx(-1200.0)
-        assert float(by[(0, "2024-03")]["orders.chg"]) == pytest.approx(-6200.0)
-        assert by[(1, "2024-02")]["orders.chg"] is None
+        assert by[(0, "2024-01")]["chg"] is None
+        assert float(by[(0, "2024-02")]["chg"]) == pytest.approx(-1200.0)
+        assert float(by[(0, "2024-03")]["chg"]) == pytest.approx(-6200.0)
+        assert by[(1, "2024-02")]["chg"] is None
 
 
 class TestCaseInColumnSql:
-    async def test_mode_a_case_column_still_executes(self, exec_engine) -> None:
-        # A CASE in Column.sql (raw SQL) grouped as a dimension — the existing
+    async def test_mode_a_case_column_still_executes(self, exec_engine: SlayerQueryEngine) -> None:
+        # A CASE in DatasetField.sql (raw SQL) grouped as a dimension — the existing
         # escape hatch, pinned against Part A regressions. Row 9 (amount 6000)
         # is the only per-row band 1; everything else bands 0.
-        base = orders_model()
-        await exec_engine.storage.save_model(base.model_copy(update={"columns": [
-            *base.columns,
-            Column(name="row_band", sql="CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
-                   type=DataType.INT),
+        base = orders_dataset()
+        await exec_engine.storage.save_dataset(base.model_copy(update={"fields": [
+            *base.fields,
+            DatasetField(name="row_band", expression="CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
+                   datatype=DataType.INTEGER),
         ]}))
         resp = await exec_engine.execute(_q(
-            dimensions=["row_band"],
-            measures=[ModelMeasure(formula="sum(amount)", name="rev")],
+            dimensions=["orders.row_band"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
-        by = {int(r["orders.row_band"]): float(r["orders.rev"]) for r in resp.data}
+        by = {int(r["orders.row_band"]): float(r["rev"]) for r in resp.data}
         assert by == {0: pytest.approx(19000.0), 1: pytest.approx(6000.0)}

@@ -1,5 +1,5 @@
-"""Shared fixtures for DEV-1919 — an attached input's producer is rooted at its
-own home in every ``to_many_handling`` mode. Raw-row oracles over the DEV-1840
+"""Shared fixtures for an attached input's producer rooted at its
+own home in every ``to_many_handling`` mode. Raw-row oracles over the
 dataset (``tests/_dev1840_fixtures``), the double-entry reference the executed
 suite asserts against.
 """
@@ -11,15 +11,15 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
-from slayer.core.enums import JoinCardinality, TimeGranularity
-from slayer.core.models import SlayerModel
+from slayer.core.enums import RelationshipCardinality, TimeGranularity
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 
 from tests._dev1840_fixtures import (
     _CUSTOMERS_ROWS,
     _ORDERS_ROWS,
     _REGIONS_ROWS,
-    dev1840_models,
+    dev1840_datasets,
     month_key,
     rows_by,
     signup_month_td,
@@ -29,34 +29,34 @@ from tests._dev1859_fixtures import _wavg, region_amount_totals
 MODES = ["broadcast", "associate", "error"]
 
 HEADLINE = ("weighted_avg(customers.spend, "
-            "weight=sum(amount, partition_by=customers.regions.name))")
-MIXED = "sum(customers.spend * sum(amount, partition_by=customers.regions.name))"
-RECURSIVE = ("weighted_avg(customers.spend, weight=weighted_avg(amount, "
+            "weight=sum(orders.amount, partition_by=customers.regions.name))")
+MIXED = "sum(customers.spend * sum(orders.amount, partition_by=customers.regions.name))"
+RECURSIVE = ("weighted_avg(customers.spend, weight=weighted_avg(orders.amount, "
              "weight=sum(customers.regions.pop, partition_by=customers.regions.name), "
              "partition_by=customers.regions.name))")
 RANKED = ("weighted_avg(customers.spend, "
-          "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
+          "weight=rank(sum(orders.amount, partition_by=customers.regions.name), direction='desc'))")
 WINDOWED_PARAM = ("weighted_avg(customers.spend, window='1y', "
-                  "weight=sum(amount, partition_by=customers.regions.name))")
+                  "weight=sum(orders.amount, partition_by=customers.regions.name))")
 WINDOWED_CUSTOM_PARAM = ("wsum(customers.spend, window='1y', "
-                         "weight=sum(amount, partition_by=customers.regions.name))")
-WINDOWED_CONSTITUENT = ("sum(customers.spend * sum(amount, "
+                         "weight=sum(orders.amount, partition_by=customers.regions.name))")
+WINDOWED_CONSTITUENT = ("sum(customers.spend * sum(orders.amount, "
                         "partition_by=customers.regions.name), window='1y')")
-CUMSUM_PARAM = ("weighted_avg(customers.spend, weight=cumsum(sum(amount, "
-                "partition_by=[customers.regions.name, ordered_at])))")
+CUMSUM_PARAM = ("weighted_avg(customers.spend, weight=cumsum(sum(orders.amount, "
+                "partition_by=[customers.regions.name, orders.ordered_at])))")
 UNPARSE_PARAM = ("weighted_avg(customers.spend, weight=sum("
                  "customers.regions.unparseable, partition_by=customers.regions.name))")
 #: the parameter's own key crosses the fanning regions → region_events hop (dev1900 graph).
-OWN_FAN_BADPOP = ("weighted_avg(amount, weight=sum(customers.regions.pop, "
+OWN_FAN_BADPOP = ("weighted_avg(orders.amount, weight=sum(customers.regions.pop, "
                   "partition_by=customers.regions.bad_pop))")
-#: a host-safe key, unattributable only from the parameter's cross-model home.
-OWN_FAN_STATUS = "weighted_avg(amount, weight=sum(customers.spend, partition_by=status))"
+#: a host-safe key, unattributable only from the parameter's cross-dataset home.
+OWN_FAN_STATUS = "weighted_avg(orders.amount, weight=sum(customers.spend, partition_by=orders.status))"
 #: the outer home (customers) does not determine the parameter's grain member.
-UNDETERMINED_PARAM = "weighted_avg(customers.spend, weight=sum(customers.spend, partition_by=status))"
+UNDETERMINED_PARAM = "weighted_avg(customers.spend, weight=sum(customers.spend, partition_by=orders.status))"
 #: a positional value on a parameterless aggregation: refused at bind (D8).
-STRAY_POSITIONAL = "sum(customers.spend, sum(customers.spend, partition_by=status))"
-LAST_HOST = "last(customers.spend, ordered_at)"
-LAST_BADPOP = "last(customers.regions.bad_pop, ordered_at)"
+STRAY_POSITIONAL = "sum(customers.spend, sum(customers.spend, partition_by=orders.status))"
+LAST_HOST = "last(customers.spend, orders.ordered_at)"
+LAST_BADPOP = "last(customers.regions.bad_pop, orders.ordered_at)"
 
 # customers: (id, region_id, plan_code, tier, spend, signup_at)
 _C_ID, _C_REGION, _C_TIER, _C_SPEND, _C_SIGNUP = 0, 1, 3, 4, 5
@@ -68,34 +68,35 @@ _CUST_REGION: Dict[int, Optional[str]] = {
     c[_C_ID]: _REGION_NAME.get(c[_C_REGION]) for c in _CUSTOMERS_ROWS}
 
 
-def keyless_declared_models() -> List[SlayerModel]:
+def keyless_declared_datasets() -> List[SlayerDataset]:
     """customers without a unique key, the orders → customers hop declared
     many-to-one: association cannot dedup, the parameter's key stays provable."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     cust = next(m for m in models if m.name == "customers")
-    cust.columns = [
+    cust.fields = [
         (c.model_copy(update={"primary_key": False}) if c.name == "id" else c)
-        for c in cust.columns
+        for c in cust.fields
     ]
     orders = models[0]
-    orders.joins = [
-        (j.model_copy(update={"cardinality": JoinCardinality.MANY_TO_ONE})
-         if j.target_model == "customers" else j)
-        for j in orders.joins
+    orders.relationships = [
+        (j.model_copy(update={"cardinality": RelationshipCardinality.MANY_TO_ONE})
+         if j.to == "customers" else j)
+        for j in orders.relationships
     ]
     return models
 
 
 def mode_q(mode: Optional[str], **kw) -> SlayerQuery:
     """An orders-rooted query; ``mode=None`` leaves ``to_many_handling`` at its default."""
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     if mode is not None:
         kw["to_many_handling"] = mode
     return SlayerQuery(**kw)
 
 
-def ordered_month_td() -> List[TimeDimension]:
-    return [TimeDimension(dimension="ordered_at",
+def ordered_month_td(population: Optional[str] = None) -> List[TimeDimension]:
+    field = "ordered_at" if population is None else f"{population}.ordered_at"
+    return [TimeDimension(field=field,
                           granularity=TimeGranularity.MONTH)]
 
 
@@ -228,17 +229,17 @@ def local_wavg_status_assoc_by_status() -> Dict[str, Optional[float]]:
 # Result helpers.
 # --------------------------------------------------------------------------- #
 def tier_vals(resp, name: str = "w") -> Dict[Optional[str], Any]:
-    return {k[0]: v[f"orders.{name}"]
-            for k, v in rows_by(resp, "orders.customers.tier").items()}
+    return {k[0]: v[name]
+            for k, v in rows_by(resp, "customers.tier").items()}
 
 
 def status_vals(resp, name: str = "w") -> Dict[str, Any]:
-    return {k[0]: v[f"orders.{name}"] for k, v in rows_by(resp, "orders.status").items()}
+    return {k[0]: v[name] for k, v in rows_by(resp, "orders.status").items()}
 
 
 def month_vals(resp, name: str = "w") -> Dict[Optional[str], Any]:
-    return {(None if r["orders.customers.signup_at"] is None
-             else month_key(r["orders.customers.signup_at"])): r[f"orders.{name}"]
+    return {(None if r["customers.signup_at"] is None
+             else month_key(r["customers.signup_at"])): r[name]
             for r in resp.data}
 
 
@@ -257,7 +258,7 @@ __all__ = [
     "WINDOWED_CUSTOM_PARAM",
     "WINDOWED_CONSTITUENT", "CUMSUM_PARAM", "UNPARSE_PARAM", "OWN_FAN_BADPOP",
     "OWN_FAN_STATUS", "UNDETERMINED_PARAM", "LAST_HOST", "LAST_BADPOP",
-    "keyless_declared_models", "mode_q", "ordered_month_td", "signup_month_td",
+    "keyless_declared_datasets", "mode_q", "ordered_month_td", "signup_month_td",
     "wavg_by_tier", "mixed_global", "mixed_by_tier", "recursive_global",
     "recursive_by_tier", "ranked_global", "ranked_by_tier",
     "windowed_constituent_by_month", "windowed_param_by_month",

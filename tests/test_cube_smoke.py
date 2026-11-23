@@ -1,15 +1,15 @@
-"""Smoke tests: plan/generate SQL against converted Cube models.
+"""Smoke tests: plan/generate SQL against converted Cube datasets.
 
-DEV-1608 §12 (Codex test-gap). These don't just assert converter *output* — they
-push the converted models through the engine's typed pipeline + SQL generation, which
-is where the §6/§4.4 mapping breaks actually surface (e.g. a facade measure that
-referenced a Cube measure *name* instead of the underlying Column would raise
+These don't just assert converter *output* — they
+push the converted datasets through the engine's typed pipeline + SQL generation, which
+is where mapping breaks actually surface (e.g. a facade metric that
+referenced a Cube measure *name* instead of the underlying field would raise
 "Column '<name>' not found" at binding).
 """
 
 
 from slayer.core.models import DatasourceConfig
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import (
     CubeCube,
@@ -68,27 +68,27 @@ async def _save_converted(tmp_path) -> tuple[SlayerQueryEngine, dict]:
     result = CubeToSlayerConverter(
         project=_orders_customers_view_project(), data_source=DS).convert()
     storage = YAMLStorage(base_dir=str(tmp_path))
-    # DEV-1485 Stage D: the typed pipeline resolves the datasource to pick a
-    # dialect, so the converted models need one saved alongside them (the
+    # The typed pipeline resolves the datasource to pick a
+    # dialect, so the converted datasets need one saved alongside them (the
     # legacy _enrich path took the dialect as a bare SQLGenerator argument).
     await storage.save_datasource(
         DatasourceConfig(name=DS, type="sqlite", database=":memory:")
     )
-    for model in result.models:
-        await storage.save_model(model)
+    for model in result.datasets:
+        await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
-    return engine, {m.name: m for m in result.models}
+    return engine, {m.name: m for m in result.datasets}
 
 
 async def _gen_sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
     """Render ``query`` through the typed pipeline.
 
-    DEV-1485 Stage D: was ``engine._enrich`` + ``SQLGenerator.generate(
+    Was ``engine._enrich`` + ``SQLGenerator.generate(
     enriched=...)``. Going through ``execute(dry_run=True)`` exercises the same
-    thing this module is actually for — that a converted Cube model survives
+    thing this module is actually for — that a converted Cube dataset survives
     resolution and SQL generation — and covers more of the path than the two
     legacy calls did. The ``model`` argument is gone: it only ever restated
-    ``query.source_model``, which the engine resolves from storage itself.
+    ``query.population``, which the engine resolves from storage itself.
     """
     resp = await engine.execute(query, dry_run=True)
     assert resp.sql is not None, "dry-run returned no SQL"
@@ -96,14 +96,14 @@ async def _gen_sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
 
 
 async def test_view_cross_model_measure_resolves_to_underlying_column(tmp_path):
-    """The facade measure `customers_lifetime_value` must resolve through the
-    join to the underlying `ltv` column — this is the Codex #1 regression."""
+    """The facade metric `customers_lifetime_value` must resolve through the
+    relationship to the underlying `ltv` field — this is the Codex #1 regression."""
     engine, _models = await _save_converted(tmp_path)
-    query = SlayerQuery(
-        source_model="orders_overview",
-        dimensions=[ColumnRef(name="status")],
-        measures=[{"formula": "customers_lifetime_value"}],
-    )
+    query = SlayerQuery.model_validate({
+        "population": "orders_overview",
+        "dimensions": [QueryDimension(field="orders_overview.status")],
+        "metrics": [{"metric": "orders_overview.customers_lifetime_value"}],
+    })
     sql = await _gen_sql(engine, query)  # must not raise "Column not found"
     assert "ltv" in sql.lower()
     assert "sum" in sql.lower()
@@ -111,11 +111,11 @@ async def test_view_cross_model_measure_resolves_to_underlying_column(tmp_path):
 
 async def test_view_status_dimension_generates(tmp_path):
     engine, _models = await _save_converted(tmp_path)
-    query = SlayerQuery(
-        source_model="orders_overview",
-        dimensions=[ColumnRef(name="status")],
-        measures=[{"formula": "total_revenue"}],
-    )
+    query = SlayerQuery.model_validate({
+        "population": "orders_overview",
+        "dimensions": [QueryDimension(field="orders_overview.status")],
+        "metrics": [{"metric": "orders_overview.total_revenue"}],
+    })
     sql = await _gen_sql(engine, query)
     assert "status" in sql.lower()
 
@@ -124,10 +124,10 @@ async def test_filtered_and_unfiltered_measures_emit_distinct_sql(tmp_path):
     """Codex #4 at the SQL layer: total_revenue (plain SUM) and
     completed_revenue (SUM over CASE WHEN) must both appear, distinctly."""
     engine, _models = await _save_converted(tmp_path)
-    query = SlayerQuery(
-        source_model="orders",
-        measures=[{"formula": "total_revenue"}, {"formula": "completed_revenue"}],
-    )
+    query = SlayerQuery.model_validate({
+        "population": "orders",
+        "metrics": [{"metric": "orders.total_revenue"}, {"metric": "orders.completed_revenue"}],
+    })
     sql = await _gen_sql(engine, query)
     assert sql.lower().count("sum(") >= 2
     assert "case" in sql.lower()  # the filtered one wraps amount in CASE WHEN

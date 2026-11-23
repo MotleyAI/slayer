@@ -16,7 +16,8 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
-from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind
+from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
@@ -68,7 +69,7 @@ _TSQL_STAT_NAMES: dict[str, str] = {
 
 
 # ``timestamp`` is rowversion here, not a temporal type.
-_TYPE_NAME_OVERRIDES = {"TIMESTAMP": DataType.TEXT}
+_TYPE_NAME_OVERRIDES = {"TIMESTAMP": DataType.STRING}
 
 # ``sp_describe_first_result_set``'s "metadata could not be determined" errors.
 _UNDESCRIBABLE_ERRORS = range(11500, 11542)
@@ -77,9 +78,9 @@ _NATIVE_ERROR_RE = re.compile(r"\((\d+)\)\s*\(SQL\w*\)")
 # pyodbc ``type_code`` Python types → SLayer types; ``Decimal`` is read by scale.
 _PYTHON_TYPES: tuple[tuple[type, DataType], ...] = (
     (bool, DataType.BOOLEAN),
-    (int, DataType.INT),
-    (float, DataType.DOUBLE),
-    (dt.datetime, DataType.TIMESTAMP),
+    (int, DataType.INTEGER),
+    (float, DataType.FLOAT),
+    (dt.datetime, DataType.DATETIME),
     (dt.date, DataType.DATE),
     (dt.time, info_schema_type("TIME")[0]),
 )
@@ -87,16 +88,16 @@ _PYTHON_TYPES: tuple[tuple[type, DataType], ...] = (
 
 # ODBC SQL type codes → (name, SLayer type).
 _ODBC_SQL_TYPES: dict[int, tuple[str, DataType]] = {
-    4: ("SQL_INTEGER", DataType.INT), 5: ("SQL_SMALLINT", DataType.INT), -6: ("SQL_TINYINT", DataType.INT),
-    -5: ("SQL_BIGINT", DataType.INT), 2: ("SQL_NUMERIC", DataType.DOUBLE), 3: ("SQL_DECIMAL", DataType.DOUBLE),
-    6: ("SQL_FLOAT", DataType.DOUBLE), 7: ("SQL_REAL", DataType.DOUBLE), 8: ("SQL_DOUBLE", DataType.DOUBLE),
-    1: ("SQL_CHAR", DataType.TEXT), 12: ("SQL_VARCHAR", DataType.TEXT), -1: ("SQL_LONGVARCHAR", DataType.TEXT),
-    -8: ("SQL_WCHAR", DataType.TEXT), -9: ("SQL_WVARCHAR", DataType.TEXT), -10: ("SQL_WLONGVARCHAR", DataType.TEXT),
-    -152: ("SQL_SS_XML", DataType.UNKNOWN), -11: ("SQL_GUID", DataType.TEXT), -7: ("SQL_BIT", DataType.BOOLEAN),
-    -2: ("SQL_BINARY", DataType.TEXT), -3: ("SQL_VARBINARY", DataType.TEXT), -4: ("SQL_LONGVARBINARY", DataType.TEXT),
-    91: ("SQL_TYPE_DATE", DataType.DATE), 92: ("SQL_TYPE_TIME", DataType.TIMESTAMP),
-    93: ("SQL_TYPE_TIMESTAMP", DataType.TIMESTAMP), -154: ("SQL_SS_TIME2", DataType.TIMESTAMP),
-    -155: ("SQL_SS_TIMESTAMPOFFSET", DataType.TIMESTAMP),
+    4: ("SQL_INTEGER", DataType.INTEGER), 5: ("SQL_SMALLINT", DataType.INTEGER), -6: ("SQL_TINYINT", DataType.INTEGER),
+    -5: ("SQL_BIGINT", DataType.INTEGER), 2: ("SQL_NUMERIC", DataType.FLOAT), 3: ("SQL_DECIMAL", DataType.FLOAT),
+    6: ("SQL_FLOAT", DataType.FLOAT), 7: ("SQL_REAL", DataType.FLOAT), 8: ("SQL_DOUBLE", DataType.FLOAT),
+    1: ("SQL_CHAR", DataType.STRING), 12: ("SQL_VARCHAR", DataType.STRING), -1: ("SQL_LONGVARCHAR", DataType.STRING),
+    -8: ("SQL_WCHAR", DataType.STRING), -9: ("SQL_WVARCHAR", DataType.STRING), -10: ("SQL_WLONGVARCHAR", DataType.STRING),
+    -152: ("SQL_SS_XML", DataType.OPAQUE), -11: ("SQL_GUID", DataType.STRING), -7: ("SQL_BIT", DataType.BOOLEAN),
+    -2: ("SQL_BINARY", DataType.STRING), -3: ("SQL_VARBINARY", DataType.STRING), -4: ("SQL_LONGVARBINARY", DataType.STRING),
+    91: ("SQL_TYPE_DATE", DataType.DATE), 92: ("SQL_TYPE_TIME", DataType.DATETIME),
+    93: ("SQL_TYPE_TIMESTAMP", DataType.DATETIME), -154: ("SQL_SS_TIME2", DataType.DATETIME),
+    -155: ("SQL_SS_TIMESTAMPOFFSET", DataType.DATETIME),
 }
 
 
@@ -297,7 +298,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
         """T-SQL's own ``TIMESTAMP`` is ``ROWVERSION``; the portable one is ``DATETIME2``."""
-        return exp.DataType.build("DATETIME2", dialect="tsql") if data_type is DataType.TIMESTAMP else to
+        return exp.DataType.build("DATETIME2", dialect="tsql") if data_type.kind is TypeKind.TIMESTAMP else to
 
     def code_point_char(self, n: Expression) -> Expression:
         """``NCHAR``, astral code points as their UTF-16 surrogate pair (no supplementary collation needed)."""
@@ -399,7 +400,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return {
             row["name"]: (
                 result_column_type_of_name(row["system_type_name"], overrides=_TYPE_NAME_OVERRIDES)
-                if row["system_type_name"] else ResultColumnType(type=DataType.TEXT)
+                if row["system_type_name"] else ResultColumnType(type=DataType.STRING)
             )
             for row in rows if not row.get("is_hidden")
         }
@@ -419,12 +420,12 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             return None
         if issubclass(code, Decimal):
             sized = isinstance(precision, int) and isinstance(scale, int)
-            return ResultColumnType(type=DataType.INT if scale == 0 else DataType.DOUBLE,
+            return ResultColumnType(type=DataType.INTEGER if scale == 0 else DataType.FLOAT,
                                     db_type=f"decimal({precision},{scale})" if sized else "decimal")
         for python_type, data_type in _PYTHON_TYPES:
             if issubclass(code, python_type):
                 return ResultColumnType(type=data_type)
-        return ResultColumnType(type=DataType.TEXT)
+        return ResultColumnType(type=DataType.STRING)
 
     def build_null_safe_eq(
         self, left: Expression, right: Expression,
@@ -476,18 +477,19 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         ]
 
     def build_date_trunc(
-        self,
-        col_expr: Expression,
-        granularity: TimeGranularity,
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``DATETRUNC`` (2022+); ``iso_week`` keeps weeks ``@@DATEFIRST``-independent."""
+        """``DATETRUNC`` (2022+), which keeps its input's type: the input is cast to the bucket's type;
+        ``iso_week`` keeps weeks ``@@DATEFIRST``-independent."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity,
-            )
+            return super().build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
         gran_str = granularity.value
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
+        result = bucket_type(operand, granularity)
+        if result is DataType.DATETIME and (result is not operand or not isinstance(col_expr, (exp.Column, exp.Cast))):
+            # ``DATETIME2``: a legacy ``DATETIME`` rounds to 1/300 s, which can carry a value into the next bucket.
+            col_expr = self.promote_to_timestamp(col_expr)
+        elif not isinstance(col_expr, (exp.Column, exp.Cast)):
+            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("DATE"))
         tsql_gran = "iso_week" if gran_str == "week" else gran_str
         return exp.Anonymous(
             this="DATETRUNC",

@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_rest_memory_string_ids.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  }
+ ]
+}

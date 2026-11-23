@@ -25,7 +25,7 @@ Any measure-legal expression SHALL be legal as a computed dimension provided it 
 - THEN the transform partitions by the dimension's value exactly as `sum(amount, partition_by=ureg)` would, in the measure, aggregation-parameter, filter, order and computed-dimension positions (values per `queries/partitioned-aggregates` › Transform partition keys bind like aggregate partition keys)
 
 ### Requirement: Transforms inside dimension expressions
-A transform inside a dimension expression SHALL evaluate at the union of its inner aggregates' effective grains — the grain of its containing context — unlike the same expression used as a measure, which evaluates at the query grain. An inner aggregate's effective grain is its declared `partition_by=` set, plus the query's active time bucket when the aggregate is windowed (`window=`); a `first`/`last` inner aggregate contributes its declared partition set only. Each inner aggregate is computed at its own effective grain and broadcast to the union-grain rows; when all inner aggregates share one grain the union degenerates to that grain (behavior unchanged). The rule is recursive: a nested transform evaluates at the union of its OWN inner aggregates' grains and its result is broadcast into the containing union like any other grained value. Keyword references on the transform (e.g. an explicit `partition_by=`) SHALL resolve against the union grain. A time-ordered transform (e.g. `cumsum`, `lag`, `time_shift`) inside a dimension expression SHALL fail with a clear error when its evaluation grain does not contain its time-ordering key — never duplicated result rows. When a windowed inner aggregate contributes the active time bucket, that synthesized bucket IS the query's bucketed time dimension — one dimension for all grain purposes (union membership, deduplication, attachment keys) — and a mixed-grain transform with a windowed inner aggregate but no resolvable time dimension SHALL fail with the same time-resolution error as windowed measures; single-grain windowed and `first`/`last` transform inputs remain legal.
+A transform inside a dimension expression SHALL evaluate at the union of its inner aggregates' effective grains — the grain of its containing context — over that grain's domain, exactly as the same expression does as a measure, a filter or an order key (`queries/transforms` › Transforms evaluate over their operand's domain). An inner aggregate's effective grain is its declared `partition_by=` set, plus the query's active time bucket when the aggregate is windowed (`window=`); a `first`/`last` inner aggregate contributes its declared partition set only. Each inner aggregate is computed at its own effective grain and broadcast to the union-grain rows; when all inner aggregates share one grain the union degenerates to that grain (behavior unchanged). The rule is recursive: a nested transform evaluates at the union of its OWN inner aggregates' grains and its result is broadcast into the containing union like any other grained value. Keyword references on the transform (e.g. an explicit `partition_by=`) SHALL resolve against the union grain. A time-ordered transform (e.g. `cumsum`, `lag`, `time_shift`) inside a dimension expression SHALL fail with a clear error when its evaluation grain does not contain its time-ordering key — never duplicated result rows. When a windowed inner aggregate contributes the active time bucket, that synthesized bucket IS the query's bucketed time dimension — one dimension for all grain purposes (union membership, deduplication, attachment keys) — and a mixed-grain transform with a windowed inner aggregate but no resolvable time dimension SHALL fail with the same time-resolution error as windowed measures; single-grain windowed and `first`/`last` transform inputs remain legal.
 
 #### Scenario: Rank of partitions as a bandable dimension
 - WHEN a query declares the dimension `rank(sum(revenue, partition_by=region), direction='desc')`
@@ -33,7 +33,7 @@ A transform inside a dimension expression SHALL evaluate at the union of its inn
 
 #### Scenario: Context grain distinguishes dimension use from measure use
 - WHEN `rank(sum(revenue, partition_by=region), direction='desc')` is used once as a dimension and once as a measure in otherwise identical queries
-- THEN the dimension form ranks regions at region grain while the measure form ranks result rows at query grain
+- THEN both forms rank the regions at region grain, each row carrying its region's rank
 
 #### Scenario: Different grains in one transform union and broadcast
 - WHEN a dimension expression applies a transform over an arithmetic of two aggregates at different partition grains (e.g. `rank(sum(a, partition_by=region) - sum(b, partition_by=city), direction='desc')`)
@@ -69,7 +69,7 @@ A transform inside a dimension expression SHALL evaluate at the union of its inn
 
 #### Scenario: Same mixed-grain transform as dimension and measure in one query
 - WHEN the same mixed-grain transform expression appears both as a dimension and as a measure
-- THEN the dimension form evaluates at the union grain, the measure form at the query grain, and both are correct in one result
+- THEN both forms evaluate over the union grain's domain and carry the same value in every row of one result
 
 #### Scenario: Different grains in one transform are deferred, not misgrained
 - WHEN a mixed-grain transform's inner aggregates include a `window=` or `first`/`last` aggregation at a different grain than a sibling aggregate
@@ -343,44 +343,44 @@ Oracles use the DEV-1847 `sales` fixture with `P` = `sum(amount, partition_by=re
 - **THEN** on every row the first equals `x` and the second equals `x` plus 1
 
 ### Requirement: A named computed dimension keys by its name
-A computed dimension with a user-chosen `name` SHALL surface under that name — result key `<model>.<name>` in a single query, column `<name>` in any downstream stage or when its query backs a model — whatever its expression, including a bare joined path of any length. A computed dimension without a user-chosen name whose expression is a bare joined path SHALL behave exactly as the plain dotted dimension: result key `<model>.<canonical path>.<column>`, downstream column `<canonical path, __-joined>__<column>`. Every dimension entry SHALL project its own column, including two entries over the same joined path. A query's planned result keys SHALL equal, in projection order, the result keys its rendered SQL returns.
+A computed dimension with a user-chosen `name` SHALL surface under that name — result key `<name>` in a single query, column `<name>` in any downstream stage or when its query backs a model — whatever its expression, including a bare joined path of any length. A computed dimension without a user-chosen name whose expression is a bare joined path SHALL behave exactly as the plain dotted dimension: result key `<anchor>.<canonical route>.<field>` (`queries/references`), downstream column `<canonical path, __-joined>__<field>`. Every dimension entry SHALL project its own column, including two entries over the same joined path. A query's planned result keys SHALL equal, in projection order, the result keys its rendered SQL returns.
 
 #### Scenario: Named one-hop path in a single query
-- **WHEN** `orders` is queried with dimension `{"name": "region_id", "expression": "customers.region_id"}` and measure `{"formula": "sum(amount)", "name": "revenue"}`
-- **THEN** the result columns are `orders.region_id` and `orders.revenue`, with rows `(1, 160)` and `(2, 50)`
+- **WHEN** `orders` is queried with dimension `{"field": "customers.region_id", "alias": "region_id"}` and measure `{"metric": "sum(amount)", "alias": "revenue"}`
+- **THEN** the result columns are `region_id` and `revenue`, with rows `(1, 160)` and `(2, 50)`
 
 #### Scenario: Named one-hop path crosses a stage
-- **WHEN** stage `cr` over `orders` declares dimensions `{"name": "region_id", "expression": "customers.region_id"}` and `customer_id` and measure `{"formula": "sum(amount)", "name": "revenue"}`, and the next stage over `cr` selects dimensions `region_id`, `customer_id`, `revenue`
+- **WHEN** stage `cr` over `orders` declares dimensions `{"field": "customers.region_id", "alias": "region_id"}` and `customer_id` and measure `{"metric": "sum(amount)", "alias": "revenue"}`, and the next stage over `cr` selects dimensions `region_id`, `customer_id`, `revenue`
 - **THEN** the query executes, with rows `(1, 1, 90)`, `(1, 2, 70)`, `(2, 3, 50)`
 
 #### Scenario: Named two-hop path crosses a stage
-- **WHEN** stage `cr` over `orders` declares dimension `{"name": "region_name", "expression": "customers.regions.name"}` and measure `revenue = sum(amount)`, and the next stage over `cr` selects dimensions `region_name`, `revenue`
+- **WHEN** stage `cr` over `orders` declares dimension `{"field": "customers.regions.name", "alias": "region_name"}` and measure `revenue = sum(amount)`, and the next stage over `cr` selects dimensions `region_name`, `revenue`
 - **THEN** the query executes, with rows `(RegN, 160)` and `(RegS, 50)`
 
 #### Scenario: A downstream stage aggregates by a named joined dimension
-- **WHEN** stage `cr` over `orders` declares dimensions `{"name": "rid", "expression": "customers.region_id"}` and `customer_id` and measure `revenue = sum(amount)`, and the next stage over `cr` selects dimension `rid` and measure `sum(revenue)` named `tot`
+- **WHEN** stage `cr` over `orders` declares dimensions `{"field": "customers.region_id", "alias": "rid"}` and `customer_id` and measure `revenue = sum(amount)`, and the next stage over `cr` selects dimension `rid` and measure `sum(revenue)` named `tot`
 - **THEN** the query executes, with rows `(1, 160)` and `(2, 50)`
 
 #### Scenario: A query-backed model exposes a named joined dimension
-- **WHEN** a saved query-backed model `cr` over `orders` declares dimension `{"name": "region_id", "expression": "customers.region_id"}` and measure `revenue = sum(amount)`, and `cr` is queried with dimensions `region_id` and `revenue`
+- **WHEN** a saved query-backed model `cr` over `orders` declares dimension `{"field": "customers.region_id", "alias": "region_id"}` and measure `revenue = sum(amount)`, and `cr` is queried with dimensions `region_id` and `revenue`
 - **THEN** the query executes, with rows `(1, 160)` and `(2, 50)`
 
 #### Scenario: Unnamed computed path equals the plain dimension
-- **WHEN** `orders` is queried with dimension `{"expression": "customers.region_id"}` and measure `revenue = sum(amount)`, alone and as stage `cr` read downstream by dimension `customers__region_id`
-- **THEN** the single query's result key is `orders.customers.region_id`, and the two-stage query executes with rows `(1, 160)` and `(2, 50)`
+- **WHEN** `orders` is queried with dimension `{"field": "customers.region_id"}` and measure `revenue = sum(amount)`, alone and as stage `cr` read downstream by dimension `customers__region_id`
+- **THEN** the single query's result key is `customers.region_id`, and the two-stage query executes with rows `(1, 160)` and `(2, 50)`
 
 #### Scenario: Plain and named entries over one path each project a column
-- **WHEN** `orders` is queried with dimensions `customers.region_id`, `status`, `{"name": "rid", "expression": "customers.region_id"}` and measure `revenue = sum(amount)`, alone and as stage `cr` read downstream by `customers__region_id`, `status`, `rid`
-- **THEN** the single query's result columns are `orders.customers.region_id`, `orders.status`, `orders.rid`, `orders.revenue` in that order with `rid` equal to `customers.region_id` on every row, and the two-stage query executes with both columns
+- **WHEN** `orders` is queried with dimensions `customers.region_id`, `status`, `{"field": "customers.region_id", "alias": "rid"}` and measure `revenue = sum(amount)`, alone and as stage `cr` read downstream by `customers__region_id`, `status`, `rid`
+- **THEN** the single query's result columns are `customers.region_id`, `orders.status`, `rid`, `revenue` in that order with `rid` equal to `customers.region_id` on every row, and the two-stage query executes with both columns
 
 #### Scenario: Ordering and filtering by the name
-- **WHEN** `orders` is queried with dimension `{"name": "rid", "expression": "customers.region_id"}`, measure `revenue = sum(amount)`, and either order `rid` descending or filter `rid = 1`
-- **THEN** the rows are keyed `orders.rid` and come back as `(2, 50), (1, 160)` or `(1, 160)` respectively
+- **WHEN** `orders` is queried with dimension `{"field": "customers.region_id", "alias": "rid"}`, measure `revenue = sum(amount)`, and either order `rid` descending or filter `rid = 1`
+- **THEN** the rows are keyed `rid` and come back as `(2, 50), (1, 160)` or `(1, 160)` respectively
 
 #### Scenario: Plain dotted dimension and local rename unchanged
-- **WHEN** stage `cr` over `orders` declares dimension `customers.region_id` read downstream as `customers__region_id`, or declares `{"name": "cust", "expression": "customer_id"}` read downstream as `cust`
+- **WHEN** stage `cr` over `orders` declares dimension `customers.region_id` read downstream as `customers__region_id`, or declares `{"field": "customer_id", "alias": "cust"}` read downstream as `cust`
 - **THEN** both queries execute with their existing names and values
 
 #### Scenario: A name colliding with a host column is still rejected
-- **WHEN** `orders` (which has a column `region`) is queried with dimension `{"name": "region", "expression": "customers.regions.name"}`
+- **WHEN** `orders` (which has a column `region`) is queried with dimension `{"field": "customers.regions.name", "alias": "region"}`
 - **THEN** the query fails with the computed-dimension name-collision error

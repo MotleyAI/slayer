@@ -1,4 +1,4 @@
-"""DEV-1935 — boolean-total semi-join pushdown: a root row survives iff the
+"""Boolean-total semi-join pushdown: a root row survives iff the
 conjunct holds on >=1 row of its join product (hops joined as declared, LEFT ->
 null-extended). Executed dual-engine (SQLite + DuckDB); structural pins via
 ``plan_query``."""
@@ -17,8 +17,11 @@ from slayer.core.errors import (
     SlayerError,
 )
 from slayer.engine.plan import plan_query
+from slayer.ir.planned import PlannedQuery, SemiJoinHop
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
+
+from slayer.core.query import QueryMetric
 
 from tests._dev1935_fixtures import (
     ASSOC_OR,
@@ -31,14 +34,13 @@ from tests._dev1935_fixtures import (
     EVENTLESS_EVENT_ONLY,
     EVENTLESS_GOLD_OR_EVENT_INNER,
     EVENTLESS_GOLD_OR_EVENT_LEFT,
-    event_less_models,
+    event_less_datasets,
     GOLD_OR_OK,
     GOLD_OR_OK_SPEND,
     MATERIALISED_OR,
     REDUCED_PUSH_OR,
     REDUCED_PUSH_ORDER_CELLS,
     MATERIALISED_ORDER_CELLS,
-    ModelMeasure,
     NEW_OR_EVENT,
     NEW_OR_EVENT_SPEND,
     NO_ORDERS,
@@ -55,22 +57,22 @@ from tests._dev1935_fixtures import (
     TWO_SPELLINGS,
     TWO_SPELLINGS_BY_TIER,
     cust_q,
-    dev1900_models,
-    disconnected_model_models,
+    dev1900_datasets,
+    disconnected_dataset_datasets,
     make_eventless_engine,
     make_exec_engine,
     orders_q,
     pushed_filter_infos,
     rows_by,
-    two_spellings_models,
-    unproven_plans_models,
+    two_spellings_datasets,
+    unproven_plans_datasets,
 )
 
 MODES = ["broadcast", "associate", "error"]
 
-SPEND = ModelMeasure(formula="sum(spend)", name="sp")
-SPEND_X = ModelMeasure(formula="sum(customers.spend)", name="csp")
-PARTITIONED = ModelMeasure(formula="sum(spend, partition_by=tier)", name="pt")
+SPEND = QueryMetric(metric="sum(customers.spend)", alias="sp")
+SPEND_X = QueryMetric(metric="sum(customers.spend)", alias="csp")
+PARTITIONED = QueryMetric(metric="sum(customers.spend, partition_by=customers.tier)", alias="pt")
 
 #: Python-warning carriers the boolean-total push must never emit.
 _SLAYER_WARNS = (
@@ -85,13 +87,13 @@ async def backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def two_spellings_backend(request):
-    async for e in make_exec_engine(request, models=two_spellings_models()):
+    async for e in make_exec_engine(request, datasets=two_spellings_datasets()):
         yield request.param, e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unproven_backend(request):
-    async for e in make_exec_engine(request, models=unproven_plans_models()):
+    async for e in make_exec_engine(request, datasets=unproven_plans_datasets()):
         yield request.param, e
 
 
@@ -115,13 +117,13 @@ async def eventless_derived_backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unreachable_backend(request):
-    async for e in make_exec_engine(request, models=disconnected_model_models()):
+    async for e in make_exec_engine(request, datasets=disconnected_dataset_datasets()):
         yield request.param, e
 
 
 def _pop_infos(resp) -> list:
     """Population-push entries: a semi_join_pushed entry naming no aggregate."""
-    return [i for i in pushed_filter_infos(resp) if i.measure is None]
+    return [i for i in pushed_filter_infos(resp) if i.metric is None]
 
 
 async def _dry(engine, query, dialect: str) -> str:
@@ -131,21 +133,21 @@ async def _dry(engine, query, dialect: str) -> str:
     return dry.sql
 
 
-def _bundle(*, models, root: str) -> ResolvedSourceBundle:
-    src = next(x for x in models if x.name == root)
+def _bundle(*, datasets, root: str) -> ResolvedSourceBundle:
+    src = next(x for x in datasets if x.name == root)
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=src, referenced_models=[x for x in models if x.name != root])
+        population=src, referenced_datasets=[x for x in datasets if x.name != root])
 
 
-def _base_hops(planned) -> list:
+def _base_hops(planned: PlannedQuery) -> list[SemiJoinHop]:
     """Every SemiJoinHop of the base query's pushed conjuncts."""
     return [h for sf in planned.semi_join_filters for h in sf.hops]
 
 
-def _hop(planned, target_model: str):
-    hs = [h for h in _base_hops(planned) if h.target_model == target_model]
-    assert hs, f"no {target_model} hop in the base push: {_base_hops(planned)}"
+def _hop(planned: PlannedQuery, target_dataset: str) -> SemiJoinHop:
+    hs = [h for h in _base_hops(planned) if h.to == target_dataset]
+    assert hs, f"no {target_dataset} hop in the base push: {_base_hops(planned)}"
     return hs[0]
 
 
@@ -161,8 +163,8 @@ class TestOrMixRestrictsPopulation:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(cust_q(
-                measures=[SPEND], filters=[OR_MIX_LOCAL], to_many_handling=mode))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(OR_MIX_SPEND)
+                metrics=[SPEND], filter=[OR_MIX_LOCAL], to_many_handling=mode))
+        assert float(resp.data[0]["sp"]) == pytest.approx(OR_MIX_SPEND)
         (info,) = _pop_infos(resp)
         assert "status" in info.filter_text
         assert [w for w in caught if issubclass(w.category, _SLAYER_WARNS)] == []
@@ -171,24 +173,24 @@ class TestOrMixRestrictsPopulation:
         """tier='gold' or orders.status='ok' = 475: the gold customer with no
         orders survives on the null-extended row (never 420, never 675)."""
         _, engine = backend
-        resp = await engine.execute(cust_q(measures=[SPEND], filters=[GOLD_OR_OK]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(GOLD_OR_OK_SPEND)
+        resp = await engine.execute(cust_q(metrics=[SPEND], filter=[GOLD_OR_OK]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(GOLD_OR_OK_SPEND)
 
     async def test_negation_keeps_existential_reading(self, backend):
         """not (tier='gold' and orders.status='ok') = 370: non-gold plus gold with
         a non-ok order; an orderless gold customer is not counted (never 520)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[SPEND], filters=[NOT_GOLD_AND_OK]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(
+            metrics=[SPEND], filter=[NOT_GOLD_AND_OK]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(
             NOT_GOLD_AND_OK_SPEND)
 
     async def test_null_test_reads_as_absence(self, backend):
         """orders.id is null = 55: exactly the customers with no orders; the
         response carries the population entry."""
         _, engine = backend
-        resp = await engine.execute(cust_q(measures=[SPEND], filters=[NO_ORDERS]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(NO_ORDERS_SPEND)
+        resp = await engine.execute(cust_q(metrics=[SPEND], filter=[NO_ORDERS]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(NO_ORDERS_SPEND)
         assert _pop_infos(resp), "expected the population semi_join_pushed entry"
 
 
@@ -197,16 +199,16 @@ class TestMultiBranch:
         """orders.status='new' or regions.region_events.value>=50 = 320; one entry."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[SPEND], filters=[NEW_OR_EVENT]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(NEW_OR_EVENT_SPEND)
+            metrics=[SPEND], filter=[NEW_OR_EVENT]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(NEW_OR_EVENT_SPEND)
         assert _pop_infos(resp), "expected a population entry"
 
     async def test_atom_spanning_two_branches(self, backend):
         """orders.amount < regions.region_events.value = 420 (product), no warning."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[SPEND], filters=[ATOM_TWO_BRANCH]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(
+            metrics=[SPEND], filter=[ATOM_TWO_BRANCH]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(
             ATOM_TWO_BRANCH_SPEND)
 
 
@@ -219,8 +221,8 @@ class TestMaterialisedBranchBinding:
         emits this inline, so it is a same-row-binding + null-extension anchor."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["orders.id"], filters=[MATERIALISED_OR]))
-        cells = {r["customers.orders.id"] for r in resp.data}
+            dimensions=["orders.id"], filter=[MATERIALISED_OR]))
+        cells = {r["orders.id"] for r in resp.data}
         cells = {int(c) if c is not None else None for c in cells}
         assert cells == MATERIALISED_ORDER_CELLS
 
@@ -236,8 +238,8 @@ class TestReducedPushOnPartialMaterialisation:
         (never a sibling order admitted through another order of the customer)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]))
-        cells = {r["customers.orders.id"] for r in resp.data}
+            dimensions=["orders.id"], filter=[REDUCED_PUSH_OR]))
+        cells = {r["orders.id"] for r in resp.data}
         assert {int(c) if c is not None else None for c in cells} == \
             REDUCED_PUSH_ORDER_CELLS
         assert _pop_infos(resp), "expected a population entry"
@@ -247,7 +249,7 @@ class TestReducedPushOnPartialMaterialisation:
         holds only the unmaterialised branch."""
         dialect, engine = backend
         sql = await _dry(engine, cust_q(
-            dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]), dialect)
+            dimensions=["orders.id"], filter=[REDUCED_PUSH_OR]), dialect)
         tree = sqlglot.parse_one(sql, dialect=dialect)
         (exists_node,) = list(tree.find_all(exp.Exists))
         inside = {t.name for t in exists_node.find_all(exp.Table)}
@@ -257,9 +259,9 @@ class TestReducedPushOnPartialMaterialisation:
 
     def test_reduced_push_drops_the_materialised_hop(self):
         planned = plan_query(
-            query=cust_q(dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]),
-            bundle=_bundle(models=dev1900_models(), root="customers"))
-        assert {h.target_model for h in _base_hops(planned)} == {
+            query=cust_q(dimensions=["orders.id"], filter=[REDUCED_PUSH_OR]),
+            bundle=_bundle(datasets=dev1900_datasets(), root="customers"))
+        assert {h.to for h in _base_hops(planned)} == {
             "regions", "region_events"}
 
 
@@ -271,14 +273,14 @@ class TestPartitionedOverOrMix:
         no dropped warning, error mode does not error."""
         _, engine = backend
         q = cust_q(
-            dimensions=["tier"], measures=[PARTITIONED], filters=[OR_MIX_LOCAL],
+            dimensions=["customers.tier"], metrics=[PARTITIONED], filter=[OR_MIX_LOCAL],
             to_many_handling=mode)
         resp = await engine.execute(q)
         by = rows_by(resp, "customers.tier")
         assert set(by) == {(t,) for t in OR_MIX_PARTITIONED}
         for tier, spend in OR_MIX_PARTITIONED.items():
-            assert float(by[(tier,)]["customers.pt"]) == pytest.approx(spend), tier
-        measures = {i.measure for i in pushed_filter_infos(resp)}
+            assert float(by[(tier,)]["pt"]) == pytest.approx(spend), tier
+        measures = {i.metric for i in pushed_filter_infos(resp)}
         assert None in measures, measures
         assert "pt" in measures, measures
 
@@ -289,7 +291,7 @@ class TestRawRowMode:
         (6), never one per matching order (7)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filters=[OR_MIX_LOCAL],
+            dimensions=["customers.tier"], filter=[OR_MIX_LOCAL],
             distinct_dimension_values=False))
         assert len(resp.data) == OR_MIX_RAW_ROWS
 
@@ -303,13 +305,13 @@ class TestProducerSideMixedOr:
         and the filter, no dropped warning, error mode does not error."""
         _, engine = backend
         q = orders_q(
-            dimensions=["customers.tier"], measures=[SPEND_X],
-            filters=[OR_MIX_PRODUCER], to_many_handling=mode)
+            dimensions=["customers.tier"], metrics=[SPEND_X],
+            filter=[OR_MIX_PRODUCER], to_many_handling=mode)
         resp = await engine.execute(q)
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         for tier, spend in OR_MIX_PRODUCER_BY_TIER.items():
-            assert float(by[(tier,)]["orders.csp"]) == pytest.approx(spend), tier
-        named = {(i.measure, "tier" in (i.filter_text or ""))
+            assert float(by[(tier,)]["csp"]) == pytest.approx(spend), tier
+        named = {(i.metric, "tier" in (i.filter_text or ""))
                  for i in pushed_filter_infos(resp)}
         assert ("csp", True) in named, named
 
@@ -321,11 +323,11 @@ class TestAssociationArmMixedOr:
         that status that is app or belongs to a gold customer (ok 270, new 250)."""
         _, engine = backend
         resp = await engine.execute(orders_q(
-            dimensions=["status"], measures=[SPEND_X], filters=[ASSOC_OR],
+            dimensions=["orders.status"], metrics=[SPEND_X], filter=[ASSOC_OR],
             to_many_handling="associate"))
         by = rows_by(resp, "orders.status")
         for status, spend in ASSOC_OR_BY_STATUS.items():
-            assert float(by[(status,)]["orders.csp"]) == pytest.approx(spend), status
+            assert float(by[(status,)]["csp"]) == pytest.approx(spend), status
         assert pushed_filter_infos(resp), "expected the informational entry"
 
     async def test_mixed_or_branch_absent_from_query(self, unproven_backend):
@@ -334,11 +336,11 @@ class TestAssociationArmMixedOr:
         customers with an order of that status (ok 270, new 100)."""
         _, engine = unproven_backend
         resp = await engine.execute(orders_q(
-            dimensions=["status"], measures=[SPEND_X], filters=[ASSOC_OR_ABSENT],
+            dimensions=["orders.status"], metrics=[SPEND_X], filter=[ASSOC_OR_ABSENT],
             to_many_handling="associate"))
         by = rows_by(resp, "orders.status")
         for status, spend in ASSOC_OR_ABSENT_BY_STATUS.items():
-            assert float(by[(status,)]["orders.csp"]) == pytest.approx(spend), status
+            assert float(by[(status,)]["csp"]) == pytest.approx(spend), status
 
 
 class TestTwoSpellingsOneNode:
@@ -347,11 +349,11 @@ class TestTwoSpellingsOneNode:
         spellings) bind to one order: gold 60 / silver 80 (never 160 / 230)."""
         _, engine = two_spellings_backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], measures=[SPEND],
-            filters=list(TWO_SPELLINGS)))
+            dimensions=["customers.tier"], metrics=[SPEND],
+            filter=list(TWO_SPELLINGS)))
         by = rows_by(resp, "customers.tier")
         for tier, spend in TWO_SPELLINGS_BY_TIER.items():
-            assert float(by[(tier,)]["customers.sp"]) == pytest.approx(spend), tier
+            assert float(by[(tier,)]["sp"]) == pytest.approx(spend), tier
 
     async def test_single_orders_relation_correlated(self, two_spellings_backend):
         """The generated SQL correlates a single orders relation for both conjuncts:
@@ -359,7 +361,7 @@ class TestTwoSpellingsOneNode:
         `FROM orders ... JOIN orders` duplicate cannot slip past a text count)."""
         dialect, engine = two_spellings_backend
         sql = await _dry(engine, cust_q(
-            dimensions=["tier"], measures=[SPEND], filters=list(TWO_SPELLINGS)),
+            dimensions=["customers.tier"], metrics=[SPEND], filter=list(TWO_SPELLINGS)),
             dialect)
         (exists_node,) = list(sqlglot.parse_one(sql, dialect=dialect).find_all(exp.Exists))
         orders = [t for t in exists_node.find_all(exp.Table) if t.name == "orders"]
@@ -372,9 +374,9 @@ class TestEventLessNullExtension:
         the event-less region is null-extended and kept via the gold leg = 190."""
         _, engine = eventless_backend
         resp = await engine.execute(SlayerQuery(
-            source_model="customers", measures=[SPEND],
-            filters=["tier = 'gold' or regions.region_events.value >= 50"]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(
+            population="customers", metrics=[SPEND],
+            filter=["customers.tier = 'gold' or regions.region_events.value >= 50"]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(
             EVENTLESS_GOLD_OR_EVENT_LEFT)
 
     async def test_rejecting_predicate_excludes_event_less(self, eventless_backend):
@@ -382,9 +384,9 @@ class TestEventLessNullExtension:
         event-less region is excluded = 100."""
         _, engine = eventless_backend
         resp = await engine.execute(SlayerQuery(
-            source_model="customers", measures=[SPEND],
-            filters=["regions.region_events.value >= 50"]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(
+            population="customers", metrics=[SPEND],
+            filter=["regions.region_events.value >= 50"]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(
             EVENTLESS_EVENT_ONLY)
 
     async def test_declared_inner_descendant_drops_absent_row(
@@ -393,9 +395,9 @@ class TestEventLessNullExtension:
         leg: the event-less region has no product row and is dropped = 100."""
         _, engine = eventless_inner_backend
         resp = await engine.execute(SlayerQuery(
-            source_model="customers", measures=[SPEND],
-            filters=["tier = 'gold' or regions.region_events.value >= 50"]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(
+            population="customers", metrics=[SPEND],
+            filter=["customers.tier = 'gold' or regions.region_events.value >= 50"]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(
             EVENTLESS_GOLD_OR_EVENT_INNER)
 
     async def test_non_propagating_fragment_null_extends(
@@ -405,16 +407,16 @@ class TestEventLessNullExtension:
         never 80 (an INNER correlation would drop it)."""
         _, engine = eventless_derived_backend
         resp = await engine.execute(SlayerQuery(
-            source_model="customers", measures=[SPEND],
-            filters=["regions.region_events.value_or_zero < 40"]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(
+            population="customers", metrics=[SPEND],
+            filter=["regions.region_events.value_or_zero < 40"]))
+        assert float(resp.data[0]["sp"]) == pytest.approx(
             EVENTLESS_COALESCE_LT40)
 
 
 class TestGenuinelyUnreachableFilterRefused:
-    """DEV-1935 narrows exclusion to a genuinely unreachable reference (no
-    resolvable join path from the root). In the connected reference graph such a
-    reference is refused in every mode (`UnresolvableDimensionJoinError`), never
+    """Exclusion is narrowed to a genuinely unreachable reference (no
+    resolvable relationship path from the root). In the connected reference graph such a
+    reference is refused in every mode (`UnresolvableDimensionRelationshipError`), never
     silently routed as if it crossed nothing — the one retained exclusion. See
     tasks.md §1.5: whether a filter can be dropped-and-warned (rather than hard
     refused) requires a host-reachable/producer-unreachable topology this graph
@@ -423,8 +425,8 @@ class TestGenuinelyUnreachableFilterRefused:
     @pytest.mark.parametrize("mode", MODES)
     async def test_unreachable_ref_is_refused(self, unreachable_backend, mode):
         _, engine = unreachable_backend
-        q = cust_q(dimensions=["tier"], measures=[PARTITIONED],
-                   filters=["promos.discount > 0"], to_many_handling=mode)
+        q = cust_q(dimensions=["customers.tier"], metrics=[PARTITIONED],
+                   filter=["promos.discount > 0"], to_many_handling=mode)
         with pytest.raises((SlayerError, ValueError)):
             await engine.execute(q)
 
@@ -437,7 +439,7 @@ class TestGroupingAndDeterminism:
         """Union-find grouping keeps first-appearance order: generating an OR-mix
         query twice yields byte-identical SQL."""
         dialect, engine = backend
-        q = cust_q(measures=[SPEND], filters=[OR_MIX_LOCAL])
+        q = cust_q(metrics=[SPEND], filter=[OR_MIX_LOCAL])
         first = await _dry(engine, q, dialect)
         second = await _dry(engine, q, dialect)
         assert first == second
@@ -447,8 +449,8 @@ class TestGroupingAndDeterminism:
         merges them)."""
         dialect, engine = backend
         sql = await _dry(engine, cust_q(
-            measures=[SPEND],
-            filters=["orders.status = 'ok'", "regions.region_events.value >= 50"]),
+            metrics=[SPEND],
+            filter=["orders.status = 'ok'", "regions.region_events.value >= 50"]),
             dialect)
         assert sql.upper().count("EXISTS") == 2, sql
 
@@ -460,7 +462,7 @@ class TestExistsIsNeverUnderOr:
         of an OR (Snowflake forbids a correlated EXISTS under OR). Checked on the
         AST, so `EXISTS(...) OR local` cannot slip past a text match."""
         dialect, engine = backend
-        sql = await _dry(engine, cust_q(measures=[SPEND], filters=[OR_MIX_LOCAL]),
+        sql = await _dry(engine, cust_q(metrics=[SPEND], filter=[OR_MIX_LOCAL]),
                          dialect)
         tree = sqlglot.parse_one(sql, dialect=dialect)
         exists_nodes = list(tree.find_all(exp.Exists))
@@ -480,11 +482,11 @@ class TestNullExtendedFlag:
             root = "customers" if flt.startswith("orders") else "orders"
             planned = plan_query(
                 query=SlayerQuery(
-                    source_model=root,
-                    measures=[SPEND if root == "customers" else
-                              ModelMeasure(formula="sum(amount)", name="amt")],
-                    filters=[flt]),
-                bundle=_bundle(models=dev1900_models(), root=root))
+                    population=root,
+                    metrics=[SPEND if root == "customers" else
+                              QueryMetric(metric="sum(orders.amount)", alias="amt")],
+                    filter=[flt]),
+                bundle=_bundle(datasets=dev1900_datasets(), root=root))
             hops = _base_hops(planned)
             assert hops, flt
             assert all(h.null_extended is False for h in hops), (flt, hops)
@@ -493,18 +495,18 @@ class TestNullExtendedFlag:
         """A predicate whose disjunction can hold on the hop's null-extended row
         marks that hop null_extended (spine shape)."""
         planned = plan_query(
-            query=SlayerQuery(source_model="customers", measures=[SPEND],
-                              filters=[GOLD_OR_OK]),
-            bundle=_bundle(models=dev1900_models(), root="customers"))
+            query=SlayerQuery(population="customers", metrics=[SPEND],
+                              filter=[GOLD_OR_OK]),
+            bundle=_bundle(datasets=dev1900_datasets(), root="customers"))
         assert _hop(planned, "orders").null_extended is True
 
     def test_declared_inner_descendant_stays_inner(self):
         """A declared-INNER hop is never null_extended, even under a saving leg."""
         planned = plan_query(
             query=SlayerQuery(
-                source_model="customers", measures=[SPEND],
-                filters=["tier = 'gold' or regions.region_events.value >= 50"]),
-            bundle=_bundle(models=event_less_models(inner_events=True), root="customers"))
+                population="customers", metrics=[SPEND],
+                filter=["customers.tier = 'gold' or regions.region_events.value >= 50"]),
+            bundle=_bundle(datasets=event_less_datasets(inner_events=True), root="customers"))
         assert _hop(planned, "region_events").null_extended is False
 
 
@@ -514,8 +516,8 @@ class TestPopulationDroppedArmImpossible:
         population push produces a base semi-join and never a dropped-filter
         disposition (the two-way disposition's dropped arm is impossible)."""
         dialect, engine = backend
-        q = cust_q(measures=[SPEND], filters=[OR_MIX_LOCAL])
-        planned = plan_query(query=q, bundle=_bundle(models=dev1900_models(), root="customers"))
+        q = cust_q(metrics=[SPEND], filter=[OR_MIX_LOCAL])
+        planned = plan_query(query=q, bundle=_bundle(datasets=dev1900_datasets(), root="customers"))
         assert planned.semi_join_filters, "the OR-mix population must push"
         await engine.execute(q)
         # the host base carries the EXISTS and never joins orders into the OUTER
@@ -542,13 +544,13 @@ _NULL_REJECTION_CASES = [
      False),                                               # AND of UNKNOWN -> UNKNOWN
     ("not (regions.region_events.value >= 50)", False),    # NOT UNKNOWN -> UNKNOWN
     ("abs(regions.region_events.value) >= 50", True),      # scalar call -> DEPENDS
-    ("tier = 'gold' or regions.region_events.value >= 50", True),  # OR w/ DEPENDS
+    ("customers.tier = 'gold' or regions.region_events.value >= 50", True),  # OR w/ DEPENDS
 ]
 
-#: (predicate over a derived event column or an IS operand, expected null_extended):
+#: (predicate over a derived event field or an IS operand, expected null_extended):
 #: the D5 Mode-A fragment rule (on the EXPANDED definition) and the IS rules.
 _FRAGMENT_AND_IS_CASES = [
-    ("regions.region_events.value_bare >= 50", False),     # bare column -> null-valued
+    ("regions.region_events.value_bare >= 50", False),     # bare field -> null-valued
     ("regions.region_events.value_x2 >= 50", False),       # arithmetic -> null-valued
     ("regions.region_events.value_x2_x2 >= 50", False),    # derived-on-derived arithmetic
     ("regions.region_events.value_or_zero >= 50", True),   # COALESCE -> DEPENDS
@@ -558,12 +560,12 @@ _FRAGMENT_AND_IS_CASES = [
     ("regions.region_events.col_in_list is not null", False),  # NULL IN (..) -> null-valued
     ("regions.region_events.lit_in_list is not null", True),   # 1 IN (NULL, 1) is TRUE
     ("regions.region_events.lit_between is not null", True),   # 1 BETWEEN NULL AND 0 is FALSE
-    ("regions.region_events.value is tier", True),         # IS <non-literal> -> DEPENDS
-    ("regions.region_events.value is not tier", True),
+    ("regions.region_events.value is customers.tier", True),         # IS <non-literal> -> DEPENDS
+    ("regions.region_events.value is not customers.tier", True),
     ("regions.region_events.value is True", False),        # NULL IS TRUE -> FALSE
     ("regions.region_events.value is not True", True),     # NULL IS NOT TRUE -> TRUE
     # a predicate as a value operand is NULL iff UNKNOWN: (UNKNOWN or DEPENDS) is DEPENDS
-    ("(regions.region_events.value >= 50 or tier = 'gold') is not null", True),
+    ("(regions.region_events.value >= 50 or customers.tier = 'gold') is not null", True),
     ("(regions.region_events.value >= 50) is not null", False),  # UNKNOWN -> NULL
 ]
 
@@ -574,9 +576,9 @@ class TestNullRejectionAnalysis:
         """A derived ref is null-valued only when its expanded definition
         propagates NULL; IS / IS NOT with a non-literal operand is DEPENDS."""
         planned = plan_query(
-            query=SlayerQuery(source_model="customers", measures=[SPEND],
-                              filters=[predicate]),
-            bundle=_bundle(models=event_less_models(derived_events=True), root="customers"))
+            query=SlayerQuery(population="customers", metrics=[SPEND],
+                              filter=[predicate]),
+            bundle=_bundle(datasets=event_less_datasets(derived_events=True), root="customers"))
         assert _hop(planned, "region_events").null_extended is expected
 
     def test_filter_dependency_never_nulls_the_masked_value(self):
@@ -584,9 +586,9 @@ class TestNullRejectionAnalysis:
         the filter crosses stays null-extended (its OR leg holds without it), the
         value's own hop does not."""
         planned = plan_query(
-            query=SlayerQuery(source_model="customers", measures=[SPEND],
-                              filters=["regions.region_events.value_if_kind >= 50"]),
-            bundle=_bundle(models=event_less_models(derived_events=True), root="customers"))
+            query=SlayerQuery(population="customers", metrics=[SPEND],
+                              filter=["regions.region_events.value_if_kind >= 50"]),
+            bundle=_bundle(datasets=event_less_datasets(derived_events=True), root="customers"))
         assert _hop(planned, "event_kinds").null_extended is True
         assert _hop(planned, "region_events").null_extended is False
 
@@ -596,7 +598,7 @@ class TestNullRejectionAnalysis:
         hop: a rejecting predicate (FALSE/UNKNOWN) stays INNER; a non-rejecting one
         (TRUE/DEPENDS) null-extends."""
         planned = plan_query(
-            query=SlayerQuery(source_model="customers", measures=[SPEND],
-                              filters=[predicate]),
-            bundle=_bundle(models=event_less_models(), root="customers"))
+            query=SlayerQuery(population="customers", metrics=[SPEND],
+                              filter=[predicate]),
+            bundle=_bundle(datasets=event_less_datasets(), root="customers"))
         assert _hop(planned, "region_events").null_extended is expected

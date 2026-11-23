@@ -1,4 +1,4 @@
-"""DEV-1656: the SLayer MCP server exposes its per-task query engine for
+"""The SLayer MCP server exposes its per-task query engine for
 caller-controlled teardown.
 
 ``create_mcp_server`` attaches its closure ``SlayerQueryEngine`` to the
@@ -33,7 +33,7 @@ import pytest
 
 import slayer.mcp.server as srv
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.database.engine_factory import client_cache_key
@@ -63,24 +63,24 @@ def _lite_datasource(db: Path) -> DatasourceConfig:
 
 
 async def _seed_storage(workspace: Path, *, with_sql_mode: bool = False) -> YAMLStorage:
-    """A YAML store with a ``lite`` sqlite datasource, a ``sql_table`` model
-    ``t`` and (optionally) a ``sql``-mode model ``sv`` over the same table."""
+    """A YAML store with a ``lite`` sqlite datasource, a ``sql_table`` dataset
+    ``t`` and (optionally) a ``sql``-mode dataset ``sv`` over the same table."""
     db = _make_sqlite_db(workspace)
     storage = YAMLStorage(base_dir=str(workspace / "store"))
     await storage.save_datasource(_lite_datasource(db))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="t", data_source="lite", sql_table="t",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="v", sql="v", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="v", expression="v", datatype=DataType.INTEGER),
         ],
     ))
     if with_sql_mode:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="sv", data_source="lite", sql="SELECT id, v FROM t",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="v", sql="v", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="v", expression="v", datatype=DataType.INTEGER),
             ],
         ))
     return storage
@@ -91,14 +91,14 @@ async def _call(server, *, name: str, arguments: dict[str, Any] | None = None) -
     return content_blocks[0].text
 
 
-async def _query_count(server, *, source_model: str) -> int:
+async def _query_count(server, *, source_dataset: str) -> int:
     """Run the ``query`` tool for ``count(*)`` and return the integer count."""
     text = await _call(
         server, name="query",
         arguments={
             "query": {
-                "source_model": source_model,
-                "measures": [{"formula": "count(*)"}],
+                "population": source_dataset,
+                "metrics": [{"metric": f"count({source_dataset}.*)"}],
             },
             "format": "json",
         },
@@ -107,7 +107,7 @@ async def _query_count(server, *, source_model: str) -> int:
     # attributes/warnings are present — strict-parse and unwrap either.
     payload = json.loads(text)
     row = payload[0] if isinstance(payload, list) else payload["data"][0]
-    return int(row[f"{source_model}._count"])
+    return int(row[f"{source_dataset}._count"])
 
 
 class TestContractAttribute:
@@ -119,7 +119,7 @@ class TestContractAttribute:
         assert isinstance(server._slayer_engine, SlayerQueryEngine)
 
     async def test_slayer_engine_is_the_object_query_uses(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The exposed attribute is identity-equal to the engine the ``query``
         tool executes on — not just some engine."""
@@ -134,12 +134,12 @@ class TestContractAttribute:
             return await original(self, *args, **kwargs)
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
-        await _query_count(server, source_model="t")
+        await _query_count(server, source_dataset="t")
 
         assert captured["self"] is server._slayer_engine
 
     async def test_slayer_engine_is_the_object_query_list_uses(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The list (multi-stage) form shares the same closure engine (plan:
         one engine across query/validate_models/recommend_root_model)."""
@@ -156,7 +156,7 @@ class TestContractAttribute:
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
         await _call(
             server, name="query",
-            arguments={"query": [{"source_model": "t", "measures": [{"formula": "count(*)"}]}]},
+            arguments={"query": [{"population": "t", "metrics": [{"metric": "count(t.*)"}]}]},
         )
 
         assert captured["self"] is server._slayer_engine
@@ -164,7 +164,7 @@ class TestContractAttribute:
 
 class TestToolsReuseClosureEngine:
     async def test_validate_models_constructs_no_new_engine(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
@@ -174,12 +174,12 @@ class TestToolsReuseClosureEngine:
                 raise AssertionError("validate_models constructed a new engine")
 
         monkeypatch.setattr(srv, "SlayerQueryEngine", _Boom)
-        out = await _call(server, name="validate_models", arguments={"data_source": "lite"})
+        out = await _call(server, name="validate_datasets", arguments={"data_source": "lite"})
         # Sane output: a JSON list of pending deletes (empty when no drift).
         assert isinstance(json.loads(out), list)
 
     async def test_recommend_root_model_constructs_no_new_engine(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
@@ -190,7 +190,7 @@ class TestToolsReuseClosureEngine:
 
         monkeypatch.setattr(srv, "SlayerQueryEngine", _Boom)
         out = await _call(
-            server, name="recommend_root_model",
+            server, name="recommend_population",
             arguments={"items": ["t.v"], "data_source": "lite"},
         )
         assert "t" in out
@@ -198,14 +198,14 @@ class TestToolsReuseClosureEngine:
 
 class TestAcloseDisposesCachedClients:
     async def test_aclose_releases_client_sync_pool_survives(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``server._slayer_engine.aclose()`` releases the cached client, leaves its sync engine intact,
         and a follow-up query returns the same rows (file-backed sqlite stands in for ``:memory:``)."""
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
 
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
         engine = server._slayer_engine
         assert len(engine._sql_clients) == 1
         client = next(iter(engine._sql_clients.values()))
@@ -229,7 +229,7 @@ class TestAcloseDisposesCachedClients:
         sync_dispose_spy.assert_not_called()
 
         # Reusable after disposal — the sync path still serves the same data.
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
 
 
 class TestAcloseNoOpSafeAndReusable:
@@ -241,26 +241,26 @@ class TestAcloseNoOpSafeAndReusable:
         # No query yet — nothing opened. Must not raise.
         await server._slayer_engine.aclose()
         # And the engine is still usable.
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
 
     async def test_query_after_aclose_still_works(
         self, workspace: Path,
     ) -> None:
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
         await server._slayer_engine.aclose()
         # Async engine lazily recreated / sync path intact.
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
 
 
 class TestSqlModeDriftClientReachable:
-    """DEV-1656 / Codex finding #1: the ``sql``-mode schema-drift path opens a
+    """The ``sql``-mode schema-drift path opens a
     ``SlayerSQLClient`` that must be cached on the shared engine so teardown
     reaches it (otherwise it leaks an asyncpg pool on Postgres)."""
 
     async def test_validate_models_caches_sql_mode_client_and_aclose_disposes_it(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A ``validate_models`` call with no prior query must cache the
         ``sql``-mode drift client on the shared engine, and a subsequent
@@ -270,7 +270,7 @@ class TestSqlModeDriftClientReachable:
         engine = server._slayer_engine
         assert len(engine._sql_clients) == 0
 
-        await _call(server, name="validate_models", arguments={"data_source": "lite"})
+        await _call(server, name="validate_datasets", arguments={"data_source": "lite"})
 
         key = client_cache_key(_lite_datasource(workspace / "live.db"))
         assert key in engine._sql_clients, (
@@ -294,8 +294,8 @@ class TestSqlModeDriftClientReachable:
         server = create_mcp_server(storage=storage)
         engine = server._slayer_engine
 
-        # Query the sql-mode model — caches a client under the datasource key.
-        assert await _query_count(server, source_model="sv") == 3
+        # Query the sql-mode dataset — caches a client under the datasource key.
+        assert await _query_count(server, source_dataset="sv") == 3
         assert len(engine._sql_clients) == 1
         key = next(iter(engine._sql_clients.keys()))
         client_before = engine._sql_clients[key]
@@ -303,6 +303,6 @@ class TestSqlModeDriftClientReachable:
         # validate_models reuses that cached client object; no second one is
         # built (a new client under the same key would still leak on teardown
         # of the original — assert object identity, not just key equality).
-        await _call(server, name="validate_models", arguments={"data_source": "lite"})
+        await _call(server, name="validate_datasets", arguments={"data_source": "lite"})
         assert set(engine._sql_clients.keys()) == {key}
         assert engine._sql_clients[key] is client_before

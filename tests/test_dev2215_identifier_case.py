@@ -12,13 +12,13 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import (
     AmbiguousReferenceError,
-    IllegalScopeReferenceError,
     SlayerError,
     UnknownReferenceError,
+    UnresolvableDimensionRelationshipError,
 )
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.names import match_path
-from slayer.core.query import ColumnRef, ComputedDimension, QueryRefinement, SlayerQuery, refine_query
+from slayer.core.query import QueryRefinement, SlayerQuery, refine_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
 from slayer.facade.translator import QueryResult, translate
@@ -29,12 +29,12 @@ from tests._dev2215_fixtures import (
     BACKENDS,
     TIER1,
     dev2215_engine,
-    dev2215_models,
-    ledger_model,
+    dev2215_datasets,
+    ledger_dataset,
     m,
     messages,
     num,
-    orders_model,
+    orders_dataset,
     q,
     recorded_warnings,
     single,
@@ -65,31 +65,31 @@ async def storage(request, tmp_path) -> StorageBackend:
 # --------------------------------------------------------------------------- #
 class TestFolding:
     async def test_any_case_reaches_a_column(self, engine: SlayerQueryEngine) -> None:
-        folded = await engine.execute(q(dimensions=["ORDERS.Status"], measures=[m("SUM(Amount)")]))
-        plain = await engine.execute(q(dimensions=["status"], measures=[m("sum(amount)")]))
+        folded = await engine.execute(q(dimensions=["ORDERS.Status"], metrics=[m("SUM(orders.Amount)")]))
+        plain = await engine.execute(q(dimensions=["orders.status"], metrics=[m("sum(orders.amount)")]))
         assert folded.columns == plain.columns
         assert sorted_rows(folded) == sorted_rows(plain)
 
     async def test_quoted_names_are_exact(self, engine: SlayerQueryEngine) -> None:
-        query = q(measures=[m('sum("Amount")')])
+        query = q(metrics=[m('sum(orders."Amount")')])
         with pytest.raises(UnknownReferenceError):
             await engine.execute(query)
-        assert num(single(await engine.execute(q(measures=[m('sum("amount")')])))) == 160.0
+        assert num(single(await engine.execute(q(metrics=[m('sum(orders."amount")')])))) == 160.0
 
     @pytest.mark.parametrize("dimension", ['"customers".REGION', 'CUSTOMERS."region"'])
     async def test_quoting_per_segment(self, engine: SlayerQueryEngine, dimension: str) -> None:
-        resp = await engine.execute(q(dimensions=[dimension], measures=[m("count(*)", "n")]))
-        assert "orders.customers.region" in resp.columns
+        resp = await engine.execute(q(dimensions=[dimension], metrics=[m("count(orders.*)", "n")]))
+        assert "customers.region" in resp.columns
 
     async def test_quoted_segment_with_wrong_case_fails(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=['"Customers".region'], measures=[m("count(*)", "n")])
+        query = q(dimensions=['"Customers".region'], metrics=[m("count(orders.*)", "n")])
         with pytest.raises(UnknownReferenceError):
             await engine.execute(query)
 
     @pytest.mark.parametrize("query", [
-        q(dimensions=['"ORDERS".status'], measures=[m("count(*)", "n")]),
-        q(measures=[m('count("ORDERS".*)', "n")]),
-        q(time_dimensions=[{"dimension": '"ORDERS".created_at', "granularity": "month"}], measures=[m("count(*)", "n")]),
+        q(dimensions=['"ORDERS".status'], metrics=[m("count(orders.*)", "n")]),
+        q(metrics=[m('count("ORDERS".*)', "n")]),
+        q(time_dimensions=[{"field": '"ORDERS".created_at', "granularity": "month"}], metrics=[m("count(orders.*)", "n")]),
     ], ids=["dimension", "star", "time-dimension"])
     async def test_a_quoted_root_qualifier_is_exact(self, engine: SlayerQueryEngine, query: Any) -> None:
         with pytest.raises(UnknownReferenceError):
@@ -97,29 +97,23 @@ class TestFolding:
 
     @pytest.mark.parametrize("dimension", ['"status"', '"orders".status', 'orders."status"', '"orders"."status"'])
     async def test_a_quoted_dimension_is_its_column(self, engine: SlayerQueryEngine, dimension: str) -> None:
-        quoted = await engine.execute(q(dimensions=[dimension], measures=[m("count(*)", "n")]))
-        plain = await engine.execute(q(dimensions=["status"], measures=[m("count(*)", "n")]))
+        quoted = await engine.execute(q(dimensions=[dimension], metrics=[m("count(orders.*)", "n")]))
+        plain = await engine.execute(q(dimensions=["orders.status"], metrics=[m("count(orders.*)", "n")]))
         assert quoted.columns == plain.columns
         assert sorted_rows(quoted) == sorted_rows(plain)
 
     async def test_a_quoted_time_dimension_is_its_column(self, engine: SlayerQueryEngine) -> None:
-        quoted = await engine.execute(q(time_dimensions=[{"dimension": '"orders"."created_at"', "granularity": "month"}],
-                                        measures=[m("count(*)", "n")]))
-        plain = await engine.execute(q(time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-                                       measures=[m("count(*)", "n")]))
+        quoted = await engine.execute(q(time_dimensions=[{"field": '"orders"."created_at"', "granularity": "month"}],
+                                        metrics=[m("count(orders.*)", "n")]))
+        plain = await engine.execute(q(time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+                                       metrics=[m("count(orders.*)", "n")]))
         assert quoted.columns == plain.columns
         assert sorted_rows(quoted) == sorted_rows(plain)
 
-    async def test_a_quoted_column_object_time_dimension_is_exact(self, engine: SlayerQueryEngine) -> None:
-        query = q(time_dimensions=[{"dimension": {"name": "CREATED_AT", "quoted": [True]}, "granularity": "month"}],
-                  measures=[m("count(*)", "n")])
-        with pytest.raises(UnknownReferenceError):
-            await engine.execute(query)
-
-    @pytest.mark.parametrize(("column", "error"), [('"status"', None), ('"STATUS"', UnknownReferenceError)])
+    @pytest.mark.parametrize(("column", "error"), [('orders."status"', None), ('orders."STATUS"', UnknownReferenceError)])
     async def test_a_quoted_order_column_is_exact(self, engine: SlayerQueryEngine, column: str,
                                                   error: type[SlayerError] | None) -> None:
-        query = q(measures=[m("count(*)", "n")], dimensions=["region"], order=[{"column": column, "direction": "desc"}])
+        query = q(metrics=[m("count(orders.*)", "n")], dimensions=["orders.region"], order=[{"field": column, "direction": "desc"}])
         if error is None:
             assert (await engine.execute(query)).data
         else:
@@ -127,58 +121,58 @@ class TestFolding:
                 await engine.execute(query)
 
     async def test_a_quoted_root_qualifier_in_its_case_is_dropped(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(measures=[m('count("orders".status)', "n")]))
+        resp = await engine.execute(q(metrics=[m('count("orders".status)', "n")]))
         assert num(single(resp, "n")) == 6.0
 
     @pytest.mark.parametrize(("ref", "error"), [
-        ("ITEMS.value", None), ('"items".value', None), ('"ITEMS".value', UnknownReferenceError),
-        ("items.VALUE", None), ('items."value"', None), ('items."VALUE"', IllegalScopeReferenceError),
+        ("ITEMS.value", None), ('"items".value', None), ('"ITEMS".value', UnresolvableDimensionRelationshipError),
+        ("items.VALUE", None), ('items."value"', None), ('items."VALUE"', UnknownReferenceError),
     ])
     async def test_a_list_element_reference_follows_quoting(self, ref: str, error: type[SlayerError] | None) -> None:
         stages: list[Any] = [
-            {"name": "s", "source_model": "orders", "dimensions": ["status"], "measures": [m("collect(note)", "items")]},
-            {"source_model": "s", "measures": [m(f"count({ref})", "c")]},
+            {"name": "s", "population": "orders", "dimensions": ["orders.status"], "metrics": [m("collect(orders.note)", "items")]},
+            {"population": "s", "metrics": [m(f"count(s.{ref})", "c")]},
         ]
         async with dev2215_engine("duckdb") as eng:
             if error is None:
-                assert num(single(await eng.execute(stages), "c", model="s")) == 5.0
+                assert num(single(await eng.execute(stages), "c", dataset="s")) == 5.0
             else:
                 with pytest.raises(error):
                     await eng.execute(stages)
 
     async def test_join_names_fold(self, engine: SlayerQueryEngine) -> None:
-        folded = await engine.execute(q(dimensions=["CUSTOMERS.region"], measures=[m("count(*)", "n")]))
-        plain = await engine.execute(q(dimensions=["customers.region"], measures=[m("count(*)", "n")]))
+        folded = await engine.execute(q(dimensions=["CUSTOMERS.region"], metrics=[m("count(orders.*)", "n")]))
+        plain = await engine.execute(q(dimensions=["customers.region"], metrics=[m("count(orders.*)", "n")]))
         assert folded.columns == plain.columns
         assert sorted_rows(folded) == sorted_rows(plain)
 
     async def test_stage_names_fold(self, engine: SlayerQueryEngine) -> None:
         stages: list[Any] = [
-            {"name": "Monthly", "source_model": "orders",
-             "time_dimensions": [{"dimension": "created_at", "granularity": "month"}], "measures": [m("count(*)", "n")]},
-            {"source_model": "monthly", "measures": [m("sum(n)", "t")]},
+            {"name": "Monthly", "population": "orders",
+             "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}], "metrics": [m("count(orders.*)", "n")]},
+            {"population": "monthly", "metrics": [m("sum(monthly.n)", "t")]},
         ]
         resp = await engine.execute(stages)
-        assert [num(v) for r in resp.data for k, v in r.items() if k.endswith(".t")] == [6.0]
+        assert [num(v) for r in resp.data for k, v in r.items() if k == "t" or k.endswith(".t")] == [6.0]
 
     async def test_model_names_fold(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(source_model="ORDERS", measures=[m("count(*)", "n")]))
-        assert resp.columns == ["orders.n"]
+        resp = await engine.execute(q(population="ORDERS", metrics=[m("count(ORDERS.*)", "n")]))
+        assert resp.columns == ["n"]
 
     @pytest.mark.parametrize(("folded", "plain"), [
-        ("RANK(SUM(amount), direction = 'desc')", "rank(sum(amount), direction = 'desc')"),
-        ("CumSum(sum(amount))", "cumsum(sum(amount))"),
+        ("RANK(SUM(orders.amount), direction = 'desc')", "rank(sum(orders.amount), direction = 'desc')"),
+        ("CumSum(sum(orders.amount))", "cumsum(sum(orders.amount))"),
     ])
     async def test_transform_names_fold(self, engine: SlayerQueryEngine, folded: str, plain: str) -> None:
-        td = [{"dimension": "created_at", "granularity": "month"}]
-        a = await engine.execute(q(time_dimensions=td, measures=[m(folded)]))
-        b = await engine.execute(q(time_dimensions=td, measures=[m(plain)]))
+        td = [{"field": "orders.created_at", "granularity": "month"}]
+        a = await engine.execute(q(time_dimensions=td, metrics=[m(folded)]))
+        b = await engine.execute(q(time_dimensions=td, metrics=[m(plain)]))
         assert a.sql == b.sql
         assert sorted_rows(a) == sorted_rows(b)
 
     async def test_model_aggregation_parameter_names_fold(self, engine: SlayerQueryEngine) -> None:
-        a = await engine.execute(q(measures=[m("TRIMMED(amount, cutoff = 25)")]))
-        b = await engine.execute(q(measures=[m("trimmed(amount, cutoff = 25)")]))
+        a = await engine.execute(q(metrics=[m("TRIMMED(orders.amount, cutoff = 25)")]))
+        b = await engine.execute(q(metrics=[m("trimmed(orders.amount, cutoff = 25)")]))
         assert num(single(a)) == num(single(b))
 
 
@@ -187,11 +181,11 @@ class TestFolding:
 # --------------------------------------------------------------------------- #
 class TestExactSpellingWins:
     async def test_exact_spelling_in_a_colliding_model(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(source_model="ledger", measures=[m("sum(Revenue)", "a"), m("sum(revenue)", "b")]))
-        assert (num(single(resp, "a", model="ledger")), num(single(resp, "b", model="ledger"))) == (3.0, 30.0)
+        resp = await engine.execute(q(population="ledger", metrics=[m("sum(ledger.Revenue)", "a"), m("sum(ledger.revenue)", "b")]))
+        assert (num(single(resp, "a", dataset="ledger")), num(single(resp, "b", dataset="ledger"))) == (3.0, 30.0)
 
     async def test_ambiguous_spelling(self, engine: SlayerQueryEngine) -> None:
-        query = q(source_model="ledger", measures=[m("sum(REVENUE)")])
+        query = q(population="ledger", metrics=[m("sum(ledger.REVENUE)")])
         with pytest.raises(AmbiguousReferenceError) as err:
             await engine.execute(query)
         text = str(err.value)
@@ -201,8 +195,8 @@ class TestExactSpellingWins:
         assert '"revenue"' in text
 
     async def test_quoting_resolves_the_ambiguity(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(source_model="ledger", measures=[m('sum("Revenue")')]))
-        assert num(single(resp, model="ledger")) == 3.0
+        resp = await engine.execute(q(population="ledger", metrics=[m('sum(ledger."Revenue")')]))
+        assert num(single(resp, dataset="ledger")) == 3.0
 
 
 # --------------------------------------------------------------------------- #
@@ -210,117 +204,117 @@ class TestExactSpellingWins:
 # --------------------------------------------------------------------------- #
 class TestCanonicalKeys:
     async def test_case_variant_references_share_one_key(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(measures=["sum(AMOUNT)", "sum(amount)"]))
+        resp = await engine.execute(q(metrics=["sum(orders.AMOUNT)", "sum(orders.amount)"]))
         assert resp.columns == ["orders.amount_sum"]
         assert num(resp.data[0]["orders.amount_sum"]) == 160.0
 
     async def test_dimension_key_uses_the_declared_spelling(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["CUSTOMERS.REGION"], measures=[m("count(*)", "n")]))
-        assert "orders.customers.region" in resp.columns
+        resp = await engine.execute(q(dimensions=["CUSTOMERS.REGION"], metrics=[m("count(orders.*)", "n")]))
+        assert "customers.region" in resp.columns
 
 
 # --------------------------------------------------------------------------- #
 # Saves never introduce a case collision
 # --------------------------------------------------------------------------- #
-def _with_measure(model: SlayerModel, name: str) -> SlayerModel:
-    return model.model_copy(update={"measures": [*model.measures, ModelMeasure(name=name, formula="sum(amount)")]})
+def _with_metric(dataset: SlayerDataset, name: str) -> SlayerDataset:
+    return dataset.model_copy(update={"metrics": [*dataset.metrics, DatasetMetric(name=name, expression="sum(amount)")]})
 
 
 class TestSaveCollisions:
     async def test_a_new_column_measure_collision_is_refused(self, storage: StorageBackend) -> None:
-        await storage.save_model(orders_model())
-        model = _with_measure(orders_model(), "Amount")
+        await storage.save_dataset(orders_dataset())
+        model = _with_metric(orders_dataset(), "Amount")
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "amount" in str(err.value)
         assert "Amount" in str(err.value)
 
     async def test_a_new_aggregation_collision_is_refused(self, storage: StorageBackend) -> None:
-        model = orders_model(aggregations=[Aggregation(name="Share", formula="AVG({value})")])
+        model = orders_dataset(aggregations=[Aggregation(name="Share", expression="AVG({value})")])
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "Share" in str(err.value)
         assert "share" in str(err.value)
 
     async def test_a_new_join_name_collision_is_refused(self, storage: StorageBackend) -> None:
-        await storage.save_model(dev2215_models()[1])
-        model = orders_model().model_copy(update={"joins": [
-            ModelJoin(target_model="customers", name="buyer", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="customers", name="Buyer", join_pairs=[["customer_id", "id"]]),
+        await storage.save_dataset(dev2215_datasets()[1])
+        model = orders_dataset().model_copy(update={"relationships": [
+            DatasetRelationship(to="customers", name="buyer", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="customers", name="Buyer", from_columns=["customer_id"], to_columns=["id"]),
         ]})
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "buyer" in str(err.value)
         assert "Buyer" in str(err.value)
 
     @pytest.mark.parametrize("source_queries", [
-        [{"name": "Monthly", "source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]},
-         {"name": "monthly", "source_model": "Monthly", "measures": [{"formula": "sum(n)", "name": "t"}]},
-         {"source_model": "monthly", "measures": [{"formula": "sum(t)", "name": "u"}]}],
-        [{"source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "Total"},
-                                                 {"formula": "count(*)", "name": "total"}]}],
+        [{"name": "Monthly", "population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]},
+         {"name": "monthly", "population": "Monthly", "metrics": [{"metric": "sum(Monthly.n)", "alias": "t"}]},
+         {"population": "monthly", "metrics": [{"metric": "sum(monthly.t)", "alias": "u"}]}],
+        [{"population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "Total"},
+                                                 {"metric": "count(orders.*)", "alias": "total"}]}],
     ], ids=["stage-names", "result-names"])
     async def test_a_saved_query_collision_is_refused(self, storage: StorageBackend,
                                                       source_queries: list[dict[str, Any]]) -> None:
-        await storage.save_model(orders_model())
-        model = SlayerModel.model_validate({"name": "saved", "data_source": "test", "source_queries": source_queries})
+        await storage.save_dataset(orders_dataset())
+        model = SlayerDataset.model_validate({"name": "saved", "data_source": "test", "source_queries": source_queries})
         with pytest.raises(SlayerError):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
 
     async def test_model_names_in_a_datasource(self, storage: StorageBackend) -> None:
-        await storage.save_model(orders_model())
-        model = orders_model().model_copy(update={"name": "Orders"})
+        await storage.save_dataset(orders_dataset())
+        model = orders_dataset().model_copy(update={"name": "Orders"})
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "orders" in str(err.value)
         assert "Orders" in str(err.value)
 
     async def test_a_grandfathered_collision_keeps_working(self, storage: StorageBackend) -> None:
-        await storage.save_model(ledger_model(), _validate=False)
+        await storage.save_dataset(ledger_dataset(), _validate=False)
         with recorded_warnings() as caught:
-            await storage.save_model(ledger_model())
-            await storage.save_model(ledger_model().model_copy(update={"description": "edited"}))
+            await storage.save_dataset(ledger_dataset())
+            await storage.save_dataset(ledger_dataset().model_copy(update={"description": "edited"}))
         assert len(messages(caught, "Revenue", "revenue")) >= 2
 
     async def test_removing_and_reintroducing_a_collision(self, storage: StorageBackend) -> None:
-        await storage.save_model(ledger_model(), _validate=False)
-        without = ledger_model().model_copy(update={"columns": [c for c in ledger_model().columns if c.name != "revenue"]})
-        await storage.save_model(without)
-        model = ledger_model()
+        await storage.save_dataset(ledger_dataset(), _validate=False)
+        without = ledger_dataset().model_copy(update={"fields": [c for c in ledger_dataset().fields if c.name != "revenue"]})
+        await storage.save_dataset(without)
+        model = ledger_dataset()
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "Revenue" in str(err.value)
         assert "revenue" in str(err.value)
 
     async def test_a_grandfathered_collision_warns_on_load(self, storage: StorageBackend) -> None:
-        await storage.save_model(ledger_model(), _validate=False)
+        await storage.save_dataset(ledger_dataset(), _validate=False)
         with recorded_warnings() as caught:
-            await storage.get_model("ledger", data_source="test")
+            await storage.get_dataset("ledger", data_source="test")
         assert messages(caught, "Revenue", "revenue")
 
     async def test_a_query_reading_the_model_returns_the_warning(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(source_model="ledger", measures=[m('sum("Revenue")')]))
+        resp = await engine.execute(q(population="ledger", metrics=[m('sum(ledger."Revenue")')]))
         assert warnings_mentioning(resp, "Revenue", "revenue")
 
     async def test_a_facade_query_reading_the_model_returns_the_warning(self, engine: SlayerQueryEngine) -> None:
-        catalog = build_catalog(models_by_datasource={"test": dev2215_models()})
+        catalog = build_catalog(datasets_by_datasource={"test": dev2215_datasets()})
         result = translate("SELECT id FROM ledger", catalog)
         assert isinstance(result, QueryResult)
         assert warnings_mentioning(await engine.execute(result.query), "Revenue", "revenue")
 
     async def test_a_query_not_reading_the_model_is_silent(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(measures=[m("count(*)", "n")]))
+        resp = await engine.execute(q(metrics=[m("count(orders.*)", "n")]))
         assert not warnings_mentioning(resp, "Revenue", "revenue")
 
 
 # --------------------------------------------------------------------------- #
 # A query's result names never collide by case
 # --------------------------------------------------------------------------- #
-COLLIDING = [m("sum(amount)", "Total"), m("count(*)", "total")]
+COLLIDING = [m("sum(orders.amount)", "Total"), m("count(orders.*)", "total")]
 
 
 async def test_result_names_colliding_by_case_are_refused(engine: SlayerQueryEngine) -> None:
-    query = q(measures=COLLIDING)
+    query = q(metrics=COLLIDING)
     with pytest.raises(SlayerError) as err:
         await engine.execute(query)
     assert "Total" in str(err.value)
@@ -329,19 +323,19 @@ async def test_result_names_colliding_by_case_are_refused(engine: SlayerQueryEng
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_result_names_colliding_by_case_are_refused_on_every_dialect(dialect: str) -> None:
-    first, *rest = dev2215_models()
-    query = q(measures=COLLIDING)
+    first, *rest = dev2215_datasets()
+    query = q(metrics=COLLIDING)
     with pytest.raises(SlayerError):
-        await _engine_generate(query=query, model=first, extra_models=rest, dialect=dialect, validate=False)
+        await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect, validate=False)
 
 
 async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
-    saved = SlayerModel.model_validate({"name": "saved", "data_source": "test", "source_queries": [
-        {"source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "Total"},
-                                                {"formula": "count(*)", "name": "total"}]}]})
-    async with dev2215_engine("sqlite", models=[*dev2215_models(), saved]) as eng:
-        resp = await eng.execute(q(source_model="saved", measures=[m("sum(Total)", "a")]))
-    assert num(single(resp, "a", model="saved")) == 160.0
+    saved = SlayerDataset.model_validate({"name": "saved", "data_source": "test", "source_queries": [
+        {"population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "Total"},
+                                                {"metric": "count(orders.*)", "alias": "total"}]}]})
+    async with dev2215_engine("sqlite", datasets=[*dev2215_datasets(), saved]) as eng:
+        resp = await eng.execute(q(population="saved", metrics=[m("sum(saved.Total)", "a")]))
+    assert num(single(resp, "a", dataset="saved")) == 160.0
 
 
 @pytest.mark.parametrize(("parts", "quoted", "expected"), [
@@ -359,41 +353,43 @@ def test_dotted_names_colliding_by_case_are_ambiguous() -> None:
         match_path(parts=("a", "b"), declared=["A.b", "a.B"], quoted=())
 
 
-@pytest.mark.parametrize(("dimension", "expected"), [
-    ('"Revenue"', {"name": "Revenue", "quoted": [True]}),
-    ('ledger."Revenue"', {"name": "Revenue", "model": "ledger", "quoted": [False, True]}),
-    ("Revenue", {"name": "Revenue"}),
+@pytest.mark.parametrize(("dimension", "quoted"), [
+    ('"Revenue"', [True]),
+    ('ledger."Revenue"', [False, True]),
+    ("Revenue", None),
 ])
-def test_a_reference_dimension_is_a_column_ref_keeping_its_quoting(dimension: str, expected: dict[str, Any]) -> None:
-    query = q(source_model="ledger", dimensions=[dimension], measures=[m("count(*)", "n")])
+def test_a_reference_dimension_is_a_column_ref_keeping_its_quoting(dimension: str, quoted: list[bool] | None) -> None:
+    query = q(population="ledger", dimensions=[dimension], metrics=[m("count(orders.*)", "n")])
     dumped = query.model_dump(mode="json", exclude_none=True)["dimensions"]
-    assert dumped == [expected]
+    assert dumped == [dimension]
+    [dim] = query.dimensions or []
+    assert dim.ref is not None
+    assert dim.ref.quoted == quoted
     assert SlayerQuery.model_validate(query.model_dump(mode="json")).dimensions == query.dimensions
 
 
-def test_an_explicitly_named_reference_stays_computed() -> None:
-    (dim,) = q(dimensions=[{"expression": '"status"', "name": "st"}]).dimensions or []
-    assert isinstance(dim, ComputedDimension)
+def test_an_aliased_reference_keeps_its_reference() -> None:
+    (dim,) = q(dimensions=[{"field": 'orders."status"', "alias": "st"}]).dimensions or []
+    assert dim.ref is not None
+    assert dim.alias == "st"
 
 
 def test_a_refinement_dedupes_a_quoted_and_a_plain_reference() -> None:
-    saved = q(dimensions=['"orders".status'], measures=[m("count(*)", "n")])
-    refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"dimensions": ["status"]}))
-    assert [d.full_name for d in refined.dimensions or [] if isinstance(d, ColumnRef)] == ["orders.status"]
+    saved = q(dimensions=['"orders".status'], metrics=[m("count(orders.*)", "n")])
+    refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"dimensions": ["orders.status"]}))
+    assert [d.ref.full_name for d in refined.dimensions or [] if d.ref is not None] == ["orders.status"]
 
 
 def test_a_quoted_dimension_takes_its_column_name() -> None:
-    with pytest.raises(ValueError, match="used twice"):
-        q(dimensions=['"status"'], time_dimensions=[{"dimension": "created_at", "granularity": "month", "name": "status"}])
-    q(dimensions=['"orders".status'],
-      time_dimensions=[{"dimension": "created_at", "granularity": "month", "name": "orders_status"}])
+    query = q(dimensions=['orders."status"', '"orders".status'])
+    assert [d.name for d in query.dimensions or []] == ["status", "status"]
 
 
 def test_model_lookups_fold() -> None:
-    model = SlayerModel(name="x", sql_table="orders", data_source="test",
-                        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-                        measures=[ModelMeasure(name="Total", formula="count(*)")])
-    column, measure = model.get_column("ID"), model.get_measure("total")
+    model = SlayerDataset(name="x", sql_table="orders", data_source="test",
+                        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+                        metrics=[DatasetMetric(name="Total", expression="count(*)")])
+    column, measure = model.get_field("ID"), model.get_metric("total")
     assert column is not None
     assert column.name == "id"
     assert measure is not None

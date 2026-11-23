@@ -10,12 +10,13 @@ import datetime as dt
 import struct
 import time
 import types
-from typing import List, Tuple
+from typing import TYPE_CHECKING, List, Tuple
 
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import SlayerQuery
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.connection import (
     PgConnection,
@@ -24,6 +25,9 @@ from slayer.pg_facade.connection import (
     _PreparedStatement,
 )
 from slayer.pg_facade.probes import SESSION_SETTING_SEED
+
+if TYPE_CHECKING:
+    from tests._otel_helpers import OtelCapture
 
 
 # --- fakes -------------------------------------------------------------------
@@ -49,25 +53,25 @@ class _FakeWriter:
 
 
 class _FakeStorage:
-    def __init__(self, models_by_ds, *, schema_by_ds=None, priority=None) -> None:
-        self._models_by_ds = models_by_ds
+    def __init__(self, datasets_by_ds, *, schema_by_ds=None, priority=None) -> None:
+        self._datasets_by_ds = datasets_by_ds
         self._schema_by_ds = schema_by_ds or {}
         self._priority = priority or []
 
     async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
-        return list(self._models_by_ds)
+        return list(self._datasets_by_ds)
 
-    async def list_models(self, *, data_source: str) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
-        return [m.name for m in self._models_by_ds.get(data_source, [])]
+    async def list_datasets(self, *, data_source: str) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
+        return [m.name for m in self._datasets_by_ds.get(data_source, [])]
 
-    async def get_model(self, *, name: str, data_source: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
-        for m in self._models_by_ds.get(data_source, []):
+    async def get_dataset(self, *, name: str, data_source: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
+        for m in self._datasets_by_ds.get(data_source, []):
             if m.name == name:
                 return m
         return None
 
-    async def load_models(self, *, data_source: str, exclude: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
-        return [m for m in self._models_by_ds.get(data_source, []) if m.name != exclude], []
+    async def load_datasets(self, *, data_source: str, exclude: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
+        return [m for m in self._datasets_by_ds.get(data_source, []) if m.name != exclude], []
 
     async def get_datasource(self, datasource: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
         schema = self._schema_by_ds.get(datasource)
@@ -87,23 +91,23 @@ class _FakeEngine:
         return types.SimpleNamespace(data=self.data)
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="order_date", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="order_date", datatype=DataType.DATE),
         ],
     )
 
 
 def _storage() -> _FakeStorage:
-    return _FakeStorage({"jaffle": [_orders_model()]})
+    return _FakeStorage({"jaffle": [_orders_dataset()]})
 
 
 class _CapturingEngine:
@@ -111,10 +115,10 @@ class _CapturingEngine:
 
     def __init__(self, data) -> None:
         self.data = data
-        self.last_query = None
-        self.last_data_source = None
+        self.last_query: SlayerQuery | None = None
+        self.last_data_source: str | None = None
 
-    async def execute(self, *, query=None, data_source=None):  # NOSONAR(S7503) — async to satisfy the awaited interface
+    async def execute(self, *, query: SlayerQuery | None = None, data_source: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
         self.last_query = query
         self.last_data_source = data_source
         return types.SimpleNamespace(data=self.data)
@@ -272,7 +276,7 @@ async def test_ssl_request_without_tls_gets_n() -> None:
     assert writer.buffer[0:1] == b"N"
 
 
-async def test_ssl_request_with_tls_gets_s(monkeypatch) -> None:
+async def test_ssl_request_with_tls_gets_s(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = asyncio.StreamReader()
     reader.feed_data(_ssl_request() + _startup(user="u", database="jaffle") + _terminate())
     reader.feed_eof()
@@ -340,7 +344,7 @@ async def test_token_empty_password_errors() -> None:
 
 
 async def test_any_database_name_accepted_as_logical_db() -> None:
-    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # The database parameter is a logical DB name, not a datasource
     # selector — an arbitrary name connects successfully (no 3D000).
     writer = await _run(_startup(user="u", database="nope") + _query("SELECT 1") + _terminate())
     msgs = _messages(writer.buffer)
@@ -398,7 +402,7 @@ async def test_multi_statement_begin_select_commit_tx_cycle() -> None:
 
 async def test_begin_read_only_tx_cycle() -> None:
     # Metabase wraps reads in BEGIN READ ONLY; sqlglot can't parse that, so the
-    # facade recognises it pre-parse (DEV-1594). Whole cycle must succeed.
+    # facade recognises it pre-parse. Whole cycle must succeed.
     inp = (
         _startup(user="u", database="jaffle")
         + _query("BEGIN READ ONLY; SELECT 1; COMMIT;")
@@ -470,7 +474,7 @@ async def test_extended_query_with_bound_param_substitutes() -> None:
     # `SELECT $1` → the bound literal becomes the projection. The probe path
     # won't match, but INFORMATION_SCHEMA filtering with a param is the real
     # use; here we assert the bind succeeds and a row is produced.
-    # DEV-1558: `catalog_name` in INFORMATION_SCHEMA rows is the
+    # `catalog_name` in INFORMATION_SCHEMA rows is the
     # connection's datasource (jaffle here), not the static `slayer`
     # name — Postgres-compatible semantics for `current_database()`.
     inp = (
@@ -489,7 +493,7 @@ async def test_extended_query_with_bound_param_substitutes() -> None:
 
 
 async def test_extended_binary_result_format_encodes_binary() -> None:
-    engine = _FakeEngine([{"orders.revenue_sum": 100.0}])
+    engine = _FakeEngine([{"revenue_sum": 100.0}])
     inp = (
         _startup(user="u", database="jaffle")
         + _parse("", "SELECT revenue_sum FROM orders")
@@ -514,7 +518,7 @@ async def test_extended_binary_result_format_encodes_binary() -> None:
 
 
 async def test_extended_text_result_format_encodes_text() -> None:
-    engine = _FakeEngine([{"orders.revenue_sum": 100.0}])
+    engine = _FakeEngine([{"revenue_sum": 100.0}])
     inp = (
         _startup(user="u", database="jaffle")
         + _parse("", "SELECT revenue_sum FROM orders")
@@ -610,6 +614,13 @@ async def test_run_query_surfaces_driver_sqlstate_and_message() -> None:
     err = next(body for t, body in msgs if t == "E")
     assert _error_sqlstate(err) == "42501"
     assert _error_message(err) == "permission denied for table Item"
+
+
+async def test_a_failed_query_marks_its_request_span(otel_env: "OtelCapture") -> None:
+    inp = _startup(user="u", database="jaffle") + _query("SELECT revenue_sum FROM orders") + _terminate()
+    await _run(inp, engine=_RaisingEngine(ValueError("boom")))
+    span = otel_env.span("slayer.request")
+    assert (span.status.status_code.name, otel_env.attributes("slayer.request")["error.type"]) == ("ERROR", "ValueError")
 
 
 async def test_run_query_falls_back_to_internal_error_without_sqlstate() -> None:
@@ -799,7 +810,7 @@ async def _binary_value_bytes(sql: str, engine_data) -> bytes:
 
 
 async def test_binary_int8_wire() -> None:
-    raw = await _binary_value_bytes("SELECT row_count FROM orders", [{"orders.row_count": 42}])
+    raw = await _binary_value_bytes("SELECT row_count FROM orders", [{"row_count": 42}])
     assert raw == struct.pack(">q", 42)
 
 
@@ -851,7 +862,7 @@ async def test_text_param_substituted_into_filter() -> None:
     )
     await _run(inp, engine=engine)
     assert engine.last_query is not None
-    assert engine.last_query.filters == ["status = 'completed'"]
+    assert engine.last_query.filter == ["orders.status = 'completed'"]
 
 
 async def test_binary_int_param_substituted_into_filter() -> None:
@@ -871,7 +882,7 @@ async def test_binary_int_param_substituted_into_filter() -> None:
     )
     await _run(inp, engine=engine)
     assert engine.last_query is not None
-    assert engine.last_query.filters == ["id = 5"]
+    assert engine.last_query.filter == ["orders.id = 5"]
 
 
 async def test_string_param_is_quote_escaped() -> None:
@@ -885,7 +896,8 @@ async def test_string_param_is_quote_escaped() -> None:
         + _terminate()
     )
     await _run(inp, engine=engine)
-    assert engine.last_query.filters == ["status = 'O''Brien'"]
+    assert engine.last_query is not None
+    assert engine.last_query.filter == ["orders.status = 'O''Brien'"]
 
 
 # --- portal close / flush / max_rows -----------------------------------------
@@ -917,7 +929,7 @@ async def test_flush_does_not_break_session() -> None:
 
 
 async def test_execute_with_max_rows_returns_all_rows_no_suspend() -> None:
-    engine = _FakeEngine([{"orders.revenue_sum": 1.0}, {"orders.revenue_sum": 2.0}])
+    engine = _FakeEngine([{"revenue_sum": 1.0}, {"revenue_sum": 2.0}])
     inp = (
         _startup(user="u", database="jaffle")
         + _parse("", "SELECT revenue_sum FROM orders")
@@ -1027,7 +1039,7 @@ class TestIterParamPlaceholders:
         )
         out = conn._substitute_params(stmt, bind)
         assert out == "WHERE note = '$1' AND status = 'active'"
-# --- DEV-1558: catalog SQL via the DuckDB executor over the extended protocol
+# --- Catalog SQL via the DuckDB executor over the extended protocol
 
 
 def _parse_row_description(body: bytes):
@@ -1136,7 +1148,7 @@ async def test_extended_protocol_catalog_query_binary_format() -> None:
 
 
 async def test_extended_protocol_catalog_query_with_bound_parameter() -> None:
-    """DEV-1558 regression: asyncpg sends Parse + Describe-Statement BEFORE
+    """Regression: asyncpg sends Parse + Describe-Statement BEFORE
     Bind. With a $N parameter in the SQL, the catalog executor would
     previously fail on Describe (unsubstituted $N → DuckDB bind error),
     emit NoData, then Execute would emit a populated RowDescription —
@@ -1191,7 +1203,7 @@ async def test_extended_protocol_catalog_query_with_bound_parameter() -> None:
 
 
 async def test_describe_int_param_against_int_column_no_conversion_error() -> None:
-    """DEV-1558 live-Metabase repro (round 19): when pgjdbc binds a
+    """Live-Metabase repro: when pgjdbc binds a
     parameter against an INT column (e.g. ``WHERE objsubid = $1``) but
     didn't declare the param OID, ``_resolve_param_oids`` defaults to
     ``OID_TEXT``. The round-13 literal sentinel ``''`` then made the
@@ -1228,7 +1240,7 @@ async def test_describe_int_param_against_int_column_no_conversion_error() -> No
 
 
 async def test_simple_query_catalog_union_routes_to_executor() -> None:
-    """DEV-1558 round 19: Metabase corpus #12 is a top-level
+    """Metabase corpus #12 is a top-level
     ``UNION ALL`` between info-schema and pg_catalog branches. Before
     the fix the translator rejected ``exp.Union`` as ``Unsupported
     statement: Union`` before the catalog-executor branch fired.
@@ -1252,7 +1264,7 @@ async def test_simple_query_catalog_union_routes_to_executor() -> None:
     assert "D" in type_seq  # at least one DataRow
 
 
-# --- DEV-1569: per-connection SET state ---
+# --- Per-connection SET state ---
 
 
 def _show_value(msgs: list[tuple[str, bytes]]) -> str:
@@ -1591,7 +1603,7 @@ async def test_set_session_qualifier_round_trip() -> None:
 
 async def test_set_local_treated_as_session_scope() -> None:
     """Scope cut: `SET LOCAL` is NOT restored at transaction end. Pins the
-    current behavior — DEV-1569 doesn't implement transaction-bound SET."""
+    current behavior — transaction-bound SET is not implemented."""
     inp = (
         _startup(user="u", database="jaffle")
         + _query("SET LOCAL application_name = 'localval'")
@@ -1750,7 +1762,7 @@ async def test_two_connections_isolated_under_set_config() -> None:
     assert _show_value(_messages(writer_b.buffer)) == "sc-B"
 
 
-# --- DEV-1569 Codex round 2 follow-ups ---
+# --- SET state: edge cases ---
 
 
 def _index_of_first(msgs: list[tuple[str, bytes]], pred) -> int:
@@ -1987,7 +1999,7 @@ async def test_set_config_with_cast_value_mutates_session() -> None:
 
 async def test_set_config_with_is_local_true_does_not_mutate() -> None:
     """`set_config('app', 'x', true)` must NOT persist — `is_local=true` is
-    out of scope for DEV-1569."""
+    not supported."""
     inp = (
         _startup(user="u", database="jaffle")
         + _query("SELECT set_config('application_name', 'transient', true)")
@@ -2029,7 +2041,7 @@ async def test_set_pushes_parameter_status_for_all_reportable_names(
     # the seed value; only the LAST push for this name should be the SET.
     assert len(post) >= 1
     assert post[-1] == (expected_name, expected_value)
-# --- DEV-1570: empty-string-vs-non-text Bind rewrite -----------------------
+# --- Empty-string-vs-non-text Bind rewrite -----------------------
 
 
 async def _run_capturing(
@@ -2053,7 +2065,7 @@ async def _run_capturing(
 
 
 async def test_bind_empty_string_to_int_column_in_pg_catalog_no_error() -> None:
-    """DEV-1570: pgjdbc's empty-string-for-null-text convention against an
+    """pgjdbc's empty-string-for-null-text convention against an
     INT column previously produced ``WHERE objsubid = ''`` → DuckDB
     ``Conversion Error: Could not convert string '' to INT64`` at Execute.
     The Bind-time rewrite swaps the literal to ``NULL`` so the query runs."""
@@ -2128,7 +2140,7 @@ async def test_bind_empty_string_to_boolean_column_substitutes_null() -> None:
 
 
 async def test_bind_empty_string_to_date_column_user_model_substitutes_null() -> None:
-    """DATE-typed user-model column. Verifies the user-model branch of the
+    """DATE-typed user-dataset column. Verifies the user-dataset branch of the
     column-type index resolves under PUBLIC_SCHEMA."""
     sql = "SELECT id FROM orders WHERE order_date = $1"
     engine = _CapturingEngine([])
@@ -2273,7 +2285,7 @@ async def test_bind_nonempty_string_against_int_column_preserves_literal() -> No
 async def test_bind_empty_string_declared_oid_int8_is_bind_error() -> None:
     """When the client explicitly declares OID_INT8 in Parse and binds
     `b""`, the existing `value_from_text` path raises ValueError → bind
-    error. The DEV-1570 rewrite is gated on OID_TEXT only."""
+    error. The empty-string rewrite is gated on OID_TEXT only."""
     sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
     inp = (
         _startup(user="u", database="jaffle")
@@ -2355,7 +2367,7 @@ async def test_bind_empty_string_via_cte_alias_falls_through() -> None:
 
 
 async def test_bind_empty_string_user_model_int_column() -> None:
-    """User-model branch via PUBLIC_SCHEMA — `orders.id` is INT primary key."""
+    """User-dataset branch via PUBLIC_SCHEMA — `orders.id` is INT primary key."""
     sql = "SELECT id FROM orders WHERE id = $1"
     inp = (
         _startup(user="u", database="jaffle")
@@ -2366,19 +2378,19 @@ async def test_bind_empty_string_user_model_int_column() -> None:
     )
     _writer, conn = await _run_capturing(inp)
     portal_sql = conn._portals[""].sql
-    assert "NULL" in portal_sql, f"user-model INT column must rewrite: {portal_sql!r}"
+    assert "NULL" in portal_sql, f"user-dataset INT column must rewrite: {portal_sql!r}"
     assert "''" not in portal_sql
 
 
-# --- DEV-1594: multi-datasource catalog + per-connection scoping -------------
+# --- Multi-datasource catalog + per-connection scoping -------------
 
 
-def _employees_model():
-    return SlayerModel(
+def _employees_dataset():
+    return SlayerDataset(
         name="employees", data_source="hr", sql_table="employees",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -2398,7 +2410,7 @@ async def _run_conn(input_bytes, *, storage, engine, storage_provider=None,
 
 
 async def test_multi_datasource_query_routes_to_owning_datasource() -> None:
-    storage = _FakeStorage({"jaffle": [_orders_model()], "hr": [_employees_model()]})
+    storage = _FakeStorage({"jaffle": [_orders_dataset()], "hr": [_employees_dataset()]})
     engine = _CapturingEngine([])
     inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
     writer, _ = await _run_conn(inp, storage=storage, engine=engine)
@@ -2408,7 +2420,7 @@ async def test_multi_datasource_query_routes_to_owning_datasource() -> None:
 
 async def test_custom_postgres_schema_separates_and_routes() -> None:
     storage = _FakeStorage(
-        {"jaffle": [_orders_model()], "hr": [_employees_model()]},
+        {"jaffle": [_orders_dataset()], "hr": [_employees_dataset()]},
         schema_by_ds={"hr": "people"},
     )
     engine = _CapturingEngine([])
@@ -2425,8 +2437,8 @@ async def test_custom_postgres_schema_separates_and_routes() -> None:
 async def test_storage_provider_scopes_connection_after_auth() -> None:
     # Static storage has only jaffle; the provider swaps in an hr-only store
     # post-auth. Querying employees succeeds only if the provider's store won.
-    static_storage = _FakeStorage({"jaffle": [_orders_model()]})
-    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    static_storage = _FakeStorage({"jaffle": [_orders_dataset()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_dataset()]})
     engine = _CapturingEngine([])
 
     async def provider(principal):
@@ -2444,10 +2456,10 @@ async def test_storage_provider_scopes_connection_after_auth() -> None:
 
 async def test_scoped_catalog_reads_the_scoped_engine_storage_view() -> None:
     engine = _CapturingEngine([])
-    engine.storage = _FakeStorage({"hr": [_employees_model()]})  # type: ignore[attr-defined]
+    engine.storage = _FakeStorage({"hr": [_employees_dataset()]})  # type: ignore[attr-defined]
 
     async def provider(principal):
-        return _FakeStorage({"jaffle": [_orders_model()]})
+        return _FakeStorage({"jaffle": [_orders_dataset()]})
 
     inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
     writer, _ = await _run_conn(
@@ -2459,7 +2471,7 @@ async def test_scoped_catalog_reads_the_scoped_engine_storage_view() -> None:
 
 
 async def test_storage_provider_storage_closed_on_connection_end() -> None:
-    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_dataset()]})
     closed = {"called": False}
 
     async def _aclose():
@@ -2500,7 +2512,7 @@ async def test_storage_provider_engine_disposed_on_connection_end() -> None:
     """``_close_scoped_storage`` must dispose the engine ``_resolve_scope``
     built — without this, a long-lived facade with ``storage_provider``
     leaks one engine's worth of async SQL-client pools per session."""
-    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_dataset()]})
     aclosed = {"engine": False, "storage": False}
 
     async def _storage_aclose():
@@ -2526,7 +2538,7 @@ async def test_storage_provider_engine_disposed_on_connection_end() -> None:
 
 
 async def test_scoped_engine_closes_even_when_its_release_fails() -> None:
-    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_dataset()]})
     closed = {"engine": False}
 
     async def _failing_aclose():
@@ -2590,8 +2602,8 @@ async def test_static_storage_aclose_not_called_when_scope_swap_did_not_run() ->
 class _RefreshableStorage(_FakeStorage):
     """Fake storage whose content and fingerprint can be mutated mid-test."""
 
-    def __init__(self, models_by_ds, *, fingerprint: str) -> None:
-        super().__init__(models_by_ds)
+    def __init__(self, datasets_by_ds, *, fingerprint: str) -> None:
+        super().__init__(datasets_by_ds)
         self.fingerprint = fingerprint
 
     async def graph_fingerprint(self) -> str:  # NOSONAR(S7503) — async to satisfy the awaited interface
@@ -2617,13 +2629,13 @@ async def _seed_catalog(conn: PgConnection, storage) -> None:
 
 
 async def test_refresh_rebuilds_catalog_when_fingerprint_changes() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
 
-    # A model edit that also bumps the storage fingerprint.
-    storage._models_by_ds["jaffle"][0].description = "edited"
+    # A dataset edit that also bumps the storage fingerprint.
+    storage._datasets_by_ds["jaffle"][0].description = "edited"
     storage.fingerprint = "v2"
 
     await conn._maybe_refresh_catalog()
@@ -2634,14 +2646,14 @@ async def test_refresh_rebuilds_catalog_when_fingerprint_changes() -> None:
 
 
 async def test_refresh_skips_when_fingerprint_unchanged() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
 
     # Content changes but the fingerprint doesn't -> the cheap check
     # short-circuits and we never pay for a rebuild.
-    storage._models_by_ds["jaffle"].append(_orders_model())
+    storage._datasets_by_ds["jaffle"].append(_orders_dataset())
 
     await conn._maybe_refresh_catalog()
 
@@ -2649,7 +2661,7 @@ async def test_refresh_skips_when_fingerprint_unchanged() -> None:
 
 
 async def test_refresh_skips_mid_transaction() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
@@ -2663,7 +2675,7 @@ async def test_refresh_skips_mid_transaction() -> None:
 
 
 async def test_refresh_disabled_by_default_never_rebuilds() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = PgConnection(
         asyncio.StreamReader(), _FakeWriter(),
         engine=_FakeEngine([]), storage=storage,
@@ -2683,7 +2695,7 @@ async def test_refresh_swallows_fingerprint_error_and_keeps_catalog() -> None:
         async def graph_fingerprint(self) -> str:
             raise RuntimeError("storage unreachable")  # not an OSError
 
-    storage = _BoomFingerprint({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _BoomFingerprint({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
@@ -2695,7 +2707,7 @@ async def test_refresh_swallows_fingerprint_error_and_keeps_catalog() -> None:
 
 
 async def test_refresh_swallows_build_error_and_keeps_catalog() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
@@ -2719,12 +2731,12 @@ async def test_describe_triggers_catalog_refresh() -> None:
     # Regression: Describe advertises the RowDescription, so it must refresh
     # too — not only Execute — or a mid-window edit could make the later
     # Execute's rows disagree with the already-sent RowDescription.
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)  # ttl 0.0 -> always re-checks
     await _seed_catalog(conn, storage)
     before = conn._catalog
 
-    storage._models_by_ds["jaffle"][0].description = "edited"
+    storage._datasets_by_ds["jaffle"][0].description = "edited"
     storage.fingerprint = "v2"
 
     # Missing statement still exercises the refresh at the top of _handle_describe.
@@ -2736,7 +2748,7 @@ async def test_describe_triggers_catalog_refresh() -> None:
 
 async def test_describe_pins_execute_to_same_catalog_within_window() -> None:
     ttl = 30.0  # realistic window (NOT 0)
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = PgConnection(
         asyncio.StreamReader(), _FakeWriter(),
         engine=_FakeEngine([]), storage=storage,

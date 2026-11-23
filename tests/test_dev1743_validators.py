@@ -1,11 +1,11 @@
-"""DEV-1743 — validator relaxation (WP1) and the ``__slayer_`` reservation (P3).
+"""Validator relaxation (WP1) and the ``__slayer_`` reservation (P3).
 
-The flip lifts the ``__`` ban on model/query names while keeping ``.``/``:``
+The flip lifts the ``__`` ban on dataset/query names while keeping ``.``/``:``
 banned, and reserves the ``__slayer_`` prefix (which the colon-agg preprocessor
 mints internally) so user input cannot spoof a placeholder.
 
 These fail today because the ban is still in force: constructing a ``__``-named
-model raises, and the parser lets a literal ``__slayer_agg_0__`` through (the
+dataset raises, and the parser lets a literal ``__slayer_agg_0__`` through (the
 pre-existing spoof hole [C3] closes).
 """
 
@@ -16,7 +16,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import parse_expr
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -26,20 +26,20 @@ from tests._dev1743_fixtures import datasource
 
 
 # --------------------------------------------------------------------------- #
-# The ban is lifted: __ is legal in model / query names.
+# The ban is lifted: __ is legal in dataset / query names.
 # --------------------------------------------------------------------------- #
 class TestDunderNamesAccepted:
     def test_model_name_with_dunder_constructs(self) -> None:
-        m = SlayerModel(name="customer__region", data_source="ds",
+        m = SlayerDataset(name="customer__region", data_source="ds",
                         sql_table="customer_region")
         assert m.name == "customer__region"
 
     def test_query_name_with_dunder_constructs(self) -> None:
-        q = SlayerQuery(name="stage__two", source_model="orders")
+        q = SlayerQuery(name="stage__two", population="orders")
         assert q.name == "stage__two"
 
     def test_triple_underscore_model_name_constructs(self) -> None:
-        m = SlayerModel(name="a___b", data_source="ds", sql_table="a___b")
+        m = SlayerDataset(name="a___b", data_source="ds", sql_table="a___b")
         assert m.name == "a___b"
 
 
@@ -50,30 +50,30 @@ class TestDotAndColonStillRejected:
     @pytest.mark.parametrize("bad", ["a.b", "orders.customers", "a:b"])
     def test_dotted_or_coloned_model_name_rejected(self, bad: str) -> None:
         with pytest.raises(ValueError):
-            SlayerModel(name=bad, data_source="ds", sql_table="t")
+            SlayerDataset(name=bad, data_source="ds", sql_table="t")
 
     @pytest.mark.parametrize("bad", ["a.b", "a:b"])
     def test_dotted_or_coloned_column_name_rejected(self, bad: str) -> None:
         with pytest.raises(ValueError):
-            Column(name=bad, type=DataType.TEXT)
+            DatasetField(name=bad, datatype=DataType.STRING)
 
     @pytest.mark.parametrize("bad", ["a.b", "a:b"])
     def test_dotted_or_coloned_measure_name_rejected(self, bad: str) -> None:
         with pytest.raises(ValueError):
-            ModelMeasure(name=bad, formula="sum(amount)")
+            DatasetMetric(name=bad, expression="sum(amount)")
 
     @pytest.mark.parametrize("bad", ["a.b", "a:b"])
     def test_dotted_or_coloned_query_name_rejected(self, bad: str) -> None:
         with pytest.raises(ValueError):
-            SlayerQuery(name=bad, source_model="orders")
+            SlayerQuery(name=bad, population="orders")
 
 
 # --------------------------------------------------------------------------- #
-# Column names with __ stay legal (D5 carve-out — unchanged).
+# Field names with __ stay legal (D5 carve-out — unchanged).
 # --------------------------------------------------------------------------- #
 class TestFlatColumnNamesUnchanged:
     def test_flat_column_name_still_allowed(self) -> None:
-        col = Column(name="stores__name", type=DataType.TEXT)
+        col = DatasetField(name="stores__name", datatype=DataType.STRING)
         assert col.name == "stores__name"
 
 
@@ -83,19 +83,19 @@ class TestFlatColumnNamesUnchanged:
 class TestSlayerPrefixReservedOnNames:
     def test_model_name_reserved(self) -> None:
         with pytest.raises(ValueError):
-            SlayerModel(name="__slayer_x", data_source="ds", sql_table="t")
+            SlayerDataset(name="__slayer_x", data_source="ds", sql_table="t")
 
     def test_query_name_reserved(self) -> None:
         with pytest.raises(ValueError):
-            SlayerQuery(name="__slayer_x", source_model="orders")
+            SlayerQuery(name="__slayer_x", population="orders")
 
     def test_column_name_reserved(self) -> None:
         with pytest.raises(ValueError):
-            Column(name="__slayer_agg_0__", type=DataType.TEXT)
+            DatasetField(name="__slayer_agg_0__", datatype=DataType.STRING)
 
     def test_measure_name_reserved(self) -> None:
         with pytest.raises(ValueError):
-            ModelMeasure(name="__slayer_x", formula="sum(amount)")
+            DatasetMetric(name="__slayer_x", expression="sum(amount)")
 
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +139,7 @@ class TestParserSlayerPrefixReservation:
 
 
 # --------------------------------------------------------------------------- #
-# A __-named model round-trips through both storage backends.
+# A __-named dataset round-trips through both storage backends.
 # --------------------------------------------------------------------------- #
 class TestDunderNameRoundTripsStorage:
     @pytest.mark.asyncio
@@ -147,11 +147,11 @@ class TestDunderNameRoundTripsStorage:
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(datasource())
-            m = SlayerModel(name="a__b", data_source="test", sql_table="a_b",
-                            columns=[Column(name="id", type=DataType.INT,
+            m = SlayerDataset(name="a__b", data_source="test", sql_table="a_b",
+                            fields=[DatasetField(name="id", datatype=DataType.INTEGER,
                                             primary_key=True)])
-            await storage.save_model(m)
-            loaded = await storage.get_model("a__b", data_source="test")
+            await storage.save_dataset(m)
+            loaded = await storage.get_dataset("a__b", data_source="test")
             assert loaded is not None
             assert loaded.name == "a__b"
 
@@ -160,10 +160,10 @@ class TestDunderNameRoundTripsStorage:
         with tempfile.TemporaryDirectory() as d:
             storage = SQLiteStorage(db_path=f"{d}/s.db")
             await storage.save_datasource(datasource())
-            m = SlayerModel(name="a__b", data_source="test", sql_table="a_b",
-                            columns=[Column(name="id", type=DataType.INT,
+            m = SlayerDataset(name="a__b", data_source="test", sql_table="a_b",
+                            fields=[DatasetField(name="id", datatype=DataType.INTEGER,
                                             primary_key=True)])
-            await storage.save_model(m)
-            loaded = await storage.get_model("a__b", data_source="test")
+            await storage.save_dataset(m)
+            loaded = await storage.get_dataset("a__b", data_source="test")
             assert loaded is not None
             assert loaded.name == "a__b"

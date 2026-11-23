@@ -1,5 +1,5 @@
 """The single ``ValueKey`` → sqlglot-AST renderer, parameterised by :class:`RenderContext`
-rather than by call site so one key can't render two ways. Column-like leaves anchor through
+rather than by call site so one key can't render two ways. Field-like leaves anchor through
 ``ScopeFrame.resolve``; a missing facility raises instead of degrading quietly."""
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TEMPORAL_DATATYPES
 from slayer.core.errors import RenderContextMissingFacilityError
 from slayer.core.keys import (
     NULL_SAFE_COMPARISON_OPS,
@@ -18,9 +18,9 @@ from slayer.core.keys import (
     ArithmeticKey,
     ArrayLiteralKey,
     CastKey,
-    ColumnKey,
-    ColumnSqlKey,
-    ColumnTypeFn,
+    FieldKey,
+    FieldSqlKey,
+    FieldTypeFn,
     InKey,
     ListSetKey,
     LiteralKey,
@@ -35,7 +35,7 @@ from slayer.core.keys import (
     aggregation_source_type,
     source_anchor_path,
 )
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.reflection import info_schema_type, is_exact_numeric_db_type
 from slayer.sql.render.aggregates import (
@@ -57,9 +57,13 @@ from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render su
     data_type_target,
     group_is_operands,
     group_unary_operand,
+    coerced_parts,
+    date_typed_comparison,
     iif_case_chain,
     list_keyed,
-    numeric_parts,
+    mixed_nullif,
+    render_bucket,
+    render_mixed_nullif,
     render_arithmetic,
     render_array_literal,
     render_cast,
@@ -87,7 +91,7 @@ def _wrap_cast_for_type(
     """Wrap ``expr`` in ``CAST(expr AS <dt>)`` to enforce a declared ``DataType``. Skipped for
     ``None`` / ``TEXT`` / opaque types and a bare ``exp.Column`` (on SQLite the cast can truncate).
     Idempotent: a cast that renders as the same ``dialect`` type (a re-parsed one included) is kept."""
-    if dt is None or dt == DataType.TEXT or dt.is_opaque:
+    if dt is None or dt == DataType.STRING or dt.is_opaque:
         return expr
     if isinstance(expr, exp.Column):
         return expr
@@ -101,19 +105,19 @@ def _wrap_cast_for_type(
     return exp.Cast(this=expr, to=target)
 
 
-def keeps_native_type(*, col: Column | None, dialect: SqlDialect) -> bool:
+def keeps_native_type(*, col: DatasetField | None, dialect: SqlDialect) -> bool:
     """Whether derived ``col`` skips its cast: an exact-numeric ``db_type`` the dialect stores exactly,
     with the type that ``db_type`` implies (a different declared type is an explicit override)."""
     return (
         col is not None and dialect.exact_decimal_native and is_exact_numeric_db_type(col.db_type)
-        and info_schema_type(col.db_type or "")[0] == col.type
+        and info_schema_type(col.db_type or "")[0] == col.datatype
     )
 
 
 def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
-    """CAST target for a derived column inside WHERE/HAVING; temporal types suppressed
-    (``CAST(text AS TIMESTAMP)`` truncates on SQLite, and a base column here isn't cast either)."""
-    if dt in (DataType.DATE, DataType.TIMESTAMP):
+    """CAST target for a derived field inside WHERE/HAVING; temporal types suppressed
+    (``CAST(text AS TIMESTAMP)`` truncates on SQLite, and a base field here isn't cast either)."""
+    if dt in TEMPORAL_DATATYPES:
         return None
     return dt
 
@@ -121,7 +125,7 @@ def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
 def _ranked_value_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
     """CAST target for a ``first`` / ``last`` value; temporal casts suppressed (the value IS
     the raw picked column, redundant and truncating on SQLite). Non-temporal types keep their cast."""
-    if dt in (DataType.DATE, DataType.TIMESTAMP):
+    if dt in TEMPORAL_DATATYPES:
         return None
     return dt
 
@@ -129,7 +133,7 @@ def _ranked_value_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
 class FilterFacilities(BaseModel):
     """What WHERE / HAVING rendering needs. ``agg_builder`` (the HAVING seam) emits the
     aggregate as an expression, not its alias — Postgres rejects aliases in HAVING;
-    ``cast_column_sql`` casts derived leaves; ``paren_comparison_operands`` over-parenthesises."""
+    ``cast_field_sql`` casts derived leaves; ``paren_comparison_operands`` over-parenthesises."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -138,7 +142,7 @@ class FilterFacilities(BaseModel):
     agg_builder: Optional[
         Callable[[AggregateKey, Optional[Any], str], Expression]
     ] = None
-    cast_column_sql: bool = False
+    cast_field_sql: bool = False
     paren_comparison_operands: bool = True
 
 
@@ -183,8 +187,8 @@ class RenderContext(BaseModel):
     filters: Optional[FilterFacilities] = None
     composites: Optional[CompositeFacilities] = None
     aliases: Optional[AliasFacilities] = None
-    #: Declared column types for date-function operands; defaults to ``scope.column_type``.
-    column_type: Optional[ColumnTypeFn] = None
+    #: Declared field types for date-function operands; defaults to ``scope.field_type``.
+    field_type: Optional[FieldTypeFn] = None
     #: Grouped SELECT: each dimension's key → its GROUP BY expression.
     dimension_values: Optional[Dict[Any, Expression]] = None
 
@@ -246,7 +250,7 @@ def _render_via_alias(key: ValueKey, ctx: RenderContext) -> Expression:
 
 
 _ALIAS_SLOTTED_KINDS: Tuple[type, ...] = (
-    ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
+    FieldKey, FieldSqlKey, TimeTruncKey, AggregateKey, TransformKey,
 )
 
 
@@ -289,7 +293,7 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> Expression:
 def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guards over the built-in agg contract (mechanism gate, then the FIELD guards that keep a filtered / parametric / cross-star aggregate from silently rendering as a plain SUM). Each guard IS a distinct wrong-number-vs-error boundary; merging them hides which one fired.
     key: AggregateKey, ctx: RenderContext,
 ) -> Expression:
-    """Render a simple / distinct built-in aggregate; anything it can't faithfully emit (custom mechanisms, filtered / parametric sources, cross-model stars) refuses."""
+    """Render a simple / distinct built-in aggregate; anything it can't faithfully emit (custom mechanisms, filtered / parametric sources, cross-dataset stars) refuses."""
     if not is_builtin_agg(key.agg):
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
@@ -306,7 +310,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"mechanism, which needs the generator's builder"
             ),
         )
-    # A Column.filter on the source rides its ColumnSqlKey (CASE WHEN baked into
+    # A DatasetField.filter on the source rides its FieldSqlKey (CASE WHEN baked into
     # the source's scope resolution), so no separate guard is needed.
     if key.kwargs or key.args:
         raise RenderContextMissingFacilityError(
@@ -320,13 +324,14 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
     if isinstance(key.source, StarKey):
         star_path = source_anchor_path(key.source)
         if star_path:
-            # ``count(customers.*)`` counts the JOINED relation's rows (needs the join graph); a bare ``*`` would count host rows.
+            # ``count(customers.*)`` counts the JOINED relation's rows (needs the relationship graph); a bare ``*``
+            # would count host rows.
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
                 detail=(
-                    f"cross-model star over path {star_path!r} needs the "
-                    f"generator's join-graph routing"
+                    f"cross-dataset star over path {star_path!r} needs the "
+                    f"generator's relationship-graph routing"
                 ),
             )
         if key.agg != "count":
@@ -348,10 +353,10 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,
         )
-    column_type = ctx.column_type or _require_scope(ctx, key).column_type
+    field_type = ctx.field_type or _require_scope(ctx, key).field_type
     return apply_aggregate(
         entry=entry, value=inner, dialect=ctx.dialect,
-        input_type=aggregation_source_type(key.source, column_type=column_type),
+        input_type=aggregation_source_type(key.source, field_type=field_type),
     )
 
 
@@ -368,27 +373,27 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if ctx.dimension_values is not None and key in ctx.dimension_values:
         return ctx.dimension_values[key].copy()
 
-    if isinstance(key, (ColumnKey, SqlFragmentKey)):
+    if isinstance(key, (FieldKey, SqlFragmentKey)):
         return _require_scope(ctx, key).resolve(key, consumer=ctx.consumer)
 
-    if isinstance(key, ColumnSqlKey):
+    if isinstance(key, FieldSqlKey):
         scope = _require_scope(ctx, key)
         resolved = scope.resolve(key, consumer=ctx.consumer)
         # Filter-side CAST for a DERIVED leaf (temporal suppressed); target-scope never casts.
-        if ctx.filters is not None and ctx.filters.cast_column_sql:
-            if not keeps_native_type(col=scope.column(key), dialect=ctx.dialect):
-                resolved = _wrap_cast_for_type(resolved, _filter_cast_type(scope.column_type(key)), dialect=ctx.dialect)
+        if ctx.filters is not None and ctx.filters.cast_field_sql:
+            if not keeps_native_type(col=scope.field(key), dialect=ctx.dialect):
+                resolved = _wrap_cast_for_type(resolved, _filter_cast_type(scope.field_type(key)), dialect=ctx.dialect)
         return resolved
 
     if isinstance(key, StarKey):
-        # Like the aggregate branch: a pathed star needs the join graph; a bare ``*`` counts the host's rows.
+        # Like the aggregate branch: a pathed star needs the relationship graph; a bare ``*`` counts the host's rows.
         if key.path:
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
                 detail=(
-                    f"cross-model star over path {key.path!r} needs the "
-                    f"generator's join-graph routing"
+                    f"cross-dataset star over path {key.path!r} needs the "
+                    f"generator's relationship-graph routing"
                 ),
             )
         return exp.Star()
@@ -402,27 +407,29 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, TimeTruncKey):
         source = (
             _require_scope(ctx, key).resolve(key.source, consumer=ctx.consumer)
-            if isinstance(key.source, (ColumnKey, ColumnSqlKey))
+            if isinstance(key.source, (FieldKey, FieldSqlKey))
             else render_value_key(key=key.source, ctx=ctx)
         )
         # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
-        return ctx.dialect.build_bucket(col_expr=source, granularity=key.granularity)
+        return render_bucket(key=key, source=source, dialect=ctx.dialect, field_type=_known_field_types(ctx))
 
     if isinstance(key, ArithmeticKey):
         comparison = temporal_comparison(key)
         if comparison is not None:
-            op, operand, value = comparison
+            op, operand, value, midnight = date_typed_comparison(comparison, field_type=_known_field_types(ctx))
             rendered = render_value_key(key=operand, ctx=ctx)
+            if midnight:
+                rendered = ctx.dialect.promote_to_timestamp(rendered)
             if ctx.filters is not None and ctx.filters.paren_comparison_operands:
                 rendered = _paren_if_binary(rendered)
             return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)
         rendered = list_keyed(
             key.operands, [render_value_key(key=o, ctx=ctx) for o in key.operands], dialect=ctx.dialect,
         )
+        operands = coerced_parts(key=key, parts=rendered, field_type=_known_field_types(ctx), dialect=ctx.dialect)
         if key.op in NULL_SAFE_COMPARISON_OPS:
-            return render_null_safe(op=key.op, operands=rendered, dialect=ctx.dialect)
+            return render_null_safe(op=key.op, operands=operands, dialect=ctx.dialect)
         op = key.op.lower()
-        operands = numeric_parts(key=key, parts=rendered, column_type=_known_column_types(ctx))
         if (
             ctx.filters is not None
             and ctx.filters.paren_comparison_operands
@@ -430,7 +437,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         ):
             operands = [_paren_if_binary(o) for o in operands]
         if op == "%":
-            return render_modulo(key=key, operands=operands, dialect=ctx.dialect, column_type=_known_column_types(ctx))
+            return render_modulo(key=key, operands=operands, dialect=ctx.dialect, field_type=_known_field_types(ctx))
         return render_arithmetic(op=op, operands=operands)
 
     if isinstance(key, ScalarCallKey):
@@ -438,25 +445,31 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             return _render_iif_case(key=key, ctx=ctx)
         # ANY key routes as a key (the tail raise owns unsupported kinds); only
         # true scalars render as literals.
-        args = numeric_parts(key=key, column_type=_known_column_types(ctx), parts=[
+        args = coerced_parts(key=key, field_type=_known_field_types(ctx), dialect=ctx.dialect, parts=[
             render_value_key(key=a, ctx=ctx)
             if isinstance(a, _FrozenKey)
             else _literal(a, dialect=ctx.dialect)
             for a in key.args
         ])
+        date_position = mixed_nullif(key, field_type=_known_field_types(ctx))
+        if date_position is not None:
+            return render_mixed_nullif(args=args, date_position=date_position, dialect=ctx.dialect)
         if key.name in DATE_FUNCTIONS:
             return render_date_call(
-                key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
+                key=key, args=args, dialect=ctx.dialect, field_type=_field_types(ctx, key),
             )
-        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx),
+        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, field_type=_known_field_types(ctx),
                                  part=lambda a: render_value_key(key=a, ctx=ctx),
-                                 column_element=ctx.scope.column_element if ctx.scope is not None else None)
+                                 field_element=ctx.scope.field_element if ctx.scope is not None else None)
 
     if isinstance(key, InKey):
-        (column,) = numeric_parts(
-            key=key, parts=[render_value_key(key=key.column, ctx=ctx)], column_type=_known_column_types(ctx),
+        (column,) = coerced_parts(
+            key=key, parts=[render_value_key(key=key.field, ctx=ctx)], field_type=_known_field_types(ctx),
+            dialect=ctx.dialect,
         )
-        return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
+        return render_in_predicate(
+            key=key, column=column, dialect=ctx.dialect, field_type=_known_field_types(ctx),
+        )
 
     if isinstance(key, CastKey):
         return render_cast(
@@ -467,8 +480,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, ListSetKey):
         return render_list_set(
             key=key, part=lambda k: render_value_key(key=k, ctx=ctx), dialect=ctx.dialect,
-            column_type=_known_column_types(ctx),
-            column_element=ctx.scope.column_element if ctx.scope is not None else None,
+            field_type=_known_field_types(ctx),
+            field_element=ctx.scope.field_element if ctx.scope is not None else None,
         )
 
     if isinstance(key, AggregateKey):
@@ -504,23 +517,23 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
             if isinstance(a, _FrozenKey) else _literal(a, dialect=ctx.dialect)
         )
 
-    return iif_case_chain(key=key, part=_part, column_type=_known_column_types(ctx))
+    return iif_case_chain(key=key, part=_part, field_type=_known_field_types(ctx), dialect=ctx.dialect)
 
 
-def _known_column_types(ctx: RenderContext) -> ColumnTypeFn:
-    """Declared column types where the context knows them; otherwise every column is untyped."""
-    if ctx.column_type is not None:
-        return ctx.column_type
+def _known_field_types(ctx: RenderContext) -> FieldTypeFn:
+    """Declared field types where the context knows them; otherwise every field is untyped."""
+    if ctx.field_type is not None:
+        return ctx.field_type
     if ctx.scope is not None:
-        return ctx.scope.column_type
+        return ctx.scope.field_type
     return lambda _key: None
 
 
-def _column_types(ctx: RenderContext, key: ScalarCallKey) -> ColumnTypeFn:
-    if ctx.column_type is not None:
-        return ctx.column_type
+def _field_types(ctx: RenderContext, key: ScalarCallKey) -> FieldTypeFn:
+    if ctx.field_type is not None:
+        return ctx.field_type
     if ctx.scope is not None:
-        return ctx.scope.column_type
+        return ctx.scope.field_type
     raise RenderContextMissingFacilityError(
         key_kind=type(key).__name__, facility="column_type",
         detail=f"{key.name}() needs its operands' declared types",
@@ -529,7 +542,7 @@ def _column_types(ctx: RenderContext, key: ScalarCallKey) -> ColumnTypeFn:
 
 def contains_aggregate(key: ValueKey) -> bool:
     """Whether ``key``'s tree contains an ``AggregateKey`` (decides GROUP BY / HAVING). A structural
-    walk over ``children()``, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw column into HAVING."""
+    walk over ``children()``, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw field into HAVING."""
     if isinstance(key, AggregateKey):
         return True
     return any(contains_aggregate(c) for c in key.children())

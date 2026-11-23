@@ -95,7 +95,7 @@ Every declared measure SHALL be typed at query grain: each row-level reference o
 
 #### Scenario: A measure mixing a non-dimension column with an aggregate fails as a typing error
 - **WHEN** a query over dimensions `[region]` declares the measure `amount + sum(amount)` named `m`
-- **THEN** planning fails with the position typing error at `measure 'm'` naming the row-level reference `amount` as not available at the query grain, and the message contains no internal placeholder name
+- **THEN** planning fails with the position typing error at `metric 'm'` naming the row-level reference `amount` as not available at the query grain, and the message contains no internal placeholder name
 
 #### Scenario: An aggregate-free measure over a non-dimension column keeps the aggregation remedy
 - **WHEN** a query over dimensions `[region]` declares the measure `round(amount, 2)`
@@ -114,7 +114,7 @@ Every declared measure SHALL be typed at query grain: each row-level reference o
 - **THEN** the query executes and each row's measure equals its `quantity` plus 1
 
 ### Requirement: A dimension value reads the dimension's grouped value in every position
-A sub-expression of a measure, an order target or a filter that is equal to an entire query dimension — a plain, joined or stage column, or a computed dimension's whole expression, including a partitioned aggregate, a re-aggregation or a transform — SHALL evaluate as that dimension's value in the result cell, in every position and on every supported dialect — except a transform-bearing computed dimension in measure position, which keeps its query-grain evaluation. The same expression SHALL yield the same value as a measure, a measure-typed filter and an order target. A reference inside an aggregation's source, arguments or partition keys SHALL remain a row-level input of that aggregation, never the dimension's grouped value.
+A sub-expression of a measure, an order target or a filter that is equal to an entire query dimension — a plain, joined or stage column, or a computed dimension's whole expression, including a partitioned aggregate, a re-aggregation or a transform — SHALL evaluate as that dimension's value in the result cell, in every position and on every supported dialect, a transform-bearing computed dimension in measure position included. The same expression SHALL yield the same value as a measure, a measure-typed filter and an order target. A reference inside an aggregation's source, arguments or partition keys SHALL remain a row-level input of that aggregation, never the dimension's grouped value.
 
 #### Scenario: A plain dimension combined with an aggregate
 - **WHEN** a `sales` query over dimensions `[quantity]` declares the measure `quantity * count(*)`
@@ -144,34 +144,38 @@ A sub-expression of a measure, an order target or a filter that is equal to an e
 - **WHEN** a measure-typed filter or an order target uses an expression over a dimension value that also executes as a declared measure in the same query
 - **THEN** the filter keeps exactly the rows where the declared measure's predicate is TRUE and the order sorts by the declared measure's values
 
+#### Scenario: A transform dimension's expression as a measure reads the dimension
+- **WHEN** a query over `[region, city, channel]` declares the computed dimension `mr` = `rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')` and also selects that expression as a measure
+- **THEN** each row's measure equals its `mr`, and the measure alone, without the dimension, reads the same union-grain ranks
+
 ### Requirement: An order column object may carry an expression
-An order entry whose `column` is an object with `name` as its only key, where `name` is not a valid
+An order entry whose `field` is an object with `name` as its only key, where `name` is not a valid
 column name but is an aggregation, transform or other expression the string form accepts, SHALL be
-an exact equivalent of the string form `{"column": "<name>"}` — same sort, columns, rows and SQL — in
-query `order` and in a refinement's `order`. An object that also carries `model` or `label` SHALL keep
+an exact equivalent of the string form `{"field": "<name>"}` — same sort, columns, rows and SQL — in
+query `order` and in a refinement's `order`. An object that also carries `dataset` or `label` SHALL keep
 the invalid-name error.
 
 #### Scenario: Expression in the object form
-- **WHEN** a query on `orders` grouped by `region` orders by `{"column": {"name": "sum(amount)"}, "direction": "desc"}`
-- **THEN** its columns, rows and SQL equal those of the same query ordering by `{"column": "sum(amount)", "direction": "desc"}`
+- **WHEN** a query on `orders` grouped by `region` orders by `{"field": {"name": "sum(amount)"}, "direction": "desc"}`
+- **THEN** its columns, rows and SQL equal those of the same query ordering by `{"field": "sum(amount)", "direction": "desc"}`
 
 #### Scenario: Expression in a refinement's order
-- **WHEN** a saved query runs with refinement `{"order": [{"column": {"name": "sum(amount)"}}]}`
-- **THEN** it equals the refinement ordering by `{"column": "sum(amount)"}`
+- **WHEN** a saved query runs with refinement `{"order": [{"field": {"name": "sum(amount)"}}]}`
+- **THEN** it equals the refinement ordering by `{"field": "sum(amount)"}`
 
 #### Scenario: Object with a model keeps the error
-- **WHEN** an order entry is `{"column": {"name": "sum(amount)", "model": "orders"}}`
+- **WHEN** an order entry is `{"field": {"name": "sum(amount)", "dataset": "orders"}}`
 - **THEN** the query is rejected with the invalid-name error
 
 ### Requirement: Order items carry an explicit NULL placement
 An order item SHALL accept `nulls` set to `first` or `last`. With it, the sorted rows SHALL place NULL values first or last on every Tier-1 dialect, SQL Server included, for every kind of order target — a projected field, a hidden filter- or order-only value, a measure, a transform or an expression. Without it, NULL placement SHALL be unchanged. `nulls` SHALL survive serialisation, saved-query refinement and the stage rewrites that rebuild order items.
 
 #### Scenario: NULLS FIRST on a descending order
-- **WHEN** a raw-rows query on `orders` orders by `{"column": "discount", "direction": "desc", "nulls": "first"}`
+- **WHEN** a raw-rows query on `orders` orders by `{"field": "discount", "direction": "desc", "nulls": "first"}`
 - **THEN** the rows with a NULL discount come first, then the rest by discount descending, on every Tier-1 dialect
 
 #### Scenario: NULLS LAST on a hidden aggregate
-- **WHEN** a query groups by `region` and orders by `{"column": "max(discount)", "direction": "asc", "nulls": "last"}` without projecting `max(discount)`
+- **WHEN** a query groups by `region` and orders by `{"field": "max(discount)", "direction": "asc", "nulls": "last"}` without projecting `max(discount)`
 - **THEN** regions whose `max(discount)` is NULL come last, and the hidden value is not returned
 
 #### Scenario: SQL Server honours the policy over an aliased target

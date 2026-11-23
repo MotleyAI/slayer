@@ -1,0 +1,100 @@
+{
+ "source": "tests/test_idempotent_ingestion.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "total"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 192,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 200,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 284,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 287,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 709,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 714,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 780,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 785,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 788,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 930,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 935,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 938,
+   "reason": "not fully literal"
+  }
+ ]
+}

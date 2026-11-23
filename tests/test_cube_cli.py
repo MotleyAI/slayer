@@ -1,6 +1,6 @@
 """Tests for the `slayer import-cube` CLI (slayer/cli.py).
 
-Offline: writes SLayer models to storage + a JSON report. No
+Offline: writes SLayer datasets to storage + a JSON report. No
 datasource connection required.
 """
 
@@ -12,6 +12,7 @@ from contextlib import contextmanager
 
 from slayer.cli import main as cli_main
 from slayer.storage.yaml_storage import YAMLStorage
+import pytest
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "cube_project")
 
@@ -44,9 +45,9 @@ def test_import_cube_writes_models_and_report(tmp_path):
     )
     assert code == 0
 
-    # Models persisted, offline (no datasource ever created/connected).
+    # Datasets persisted, offline (no datasource ever created/connected).
     storage = YAMLStorage(base_dir=str(storage_dir))
-    names = asyncio.new_event_loop().run_until_complete(storage.list_models())
+    names = asyncio.new_event_loop().run_until_complete(storage.list_datasets())
     assert "orders" in names
     assert "customers" in names
     assert "orders_overview" in names
@@ -56,18 +57,18 @@ def test_import_cube_writes_models_and_report(tmp_path):
     assert report_path.exists()
     report = json.loads(report_path.read_text())
     assert "issues" in report
-    assert report["model_count"] >= 3
+    assert report["dataset_count"] >= 3
 
 
-def test_import_cube_survives_save_failure(tmp_path, monkeypatch, capsys):
-    # A save_model failure on one model must not abort the run — the report is
+def test_import_cube_survives_save_failure(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys):
+    # A save_dataset failure on one dataset must not abort the run — the report is
     # still written ("report, don't crash"), the failure is categorized
     # SAVE_FAILED (not the misleading PARSE_ERROR), and the summary reports the
     # actual saved count.
     async def _boom(self, model):
         raise RuntimeError("save exploded")
 
-    monkeypatch.setattr(YAMLStorage, "save_model", _boom)
+    monkeypatch.setattr(YAMLStorage, "save_dataset", _boom)
     storage_dir = tmp_path / "store"
     code = _run("import-cube", FIXTURE, "--datasource", "cube_ds", "--storage", str(storage_dir))
     assert code == 0
@@ -75,7 +76,7 @@ def test_import_cube_survives_save_failure(tmp_path, monkeypatch, capsys):
     assert report_path.exists()
     report = json.loads(report_path.read_text())
     save_failures = [i for i in report["issues"] if i["category"] == "save_failed"]
-    assert save_failures  # every model failed to save → a SAVE_FAILED issue each
+    assert save_failures  # every dataset failed to save → a SAVE_FAILED issue each
     # Summary reflects that nothing was actually saved.
     assert "0 of" in capsys.readouterr().out
 

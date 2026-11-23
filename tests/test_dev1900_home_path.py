@@ -5,31 +5,31 @@ included. A source ``customers.regions.pop`` whose aggregation defaults the
 weight to ``customers.spend`` has a valid shallower home (``customers``
 determines ``pop`` to-one and ``spend`` locally); the explicit spelling already
 widens the home, so the definition default must produce the identical plan and
-value. A reverse-hop default with no forward home stays failing closed
-(reverse-hop cancellation is DEV-1908).
+value. A reverse-hop default homes on the dataset across that hop.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1900_fixtures import (
     HOME_WIDEN_VALUE,
-    ModelMeasure,
     SlayerQuery,
-    home_path_models,
+    home_path_datasets,
     make_exec_engine,
     orders_q,
 )
 
-EXPLICIT = ModelMeasure(
-    formula="wsum_cust_spend(customers.regions.pop, weight=customers.spend)", name="w")
-DEFAULT = ModelMeasure(formula="wsum_cust_spend(customers.regions.pop)", name="w")
+EXPLICIT = QueryMetric(
+    metric="wsum_cust_spend(customers.regions.pop, weight=customers.spend)", alias="w")
+DEFAULT = QueryMetric(metric="wsum_cust_spend(customers.regions.pop)", alias="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request):
-    async for e in make_exec_engine(request, models=home_path_models()):
+    async for e in make_exec_engine(request, datasets=home_path_datasets()):
         yield e
 
 
@@ -37,23 +37,23 @@ class TestDefinitionDefaultJoinsHomeCandidates:
     async def test_explicit_weight_widens_the_home(self, engine):
         """Reference: an explicit weight=customers.spend already roots the
         aggregate at the shallower customers home."""
-        resp = await engine.execute(orders_q(measures=[EXPLICIT]))
-        assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
+        resp = await engine.execute(orders_q(metrics=[EXPLICIT]))
+        assert float(resp.data[0]["w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
     async def test_definition_default_matches_the_explicit(self, engine):
         """Subject: the non-overridden default must join the home candidates the
         same way — identical value to spelling it explicitly."""
-        resp = await engine.execute(orders_q(measures=[DEFAULT]))
-        assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
+        resp = await engine.execute(orders_q(metrics=[DEFAULT]))
+        assert float(resp.data[0]["w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
 
-class TestReverseHopDefaultFailsClosed:
-    async def test_back_hop_default_stays_failing_closed(self, engine):
-        """Rooted at regions there is no forward home for the customers.spend
-        default; customers is not on the path, so nothing cancels and there is
-        no forward home."""
-        q = SlayerQuery(
-            source_model="regions",
-            measures=[ModelMeasure(formula="wsum_cust_spend(pop)", name="w")])
-        with pytest.raises(ValueError, match="unproven join hop"):
-            await engine.execute(q)
+class TestReverseHopDefaultHomesOnCustomers:
+    async def test_back_hop_default_homes_on_customers(self, engine):
+        """Rooted at regions, the customers.spend default homes on customers, which determines its region's pop:
+        the value equals the same aggregate rooted at customers."""
+        from_regions = await engine.execute(SlayerQuery(
+            population="regions", metrics=[QueryMetric(metric="wsum_cust_spend(regions.pop)", alias="w")]))
+        from_customers = await engine.execute(SlayerQuery(
+            population="customers", metrics=[QueryMetric(metric="sum(regions.pop * customers.spend)", alias="w")]))
+        assert float(from_regions.data[0]["w"]) == pytest.approx(
+            float(from_customers.data[0]["w"]))

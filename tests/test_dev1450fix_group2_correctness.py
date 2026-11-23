@@ -1,11 +1,11 @@
-"""DEV-1450 review fixes (group 2) — correctness bugs from CodeRabbit.
+"""Review fixes (group 2) — correctness bugs from CodeRabbit.
 
 * [0] ``OVER(`` inside a string literal isn't treated as a window clause.
 * [1] ``**kwargs`` dictionary unpacking in a Mode-B call is rejected, not
   silently dropped.
-* [8] a cyclic dotted star (``a.b.a.*``) is rejected like the dotted-column
+* [8] a cyclic dotted star (``a.b.a.*``) is rejected like the dotted-field
   form.
-* [12] ``_measure_formula_refs`` rewrites model-custom function-style aggs
+* [12] ``_metric_expression_refs`` rewrites dataset-custom function-style aggs
   when ``custom_agg_names`` is supplied (drift cascade completeness).
 * [14] an ORDER ref without a raw_formula binds its FULL dotted name, not
   just the leaf.
@@ -22,12 +22,12 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationNotAllowedError, IllegalWindowInFilterError
 from slayer.core.keys import AggregateKey, StarKey, TransformKey
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
-from slayer.core.scope import ModelScope
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import OrderItem, SlayerQuery
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import _measure_formula_refs
+from slayer.live_schema.schema_drift import _metric_expression_refs
 from slayer.storage.sqlite_conn import transaction
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import parse_expr, parse_expr as _parse
@@ -81,20 +81,20 @@ def test_is_null_filter_parses_and_renders():
 def test_partition_by_multi_column_parses_and_binds():
     """Codex review: ``partition_by=[region, channel]`` is parsed into
     a tuple by ``_convert_kwarg_value``, but the binder's
-    ``partition_by`` branch only handled a single column ref. Pin that
-    a multi-column form binds to a multi-element ``partition_keys``."""
-    # Build a model scope and bundle that has the needed columns.
-    orders = SlayerModel(
+    ``partition_by`` branch only handled a single field ref. Pin that
+    a multi-field form binds to a multi-element ``partition_keys``."""
+    # Build a dataset scope and bundle that has the needed fields.
+    orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="channel", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
         ],
     )
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
-    scope = ModelScope(source_model=orders)
+    bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
+    scope = DatasetScope(population=orders)
     parsed = _parse("rank(sum(amount), partition_by=[region, channel], direction='desc')")
     bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
     assert isinstance(bound.value_key, TransformKey)
@@ -110,17 +110,17 @@ def test_partition_by_multi_column_parses_and_binds():
 
 
 def test_aggregation_eligibility_primary_key_rejected():
-    """A sole primary-key column is restricted to the count family and
+    """A sole primary-key field is restricted to the count family and
     ``min`` / ``max``; ``sum(id)`` raises ``AggregationNotAllowedError``."""
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
-    scope = ModelScope(source_model=orders)
+    bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
+    scope = DatasetScope(population=orders)
     for agg in ("count", "count_distinct", "max", "min"):
         bind_expr(parsed=parse_expr(f"{agg}(id)"), scope=scope, bundle=bundle)
     for agg in ("sum", "avg"):
@@ -130,17 +130,17 @@ def test_aggregation_eligibility_primary_key_rejected():
 
 
 def test_aggregation_eligibility_type_default_rejected():
-    """A TEXT column rejects numeric aggregations (``avg`` / ``sum``)
+    """A TEXT field rejects numeric aggregations (``avg`` / ``sum``)
     per the type-default whitelist."""
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
-    scope = ModelScope(source_model=orders)
+    bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
+    scope = DatasetScope(population=orders)
     # count is fine on text.
     bind_expr(parsed=parse_expr("count(status)"), scope=scope, bundle=bundle)
     # avg / sum are not.
@@ -157,14 +157,14 @@ async def test_is_null_filter_renders_end_to_end(engine):
     filters like ``deleted_at IS NULL`` parsed/bound but failed at SQL
     generation with ``NotImplementedError``. Pin the end-to-end path."""
     # ``region`` is TEXT on the customers seed, so ``region IS NULL``
-    # makes sense as a predicate. Use ``orders`` as the host model with
-    # an Mode-B filter through the join.
+    # makes sense as a predicate. Use ``orders`` as the host dataset with
+    # a Mode-B filter through the relationship.
     resp = await engine.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "count(*)"}],
-            "filters": ["customers.region IS NOT NULL"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["customers.region IS NOT NULL"],
         })
     )
     # Both seed rows have non-null region; the filter is inert (passes).
@@ -185,21 +185,21 @@ async def test_is_null_filter_renders_end_to_end(engine):
 def test_aggregation_eligibility_allowed_aggregations_whitelist():
     """An explicit ``allowed_aggregations`` whitelist overrides the
     type-default gate."""
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(
                 name="amount",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 # Tighter than the default DOUBLE whitelist; reject avg.
                 allowed_aggregations=frozenset({"sum", "max"}),
             ),
         ],
     )
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[])
-    scope = ModelScope(source_model=orders)
-    bind_expr(parsed=parse_expr("sum(amount)"), scope=scope, bundle=bundle)
+    bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
+    scope = DatasetScope(population=orders)
+    bind_expr(parsed=parse_expr("sum(orders.amount)"), scope=scope, bundle=bundle)
     bind_expr(parsed=parse_expr("max(amount)"), scope=scope, bundle=bundle)
     parsed = parse_expr("avg(amount)")
     with pytest.raises(AggregationNotAllowedError, match="allowed_aggregations"):
@@ -227,47 +227,47 @@ def test_double_star_kwargs_rejected():
 
 
 def _cyclic_bundle():
-    a = SlayerModel(
+    a = SlayerDataset(
         name="a", data_source="prod", sql_table="a",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-        joins=[ModelJoin(target_model="b", join_pairs=[["id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+        relationships=[DatasetRelationship(to="b", from_columns=["id"], to_columns=["id"])],
     )
-    b = SlayerModel(
+    b = SlayerDataset(
         name="b", data_source="prod", sql_table="b",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
-    # ``a`` is also referenced so the walk back to it (over the inverted edge,
-    # DEV-1853) resolves and the cycle guard — not a missing-target error — fires.
-    return ResolvedSourceBundle(dialect="postgres", source_model=a, referenced_models=[b, a])
+    # ``a`` is also referenced so the walk back to it (over the inverted edge)
+    # resolves and the cycle guard — not a missing-target error — fires.
+    return ResolvedSourceBundle(dialect="postgres", population=a, referenced_datasets=[b, a])
 
 
 def test_cyclic_dotted_star_rejected():
     bundle = _cyclic_bundle()
-    scope = ModelScope(source_model=bundle.source_model)
+    scope = DatasetScope(population=bundle.population)
     parsed = parse_expr("count(a.b.a.*)")
-    with pytest.raises(ValueError, match="Circular join"):
+    with pytest.raises(ValueError, match="Circular relationship path"):
         bind_expr(parsed, scope=scope, bundle=bundle)
 
 
 def test_noncyclic_dotted_star_ok():
     bundle = _cyclic_bundle()
-    scope = ModelScope(source_model=bundle.source_model)
+    scope = DatasetScope(population=bundle.population)
     bound = bind_expr(parse_expr("count(b.*)"), scope=scope, bundle=bundle)
-    # *:count over the joined model -> AggregateKey on a StarKey(path=("b",)).
+    # *:count over the joined dataset -> AggregateKey on a StarKey(path=("b",)).
     assert isinstance(bound.value_key, AggregateKey)
     assert isinstance(bound.value_key.source, StarKey)
     assert bound.value_key.source.path == ("b",)
 
 
 # ---------------------------------------------------------------------------
-# [12] _measure_formula_refs rewrites custom function-style aggs
+# [12] _metric_expression_refs rewrites custom function-style aggs
 # ---------------------------------------------------------------------------
 
 
 def test_measure_formula_refs_custom_agg():
-    # DEV-1826: an unknown functional name defers as an AggCall candidate, so
+    # An unknown functional name defers as an AggCall candidate, so
     # a custom aggregation's source ref surfaces with NO registry threading.
-    refs = _measure_formula_refs("my_custom_agg(amount)")
+    refs = _metric_expression_refs("my_custom_agg(amount)")
     assert "amount" in refs
 
 
@@ -297,25 +297,25 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers", sql_table="customers", data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders", sql_table="orders", data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
@@ -323,16 +323,16 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 async def test_order_by_joined_column_not_in_dimensions(engine):
-    """Ordering by a joined column (customers.region) that is NOT a declared
+    """Ordering by a joined field (customers.region) that is NOT a declared
     dimension binds the full dotted ref — leaf-only binding would fail to
     resolve ``region`` on ``orders``."""
     resp = await engine.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(amount)"}],
-            "order": [OrderItem(column=ColumnRef(name="customers.region"), direction="asc")],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "order": [OrderItem(field="customers.region", direction="asc")],
         })
     )
-    regions = [r["orders.customers.region"] for r in resp.data]
+    regions = [r["customers.region"] for r in resp.data]
     assert regions == ["EU", "NA"]

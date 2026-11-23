@@ -1,0 +1,913 @@
+# Exported before the vocabulary rename (SLAYER payload version 1). The pre-2.0 spellings are deliberate:
+# keep this file out of the vocabulary respelling pass.
+version: 0.3.0.dev0
+name: osids
+datasets:
+- name: customers
+  source: customers
+  primary_key:
+  - id
+  unique_keys:
+  - - email
+  fields:
+  - name: id
+    expression:
+      sql: c_custkey
+    datatype: Integer
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: id
+        fingerprint: 86c44ce2d43ed445cca8cdc49aa32de859fed42a3f4f569915bca55b3c4396b0
+        kind: field
+        column:
+          sql: c_custkey
+          type: INT
+          hidden: false
+  - name: segment
+    expression:
+      sql: segment
+    datatype: String
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: segment
+        fingerprint: 6b6ca65902e7f3614a95d11539ab0d1a0f5d637ed4142483951a9527e765c211
+        kind: field
+        column:
+          type: TEXT
+          hidden: false
+  - name: discount
+    expression:
+      sql: discount
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: discount
+        fingerprint: 531750a69037a7f07e989bab5ca31265b70d4a25cc1c23ae45d585d0f26145cf
+        kind: field
+        column:
+          type: DOUBLE
+          hidden: false
+  - name: rate
+    expression:
+      sql: rate
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: rate
+        fingerprint: 81e42edb9748c2a2ffaa45f286c07c845574af3c9dce0543b2d36161ff569596
+        kind: field
+        column:
+          type: DOUBLE
+          hidden: false
+  - name: email
+    expression:
+      sql: email
+    datatype: String
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: email
+        fingerprint: edcf44b4f1502ef2c81053570b73f1d5e4686f0a702eb5eb1d68f418d95ebedd
+        kind: field
+        column:
+          type: TEXT
+          hidden: false
+  metrics:
+  - name: orders_customer_discount
+    expression:
+      sql: SUM(discount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: orders_customer_discount
+        fingerprint: 1f314efb463acc0c12cfb4991b40e8a50a37d85372cb1ffcd04b6ac86007b69a
+        kind: metric
+        model: orders
+        measure:
+          formula: sum(customers.discount)
+          name: customer_discount
+  nonportable_extensions:
+  - vendor_name: SLAYER
+    data:
+      version: 1
+      entity: customers
+      fingerprint: cb757345f6bfd99eacefa1e75ef468d851a899aab58939b464e539c310f487fb
+      kind: dataset
+      source:
+        sql_table: customers
+        filters: []
+        query_variables: {}
+      hidden: false
+      access_tags: []
+      aggregations: []
+      columns: []
+      measures: []
+- name: monthly_revenue
+  source: "SELECT\n  _stage_inner.\"orders.ordered_on\" AS \"ordered_on\",\n  _stage_inner.\"\
+    orders.revenue\" AS \"revenue\"\nFROM (\n  SELECT\n    DATE_TRUNC('MONTH', orders.ordered_on)\
+    \ AS \"orders.ordered_on\",\n    CAST(SUM(orders.amount) AS DOUBLE) AS \"orders.revenue\"\
+    \n  FROM orders AS orders\n  WHERE\n    orders.region = 'US'\n  GROUP BY\n   \
+    \ DATE_TRUNC('MONTH', orders.ordered_on)\n) AS _stage_inner"
+  unique_keys:
+  - - ordered_on
+  fields:
+  - name: ordered_on
+    expression:
+      sql: ordered_on
+    datatype: Date
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: ordered_on
+        fingerprint: 264c43fb68adb018ac9af5c5576f692a9e448f7f2ed9f44b98d6c2b3ef35d051
+        kind: field
+        column:
+          sql: ordered_on
+          type: DATE
+          hidden: false
+          granularity: month
+  - name: revenue
+    expression:
+      sql: revenue
+    description: Gross order value
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: revenue
+        fingerprint: 7b3c7224c17dca495806d8684fd2277d50630dd01089f07773aec7f5b3ae9011
+        kind: field
+        column:
+          sql: revenue
+          type: DOUBLE
+          hidden: false
+          format:
+            type: currency
+            precision: 2
+            symbol: $
+  nonportable_extensions:
+  - vendor_name: SLAYER
+    data:
+      version: 1
+      entity: monthly_revenue
+      fingerprint: d6a8481f693c0f1f7f3b4ba4e72fec458299b98461bbc14ec752a86ae8cf8c43
+      kind: dataset
+      source:
+        filters: []
+        source_queries:
+        - version: 15
+          source_model: orders
+          measures:
+          - formula: sum(amount)
+            name: revenue
+          time_dimensions:
+          - dimension: ordered_on
+            granularity: month
+          filters:
+          - region = '{region}'
+          whole_periods_only: false
+          distinct_dimension_values: true
+        query_variables:
+          region: US
+      hidden: false
+      access_tags: []
+      aggregations: []
+      columns: []
+      measures: []
+- name: orders
+  source: orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: o_orderkey
+    datatype: Integer
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: id
+        fingerprint: 1a01c8e51857d8d6dbc0f817a0a20bad16982885577b25186af248f52ca77336
+        kind: field
+        column:
+          sql: o_orderkey
+          type: INT
+          hidden: false
+  - name: customer_id
+    expression:
+      sql: o_custkey
+    datatype: Integer
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: customer_id
+        fingerprint: 9090721c0f1572d3b6f2ec4d860abe0496ca6acb98e4411b9f3b61f1fb291300
+        kind: field
+        column:
+          sql: o_custkey
+          type: INT
+          hidden: false
+  - name: total_amount
+    expression:
+      sql: o_totalprice
+    datatype: Decimal
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: total_amount
+        fingerprint: 01a61c381c0eb8927b003af994a1623c2f7487219a8a41c63a9a3e1d84753249
+        kind: field
+        column:
+          sql: o_totalprice
+          type: DOUBLE
+          hidden: false
+  - name: amount
+    expression:
+      sql: amount
+    label: Order amount
+    description: Gross order value
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: amount
+        fingerprint: bcc0f957ca1ba44cb8ac7d79cbc75c5e9bbeda3fddde658b88b7ddbceafa61bf
+        kind: field
+        column:
+          type: DOUBLE
+          hidden: false
+          format:
+            type: currency
+            precision: 2
+            symbol: $
+          meta:
+            unit: usd
+  - name: quantity
+    expression:
+      sql: quantity
+    datatype: Integer
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: quantity
+        fingerprint: 44f6e90507ad3791508d5fd2967609a450241950ec71d1b905f936274580462f
+        kind: field
+        column:
+          type: INT
+          hidden: false
+  - name: price
+    expression:
+      sql: price
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: price
+        fingerprint: bd0e422478194ba63aa703bf6e8c9f78c1786886e41e539bb173b8fa7440b3fa
+        kind: field
+        column:
+          type: DOUBLE
+          hidden: false
+  - name: discount
+    expression:
+      sql: discount
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: discount
+        fingerprint: 531750a69037a7f07e989bab5ca31265b70d4a25cc1c23ae45d585d0f26145cf
+        kind: field
+        column:
+          type: DOUBLE
+          hidden: false
+  - name: status
+    expression:
+      sql: status
+    datatype: String
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: status
+        fingerprint: 69ce6f16640d571a3eb0008d6fe542f8af785c6971231155fa955aef23c86b7b
+        kind: field
+        column:
+          type: TEXT
+          hidden: false
+          allowed_aggregations:
+          - count
+          - count_distinct
+  - name: region
+    expression:
+      sql: region
+    datatype: String
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: region
+        fingerprint: b043eb2874bbca322d89f9ad27f298e3db305165915b12760af2bcedaa34bda4
+        kind: field
+        column:
+          type: TEXT
+          hidden: false
+  - name: is_paid
+    expression:
+      sql: is_paid
+    datatype: Boolean
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: is_paid
+        fingerprint: 6ccf906c9bb604089265eb366760434ee37bc9e5dc450d222cc039b4ba1d752c
+        kind: field
+        column:
+          type: BOOLEAN
+          hidden: false
+  - name: ordered_on
+    expression:
+      sql: ordered_on
+    datatype: Date
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: ordered_on
+        fingerprint: ac4a049ea3596867a779514c9f0504414e57449bae87b3a7c877670144136098
+        kind: field
+        column:
+          type: DATE
+          hidden: false
+          granularity: day
+  - name: ordered_at
+    expression:
+      sql: ordered_at
+    datatype: DateTime
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: ordered_at
+        fingerprint: 6306cf198d8893aab36a5a1b95b89d4863590e6221aa744d231e0ddd9fc17c69
+        kind: field
+        column:
+          type: TIMESTAMP
+          hidden: false
+  - name: order_year
+    expression:
+      sql: order_year
+    datatype: Integer
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: order_year
+        fingerprint: 958c68d82f12d82f7841a91def10a31ff5190720260d43a334e6856c3641d121
+        kind: field
+        column:
+          type: INT
+          hidden: false
+  - name: note
+    expression:
+      sql: note
+    datatype: String
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: note
+        fingerprint: 4833abe92de6825dc2f11c5c4d2e9752908e4983a27a642194dc9a74a6f33168
+        kind: field
+        column:
+          type: TEXT
+          hidden: true
+  - name: gross
+    expression:
+      sql: price * quantity
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: gross
+        fingerprint: b94e9bb6dbaa0aa162158bd8310497111b8cac63a07f9fd73daaf0780a01c78a
+        kind: field
+        column:
+          sql: price * quantity
+          type: DOUBLE
+          hidden: false
+  - name: net
+    expression:
+      sql: (price * quantity) - discount
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: net
+        fingerprint: 96a8afcef20a319d60bd3e7dd58eba897df3d54058d68434ce5cc1a37717236b
+        kind: field
+        column:
+          sql: gross - discount
+          type: DOUBLE
+          hidden: false
+  - name: completed_amount
+    expression:
+      sql: CASE WHEN status = 'completed' THEN amount END
+    datatype: Float
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: completed_amount
+        fingerprint: f41d9c31de819fc6c15ef40f40709e3ce5102ca3bec9c05e0f8e907d1dd9317c
+        kind: field
+        column:
+          sql: amount
+          filter: status = 'completed'
+          type: DOUBLE
+          hidden: false
+  - name: paid_flag
+    expression:
+      sql: CASE WHEN status <> 'test' THEN is_paid END
+    datatype: Boolean
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: paid_flag
+        fingerprint: de210da671866f4f17531e2554496e66affe3badc61fb25e82c22c2822cc27f3
+        kind: field
+        column:
+          sql: is_paid
+          filter: status <> 'test'
+          type: BOOLEAN
+          hidden: false
+  metrics:
+  - name: revenue
+    expression:
+      sql: SUM(amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: revenue
+        fingerprint: 85c0447dee91e5b544fc24b6ed44ba5022b02a8ef340db07e833b1101b3ecad5
+        kind: metric
+        model: orders
+        measure:
+          formula: sum(amount)
+          name: revenue
+  - name: n
+    expression:
+      sql: COUNT(*)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: n
+        fingerprint: d8ae745b67bd194de6f88e191cfeb17580d0059b231c79baad1d0f013dc5a477
+        kind: metric
+        model: orders
+        measure:
+          formula: count(*)
+          name: n
+  - name: aov
+    expression:
+      sql: SUM(amount) / COUNT(*)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: aov
+        fingerprint: face0494cfe5ee4cdac02538dd7de209524c2704d59b68261e50539611e5c7fe
+        kind: metric
+        model: orders
+        measure:
+          formula: revenue / n
+          name: aov
+  - name: avg_amount
+    expression:
+      sql: AVG(amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: avg_amount
+        fingerprint: 81e603fc0be0474b980efa773405489383a94dc768012814fe7cf7d22ec4ea37
+        kind: metric
+        model: orders
+        measure:
+          formula: avg(amount)
+          name: avg_amount
+          label: Average amount
+          type: DOUBLE
+          meta:
+            owner: finance
+  - name: min_amount
+    expression:
+      sql: MIN(amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: min_amount
+        fingerprint: 18b530be55868fd4d91b92158b0ad243584a1f0f41f9cd106f7167a102b00638
+        kind: metric
+        model: orders
+        measure:
+          formula: min(amount)
+          name: min_amount
+  - name: max_amount
+    expression:
+      sql: MAX(amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: max_amount
+        fingerprint: 296dce9c6498eeb770fb45d8c543c2f2067a2c062e3f5385cdae046b662719b6
+        kind: metric
+        model: orders
+        measure:
+          formula: max(amount)
+          name: max_amount
+  - name: n_amount
+    expression:
+      sql: COUNT(amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: n_amount
+        fingerprint: 3e9ee224a341039c7482ee537e853ec4a0c393aa8dd9c9b9060d29344750e240
+        kind: metric
+        model: orders
+        measure:
+          formula: count(amount)
+          name: n_amount
+  - name: n_customers
+    expression:
+      sql: COUNT(DISTINCT customer_id)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: n_customers
+        fingerprint: 314c4161d9b0929233d6476da077b7902450ee105dbe6c3036fa87ac01ea61b8
+        kind: metric
+        model: orders
+        measure:
+          formula: count_distinct(customer_id)
+          name: n_customers
+  - name: p90
+    expression:
+      sql: PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: p90
+        fingerprint: d852f957c533792cd58d063c9e097060a412890c805247a6f15e0d8ca80f9546
+        kind: metric
+        model: orders
+        measure:
+          formula: percentile(amount, 0.9)
+          name: p90
+  - name: med
+    expression:
+      sql: PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: med
+        fingerprint: e4838c1aafc49a81a4da462df208bcba25220bfe6773a02dec46575d51aef458
+        kind: metric
+        model: orders
+        measure:
+          formula: median(amount)
+          name: med
+  - name: sd
+    expression:
+      sql: STDDEV_SAMP(amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: sd
+        fingerprint: 00305babec73703a795a6c38c8ad9d78bfada77c21c9295a59bf82f30f3eb3fe
+        kind: metric
+        model: orders
+        measure:
+          formula: stddev_samp(amount)
+          name: sd
+  - name: sdp
+    expression:
+      sql: STDDEV_POP(amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: sdp
+        fingerprint: 1f0397e2cc278301b788035125e04606332c2327b0b130ac5c6039b984216846
+        kind: metric
+        model: orders
+        measure:
+          formula: stddev_pop(amount)
+          name: sdp
+  - name: vs
+    expression:
+      sql: VARIANCE(amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: vs
+        fingerprint: 97e32799150728c100ab2f82addd2be95f4fece36a7feb1dde36bf957a56677d
+        kind: metric
+        model: orders
+        measure:
+          formula: var_samp(amount)
+          name: vs
+  - name: vp
+    expression:
+      sql: VARIANCE_POP(amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: vp
+        fingerprint: 199972b38aa905153f20bdf0278c29aaa797fe916d6eea8fca46fd74f3eec73c
+        kind: metric
+        model: orders
+        measure:
+          formula: var_pop(amount)
+          name: vp
+  - name: r
+    expression:
+      sql: CORR(amount, quantity)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: r
+        fingerprint: 761e178d051e00168e503e1effcc9dac7de1bf5b8befb83d27358d6ff3c97660
+        kind: metric
+        model: orders
+        measure:
+          formula: corr(amount, other=quantity)
+          name: r
+  - name: cvs
+    expression:
+      sql: COVAR_SAMP(amount, quantity)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: cvs
+        fingerprint: c0aa4e88020d787001216a79ce2f63bc5721930b3f05e14ce6b9b2d2de4ad27a
+        kind: metric
+        model: orders
+        measure:
+          formula: covar_samp(amount, other=quantity)
+          name: cvs
+  - name: cvp
+    expression:
+      sql: COVAR_POP(amount, quantity)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: cvp
+        fingerprint: fd394eec10b4a95e38b1bd629f41b13540735c1244ae1bbd66301dc3c183bdc6
+        kind: metric
+        model: orders
+        measure:
+          formula: covar_pop(amount, other=quantity)
+          name: cvp
+  - name: wavg
+    expression:
+      sql: SUM(price * quantity) * 1.0 / NULLIF(SUM(CASE WHEN price IS NOT NULL THEN
+        quantity END), 0)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: wavg
+        fingerprint: dfccdcf0948b22cd969c8e65efb1144c92c229c2b3b459a3dc5758b99c05265f
+        kind: metric
+        model: orders
+        measure:
+          formula: weighted_avg(price, weight=quantity)
+          name: wavg
+  - name: paid_count
+    expression:
+      sql: SUM(CAST(is_paid AS INT))
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: paid_count
+        fingerprint: 66b6fa6003c21d0acaad29e1effbecfeee9f2f23637d0b2ac5a339d587676428
+        kind: metric
+        model: orders
+        measure:
+          formula: sum(is_paid)
+          name: paid_count
+  - name: paid_masked
+    expression:
+      sql: SUM(CAST(paid_flag AS INT))
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: paid_masked
+        fingerprint: bbf14fbf28d3891ef75fb67385fff6cab36740c56fee174b3435770da7e31b21
+        kind: metric
+        model: orders
+        measure:
+          formula: sum(paid_flag)
+          name: paid_masked
+  - name: done_amount
+    expression:
+      sql: SUM(completed_amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: done_amount
+        fingerprint: 8f708d66316826eac93e3342ea476c9b883fcabbb9cf9474c0c4cab6424dbe9b
+        kind: metric
+        model: orders
+        measure:
+          formula: sum(completed_amount)
+          name: done_amount
+  - name: done_count
+    expression:
+      sql: COUNT(completed_amount)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: done_count
+        fingerprint: 80056540032d3fab85d9d583c6605272b4ed1565ecd035b5b4b670f3068b0a78
+        kind: metric
+        model: orders
+        measure:
+          formula: count(completed_amount)
+          name: done_count
+  - name: net_total
+    expression:
+      sql: SUM(net)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: net_total
+        fingerprint: cf700d4b2fd0161018c1851579cc1e137f970c3b8ac098e82a36ec1c1e346110
+        kind: metric
+        model: orders
+        measure:
+          formula: sum(net)
+          name: net_total
+  - name: notes
+    expression:
+      sql: COUNT(note)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: notes
+        fingerprint: a534032a06b143da545d59ddc7541d48adfbc052b12a9534d95e8bbb58c78671
+        kind: metric
+        model: orders
+        measure:
+          formula: count(note)
+          name: notes
+  - name: max_note
+    expression:
+      sql: MAX(note)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: max_note
+        fingerprint: 841002eaa1d3a59c10bfb8830258d431781ec8c08a798bb6119c25f5d5d07bb8
+        kind: metric
+        model: orders
+        measure:
+          formula: max(note)
+          name: max_note
+  - name: trimmed
+    expression:
+      sql: SUM(CASE WHEN amount < 15 THEN amount END)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 1
+        entity: trimmed
+        fingerprint: 28182965987401c5f232171cc83ebba71e7a62bfa636b9be2cc3b3aa36dac796
+        kind: metric
+        model: orders
+        measure:
+          formula: trimmed_sum(amount)
+          name: trimmed
+  nonportable_extensions:
+  - vendor_name: SLAYER
+    data:
+      version: 1
+      entity: orders
+      fingerprint: 474e6c9cd28a2f4af1c0e0af3e9e071e81d9a8f4c4c3b6b6a221ca3234f36dde
+      kind: dataset
+      source:
+        sql_table: orders
+        filters: []
+        query_variables: {}
+      hidden: false
+      access_tags: []
+      default_time_dimension: ordered_on
+      aggregations:
+      - name: trimmed_sum
+        formula: SUM(CASE WHEN {value} < 15 THEN {value} END)
+        params: []
+      columns:
+      - name: segment
+        sql: customers.segment
+        type: TEXT
+        primary_key: false
+        unique: false
+        hidden: false
+      measures:
+      - formula: sum(amount * customers.rate)
+        name: discounted
+      - formula: change_pct(revenue)
+        name: revenue_growth
+      - formula: cumsum(revenue)
+        name: running
+      - formula: last(amount)
+        name: latest_amount
+      - formula: sum(amount, window='30d')
+        name: rev_30d
+      - formula: sum(amount, partition_by=region)
+        name: region_total
+relationships:
+- name: orders_customers
+  from: orders
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - id
+  nonportable_extensions:
+  - vendor_name: SLAYER
+    data:
+      version: 1
+      entity: orders_customers
+      fingerprint: 5c4f0de8b11bc53b199fcf784415e572fb4cf269d674eacd5e4e3a74a8ca5ea7
+      kind: relationship
+      declarations:
+      - model: orders
+        join:
+          target_model: customers
+          join_pairs:
+          - - customer_id
+            - id
+          join_type: left
+          cardinality: many_to_one
+metrics:
+- name: aov_per_customer
+  expression:
+    sql: SUM(orders.amount) / COUNT(DISTINCT customers.id)
+  nonportable_extensions:
+  - vendor_name: SLAYER
+    data:
+      version: 1
+      entity: aov_per_customer
+      fingerprint: 8d0925991fe143cee53a57609021fd1f036d1c3c7de63621e76e29da47f0dcf4
+      kind: metric
+      model: orders
+      measure:
+        formula: sum(amount) / count_distinct(customers.id)
+        name: aov_per_customer

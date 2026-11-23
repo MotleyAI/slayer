@@ -17,15 +17,15 @@ from slayer.api.server import QueryRequest, create_app
 from slayer.mcp.server import create_mcp_server
 
 from tests._deprecated_input_helpers import deprecated_in, mcp_payload, recorded
-from tests._dev1840_fixtures import _seed_sqlite, dev1840_models
+from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
 
-_STRICT_BODY = {"source_model": "orders", "measures": [{"formula": "count(*)"}], "strict": True}
+_STRICT_BODY = {"population": "orders", "metrics": [{"metric": "count(orders.*)"}], "strict": True}
 
 _ASSOCIATE_BODY = {
-    "source_model": "orders",
-    "dimensions": ["status"],
-    "measures": [{"formula": "sum(customers.spend)", "name": "cm"}],
+    "population": "orders",
+    "dimensions": ["orders.status"],
+    "metrics": [{"metric": "sum(customers.spend)", "alias": "cm"}],
     "to_many_handling": "associate",
 }
 
@@ -36,7 +36,7 @@ async def storage() -> AsyncIterator[object]:
         db_path = os.path.join(d, "data.sqlite")
         _seed_sqlite(db_path)
         engine = await build_exec_engine(
-            db_path, dialect="sqlite", models=dev1840_models())
+            db_path, dialect="sqlite", datasets=dev1840_datasets())
         yield engine.storage
 
 
@@ -52,7 +52,7 @@ class TestRestSurface:
         client = TestClient(create_app(storage=storage))
         resp = client.post("/query", json=_ASSOCIATE_BODY)
         assert resp.status_code == 200, resp.text
-        by = {r["orders.status"]: float(r["orders.cm"]) for r in resp.json()["data"]}
+        by = {r["orders.status"]: float(r["cm"]) for r in resp.json()["data"]}
         assert by["ok"] == pytest.approx(420.0)
         assert by["new"] == pytest.approx(290.0)
 
@@ -73,21 +73,22 @@ class TestRestSurface:
         assert len(deprecated_in(resp.json()["warnings"])) == warned
 
     async def test_fresh_strict_keeps_the_rest_of_a_versioned_payload_migrated(self, storage) -> None:
-        body = {**_STRICT_BODY, "version": 3.9, "source_model": {"source_name": "orders", "joins": []}}
+        body = {"source_model": {"source_name": "orders", "joins": []}, "measures": [{"formula": "count(*)"}],
+                "strict": True, "version": 3.9}
         client = TestClient(create_app(storage=storage))
         with recorded():
             resp = client.post("/query", json=body)
         assert resp.status_code == 200, resp.text
-        assert len(deprecated_in(resp.json()["warnings"])) == 1
+        assert len([w for w in deprecated_in(resp.json()["warnings"]) if w["old"] == "strict"]) == 1
 
     async def test_association_slayer_error_maps_to_400(self, storage) -> None:
         """An association-eligibility ``SlayerError`` (a status-grained attached
         parameter the customer entity does not determine) is a client error
         (400), not a 500."""
         client = TestClient(create_app(storage=storage))
-        body = {"source_model": "orders", "dimensions": ["status"],
-                "measures": [{"formula": "weighted_avg(customers.spend, "
-                              "weight=sum(amount, partition_by=status))"}],
+        body = {"population": "orders", "dimensions": ["orders.status"],
+                "metrics": [{"metric": "weighted_avg(customers.spend, "
+                              "weight=sum(orders.amount, partition_by=orders.status))"}],
                 "to_many_handling": "associate"}
         resp = client.post("/query", json=body)
         assert resp.status_code == 400, resp.text

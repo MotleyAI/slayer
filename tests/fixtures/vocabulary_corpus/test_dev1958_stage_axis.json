@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dev1958_stage_axis.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  }
+ ]
+}

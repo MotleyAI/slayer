@@ -104,7 +104,7 @@ async def test_get_result_column_types_cross_call_sees_same_in_memory_db() -> No
     )
     types = await client.get_result_column_types(
         render_type_probe(sqlglot.parse_one("SELECT a, b FROM u"), dialect=SqliteDialect()))
-    assert types == {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
+    assert types == {"a": ResultColumnType(type=DataType.INTEGER), "b": ResultColumnType(type=DataType.STRING)}
 
 
 async def test_two_clients_get_isolated_in_memory_dbs(no_retry: None) -> None:

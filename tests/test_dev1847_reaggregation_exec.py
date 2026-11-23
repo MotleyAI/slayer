@@ -1,4 +1,4 @@
-"""DEV-1847 tasks 1.2–1.4 — executed-value re-aggregation tests (SQLite +
+"""Executed-value re-aggregation tests (SQLite +
 DuckDB). The headline oracle and its distinguishable wrong value, the outer
 operator family, to-one chain attribution, and the null / all-null / keyless
 pins. All fail until the feature lands (the parse gate rejects the outer wrap).
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryDimension, QueryMetric
+
 from tests._dev1847_fixtures import (
     AVG_CITY_TOTAL_BY_REGION,
     CHAIN_AVG_BY_REGION,
@@ -24,8 +26,6 @@ from tests._dev1847_fixtures import (
     INNER_CR,
     KEYLESS_GRAND_TOTAL,
     ROW_WEIGHTED_WRONG,
-    ColumnRef,
-    ModelMeasure,
     SlayerQuery,
     broadcast_warnings,
     chain_q,
@@ -44,8 +44,8 @@ async def exec_engine(request):
         yield engine
 
 
-def _region_vals(resp, measure="sales.acr"):
-    return {k[0]: v[measure] for k, v in region_key(resp).items()}
+def _region_vals(resp, metric="acr"):
+    return {k[0]: v[metric] for k, v in region_key(resp).items()}
 
 
 class TestHeadlineOracle:
@@ -53,8 +53,8 @@ class TestHeadlineOracle:
         """Scenario: Average of city totals per region — unweighted, by executed
         values, distinguishable from the row-count-weighted wrong value."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[reagg("avg", INNER_CR, name="acr")]))
+            dimensions=["sales.region"],
+            metrics=[reagg("avg", INNER_CR, name="acr")]))
         vals = _region_vals(resp)
         for region, expected in AVG_CITY_TOTAL_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -63,17 +63,17 @@ class TestHeadlineOracle:
             assert float(vals[region]) != pytest.approx(wrong)
 
     async def test_adding_reaggregated_measure_is_cardinality_neutral(self, exec_engine):
-        """Adding the re-aggregated measure changes neither the row set nor the
-        sibling plain measure (the core SLayer invariant)."""
+        """Adding the re-aggregated metric changes neither the row set nor the
+        sibling plain metric (the core SLayer invariant)."""
         base = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         with_reagg = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       reagg("avg", INNER_CR, name="acr")]))
-        a = {k: v["sales.tot"] for k, v in region_key(base).items()}
-        b = {k: v["sales.tot"] for k, v in region_key(with_reagg).items()}
+        a = {k: v["tot"] for k, v in region_key(base).items()}
+        b = {k: v["tot"] for k, v in region_key(with_reagg).items()}
         assert set(a) == set(b)
         for k in a:
             assert a[k] == b[k]
@@ -85,8 +85,8 @@ class TestDegenerateIdentity:
         avg(sum(amount)) equals the per-cell sum and warns with the partition_by
         remedy (operand grain == outer grain)."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="avg(sum(amount))", name="acr")]))
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric="avg(sum(sales.amount))", alias="acr")]))
         vals = _region_vals(resp)
         for region, total in DEGENERATE_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(total)
@@ -104,11 +104,11 @@ class TestChainAttribution:
         partitions exactly with NO broadcast warning."""
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            measures=[reagg("avg", "sum(amount, partition_by=customer_id)",
+            metrics=[reagg("avg", "sum(corders.amount, partition_by=corders.customer_id)",
                             name="acc")]))
-        by = rows_by(resp, "corders.customers.regions.name")
+        by = rows_by(resp, "customers.regions.name")
         for region, expected in CHAIN_AVG_BY_REGION.items():
-            assert float(by[(region,)]["corders.acc"]) == pytest.approx(expected)
+            assert float(by[(region,)]["acc"]) == pytest.approx(expected)
         assert broadcast_warnings(resp) == []
 
 
@@ -117,9 +117,9 @@ class TestOuterOperatorFamily:
         """Scenario: count over an attached operand counts the inner cells with a
         non-null value."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[reagg("count", INNER_CR, name="nc")]))
-        vals = _region_vals(resp, "sales.nc")
+            dimensions=["sales.region"],
+            metrics=[reagg("count", INNER_CR, name="nc")]))
+        vals = _region_vals(resp, "nc")
         for region, n in COUNT_CITY_CELLS_BY_REGION.items():
             assert int(vals[region]) == n
 
@@ -133,9 +133,9 @@ class TestOuterOperatorFamily:
         """Requirement: the plain scalar family resolves over the inner grain
         rows — East's city totals are [50, 50, 80]."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[reagg(agg, INNER_CR, name="v")]))
-        east = _region_vals(resp, "sales.v")["East"]
+            dimensions=["sales.region"],
+            metrics=[reagg(agg, INNER_CR, name="v")]))
+        east = _region_vals(resp, "v")["East"]
         assert float(east) == pytest.approx(float(expected))
 
     async def test_percentile_is_bounded_by_the_cell_totals(self, exec_engine):
@@ -143,21 +143,21 @@ class TestOuterOperatorFamily:
         region's city totals lies within [min, max] of those totals (exact
         interpolation differs by engine, so the bound is the portable oracle)."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[reagg("percentile", INNER_CR, name="p", p=0.9)]))
-        north = float(_region_vals(resp, "sales.p")["North"])
+            dimensions=["sales.region"],
+            metrics=[reagg("percentile", INNER_CR, name="p", p=0.9)]))
+        north = float(_region_vals(resp, "p")["North"])
         # North city totals are [30, 60]; the 0.9 percentile sits strictly above
         # the mean/median (45) and at most the max (60), excluding min/avg/median
         # — robust across PERCENTILE_CONT/DISC interpolation.
         assert 45.0 < north <= 60.0
 
     async def test_custom_model_defined_outer_aggregation(self, exec_engine):
-        """Requirement: a model-defined custom aggregation is a valid OUTER
+        """Requirement: a dataset-defined custom aggregation is a valid OUTER
         aggregation — ``dsum`` (SUM) of the city totals equals the region total."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[reagg("dsum", INNER_CR, name="ds")]))
-        vals = _region_vals(resp, "sales.ds")
+            dimensions=["sales.region"],
+            metrics=[reagg("dsum", INNER_CR, name="ds")]))
+        vals = _region_vals(resp, "ds")
         for region, total in DEGENERATE_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(total)
 
@@ -169,15 +169,15 @@ class TestNullEmptyKeyless:
         avg(12, 8) = 10, not avg(7, 5, 8)=6.67 nor the NULL-excluded avg(8)=8."""
         # Inner producer grain: the (Gap, NULL) cell totals both NULL-city rows.
         cells = await exec_engine.execute(sales_q(
-            dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=INNER_CR, name="cr")]))
+            dimensions=["sales.region", "sales.city"],
+            metrics=[QueryMetric(metric=INNER_CR, alias="cr")]))
         by_cell = rows_by(cells, "sales.region", "sales.city")
-        assert float(by_cell[("Gap", None)]["sales.cr"]) == pytest.approx(
+        assert float(by_cell[("Gap", None)]["cr"]) == pytest.approx(
             GAP_NULL_CELL_TOTAL)
         # Re-aggregated by region, that single null cell participates once.
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[reagg("avg", INNER_CR, name="acr")]))
+            dimensions=["sales.region"],
+            metrics=[reagg("avg", INNER_CR, name="acr")]))
         assert float(_region_vals(resp)["Gap"]) == pytest.approx(GAP_AVG)
 
     async def test_empty_population_cell_is_not_fabricated(self, exec_engine):
@@ -186,8 +186,8 @@ class TestNullEmptyKeyless:
         fabricating a row. Filtering to product='Q' leaves Gap/Void with no
         rows (both are P-only)."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], filters=["product = 'Q'"],
-            measures=[reagg("avg", INNER_CR, name="acr")]))
+            dimensions=["sales.region"], filter=["sales.product = 'Q'"],
+            metrics=[reagg("avg", INNER_CR, name="acr")]))
         regions = {k[0] for k in region_key(resp)}
         assert "Gap" not in regions
         assert "Void" not in regions
@@ -198,10 +198,10 @@ class TestNullEmptyKeyless:
         composite cannot fabricate cells for filtered-out cities (P-only
         South/Alpha would otherwise average in as 0)."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], filters=["product = 'Q'"],
-            measures=[ModelMeasure(
-                formula=f"avg(coalesce({INNER_CR}, 0))", name="acz")]))
-        vals = _region_vals(resp, "sales.acz")
+            dimensions=["sales.region"], filter=["sales.product = 'Q'"],
+            metrics=[QueryMetric(
+                metric=f"avg(coalesce({INNER_CR}, 0))", alias="acz")]))
+        vals = _region_vals(resp, "acz")
         assert set(vals) == set(FILTERED_COALESCE_AVG_BY_REGION)
         for region, expected in FILTERED_COALESCE_AVG_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -210,34 +210,34 @@ class TestNullEmptyKeyless:
         """Scenario: All-null operand values — Void's only cell sums to NULL, so
         avg yields NULL and count yields 0 for that cell."""
         avg_resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[reagg("avg", INNER_CR, name="acr")]))
-        assert region_key(avg_resp)[("Void",)]["sales.acr"] is None
+            dimensions=["sales.region"],
+            metrics=[reagg("avg", INNER_CR, name="acr")]))
+        assert region_key(avg_resp)[("Void",)]["acr"] is None
         cnt_resp = await exec_engine.execute(sales_q(
-            dimensions=["region"],
-            measures=[reagg("count", INNER_CR, name="nc")]))
-        assert int(region_key(cnt_resp)[("Void",)]["sales.nc"]) == 0
+            dimensions=["sales.region"],
+            metrics=[reagg("count", INNER_CR, name="nc")]))
+        assert int(region_key(cnt_resp)[("Void",)]["nc"]) == 0
 
     async def test_keyless_inner_is_global_identity_plus_warning(self, exec_engine):
         """Scenario: Keyless inner aggregate — avg(sum(amount, partition_by=[]))
         executes as the global total with the degenerate warning, no error."""
         resp = await exec_engine.execute(sales_q(
-            measures=[reagg("avg", "sum(amount, partition_by=[])", name="g")]))
-        assert float(resp.data[0]["sales.g"]) == pytest.approx(KEYLESS_GRAND_TOTAL)
+            metrics=[reagg("avg", "sum(sales.amount, partition_by=[])", name="g")]))
+        assert float(resp.data[0]["g"]) == pytest.approx(KEYLESS_GRAND_TOTAL)
         assert degenerate_warnings(resp)
 
 
 class TestCrossModelInner:
     async def test_cross_model_inner_aggregate_executes(self, exec_engine):
-        """Deferred from stage 2: a cross-model inner aggregate (corders.amount
+        """Deferred from stage 2: a cross-dataset inner aggregate (corders.amount
         summed from customers at the region_id grain) re-aggregates over its
         cells — region 1 orders 10+20+40, region 2 order 100."""
         resp = await exec_engine.execute(SlayerQuery(
-            source_model="customers",
-            dimensions=[ColumnRef(name="region_id")],
-            measures=[ModelMeasure(
-                formula="avg(sum(corders.amount, partition_by=region_id))",
-                name="art")]))
+            population="customers",
+            dimensions=[QueryDimension(field="customers.region_id")],
+            metrics=[QueryMetric(
+                metric="avg(sum(corders.amount, partition_by=customers.region_id))",
+                alias="art")]))
         by = rows_by(resp, "customers.region_id")
-        assert float(by[(1,)]["customers.art"]) == pytest.approx(70.0)
-        assert float(by[(2,)]["customers.art"]) == pytest.approx(100.0)
+        assert float(by[(1,)]["art"]) == pytest.approx(70.0)
+        assert float(by[(2,)]["art"]) == pytest.approx(100.0)

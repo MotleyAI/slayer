@@ -14,15 +14,16 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.errors import MaterialisationStageError
+from slayer.core.enums import DataType
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     Phase,
 )
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import (
     PlannedQuery,
@@ -35,7 +36,7 @@ from slayer.ir.planned import (
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.generator import generate_from_planned
 
-from tests._dev1739_fixtures import dev1739_models, make_exec_engine, month_key, month_td
+from tests._dev1739_fixtures import dev1739_datasets, make_exec_engine, month_key, month_td
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -46,57 +47,57 @@ async def exec_engine(request):
 
 def _band(key: str, threshold: int) -> dict:
     return {
-        "expression": f"case when sum(amount, partition_by={key}) > {threshold} "
+        "field": f"case when sum(orders.amount, partition_by={key}) > {threshold} "
                       "then 'high' else 'other' end",
-        "name": "band",
+        "alias": "band",
     }
 
 
-REVENUE = ModelMeasure(formula="sum(amount)", name="revenue")
+REVENUE = QueryMetric(metric="sum(orders.amount)", alias="revenue")
 
 
 def _q(**kw) -> SlayerQuery:
-    return SlayerQuery(source_model="orders", **kw)
+    return SlayerQuery(population="orders", **kw)
 
 
 def _rows(resp, *cols) -> list:
     """Every result row as a tuple — a list, so a repeated row stays visible."""
-    return sorted((tuple(r[f"orders.{c}"] for c in cols) for r in resp.data), key=repr)
+    return sorted((tuple(r[c] for c in cols) for r in resp.data), key=repr)
 
 
 # --------------------------------------------------------------------------- #
 # Shape A — a row filter on a computed dimension's partition key.
 # --------------------------------------------------------------------------- #
 class TestPartitionKeyFilter:
-    @pytest.mark.parametrize("flt", ["customer_id is not null", "customer_id + 0 > 0"])
+    @pytest.mark.parametrize("flt", ["orders.customer_id is not null", "orders.customer_id + 0 > 0"])
     async def test_filter_on_partition_key_keeps_band_grain(self, exec_engine, flt) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 50)], measures=[REVENUE], filters=[flt],
+            dimensions=[_band("orders.customer_id", 50)], metrics=[REVENUE], filter=[flt],
         ))
         assert _rows(resp, "band", "revenue") == [("high", 160.0), ("other", 50.0)]
 
     async def test_restricting_filter_keeps_band_grain(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 50)], measures=[REVENUE],
-            filters=["customer_id = 1 or customer_id = 2"],
+            dimensions=[_band("orders.customer_id", 50)], metrics=[REVENUE],
+            filter=["orders.customer_id = 1 or orders.customer_id = 2"],
         ))
         assert _rows(resp, "band", "revenue") == [("high", 160.0)]
 
     async def test_single_band_is_one_row(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 10)], measures=[REVENUE],
-            filters=["customer_id is not null"],
+            dimensions=[_band("orders.customer_id", 10)], metrics=[REVENUE],
+            filter=["orders.customer_id is not null"],
         ))
         assert _rows(resp, "band", "revenue") == [("high", 210.0)]
 
     async def test_measure_partitioned_by_band_under_partition_key_filter(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region", _band("customer_id", 50)],
-            measures=[ModelMeasure(formula="sum(amount)", name="s"),
-                      ModelMeasure(formula="sum(amount, partition_by=band)", name="bt")],
-            filters=["customer_id is not null"],
+            dimensions=["orders.region", _band("orders.customer_id", 50)],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s"),
+                      QueryMetric(metric="sum(orders.amount, partition_by=band)", alias="bt")],
+            filter=["orders.customer_id is not null"],
         ))
-        assert _rows(resp, "region", "band", "s", "bt") == [
+        assert _rows(resp, "orders.region", "band", "s", "bt") == [
             ("North", "high", 100.0, 160.0),
             ("South", "other", 50.0, 50.0),
             (None, "high", 60.0, 160.0),
@@ -109,32 +110,32 @@ class TestGrainConsumersUnderPartitionKeyFilter:
 
     async def test_ranked_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 50)],
-            measures=[ModelMeasure(formula="last(amount, ordered_at)", name="v")],
-            filters=["customer_id is not null"],
+            dimensions=[_band("orders.customer_id", 50)],
+            metrics=[QueryMetric(metric="last(orders.amount, orders.ordered_at)", alias="v")],
+            filter=["orders.customer_id is not null"],
         ))
         assert _rows(resp, "band", "v") == [("high", 60.0), ("other", 25.0)]
 
     @pytest.mark.parametrize("formula,extra_filters,expected", [
-        ("cumsum(sum(amount))", [], [
+        ("cumsum(sum(orders.amount))", [], [
             ("high", "2024-01", 30.0), ("high", "2024-02", 100.0), ("high", "2024-03", 160.0),
             ("other", "2024-01", 25.0), ("other", "2024-03", 50.0),
         ]),
-        ("sum(amount, window='60d')", [], [
+        ("sum(orders.amount, window='60d')", [], [
             ("high", "2024-01", 30.0), ("high", "2024-02", 100.0), ("high", "2024-03", 130.0),
             ("other", "2024-01", 25.0), ("other", "2024-03", 25.0),
         ]),
-        ("sum(amount, window='60d')", ["ordered_at >= '2024-02-01'"], [
+        ("sum(orders.amount, window='60d')", ["orders.ordered_at >= '2024-02-01'"], [
             ("high", "2024-02", 100.0), ("high", "2024-03", 130.0), ("other", "2024-03", 25.0),
         ]),
     ])
     async def test_time_ordered_measure(self, exec_engine, formula, extra_filters, expected) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band("customer_id", 50)], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=formula, name="v")],
-            filters=["customer_id is not null", *extra_filters],
+            dimensions=[_band("orders.customer_id", 50)], time_dimensions=month_td(),
+            metrics=[QueryMetric(metric=formula, alias="v")],
+            filter=["orders.customer_id is not null", *extra_filters],
         ))
-        got = sorted(((r["orders.band"], month_key(r["orders.ordered_at"]), float(r["orders.v"]))
+        got = sorted(((r["band"], month_key(r["orders.ordered_at"]), float(r["v"]))
                       for r in resp.data), key=repr)
         assert got == expected
 
@@ -146,38 +147,38 @@ class TestJoinedPartitionKeyFilter:
     ])
     async def test_band_spanning_two_key_values_is_one_row(self, exec_engine, key, threshold) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[_band(key, threshold)], measures=[REVENUE],
-            filters=[f"{key} is not null"],
+            dimensions=[_band(key, threshold)], metrics=[REVENUE],
+            filter=[f"{key} is not null"],
         ))
         assert _rows(resp, "band", "revenue") == [("high", 210.0)]
 
 
 # --------------------------------------------------------------------------- #
-# Shape B — an order key beside a first/last measure.
+# Shape B — an order key beside a first/last metric.
 # --------------------------------------------------------------------------- #
 class TestOrderKeyBesideRankedMeasure:
-    @pytest.mark.parametrize("order_col", ["city", "customers.regions.name"])
+    @pytest.mark.parametrize("order_col", ["orders.city", "customers.regions.name"])
     @pytest.mark.parametrize("formula,expected", [
-        ("last(amount, ordered_at)", 60.0),
-        ("first(amount, ordered_at)", 10.0),
+        ("last(orders.amount, orders.ordered_at)", 60.0),
+        ("first(orders.amount, orders.ordered_at)", 10.0),
     ])
     async def test_zero_dimension_query_is_one_row(
         self, exec_engine, formula, expected, order_col,
     ) -> None:
         resp = await exec_engine.execute(_q(
-            measures=[ModelMeasure(formula=formula, name="v")],
-            order=[{"column": order_col, "direction": "desc"}],
+            metrics=[QueryMetric(metric=formula, alias="v")],
+            order=[{"field": order_col, "direction": "desc"}],
         ))
         assert _rows(resp, "v") == [(expected,)]
 
     async def test_one_row_per_dimension_value(self, exec_engine) -> None:
         # Regression guard: a dimensioned query already wraps the sort key.
         resp = await exec_engine.execute(_q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="last(amount, ordered_at)", name="v")],
-            order=[{"column": "city", "direction": "desc"}],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="last(orders.amount, orders.ordered_at)", alias="v")],
+            order=[{"field": "orders.city", "direction": "desc"}],
         ))
-        assert _rows(resp, "region", "v") == [("North", 30.0), ("South", 25.0), (None, 60.0)]
+        assert _rows(resp, "orders.region", "v") == [("North", 30.0), ("South", 25.0), (None, 60.0)]
 
 
 # --------------------------------------------------------------------------- #
@@ -186,11 +187,11 @@ class TestOrderKeyBesideRankedMeasure:
 class TestProducerGrainCoverage:
     async def test_measure_partitioned_by_computed_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["region", _band("customer_id", 50)],
-            measures=[ModelMeasure(formula="sum(amount)", name="s"),
-                      ModelMeasure(formula="sum(amount, partition_by=band)", name="bt")],
+            dimensions=["orders.region", _band("orders.customer_id", 50)],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s"),
+                      QueryMetric(metric="sum(orders.amount, partition_by=band)", alias="bt")],
         ))
-        assert _rows(resp, "region", "band", "s", "bt") == [
+        assert _rows(resp, "orders.region", "band", "s", "bt") == [
             ("North", "high", 100.0, 160.0),
             ("South", "other", 50.0, 50.0),
             (None, "high", 60.0, 160.0),
@@ -201,8 +202,8 @@ class TestProducerGrainCoverage:
 # PlannedQuery.grain — the planner-owned grain fact.
 # --------------------------------------------------------------------------- #
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1739_models()
-    return ResolvedSourceBundle(dialect="duckdb", source_model=models[0], referenced_models=models[1:])
+    models = dev1739_datasets()
+    return ResolvedSourceBundle(dialect="duckdb", population=models[0], referenced_datasets=models[1:])
 
 
 def _plan(**kw) -> PlannedQuery:
@@ -217,43 +218,43 @@ def _slot_id_by_alias(pq: PlannedQuery, alias: str) -> str:
 class TestPlannedGrain:
     def test_grain_is_dimension_positions_in_order(self) -> None:
         pq = _plan(
-            dimensions=["region", {"expression": "region", "name": "r2"}, _band("customer_id", 50)],
-            time_dimensions=month_td(), measures=[REVENUE],
+            dimensions=["orders.region", {"field": "orders.region", "alias": "r2"}, _band("orders.customer_id", 50)],
+            time_dimensions=month_td(), metrics=[REVENUE],
         )
         assert pq.grain == [
-            _slot_id_by_alias(pq, "region"),
+            _slot_id_by_alias(pq, "orders.region"),
             _slot_id_by_alias(pq, "band"),
-            _slot_id_by_alias(pq, "ordered_at"),
+            _slot_id_by_alias(pq, "orders.ordered_at"),
         ]
 
-    @pytest.mark.parametrize("formula", ["sum(amount)", "last(amount, ordered_at)"])
+    @pytest.mark.parametrize("formula", ["sum(orders.amount)", "last(orders.amount, orders.ordered_at)"])
     def test_grouped_zero_dimension_grain_is_empty(self, formula) -> None:
-        pq = _plan(measures=[ModelMeasure(formula=formula, name="v")])
+        pq = _plan(metrics=[QueryMetric(metric=formula, alias="v")])
         assert pq.grain == []
 
     def test_raw_rows_grain_is_none(self) -> None:
-        pq = _plan(dimensions=["region", "city"], distinct_dimension_values=False)
+        pq = _plan(dimensions=["orders.region", "orders.city"], distinct_dimension_values=False)
         assert pq.grain is None
 
     def test_partition_key_filter_column_is_not_a_base_column(self) -> None:
         pq = _plan(
-            dimensions=[_band("customer_id", 50)], measures=[REVENUE],
-            filters=["customer_id is not null"],
+            dimensions=[_band("orders.customer_id", 50)], metrics=[REVENUE],
+            filter=["orders.customer_id is not null"],
         )
         assert pq.grain == [_slot_id_by_alias(pq, "band")]
-        [hidden] = [s for s in pq.row_slots if s.key == ColumnKey(path=(), leaf="customer_id")]
+        [hidden] = [s for s in pq.row_slots if s.key == FieldKey(path=(), leaf="customer_id")]
         assert hidden.hidden
-        assert hidden.needs_column is False
+        assert hidden.needs_field is False
 
 
 # --------------------------------------------------------------------------- #
 # The grain-determination invariant (hand-built plans).
 # --------------------------------------------------------------------------- #
 _BASE = Stage(kind=StageKind.BASE)
-_REGION = ColumnKey(path=(), leaf="region")
-_CITY = ColumnKey(path=(), leaf="city")
-_SUM = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum")
-_PLACEHOLDER = ColumnKey(path=(), leaf=f"{REGROUP_LEAF_PREFIX}0__amount_sum")
+_REGION = FieldKey(path=(), leaf="region")
+_CITY = FieldKey(path=(), leaf="city")
+_SUM = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum")
+_PLACEHOLDER = FieldKey(path=(), leaf=f"{REGROUP_LEAF_PREFIX}0__amount_sum")
 
 
 def _stage_error(build: Callable[[], object]) -> str:
@@ -267,28 +268,28 @@ def _stage_error(build: Callable[[], object]) -> str:
     return str(err)
 
 
-def _dim(sid: str = "d", key: ColumnKey = _REGION) -> ValueSlot:
-    return ValueSlot(id=sid, key=key, declared_name=key.leaf, public_name=key.leaf,
+def _dim(sid: str = "d", key: FieldKey = _REGION) -> ValueSlot:
+    return ValueSlot(type=DataType.INTEGER, id=sid, key=key, declared_name=key.leaf, public_name=key.leaf,
                      public_aliases=[key.leaf], is_dimension=True, phase=Phase.ROW,
-                     stage=_BASE, needs_column=True)
+                     stage=_BASE, needs_field=True)
 
 
-def _measure(sid: str = "m") -> ValueSlot:
-    return ValueSlot(id=sid, key=_SUM, declared_name="s", public_name="s", public_aliases=["s"],
-                     phase=Phase.AGGREGATE, stage=_BASE, needs_column=True)
+def _metric(sid: str = "m") -> ValueSlot:
+    return ValueSlot(type=DataType.INTEGER, id=sid, key=_SUM, declared_name="s", public_name="s", public_aliases=["s"],
+                     phase=Phase.AGGREGATE, stage=_BASE, needs_field=True)
 
 
-def _hidden(sid: str, key, *, needs_column: bool = True) -> ValueSlot:
-    return ValueSlot(id=sid, key=key, declared_name=f"__{sid}", hidden=True, phase=Phase.ROW,
-                     stage=_BASE, needs_column=needs_column)
+def _hidden(sid: str, key, *, needs_field: bool = True) -> ValueSlot:
+    return ValueSlot(type=DataType.INTEGER, id=sid, key=key, declared_name=f"__{sid}", hidden=True, phase=Phase.ROW,
+                     stage=_BASE, needs_field=needs_field)
 
 
 def _producer() -> PlannedQuery:
     return PlannedQuery(source_relation="orders", row_slots=[_dim("p_d")],
-                        aggregate_slots=[_measure("p_m")], projection=["p_d", "p_m"], grain=["p_d"])
+                        aggregate_slots=[_metric("p_m")], projection=["p_d", "p_m"], grain=["p_d"])
 
 
-def _row_attach(host_key: ColumnKey = _REGION) -> RegroupAttachPlan:
+def _row_attach(host_key: FieldKey = _REGION) -> RegroupAttachPlan:
     return RegroupAttachPlan(
         producer_plan=_producer(), alias_hint="p", attach_phase="row",
         join_pairs=[(host_key, "p_d")],
@@ -300,7 +301,7 @@ def _row_attach(host_key: ColumnKey = _REGION) -> RegroupAttachPlan:
 def _grouped(*extra_rows: ValueSlot, grain: Optional[list] = None,
              attaches: tuple = ()) -> PlannedQuery:
     return PlannedQuery(
-        source_relation="orders", row_slots=[_dim(), *extra_rows], aggregate_slots=[_measure()],
+        source_relation="orders", row_slots=[_dim(), *extra_rows], aggregate_slots=[_metric()],
         regroup_attach_plans=list(attaches), projection=["d", "m"],
         grain=["d"] if grain is None else grain,
     )
@@ -317,7 +318,7 @@ class TestGrainDeterminationInvariant:
     def test_zero_dimension_grouped_plan_rejects_hidden_base_column(self) -> None:
         _stage_error(lambda: PlannedQuery(
             source_relation="orders", row_slots=[_hidden("h", _CITY)],
-            aggregate_slots=[_measure()], projection=["m"], grain=[],
+            aggregate_slots=[_metric()], projection=["m"], grain=[],
         ))
 
     def test_raw_rows_plan_is_exempt(self) -> None:
@@ -325,7 +326,7 @@ class TestGrainDeterminationInvariant:
                      projection=["d"], grain=None)
 
     def test_hidden_value_without_a_column_is_accepted(self) -> None:
-        _grouped(_hidden("h", _CITY, needs_column=False))
+        _grouped(_hidden("h", _CITY, needs_field=False))
 
     def test_literal_is_accepted(self) -> None:
         _grouped(_hidden("h", LiteralKey(value=Decimal(1))))
@@ -347,7 +348,7 @@ class TestGrainDeterminationInvariant:
     def test_violation_in_a_producer_plan_is_rejected(self) -> None:
         producer = PlannedQuery.model_construct(
             source_relation="orders", row_slots=[_dim("p_d"), _hidden("p_h", _CITY)],
-            aggregate_slots=[_measure("p_m")], projection=["p_d", "p_m"], grain=["p_d"],
+            aggregate_slots=[_metric("p_m")], projection=["p_d", "p_m"], grain=["p_d"],
         )
         attach = RegroupAttachPlan.model_construct(producer_plan=producer, alias_hint="p",
                                                    attach_phase="combined")
@@ -356,14 +357,14 @@ class TestGrainDeterminationInvariant:
 
 class TestRenderTimeInvariant:
     def test_model_copy_bypass_is_refused_at_render(self) -> None:
-        pq = _plan(dimensions=["region"], measures=[REVENUE])
+        pq = _plan(dimensions=["orders.region"], metrics=[REVENUE])
         bad = pq.model_copy(update={"row_slots": [*pq.row_slots, _hidden("h", _CITY)]})
         bundle = _bundle()
         with pytest.raises(MaterialisationStageError):
             generate_from_planned(planned_query=bad, bundle=bundle, dialect="duckdb")
 
     def test_model_copy_bypass_in_a_producer_is_refused_at_render(self) -> None:
-        pq = _plan(dimensions=[_band("customer_id", 50)], measures=[REVENUE])
+        pq = _plan(dimensions=[_band("orders.customer_id", 50)], metrics=[REVENUE])
         [attach] = pq.regroup_attach_plans
         producer = attach.producer_plan
         bad_producer = producer.model_copy(

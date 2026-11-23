@@ -21,33 +21,33 @@ SKILLS = {c["id"]: c["skills"] for c in CONTRACTORS}
 class TestRawRows:
     async def test_list_projected_per_record(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute(query(dimensions=["id", "skills"], distinct_dimension_values=False))
+            resp = await engine.execute(query(dimensions=["contractors.id", "contractors.skills"], distinct_dimension_values=False))
         assert len(resp.data) == len(CONTRACTORS)
         assert _lists(resp.data, key="contractors.id", value="contractors.skills") == SKILLS
 
     async def test_list_valued_expression_projected_per_record(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute(query(dimensions=["id", {"name": "s", "expression": "skills"}],
+            resp = await engine.execute(query(dimensions=["contractors.id", {"alias": "s", "field": "contractors.skills"}],
                                               distinct_dimension_values=False))
-        assert _lists(resp.data, key="contractors.id", value="contractors.s") == SKILLS
+        assert _lists(resp.data, key="contractors.id", value="s") == SKILLS
 
     async def test_identical_keyless_rows_stay_two_rows(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute({"source_model": "twins", "dimensions": ["name", "skills"],
+            resp = await engine.execute({"population": "twins", "dimensions": ["twins.name", "twins.skills"],
                                          "distinct_dimension_values": False})
         assert [list(r["twins.skills"]) for r in resp.data] == [["go"], ["go"]]
 
     async def test_list_through_a_to_one_join(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute({"source_model": "assignments", "dimensions": ["id", "contractors.skills"],
+            resp = await engine.execute({"population": "assignments", "dimensions": ["assignments.id", "contractors.skills"],
                                          "distinct_dimension_values": False})
-        assert _lists(resp.data, key="assignments.id", value="assignments.contractors.skills") == {
+        assert _lists(resp.data, key="assignments.id", value="contractors.skills") == {
             a: SKILLS.get(c) for a, c in ASSIGNMENTS}
 
     @pytest.mark.parametrize("distinct", [False, True])
     async def test_ordering_by_a_list_is_refused(self, distinct: bool) -> None:
-        body = query(dimensions=["id"], distinct_dimension_values=distinct,
-                     order=[{"column": "skills", "direction": "asc"}])
+        body = query(dimensions=["contractors.id"], distinct_dimension_values=distinct,
+                     order=[{"field": "contractors.skills", "direction": "asc"}])
         async with list_engine() as engine:
             with pytest.raises(ListTypeError, match="list"):
                 await engine.execute(body)
@@ -56,7 +56,7 @@ class TestRawRows:
 class TestGrouping:
     async def test_computed_dimension_checks_keep_their_precedence(self) -> None:
         """A raw-rows computed dimension holding an aggregation is refused for that, before any list rule."""
-        body = query(dimensions=["id", {"name": "s", "expression": "iif(count(*) > 1, skills, required)"}],
+        body = query(dimensions=["contractors.id", {"alias": "s", "field": "iif(count(contractors.*) > 1, contractors.skills, contractors.required)"}],
                      distinct_dimension_values=False)
         async with list_engine() as engine:
             with pytest.raises(SlayerError, match="distinct_dimension_values") as caught:

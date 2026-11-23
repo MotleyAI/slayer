@@ -1,11 +1,11 @@
-"""Query-backed expansion on the typed pipeline: ``_expand_query_backed_model``,
+"""Query-backed expansion on the typed pipeline: ``_expand_query_backed_dataset``,
 ``_validate_and_populate_cache`` and ``get_result_column_types``.
 
 * Stored ``source_queries`` are topo-sorted (Kahn), not required top-to-bottom.
-* Virtual-model columns are the PUBLIC slots only, typed from typed-plan slot types.
+* Virtual-dataset fields are the PUBLIC slots only, typed from typed-plan slot types.
 * Per-stage normalize + variable substitution mirror ``_execute_pipeline``.
-* ``expand_query_backed_models_in_bundle`` handles nested query-backed join
-  targets, query-backed stage sources, and the root ``ModelExtension`` overlay.
+* ``expand_query_backed_models_in_bundle`` handles nested query-backed relationship
+  targets, query-backed stage sources, and the root ``DatasetExtension`` overlay.
 * ``get_result_column_types`` renders its probe through ``generate_planned_stages``.
 """
 from __future__ import annotations
@@ -23,8 +23,8 @@ from sqlglot import exp
 import slayer.engine.query_engine as query_engine_module
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
+from slayer.core.query import DatasetExtension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -34,39 +34,39 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ---------------------------------------------------------------------------
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders_t",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(
                 name="amount",
-                sql="amount",
-                type=DataType.DOUBLE,
+                expression="amount",
+                datatype=DataType.FLOAT,
                 description="Total order amount in USD",
                 format=NumberFormat(type=NumberFormatType.CURRENCY),
             ),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
         ],
         default_time_dimension="created_at",
     )
 
 
-def _customers_model() -> SlayerModel:
-    return SlayerModel(
+def _customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         sql_table="customers_t",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -79,20 +79,20 @@ def _ds2() -> DatasourceConfig:
     return DatasourceConfig(name="ds2", type="sqlite", database=":memory:")
 
 
-async def _engine(*extra_models: SlayerModel) -> Tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
+async def _engine(*extra_datasets: SlayerDataset) -> Tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build YAMLStorage with ``orders`` saved + extras, return engine + tmp."""
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(_ds())
-    await storage.save_model(_orders_model())
-    for m in extra_models:
-        await storage.save_model(m)
+    await storage.save_dataset(_orders_dataset())
+    for m in extra_datasets:
+        await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
 
 
 async def _dry_run_sql(engine: SlayerQueryEngine, name: str) -> str:
-    """The SQL a dry run of the saved model ``name`` renders."""
+    """The SQL a dry run of the saved dataset ``name`` renders."""
     sql = (await engine.execute(name, dry_run=True)).sql
     assert sql is not None
     return sql
@@ -106,43 +106,43 @@ async def _dry_run_sql(engine: SlayerQueryEngine, name: str) -> str:
 class TestStoredSourceQueriesTopoSort:
     async def test_run_by_name_accepts_nonordered_join_target_stages(self) -> None:
         """Codex round-5 fix — ``engine.execute(name)`` must topologically
-        sort stored ``source_queries`` so out-of-order ``joins[].target_
-        model`` deps work end-to-end. Pre-fix the save path went through
-        ``_expand_query_backed_model`` (which sorts) but run-by-name went
+        sort stored ``source_queries`` so out-of-order ``relationships[].to``
+        deps work end-to-end. Pre-fix the save path went through
+        ``_expand_query_backed_dataset`` (which sorts) but run-by-name went
         through ``_execute_pipeline`` directly, and ``plan_stages._topo_
-        sort`` only handles ``source_model`` deps. So a model that saved
+        sort`` only handles ``population`` deps. So a dataset that saved
         successfully would fail when run by name.
         """
-        non_ordered = SlayerModel(
+        non_ordered = SlayerDataset(
             name="qb_runbyname_topo",
             data_source="ds",
             source_queries=[
                 # Out-of-order: ``main`` references ``kpi`` via
-                # joins.target_model but appears FIRST.
+                # relationships.to but appears FIRST.
                 SlayerQuery.model_validate({
                     "name": "main",
-                    "source_model": "orders",
-                    "extensions": [ModelExtension.model_validate({
-                        "source_name": "orders",
+                    "population": "orders",
+                    "extensions": [DatasetExtension.model_validate({
+                        "dataset": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
-                        # real exported column ("id"; "kpi_id" is only a label).
-                        "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
+                        # real exported field ("id"; "kpi_id" is only a label).
+                        "relationships": [{"to": "kpi", "from_columns": ["id"], "to_columns": ["id"]}],
                     })],
-                    "dimensions": ["status"],
-                    "measures": [{"formula": "sum(kpi._count)"}],
+                    "dimensions": ["orders.status"],
+                    "metrics": [{"metric": "sum(kpi._count)"}],
                 }),
                 SlayerQuery.model_validate({
                     "name": "kpi",
-                    "source_model": "orders",
-                    "measures": [{"formula": "count(*)"}],
-                    "dimensions": [{"name": "id", "label": "kpi_id"}],
+                    "population": "orders",
+                    "metrics": [{"metric": "count(orders.*)"}],
+                    "dimensions": [{"field": "orders.id", "label": "kpi_id"}],
                 }),
-                SlayerQuery(source_model="main"),
+                SlayerQuery(population="main"),
             ],
         )
         engine, tmp = await _engine()
         try:
-            await engine.save_model(non_ordered)
+            await engine.save_dataset(non_ordered)
             # Save worked (round-1 test pinned this). Now run by name:
             resp = await engine.execute("qb_runbyname_topo", dry_run=True)
             assert resp.sql is not None, "run-by-name must produce SQL"
@@ -150,38 +150,38 @@ class TestStoredSourceQueriesTopoSort:
             tmp.cleanup()
 
     async def test_topo_sort_accepts_nonordered_save_path(self) -> None:
-        """A query-backed model whose stored ``source_queries`` are NOT in
+        """A query-backed dataset whose stored ``source_queries`` are NOT in
         topological order saves cleanly under Stage B (legacy strict order
         would reject this as a forward reference)."""
-        non_ordered = SlayerModel(
+        non_ordered = SlayerDataset(
             name="topo_qb",
             data_source="ds",
             source_queries=[
                 # main references kpi (forward ref under legacy strict order)
                 SlayerQuery.model_validate({
                     "name": "main",
-                    "source_model": "orders",
-                    "extensions": [ModelExtension.model_validate({
-                        "source_name": "orders",
+                    "population": "orders",
+                    "extensions": [DatasetExtension.model_validate({
+                        "dataset": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
-                        # real exported column ("id"; "kpi_id" is only a label).
-                        "joins": [{"target_model": "kpi", "join_pairs": [["id", "id"]]}],
+                        # real exported field ("id"; "kpi_id" is only a label).
+                        "relationships": [{"to": "kpi", "from_columns": ["id"], "to_columns": ["id"]}],
                     })],
-                    "dimensions": ["status"],
-                    "measures": [{"formula": "sum(kpi._count)"}],
+                    "dimensions": ["orders.status"],
+                    "metrics": [{"metric": "sum(kpi._count)"}],
                 }),
                 SlayerQuery.model_validate({
                     "name": "kpi",
-                    "source_model": "orders",
-                    "measures": [{"formula": "count(*)"}],
-                    "dimensions": [ {"name": "id", "label": "kpi_id"} ],
+                    "population": "orders",
+                    "metrics": [{"metric": "count(orders.*)"}],
+                    "dimensions": [ {"field": "orders.id", "label": "kpi_id"} ],
                 }),
-                SlayerQuery(source_model="main"),
+                SlayerQuery(population="main"),
             ],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(non_ordered)
+            saved = await engine.save_dataset(non_ordered)
             assert "orders_t" in (await _dry_run_sql(engine, saved.name)).lower()
         finally:
             tmp.cleanup()
@@ -189,80 +189,80 @@ class TestStoredSourceQueriesTopoSort:
     async def test_cycle_raises_clearly(self) -> None:
         engine, tmp = await _engine()
         try:
-            mutual = SlayerModel(
+            mutual = SlayerDataset(
                 name="qb_cycle",
                 data_source="ds",
                 source_queries=[
                     SlayerQuery(
                         name="a",
-                        source_model="orders",
-                        extensions=[ModelExtension.model_validate({
-                            "source_name": "orders",
-                            "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
+                        population="orders",
+                        extensions=[DatasetExtension.model_validate({
+                            "dataset": "orders",
+                            "relationships": [{"to": "b", "from_columns": ["id"], "to_columns": ["id"]}],
                         })],
                     ),
                     SlayerQuery(
                         name="b",
-                        source_model="orders",
-                        extensions=[ModelExtension.model_validate({
-                            "source_name": "orders",
-                            "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+                        population="orders",
+                        extensions=[DatasetExtension.model_validate({
+                            "dataset": "orders",
+                            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
                         })],
                     ),
-                    SlayerQuery(source_model="a"),
+                    SlayerQuery(population="a"),
                 ],
             )
             with pytest.raises(ValueError, match=r"[Cc]ycle"):
-                await engine.save_model(mutual)
+                await engine.save_dataset(mutual)
         finally:
             tmp.cleanup()
 
     async def test_root_referenced_raises(self) -> None:
         engine, tmp = await _engine()
         try:
-            m = SlayerModel(
+            m = SlayerDataset(
                 name="qb_root_ref",
                 data_source="ds",
                 source_queries=[
-                    SlayerQuery(name="a", source_model="root_stage"),
-                    SlayerQuery(name="root_stage", source_model="orders"),
+                    SlayerQuery(name="a", population="root_stage"),
+                    SlayerQuery(name="root_stage", population="orders"),
                 ],
             )
             with pytest.raises(ValueError, match="root"):
-                await engine.save_model(m)
+                await engine.save_dataset(m)
         finally:
             tmp.cleanup()
 
     async def test_self_reference_raises(self) -> None:
         engine, tmp = await _engine()
         try:
-            m = SlayerModel(
+            m = SlayerDataset(
                 name="qb_self_ref",
                 data_source="ds",
                 source_queries=[
-                    SlayerQuery(name="a", source_model="a"),
-                    SlayerQuery(source_model="a"),
+                    SlayerQuery(name="a", population="a"),
+                    SlayerQuery(population="a"),
                 ],
             )
             with pytest.raises(ValueError, match="self"):
-                await engine.save_model(m)
+                await engine.save_dataset(m)
         finally:
             tmp.cleanup()
 
     async def test_duplicate_name_raises(self) -> None:
         engine, tmp = await _engine()
         try:
-            # SlayerModel's Pydantic validator catches duplicate stage names
+            # SlayerDataset's Pydantic validator catches duplicate stage names
             # at construction time. The same guard exists in
             # ``topologically_order_stages`` as defence in depth, but the
             # user-facing error surfaces here first.
-            stage_a1 = SlayerQuery(name="a", source_model="orders")
-            stage_a2 = SlayerQuery(name="a", source_model="orders")
-            stage_c = SlayerQuery(source_model="a")
+            stage_a1 = SlayerQuery(name="a", population="orders")
+            stage_a2 = SlayerQuery(name="a", population="orders")
+            stage_c = SlayerQuery(population="a")
             with pytest.raises(
                 (ValueError, Exception), match="[Dd]uplicate",
             ):
-                SlayerModel(
+                SlayerDataset(
                     name="qb_dup",
                     data_source="ds",
                     source_queries=[stage_a1, stage_a2, stage_c],
@@ -273,74 +273,74 @@ class TestStoredSourceQueriesTopoSort:
 
 
 # ---------------------------------------------------------------------------
-# Virtual-model column TYPES, FORMAT, DESCRIPTION (decisions #2, #8)
+# Virtual-dataset field TYPES, FORMAT, DESCRIPTION (decisions #2, #8)
 # ---------------------------------------------------------------------------
 
 
 class TestVirtualModelColumns:
     async def test_star_count_yields_int_column(self) -> None:
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_count",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
-                "dimensions": ["status"],
+                "population": "orders",
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            count_col = next(c for c in saved.columns if c.name == "_count")
-            assert count_col.type == DataType.INT, (
-                f"count(*) must yield DataType.INT, got {count_col.type!r}"
+            saved = await engine.save_dataset(m)
+            count_col = next(c for c in saved.fields if c.name == "_count")
+            assert count_col.datatype == DataType.INTEGER, (
+                f"count(*) must yield DataType.INTEGER, got {count_col.datatype!r}"
             )
         finally:
             tmp.cleanup()
 
     async def test_sum_inherits_source_column_type(self) -> None:
-        """``sum(amount)`` over a DOUBLE source column → DOUBLE virtual col."""
-        m = SlayerModel(
+        """``sum(amount)`` over a DOUBLE source field → DOUBLE virtual field."""
+        m = SlayerDataset(
             name="qb_sum",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "dimensions": ["status"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            sum_col = next(c for c in saved.columns if c.name == "amount_sum")
-            assert sum_col.type == DataType.DOUBLE
+            saved = await engine.save_dataset(m)
+            sum_col = next(c for c in saved.fields if c.name == "amount_sum")
+            assert sum_col.datatype == DataType.FLOAT
         finally:
             tmp.cleanup()
 
     async def test_query_measure_type_override_wins_over_inference(self) -> None:
-        """Codex review fix — a user-supplied ``type=`` on a query measure
-        spec is the override; ``_type_for_measure_formula`` is the fallback.
+        """Codex review fix — a user-supplied ``type=`` on a query metric
+        spec is the override; ``_type_for_metric_expression`` is the fallback.
 
         ``count(*)`` ordinarily infers ``INT``; explicit ``type=DOUBLE``
-        on the same formula must win and surface as a DOUBLE virtual
-        column.
+        on the same expression must win and surface as a DOUBLE virtual
+        field.
         """
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_type_override",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="count(*)", type=DataType.DOUBLE)],
-                dimensions=["status"],
+                population="orders",
+                metrics=[QueryMetric(metric="count(orders.*)", datatype=DataType.FLOAT)],
+                dimensions=["orders.status"],
             )],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            count_col = next(c for c in saved.columns if c.name == "_count")
-            assert count_col.type == DataType.DOUBLE, (
+            saved = await engine.save_dataset(m)
+            count_col = next(c for c in saved.fields if c.name == "_count")
+            assert count_col.datatype == DataType.FLOAT, (
                 f"User-supplied type=DOUBLE must override INT inference, "
-                f"got {count_col.type!r}"
+                f"got {count_col.datatype!r}"
             )
         finally:
             tmp.cleanup()
@@ -351,174 +351,174 @@ class TestVirtualModelColumns:
 
         Repro: declare ``rank(count(*), direction='desc')`` first (hoists ``count(*)`` as a
         hidden dep with no display metadata), THEN declare ``count(*)``
-        as a public measure. The promoted public slot must end up with
+        as a public metric. The promoted public slot must end up with
         ``type=INT`` (not the default None → DOUBLE fallback).
         """
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_promoted_hidden",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["status"],
-                measures=[
+                population="orders",
+                dimensions=["orders.status"],
+                metrics=[
                     # rank uses *:count as a hidden inner; intern order
                     # hoists *:count hidden first, then the public
                     # *:count entry promotes the same slot.
-                    {"formula": "rank(count(*), direction='desc')", "name": "ranked"},
-                    {"formula": "count(*)"},
+                    {"metric": "rank(count(orders.*), direction='desc')", "alias": "ranked"},
+                    {"metric": "count(orders.*)"},
                 ],
             )],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            count_col = next(c for c in saved.columns if c.name == "_count")
-            assert count_col.type == DataType.INT, (
+            saved = await engine.save_dataset(m)
+            count_col = next(c for c in saved.fields if c.name == "_count")
+            assert count_col.datatype == DataType.INTEGER, (
                 f"Promoted hidden slot must inherit INT from the public "
-                f"intern, got {count_col.type!r}"
+                f"intern, got {count_col.datatype!r}"
             )
         finally:
             tmp.cleanup()
 
     async def test_declared_model_measure_type_honored(self) -> None:
-        """A ``ModelMeasure`` with explicit ``type=DOUBLE`` carries through
-        to the virtual column.
+        """A ``DatasetMetric`` with explicit ``type=DOUBLE`` carries through
+        to the virtual field.
         """
-        orders_with_measure = _orders_model().model_copy(update={
-            "measures": [
-                ModelMeasure(
-                    formula="sum(amount) * 1.0",
+        orders_with_measure = _orders_dataset().model_copy(update={
+            "metrics": [
+                DatasetMetric(
+                    expression="sum(amount) * 1.0",
                     name="adjusted_total",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
         })
         engine, tmp = await _engine()
         try:
-            await engine.storage.save_model(orders_with_measure)
-            m = SlayerModel(
+            await engine.storage.save_dataset(orders_with_measure)
+            m = SlayerDataset(
                 name="qb_with_declared_type",
                 data_source="ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders",
-                    measures=[{"formula": "adjusted_total"}],
-                    dimensions=["status"],
-                )],
+                source_queries=[SlayerQuery.model_validate({
+                    "population": "orders",
+                    "metrics": [{"metric": "orders.adjusted_total"}],
+                    "dimensions": ["orders.status"],
+                })],
             )
-            saved = await engine.save_model(m)
-            col = next(c for c in saved.columns if c.name == "adjusted_total")
-            assert col.type == DataType.DOUBLE
+            saved = await engine.save_dataset(m)
+            col = next(c for c in saved.fields if c.name == "adjusted_total")
+            assert col.datatype == DataType.FLOAT
         finally:
             tmp.cleanup()
 
     async def test_saved_model_measure_type_wins_over_inference(self) -> None:
-        """Codex round-5 fix — when the query formula is a bare reference
-        to a saved ``ModelMeasure`` whose explicit ``type=`` differs from
-        the type ``_type_for_measure_formula`` would infer, the saved
-        measure's type wins. ``expand_model_measures`` rewrites the AST
-        but drops the measure's type metadata; the type-priority chain
-        re-looks-up the saved measure here.
+        """Codex round-5 fix — when the query expression is a bare reference
+        to a saved ``DatasetMetric`` whose explicit ``type=`` differs from
+        the type ``_type_for_metric_expression`` would infer, the saved
+        metric's type wins. ``expand_model_measures`` rewrites the AST
+        but drops the metric's type metadata; the type-priority chain
+        re-looks-up the saved metric here.
 
-        Repro: ``ModelMeasure(formula="amount:sum", type=DataType.INT)``
-        on the source model — inference for ``sum(amount)`` over a DOUBLE
+        Repro: ``DatasetMetric(expression="sum(amount)", datatype=DataType.INTEGER)``
+        on the source dataset — inference for ``sum(amount)`` over a DOUBLE
         ``amount`` would normally pick DOUBLE, but the explicit
         ``type=INT`` must win.
         """
-        orders_with_int_measure = _orders_model().model_copy(update={
-            "measures": [
-                ModelMeasure(
-                    formula="sum(amount)",
+        orders_with_int_measure = _orders_dataset().model_copy(update={
+            "metrics": [
+                DatasetMetric(
+                    expression="sum(amount)",
                     name="rounded_total",
-                    type=DataType.INT,  # ← explicit override
+                    datatype=DataType.INTEGER,  # ← explicit override
                 ),
             ],
         })
         engine, tmp = await _engine()
         try:
-            await engine.storage.save_model(orders_with_int_measure)
-            m = SlayerModel(
-                name="qb_saved_measure_type",
+            await engine.storage.save_dataset(orders_with_int_measure)
+            m = SlayerDataset(
+                name="qb_saved_metric_type",
                 data_source="ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders",
+                source_queries=[SlayerQuery.model_validate({
+                    "population": "orders",
                     # Bare-ref + explicit ``name="rounded_total"`` keeps
                     # the column alias as the user-chosen name so the
                     # test can look it up unambiguously.
-                    measures=[{"formula": "rounded_total", "name": "rounded_total"}],
-                    dimensions=["status"],
-                )],
+                    "metrics": [{"metric": "orders.rounded_total", "alias": "rounded_total"}],
+                    "dimensions": ["orders.status"],
+                })],
             )
-            saved = await engine.save_model(m)
-            col = next(c for c in saved.columns if c.name == "rounded_total")
-            assert col.type == DataType.INT, (
-                f"Saved ModelMeasure.type=INT must override inference "
-                f"(which would pick DOUBLE for sum(amount)); got {col.type!r}"
+            saved = await engine.save_dataset(m)
+            col = next(c for c in saved.fields if c.name == "rounded_total")
+            assert col.datatype == DataType.INTEGER, (
+                f"Saved DatasetMetric.datatype=Integer must override inference "
+                f"(which would pick DOUBLE for sum(amount)); got {col.datatype!r}"
             )
         finally:
             tmp.cleanup()
 
     async def test_inherits_source_format(self) -> None:
-        """Source column with ``NumberFormat(CURRENCY)`` → virtual sum col
+        """Source field with ``NumberFormat(CURRENCY)`` → virtual sum field
         carries the same format (via ``_infer_aggregated_format``).
         """
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_fmt",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "dimensions": ["status"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            col = next(c for c in saved.columns if c.name == "amount_sum")
+            saved = await engine.save_dataset(m)
+            col = next(c for c in saved.fields if c.name == "amount_sum")
             assert col.format is not None, "amount:sum must carry format"
             assert col.format.type == NumberFormatType.CURRENCY
         finally:
             tmp.cleanup()
 
     async def test_inherits_source_description(self) -> None:
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_desc",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "dimensions": ["status"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            col = next(c for c in saved.columns if c.name == "amount_sum")
+            saved = await engine.save_dataset(m)
+            col = next(c for c in saved.fields if c.name == "amount_sum")
             assert col.description == "Total order amount in USD"
         finally:
             tmp.cleanup()
 
     async def test_carries_default_time_dimension(self) -> None:
-        """Inner source model has ``default_time_dimension="created_at"``;
-        the virtual model returned by ``_expand_query_backed_model`` carries
+        """Inner source dataset has ``default_time_dimension="created_at"``;
+        the virtual dataset returned by ``_expand_query_backed_dataset`` carries
         it forward (mirrors the legacy ``the legacy query-backed wrap`` contract).
 
         Save-time persisted ``data_source.default_time_dimension`` follows
         whatever the user passes on construction — the cache populator
-        only updates ``columns`` / ``data_source``,
+        only updates ``fields`` / ``data_source``,
         consistent with legacy behaviour.
         """
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_td",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["status"],
+                population="orders",
+                dimensions=["orders.status"],
             )],
         )
         engine, tmp = await _engine()
         try:
-            virtual = await engine._expand_query_backed_model(
-                model=m,
+            virtual = await engine._expand_query_backed_dataset(
+                dataset=m,
                 runtime_kwarg=None,
             )
             assert virtual.default_time_dimension == "created_at"
@@ -528,25 +528,25 @@ class TestVirtualModelColumns:
     async def test_excludes_hidden_hoisted_slots(self) -> None:
         """A query with ``rank(sum(amount), direction='desc')`` hoists the inner ``amount_sum``
         as a hidden slot. The migrated path exposes ONLY user-declared
-        public columns; ``amount_sum`` is NOT a column on the virtual model
+        public fields; ``amount_sum`` is NOT a field on the virtual dataset
         (decision #3 — P4 closure).
         """
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_hidden_hoist",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model="orders",
-                dimensions=["status"],
-                measures=[ModelMeasure(formula="rank(sum(amount), direction='desc')", name="rank_by_amt")],
+                population="orders",
+                dimensions=["orders.status"],
+                metrics=[QueryMetric(metric="rank(sum(orders.amount), direction='desc')", alias="rank_by_amt")],
             )],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            col_names = {c.name for c in saved.columns}
+            saved = await engine.save_dataset(m)
+            col_names = {c.name for c in saved.fields}
             assert "rank_by_amt" in col_names
             assert "amount_sum" not in col_names, (
-                f"Hidden hoisted slot leaked into virtual model columns: "
+                f"Hidden hoisted slot leaked into virtual dataset fields: "
                 f"{col_names!r}"
             )
             assert "status" in col_names
@@ -555,30 +555,30 @@ class TestVirtualModelColumns:
 
 
 # ---------------------------------------------------------------------------
-# Decision D — SourceModelOrigin / agg_column_names dropped
+# Decision D — SourceDatasetOrigin / agg_column_names dropped
 # ---------------------------------------------------------------------------
 
 
 class TestSourceModelOriginDropped:
     async def test_virtual_model_has_no_source_model_origin(self) -> None:
-        """Stage B's migrated path no longer SETS ``source_model_origin``.
-        Field still exists on the model (legacy ``enrichment.py`` reads it
+        """Stage B's migrated path no longer SETS ``source_dataset_origin``.
+        Field still exists on the dataset (legacy ``enrichment.py`` reads it
         until Stage D), but the migrated output's value is ``None``.
         """
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_no_origin",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "dimensions": ["status"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            assert saved.source_model_origin is None, (
-                f"Stage B drops SourceModelOrigin; got {saved.source_model_origin!r}"
+            saved = await engine.save_dataset(m)
+            assert saved.source_dataset_origin is None, (
+                f"Stage B drops SourceDatasetOrigin; got {saved.source_dataset_origin!r}"
             )
         finally:
             tmp.cleanup()
@@ -593,9 +593,9 @@ class TestGetResultColumnTypesTypedPipeline:
     async def test_get_result_column_types_on_query_backed_model_returns_typed_results(
         self,
     ) -> None:
-        """Functional probe against a real SQLite-backed query-backed model.
+        """Functional probe against a real SQLite-backed query-backed dataset.
         The prelude expansion + typed-path probe returns a non-empty type
-        map keyed by virtual-column bare names.
+        map keyed by virtual-field bare names.
         """
         d = tempfile.mkdtemp()
         db_path = os.path.join(d, "t.db")
@@ -614,49 +614,49 @@ class TestGetResultColumnTypesTypedPipeline:
         await storage.save_datasource(
             DatasourceConfig(name="prod", type="sqlite", database=db_path)
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="qb_for_types_live",
             data_source="prod",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "dimensions": ["status"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         ))
 
         engine = SlayerQueryEngine(storage=storage)
         types = await engine.get_result_column_types("qb_for_types_live")
         # Returned bare-name keys: ``amount_sum`` (probeable; status is
-        # a TEXT column whose default agg may or may not be probed
+        # a TEXT field whose default agg may or may not be probed
         # depending on type allowlist).
         assert "amount_sum" in types, types
-        assert types["amount_sum"].type in (DataType.INT, DataType.DOUBLE), types["amount_sum"]
+        assert types["amount_sum"].type in (DataType.INTEGER, DataType.FLOAT), types["amount_sum"]
 
     async def test_get_result_column_types_renders_via_build_planned_statement(self) -> None:
         """The query-backed probe path builds through ``build_planned_statement``."""
-        # Save a real query-backed model so the prelude branch runs too.
-        m = SlayerModel(
+        # Save a real query-backed dataset so the prelude branch runs too.
+        m = SlayerDataset(
             name="qb_for_types",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "dimensions": ["status"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         engine, tmp = await _engine()
         try:
-            await engine.save_model(m)
+            await engine.save_dataset(m)
             planned_calls: List[Tuple[bool, str]] = []
             original_generate = query_engine_module.build_planned_statement
 
@@ -699,51 +699,51 @@ class TestGetResultColumnTypesTypedPipeline:
 
 
 class TestInlineNestedSourceQueriesIntegrated:
-    """Inline nested ``SlayerModel.source_queries`` as a stage source are rejected."""
+    """Inline nested ``SlayerDataset.source_queries`` as a stage source are rejected."""
 
     def test_inline_nested_source_rejected_at_construction(self) -> None:
         """An inline query-backed stage source is rejected before any save-time cycle walk."""
-        inline = SlayerModel(name="_inline_a", source_queries=[SlayerQuery(source_model="b")])
+        inline = SlayerDataset(name="_inline_a", source_queries=[SlayerQuery(population="b")])
         with pytest.raises(ValueError, match="(?i)inline"):
-            SlayerQuery(name="a", source_model=inline)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
+            SlayerQuery(name="a", population=inline)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
 
 
 class TestNestedQueryBackedSavePath:
-    """Decision F end-to-end — save a query-backed model whose own
-    backing query joins ANOTHER query-backed model (qb-A joins qb-B)."""
+    """Decision F end-to-end — save a query-backed dataset whose own
+    backing query relates to ANOTHER query-backed dataset (qb-A → qb-B)."""
 
     async def test_qb_a_joins_qb_b_save_path(self) -> None:
         # qb_B aggregates customers.
-        qb_b = SlayerModel(
+        qb_b = SlayerDataset(
             name="qb_b_customers_kpi",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "customers",
-                "measures": [{"formula": "count(*)"}],
-                "dimensions": ["region"],
+                "population": "customers",
+                "metrics": [{"metric": "count(customers.*)"}],
+                "dimensions": ["customers.region"],
             })],
         )
-        # qb_A joins qb_B inline AND references a column on it (so the
-        # planner doesn't drop the join as unused).
-        qb_a = SlayerModel(
+        # qb_A relates to qb_B inline AND references a field on it (so the
+        # planner doesn't drop the relationship as unused).
+        qb_a = SlayerDataset(
             name="qb_a_orders_with_kpi",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "extensions": [ModelExtension.model_validate({
-                    "source_name": "orders",
-                    "joins": [{
-                        "target_model": "qb_b_customers_kpi",
-                        "join_pairs": [["region", "region"]],
+                "population": "orders",
+                "extensions": [DatasetExtension.model_validate({
+                    "dataset": "orders",
+                    "relationships": [{
+                        "to": "qb_b_customers_kpi",
+                        "from_columns": ["region"], "to_columns": ["region"],
                     }],
                 })],
-                "dimensions": ["status"],
-                "measures": [{"formula": "sum(qb_b_customers_kpi._count)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "sum(qb_b_customers_kpi._count)"}],
             })],
         )
-        engine, tmp = await _engine(_customers_model(), qb_b)
+        engine, tmp = await _engine(_customers_dataset(), qb_b)
         try:
-            saved = await engine.save_model(qb_a)
+            saved = await engine.save_dataset(qb_a)
             # Both inner tables must appear in the rendered SQL.
             sql_lower = (await _dry_run_sql(engine, saved.name)).lower()
             assert "orders_t" in sql_lower
@@ -755,72 +755,72 @@ class TestNestedQueryBackedSavePath:
 class TestSavePath:
     async def test_save_with_undefined_var_refused(self) -> None:
         """``filters=["amount > {threshold}"]`` with no ``query_variables`` refuses the save."""
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_with_var",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "dimensions": ["status"],
-                "filters": ["amount > {threshold}"],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.status"],
+                "filter": ["orders.amount > {threshold}"],
             })],
         )
         engine, tmp = await _engine()
         try:
             with pytest.raises(ValueError, match="Undefined variable 'threshold'"):
-                await engine.save_model(m)
+                await engine.save_dataset(m)
         finally:
             tmp.cleanup()
 
     async def test_sibling_stage_inherits_outer_model_query_variables(self) -> None:
         """Codex round-4 fix — a named non-final sibling stage's filter
-        ``amount > {threshold}`` must see the OUTER model's
-        ``query_variables`` (precedence runtime > stage > outer > model
+        ``amount > {threshold}`` must see the OUTER dataset's
+        ``query_variables`` (precedence runtime > stage > outer > dataset
         defaults). Pre-fix, ``apply_variables_to_query`` substituted the
         FINAL stage's filters with ``bundle.query_variables`` but
         siblings only saw the stage-level ``final_stage.variables`` dict
-        (which doesn't include ``model.query_variables``), so the
+        (which doesn't include ``dataset.query_variables``), so the
         sibling's ``{threshold}`` was filled with the dry-run ``"0"``
         sentinel.
         """
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_sibling_vars",
             data_source="ds",
-            # Outer model's defaults — sibling must see ``threshold=100``.
+            # Outer dataset's defaults — sibling must see ``threshold=100``.
             query_variables={"threshold": "100"},
             source_queries=[
                 SlayerQuery.model_validate({
                     "name": "filtered",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
-                    "dimensions": ["status"],
-                    "filters": ["amount > {threshold}"],
+                    "population": "orders",
+                    "metrics": [{"metric": "sum(orders.amount)"}],
+                    "dimensions": ["orders.status"],
+                    "filter": ["orders.amount > {threshold}"],
                 }),
                 SlayerQuery(
-                    source_model="filtered",
-                    dimensions=["status"],
+                    population="filtered",
+                    dimensions=["filtered.status"],
                 ),
             ],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
+            saved = await engine.save_dataset(m)
             sql = await _dry_run_sql(engine, saved.name)
             # The sibling's filter ``amount > {threshold}`` must
-            # substitute to ``amount > 100`` (the outer model default),
+            # substitute to ``amount > 100`` (the outer dataset default),
             # not to ``amount > 0`` (the dry-run placeholder fallback).
             assert "> 100" in sql, (
-                f"Sibling filter must inherit outer model.query_variables; "
+                f"Sibling filter must inherit outer dataset.query_variables; "
                 f"placeholder fill leaked into:\n{sql}"
             )
         finally:
             tmp.cleanup()
 
     async def test_data_source_refresh_when_backing_query_changes(self) -> None:
-        """Save a query-backed model whose backing query routes through
+        """Save a query-backed dataset whose backing query routes through
         ds=A; replace its ``source_queries`` to root in ds=B (with a
         DIFFERENT base table name so the inner resolution is unambiguous);
-        the second save updates ``model.data_source`` to ``"ds2"``
+        the second save updates ``dataset.data_source`` to ``"ds2"``
         (mirrors the legacy ``_validate_and_populate_cache`` refresh).
         """
         tmp = tempfile.TemporaryDirectory()
@@ -829,56 +829,56 @@ class TestSavePath:
         await storage.save_datasource(_ds2())
         # Same orders schema, different names in each datasource so the
         # bare-name lookup in the inner stage is unambiguous.
-        await storage.save_model(
-            _orders_model().model_copy(update={"name": "orders_a"})
+        await storage.save_dataset(
+            _orders_dataset().model_copy(update={"name": "orders_a"})
         )
-        await storage.save_model(
-            _orders_model().model_copy(update={"name": "orders_b", "data_source": "ds2"})
+        await storage.save_dataset(
+            _orders_dataset().model_copy(update={"name": "orders_b", "data_source": "ds2"})
         )
         engine = SlayerQueryEngine(storage=storage)
         try:
-            m1 = SlayerModel(
+            m1 = SlayerDataset(
                 name="qb_ds_refresh",
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "orders_a",
-                    "measures": [{"formula": "sum(amount)"}],
-                    "dimensions": ["status"],
+                    "population": "orders_a",
+                    "metrics": [{"metric": "sum(orders_a.amount)"}],
+                    "dimensions": ["orders_a.status"],
                 })],
             )
-            saved1 = await engine.save_model(m1)
+            saved1 = await engine.save_dataset(m1)
             assert saved1.data_source == "ds"
-            m2 = SlayerModel(
+            m2 = SlayerDataset(
                 name="qb_ds_refresh",
                 data_source="ds",  # deliberately stale
                 source_queries=[SlayerQuery.model_validate({
-                    "source_model": "orders_b",
-                    "measures": [{"formula": "sum(amount)"}],
-                    "dimensions": ["status"],
+                    "population": "orders_b",
+                    "metrics": [{"metric": "sum(orders_b.amount)"}],
+                    "dimensions": ["orders_b.status"],
                 })],
             )
-            saved2 = await engine.save_model(m2)
+            saved2 = await engine.save_dataset(m2)
             assert saved2.data_source == "ds2", saved2.data_source
         finally:
             tmp.cleanup()
 
     async def test_create_model_from_query_save_false_populates_cache(self) -> None:
-        """``create_model_from_query(..., save=False)`` returns a model
-        whose ``columns`` / ``data_source`` are
+        """``create_model_from_query(..., save=False)`` returns a dataset
+        whose ``fields`` / ``data_source`` are
         populated by the migrated ``_validate_and_populate_cache``.
         """
         engine, tmp = await _engine()
         try:
-            built = await engine.create_model_from_query(
+            built = await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
-                    "dimensions": ["status"],
+                    "population": "orders",
+                    "metrics": [{"metric": "sum(orders.amount)"}],
+                    "dimensions": ["orders.status"],
                 }),
                 name="built_no_save",
                 save=False,
             )
-            assert built.columns, "save=False must still populate columns"
+            assert built.fields, "save=False must still populate fields"
             assert built.data_source == "ds"
         finally:
             tmp.cleanup()
@@ -886,41 +886,41 @@ class TestSavePath:
 
 # ---------------------------------------------------------------------------
 # Decision F — expand_query_backed_models_in_bundle helper covers nested
-# query-backed targets, query-backed stage sources, and ModelExtension
+# query-backed targets, query-backed stage sources, and DatasetExtension
 # overlay re-apply. (CRITICAL Codex findings #1 + #2.)
 # ---------------------------------------------------------------------------
 
 
 class TestNestedQueryBackedExpansion:
     async def test_query_backed_join_target_renders_through_typed_path(self) -> None:
-        """A query-backed model joined to ANOTHER query-backed model
+        """A query-backed dataset related to ANOTHER query-backed dataset
         executes end-to-end through the migrated path.
         """
-        kpi_model = SlayerModel(
+        kpi_model = SlayerDataset(
             name="customers_kpi",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "customers",
-                "measures": [{"formula": "count(*)"}],
-                "dimensions": ["region"],
+                "population": "customers",
+                "metrics": [{"metric": "count(customers.*)"}],
+                "dimensions": ["customers.region"],
             })],
         )
-        engine, tmp = await _engine(_customers_model(), kpi_model)
+        engine, tmp = await _engine(_customers_dataset(), kpi_model)
         try:
-            # Save another query-backed model that references the first
-            # as a join target AND references a column on it so the
-            # planner doesn't drop the join as unused.
+            # Save another query-backed dataset that references the first
+            # as a relationship target AND references a field on it so the
+            # planner doesn't drop the relationship as unused.
             outer = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "extensions": [ModelExtension.model_validate({
-                    "source_name": "orders",
-                    "joins": [{
-                        "target_model": "customers_kpi",
-                        "join_pairs": [["region", "region"]],
+                "population": "orders",
+                "extensions": [DatasetExtension.model_validate({
+                    "dataset": "orders",
+                    "relationships": [{
+                        "to": "customers_kpi",
+                        "from_columns": ["region"], "to_columns": ["region"],
                     }],
                 })],
-                "measures": [{"formula": "sum(customers_kpi._count)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "sum(customers_kpi._count)"}],
+                "dimensions": ["orders.status"],
             })
             resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
@@ -931,47 +931,47 @@ class TestNestedQueryBackedExpansion:
             tmp.cleanup()
 
     async def test_modelextension_overlay_over_query_backed_base(self) -> None:
-        """A query-backed model used as a ``ModelExtension`` base preserves
-        the overlay's extra measure after expansion.
+        """A query-backed dataset used as a ``DatasetExtension`` base preserves
+        the overlay's extra metric after expansion.
         """
-        qb = SlayerModel(
+        qb = SlayerDataset(
             name="qb_base",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         engine, tmp = await _engine(qb)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "qb_base",
-                "extensions": [ModelExtension(
-                    source_name="qb_base",
-                    measures=[ModelMeasure(name="extra", formula="sum(amount_sum)")],
+                "population": "qb_base",
+                "extensions": [DatasetExtension(
+                    dataset="qb_base",
+                    metrics=[DatasetMetric(name="extra", expression="sum(amount_sum)")],
                 )],
-                "dimensions": ["status"],
-                "measures": ["extra"],
+                "dimensions": ["qb_base.status"],
+                "metrics": ["qb_base.extra"],
             })
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
-            # The overlay measure appears in the outer projection.
+            # The overlay metric appears in the outer projection.
             assert "extra" in resp.sql.lower()
         finally:
             tmp.cleanup()
 
     async def test_query_backed_stage_source_in_runtime_list(self) -> None:
         """A multi-stage runtime DAG whose non-root stage's source is a
-        query-backed model renders through the migrated path.
+        query-backed dataset renders through the migrated path.
         """
-        qb = SlayerModel(
+        qb = SlayerDataset(
             name="qb_inner",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         engine, tmp = await _engine(qb)
@@ -980,11 +980,11 @@ class TestNestedQueryBackedExpansion:
             queries: list = [
                 SlayerQuery.model_validate({
                     "name": "s",
-                    "source_model": "qb_inner",
-                    "dimensions": ["status"],
-                    "measures": [{"formula": "sum(amount_sum)"}],
+                    "population": "qb_inner",
+                    "dimensions": ["qb_inner.status"],
+                    "metrics": [{"metric": "sum(qb_inner.amount_sum)"}],
                 }),
-                SlayerQuery(source_model="s", dimensions=["status"]),
+                SlayerQuery(population="s", dimensions=["s.status"]),
             ]
             resp = await engine.execute(queries, dry_run=True)
             assert resp.sql is not None
@@ -997,71 +997,71 @@ class TestCrossDatasourceJoin:
     async def test_cross_datasource_join_on_query_backed_model_rejected(
         self,
     ) -> None:
-        """A query-backed model in datasource A joining a model in
-        datasource B fails clearly — joins cannot cross datasource
+        """A query-backed dataset in datasource A related to a dataset in
+        datasource B fails clearly — relationships cannot cross datasource
         boundaries.
         """
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(_ds())
         await storage.save_datasource(_ds2())
-        await storage.save_model(_orders_model())
-        await storage.save_model(
-            _customers_model().model_copy(update={"data_source": "ds2"})
+        await storage.save_dataset(_orders_dataset())
+        await storage.save_dataset(
+            _customers_dataset().model_copy(update={"data_source": "ds2"})
         )
 
-        # Build a query-backed model in ds=A that joins to ds=B AND
-        # references a column on the target (so the missing cross-DS
+        # Build a query-backed dataset in ds=A that relates to ds=B AND
+        # references a field on the target (so the missing cross-DS
         # target surfaces as a binder error rather than a silently
-        # dropped join).
-        bad = SlayerModel(
+        # dropped relationship).
+        bad = SlayerDataset(
             name="xds_qb",
             data_source="ds",
             source_queries=[SlayerQuery(
-                source_model="orders",
-                extensions=[ModelExtension.model_validate({
-                    "source_name": "orders",
-                    "joins": [{
-                        "target_model": "customers",
-                        "join_pairs": [["region", "region"]],
+                population="orders",
+                extensions=[DatasetExtension.model_validate({
+                    "dataset": "orders",
+                    "relationships": [{
+                        "to": "customers",
+                        "from_columns": ["region"], "to_columns": ["region"],
                     }],
                 })],
-                dimensions=["status", "customers.name"],
+                dimensions=["orders.status", "customers.name"],
             )],
         )
         engine = SlayerQueryEngine(storage=storage)
         try:
-            # The join must not silently cross datasources. ds=A's
+            # The relationship must not silently cross datasources. ds=A's
             # ``customers`` lookup returns None (the only ``customers``
             # is in ds=B); the binder then raises on the
             # ``customers.name`` ref.
             with pytest.raises(Exception):
-                await engine.save_model(bad)
+                await engine.save_dataset(bad)
         finally:
             tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------
 # Wrapper alias shapes (decision B) — pin the rendered SQL's projection
-# matches the flat-renamed column set the virtual model declares.
+# matches the flat-renamed field set the virtual dataset declares.
 # ---------------------------------------------------------------------------
 
 
 class TestWrapperAliasShapes:
     async def test_local_agg_alias_flattens_to_underscore(self) -> None:
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_local",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         engine, tmp = await _engine()
         try:
-            saved = await engine.save_model(m)
-            col_names = {c.name for c in saved.columns}
+            saved = await engine.save_dataset(m)
+            col_names = {c.name for c in saved.fields}
             assert "amount_sum" in col_names
             assert "status" in col_names
             # The wrapper exposes flat names — no dots.
@@ -1072,41 +1072,41 @@ class TestWrapperAliasShapes:
     async def test_cross_model_agg_alias_flattens_with_double_underscore(
         self,
     ) -> None:
-        """``sum(customers.revenue)`` (cross-model) flattens to canonical
-        ``customers__revenue_sum`` (the join path AND the agg suffix both
+        """``sum(customers.revenue)`` (cross-dataset) flattens to canonical
+        ``customers__revenue_sum`` (the relationship path AND the agg suffix both
         appear in the flat name).
         """
-        # Add a join + a numeric customers.revenue column so the cross-
-        # model agg has something to aggregate.
-        orders_with_join = _orders_model().model_copy(update={
-            "joins": [ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+        # Add a relationship + a numeric customers.revenue field so the cross-
+        # dataset agg has something to aggregate.
+        orders_with_join = _orders_dataset().model_copy(update={
+            "relationships": [DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
             )],
         })
-        customers_with_rev = _customers_model().model_copy(update={
-            "columns": list(_customers_model().columns) + [
-                Column(name="revenue", sql="revenue", type=DataType.DOUBLE),
+        customers_with_rev = _customers_dataset().model_copy(update={
+            "fields": list(_customers_dataset().fields) + [
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
             ],
         })
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_cross",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "population": "orders",
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })],
         )
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(_ds())
-        await storage.save_model(customers_with_rev)
-        await storage.save_model(orders_with_join)
+        await storage.save_dataset(customers_with_rev)
+        await storage.save_dataset(orders_with_join)
         engine = SlayerQueryEngine(storage=storage)
         try:
-            saved = await engine.save_model(m)
-            col_names = {c.name for c in saved.columns}
+            saved = await engine.save_dataset(m)
+            col_names = {c.name for c in saved.fields}
             assert "customers__revenue_sum" in col_names, col_names
         finally:
             tmp.cleanup()
@@ -1114,86 +1114,86 @@ class TestWrapperAliasShapes:
     async def test_cross_model_parametric_agg_alias_includes_kwargs(
         self,
     ) -> None:
-        """``percentile(customers.revenue, p=0.5)`` (cross-model parametric)
+        """``percentile(customers.revenue, p=0.5)`` (cross-dataset parametric)
         flattens to ``customers__revenue_percentile_p_0_5`` (the wrapper keeps the kwarg suffix).
         """
-        orders_with_join = _orders_model().model_copy(update={
-            "joins": [ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+        orders_with_join = _orders_dataset().model_copy(update={
+            "relationships": [DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
             )],
         })
-        customers_with_rev = _customers_model().model_copy(update={
-            "columns": list(_customers_model().columns) + [
-                Column(name="revenue", sql="revenue", type=DataType.DOUBLE),
+        customers_with_rev = _customers_dataset().model_copy(update={
+            "fields": list(_customers_dataset().fields) + [
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
             ],
         })
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_cross_param",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "measures": [{"formula": "percentile(customers.revenue, p=0.5)"}],
+                "population": "orders",
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "percentile(customers.revenue, p=0.5)"}],
             })],
         )
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(_ds())
-        await storage.save_model(customers_with_rev)
-        await storage.save_model(orders_with_join)
+        await storage.save_dataset(customers_with_rev)
+        await storage.save_dataset(orders_with_join)
         engine = SlayerQueryEngine(storage=storage)
         try:
-            saved = await engine.save_model(m)
-            col_names = {c.name for c in saved.columns}
+            saved = await engine.save_dataset(m)
+            col_names = {c.name for c in saved.fields}
             assert "customers__revenue_percentile_p_0_5" in col_names, col_names
         finally:
             tmp.cleanup()
 
     async def test_joined_dim_alias_flattens(self) -> None:
-        orders_with_join = _orders_model().model_copy(update={
-            "joins": [ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+        orders_with_join = _orders_dataset().model_copy(update={
+            "relationships": [DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
             )],
         })
-        m = SlayerModel(
+        m = SlayerDataset(
             name="qb_joined_dim",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.name", "customers.signup_at"],
-                "measures": [{"formula": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(_ds())
-        await storage.save_model(_customers_model())
-        await storage.save_model(orders_with_join)
+        await storage.save_dataset(_customers_dataset())
+        await storage.save_dataset(orders_with_join)
         engine = SlayerQueryEngine(storage=storage)
         try:
-            saved = await engine.save_model(m)
-            by_name = {c.name: c for c in saved.columns}
+            saved = await engine.save_dataset(m)
+            by_name = {c.name: c for c in saved.fields}
             assert "customers__name" in by_name, set(by_name)
             # A joined (dotted) dimension must persist the
-            # TARGET column's type. Before the fix ``_type_for_dimension``
+            # TARGET field's type. Before the fix ``_type_for_dimension``
             # returned None for dotted refs and ``_query_as_model`` coerced
             # the slot to DOUBLE, mistyping joined string / temporal dims.
-            assert by_name["customers__name"].type == DataType.TEXT, (
+            assert by_name["customers__name"].datatype == DataType.STRING, (
                 f"joined TEXT dim must persist as TEXT, not DOUBLE; "
-                f"got {by_name['customers__name'].type!r}"
+                f"got {by_name['customers__name'].datatype!r}"
             )
-            assert by_name["customers__signup_at"].type == DataType.TIMESTAMP, (
+            assert by_name["customers__signup_at"].datatype == DataType.DATETIME, (
                 f"joined TIMESTAMP dim must persist as TIMESTAMP; "
-                f"got {by_name['customers__signup_at'].type!r}"
+                f"got {by_name['customers__signup_at'].datatype!r}"
             )
         finally:
             tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------
-# Decision D breaking change pinned — outer dotted ref on query-backed model
+# Decision D breaking change pinned — outer dotted ref on query-backed dataset
 # ---------------------------------------------------------------------------
 
 
@@ -1201,53 +1201,53 @@ class TestP4ClosureBehavior:
     async def test_outer_dotted_ref_canonical_alias_no_longer_resolves(
         self,
     ) -> None:
-        """A query-backed model that already aggregated ``sum(customers.revenue)``
+        """A query-backed dataset that already aggregated ``sum(customers.revenue)``
         exposes the canonical flat name ``customers__revenue_sum``. An outer
-        dotted ref (``sum(customers.revenue)``) against the virtual model never
-        re-aggregates that column through the legacy ``SourceModelOrigin``
-        lineage walk (the P4 closure): ``customers``, which no join path
-        reaches from the virtual model, is aggregated over its own rows.
+        dotted ref (``sum(customers.revenue)``) against the virtual dataset never
+        re-aggregates that field through the legacy ``SourceDatasetOrigin``
+        lineage walk (the P4 closure): ``customers``, which no relationship path
+        reaches from the virtual dataset, is aggregated over its own rows.
         """
-        orders_with_join = _orders_model().model_copy(update={
-            "joins": [ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+        orders_with_join = _orders_dataset().model_copy(update={
+            "relationships": [DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
             )],
         })
-        customers_with_rev = _customers_model().model_copy(update={
-            "columns": list(_customers_model().columns) + [
-                Column(name="revenue", sql="revenue", type=DataType.DOUBLE),
+        customers_with_rev = _customers_dataset().model_copy(update={
+            "fields": list(_customers_dataset().fields) + [
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
             ],
         })
-        qb = SlayerModel(
+        qb = SlayerDataset(
             name="qb_already_aggregated",
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": ["status"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "population": "orders",
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })],
         )
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(_ds())
-        await storage.save_model(customers_with_rev)
-        await storage.save_model(orders_with_join)
+        await storage.save_dataset(customers_with_rev)
+        await storage.save_dataset(orders_with_join)
         engine = SlayerQueryEngine(storage=storage)
         try:
-            await engine.save_model(qb)
+            await engine.save_dataset(qb)
             # The flat-name form MUST work.
             flat_q = SlayerQuery.model_validate({
-                "source_model": "qb_already_aggregated",
-                "measures": [{"formula": "sum(customers__revenue_sum)"}],
-                "dimensions": ["status"],
+                "population": "qb_already_aggregated",
+                "metrics": [{"metric": "sum(qb_already_aggregated.customers__revenue_sum)"}],
+                "dimensions": ["qb_already_aggregated.status"],
             })
             resp_flat = await engine.execute(flat_q, dry_run=True)
             assert resp_flat.sql is not None
             dotted_q = SlayerQuery.model_validate({
-                "source_model": "qb_already_aggregated",
-                "measures": [{"formula": "sum(customers.revenue)"}],
-                "dimensions": ["status"],
+                "population": "qb_already_aggregated",
+                "metrics": [{"metric": "sum(customers.revenue)"}],
+                "dimensions": ["qb_already_aggregated.status"],
             })
             resp = await engine.execute(dotted_q, dry_run=True)
             assert any(

@@ -86,6 +86,8 @@ class RankWindow(BaseModel):
     partition_sql: List[str]
     null_flag: bool
     null_guarded: bool
+    #: ``ntile``'s tie-breaking ORDER BY terms after the value: the cell's grain columns.
+    tie_sql: List[str] = []
 
 
 def _is_null_test(node: Expression, target: str, dialect: str) -> bool:
@@ -120,7 +122,8 @@ def rank_windows(sql: str, *, dialect: str) -> List[RankWindow]:
     for window in sqlglot.parse_one(sql, read=dialect).find_all(exp.Window):
         if not isinstance(window.this, RANK_FNS):
             continue
-        [ordered] = window.args["order"].expressions
+        ordered, *ties = window.args["order"].expressions
+        assert not ties or isinstance(window.this, exp.Ntile), "only ntile breaks ties by the cell"
         target = ordered.this.sql(dialect=dialect)
         parts = window.args.get("partition_by") or []
         flags = [p for p in parts if _is_null_flag(p, target, dialect)]
@@ -131,5 +134,6 @@ def rank_windows(sql: str, *, dialect: str) -> List[RankWindow]:
             partition_sql=[p.sql(dialect=dialect) for p in parts if p not in flags],
             null_flag=len(flags) == 1,
             null_guarded=_is_null_guard(window, target, dialect),
+            tie_sql=[t.this.sql(dialect=dialect) for t in ties],
         ))
     return out

@@ -20,7 +20,7 @@ from slayer.core.syntax import (
     ScalarCall,
     TransformCall,
     UnaryOp,
-    canonical_measure_text,
+    canonical_metric_text,
     parse_expr,
 )
 
@@ -80,7 +80,7 @@ def test_filter_parser_admits_placeholder() -> None:
 
 
 def test_canonical_text_renders_placeholder() -> None:
-    assert canonical_measure_text(parse_expr("sum(amount) * {k} / 100")) == "sum(amount) * {k} / 100"
+    assert canonical_metric_text(parse_expr("sum(amount) * {k} / 100")) == "sum(amount) * {k} / 100"
 
 
 @pytest.mark.parametrize("text", ["amount * {a, b}", "amount * {1}", "amount * {a.b}", "amount * {}"])

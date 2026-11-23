@@ -1,0 +1,109 @@
+{
+ "source": "tests/test_search_service.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount_paid)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount_paid)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount_paid)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount_paid)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount_paid)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(amount_paid)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount_paid)"
+   },
+   "new": {
+    "metric": "sum(amount_paid)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 397,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 530,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 536,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 537,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 539,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 794,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 898,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 904,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 905,
+   "reason": "not fully literal"
+  }
+ ]
+}

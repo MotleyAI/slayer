@@ -14,20 +14,24 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
+import pytest
+from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
 
+from slayer.api.server import create_app
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.deprecation import DeprecatedInputFutureWarning
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import DeprecatedInputWarning
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._dev1840_fixtures import _seed_sqlite, dev1840_models
+from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
 
 SAVED = "by_status"
-CM = {"formula": "sum(customers.spend)", "name": "cm"}
-CLEAN = {"source_model": "orders", "measures": ["count(*)"]}
-CROSS = {"source_model": "orders", "dimensions": ["status"], "measures": [CM]}
+CM = {"metric": "sum(customers.spend)", "alias": "cm"}
+CLEAN = {"population": "orders", "metrics": ["count(orders.*)"]}
+CROSS = {"population": "orders", "dimensions": ["orders.status"], "metrics": [CM]}
 
 
 @contextmanager
@@ -80,19 +84,19 @@ def mcp_payload(text: str) -> dict[str, Any]:
 
 def saved_stage() -> SlayerQuery:
     return SlayerQuery.model_validate(
-        {"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "count(*)", "name": "n"}]},
+        {"population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "count(orders.*)", "alias": "n"}]},
     )
 
 
 @asynccontextmanager
 async def orders_engine() -> AsyncGenerator[SlayerQueryEngine]:
-    """The dev1840 engine plus a saved query-backed model ``by_status``."""
+    """The dev1840 engine plus a saved query-backed dataset ``by_status``."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "data.sqlite")
         _seed_sqlite(db_path)
-        engine = await build_exec_engine(db_path, dialect="sqlite", models=dev1840_models())
+        engine = await build_exec_engine(db_path, dialect="sqlite", datasets=dev1840_datasets())
         try:
-            await engine.save_model(SlayerModel(name=SAVED, source_queries=[saved_stage()]))
+            await engine.save_dataset(SlayerDataset(name=SAVED, source_queries=[saved_stage()]))
             yield engine
         finally:
             engine.close()
@@ -105,3 +109,21 @@ def rows(data: list[dict[str, Any]]) -> list[tuple]:
 
 def dumped(payload: BaseModel) -> dict[str, Any]:
     return payload.model_dump(mode="json")
+
+
+def http_client(engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> SlayerClient:
+    """A remote ``SlayerClient`` whose sync and async transports post to an in-process app."""
+    server = TestClient(create_app(storage=engine.storage))
+
+    def via_app(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:
+        resp = server.request(method, path, json=json, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def via_app_async(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:  # NOSONAR(S7503) — matches the awaited transport
+        return via_app(method=method, path=path, json=json, params=params)
+
+    client = SlayerClient(url="http://testserver")
+    monkeypatch.setattr(client, "_request_sync", via_app)
+    monkeypatch.setattr(client, "_request", via_app_async)
+    return client

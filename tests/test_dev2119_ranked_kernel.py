@@ -10,33 +10,33 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2119_fixtures import BACKENDS, EFF, TIER1, by_bucket, by_dims, emit, engine_for, m, q, td
 
-MIXED = "quantity * avg(price, partition_by=product)"
+MIXED = "orders.quantity * avg(orders.price, partition_by=orders.product)"
 
-#: (formula, per-region value) over ``dimensions=["region"]``.
+#: (expression, per-region value) over ``dimensions=["region"]``.
 REGION_SHAPES: dict[str, tuple[str, dict[str, Any]]] = {
-    "expression_value": ("last(amount * quantity)", {"EU": 200.0, "US": 80.0}),
-    "expression_key_last": (f"last(amount, {EFF})", {"EU": 50.0, "US": 60.0}),
-    "expression_key_first": (f"first(amount, {EFF})", {"EU": 10.0, "US": 30.0}),
-    "value_and_key": (f"last(amount * quantity, {EFF})", {"EU": 200.0, "US": 60.0}),
-    "joined_leaves": ("last(amount - coalesce(customers.discount, 0), coalesce(customers.signup_ts, created_at))",
+    "expression_value": ("last(orders.amount * orders.quantity)", {"EU": 200.0, "US": 80.0}),
+    "expression_key_last": (f"last(orders.amount, {EFF})", {"EU": 50.0, "US": 60.0}),
+    "expression_key_first": (f"first(orders.amount, {EFF})", {"EU": 10.0, "US": 30.0}),
+    "value_and_key": (f"last(orders.amount * orders.quantity, {EFF})", {"EU": 200.0, "US": 60.0}),
+    "joined_leaves": ("last(orders.amount - coalesce(customers.discount, 0), coalesce(customers.signup_ts, orders.created_at))",
                       {"EU": 49.5, "US": 40.0}),
     "attached_constituent": (f"last({MIXED}, {EFF})", {"EU": pytest.approx(28 / 3), "US": pytest.approx(14 / 3)}),
 }
-#: (formula, per created_at month value) over a month time dimension on ``created_at``.
+#: (expression, per created_at month value) over a month time dimension on ``created_at``.
 WINDOWED_SHAPES: dict[str, tuple[str, dict[str, float]]] = {
-    "windowed_last": (f"last(amount, {EFF}, window='2m')",
+    "windowed_last": (f"last(orders.amount, {EFF}, window='2m')",
                       {"2024-12": 60.0, "2025-01": 60.0, "2025-02": 40.0, "2025-03": 50.0}),
-    "windowed_first": (f"first(amount, {EFF}, window='2m')",
+    "windowed_first": (f"first(orders.amount, {EFF}, window='2m')",
                        {"2024-12": 60.0, "2025-01": 10.0, "2025-02": 10.0, "2025-03": 30.0}),
 }
 
 
-def _region_query(formula: str) -> SlayerQuery:
-    return q(dimensions=["region"], measures=[m(formula)])
+def _region_query(expression: str) -> SlayerQuery:
+    return q(dimensions=["orders.region"], metrics=[m(expression)])
 
 
-def _windowed_query(formula: str) -> SlayerQuery:
-    return q(time_dimensions=[td("created_at")], measures=[m(formula)])
+def _windowed_query(expression: str) -> SlayerQuery:
+    return q(time_dimensions=[td("orders.created_at")], metrics=[m(expression)])
 
 
 @pytest.fixture(params=BACKENDS)
@@ -56,7 +56,7 @@ class TestExecutedValues:
     async def test_windowed_shapes(self, engine: SlayerQueryEngine, shape: str) -> None:
         formula, expected = WINDOWED_SHAPES[shape]
         resp = await engine.execute(_windowed_query(formula))
-        assert by_bucket(resp, "orders.created_at", "orders.v") == expected
+        assert by_bucket(resp, "orders.created_at", "v") == expected
 
 
 class TestTier1Emission:

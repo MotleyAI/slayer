@@ -1,7 +1,7 @@
 """BigQuery dialect.
 
 BigQuery rejects ``.`` in column names, so dotted aliases are mangled to ``___``
-(distinct from the ``__`` cross-model flattening) on write and decoded on read.
+(distinct from the ``__`` cross-dataset flattening) on write and decoded on read.
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
+from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
@@ -25,6 +26,7 @@ from slayer.sql.dialects.base import (
     NativeFn,
     COMPARISON_NODES,
     LIST_ELEMENT,
+    LIST_POSITION,
     LIST_VALUE,
     ListRelation,
     PORTABLE_LIBRARY,
@@ -59,7 +61,7 @@ _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "S
 _DATETIME = exp.DataType.build("DATETIME")
 
 
-_ELEMENT, _WANTED = LIST_ELEMENT, "__slayer_w"
+_ELEMENT, _WANTED, _OFFSET = LIST_ELEMENT, "__slayer_w", "__slayer_o"
 
 
 def _over_elements(values: Expression, name: str) -> exp.Select:
@@ -186,14 +188,18 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False,
+        positioned: bool = False,
     ) -> ListRelation:
-        """``UNNEST`` of a ``STRUCT<value>`` array, so the element reads as ``alias.value``."""
+        """``UNNEST`` of a ``STRUCT<value[, position]>`` array, so the element reads as ``alias.value``."""
         element_ref = exp.column(_ELEMENT)
-        rows = exp.Select(kind="STRUCT").select(exp.alias_(element_ref, LIST_VALUE)).from_(exp.Unnest(
+        elements = exp.Unnest(
             expressions=[values.copy()], alias=exp.TableAlias(columns=[exp.to_identifier(_ELEMENT)]),
-        )).where(is_not_null(element_ref))
-        rows = rows.distinct() if distinct else rows
+            offset=exp.to_identifier(_OFFSET) if positioned else None,
+        )
+        rows = exp.Select(kind="STRUCT").select(exp.alias_(element_ref, LIST_VALUE)).from_(elements).where(
+            is_not_null(element_ref))
+        if positioned:
+            rows = rows.select(exp.alias_(exp.column(_OFFSET), LIST_POSITION))
         return ListRelation(relation=exp.Unnest(
             expressions=[exp.Array(expressions=[rows])], alias=exp.TableAlias(columns=[alias.copy()]),
         ))
@@ -292,23 +298,23 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             return None
 
     def build_date_trunc(
-        self,
-        col_expr: Expression,
-        granularity: TimeGranularity,
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """Anchor both weeks explicitly: BigQuery's bare ``WEEK`` is Sunday-based.
-
-        ``exp.Anonymous`` because sqlglot drops the weekday modifier from ``exp.DateTrunc``.
-        """
+        """``DATE_TRUNC`` keeps its input's type: a DATE is promoted to DATETIME for a sub-day bucket. Both weeks
+        anchor explicitly (bare ``WEEK`` is Sunday-based); ``exp.Anonymous`` because sqlglot drops the weekday
+        modifier from ``exp.DateTrunc``."""
+        if bucket_type(operand, granularity) is not operand or (
+                operand is DataType.DATETIME and not isinstance(col_expr, (exp.Column, exp.Cast))):
+            source = self.promote_to_timestamp(col_expr)
+        elif not isinstance(col_expr, (exp.Column, exp.Cast)):
+            source = exp.Cast(this=col_expr, to=exp.DataType.build("DATE"))
+        else:
+            source = col_expr
         weekday = _WEEK_ANCHORS.get(granularity)
         if weekday is None:
-            return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity,
-            )
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = self.promote_to_timestamp(col_expr)
+            return exp.DateTrunc(this=source, unit=exp.Literal.string(granularity.value))
         week = exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
-        return exp.Anonymous(this="DATE_TRUNC", expressions=[col_expr, week])
+        return exp.Anonymous(this="DATE_TRUNC", expressions=[source, week])
 
     def build_integer_sequence(self, *, size: int) -> exp.Select:
         return exp.select(exp.column("i")).from_(exp.Unnest(
@@ -334,7 +340,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
         zoned = to.this is exp.DataType.Type.TIMESTAMPTZ
-        return _DATETIME.copy() if data_type is DataType.TIMESTAMP and zoned else to
+        return _DATETIME.copy() if data_type.kind is TypeKind.TIMESTAMP and zoned else to
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:
@@ -381,14 +387,10 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             return exp.Anonymous(this="DATETIME_DIFF", expressions=[
                 trunc(end), trunc(start), exp.var(unit.value.upper()),
             ])
-        if operand is DataType.TIMESTAMP:
+        if kind_of(operand) is TypeKind.TIMESTAMP:
             start = exp.Cast(this=start.copy(), to=exp.DataType.build("DATE"))
             end = exp.Cast(this=end.copy(), to=exp.DataType.build("DATE"))
         return exp.Anonymous(this="DATE_DIFF", expressions=[end.copy(), start.copy(), _date_part_unit(unit)])
-
-    def bucket_comparand(self, bucket: Expression) -> Expression:
-        """A bucket is DATE, DATETIME or TIMESTAMP, and none of them compare with another."""
-        return self.promote_to_timestamp(bucket)
 
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,

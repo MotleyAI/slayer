@@ -1,0 +1,575 @@
+{
+ "source": "tests/test_dev1708_stage4_cte_scope.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.deep_weight)"
+   },
+   "new": {
+    "metric": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.deep_weight)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.id)"
+   },
+   "new": {
+    "metric": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.id)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(customers_v2.lifetime_value, weight=deep_weight)"
+   },
+   "new": {
+    "metric": "weighted_avg(customers_v2.lifetime_value, weight=deep_weight)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   },
+   "new": {
+    "metric": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(customers_v2.lifetime_value, customers_v2.region_opened_eff)"
+   },
+   "new": {
+    "metric": "last(customers_v2.lifetime_value, customers_v2.region_opened_eff)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(customers_v2.deep_pop_flt, customers_v2.signup_at)"
+   },
+   "new": {
+    "metric": "last(customers_v2.deep_pop_flt, customers_v2.signup_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   },
+   "new": {
+    "metric": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_pop)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_pop)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(customers_v2.lifetime_value, customers_v2.signup_at)"
+   },
+   "new": {
+    "metric": "last(customers_v2.lifetime_value, customers_v2.signup_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_pop)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_pop)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   },
+   "new": {
+    "metric": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   },
+   "new": {
+    "metric": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(customers_v2.deep_weight, customers_v2.signup_at)"
+   },
+   "new": {
+    "metric": "last(customers_v2.deep_weight, customers_v2.signup_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers_v2",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers_v2",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers_v2",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers_v2",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amt_hi)"
+   },
+   "new": {
+    "metric": "sum(amt_hi)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.lifetime_value)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 121,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 176,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 218,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 234,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 251,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 278,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 303,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 306,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 336,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 362,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 391,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 412,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 452,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 466,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 478,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 492,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 494,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 506,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 508,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 522,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 535,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 632,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 647,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 712,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 715,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 716,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 717,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 720,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 723,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 724,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 725,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 726,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 727,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 731,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 734,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 735,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 736,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 737,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 749,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 768,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 771,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 772,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 773,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 774,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 777,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 782,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 799,
+   "reason": "not fully literal"
+  }
+ ]
+}

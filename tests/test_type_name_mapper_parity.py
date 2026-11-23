@@ -16,32 +16,32 @@ from slayer.sql.dialects.reflection import (
 )
 
 _CASES = [
-    ("INTEGER", sa.INTEGER(), DataType.INT),
-    ("BIGINT", sa.BIGINT(), DataType.INT),
-    ("UInt8", None, DataType.INT),
-    ("NUMERIC(10,0)", sa.NUMERIC(10, 0), DataType.INT),
-    ("NUMERIC(10,2)", sa.NUMERIC(10, 2), DataType.DOUBLE),
-    ("NUMERIC", sa.NUMERIC(), DataType.DOUBLE),
-    ("DOUBLE PRECISION", postgresql.DOUBLE_PRECISION(), DataType.DOUBLE),
-    ("MONEY", postgresql.MONEY(), DataType.DOUBLE),
-    ("VARCHAR(10)", sa.VARCHAR(10), DataType.TEXT),
+    ("INTEGER", sa.INTEGER(), DataType.INTEGER),
+    ("BIGINT", sa.BIGINT(), DataType.INTEGER),
+    ("UInt8", None, DataType.INTEGER),
+    ("NUMERIC(10,0)", sa.NUMERIC(10, 0), DataType.INTEGER),
+    ("NUMERIC(10,2)", sa.NUMERIC(10, 2), DataType.FLOAT),
+    ("NUMERIC", sa.NUMERIC(), DataType.FLOAT),
+    ("DOUBLE PRECISION", postgresql.DOUBLE_PRECISION(), DataType.FLOAT),
+    ("MONEY", postgresql.MONEY(), DataType.FLOAT),
+    ("VARCHAR(10)", sa.VARCHAR(10), DataType.STRING),
     ("BOOLEAN", sa.BOOLEAN(), DataType.BOOLEAN),
     ("DATE", sa.DATE(), DataType.DATE),
     ("DATE32", None, DataType.DATE),
-    ("TIMESTAMP", sa.TIMESTAMP(), DataType.TIMESTAMP),
-    ("INTERVAL", postgresql.INTERVAL(), DataType.TEXT),
+    ("TIMESTAMP", sa.TIMESTAMP(), DataType.DATETIME),
+    ("INTERVAL", postgresql.INTERVAL(), DataType.STRING),
     ("INTEGER[]", postgresql.ARRAY(sa.INTEGER()), DataType.ARRAY),
     ("ARRAY(INTEGER)", None, DataType.ARRAY),
     ("Array(Int32)", None, DataType.ARRAY),
-    ("STRUCT(a INTEGER)", None, DataType.TEXT),
-    ("ROW(a INTEGER)", None, DataType.TEXT),
-    ("MAP(VARCHAR, INTEGER)", None, DataType.TEXT),
-    ("JSON", sa.JSON(), DataType.UNKNOWN),
-    ("XML", None, DataType.UNKNOWN),
-    ("GEOMETRY", None, DataType.UNKNOWN),
-    ("JSONB", postgresql.JSONB(), DataType.TEXT),
-    ("UUID", sa.Uuid(), DataType.TEXT),
-    ("NOT_A_KNOWN_TYPE", None, DataType.TEXT),
+    ("STRUCT(a INTEGER)", None, DataType.STRING),
+    ("ROW(a INTEGER)", None, DataType.STRING),
+    ("MAP(VARCHAR, INTEGER)", None, DataType.STRING),
+    ("JSON", sa.JSON(), DataType.OPAQUE),
+    ("XML", None, DataType.OPAQUE),
+    ("GEOMETRY", None, DataType.OPAQUE),
+    ("JSONB", postgresql.JSONB(), DataType.STRING),
+    ("UUID", sa.Uuid(), DataType.STRING),
+    ("NOT_A_KNOWN_TYPE", None, DataType.STRING),
 ]
 
 
@@ -58,10 +58,10 @@ def test_same_name_same_type(name: str, sa_type: sa.types.TypeEngine | None, exp
 
 @pytest.mark.parametrize("sa_type", [mssql.TIMESTAMP(), mssql.ROWVERSION()])
 def test_sql_server_timestamp_is_rowversion(sa_type: sa.types.TypeEngine) -> None:
-    assert column_from_sa_type(name="c", sa_type=sa_type).type == DataType.TEXT
+    assert column_from_sa_type(name="c", sa_type=sa_type).type == DataType.STRING
 
 
 def test_duckdb_json_is_text() -> None:
     assert dialect_for_ds_type("duckdb").describe_cursor_column(("c", "JSON", None, None, None, None, None)) == (
-        ResultColumnType(type=DataType.TEXT, db_type="JSON")
+        ResultColumnType(type=DataType.STRING, db_type="JSON")
     )

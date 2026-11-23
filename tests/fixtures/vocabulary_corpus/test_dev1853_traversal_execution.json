@@ -1,0 +1,327 @@
+{
+ "source": "tests/test_dev1853_traversal_execution.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "t"
+     }
+    ],
+    "to_many_handling": "broadcast"
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "tier"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "t"
+     }
+    ],
+    "to_many_handling": "broadcast"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "orders.status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(regions.pop)",
+      "name": "rp"
+     }
+    ],
+    "to_many_handling": "broadcast"
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "orders.status"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(regions.pop)",
+      "alias": "rp"
+     }
+    ],
+    "to_many_handling": "broadcast"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "regions",
+    "dimensions": [
+     "name",
+     "customers.orders.status"
+    ]
+   },
+   "new": {
+    "population": "regions",
+    "dimensions": [
+     "name",
+     "customers.orders.status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "metrics": [
+     {
+      "metric": "sum(orders.amount)",
+      "alias": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "total_amount",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "total_amount",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     {
+      "formula": "orders.total_amount",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     {
+      "metric": "orders.total_amount",
+      "alias": "t"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

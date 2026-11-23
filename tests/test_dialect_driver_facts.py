@@ -160,7 +160,7 @@ def test_no_parallel_async_driver_table() -> None:
     assert not hasattr(engine_factory, "_sync_connection_string")
 
 
-def test_registry_is_the_one_driver_table(monkeypatch) -> None:
+def test_registry_is_the_one_driver_table(monkeypatch: pytest.MonkeyPatch) -> None:
     swapped = PostgresDialect().model_copy(update={"url_scheme": "postgresql+pg8000"})
     monkeypatch.setitem(dialects._BY_DS_TYPE, "postgres", swapped)
     ds = DatasourceConfig(name="d", type="postgres", **_STRUCTURED)

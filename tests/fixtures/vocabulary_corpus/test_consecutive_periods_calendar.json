@@ -1,0 +1,113 @@
+{
+ "source": "tests/test_consecutive_periods_calendar.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "order_date",
+      "granularity": "month"
+     }
+    ],
+    "filters": [
+     "customer_id = 1"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "order_date",
+      "granularity": "month"
+     }
+    ],
+    "filter": [
+     "customer_id = 1"
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "time_dimensions": [
+     {
+      "dimension": "order_date",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "consecutive_periods(sum(total) > 100)",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "time_dimensions": [
+     {
+      "field": "order_date",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "consecutive_periods(sum(total) > 100)",
+      "alias": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount) > 0)",
+    "name": "v"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount) > 0)",
+    "name": "v"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "chg"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "chg"
+   }
+  }
+ ],
+ "skipped": []
+}

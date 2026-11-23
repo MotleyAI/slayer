@@ -11,13 +11,12 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 
 from tests._dev1746_fixtures import (
-    dev1746_models,
+    dev1746_datasets,
     make_sqlite_engine,
     outer_clause_sql,
     outer_statement,
@@ -45,12 +44,12 @@ _BARE_LIMIT = re.compile(r"(?<![\w.\[\"`])LIMIT\s+\d+", re.IGNORECASE)
 def _plain_query(
     *, limit: Optional[int], offset: Optional[int], ordered: bool,
 ) -> SlayerQuery:
-    """Single-model aggregate — no isolation CTE, no hidden slot."""
+    """Single-dataset aggregate — no isolation CTE, no hidden slot."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
-        order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})] if ordered else [],
+        population="orders",
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="revenue")],
+        order=[OrderItem.model_validate({"field": "sum(orders.amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
     )
@@ -61,10 +60,10 @@ def _outer_trim_query(
 ) -> SlayerQuery:
     """Ordering by a non-projected aggregate produces the outer-trim wrapper shape."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="count(*)", name="n")],
-        order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})] if ordered else [],
+        population="orders",
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+        order=[OrderItem.model_validate({"field": "sum(orders.amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
     )
@@ -73,13 +72,13 @@ def _outer_trim_query(
 def _combined_query(
     *, limit: Optional[int], offset: Optional[int], ordered: bool,
 ) -> SlayerQuery:
-    """Cross-model measure — the combined-SELECT path that appends raw text."""
+    """Cross-dataset metric — the combined-SELECT path that appends raw text."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="customers.tier")],
-        measures=[ModelMeasure(formula="sum(customers.spend)", name="spend")],
+        population="orders",
+        dimensions=[QueryDimension(field="customers.tier")],
+        metrics=[QueryMetric(metric="sum(customers.spend)", alias="spend")],
         order=(
-            [OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})]
+            [OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})]
             if ordered else []
         ),
         limit=limit,
@@ -95,9 +94,9 @@ SHAPES = {
 
 
 async def _gen_sql(query: SlayerQuery, *, dialect: str) -> str:
-    models = dev1746_models()
+    models = dev1746_datasets()
     return await _engine_generate(
-        query=query, model=models[0], dialect=dialect, extra_models=models[1:],
+        query=query, dataset=models[0], dialect=dialect, extra_datasets=models[1:],
     )
 
 
@@ -283,7 +282,7 @@ class TestChainOuterWrapInjectsOrderingForOffset:
 
     async def test_bare_offset_is_ordered_by_a_noop(self) -> None:
         # An inner stage: a final stage with dimensions is default-ordered.
-        stages = [cumsum_chain(name="s1", offset=5), q(source_model="s1", measures=["sum(running)"])]
+        stages = [cumsum_chain(name="s1", offset=5), q(population="s1", metrics=["sum(s1.running)"])]
         sql = await gen(stages, dialect="tsql")
         paged = next(s for s in parse(sql, "tsql").find_all(exp.Select) if s.args.get("offset"))
         order = paged.args.get("order")
@@ -296,7 +295,7 @@ class TestChainOuterWrapInjectsOrderingForOffset:
 
     async def test_user_order_is_never_replaced(self) -> None:
         sql = await gen(cumsum_chain(
-            order=[{"column": "created_at", "direction": "desc"}], offset=5,
+            order=[{"field": "orders.created_at", "direction": "desc"}], offset=5,
         ), dialect="tsql")
         assert "SELECT NULL" not in sql.upper(), (
             f"the user's ORDER BY was replaced by the fallback ordering:\n{sql}"
@@ -320,13 +319,13 @@ class TestPaginationExecution:
             _plain_query(limit=1, offset=None, ordered=True),
         )
         assert [r["orders.status"] for r in top.data] == ["paid"], top.data
-        assert top.data[0]["orders.revenue"] == pytest.approx(30.0), top.data
+        assert top.data[0]["revenue"] == pytest.approx(30.0), top.data
 
         second = await exec_engine.execute(
             _plain_query(limit=1, offset=1, ordered=True),
         )
         assert [r["orders.status"] for r in second.data] == [None], second.data
-        assert second.data[0]["orders.revenue"] == pytest.approx(12.0), second.data
+        assert second.data[0]["revenue"] == pytest.approx(12.0), second.data
 
     async def test_outer_trim_shape_limit_and_offset(
         self, exec_engine: SlayerQueryEngine,
@@ -348,20 +347,20 @@ class TestPaginationExecution:
     async def test_combined_shape_limit_and_offset(
         self, exec_engine: SlayerQueryEngine,
     ) -> None:
-        """The cross-model combined shape paginates when executed."""
+        """The cross-dataset combined shape paginates when executed."""
         top = await exec_engine.execute(
             _combined_query(limit=1, offset=None, ordered=True),
         )
         assert len(top.data) == 1, f"LIMIT 1 returned {len(top.data)} rows:\n{top.data}"
-        assert top.data[0]["orders.customers.tier"] == "gold", top.data
-        assert top.data[0]["orders.spend"] == pytest.approx(1000.0), top.data
+        assert top.data[0]["customers.tier"] == "gold", top.data
+        assert top.data[0]["spend"] == pytest.approx(1000.0), top.data
 
         second = await exec_engine.execute(
             _combined_query(limit=1, offset=1, ordered=True),
         )
         assert len(second.data) == 1, second.data
-        assert second.data[0]["orders.customers.tier"] is None, second.data
-        assert second.data[0]["orders.spend"] == pytest.approx(325.0), second.data
+        assert second.data[0]["customers.tier"] is None, second.data
+        assert second.data[0]["spend"] == pytest.approx(325.0), second.data
 
     async def test_offset_past_the_end_returns_no_rows(
         self, exec_engine: SlayerQueryEngine,

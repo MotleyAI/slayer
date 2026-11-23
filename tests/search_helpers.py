@@ -5,40 +5,40 @@ from __future__ import annotations
 from typing import Any
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.storage.base import StorageBackend
 
 
-async def seed_warehouse_models(storage: StorageBackend) -> None:
-    """Seed the standard warehouse datasource + orders + customers models.
+async def seed_warehouse_datasets(storage: StorageBackend) -> None:
+    """Seed the standard warehouse datasource + orders + customers datasets.
 
     Centralised here to avoid Sonar duplication-density failures across
-    tests that each need the same model corpus.
+    tests that each need the same dataset corpus.
     """
     await storage.save_datasource(
         DatasourceConfig(name="warehouse", type="sqlite", database=":memory:")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="warehouse",
         description="Checkout orders.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount_paid", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount_paid", datatype=DataType.FLOAT,
                    description="Net paid in USD."),
-            Column(name="status", type=DataType.TEXT,
+            DatasetField(name="status", datatype=DataType.STRING,
                    description="paid|refunded|cancelled."),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="warehouse",
         description="Customer master data.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="email", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="email", datatype=DataType.STRING),
         ],
     ))
 

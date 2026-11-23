@@ -16,7 +16,7 @@ from sqlglot.expressions.core import Expr
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ForcedFilterError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.policy import (
     ColumnFilterRuleset,
     JoinFilterRule,
@@ -57,49 +57,49 @@ ITEMS = [(1, 1, 2.0, "a"), (2, 1, 1.0, "a"), (3, 3, 5.0, "b"), (4, 4, 1.0, "a")]
 ORDER_TOTALS_SQL = "SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id"
 
 
-def rls_models(*, data_source: str = "test") -> list[SlayerModel]:
+def rls_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     """``regions`` ← ``customers`` ← ``orders`` ← ``items``, plus a sql-mode ``order_totals``."""
     return [
-        SlayerModel(name="regions", sql_table="regions", data_source=data_source, columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        SlayerDataset(name="regions", sql_table="regions", data_source=data_source, fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ]),
-        SlayerModel(name="customers", sql_table="customers", data_source=data_source, columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="region_id", type=DataType.INT),
-            Column(name=TENANT, type=DataType.TEXT),
-        ], joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
-            ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]]),
+        SlayerDataset(name="customers", sql_table="customers", data_source=data_source, fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name=TENANT, datatype=DataType.STRING),
+        ], relationships=[
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
+            DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"]),
         ]),
-        SlayerModel(name="orders", sql_table="orders", data_source=data_source,
-                    default_time_dimension="created_at", columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name=TENANT, type=DataType.TEXT),
-            Column(name="tags", type=DataType.ARRAY, element_type=DataType.TEXT),
+        SlayerDataset(name="orders", sql_table="orders", data_source=data_source,
+                    default_time_dimension="created_at", fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name=TENANT, datatype=DataType.STRING),
+            DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.STRING),
         ]),
-        SlayerModel(name="items", sql_table="items", data_source=data_source, columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="qty", type=DataType.DOUBLE),
-            Column(name=TENANT, type=DataType.TEXT),
-        ], joins=[ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]])]),
-        SlayerModel(name="order_totals", sql=ORDER_TOTALS_SQL, data_source=data_source, columns=[
-            Column(name="customer_id", type=DataType.INT, primary_key=True),
-            Column(name="total", type=DataType.DOUBLE),
+        SlayerDataset(name="items", sql_table="items", data_source=data_source, fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name=TENANT, datatype=DataType.STRING),
+        ], relationships=[DatasetRelationship(to="orders", from_columns=["order_id"], to_columns=["id"])]),
+        SlayerDataset(name="order_totals", sql=ORDER_TOTALS_SQL, data_source=data_source, fields=[
+            DatasetField(name="customer_id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="total", datatype=DataType.FLOAT),
         ]),
     ]
 
 
-#: The query-backed model the ``query_backed`` shape reads (saved by the engine builders).
-QUERY_BACKED = SlayerModel.model_validate({
+#: The query-backed dataset the ``query_backed`` shape reads (saved by the engine builders).
+QUERY_BACKED = SlayerDataset.model_validate({
     "name": "spend", "data_source": "test",
-    "source_queries": [{"source_model": "orders", "dimensions": ["customer_id"], "measures": ["sum(amount)"]}],
+    "source_queries": [{"population": "orders", "dimensions": ["orders.customer_id"], "metrics": ["sum(orders.amount)"]}],
 })
 
 
@@ -159,25 +159,25 @@ def _seed_file(backend: str, db_path: str) -> None:
             con.execute(stmt)
 
 
-async def save_models(storage: YAMLStorage, *, data_source: str = "test") -> None:
-    for model in rls_models(data_source=data_source):
-        await storage.save_model(model)
+async def save_datasets(storage: YAMLStorage, *, data_source: str = "test") -> None:
+    for model in rls_datasets(data_source=data_source):
+        await storage.save_dataset(model)
 
 
 async def save_query_backed(engine: SlayerQueryEngine) -> None:
-    await engine.save_model(QUERY_BACKED)
+    await engine.save_dataset(QUERY_BACKED)
 
 
 @contextlib.asynccontextmanager
 async def file_engine(backend: str) -> AsyncGenerator[tuple[SlayerQueryEngine, DatasourceConfig]]:
-    """A policy-free engine over a seeded SQLite / DuckDB file, with the query-backed model saved."""
+    """A policy-free engine over a seeded SQLite / DuckDB file, with the query-backed dataset saved."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "seed.duckdb" if backend == "duckdb" else "seed.db")
         _seed_file(backend, db_path)
         ds = DatasourceConfig(name="test", type=backend, database=db_path)
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-            await save_models(storage)
+            await save_datasets(storage)
             await save_query_backed(engine)
             yield engine, ds
 
@@ -190,9 +190,9 @@ async def emission_engine(dialect: str) -> AsyncGenerator[tuple[SlayerQueryEngin
         storage = YAMLStorage(base_dir=tmp)
         await storage.save_datasource(ds)
         async with owned_query_engine(storage=storage) as engine:
-            await save_models(storage)
-            # A query-backed model's save-time dry run never connects.
-            await storage.save_model(QUERY_BACKED, _validate=False)
+            await save_datasets(storage)
+            # A query-backed dataset's save-time dry run never connects.
+            await storage.save_dataset(QUERY_BACKED, _validate=False)
             yield engine, ds
 
 
@@ -244,26 +244,26 @@ def _q(body: dict[str, Any]) -> SlayerQuery:
 
 
 SHAPES: dict[str, Any] = {
-    "plain": _q({"source_model": "orders", "dimensions": ["status"], "measures": ["sum(amount)"]}),
-    "joined_dims": _q({"source_model": "orders", "dimensions": ["customers.name", "customers.regions.name"],
-                       "measures": ["sum(amount)"]}),
+    "plain": _q({"population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.amount)"]}),
+    "joined_dims": _q({"population": "orders", "dimensions": ["customers.name", "customers.regions.name"],
+                       "metrics": ["sum(orders.amount)"]}),
     "multi_stage": [
-        {"name": "per_customer", "source_model": "orders", "dimensions": ["customer_id"], "measures": ["sum(amount)"]},
-        {"source_model": "per_customer", "measures": [{"formula": "max(amount_sum)", "name": "top"}]},
+        {"name": "per_customer", "population": "orders", "dimensions": ["orders.customer_id"], "metrics": ["sum(orders.amount)"]},
+        {"population": "per_customer", "metrics": [{"metric": "max(per_customer.amount_sum)", "alias": "top"}]},
     ],
-    "query_backed": _q({"source_model": "spend", "measures": [{"formula": "sum(amount_sum)", "name": "total"}]}),
-    "sql_mode": _q({"source_model": "order_totals", "dimensions": ["customer_id"], "measures": ["sum(total)"]}),
-    "semi_join": _q({"source_model": "customers", "dimensions": ["name"], "filters": ["orders.amount > 15"],
-                     "measures": [{"formula": "count(*)", "name": "n"}]}),
-    "list_unnest": _q({"source_model": "orders", "dimensions": ["tags.value"],
-                       "measures": [{"formula": "count(tags.*)", "name": "n"}]}),
-    "time_spine": _q({"measures": [{"formula": "sum(orders.amount)", "name": "o"}],
-                      "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month",
+    "query_backed": _q({"population": "spend", "metrics": [{"metric": "sum(spend.amount_sum)", "alias": "total"}]}),
+    "sql_mode": _q({"population": "order_totals", "dimensions": ["order_totals.customer_id"], "metrics": ["sum(order_totals.total)"]}),
+    "semi_join": _q({"population": "customers", "dimensions": ["customers.name"], "filter": ["orders.amount > 15"],
+                     "metrics": [{"metric": "count(customers.*)", "alias": "n"}]}),
+    "list_unnest": _q({"population": "orders", "dimensions": ["orders.tags.value"],
+                       "metrics": [{"metric": "count(orders.tags.*)", "alias": "n"}]}),
+    "time_spine": _q({"metrics": [{"metric": "sum(orders.amount)", "alias": "o"}],
+                      "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month",
                                            "date_range": ["2025-01-01", "2025-03-31"]}]}),
-    "cross_model": _q({"source_model": "orders", "dimensions": ["status"],
-                       "measures": [{"formula": "sum(amount) / count(customers.id)", "name": "r"}]}),
-    "paginated": _q({"source_model": "orders", "dimensions": ["status"], "measures": ["sum(amount)"],
-                     "order": [{"column": "amount_sum", "direction": "desc"}], "limit": 1, "offset": 1}),
+    "cross_model": _q({"population": "orders", "dimensions": ["orders.status"],
+                       "metrics": [{"metric": "sum(orders.amount) / count(customers.id)", "alias": "r"}]}),
+    "paginated": _q({"population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.amount)"],
+                     "order": [{"field": "orders.amount_sum", "direction": "desc"}], "limit": 1, "offset": 1}),
 }
 
 

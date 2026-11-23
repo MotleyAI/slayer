@@ -9,17 +9,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
+from slayer.engine.key_metadata import SlotTyping
 from slayer.engine.elaborate_env import (
-    check_canonical_alias_shadows_column,
-    check_duplicate_measure_name,
-    check_measure_name_collision,
+    check_canonical_alias_shadows_field,
+    check_duplicate_metric_name,
+    check_metric_name_collision,
 )
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     ArrayLiteralKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     InKey,
     KIND_POLICY,
     LiteralKey,
@@ -34,21 +35,21 @@ from slayer.core.keys import (
     TransformKey,
     VALUE_KEY_TYPES,
     ValueKey,
-    column_leaf,
-    column_path,
+    field_leaf,
+    field_path,
 )
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.planned import SlotId, ValueSlot
-from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec
+from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMetric, OrderSpec
 
 __all__ = [
-    "DeclaredMeasure",
+    "DeclaredMetric",
     "OrderSpec",
     "ProjectionPlan",
     "ProjectionPlanner",
     "ValueRegistry",
     "filter_referenced_slot_ids",
-    "free_measure_name",
+    "free_metric_name",
 ]
 
 # Hoisted from the two signatures below: a paren inside a keyword-only default
@@ -56,7 +57,7 @@ __all__ = [
 _HOST_FALLBACK_NAME = "(host)"
 
 
-def free_measure_name(*, declared: str, canonical: Optional[str], taken: AbstractSet[str]) -> str:
+def free_metric_name(*, declared: str, canonical: Optional[str], taken: AbstractSet[str]) -> str:
     """``canonical`` when free, else the first free ``<declared>_<n>`` from n = 2."""
     if canonical and canonical != declared and canonical not in taken:
         return canonical
@@ -89,18 +90,20 @@ def _fill_missing_metadata(
 
 
 class ValueRegistry:
-    """Interns ``ValueKey``s by structural identity into ``ValueSlot``s; ``source_column_names`` drives alias-collision checks."""
+    """Interns ``ValueKey``s by structural identity into ``ValueSlot``s; ``source_field_names`` drives alias-collision checks."""
 
     def __init__(
         self,
         *,
-        source_column_names: Optional[FrozenSet[str]] = None,
-        host_model_name: str = _HOST_FALLBACK_NAME,
+        typing: SlotTyping,
+        source_field_names: Optional[FrozenSet[str]] = None,
+        host_dataset_name: str = _HOST_FALLBACK_NAME,
     ) -> None:
-        self._source_columns: FrozenSet[str] = (
-            source_column_names or frozenset()
+        self._typing = typing
+        self._source_fields: FrozenSet[str] = (
+            source_field_names or frozenset()
         )
-        self._host_model_name = host_model_name
+        self._host_dataset_name = host_dataset_name
         self._slots: Dict[SlotId, ValueSlot] = {}
         self._by_key: Dict[ValueKey, SlotId] = {}
         self._declared_names: Dict[str, SlotId] = {}
@@ -108,7 +111,7 @@ class ValueRegistry:
         # Every alias name already taken (public names + each slot's declared_name);
         # hidden slots are uniquified against it so no alias maps to two expressions.
         self._taken_names: set = set()
-        # Multiset of reserved names, so a collision suggestion can discount the colliding measure's own.
+        # Multiset of reserved names, so a collision suggestion can discount the colliding metric's own.
         self._reserved: Counter[str] = Counter()
 
     def _next_id(self) -> SlotId:
@@ -125,14 +128,14 @@ class ValueRegistry:
     def _collision_suggestion(
         self, *, declared_name: str, public_name: Optional[str], canonical_alias: Optional[str],
     ) -> str:
-        """``rename it, e.g. to '<free name>'`` — free of source columns and every other name in the query."""
+        """``rename it, e.g. to '<free name>'`` — free of source fields and every other name in the query."""
         own = Counter(n for n in (declared_name, public_name, canonical_alias) if n)
         taken = (
-            self._source_columns
+            self._source_fields
             | (self._taken_names - self._reserved.keys())
             | (self._reserved - own).keys()
         )
-        free = free_measure_name(declared=public_name or declared_name, canonical=canonical_alias, taken=taken)
+        free = free_metric_name(declared=public_name or declared_name, canonical=canonical_alias, taken=taken)
         return f"rename it, e.g. to {free!r}"
 
     def _unique_hidden_name(self, declared_name: str) -> str:
@@ -152,56 +155,56 @@ class ValueRegistry:
         public_name: Optional[str],
         canonical_alias: Optional[str],
     ) -> None:
-        """Alias-collision validations (P4): a public name or renamed canonical alias shadowing a source column raises; self-named dimensions are exempt."""
+        """Alias-collision validations (P4): a public name or renamed canonical alias shadowing a source field raises; self-named dimensions are exempt."""
         if isinstance(key, ListSetKey):
             key = key.source
         is_self_named_dimension = (
-            isinstance(key, ColumnKey)
+            isinstance(key, FieldKey)
             and key.path == ()
             and public_name == key.leaf
         ) or (
-            isinstance(key, ColumnSqlKey)
+            isinstance(key, FieldSqlKey)
             and key.path == ()
-            and public_name == key.column_name
+            and public_name == key.field_name
         ) or (
             isinstance(key, TimeTruncKey)
-            and isinstance(key.source, (ColumnKey, ColumnSqlKey))
-            and column_path(key.source) == ()
-            and public_name == column_leaf(key.source)
+            and isinstance(key.source, (FieldKey, FieldSqlKey))
+            and field_path(key.source) == ()
+            and public_name == field_leaf(key.source)
         )
         # An unnamed ``<agg>(*)`` (StarKey) is exempt: its canonical alias (``_count``)
-        # is a structural marker, not a column ref. An explicit user name still raises.
+        # is a structural marker, not a field ref. An explicit user name still raises.
         is_unnamed_star_agg = (
             isinstance(key, AggregateKey)
             and isinstance(getattr(key, "source", None), StarKey)
             and canonical_alias is None
         )
-        # A pathed column ref only flattens to a ``__`` name at a stage boundary;
+        # A pathed field ref only flattens to a ``__`` name at a stage boundary;
         # that collision is owned by the stage-schema guard, so exempt it here.
         is_pathed_projection = (
-            isinstance(key, (ColumnKey, ColumnSqlKey)) and key.path != ()
+            isinstance(key, (FieldKey, FieldSqlKey)) and key.path != ()
         )
         collides = (
             public_name is not None
-            and public_name in self._source_columns
+            and public_name in self._source_fields
             and not is_self_named_dimension
             and not is_unnamed_star_agg
             and not is_pathed_projection
         )
-        check_measure_name_collision(
+        check_metric_name_collision(
             name=public_name if collides else None,
-            model=self._host_model_name,
+            dataset=self._host_dataset_name,
             suggestion=self._collision_suggestion(
                 declared_name=declared_name, public_name=public_name, canonical_alias=canonical_alias,
             ) if collides else None,
         )
-        check_canonical_alias_shadows_column(
-            formula=declared_name,
+        check_canonical_alias_shadows_field(
+            expression=declared_name,
             canonical=canonical_alias if (
                 canonical_alias is not None
-                and canonical_alias in self._source_columns
+                and canonical_alias in self._source_fields
             ) else None,
-            model=self._host_model_name,
+            dataset=self._host_dataset_name,
         )
 
     def intern(
@@ -250,7 +253,7 @@ class ValueRegistry:
         if public_name is not None:
             owner = self._declared_names.get(public_name)
             if owner is not None:
-                check_duplicate_measure_name(
+                check_duplicate_metric_name(
                     name=public_name,
                     occurrences=[
                         self._slots[owner].declared_name,
@@ -267,6 +270,11 @@ class ValueRegistry:
         if public_name is not None:
             self._taken_names.add(public_name)
         public_aliases = [public_name] if public_name is not None else []
+        slot_type = type if type is not None else self._typing.type_of(key)
+        if element_type is None:
+            element_type = self._typing.element_type_of(key, slot_type)
+        if not type_is_explicit:
+            preserve_native_type = preserve_native_type or self._typing.preserves_native_type(key, slot_type)
         slot = ValueSlot(
             id=sid,
             key=key,
@@ -276,7 +284,7 @@ class ValueRegistry:
             hidden=hidden,
             phase=phase,
             label=label,
-            type=type,
+            type=slot_type,
             element_type=element_type,
             type_is_explicit=type_is_explicit,
             preserve_native_type=preserve_native_type,
@@ -325,8 +333,10 @@ class ValueRegistry:
         )
         if element_type is not None and slot.element_type is None:
             updates["element_type"] = element_type
-        if type_is_explicit and type is not None and slot.type in (None, type):
+        if type_is_explicit and type is not None and (slot.type == type or not slot.type_is_explicit):
+            updates["type"] = type
             updates["type_is_explicit"] = True
+            updates["element_type"] = (element_type or slot.element_type) if type is DataType.ARRAY else None
         if preserve_native_type and not slot.preserve_native_type:
             updates["preserve_native_type"] = True
         if updates:
@@ -339,7 +349,7 @@ class ValueRegistry:
         slot = self._slots[existing_sid]
         owner = self._declared_names.get(public_name)
         if owner is not None and owner != existing_sid:
-            check_duplicate_measure_name(
+            check_duplicate_metric_name(
                 name=public_name,
                 occurrences=[
                     self._slots[owner].declared_name,
@@ -392,8 +402,8 @@ _SLOTTABLE_KIND = tuple(k for k in VALUE_KEY_TYPES if KIND_POLICY[k].slottable)
 def _iter_slot_deps(key: ValueKey):
     """Yield only ``ValueKey``s needing a materialised slot. Deliberately
     asymmetric kind-dispatch (any unclassified kind raises): stops at
-    ``AggregateKey``, and yields ``TimeTruncKey`` without its inner column (a
-    time dimension must not auto-add the raw column)."""
+    ``AggregateKey``, and yields ``TimeTruncKey`` without its inner field (a
+    time dimension must not auto-add the raw field)."""
     if isinstance(key, AggregateKey):
         yield key
         return
@@ -404,7 +414,7 @@ def _iter_slot_deps(key: ValueKey):
         for child in key.children():
             yield from _iter_slot_deps(child)
         return
-    if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+    if isinstance(key, (FieldKey, FieldSqlKey, TimeTruncKey)):
         yield key
         return
     if isinstance(key, (StarKey, LiteralKey, ArrayLiteralKey)):
@@ -428,14 +438,14 @@ def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]
     if not deps:
         return None
     for dep in deps:
-        if not (isinstance(dep, ColumnKey)
+        if not (isinstance(dep, FieldKey)
                 and dep.leaf.startswith(REGROUP_LEAF_PREFIX)):
             return None
     return Phase.AGGREGATE
 
 
 class ProjectionPlanner:
-    """Allocate slots for declared measures + hidden slots for order/filter-only refs."""
+    """Allocate slots for declared metrics + hidden slots for order/filter-only refs."""
 
     @staticmethod
     def _intern_hidden(registry: "ValueRegistry", key: ValueKey) -> None:
@@ -448,29 +458,31 @@ class ProjectionPlanner:
                 phase=key.phase,
             )
 
-    def plan(  # NOSONAR(S3776) — one sequential allocation pass (reserve names → intern measures → filter/order deps) sharing the same registry + hidden-slot rule; splitting the loops scatters that shared mutation invariant.
+    def plan(  # NOSONAR(S3776) — one sequential allocation pass (reserve names → intern metrics → filter/order deps) sharing the same registry + hidden-slot rule; splitting the loops scatters that shared mutation invariant.
         self,
         *,
-        measures: List[DeclaredMeasure],
+        metrics: List[DeclaredMetric],
         filters: List[BoundFilter],
         order: List[OrderSpec],
-        source_column_names: Optional[FrozenSet[str]] = None,
-        host_model_name: str = _HOST_FALLBACK_NAME,
+        typing: SlotTyping,
+        source_field_names: Optional[FrozenSet[str]] = None,
+        host_dataset_name: str = _HOST_FALLBACK_NAME,
     ) -> ProjectionPlan:
         registry = ValueRegistry(
-            source_column_names=source_column_names,
-            host_model_name=host_model_name,
+            typing=typing,
+            source_field_names=source_field_names,
+            host_dataset_name=host_dataset_name,
         )
         # Claim every declared name before interning so hidden-name uniquification
         # is order-independent.
         registry.reserve_public_names(
             name
-            for m in measures
+            for m in metrics
             for name in (m.declared_name, m.public_name, m.canonical_alias)
         )
         public_projection: List[SlotId] = []
-        for m in measures:
-            # An all-placeholder regroup composite measure is AGGREGATE-phase, not
+        for m in metrics:
+            # An all-placeholder regroup composite metric is AGGREGATE-phase, not
             # the ROW phase its leaves imply; a computed dimension is excluded.
             phase = m.bound.phase
             if not m.is_dimension:
@@ -485,7 +497,7 @@ class ProjectionPlanner:
                 canonical_alias=m.canonical_alias,
                 phase=phase,
                 label=m.label,
-                type=m.type,
+                type=m.datatype,
                 element_type=m.element_type,
                 type_is_explicit=m.type_is_explicit,
                 preserve_native_type=m.preserve_native_type,
@@ -496,8 +508,8 @@ class ProjectionPlanner:
             if m.name_is_explicit and m.public_name is not None:
                 registry.mark_explicit(sid, m.public_name)
             public_projection.append(sid)
-            # Materialise the measure's aux deps (inner aggregate, partition/time
-            # columns) as hidden slots — rendered but not publicly projected.
+            # Materialise the metric's aux deps (inner aggregate, partition/time
+            # fields) as hidden slots — rendered but not publicly projected.
             for dep in _iter_slot_deps(m.bound.value_key):
                 if dep != m.bound.value_key:
                     self._intern_hidden(registry, dep)
@@ -527,16 +539,16 @@ class ProjectionPlanner:
 
 def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type canonical-name contract. Extracting per-type helpers would scatter the contract.
     """Best-effort canonical name for a hidden slot (``sum(revenue)`` → ``revenue_sum``, ``customers.regions.name`` → ``customers__regions__name``)."""
-    if isinstance(key, ColumnKey):
+    if isinstance(key, FieldKey):
         return "__".join(key.path + (key.leaf,))
-    if isinstance(key, ColumnSqlKey):
+    if isinstance(key, FieldSqlKey):
         prefix = "__".join(key.path) + "__" if key.path else ""
-        return f"{prefix}{key.column_name}"
+        return f"{prefix}{key.field_name}"
     if isinstance(key, TimeTruncKey):
         # Granularity lives in the SQL DATE_TRUNC, not the alias.
         return _canonical_name(key.source)
     if isinstance(key, AggregateKey):
-        # Include args/kwargs so parametric aggregates over one column
+        # Include args/kwargs so parametric aggregates over one field
         # (``percentile(revenue, p=0.5)`` vs ``p=0.95``) get distinct names.
         alias = canonical_aggregate_alias(key, profile="declared_name")
         # declared_name profile always yields a name.
@@ -557,14 +569,14 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
     if isinstance(key, StarKey):
         return "_star"
     if isinstance(key, InKey):
-        return f"_in_{_canonical_name(key.column)}"
+        return f"_in_{_canonical_name(key.field)}"
     return "_hidden"
 
 
 ProjectionPlan.model_rebuild()
 
 
-# Filter → slot id mapping for cross-model planner routing
+# Filter → slot id mapping for cross-dataset planner routing
 
 
 def filter_referenced_slot_ids(

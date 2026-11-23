@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_stored_upgrade_filter_literals.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_f",
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_f",
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_f",
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_f",
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

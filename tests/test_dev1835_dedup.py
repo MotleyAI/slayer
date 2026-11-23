@@ -1,4 +1,4 @@
-"""DEV-1835 attach-dedup (design D6) — one producer per structural identity,
+"""Attach-dedup (design D6) — one producer per structural identity,
 serving every consuming position across both attach phases; producers that
 differ in any input stay separate.
 
@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import (
     COL_WM,
     LAST_BY_ORDERED,
     LAST_BY_SHIPPED,
-    ModelMeasure,
     OK_W90,
     REGION_LAST,
     REGION_TOTAL,
@@ -49,13 +50,13 @@ async def shipped_backend(request):
 
 
 def _by_region(resp, col: str) -> dict:
-    return {r["orders.region"]: float(r[f"orders.{col}"]) for r in resp.data}
+    return {r["orders.region"]: float(r[col]) for r in resp.data}
 
 
 def _by_region_month(resp, col: str) -> dict:
     return {
         (r["orders.region"], month_key(r["orders.ordered_at"])):
-            float(r[f"orders.{col}"])
+            float(r[col])
         for r in resp.data
     }
 
@@ -79,19 +80,19 @@ class TestDedupPositive:
         self, exec_backend,
     ) -> None:
         """The same region total inside a computed dimension AND as a selected
-        measure: one producer relation, both roles correct."""
+        metric: one producer relation, both roles correct."""
         dialect, engine = exec_backend
-        band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "rband"}],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            dimensions=["orders.region", {"field": band, "alias": "rband"}],
+            metrics=[
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
         )
         resp = await engine.execute(query)
         got = {
-            r["orders.region"]: (int(r["orders.rband"]), float(r["orders.rt"]))
+            r["orders.region"]: (int(r["rband"]), float(r["rt"]))
             for r in resp.data
         }
         assert got == {
@@ -110,12 +111,12 @@ class TestDedupPositive:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, window='1y')", name="wb"),
-                ModelMeasure(
-                    formula="sum(amount, window='1y', partition_by=region)",
-                    name="we",
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="wb"),
+                QueryMetric(
+                    metric="sum(orders.amount, window='1y', partition_by=orders.region)",
+                    alias="we",
                 ),
             ],
         )
@@ -130,10 +131,10 @@ class TestDedupPositive:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="last(amount)", name="lb"),
-                ModelMeasure(formula="last(amount, partition_by=region)", name="le"),
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(metric="last(orders.amount)", alias="lb"),
+                QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="le"),
             ],
         )
         resp = await engine.execute(query)
@@ -146,21 +147,21 @@ class TestDedupPositive:
         self, exec_backend,
     ) -> None:
         """D10 subsumption: the dual-role total dedups to one producer, the
-        bare windowed measure adds exactly one more."""
+        bare windowed metric adds exactly one more."""
         dialect, engine = exec_backend
-        band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "rband"}],
+            dimensions=["orders.region", {"field": band, "alias": "rband"}],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         )
         resp = await engine.execute(query)
         _assert_map(_by_region_month(resp, "w"), COL_WM)
         for r in resp.data:
-            assert float(r["orders.rt"]) == pytest.approx(
+            assert float(r["rt"]) == pytest.approx(
                 REGION_TOTAL[r["orders.region"]],
             )
         counts = await _producer_counts(engine, query, dialect)
@@ -173,10 +174,10 @@ class TestDedupNegative:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, window='90d')", name="w90"),
-                ModelMeasure(formula="sum(amount, window='45d')", name="w45"),
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w90"),
+                QueryMetric(metric="sum(orders.amount, window='45d')", alias="w45"),
             ],
         )
         resp = await engine.execute(query)
@@ -190,10 +191,10 @@ class TestDedupNegative:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
-                ModelMeasure(formula="sum(ok_amount, window='90d')", name="wok"),
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            metrics=[
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(orders.ok_amount, window='90d')", alias="wok"),
             ],
         )
         resp = await engine.execute(query)
@@ -206,13 +207,13 @@ class TestDedupNegative:
         self, shipped_backend,
     ) -> None:
         """``last(amount)`` (default ``ordered_at``) vs an explicit
-        ``shipped_at`` ranking column — North's values differ (30 vs 10)."""
+        ``shipped_at`` ranking field — North's values differ (30 vs 10)."""
         dialect, engine = shipped_backend
         query = q(
-            dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="last(amount)", name="lo"),
-                ModelMeasure(formula="last(amount, shipped_at)", name="ls"),
+            dimensions=["orders.region"],
+            metrics=[
+                QueryMetric(metric="last(orders.amount)", alias="lo"),
+                QueryMetric(metric="last(orders.amount, orders.shipped_at)", alias="ls"),
             ],
         )
         resp = await engine.execute(query)

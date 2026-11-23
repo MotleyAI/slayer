@@ -1,0 +1,250 @@
+{
+ "source": "tests/test_dev1740_conditional_execution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
+    "name": "big"
+   },
+   "new": {
+    "expression": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
+    "name": "big"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "CASE WHEN sum(amount) >= 14000 THEN 2 WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END",
+    "name": "tier"
+   },
+   "new": {
+    "expression": "CASE WHEN sum(amount) >= 14000 THEN 2 WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END",
+    "name": "tier"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "iif(sum(amount) >= 10000, 1, 0)",
+    "name": "big"
+   },
+   "new": {
+    "expression": "iif(sum(amount) >= 10000, 1, 0)",
+    "name": "big"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "CASE WHEN sum(amount) >= 10000 THEN 1 END",
+    "name": "big"
+   },
+   "new": {
+    "expression": "CASE WHEN sum(amount) >= 10000 THEN 1 END",
+    "name": "big"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "CASE WHEN sum(amount) >= 100 THEN 'big' ELSE 0 END",
+    "name": "bad"
+   },
+   "new": {
+    "expression": "CASE WHEN sum(amount) >= 100 THEN 'big' ELSE 0 END",
+    "name": "bad"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0.5 END",
+    "name": "w"
+   },
+   "new": {
+    "expression": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0.5 END",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "CASE WHEN sum(amount) > 12000 THEN 0 ELSE 1 END",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "CASE WHEN sum(amount) > 12000 THEN 0 ELSE 1 END",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "CASE WHEN sum(customers.spend) > 300 THEN 1 ELSE 0 END",
+    "name": "b"
+   },
+   "new": {
+    "expression": "CASE WHEN sum(customers.spend) > 300 THEN 1 ELSE 0 END",
+    "name": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "coalesce(iif(sum(amount) >= 10000, 1, 0), -1)",
+    "name": "c"
+   },
+   "new": {
+    "expression": "coalesce(iif(sum(amount) >= 10000, 1, 0), -1)",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "measures": [
+     {
+      "formula": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
+      "name": "big"
+     }
+    ]
+   },
+   "new": {
+    "dataset": "orders",
+    "metrics": [
+     {
+      "expression": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
+      "name": "big"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "big"
+   },
+   "new": {
+    "metric": "big"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "iif(sum(amount) >= 10000, 1)",
+    "name": "b"
+   },
+   "new": {
+    "expression": "iif(sum(amount) >= 10000, 1)",
+    "name": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "CASE WHEN change(sum(amount)) > 0 THEN 1 ELSE 0 END",
+    "name": "up"
+   },
+   "new": {
+    "expression": "CASE WHEN change(sum(amount)) > 0 THEN 1 ELSE 0 END",
+    "name": "up"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "chg"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "chg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  }
+ ]
+}

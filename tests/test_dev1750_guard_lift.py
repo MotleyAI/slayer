@@ -1,8 +1,8 @@
-"""DEV-1750/1836 — the ``time_shift`` / ``consecutive_periods`` × cross-model
-shapes all render now: (a) local inner + a cross-model sibling; (b) host-rooted
-crossing-fragment inner; (c) target-grain cross-model inner (lifted by DEV-1836);
-``consecutive_periods`` over any inner; ``change`` / ``change_pct``. DEV-1846
-adds a composite-input ``time_shift`` case at the bottom.
+"""The ``time_shift`` / ``consecutive_periods`` × cross-dataset
+shapes all render now: (a) local inner + a cross-dataset sibling; (b) host-rooted
+crossing-fragment inner; (c) target-grain cross-dataset inner;
+``consecutive_periods`` over any inner; ``change`` / ``change_pct``. Plus
+a composite-input ``time_shift`` case at the bottom.
 """
 
 from __future__ import annotations
@@ -14,8 +14,9 @@ import pytest
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1750_fixtures import (
-    ModelMeasure,
     SlayerQuery,
     gen,
     month_td,
@@ -25,19 +26,19 @@ from tests._dev1750_fixtures import (
 pytestmark = pytest.mark.asyncio
 
 
-def _q(*, measures) -> SlayerQuery:
+def _q(*, metrics) -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders", time_dimensions=month_td(), measures=measures,
+        population="orders", time_dimensions=month_td(), metrics=metrics,
     )
 
 
 class TestLiftedShapesRender:
     async def test_a_local_time_shift_with_cross_model_sibling(self) -> None:
-        """(a) A local ``time_shift`` beside a cross-model sibling: the shift's
+        """(a) A local ``time_shift`` beside a cross-dataset sibling: the shift's
         own inner is local and re-aggregates host-rooted."""
-        sql = await gen(_q(measures=[
-            ModelMeasure(formula="sum(customers.spend)", name="cm"),
-            ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+        sql = await gen(_q(metrics=[
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
         ]))
         assert "shifted_" in sql, sql
         assert "_cm_" in sql, sql  # the sibling still isolates into its own CTE
@@ -46,51 +47,51 @@ class TestLiftedShapesRender:
         """(b) ``time_shift`` over the crossing-fragment aggregate — the issue's
         named repro. Renders scope-closed; the shift reads the producer that pulls
         the fragment's join (pinned in the fragment-join module)."""
-        sql = await gen(_q(measures=[
-            ModelMeasure(formula="time_shift(wscaled_sum(amount), -1)", name="prev"),
+        sql = await gen(_q(metrics=[
+            QueryMetric(metric="time_shift(wscaled_sum(orders.amount), -1)", alias="prev"),
         ]))
         assert_scope_closed(sql, dialect="duckdb")
         assert "customers__regions" in shifted_cte_body(sql), sql
 
     async def test_consecutive_periods_with_cross_model_sibling(self) -> None:
-        sql = await gen(_q(measures=[
-            ModelMeasure(formula="sum(customers.spend)", name="cm"),
-            ModelMeasure(formula="consecutive_periods(sum(amount) > 0)", name="streak"),
+        sql = await gen(_q(metrics=[
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="consecutive_periods(sum(orders.amount) > 0)", alias="streak"),
         ]))
         assert "cp_" in sql, sql
 
     async def test_consecutive_periods_over_target_grain_inner(self) -> None:
         """cp has no target-grain failure mode: it reads the materialised
-        cross-model alias and never re-aggregates, so it renders."""
-        sql = await gen(_q(measures=[
-            ModelMeasure(
-                formula="consecutive_periods(sum(customers.spend) > 0)",
-                name="streak",
+        cross-dataset alias and never re-aggregates, so it renders."""
+        sql = await gen(_q(metrics=[
+            QueryMetric(
+                metric="consecutive_periods(sum(customers.spend) > 0)",
+                alias="streak",
             ),
         ]))
         assert "cp_" in sql, sql
 
     async def test_change_desugars_and_renders(self) -> None:
-        sql = await gen(_q(measures=[
-            ModelMeasure(formula="sum(customers.spend)", name="cm"),
-            ModelMeasure(formula="change(sum(amount))", name="delta"),
+        sql = await gen(_q(metrics=[
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="change(sum(orders.amount))", alias="delta"),
         ]))
         assert "shifted_" in sql, sql
 
     async def test_change_pct_desugars_and_renders(self) -> None:
-        sql = await gen(_q(measures=[
-            ModelMeasure(formula="sum(customers.spend)", name="cm"),
-            ModelMeasure(formula="change_pct(sum(amount))", name="delta"),
+        sql = await gen(_q(metrics=[
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="change_pct(sum(orders.amount))", alias="delta"),
         ]))
         assert "shifted_" in sql, sql
 
 
 class TestTargetGrainCrossModelRenders:
     async def test_c_target_grain_inner_renders(self) -> None:
-        """(c) DEV-1836 broadcasts the target-grain cross-model aggregate from a
+        """(c) The target-grain cross-dataset aggregate from a
         target-rooted producer, so the row-multiplying re-aggregation is gone."""
-        sql = await gen(_q(measures=[
-            ModelMeasure(formula="time_shift(sum(customers.spend), -1)", name="prev"),
+        sql = await gen(_q(metrics=[
+            QueryMetric(metric="time_shift(sum(customers.spend), -1)", alias="prev"),
         ]))
         assert "shifted_" in sql, sql
 
@@ -104,8 +105,8 @@ class TestTargetGrainCrossModelRenders:
             calls.append(kwargs.get("slot"))
             return real(self, **kwargs)
 
-        q = _q(measures=[
-            ModelMeasure(formula="time_shift(sum(customers.spend), -1)", name="prev"),
+        q = _q(metrics=[
+            QueryMetric(metric="time_shift(sum(customers.spend), -1)", alias="prev"),
         ])
         with patch.object(
             SQLGenerator, "_emit_time_shift_ctes_for_planned", _spy,
@@ -126,18 +127,18 @@ class TestTargetGrainCrossModelRenders:
         with patch.object(
             SQLGenerator, "_emit_time_shift_ctes_for_planned", _spy,
         ):
-            await gen(_q(measures=[
-                ModelMeasure(formula="time_shift(wscaled_sum(amount), -1)", name="prev"),
+            await gen(_q(metrics=[
+                QueryMetric(metric="time_shift(wscaled_sum(orders.amount), -1)", alias="prev"),
             ]))
         assert len(calls) == 1, calls
 
 
 class TestWindowOpsUnaffected:
     async def test_cumsum_over_cross_model_still_renders(self) -> None:
-        """``cumsum`` (a window op, never guarded) over a cross-model aggregate
+        """``cumsum`` (a window op, never guarded) over a cross-dataset aggregate
         must keep rendering — the narrowing must not disturb the window arm."""
-        sql = await gen(_q(measures=[
-            ModelMeasure(formula="cumsum(sum(customers.spend))", name="run"),
+        sql = await gen(_q(metrics=[
+            QueryMetric(metric="cumsum(sum(customers.spend))", alias="run"),
         ]))
         # A cumsum renders as a windowed running sum in the transform-chain step
         # CTE — pin the actual window shape, not a vacuous SUM( that any aggregate
@@ -151,10 +152,10 @@ class TestCompositeInputTimeShiftRenders:
         """A composite-input ``time_shift`` (arithmetic of two aggregates) that
         the old 7b.11 guard deferred now renders a shifted-CTE re-aggregation —
         no NotImplementedError remains."""
-        q = _q(measures=[
-            ModelMeasure(formula="sum(customers.spend)", name="cm"),
-            ModelMeasure(
-                formula="time_shift(sum(amount) + sum(amount), -1)", name="prev",
+        q = _q(metrics=[
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(
+                metric="time_shift(sum(orders.amount) + sum(orders.amount), -1)", alias="prev",
             ),
         ])
         sql = await gen(q)

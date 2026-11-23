@@ -20,7 +20,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
-    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
+    LIST_POSITION, LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
     case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
 )
@@ -46,13 +46,12 @@ def _semi_structured(values: Expression) -> Expression:
     return exp.Cast(this=values.copy(), to=exp.DataType.build("ARRAY"))
 
 
-def _typed_elements(values: Expression, element: Optional[DataType], distinct: bool = False) -> Expression:
+def _typed_elements(values: Expression, element: Optional[DataType]) -> Expression:
     """The non-NULL elements as a structured ``ARRAY(T)``, whose elements read as ``T``."""
     kept = anon("ARRAY_COMPACT", _semi_structured(values))
-    kept = anon("ARRAY_DISTINCT", kept) if distinct else kept
     if element is None or element.is_opaque:
         return kept
-    return exp.Cast(this=kept, to=exp.DataType.build(f"ARRAY<{element.value}>"))
+    return exp.Cast(this=kept, to=exp.DataType.build(f"ARRAY<{element.kind.value}>"))
 
 
 def _json_list(value: Any) -> Any:
@@ -62,9 +61,9 @@ def _json_list(value: Any) -> Any:
 _TYPEOF_SAMPLE = 20
 #: ``TYPEOF`` of a VARIANT element → its SLayer type (absent: opaque).
 _TYPEOF_TYPES: dict[str, DataType] = {
-    "INTEGER": DataType.INT, "DECIMAL": DataType.DOUBLE, "DOUBLE": DataType.DOUBLE, "VARCHAR": DataType.TEXT,
-    "BOOLEAN": DataType.BOOLEAN, "DATE": DataType.DATE, "TIMESTAMP_NTZ": DataType.TIMESTAMP,
-    "TIMESTAMP_LTZ": DataType.TIMESTAMP, "TIMESTAMP_TZ": DataType.TIMESTAMP,
+    "INTEGER": DataType.INTEGER, "DECIMAL": DataType.FLOAT, "DOUBLE": DataType.FLOAT, "VARCHAR": DataType.STRING,
+    "BOOLEAN": DataType.BOOLEAN, "DATE": DataType.DATE, "TIMESTAMP_NTZ": DataType.DATETIME,
+    "TIMESTAMP_LTZ": DataType.DATETIME, "TIMESTAMP_TZ": DataType.DATETIME,
 }
 # ``snowflake.connector.constants.FieldType`` codes → type names; ``FIXED`` (0) is read by precision / scale.
 _FIXED = 0
@@ -176,6 +175,10 @@ class SnowflakeDialect(SqlDialect):
     def normalize_reflected_name(self, name: str) -> str:
         return name.lower() if name == name.upper() else name
 
+    def naive_timestamp_type(self) -> exp.DataType:
+        """``TIMESTAMP_NTZ``: a bare ``TIMESTAMP`` follows the session's ``TIMESTAMP_TYPE_MAPPING``."""
+        return exp.DataType.build("TIMESTAMPNTZ")
+
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         return info_schema_comments_query(
             comment_column="comment", default_schema=call("CURRENT_SCHEMA"), location=location,
@@ -213,12 +216,12 @@ class SnowflakeDialect(SqlDialect):
     def list_element_type(self, names: Sequence[Any]) -> DataType:
         """One scalar family maps to its type, mixed scalars to TEXT; objects, nested arrays or no elements are
         UNKNOWN."""
-        kinds = {_TYPEOF_TYPES.get(str(n).upper(), DataType.UNKNOWN) for n in names if str(n).upper() != "NULL_VALUE"}
-        if not kinds or DataType.UNKNOWN in kinds:
-            return DataType.UNKNOWN
-        if kinds <= {DataType.INT, DataType.DOUBLE}:
-            return DataType.DOUBLE if DataType.DOUBLE in kinds else DataType.INT
-        return kinds.pop() if len(kinds) == 1 else DataType.TEXT
+        kinds = {_TYPEOF_TYPES.get(str(n).upper(), DataType.OPAQUE) for n in names if str(n).upper() != "NULL_VALUE"}
+        if not kinds or DataType.OPAQUE in kinds:
+            return DataType.OPAQUE
+        if kinds <= {DataType.INTEGER, DataType.FLOAT}:
+            return DataType.FLOAT if DataType.FLOAT in kinds else DataType.INTEGER
+        return kinds.pop() if len(kinds) == 1 else DataType.STRING
 
     def list_length(self, values: Expression) -> Expression:
         return anon("ARRAY_SIZE", values)
@@ -244,11 +247,17 @@ class SnowflakeDialect(SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False,
+        positioned: bool = False,  # NOSONAR(S1172) — FLATTEN always exposes INDEX
     ) -> ListRelation:
         """``FLATTEN`` of the list cast to ``ARRAY(T)``, so ``value`` is typed; no correlated subquery reads it."""
-        rows = exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=_typed_elements(values, element, distinct)))
+        rows = exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=_typed_elements(values, element)))
         return ListRelation(relation=exp.TableFromRows(this=rows, alias=exp.TableAlias(this=alias.copy())))
+
+    def read_column(self, column: Expression, *, zoned: bool) -> Expression:
+        """A list element's position reads as FLATTEN's own ``INDEX``."""
+        if isinstance(column, exp.Column) and column.name == LIST_POSITION:
+            return exp.Column(this=exp.to_identifier("INDEX"), table=column.args.get("table"))
+        return super().read_column(column, zoned=zoned)
 
     def list_exists(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
@@ -466,7 +475,7 @@ class SnowflakeDialect(SqlDialect):
         if code == _FIXED:
             known = precision is not None and scale is not None
             return ResultColumnType(
-                type=DataType.INT if scale == 0 else DataType.DOUBLE,
+                type=DataType.INTEGER if scale == 0 else DataType.FLOAT,
                 db_type=f"NUMBER({precision},{scale})" if known else "NUMBER",
             )
         name = _FIELD_TYPE_NAMES.get(code) if isinstance(code, int) else None

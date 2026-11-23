@@ -1,0 +1,70 @@
+{
+ "source": "tests/test_dev1948_stage_edges.py",
+ "pairs": [
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "outer",
+    "source_queries": [
+     {
+      "source_model": "x",
+      "dimensions": [
+       "tier"
+      ],
+      "measures": [
+       {
+        "formula": "sum(total_spend)",
+        "name": "s"
+       }
+      ]
+     }
+    ]
+   },
+   "new": {
+    "name": "outer",
+    "source_queries": [
+     {
+      "population": "x",
+      "dimensions": [
+       "tier"
+      ],
+      "metrics": [
+       {
+        "metric": "sum(total_spend)",
+        "alias": "s"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 175,
+   "reason": "not fully literal"
+  }
+ ]
+}

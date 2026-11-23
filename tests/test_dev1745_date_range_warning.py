@@ -6,7 +6,7 @@ import pydantic
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import NormalizationWarning
 from slayer.engine.normalization import normalize_query
@@ -14,25 +14,25 @@ from slayer.engine.normalization import normalize_query
 from tests._engine_helpers import _engine_generate
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
 
 
 def _query(date_range) -> SlayerQuery:
-    td: dict = {"dimension": "created_at", "granularity": "month"}
+    td: dict = {"field": "orders.created_at", "granularity": "month"}
     if date_range is not None:
         td["date_range"] = date_range
     return SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "time_dimensions": [td],
-        "measures": [{"formula": "sum(amount)", "name": "m0"}],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
     })
 
 
@@ -83,7 +83,7 @@ class TestEmission:
 
     async def _sql(self, date_range) -> str:
         return await _engine_generate(
-            query=_query(date_range), model=_orders(),
+            query=_query(date_range), dataset=_orders(),
             dialect="postgres", validate=False,
         )
 

@@ -7,11 +7,11 @@ Lets a host application show each caller only the semantic models their access t
 
 ### Requirement: Models carry access tags
 
-A model SHALL carry `access_tags`, a list of strings that defaults to empty. An empty list means the model is public. The tags SHALL round-trip unchanged through model JSON, storage, git sync, import and export, REST, the Python client, and MCP `create_model` / `edit_model`. SLayer SHALL accept any string as a tag. A stored model without the field SHALL load as untagged, and models SHALL be written at schema version 15. Access tags are independent of the `hidden` flag: `hidden` curates the catalog for everyone and keeps the model queryable.
+A model SHALL carry `access_tags`, a list of strings that defaults to empty. An empty list means the model is public. The tags SHALL round-trip unchanged through model JSON, storage, git sync, import and export, REST, the Python client, and MCP `create_dataset` / `edit_dataset`. SLayer SHALL accept any string as a tag. A stored model without the field SHALL load as untagged, and models SHALL be written at schema version 15. Access tags are independent of the `hidden` flag: `hidden` curates the catalog for everyone and keeps the model queryable.
 
 #### Scenario: Tags round-trip through MCP and storage
 
-- **WHEN** `create_model` is called with `access_tags=["hr"]` and the model is read back through storage, REST and inspect
+- **WHEN** `create_dataset` is called with `access_tags=["hr"]` and the model is read back through storage, REST and inspect
 - **THEN** each returns `access_tags == ["hr"]`
 
 #### Scenario: A pre-v15 model loads untagged
@@ -135,7 +135,7 @@ For a non-bypass caller, each model the filtered store returns SHALL omit every 
 
 ### Requirement: Memories follow the models they link to
 
-A memory's linked models SHALL be the models named by its `<datasource>.<model>[.<leaf>]` entities plus the models its example query reads. Datasource-only entities and `memory:` references SHALL link no model. For a non-bypass caller, a memory SHALL be hidden iff it links at least one model and every linked model exists in the full store but is invisible. A visible memory SHALL be returned without entities naming invisible models (or their columns and measures) or hidden memories, and without its example query when that query reads an invisible model. Query-resolution warnings SHALL NOT fire for a query withheld this way.
+A memory's linked models SHALL be the models named by its `<datasource>.<dataset>[.<leaf>]` entities plus the models its example query reads. Datasource-only entities and `memory:` references SHALL link no model. For a non-bypass caller, a memory SHALL be hidden iff it links at least one model and every linked model exists in the full store but is invisible. A visible memory SHALL be returned without entities naming invisible models (or their columns and measures) or hidden memories, and without its example query when that query reads an invisible model. Query-resolution warnings SHALL NOT fire for a query withheld this way.
 
 #### Scenario: A memory linked only to a hidden model is hidden
 
@@ -231,7 +231,7 @@ A model's access is narrowed when it reads, transitively, a tagged model whose t
 
 #### Scenario: A REST model save returns the warning
 
-- **WHEN** an untagged query-backed model reading `hr` is saved through `POST /models`, and again through `PUT /models/{name}`
+- **WHEN** an untagged query-backed model reading `hr` is saved through `POST /datasets`, and again through `PUT /datasets/{name}`
 - **THEN** each response carries a `warnings` list holding the structured `narrowed_access` warning naming `hr`
 
 ### Requirement: Cached views are never shared across callers

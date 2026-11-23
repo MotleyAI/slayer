@@ -1,17 +1,17 @@
 """Engine-side bare-name resolution after v4 datasource namespacing.
 
-The engine accepts model references in two shapes:
+The engine accepts dataset references in two shapes:
 
-* ``engine.execute("orders", ...)`` — run-by-name (resolves a query-backed model).
-* ``SlayerQuery(source_model="orders")`` — string source model in a query.
-* ``ModelJoin(target_model="customers")`` — join targets inside models/queries.
+* ``engine.execute("orders", ...)`` — run-by-name (resolves a query-backed dataset).
+* ``SlayerQuery(population="orders")`` — string population dataset in a query.
+* ``DatasetRelationship(to="customers")`` — relationship targets inside datasets/queries.
 
 Each of these is a bare name. After v4 the resolution algorithm is:
 
-1. If a ``data_source`` hint is available (the *parent* model's data_source for
-   join targets, or an explicit kwarg on ``execute``), prefer that datasource.
-2. Otherwise fall back to ``storage.resolve_model_identity(name)``, which
-   applies the priority list and raises ``AmbiguousModelError`` on conflict.
+1. If a ``data_source`` hint is available (the *parent* dataset's data_source for
+   relationship targets, or an explicit kwarg on ``execute``), prefer that datasource.
+2. Otherwise fall back to ``storage.resolve_dataset_identity(name)``, which
+   applies the priority list and raises ``AmbiguousDatasetError`` on conflict.
 
 These tests build minimal SQLite-backed engines, skip actual DB execution via
 ``dry_run=True``, and assert against the generated SQL or the error type.
@@ -22,39 +22,39 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.errors import AmbiguousModelError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.errors import AmbiguousDatasetError
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _orders(data_source: str, *, sql_table: str = "orders_t", joins: list[ModelJoin] | None = None) -> SlayerModel:
-    return SlayerModel(
+def _orders(data_source: str, *, sql_table: str = "orders_t", relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table=sql_table,
         data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
-        joins=joins or [],
+        relationships=relationships or [],
     )
 
 
-def _customers(data_source: str, *, sql_table: str = "customers_t", with_revenue: bool = False) -> SlayerModel:
+def _customers(data_source: str, *, sql_table: str = "customers_t", with_revenue: bool = False) -> SlayerDataset:
     cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="region", sql="region", type=DataType.TEXT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="region", expression="region", datatype=DataType.STRING),
     ]
     if with_revenue:
-        cols.append(Column(name="revenue", sql="revenue", type=DataType.DOUBLE))
-    return SlayerModel(
+        cols.append(DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT))
+    return SlayerDataset(
         name="customers",
         sql_table=sql_table,
         data_source=data_source,
-        columns=cols,
+        fields=cols,
     )
 
 
@@ -62,28 +62,28 @@ def _ds(name: str) -> DatasourceConfig:
     return DatasourceConfig(name=name, type="sqlite", database=":memory:")
 
 
-async def _engine_with(*models: SlayerModel, datasources: list[str]) -> tuple:
+async def _engine_with(*datasets: SlayerDataset, datasources: list[str]) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     for n in datasources:
         await storage.save_datasource(_ds(n))
-    for m in models:
-        await storage.save_model(m)
+    for m in datasets:
+        await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
 
 
 # ---------------------------------------------------------------------------
-# source_model resolution
+# population resolution
 # ---------------------------------------------------------------------------
 
 
 class TestSourceModelResolution:
     async def test_unique_bare_name_resolves(self) -> None:
-        """Single ``orders`` across all datasources → bare ``source_model`` works."""
+        """Single ``orders`` across all datasources → bare ``population`` works."""
         engine, tmp = await _engine_with(_orders("db_a"), datasources=["db_a"])
         try:
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
             assert "amount" in resp.sql.lower()
@@ -98,8 +98,8 @@ class TestSourceModelResolution:
             datasources=["db_a", "db_b"],
         )
         try:
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
-            with pytest.raises(AmbiguousModelError) as exc:
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
+            with pytest.raises(AmbiguousDatasetError) as exc:
                 await engine.execute(q, dry_run=True)
             assert "db_a" in str(exc.value)
             assert "db_b" in str(exc.value)
@@ -114,7 +114,7 @@ class TestSourceModelResolution:
         )
         try:
             await engine.storage.set_datasource_priority(["db_b", "db_a"])
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
             # db_b's table appears, not db_a's.
@@ -132,7 +132,7 @@ class TestSourceModelResolution:
         )
         try:
             await engine.storage.set_datasource_priority(["db_b"])
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
             resp = await engine.execute(q, data_source="db_a", dry_run=True)
             assert resp.sql is not None
             assert "db_a.orders_t" in resp.sql
@@ -142,22 +142,22 @@ class TestSourceModelResolution:
 
 
 # ---------------------------------------------------------------------------
-# Join target resolution prefers the parent's data_source
+# Relationship target resolution prefers the parent's data_source
 # ---------------------------------------------------------------------------
 
 
 class TestJoinTargetResolution:
     async def test_join_resolves_within_parent_datasource(self) -> None:
-        """``orders@db_a`` joins ``customers``. Both ``customers@db_a`` and
-        ``customers@db_b`` exist. The join must resolve within db_a — the
-        parent model's ``data_source`` is the resolution hint, no query-side
+        """``orders@db_a`` relates to ``customers``. Both ``customers@db_a`` and
+        ``customers@db_b`` exist. The relationship must resolve within db_a — the
+        parent dataset's ``data_source`` is the resolution hint, no query-side
         marker required."""
         orders_a = _orders(
             "db_a",
             sql_table="db_a.orders_t",
-            joins=[ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+            relationships=[DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -169,8 +169,8 @@ class TestJoinTargetResolution:
         )
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "dimensions": ["customers.region"],
             })
             resp = await engine.execute(q, data_source="db_a", dry_run=True)
@@ -182,13 +182,13 @@ class TestJoinTargetResolution:
             tmp.cleanup()
 
     async def test_join_target_only_in_other_datasource_raises(self) -> None:
-        """The join target doesn't exist in the parent's datasource and no
-        priority is configured → engine raises a join-resolution error."""
+        """The relationship target doesn't exist in the parent's datasource and no
+        priority is configured → engine raises a relationship-resolution error."""
         orders_a = _orders(
             "db_a",
-            joins=[ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+            relationships=[DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -199,11 +199,11 @@ class TestJoinTargetResolution:
         )
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "dimensions": ["customers.region"],
             })
-            with pytest.raises((AmbiguousModelError, ValueError), match=r"customers"):
+            with pytest.raises((AmbiguousDatasetError, ValueError), match=r"customers"):
                 await engine.execute(q, data_source="db_a", dry_run=True)
         finally:
             tmp.cleanup()
@@ -216,22 +216,22 @@ class TestJoinTargetResolution:
 
 class TestRunByName:
     async def test_ambiguous_run_by_name_raises(self) -> None:
-        """``engine.execute("rev")`` with two query-backed models named
+        """``engine.execute("rev")`` with two query-backed datasets named
         ``rev`` in different datasources → ambiguity."""
-        rev_a = SlayerModel(
+        rev_a = SlayerDataset(
             name="rev",
             data_source="db_a",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
-        rev_b = SlayerModel(
+        rev_b = SlayerDataset(
             name="rev",
             data_source="db_b",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         engine, tmp = await _engine_with(
@@ -242,26 +242,26 @@ class TestRunByName:
             datasources=["db_a", "db_b"],
         )
         try:
-            with pytest.raises(AmbiguousModelError):
+            with pytest.raises(AmbiguousDatasetError):
                 await engine.execute("rev", dry_run=True)
         finally:
             tmp.cleanup()
 
     async def test_run_by_name_with_data_source_kwarg(self) -> None:
-        rev_a = SlayerModel(
+        rev_a = SlayerDataset(
             name="rev",
             data_source="db_a",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
-        rev_b = SlayerModel(
+        rev_b = SlayerDataset(
             name="rev",
             data_source="db_b",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         )
         engine, tmp = await _engine_with(
@@ -280,16 +280,16 @@ class TestRunByName:
 
 
 # ---------------------------------------------------------------------------
-# Cross-model measure / re-rooted resolvers must scope hops the same way
+# Cross-dataset metric / re-rooted resolvers must scope hops the same way
 # (CR #6 on PR #92).
 # ---------------------------------------------------------------------------
 
 
 class TestCrossModelMeasureScoping:
-    """Hop resolution inside cross-model measures must use the parent's
+    """Hop resolution inside cross-dataset metrics must use the parent's
     ``data_source`` as the priority hint, exactly like the dimension path.
     Without it, ``sum(customers.revenue)`` against ``orders@db_a`` either
-    silently joins ``db_b.customers_t`` or raises ``AmbiguousModelError``
+    silently joins ``db_b.customers_t`` or raises ``AmbiguousDatasetError``
     when both ``customers@db_a`` and ``customers@db_b`` exist.
     """
 
@@ -297,9 +297,9 @@ class TestCrossModelMeasureScoping:
         orders_a = _orders(
             "db_a",
             sql_table="db_a.orders_t",
-            joins=[ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+            relationships=[DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -311,8 +311,8 @@ class TestCrossModelMeasureScoping:
         )
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             resp = await engine.execute(q, data_source="db_a", dry_run=True)
             assert resp.sql is not None
@@ -322,16 +322,16 @@ class TestCrossModelMeasureScoping:
             tmp.cleanup()
 
     async def test_cross_model_measure_only_in_other_datasource_raises(self) -> None:
-        """Parent's datasource doesn't contain the join target's model →
-        cross-model measure must fail rather than silently using db_b's
+        """Parent's datasource doesn't contain the relationship target's dataset →
+        cross-dataset metric must fail rather than silently using db_b's
         ``customers``.
         """
         orders_a = _orders(
             "db_a",
             sql_table="db_a.orders_t",
-            joins=[ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+            relationships=[DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -342,38 +342,38 @@ class TestCrossModelMeasureScoping:
         )
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
-            with pytest.raises((AmbiguousModelError, ValueError), match=r"customers"):
+            with pytest.raises((AmbiguousDatasetError, ValueError), match=r"customers"):
                 await engine.execute(q, data_source="db_a", dry_run=True)
         finally:
             tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------
-# Join-target resolution must NOT silently fall back to a bare lookup when
+# Relationship-target resolution must NOT silently fall back to a bare lookup when
 # the parent's datasource is known (CR #5 on PR #92).
 # ---------------------------------------------------------------------------
 
 
 class TestJoinTargetStrictWhenParentScoped:
     async def test_join_target_does_not_silently_resolve_outside_parent_ds(self) -> None:
-        """Even before any dimension/measure references ``customers``, the
-        join-target resolution path must not pick ``customers@db_b`` when
+        """Even before any dimension/metric references ``customers``, the
+        relationship-target resolution path must not pick ``customers@db_b`` when
         the parent is ``orders@db_a``. Today the bare-name fallback at
         ``_resolve_join_target`` returns ``customers@db_b`` silently — this
         test pins the corrected behavior: no fallback when parent scoped.
         """
-        # We exercise the join-target resolver directly: it's called during
+        # We exercise the relationship-target resolver directly: it's called during
         # enrichment regardless of whether dimensions reference the joined
         # table, so a wrong choice here corrupts later phases.
         orders_a = _orders(
             "db_a",
             sql_table="db_a.orders_t",
-            joins=[ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+            relationships=[DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -384,18 +384,18 @@ class TestJoinTargetStrictWhenParentScoped:
         )
         try:
             # Reach in to verify the resolver itself.
-            target = await engine.storage.get_model("customers", data_source="db_a")
+            target = await engine.storage.get_dataset("customers", data_source="db_a")
             assert target is None  # Sanity: customers@db_a doesn't exist.
 
             # The bare-name resolution gives db_b's customers (unique match).
             # The fix should make join_target resolution refuse to fall back
             # to that when the parent already declared a data_source.
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "dimensions": ["customers.region"],
             })
-            with pytest.raises((AmbiguousModelError, ValueError), match=r"customers"):
+            with pytest.raises((AmbiguousDatasetError, ValueError), match=r"customers"):
                 await engine.execute(q, data_source="db_a", dry_run=True)
         finally:
             tmp.cleanup()

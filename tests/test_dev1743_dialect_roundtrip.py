@@ -1,18 +1,18 @@
-"""DEV-1743 category 9 — dialect wire-encoding round-trip for ``__``-named models.
+"""Category 9 — dialect wire-encoding round-trip for ``__``-named datasets.
 
 BigQuery and T-SQL cannot emit dotted output-column names, so SLayer mangles
 projection aliases ``.`` -> ``___`` on emit and decodes them back on result-row
 keys (``slayer/sql/naming_bijection.py``, escape-doubling pre-existing ``___``).
 
-Once model names may contain ``__`` (the flip this issue lifts), a result key
+Once dataset names may contain ``__`` (the flip this issue lifts), a result key
 like ``orders.customer__region.label`` must still survive that wire round-trip
-without corruption — the model's literal ``__`` stays ``__`` while the dot
+without corruption — the dataset's literal ``__`` stays ``__`` while the dot
 separators become ``___`` — and a genuinely ambiguous encode collision
 (``a__`` + ``col`` vs ``a`` + ``__col``, which both encode to ``a_____col``)
 must raise a loud ``IdentifierCollisionError`` rather than silently collapse.
 
 Each test is labelled:
-* FAIL-FIRST — fails today because constructing the ``__``-named model raises;
+* FAIL-FIRST — fails today because constructing the ``__``-named dataset raises;
   after the flip the emitted SQL must be structurally valid.
 * INVARIANT LOCK — passes today; pins wire-layer behaviour the flip must NOT
   disturb (the bijection already escape-doubles, so names with ``__``/``___``
@@ -26,7 +26,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming_bijection import decode_alias, encode_alias
@@ -35,48 +35,48 @@ from tests._dev1743_fixtures import dunder_target
 from tests._engine_helpers import _engine_generate
 
 
-#: The dotted result key for the ``label`` column on the ``__``-named join
+#: The dotted result key for the ``label`` field on the ``__``-named relationship
 #: target ``customer__region``, reached from the ``orders`` host.
 DUNDER_KEY = "orders.customer__region.label"
 
 
-def _host_with_label() -> SlayerModel:
-    """``orders`` host with a Mode-A derived column reading the ``__``-named
-    join target ``customer__region`` (exact-match, single hop).
+def _host_with_label() -> SlayerDataset:
+    """``orders`` host with a Mode-A derived field reading the ``__``-named
+    relationship target ``customer__region`` (exact-match, single hop).
 
     The host itself carries no ``__`` in its name, so it constructs today; the
-    feature-missing raise comes from :func:`dunder_target` (the join target,
+    feature-missing raise comes from :func:`dunder_target` (the relationship target,
     literally named ``customer__region``) at query time.
     """
-    return SlayerModel(
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="cr_id", type=DataType.INT),
-            Column(name="region_label", type=DataType.TEXT,
-                   sql="customer__region.label"),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="cr_id", datatype=DataType.INTEGER),
+            DatasetField(name="region_label", datatype=DataType.STRING,
+                   expression="customer__region.label"),
         ],
-        joins=[ModelJoin(target_model="customer__region",
-                         join_pairs=[["cr_id", "id"]])],
+        relationships=[DatasetRelationship(to="customer__region",
+                         from_columns=["cr_id"], to_columns=["id"])],
     )
 
 
 # --------------------------------------------------------------------------- #
-# 1-2. End-to-end BigQuery / T-SQL emission over a ``__``-named model.
+# 1-2. End-to-end BigQuery / T-SQL emission over a ``__``-named dataset.
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_bigquery_emits_over_dunder_named_model() -> None:
-    """FAIL-FIRST: a query over a ``__``-named join target emits valid BigQuery.
+    """FAIL-FIRST: a query over a ``__``-named relationship target emits valid BigQuery.
 
-    Fails today: building the join target ``dunder_target()`` raises at
-    ``SlayerModel(name="customer__region")`` construction. After the flip the
+    Fails today: building the relationship target ``dunder_target()`` raises at
+    ``SlayerDataset(name="customer__region")`` construction. After the flip the
     BigQuery SQL must be structurally valid (``_engine_generate`` parses it with
     sqlglot's bigquery dialect) and must reference the target's physical table.
     """
     sql = await _engine_generate(
-        query=SlayerQuery(source_model="orders", dimensions=["region_label"]),
-        model=_host_with_label(),
-        extra_models=[dunder_target()],
+        query=SlayerQuery(population="orders", dimensions=["orders.region_label"]),
+        dataset=_host_with_label(),
+        extra_datasets=[dunder_target()],
         dialect="bigquery",
     )
     assert "customer_region_dim" in sql
@@ -92,9 +92,9 @@ async def test_tsql_emits_over_dunder_named_model() -> None:
     target's physical table.
     """
     sql = await _engine_generate(
-        query=SlayerQuery(source_model="orders", dimensions=["region_label"]),
-        model=_host_with_label(),
-        extra_models=[dunder_target()],
+        query=SlayerQuery(population="orders", dimensions=["orders.region_label"]),
+        dataset=_host_with_label(),
+        extra_datasets=[dunder_target()],
         dialect="tsql",
     )
     assert "customer_region_dim" in sql
@@ -102,22 +102,22 @@ async def test_tsql_emits_over_dunder_named_model() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. Result-key decode for a ``__``-named model round-trips on the wire.
+# 3. Result-key decode for a ``__``-named dataset round-trips on the wire.
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("dialect", ["bigquery", "tsql"])
 def test_dunder_result_key_round_trips_through_dialect(dialect: str) -> None:
     """INVARIANT LOCK: the wire form of ``orders.customer__region.label``
     decodes back to the dotted canonical.
 
-    A pure unit test on the dialect object (no ``__``-named model construction
-    needed), so it passes today — locking that a model name's literal ``__``
+    A pure unit test on the dialect object (no ``__``-named dataset construction
+    needed), so it passes today — locking that a dataset name's literal ``__``
     survives the ``.``->``___`` wire round-trip. The dots become ``___``
-    separators while the model's ``__`` passes through verbatim, keeping the two
+    separators while the dataset's ``__`` passes through verbatim, keeping the two
     encodings distinct.
     """
     d = get_dialect(dialect)
     wire = d.emit_alias(DUNDER_KEY)
-    # Dots were mangled to ``___``, but the model's literal ``__`` is preserved.
+    # Dots were mangled to ``___``, but the dataset's literal ``__`` is preserved.
     assert wire != DUNDER_KEY
     assert "customer__region" in wire
     got = d.decode_result_keys([{wire: "north"}], aliases=[DUNDER_KEY])
@@ -130,7 +130,7 @@ def test_dunder_result_key_round_trips_through_dialect(dialect: str) -> None:
 @pytest.mark.parametrize(
     "original",
     [
-        DUNDER_KEY,             # ``__`` inside a model-name segment
+        DUNDER_KEY,             # ``__`` inside a dataset-name segment
         "a___b.c",              # pre-existing ``___`` (escape-doubled)
         "orders.a__b.c__d",     # ``__`` in two segments across dots
         "orders.my___metric",   # ``___`` in the leaf
@@ -159,12 +159,12 @@ def test_ambiguous_wire_collision_raises(dialect: str) -> None:
     than let ``a__.col`` silently decode as ``a.__col``.
 
     Constructible against the dialect method directly, and it already raises
-    today, so this locks the guard the flip relies on — a ``__``-named model
+    today, so this locks the guard the flip relies on — a ``__``-named dataset
     whose emitted key would collide with a differently-shaped one fails loudly.
     """
     d = get_dialect(dialect)
-    twin_a = "a__.col"   # model ``a__``, column ``col``
-    twin_b = "a.__col"   # model ``a``, column ``__col``
+    twin_a = "a__.col"   # dataset ``a__``, field ``col``
+    twin_b = "a.__col"   # dataset ``a``, field ``__col``
     assert d.emit_alias(twin_a) == d.emit_alias(twin_b)  # non-injective encode
     with pytest.raises(IdentifierCollisionError, match="result key"):
         d.decode_result_keys([{}], aliases=[twin_a, twin_b])

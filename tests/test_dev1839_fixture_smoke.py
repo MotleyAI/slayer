@@ -6,15 +6,15 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1839_fixtures import (
     CITY_TOTAL,
-    DUAL_MEASURE_RANK_OF,
     EXPLICIT_PART_RANK_OF,
     GRAND_TOTAL,
     KEYLESS_RANK_OF,
     MIXED_DIFF_OF,
     MIXED_RANK_OF,
-    ModelMeasure,
     NESTED_RANK_OF,
     OK_REGION_TOTAL,
     RCC_TOTAL,
@@ -77,12 +77,6 @@ class TestOracleConsistency:
             for key, rank in _ranks_desc(group).items():
                 assert EXPLICIT_PART_RANK_OF[key] == rank
 
-    def test_dual_measure_rank(self) -> None:
-        broadcast = {
-            (r, c, ch): MIXED_DIFF_OF[(r, c)] for (r, c, ch) in RCC_TOTAL
-        }
-        assert DUAL_MEASURE_RANK_OF == _ranks_desc(broadcast)
-
     def test_samegrain_oracles(self) -> None:
         sums = {r: REGION_TOTAL[r] + OK_REGION_TOTAL[r] for r in REGION_TOTAL}
         assert SAMEGRAIN_RANK_OF == _ranks_desc(sums)
@@ -101,20 +95,20 @@ class TestOracleConsistency:
 class TestSeededDataset:
     async def test_channel_grain_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region", "city", "channel"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            dimensions=["orders.region", "orders.city", "orders.channel"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city", "orders.channel")
         assert set(by) == set(RCC_TOTAL)
         for key, total in RCC_TOTAL.items():
-            assert float(by[key]["orders.s"]) == pytest.approx(total)
+            assert float(by[key]["s"]) == pytest.approx(total)
 
     async def test_ok_region_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(ok_amount)", name="s")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.ok_amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region")
-        assert {k[0]: float(r["orders.s"]) for k, r in by.items()} == pytest.approx(
+        assert {k[0]: float(r["s"]) for k, r in by.items()} == pytest.approx(
             OK_REGION_TOTAL
         )

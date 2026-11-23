@@ -1,0 +1,11002 @@
+{
+ "source": "tests/test_sql_generator.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(num_policies)"
+   },
+   "new": {
+    "metric": "sum(num_policies)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(*)"
+   },
+   "new": {
+    "metric": "sum(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "dimension",
+   "old": {
+    "name": "count",
+    "model": "orders"
+   },
+   "new": {
+    "field": "orders.count"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count_distinct(distinct_customers)"
+   },
+   "new": {
+    "metric": "count_distinct(distinct_customers)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "avg(avg_revenue)"
+   },
+   "new": {
+    "metric": "avg(avg_revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(total)"
+   },
+   "new": {
+    "metric": "sum(total)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / count(*)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(revenue) / count(*)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / count(*)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(revenue) / count(*)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))",
+    "name": "rev_running"
+   },
+   "new": {
+    "expression": "cumsum(sum(revenue))",
+    "name": "rev_running"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))",
+    "name": "rev_running"
+   },
+   "new": {
+    "expression": "cumsum(sum(revenue))",
+    "name": "rev_running"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1)",
+    "name": "rev_prev_week"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1)",
+    "name": "rev_prev_week"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "revenue_90d"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "revenue_90d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customers.id)",
+    "name": "n_customers"
+   },
+   "new": {
+    "expression": "count_distinct(customers.id)",
+    "name": "n_customers"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "rev_90d"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "rev_90d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(revenue, window='30d')",
+    "name": "rev_30d"
+   },
+   "new": {
+    "expression": "avg(revenue, window='30d')",
+    "name": "rev_30d"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "rev_a"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "rev_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "rev_b"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "rev_b"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1)",
+    "name": "rev_prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1)",
+    "name": "rev_prev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "lag(sum(revenue), 1)",
+    "name": "rev_prev"
+   },
+   "new": {
+    "expression": "lag(sum(revenue), 1)",
+    "name": "rev_prev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "lead(sum(revenue), 1)",
+    "name": "rev_next"
+   },
+   "new": {
+    "expression": "lead(sum(revenue), 1)",
+    "name": "rev_next"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(revenue))",
+    "name": "rev_change"
+   },
+   "new": {
+    "expression": "change(sum(revenue))",
+    "name": "rev_change"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change_pct(sum(revenue))",
+    "name": "rev_pct"
+   },
+   "new": {
+    "expression": "change_pct(sum(revenue))",
+    "name": "rev_pct"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), direction='desc')",
+    "name": "rev_rank"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), direction='desc')",
+    "name": "rev_rank"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(sum(revenue))",
+    "name": "latest_rev"
+   },
+   "new": {
+    "expression": "last(sum(revenue))",
+    "name": "latest_rev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(balance)"
+   },
+   "new": {
+    "metric": "last(balance)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(balance, ordered_at)"
+   },
+   "new": {
+    "metric": "last(balance, ordered_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "first(balance, ordered_at)"
+   },
+   "new": {
+    "metric": "first(balance, ordered_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(revenue, ordered_at)"
+   },
+   "new": {
+    "metric": "last(revenue, ordered_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(balance, updated_at)"
+   },
+   "new": {
+    "metric": "last(balance, updated_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(revenue)"
+   },
+   "new": {
+    "metric": "last(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(balance, ordered_at)"
+   },
+   "new": {
+    "metric": "last(balance, ordered_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(revenue, ordered_at)"
+   },
+   "new": {
+    "metric": "last(revenue, ordered_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "first(balance, ordered_at)"
+   },
+   "new": {
+    "metric": "first(balance, ordered_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_prev_year"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_prev_year"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'month')",
+    "name": "rev_prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'month')",
+    "name": "rev_prev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_yoy"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_yoy"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(revenue))",
+    "name": "rev_change"
+   },
+   "new": {
+    "expression": "change(sum(revenue))",
+    "name": "rev_change"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'month')",
+    "name": "rev_prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'month')",
+    "name": "rev_prev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), 1, 'month')",
+    "name": "rev_next"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), 1, 'month')",
+    "name": "rev_next"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'quarter')",
+    "name": "prev_q"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'quarter')",
+    "name": "prev_q"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   },
+   "new": {
+    "expression": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) - time_shift(sum(revenue), -2, 'month')",
+    "name": "growth_2m"
+   },
+   "new": {
+    "expression": "sum(revenue) - time_shift(sum(revenue), -2, 'month')",
+    "name": "growth_2m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   },
+   "new": {
+    "expression": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) - time_shift(sum(revenue), -2, 'month')",
+    "name": "growth_2m"
+   },
+   "new": {
+    "expression": "sum(revenue) - time_shift(sum(revenue), -2, 'month')",
+    "name": "growth_2m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   },
+   "new": {
+    "expression": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) * 2",
+    "name": "_t0_growth"
+   },
+   "new": {
+    "expression": "sum(revenue) * 2",
+    "name": "_t0_growth"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   },
+   "new": {
+    "expression": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total_revenue"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total_revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'month')",
+    "name": "prev_revenue"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'month')",
+    "name": "prev_revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   },
+   "new": {
+    "expression": "sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+    "name": "growth"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "(sum(revenue) - time_shift(sum(revenue), -1, 'month')) / time_shift(sum(revenue), -1, 'month')",
+    "name": "growth_pct"
+   },
+   "new": {
+    "expression": "(sum(revenue) - time_shift(sum(revenue), -1, 'month')) / time_shift(sum(revenue), -1, 'month')",
+    "name": "growth_pct"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(time_shift(sum(revenue), -1, 'year'))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "change(time_shift(sum(revenue), -1, 'year'))",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(revenue))",
+    "name": "rev_change"
+   },
+   "new": {
+    "expression": "change(sum(revenue))",
+    "name": "rev_change"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(revenue))",
+    "name": "rev_change"
+   },
+   "new": {
+    "expression": "change(sum(revenue))",
+    "name": "rev_change"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "cumsum(sum(revenue))",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "cumsum(sum(revenue))",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / count(*)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(revenue) / count(*)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / count(*)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(revenue) / count(*)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), direction='desc')",
+    "name": "rev_rank"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), direction='desc')",
+    "name": "rev_rank"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), partition_by=status, direction='desc')",
+    "name": "rev_rank"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), partition_by=status, direction='desc')",
+    "name": "rev_rank"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), partition_by=[status, customer_id], direction='desc')",
+    "name": "rev_rank"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), partition_by=[status, customer_id], direction='desc')",
+    "name": "rev_rank"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "percent_rank(sum(revenue))",
+    "name": "rev_pr"
+   },
+   "new": {
+    "expression": "percent_rank(sum(revenue))",
+    "name": "rev_pr"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "percent_rank(sum(revenue), partition_by=status)",
+    "name": "rev_pr"
+   },
+   "new": {
+    "expression": "percent_rank(sum(revenue), partition_by=status)",
+    "name": "rev_pr"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "dense_rank(sum(revenue), direction='desc')",
+    "name": "rev_dr"
+   },
+   "new": {
+    "expression": "dense_rank(sum(revenue), direction='desc')",
+    "name": "rev_dr"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "dense_rank(sum(revenue), partition_by=status, direction='desc')",
+    "name": "rev_dr"
+   },
+   "new": {
+    "expression": "dense_rank(sum(revenue), partition_by=status, direction='desc')",
+    "name": "rev_dr"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "ntile(sum(revenue), n=4)",
+    "name": "rev_quartile"
+   },
+   "new": {
+    "expression": "ntile(sum(revenue), n=4)",
+    "name": "rev_quartile"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "ntile(sum(revenue), n=4, partition_by=status)",
+    "name": "rev_quartile"
+   },
+   "new": {
+    "expression": "ntile(sum(revenue), n=4, partition_by=status)",
+    "name": "rev_quartile"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), partition_by=created_at, direction='desc')",
+    "name": "rev_rank"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), partition_by=created_at, direction='desc')",
+    "name": "rev_rank"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), partition_by=customer_id, direction='desc')",
+    "name": "rev_rank"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), partition_by=customer_id, direction='desc')",
+    "name": "rev_rank"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))"
+   },
+   "new": {
+    "metric": "cumsum(sum(revenue))"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "lag(sum(revenue))"
+   },
+   "new": {
+    "metric": "lag(sum(revenue))"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "consecutive_periods(sum(revenue) > 0)"
+   },
+   "new": {
+    "metric": "consecutive_periods(sum(revenue) > 0)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))"
+   },
+   "new": {
+    "metric": "cumsum(sum(revenue))"
+   }
+  },
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "created_at",
+    "granularity": "month"
+   },
+   "new": {
+    "field": "created_at",
+    "granularity": "month"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(change(sum(revenue)))",
+    "name": "delta"
+   },
+   "new": {
+    "expression": "cumsum(change(sum(revenue)))",
+    "name": "delta"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(cumsum(sum(revenue)))",
+    "name": "delta"
+   },
+   "new": {
+    "expression": "change(cumsum(sum(revenue)))",
+    "name": "delta"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(revenue)) / count(*)",
+    "name": "avg_cumsum"
+   },
+   "new": {
+    "expression": "cumsum(sum(revenue)) / count(*)",
+    "name": "avg_cumsum"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*) / nullif(max(revenue), 0)",
+    "name": "violation_rate"
+   },
+   "new": {
+    "expression": "count(*) / nullif(max(revenue), 0)",
+    "name": "violation_rate"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_prev_year"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_prev_year"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='1y2m3d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(revenue, window='1y2m3d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='7d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(revenue, window='7d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "corr(price, other=quantity)"
+   },
+   "new": {
+    "metric": "corr(price, other=quantity)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "orgs",
+    "join_pairs": [
+     [
+      "org_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "orgs",
+    "from_columns": [
+     "org_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "users",
+    "join_pairs": [
+     [
+      "user_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "users",
+    "from_columns": [
+     "user_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(region_pop_sum)"
+   },
+   "new": {
+    "metric": "sum(region_pop_sum)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_payment, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_payment, orders.created_at)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(cust_balance, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(cust_balance, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_payment, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_payment, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_payment_a, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_payment_a, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_payment_b, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_payment_b, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_pay_d, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_pay_d, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_pay_i, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_pay_i, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_payment, orders.created_at) + 1"
+   },
+   "new": {
+    "metric": "last(region_payment, orders.created_at) + 1"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_payment, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_payment, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_payment, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_payment, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(double_amount, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(double_amount, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(amount, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(amount, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count_distinct(customer_region_count)"
+   },
+   "new": {
+    "metric": "count_distinct(customer_region_count)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(region_pop_sum) + sum(amount)"
+   },
+   "new": {
+    "metric": "sum(region_pop_sum) + sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "coalesce(sum(region_pop_sum), 0)"
+   },
+   "new": {
+    "metric": "coalesce(sum(region_pop_sum), 0)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(region_prop_x)"
+   },
+   "new": {
+    "metric": "sum(region_prop_x)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(doubled_pop)"
+   },
+   "new": {
+    "metric": "sum(doubled_pop)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "cumsum(sum(region_pop_sum))"
+   },
+   "new": {
+    "metric": "cumsum(sum(region_pop_sum))"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(region_pop_sum)"
+   },
+   "new": {
+    "metric": "sum(region_pop_sum)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(region_weight_sum)"
+   },
+   "new": {
+    "metric": "sum(region_weight_sum)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(region_pop_sum)"
+   },
+   "new": {
+    "metric": "sum(region_pop_sum)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(region_pop_sum)"
+   },
+   "new": {
+    "metric": "sum(region_pop_sum)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count_distinct(customers.region_id)"
+   },
+   "new": {
+    "metric": "count_distinct(customers.region_id)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers_v2",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers_v2",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_pop)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_pop)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=region_weight)"
+   },
+   "new": {
+    "metric": "weighted_avg(amount, weight=region_weight)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(region_pop_sum)"
+   },
+   "new": {
+    "metric": "sum(region_pop_sum)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(amount, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(amount, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=region_weight)"
+   },
+   "new": {
+    "metric": "weighted_avg(amount, weight=region_weight)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(amount, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(amount, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(amount, customers.signup_at)"
+   },
+   "new": {
+    "metric": "last(amount, customers.signup_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(amount, cross_time)"
+   },
+   "new": {
+    "metric": "last(amount, cross_time)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "scaled_sum(amount, scale='customers.regions.weight')"
+   },
+   "new": {
+    "metric": "scaled_sum(amount, scale='customers.regions.weight')"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "wscaled_sum(amount)"
+   },
+   "new": {
+    "metric": "wscaled_sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(region_pop_sum)"
+   },
+   "new": {
+    "metric": "sum(region_pop_sum)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(region_pop_sum)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(region_pop_sum)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_pay_d, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_pay_d, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(region_pay_i, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(region_pay_i, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=region_weight)"
+   },
+   "new": {
+    "metric": "weighted_avg(amount, weight=region_weight)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(amount, orders.created_at)"
+   },
+   "new": {
+    "metric": "last(amount, orders.created_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(amount)"
+   },
+   "new": {
+    "metric": "last(amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(price, weight=quantity)"
+   },
+   "new": {
+    "metric": "weighted_avg(price, weight=quantity)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "percentile(revenue, p=0.95)"
+   },
+   "new": {
+    "metric": "percentile(revenue, p=0.95)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(price, weight=sales.quantity)"
+   },
+   "new": {
+    "metric": "weighted_avg(price, weight=sales.quantity)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "custom_weighted(price)"
+   },
+   "new": {
+    "metric": "custom_weighted(price)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "scaled_sum(active_revenue)"
+   },
+   "new": {
+    "metric": "scaled_sum(active_revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(active_price, weight=quantity)"
+   },
+   "new": {
+    "metric": "weighted_avg(active_price, weight=quantity)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(active_revenue)"
+   },
+   "new": {
+    "metric": "sum(active_revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(active_count)"
+   },
+   "new": {
+    "metric": "count(active_count)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "avg(active_avg)"
+   },
+   "new": {
+    "metric": "avg(active_avg)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "weighted_avg(active_revenue, weight=quantity)"
+   },
+   "new": {
+    "metric": "weighted_avg(active_revenue, weight=quantity)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(active_revenue)"
+   },
+   "new": {
+    "metric": "sum(active_revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(completed_balance)"
+   },
+   "new": {
+    "metric": "last(completed_balance)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "first(completed_balance)"
+   },
+   "new": {
+    "metric": "first(completed_balance)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(balance)"
+   },
+   "new": {
+    "metric": "last(balance)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(balance)"
+   },
+   "new": {
+    "metric": "last(balance)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(completed_balance)"
+   },
+   "new": {
+    "metric": "last(completed_balance)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(active_balance)"
+   },
+   "new": {
+    "metric": "last(active_balance)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "foo",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "foo",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(vendor_revenue)"
+   },
+   "new": {
+    "metric": "sum(vendor_revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(active_balance)"
+   },
+   "new": {
+    "metric": "last(active_balance)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(completed_balance)"
+   },
+   "new": {
+    "metric": "last(completed_balance)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(evil)"
+   },
+   "new": {
+    "metric": "sum(evil)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(evil)"
+   },
+   "new": {
+    "metric": "sum(evil)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(irish_names)"
+   },
+   "new": {
+    "metric": "sum(irish_names)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(evil)"
+   },
+   "new": {
+    "metric": "sum(evil)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(evil)"
+   },
+   "new": {
+    "metric": "sum(evil)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(evil)"
+   },
+   "new": {
+    "metric": "sum(evil)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(evil)"
+   },
+   "new": {
+    "metric": "sum(evil)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(active_revenue)"
+   },
+   "new": {
+    "metric": "sum(active_revenue)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_table",
+    "measures": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "customers.name"
+    ]
+   },
+   "new": {
+    "population": "orders_table",
+    "metrics": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "customers.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_inline",
+    "measures": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "customers.name"
+    ]
+   },
+   "new": {
+    "population": "orders_inline",
+    "metrics": [
+     "sum(amount)"
+    ],
+    "dimensions": [
+     "customers.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_inline",
+    "measures": [
+     "avg(amount)"
+    ],
+    "dimensions": [
+     "customers.name"
+    ]
+   },
+   "new": {
+    "population": "orders_inline",
+    "metrics": [
+     "avg(amount)"
+    ],
+    "dimensions": [
+     "customers.name"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "orders.customers.name"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "orders.customers.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(orders.customers.score)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(orders.customers.score)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(customers.score)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(customers.score)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "orders.amount"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "orders.amount"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "amount"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "amount"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "premium",
+    "join_pairs": [
+     [
+      "premium_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "premium",
+    "from_columns": [
+     "premium_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(total)"
+   },
+   "new": {
+    "metric": "sum(total)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count_distinct(order_id)"
+   },
+   "new": {
+    "metric": "count_distinct(order_id)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(customer_id)"
+   },
+   "new": {
+    "metric": "count(customer_id)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "min(status)"
+   },
+   "new": {
+    "metric": "min(status)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(status)"
+   },
+   "new": {
+    "metric": "sum(status)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(quantity)"
+   },
+   "new": {
+    "metric": "sum(quantity)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / count_distinct(customer_id)",
+    "name": "rev_per_customer"
+   },
+   "new": {
+    "expression": "sum(revenue) / count_distinct(customer_id)",
+    "name": "rev_per_customer"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "policies",
+    "join_pairs": [
+     [
+      "policy_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "policies",
+    "from_columns": [
+     "policy_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(total) / count_distinct(policies.id)",
+    "name": "avg_per_policy"
+   },
+   "new": {
+    "expression": "sum(total) / count_distinct(policies.id)",
+    "name": "avg_per_policy"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "rolling_avg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "rolling_avg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "b",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "b",
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "c",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "c",
+    "from_columns": [
+     "c_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "d",
+    "join_pairs": [
+     [
+      "d_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "d",
+    "from_columns": [
+     "d_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "e",
+    "join_pairs": [
+     [
+      "e_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "e",
+    "from_columns": [
+     "e_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "rolling_avg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "rolling_avg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "measures": [
+     "rolling_avg(b.c.d.e.score)"
+    ]
+   },
+   "new": {
+    "population": "a",
+    "metrics": [
+     "rolling_avg(b.c.d.e.score)"
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "rolling_a",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "rolling_a",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "b",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "b",
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "a",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "a",
+    "from_columns": [
+     "a_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "measures": [
+     "rolling_a(amount)"
+    ]
+   },
+   "new": {
+    "population": "a",
+    "metrics": [
+     "rolling_a(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "percentile(revenue, p=0.5)",
+    "name": "p50"
+   },
+   "new": {
+    "expression": "percentile(revenue, p=0.5)",
+    "name": "p50"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "percentile(revenue, p=0.95)",
+    "name": "p95"
+   },
+   "new": {
+    "expression": "percentile(revenue, p=0.95)",
+    "name": "p95"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(revenue)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(revenue)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(revenue, created_at)",
+    "name": "latest_cr"
+   },
+   "new": {
+    "expression": "last(revenue, created_at)",
+    "name": "latest_cr"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "last(revenue, updated_at)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "last(revenue, updated_at)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(revenue, created_at)",
+    "name": "lc"
+   },
+   "new": {
+    "expression": "last(revenue, created_at)",
+    "name": "lc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(revenue, updated_at)",
+    "name": "lu"
+   },
+   "new": {
+    "expression": "last(revenue, updated_at)",
+    "name": "lu"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(revenue, created_at) + last(revenue, updated_at)",
+    "name": "diff"
+   },
+   "new": {
+    "expression": "last(revenue, created_at) + last(revenue, updated_at)",
+    "name": "diff"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(revenue) + 1",
+    "name": "plus1"
+   },
+   "new": {
+    "expression": "last(revenue) + 1",
+    "name": "plus1"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(revenue, customers.signed_up_at) + 1",
+    "name": "plus1"
+   },
+   "new": {
+    "expression": "last(revenue, customers.signed_up_at) + 1",
+    "name": "plus1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(paid_amount, created_at) + 1",
+    "name": "plus1"
+   },
+   "new": {
+    "expression": "last(paid_amount, created_at) + 1",
+    "name": "plus1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(revenue, created_at)",
+    "name": "lc"
+   },
+   "new": {
+    "expression": "last(revenue, created_at)",
+    "name": "lc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(revenue, created_at) + last(revenue, updated_at)",
+    "name": "diff"
+   },
+   "new": {
+    "expression": "last(revenue, created_at) + last(revenue, updated_at)",
+    "name": "diff"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.score)",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "sum(customers.score)",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rev",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rev",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "last(revenue, created_at)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "last(revenue, created_at)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "rev_a"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "rev_a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "rev_b"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "rev_b"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "last(revenue, created_at)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "last(revenue, created_at)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "claim_coverage",
+    "join_pairs": [
+     [
+      "id",
+      "pcd_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "claim_coverage",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "pcd_id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "claim_amount",
+    "join_pairs": [
+     [
+      "claim_id",
+      "claim_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "claim_amount",
+    "from_columns": [
+     "claim_id"
+    ],
+    "to_columns": [
+     "claim_id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(claim_coverage.claim_amount.total_claim_amount)"
+   },
+   "new": {
+    "metric": "sum(claim_coverage.claim_amount.total_claim_amount)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "b",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "b",
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "c",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "c",
+    "from_columns": [
+     "c_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "d",
+    "join_pairs": [
+     [
+      "d_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "d",
+    "from_columns": [
+     "d_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(b.c.d.value)"
+   },
+   "new": {
+    "metric": "sum(b.c.d.value)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.score)"
+   },
+   "new": {
+    "metric": "sum(customers.score)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "policy_amount",
+    "join_pairs": [
+     [
+      "policy_identifier",
+      "policy_identifier"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "policy_amount",
+    "join_type": "inner",
+    "from_columns": [
+     "policy_identifier"
+    ],
+    "to_columns": [
+     "policy_identifier"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "agreement_party_role",
+    "join_pairs": [
+     [
+      "policy_identifier",
+      "agreement_identifier"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "agreement_party_role",
+    "join_type": "inner",
+    "from_columns": [
+     "policy_identifier"
+    ],
+    "to_columns": [
+     "agreement_identifier"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "premium",
+    "join_pairs": [
+     [
+      "policy_amount_identifier",
+      "policy_amount_identifier"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "premium",
+    "join_type": "inner",
+    "from_columns": [
+     "policy_amount_identifier"
+    ],
+    "to_columns": [
+     "policy_amount_identifier"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "agreement_party_role",
+    "join_pairs": [
+     [
+      "policy_identifier",
+      "agreement_identifier"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "agreement_party_role",
+    "join_type": "inner",
+    "from_columns": [
+     "policy_identifier"
+    ],
+    "to_columns": [
+     "agreement_identifier"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(policy_amount.total_policy_amount)"
+   },
+   "new": {
+    "metric": "sum(policy_amount.total_policy_amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(policy_amount.total_policy_amount)"
+   },
+   "new": {
+    "metric": "sum(policy_amount.total_policy_amount)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "warehouse",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "warehouse",
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "avg(customers.score)"
+   },
+   "new": {
+    "metric": "avg(customers.score)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(policy_amount.total_policy_amount)"
+   },
+   "new": {
+    "metric": "sum(policy_amount.total_policy_amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(number_of_policies) / sum(policy_amount.total_policy_amount)",
+    "name": "ratio"
+   },
+   "new": {
+    "expression": "sum(number_of_policies) / sum(policy_amount.total_policy_amount)",
+    "name": "ratio"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(policy_amount.total_policy_amount)"
+   },
+   "new": {
+    "metric": "sum(policy_amount.total_policy_amount)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "custom_sum",
+    "formula": "SUM({value})"
+   },
+   "new": {
+    "name": "custom_sum",
+    "expression": "SUM({value})"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.lifetime_value)"
+   },
+   "new": {
+    "metric": "sum(customers.lifetime_value)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)",
+    "name": "num_customers"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)",
+    "name": "num_customers"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count_distinct(customer_id)"
+   },
+   "new": {
+    "metric": "count_distinct(customer_id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)",
+    "name": "num_customers"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)",
+    "name": "num_customers"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))",
+    "name": "running_rev"
+   },
+   "new": {
+    "expression": "cumsum(sum(revenue))",
+    "name": "running_rev"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "count(*)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "count(*)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.score)"
+   },
+   "new": {
+    "metric": "sum(customers.score)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.score)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.score)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.score)"
+   },
+   "new": {
+    "metric": "sum(customers.score)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.score)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "sum(customers.score)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(revenue, ordered_at)"
+   },
+   "new": {
+    "metric": "last(revenue, ordered_at)"
+   }
+  },
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "ordered_at",
+    "granularity": "month"
+   },
+   "new": {
+    "field": "ordered_at",
+    "granularity": "month"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "last(revenue, ordered_at)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "last(revenue, ordered_at)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "customers",
+    "join_type": "inner",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "loss_payment",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_amt)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "claim",
+    "join_pairs": [
+     [
+      "claim_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "claim",
+    "from_columns": [
+     "claim_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_reserve_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_reserve_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_reserve_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_reserve_amt)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(loss_payment_amt) + sum(loss_reserve_amt)",
+    "name": "total_loss"
+   },
+   "new": {
+    "expression": "sum(loss_payment_amt) + sum(loss_reserve_amt)",
+    "name": "total_loss"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(total_amount)"
+   },
+   "new": {
+    "metric": "sum(total_amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_reserve_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_reserve_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "warehouse",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "warehouse",
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.score)"
+   },
+   "new": {
+    "metric": "sum(customers.score)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "avg(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "avg(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(latest_payment)"
+   },
+   "new": {
+    "metric": "last(latest_payment)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(latest_payment)"
+   },
+   "new": {
+    "metric": "last(latest_payment)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(total_amount)"
+   },
+   "new": {
+    "metric": "last(total_amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(latest_payment)"
+   },
+   "new": {
+    "metric": "last(latest_payment)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "first(earliest_reserve, updated_at)"
+   },
+   "new": {
+    "metric": "first(earliest_reserve, updated_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(latest_payment)"
+   },
+   "new": {
+    "metric": "last(latest_payment)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(latest_reserve)"
+   },
+   "new": {
+    "metric": "last(latest_reserve)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers.revenue)"
+   },
+   "new": {
+    "metric": "sum(customers.revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "avg(customers.revenue)"
+   },
+   "new": {
+    "metric": "avg(customers.revenue)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(eu_amount)"
+   },
+   "new": {
+    "metric": "sum(eu_amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(loss_payment_amt))",
+    "name": "cum_loss"
+   },
+   "new": {
+    "expression": "cumsum(sum(loss_payment_amt))",
+    "name": "cum_loss"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(loss_payment_amt))",
+    "name": "cum_loss"
+   },
+   "new": {
+    "expression": "cumsum(sum(loss_payment_amt))",
+    "name": "cum_loss"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_reserve_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_reserve_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(latest_payment, updated_at)",
+    "name": "latest_pmt"
+   },
+   "new": {
+    "expression": "last(latest_payment, updated_at)",
+    "name": "latest_pmt"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "latest_pmt",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "latest_pmt",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(latest_payment, updated_at)",
+    "name": "latest_pmt"
+   },
+   "new": {
+    "expression": "last(latest_payment, updated_at)",
+    "name": "latest_pmt"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment.has_flag)"
+   },
+   "new": {
+    "metric": "sum(loss_payment.has_flag)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_reserve_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_reserve_amt)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(loss_payment_amt) + sum(loss_reserve_amt)",
+    "name": "total_loss"
+   },
+   "new": {
+    "expression": "sum(loss_payment_amt) + sum(loss_reserve_amt)",
+    "name": "total_loss"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "total_loss",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "total_loss",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_reserve_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_reserve_amt)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(loss_payment_amt) + sum(loss_reserve_amt)",
+    "name": "total_loss"
+   },
+   "new": {
+    "expression": "sum(loss_payment_amt) + sum(loss_reserve_amt)",
+    "name": "total_loss"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(loss_payment_amt) + sum(loss_reserve_amt)",
+    "name": "grand_total"
+   },
+   "new": {
+    "expression": "sum(loss_payment_amt) + sum(loss_reserve_amt)",
+    "name": "grand_total"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(total_amount)"
+   },
+   "new": {
+    "metric": "last(total_amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment.has_flag)"
+   },
+   "new": {
+    "metric": "sum(loss_payment.has_flag)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(total_amount)"
+   },
+   "new": {
+    "metric": "last(total_amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment.has_flag)"
+   },
+   "new": {
+    "metric": "sum(loss_payment.has_flag)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "claim_amount_id"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "loss_payment",
+    "join_type": "inner",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "claim_amount_id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(loss_payment_amt)"
+   },
+   "new": {
+    "metric": "sum(loss_payment_amt)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "max(log_amount)"
+   },
+   "new": {
+    "metric": "max(log_amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "max(log2_amount)"
+   },
+   "new": {
+    "metric": "max(log2_amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "max(log_completed_amount)"
+   },
+   "new": {
+    "metric": "max(log_completed_amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(log_amount) / count(*)",
+    "name": "ratio"
+   },
+   "new": {
+    "expression": "max(log_amount) / count(*)",
+    "name": "ratio"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "max(log3_amount)"
+   },
+   "new": {
+    "metric": "max(log3_amount)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "max(ln_amount)"
+   },
+   "new": {
+    "metric": "max(ln_amount)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "planets",
+    "dimensions": [
+     "name"
+    ],
+    "filters": [
+     "rn <= 3"
+    ]
+   },
+   "new": {
+    "population": "planets",
+    "dimensions": [
+     "name"
+    ],
+    "filter": [
+     "rn <= 3"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "planets",
+    "dimensions": [
+     "name",
+     "rn"
+    ]
+   },
+   "new": {
+    "population": "planets",
+    "dimensions": [
+     "name",
+     "rn"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "cnt"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "cnt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "rev_90d"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "rev_90d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "percentile(score, p=0.5)",
+    "name": "p50"
+   },
+   "new": {
+    "expression": "percentile(score, p=0.5)",
+    "name": "p50"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(score, weight=weight)",
+    "name": "wavg"
+   },
+   "new": {
+    "expression": "weighted_avg(score, weight=weight)",
+    "name": "wavg"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(cleaned_amt)"
+   },
+   "new": {
+    "metric": "sum(cleaned_amt)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(risk)"
+   },
+   "new": {
+    "metric": "sum(risk)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(price, weight=quantity)",
+    "name": "wavg"
+   },
+   "new": {
+    "expression": "weighted_avg(price, weight=quantity)",
+    "name": "wavg"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "metric": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "countries",
+    "join_pairs": [
+     [
+      "country_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "countries",
+    "from_columns": [
+     "country_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers_v2",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers_v2",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_pop)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_pop)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_gdp)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_gdp)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count_distinct(customers_v2.deep_country_name)"
+   },
+   "new": {
+    "metric": "count_distinct(customers_v2.deep_country_name)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.region_prop_x)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.region_prop_x)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.doubled_pop)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.doubled_pop)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_score)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_score)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_pop)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_pop)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_gdp)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_gdp)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_pop) + sum(customers_v2.deep_weight)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_pop) + sum(customers_v2.deep_weight)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   },
+   "new": {
+    "metric": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count_distinct(customers_v2.region_id)"
+   },
+   "new": {
+    "metric": "count_distinct(customers_v2.region_id)"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(customers_v2.deep_pop)"
+   },
+   "new": {
+    "metric": "sum(customers_v2.deep_pop)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1)",
+    "name": "rev_prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1)",
+    "name": "rev_prev"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "myagg",
+    "formula": "SUM({value})"
+   },
+   "new": {
+    "name": "myagg",
+    "expression": "SUM({value})"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1)",
+    "name": "rev_prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1)",
+    "name": "rev_prev"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(revenue, window='90d')",
+      "name": "rev_w"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(revenue, window='90d')",
+      "alias": "rev_w"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 203,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 223,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 228,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 230,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 233,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 240,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 248,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 270,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 280,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 290,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 302,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 313,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 317,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 327,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 340,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 342,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 344,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 353,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 358,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 366,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 370,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 385,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 395,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 406,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 417,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 437,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 446,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 457,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 467,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 477,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 490,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 502,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 511,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 520,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 531,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 536,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 537,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 539,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 549,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 562,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 567,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 572,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 579,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 583,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 584,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 586,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 599,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 604,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 606,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 610,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 622,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 627,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 631,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 643,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 656,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 665,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 677,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 679,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 693,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 695,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 715,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 717,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 731,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 745,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 748,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 749,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 768,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 789,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 802,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 827,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 840,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 843,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 844,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 845,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 848,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 851,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 852,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 853,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 854,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 855,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 867,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 870,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 890,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 911,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 914,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 915,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 918,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 921,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 922,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 926,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 929,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 930,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 931,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 932,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 933,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 940,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 961,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 984,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1005,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1026,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1029,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1054,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1057,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1058,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1059,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1060,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1063,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1078,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1081,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1082,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1085,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1088,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1089,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1090,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1091,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1095,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1191,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1249,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1266,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1270,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1273,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1276,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1277,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1278,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1282,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1296,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1298,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1309,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1311,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1322,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1331,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1333,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1346,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1348,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1358,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1369,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1371,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1381,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1382,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1384,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1399,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1400,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1401,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1403,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1414,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1415,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1416,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1418,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1429,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1430,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1431,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1433,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1451,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1452,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1453,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1455,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1469,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1470,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1471,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1473,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1489,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1491,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1502,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1505,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1522,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1525,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1540,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1543,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1559,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1561,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1571,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1574,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1589,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1592,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1612,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1615,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1634,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1637,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1683,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1686,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1718,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1720,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1724,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1751,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1755,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1778,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1780,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1789,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1791,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1803,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1805,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1817,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1819,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1832,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1844,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1852,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1861,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1874,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1899,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1908,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1920,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1936,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1948,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1962,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1974,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1988,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2000,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2018,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2042,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2065,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2087,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2090,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2132,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2137,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2138,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2175,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2180,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2181,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2182,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2183,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2203,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2222,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2224,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2239,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2271,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2322,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2328,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2329,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2330,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2334,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2360,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2373,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2376,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2388,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2393,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2394,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2395,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2401,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2404,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2413,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2416,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2430,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2446,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2449,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2479,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2482,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2519,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2521,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2549,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2551,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2571,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2574,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2575,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2576,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2577,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2578,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2582,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2632,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2637,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2638,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2639,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2640,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2660,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2662,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2672,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2688,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2691,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2692,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2693,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2696,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2699,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2700,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2709,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2714,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2715,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2716,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2717,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2737,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2750,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2753,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2754,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2757,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2760,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2761,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2765,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2770,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2771,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2772,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2785,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2788,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2805,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2807,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2828,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2831,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2832,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2833,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2834,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2835,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2836,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2839,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2842,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2843,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2852,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2853,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2854,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2855,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2859,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2899,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2903,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2921,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2924,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2925,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2926,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2931,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2934,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2948,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2952,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2978,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2980,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2984,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3013,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3015,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3019,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3041,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3045,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3063,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3067,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3089,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3090,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3094,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3117,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3172,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3179,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3228,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3251,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3280,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3287,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3291,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3311,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3316,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3323,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3348,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3355,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3375,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3384,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3407,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3425,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3426,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3433,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3452,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3455,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3457,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3461,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3464,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3465,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3470,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3486,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3493,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3512,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3515,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3516,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3517,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3523,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3526,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3527,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3528,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3538,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3539,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3540,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3541,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3544,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3563,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3566,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3590,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3593,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3613,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3628,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3631,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3644,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3649,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3667,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3674,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3690,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3693,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3715,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3718,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3735,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3738,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3759,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3761,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3769,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3795,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3803,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3827,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3832,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3845,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3850,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3851,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3853,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3854,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3855,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3864,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3873,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3882,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3905,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3913,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3927,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3934,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3941,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3958,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3965,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3984,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3986,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3995,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 3997,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4005,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4007,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4014,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4027,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4030,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4032,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4045,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4047,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4064,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4066,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4069,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4091,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4093,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4096,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4138,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4173,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4175,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4177,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4253,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4258,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4259,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4261,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4287,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4290,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4292,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4295,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4322,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4329,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4337,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4344,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4351,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4368,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4374,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4398,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4404,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4438,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4444,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4455,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4469,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4471,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4487,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4492,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4493,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4494,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4500,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4505,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4506,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4507,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4513,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4518,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4519,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4558,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4561,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4562,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4563,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4578,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4581,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4582,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4583,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4586,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4589,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4590,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4591,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4639,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4644,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4645,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4646,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4648,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4667,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4672,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4673,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4676,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4681,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4682,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4683,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4687,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4705,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4710,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4711,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4712,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4714,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4726,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4731,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4732,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4735,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4740,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4741,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4742,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4746,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4760,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4765,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4769,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4779,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4784,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4785,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4789,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4799,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4804,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4805,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4809,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4818,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4823,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4824,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4828,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4837,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4842,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4843,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4847,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4857,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4862,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4863,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4865,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4868,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4882,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4887,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4888,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4890,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4894,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4899,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4900,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4913,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4932,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4937,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4938,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4939,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4940,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4943,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4948,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4949,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4962,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4978,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4980,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4981,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4986,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4988,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4989,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4994,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4996,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 4997,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5002,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5004,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5005,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5010,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5012,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5013,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5037,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5039,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5040,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5041,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5045,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5047,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5048,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5072,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5087,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5203,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5213,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5215,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5216,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5246,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5248,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5249,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5250,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5260,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5264,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5265,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5266,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5268,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5287,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5323,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5353,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5372,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5389,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5421,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5449,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5475,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5505,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5536,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5563,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5587,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5620,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5635,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5638,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5639,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5642,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5645,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5646,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5647,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5648,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5656,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5680,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5710,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5750,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5753,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5754,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5757,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5760,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5761,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5762,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5763,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5764,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5772,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5800,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5803,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5804,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5805,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5807,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5813,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5816,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5817,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5818,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5819,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5827,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5855,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5858,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5859,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5862,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5865,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5866,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5867,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5868,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5870,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5883,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5915,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5934,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 5979,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6009,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6012,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6013,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6014,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6015,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6019,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6041,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6071,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6213,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6214,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6219,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6224,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6225,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6230,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6236,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6261,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6264,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6265,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6271,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6272,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6276,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6278,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6283,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6296,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6309,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6311,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6312,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6313,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6314,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6317,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6319,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6330,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6347,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6350,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6351,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6352,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6359,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6362,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6363,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6364,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6365,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6373,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6376,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6377,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6380,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6383,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6384,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6404,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6432,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6450,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6453,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6454,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6455,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6464,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6467,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6468,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6470,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6473,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6474,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6478,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6504,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6507,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6532,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6553,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6570,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6573,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6574,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6575,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6576,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6580,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6583,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6584,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6585,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6589,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6605,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6610,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6611,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6612,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6613,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6615,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6619,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6636,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6641,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6642,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6643,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6644,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6646,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6650,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6658,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6663,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6664,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6665,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6666,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6667,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6669,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6676,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6679,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6695,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6700,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6701,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6702,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6704,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6716,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6721,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6722,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6723,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6725,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6738,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6743,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6744,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6745,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6746,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6749,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6754,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6755,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6756,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6766,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6781,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6786,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6787,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6788,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6789,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6792,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6797,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6798,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6799,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6800,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6803,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6808,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6809,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6822,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6841,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6846,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6847,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6848,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6850,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6863,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6868,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6869,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6870,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6871,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6873,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6894,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6899,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6900,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6903,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6908,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6909,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6910,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6914,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6930,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6935,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6936,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6939,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6944,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6946,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6951,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6971,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6976,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6977,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6980,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6985,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6986,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6987,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 6991,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7006,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7011,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7012,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7014,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7015,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7016,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7019,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7020,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7064,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7090,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7227,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7246,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7249,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7250,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7253,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7257,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7260,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7264,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7265,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7272,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7297,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7324,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7360,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7385,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7388,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7396,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7401,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7427,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7451,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7459,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7491,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7494,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7497,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7502,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7523,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7525,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7533,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7564,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7567,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7568,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7571,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7574,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7575,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7579,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7600,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7603,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7604,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7607,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7610,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7611,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7615,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7618,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7619,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7620,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7622,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7624,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7631,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7661,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7686,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7728,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7730,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7737,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7767,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7769,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7776,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7805,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7839,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7841,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7849,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7876,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7878,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7883,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7908,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7946,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7951,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 7985,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8020,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8057,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8065,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8095,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8097,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8121,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8181,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8182,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8190,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8198,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8199,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8210,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8240,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8244,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8246,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8283,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8287,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8290,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8295,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8296,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8297,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8298,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8334,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8339,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8340,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8341,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8377,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8382,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8383,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8384,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8386,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8387,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8389,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8391,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8400,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8457,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8462,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8463,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8464,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8465,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8474,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8495,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8512,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8534,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8550,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8555,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8556,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8557,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8558,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8611,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8616,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8617,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8630,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8638,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8644,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8649,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8650,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8654,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8663,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8671,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8679,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8688,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8698,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8703,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8704,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8705,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8709,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8718,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8723,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8724,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8732,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8752,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8757,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8758,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8767,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8773,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8778,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8779,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8780,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8789,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8800,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8805,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8806,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8810,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8825,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8830,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8831,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8837,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8848,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8851,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8861,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8864,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8882,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8887,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8888,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8889,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8890,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8899,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8902,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8908,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8929,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8932,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8951,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8956,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8957,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8965,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8978,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8983,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8984,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8989,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 8993,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9022,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9048,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9073,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9099,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9138,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9180,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9203,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9210,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9211,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9215,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9220,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9221,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9238,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9268,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9288,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9319,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9338,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9357,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9371,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9391,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9412,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9440,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9473,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9478,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9479,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9480,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9481,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9484,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9528,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9552,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9577,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9582,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9583,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9584,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9585,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9588,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9617,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9622,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9623,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9624,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9627,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9646,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9651,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9652,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9653,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9656,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9676,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9681,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9682,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9683,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9686,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9737,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9741,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9765,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9782,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9786,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9787,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9791,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9794,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9799,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9802,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9825,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9827,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9872,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9875,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9876,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9877,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9880,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9883,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9884,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9885,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9886,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9887,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9888,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 9898,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9899,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9900,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9904,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9912,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9915,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9916,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9917,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9918,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9930,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9932,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9943,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9945,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9957,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9960,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9972,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9975,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9986,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9987,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 9989,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10000,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10003,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10017,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10021,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10035,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10040,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10054,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10055,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10057,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10072,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10074,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10076,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10093,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10188,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10223,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10233,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 10235,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 10236,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 10252,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10262,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10272,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10283,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10287,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10288,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10292,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10306,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10325,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10327,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10328,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10330,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10335,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10345,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10352,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10359,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10362,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10363,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10366,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10369,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10370,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10375,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10386,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10393,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10401,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10410,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10419,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10436,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10439,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10440,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10441,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 10454,
+   "reason": "not fully literal"
+  }
+ ]
+}

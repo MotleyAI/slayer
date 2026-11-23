@@ -1,7 +1,7 @@
 """Flat-rename wrapper over a composed stage statement.
 
 Shared by the multi-stage CTE chaining, the regroup producer attach and the
-query-backed virtual-model wrap: output columns become the flat downstream
+query-backed virtual-dataset wrap: output columns become the flat downstream
 bind names, checked against the expected stage schema.
 """
 from __future__ import annotations
@@ -32,6 +32,10 @@ def _source_names(source: Expression) -> set:
     alias = source.args.get("alias")
     if isinstance(source, exp.Unnest) and isinstance(alias, exp.TableAlias) and not alias.name:
         return {c.name for c in alias.columns}
+    if isinstance(source, exp.Table) and alias is None:
+        parts = [p.name for p in (source.args.get("catalog"), source.args.get("db"), source.this)
+                 if isinstance(p, exp.Identifier)]
+        return {".".join(parts[i:]) for i in range(len(parts))} | {source.alias_or_name}
     return {source.alias_or_name}
 
 
@@ -92,32 +96,35 @@ def unmangle_dotted_table_refs(node: Expression) -> None:
     ``\\`orders.region\\``` back into its qualifier whenever some OUTER query
     happens to have an ``orders`` source."""
     for col in node.find_all(exp.Column):
-        prefix = [
-            p for p in (col.args.get(k) for k in ("catalog", "db", "table"))
-            if isinstance(p, exp.Identifier)
-        ]
-        # Four-plus segments overflow the qualifier slots into a Dot in ``this``.
-        this_segments = _dot_segments(col.this)
-        if not prefix or this_segments is None:
-            continue
-        select = col.parent_select
-        sources = _visible_source_names(select) if select is not None else set()
-        if prefix[0].name in sources:
-            segments = [p.name for p in prefix[1:]] + this_segments
-            if len(segments) == 1:
-                continue  # a plain <source>.<col> — nothing was split
-            real_table: exp.Identifier | None = prefix[0]
-        else:
-            segments = [p.name for p in prefix] + this_segments
-            real_table = None
-        # Replace the node wholesale: clearing an existing column's ``table`` slot
-        # leaves a dangling empty qualifier (`` ``.col ``) in this sqlglot.
-        new_col = exp.Column(this=exp.to_identifier(".".join(segments), quoted=True))
-        if real_table is not None:
-            new_col.set(
-                "table", exp.to_identifier(real_table.name, quoted=real_table.quoted),
-            )
-        col.replace(new_col)
+        new_col = _unmangled(col)
+        if new_col is not None:
+            col.replace(new_col)
+
+
+def _unmangled(col: exp.Column) -> exp.Column | None:
+    """``col`` with its split dotted name folded back, or ``None`` when it was parsed correctly."""
+    prefix = [
+        p for p in (col.args.get(k) for k in ("catalog", "db", "table"))
+        if isinstance(p, exp.Identifier)
+    ]
+    # Four-plus segments overflow the qualifier slots into a Dot in ``this``.
+    this_segments = _dot_segments(col.this)
+    if not prefix or this_segments is None:
+        return None
+    select = col.parent_select
+    sources = _visible_source_names(select) if select is not None else set()
+    if len(prefix) > 1 and len(this_segments) == 1 and ".".join(p.name for p in prefix) in sources:
+        return None  # a schema-qualified source's own column
+    real_table = prefix[0] if prefix[0].name in sources else None
+    segments = [p.name for p in prefix[1 if real_table is not None else 0:]] + this_segments
+    if real_table is not None and len(segments) == 1:
+        return None  # a plain <source>.<col> — nothing was split
+    # Replace the node wholesale: clearing an existing column's ``table`` slot
+    # leaves a dangling empty qualifier (`` ``.col ``) in this sqlglot.
+    new_col = exp.Column(this=exp.to_identifier(".".join(segments), quoted=True))
+    if real_table is not None:
+        new_col.set("table", exp.to_identifier(real_table.name, quoted=real_table.quoted))
+    return new_col
 
 
 def build_flat_rename_wrapper(

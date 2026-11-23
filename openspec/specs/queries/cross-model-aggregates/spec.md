@@ -81,10 +81,9 @@ fanning or unproven join hop when a path exists, or unreachable when no join pat
 resolves — a reachable-but-fanning dimension MUST NOT be reported as unreachable, and a
 dimension on a prefix of the aggregate's own path is reachable back over that prefix,
 never a round trip through the query root. A
-broadcast warning SHALL carry the dice–slice hint, or, for a fallback of an
-association-ineligible aggregate under the default, the unsupported-association reason
-and remedy (per `queries/semantics` › Loud degradation). One warning SHALL be emitted
-per distinct aggregate and fallback reason: an aggregate is identified by its public
+broadcast warning SHALL carry the dice–slice hint (per `queries/semantics` › Loud
+degradation) and no association-unsupported reason. One warning SHALL be emitted
+per distinct aggregate: an aggregate is identified by its public
 measure name when directly selected, else by its canonical aggregate form and role
 (expression, order, or filter). Hidden and filter-only aggregate uses emit
 warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT warn.
@@ -114,7 +113,7 @@ warnings too. Explicit `partition_by=` broadcasting is by design and MUST NOT wa
   through `orders` used to report
 
 ### Requirement: Unsafe aggregate inputs fail closed
-An aggregate whose inputs — positional args, keyword args (including aggregation-parameter fragments and the aggregation definition's non-overridden defaults), or measure-level column filter references — cross a join hop that is not provably many-to-one from the aggregate's root SHALL fail with a clear error in all three modes, whatever the aggregate's root: target-rooted, host-rooted, and local aggregates alike. An input's dependencies are its *dependency closure*: its own join path plus every join path the definition of any derived column it names crosses, recursively through chains of derived columns, whether the reference is bare or path-bearing — a derived column whose definition crosses a fanning hop is an unsafe input exactly as a structural reference across that hop is. An input whose derived-column definition cannot be analyzed for join dependencies SHALL fail closed with a typed error naming the aggregate and the column — never be treated as crossing nothing. Multiplying a host-side operand through a fanning join is ambiguous and MUST never silently compute over multiplied rows. The rule applies per input role: a *filter reference* or *argument* crossing an unproven hop fails closed, whatever the aggregate's root. A crossing *source* stays legal only where the aggregate is evaluated over the join result at host grain — a host-grain wrap (an ORDER BY sort key over an unprojected joined column) consumes the target's values per matched row and keeps its established values; a definition default's references local to its owner ride with the source. A target-rooted cross-model producer re-roots its source to the target; a source that then reads through an unproven hop fans the aggregate and fails closed like any other crossing input. An attached (aggregate- or transform-valued) input is opaque to this rule: its own inputs are judged by its own producer at its own home, never by the enclosing aggregate. When an explicit column argument is the violation, the error SHALL name that argument and the hop it crosses, taking precedence over the closure's hop-only message — a derived argument included, judged by its closure. The *ranking key* of a `first`/`last` aggregation is an input under this rule whichever way it is chosen: the explicit positional argument, else the producer's first temporal row dimension, else the time dimension's raw column, else the model's `default_time_dimension` — a key whose dependency closure crosses a hop that is not provably many-to-one from the producer's root SHALL fail closed in every mode, naming the column and the hop, for host-rooted, target-rooted and `window=` producers alike, and a key whose derived definition cannot be analyzed SHALL fail closed naming the column; a ranked producer's grain may still fan (each cell ranks the rows that reached it) — only the ordering key is refused.
+An aggregate whose inputs — positional args, keyword args (including aggregation-parameter fragments and the aggregation definition's non-overridden defaults), or measure-level column filter references — cross a join hop that is not provably many-to-one from the aggregate's root SHALL fail with a clear error in all three modes, whatever the aggregate's root: target-rooted, host-rooted, and local aggregates alike. An input's dependencies are its *dependency closure*: its own join path plus every join path the definition of any derived column it names crosses, recursively through chains of derived columns, whether the reference is bare or path-bearing — a derived column whose definition crosses a fanning hop is an unsafe input exactly as a structural reference across that hop is. An input whose derived-column definition cannot be analyzed for join dependencies SHALL fail closed with a typed error naming the aggregate and the column — never be treated as crossing nothing. Multiplying a host-side operand through a fanning join is ambiguous and MUST never silently compute over multiplied rows. The rule applies per input role: a *filter reference* or *argument* crossing an unproven hop fails closed, whatever the aggregate's root. A crossing *source* stays legal only where the aggregate is evaluated over the join result at host grain — a host-grain wrap (an ORDER BY sort key over an unprojected joined column) consumes the target's values per matched row and keeps its established values; a definition default's references local to its owner ride with the source. A target-rooted cross-model producer re-roots its source to the target; a source that then reads through an unproven hop fans the aggregate and fails closed like any other crossing input. An attached (aggregate- or transform-valued) input is opaque to this rule: its own inputs are judged by its own producer at its own home, never by the enclosing aggregate. When an explicit column argument is the violation, the error SHALL name that argument and the hop it crosses, taking precedence over the closure's hop-only message — a derived argument included, judged by its closure. The *ranking key* of a `first`/`last` aggregation is an input under this rule whichever way it is chosen: the explicit positional argument, else the default per `aggregations/functional-form` › Default ranking key — a key whose dependency closure crosses a hop that is not provably many-to-one from the producer's root SHALL fail closed in every mode, naming the column and the hop, for host-rooted, target-rooted and `window=` producers alike, and a key whose derived definition cannot be analyzed SHALL fail closed naming the column; a ranked producer's grain dimensions resolve per `to_many_handling` like any aggregate's (per `queries/attribution-modes`) — only the ordering key is refused in every mode.
 
 #### Scenario: Aggregate reading through an unproven join errors
 - WHEN an aggregate's column filter references a column across a join with unproven arity from the aggregate's root
@@ -185,7 +184,7 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 - THEN the error names the argument `li_ts` and the hop `line_items` (the "ranks/reads by" form), not the closure's hop-only message; `last(amount, line_items.created_at)` keeps naming `created_at` and `line_items`
 
 #### Scenario: Default ranking key whose column filter crosses an unproven hop fails closed
-- WHEN `orders.default_time_dimension` names a column whose `Column.filter` references `line_items.qty` across the unproven hop, and a query selects `last(amount)` with no time dimension
+- WHEN `orders.default_time_dimension` names a column whose `DatasetField.filter` references `line_items.qty` across the unproven hop, and a query selects `last(amount)` with no time dimension
 - THEN the query fails with the input-safety error naming that column and the hop `line_items`
 
 #### Scenario: Unanalyzable default ranking key fails closed
@@ -193,7 +192,7 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 - THEN the query fails at plan time with the typed unanalyzable-dependency error naming the aggregate and the column — never a plan that ranks by it
 
 #### Scenario: Safe ranking keys keep executing
-- WHEN the resolved ranking key is a local column (the model default, or a filter-only temporal column with no default), a derived column over a provably to-one hop (`cust_signup` = `customers.signup_at` with `customers.id` a primary key), or — for `last(amount, window='30d')` on a `created_at` time dimension — the bucket's raw column while the model default crosses the unproven hop
+- WHEN the resolved ranking key is a local column (the model default), a derived column over a provably to-one hop (`cust_signup` = `customers.signup_at` with `customers.id` a primary key), or — for `last(amount, window='30d')` on a `created_at` time dimension — the bucket's raw column while the model default crosses the unproven hop
 - THEN each query executes with its established value (the proven-hop case joins `customers` and picks the row with the latest signup; the windowed case never joins `line_items`), and the derived key renders as its plain expansion with no added CAST in both the plain and the windowed ranked CTE
 
 ### Requirement: Explicit grain and window on cross-model aggregates
@@ -202,15 +201,14 @@ Under `"broadcast"` and `"error"` modes, every explicit partition key MUST be
 attributable from the aggregate's root — an unattributable key is a hard error naming
 the remedy. When the mode is omitted or `"associate"`, an explicit partition key not
 attributable from the root is legal: the aggregate attributes at the declared grain by distinct-entity
-association (per `queries/attribution-modes`), without warning (requested grain). A
-windowed aggregate — cross-model or rooted at the query population — requires the query's
-active time dimension attributable from its home dataset, else fails at plan time with a
-typed error naming the time dimension and the remedy, in every `to_many_handling` mode and
-whether or not the query filters: the time bucket is a grain member of the windowed
-aggregate that its home must determine, never a fanning join multiplying the windowed rows.
-Windowing by association is deferred to DEV-1914: a windowed or `first`/`last` aggregate
-that needs association broadcasts with its reason when the mode is omitted and fails
-under `"associate"` (per `queries/attribution-modes`).
+association (per `queries/attribution-modes`), without warning (requested grain) — a
+`first`/`last` or windowed aggregate included. A windowed aggregate — cross-model or
+rooted at the query population — whose query's active time dimension is not attributable
+from its home dataset associates by its frame when the mode is omitted or `"associate"`
+(per `queries/attribution-modes` › Ranked and windowed association), never a fanning join
+multiplying the windowed rows; under `"broadcast"` and `"error"` it fails at plan time,
+whether or not the query filters, with a typed error naming the time dimension and the
+remedies, association among them — broadcasting cannot drop the window's own axis.
 
 #### Scenario: Cross-model partitioned aggregate computes at the declared grain
 - **WHEN** a query selects `sum(customers.spend, partition_by=<customer-level dimension>)`
@@ -235,10 +233,18 @@ under `"associate"` (per `queries/attribution-modes`).
 
 #### Scenario: Population-rooted window over a fanning time axis fails closed
 - **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` over
-  `time_dimensions: [{"dimension": "orders.ordered_at", "granularity": "month"}]`, with or
-  without `filters: ["orders.status = 'ok'"]`, in any `to_many_handling` mode
+  `time_dimensions: [{"field": "orders.ordered_at", "granularity": "month"}]`, with and
+  without `filter: ["orders.status = 'ok'"]`, omitting the mode and again under
+  `"associate"`
+- **THEN** it no longer fails closed: each month counts every customer with an order in its
+  trailing year once — Jan
+  100, Feb 250, Mar 350, Apr 460 unfiltered and Jan 100, Feb 250, Mar 310, Apr 420 filtered
+  on the reference data — never a value counting a customer once per order
+
+#### Scenario: Population-rooted window over a fanning time axis fails outside association
+- **WHEN** the same query runs under `"broadcast"` or `"error"`, with or without the filter
 - **THEN** the query fails at plan time with a typed error naming `orders.ordered_at` and the
-  remedy, containing no issue reference — never a value counting a customer once per order
+  remedies, association among them, containing no issue reference
 
 ### Requirement: Cross-model aggregates compose in expressions and dimensions
 Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. Composite legality is uniform across the composite's own shape: a cross-model operand SHALL compile whether the composite combines it with local aggregates, with literals, with several cross-model operands, or wraps it in scalar calls — the compiled route never depends on which seam the composite would otherwise render through, and no composite shape reaches an internal not-supported seam error. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise it is unattributable to the metric and resolves per `to_many_handling`. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.
@@ -402,9 +408,9 @@ restricting the population by association restricts the producer by the same sem
 a producer nested inside such a producer and rooted at the same population
 inherits the same disposition during its own compilation. Such a producer's own grain — its
 partition keys and its window time axis — is attributable from the population (an
-unattributable partition key or window time axis is a typed error, per *Explicit grain and
-window on cross-model aggregates*), so it takes the population's semi-join, never an inline
-join across the fanning hop. This
+aggregate with an unattributable grain member resolves per `to_many_handling` instead —
+by the association producer, a broadcast or a refusal — per `queries/attribution-modes`),
+so it takes the population's semi-join, never an inline join across the fanning hop. This
 population inheritance is keyed on the producer's kernel, not on whether its root equals
 the host: an association producer (even one whose root is the host) keeps the association
 routing of the paragraph above and receives no population semi-join, and a target-rooted
@@ -466,7 +472,7 @@ only in the filter.
 #### Scenario: Two spellings of one edge bind to the same related row
 - **WHEN** the `customers → orders` edge is named `purchases` and a query rooted at
   `customers` selects `sum(spend)` by `tier` with
-  `filters: ["purchases.status = 'ok'", "orders.channel = 'app'"]`
+  `filter: ["purchases.status = 'ok'", "orders.channel = 'app'"]`
 - **THEN** by executed values each cell counts the customers having one order that is both
   `ok` and `app` (gold 60, silver 80 on the reference dataset, never gold 160 / silver 230),
   and the generated SQL correlates a single `orders` relation for both conjuncts
@@ -486,7 +492,7 @@ only in the filter.
 
 #### Scenario: Mixed disjunction stays dropped and warned
 - **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by `customers.tier`
-  with `filters: ["customers.tier = 'bronze' OR channel = 'app'"]`, in any mode
+  with `filter: ["customers.tier = 'bronze' OR channel = 'app'"]`, in any mode
 - **THEN** it is no longer dropped: by executed values each cell counts the distinct customers
   that are bronze or have at least one `app` order, each once (gold 160, silver 230, bronze 40
   on the reference dataset, never gold 245), the response carries the informational entry naming the
@@ -495,7 +501,7 @@ only in the filter.
 
 #### Scenario: Mixed disjunction on the association producer binds to the same related row
 - **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by `status` under
-  `to_many_handling: "associate"` with `filters: ["customers.tier = 'gold' OR channel = 'app'"]`
+  `to_many_handling: "associate"` with `filter: ["customers.tier = 'gold' OR channel = 'app'"]`
 - **THEN** by executed values each status cell counts the distinct customers having an
   order of that status that is itself `app` or belongs to a gold customer (ok 270, new 250 on
   the reference dataset), reported through the informational entry with no dropped-filter
@@ -579,7 +585,7 @@ only in the filter.
 
 #### Scenario: Partitioned local producer restricts by association
 - **WHEN** a query rooted at `customers` selects `sum(spend, partition_by=tier)` by `tier`
-  with `filters: ["orders.status = 'ok'"]`, and one gold customer has two `ok` orders
+  with `filter: ["orders.status = 'ok'"]`, and one gold customer has two `ok` orders
 - **THEN** by executed values each tier cell equals the spend of that tier's distinct
   customers with at least one `ok` order, each once (gold 190 and silver 230 on the
   reference dataset, never gold 290), and the response carries a `semi_join_pushed` entry
@@ -587,8 +593,8 @@ only in the filter.
 
 #### Scenario: Windowed producer over a local axis inherits the restriction
 - **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` over
-  `time_dimensions: [{"dimension": "customers.signup_at", "granularity": "month"}]` with
-  `filters: ["orders.status = 'ok'"]`, and one customer has two `ok` orders
+  `time_dimensions: [{"field": "customers.signup_at", "granularity": "month"}]` with
+  `filter: ["orders.status = 'ok'"]`, and one customer has two `ok` orders
 - **THEN** by executed values each bucket sums the trailing-year signups among the distinct
   customers with at least one `ok` order, each once (April 420 on the reference dataset,
   never 520), the window's source relation carries the semi-join and no `orders` join, and
@@ -596,14 +602,14 @@ only in the filter.
 
 #### Scenario: Nested producer rooted at the population inherits the restriction
 - **WHEN** a query rooted at `customers` selects `avg(sum(spend, partition_by=tier))` with
-  `dimensions: ["tier"]` and `filters: ["orders.status = 'ok'"]`
+  `dimensions: ["tier"]` and `filter: ["orders.status = 'ok'"]`
 - **THEN** by executed values the inner per-tier totals count each customer once (the
   average over tiers is 210 on the reference dataset, never 260), and the generated SQL
   carries the semi-join in the host-rooted producer body and no `orders` join
 
 #### Scenario: Population restriction reaches the producer-only spine
 - **WHEN** a query rooted at `customers` selects only `sum(orders.amount)` with
-  `filters: ["orders.status = 'ok'"]`, and a second run uses a predicate no order passes
+  `filter: ["orders.status = 'ok'"]`, and a second run uses a predicate no order passes
 - **THEN** the first run returns one row with the producer's value by executed values (82 on
   the reference dataset) and the second returns zero rows — never one row carrying a NULL
 
@@ -619,14 +625,16 @@ only in the filter.
 A result cell whose attached aggregate has no home rows SHALL take the aggregation's
 **empty value**: 0 for the built-in count family (`count`, `count_distinct`,
 `count_distinct_approx`, including `count(x.*)`), NULL for every other aggregation. A
-model-level aggregation declaring its own `formula` — including one named after a
+model-level aggregation declaring its own `expression` — including one named after a
 built-in count — and every custom aggregation SHALL have the empty value NULL; a
 formula-less declaration of a built-in name keeps the built-in's empty value; the
 declaration consulted is the one on the aggregation's owning model. The empty value
 SHALL hold in every position (measure, composite, measure filter, order key, dimension,
-aggregation source, transform operand), in every `to_many_handling` mode, and for
-windowed aggregates. A transform cell with no value (e.g. a `time_shift` whose prior
-bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
+aggregation source, and a transform operand's cells within the transform's domain), in
+every `to_many_handling` mode, and for windowed aggregates. A transform cell outside its
+operand's domain (`queries/transforms` › Transforms evaluate over their operand's domain),
+or with no value (e.g. a `time_shift` whose prior bucket is absent), SHALL stay NULL, and
+no population cell SHALL be fabricated.
 
 #### Scenario: Single-hop count of a childless parent is 0
 - **WHEN** a query rooted at `customers` groups by `name` and selects `count(orders.id)`,
@@ -640,9 +648,10 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 - **THEN** the childless customer's cell holds NULL for both
 
 #### Scenario: Inferred population
-- **WHEN** a query without `source_model` has `dimensions=[customers.name]` and selects
+- **WHEN** a query without `population` has `dimensions=[customers.name]` and selects
   `count(orders.id)`
-- **THEN** the population is `customers` and the childless customer's cell holds 0
+- **THEN** the population is `customers` and the childless customer has no row (no
+  measure's home rows reach it); with `"population": "customers"` named, its cell holds 0
 
 #### Scenario: Multi-hop count
 - **WHEN** a query rooted at `regions` groups by `name` and selects
@@ -682,11 +691,12 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 - **WHEN** a query rooted at `customers` with a time dimension selects
   `cumsum(count(orders.id))`, `change(count(orders.id))` and
   `time_shift(count(orders.id), -1)`
-- **THEN** a cell whose count operand has no home rows contributes 0 to the transform,
-  and a cell whose shifted prior bucket is absent from the result holds NULL
+- **THEN** `cumsum` reads NULL in a cell whose count has no home rows and accumulates the
+  counts of the cells that have them; `change` and `time_shift` consume the count's 0
+  there; a cell whose shifted prior bucket is absent from the result holds NULL
 
 #### Scenario: Custom formula override stays NULL, formula-less declaration keeps 0
-- **WHEN** the owning model declares an aggregation named `count` with its own `formula`
+- **WHEN** the owning model declares an aggregation named `count` with its own `expression`
   and a query selects `count(orders.id)` from `customers`
 - **THEN** the childless customer's cell holds NULL; with a formula-less `count`
   declaration it holds 0

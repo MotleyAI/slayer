@@ -1,7 +1,7 @@
 """Shared fixtures for re-aggregation outer-grain attribution against the operand dataset.
 
 Graph (datasource ``test``): ``account_snapshots`` → ``customers`` many-to-one, so a query
-rooted at ``customers`` reaches every ``account_snapshots`` column (and its month bucket)
+rooted at ``customers`` reaches every ``account_snapshots`` field (and its month bucket)
 only across the fanning ``customers → account_snapshots`` hop.
 
 * Ann (1) holds accounts 10 and 11, Bob (2) account 20, Cy (3) has no snapshots, Dee (4)
@@ -17,13 +17,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerResponse
 
 # (id, name)
 CUSTOMERS_ROWS = [(1, "Ann"), (2, "Bob"), (3, "Cy"), (4, "Dee")]
@@ -45,9 +46,9 @@ SNAPSHOT_ROWS = [
 JAN, FEB = "2024-01", "2024-02"
 
 #: Inner grain with the joined month bucket.
-P = "partition_by=[account_snapshots.account_id, id, account_snapshots.snapshot_date]"
+P = "partition_by=[account_snapshots.account_id, customers.id, account_snapshots.snapshot_date]"
 #: Inner grain without it.
-Q = "partition_by=[account_snapshots.account_id, id]"
+Q = "partition_by=[account_snapshots.account_id, customers.id]"
 MAX_Q = f"max(account_snapshots.balance, {Q})"
 
 #: ``sum(<inner>(balance, P))`` by (name, month).
@@ -108,53 +109,53 @@ WAVG_BY_ACCOUNT_MAX = {
 }
 
 def query(**kw: Any) -> SlayerQuery:
-    kw.setdefault("source_model", "customers")
+    kw.setdefault("population", "customers")
     return SlayerQuery.model_validate(kw)
 
 
-def m(formula: str, name: str = "v") -> Dict[str, str]:
-    return {"formula": formula, "name": name}
+def m(expression: str, name: str = "v") -> Dict[str, str]:
+    return {"metric": expression, "alias": name}
 
 
-MONTH_TD = {"dimension": "account_snapshots.snapshot_date", "granularity": "month"}
+MONTH_TD = {"field": "account_snapshots.snapshot_date", "granularity": "month"}
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
 
-def snapshots_model() -> SlayerModel:
-    return SlayerModel(
+def snapshots_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="account_snapshots", data_source="test", sql_table="account_snapshots",
         default_time_dimension="snapshot_date",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="account_id", type=DataType.INT),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="snapshot_date", type=DataType.DATE),
-            Column(name="balance", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="account_id", datatype=DataType.INTEGER),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="snapshot_date", datatype=DataType.DATE),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                         cardinality=JoinCardinality.MANY_TO_ONE)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
+                         cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
 
-def outer_grain_models() -> List[SlayerModel]:
-    return [customers_model(), snapshots_model()]
+def outer_grain_datasets() -> List[SlayerDataset]:
+    return [customers_dataset(), snapshots_dataset()]
 
 
 def bundle(*, source: str = "customers") -> ResolvedSourceBundle:
-    models = outer_grain_models()
+    models = outer_grain_datasets()
     root = next(x for x in models if x.name == source)
     return ResolvedSourceBundle(
-        dialect="postgres", source_model=root,
-        referenced_models=[x for x in models if x is not root])
+        dialect="postgres", population=root,
+        referenced_datasets=[x for x in models if x is not root])
 
 
 def seed_sqlite(db_path: str) -> None:
@@ -188,7 +189,7 @@ async def outer_grain_engine(dialect: str) -> AsyncGenerator[SlayerQueryEngine]:
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=outer_grain_models(),
+        dialect=dialect, seed=seed, datasets=outer_grain_datasets(),
     ) as (engine, _):
         yield engine
 
@@ -204,7 +205,7 @@ def month(value: Any) -> Optional[str]:
     return None if value is None else str(value)[:7]
 
 
-def cells(resp, *, keys: Tuple[str, ...], value: str = "v") -> Dict[Tuple[Any, ...], Any]:
+def cells(resp: SlayerResponse, *, keys: Tuple[str, ...], value: str = "v") -> Dict[Tuple[Any, ...], Any]:
     """Result rows as ``{(key values…): value}``; a ``snapshot_date`` key reads as its month."""
     names = [col(resp.columns, k) for k in keys]
     v = col(resp.columns, value)

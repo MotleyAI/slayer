@@ -1,0 +1,28 @@
+{
+ "source": "tests/test_dev1824_ranked_temporal_cast.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(ordered_at)",
+    "name": "lt"
+   },
+   "new": {
+    "expression": "last(ordered_at)",
+    "name": "lt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(ordered_at)",
+    "name": "ft"
+   },
+   "new": {
+    "expression": "first(ordered_at)",
+    "name": "ft"
+   }
+  }
+ ],
+ "skipped": []
+}

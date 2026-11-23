@@ -1,17 +1,17 @@
-"""Tests for slayer.facade.catalog — FacadeCatalog construction (DEV-1390 §5)."""
+"""Tests for slayer.facade.catalog — FacadeCatalog construction."""
 
 from __future__ import annotations
 
 import logging
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.facade.catalog import (
     CATALOG_NAME,
@@ -22,27 +22,27 @@ from slayer.facade.catalog import (
 )
 
 
-def _model(
+def _dataset(
     *,
     name: str,
     data_source: str = "ds1",
-    columns: list[Column] | None = None,
-    measures: list[ModelMeasure] | None = None,
+    fields: list[DatasetField] | None = None,
+    metrics: list[DatasetMetric] | None = None,
     aggregations: list[Aggregation] | None = None,
-    joins: list[ModelJoin] | None = None,
+    relationships: list[DatasetRelationship] | None = None,
     hidden: bool = False,
     sql: str | None = None,
     description: str | None = None,
-) -> SlayerModel:
-    return SlayerModel(
+) -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         data_source=data_source,
         sql_table=None if sql else name,
         sql=sql,
-        columns=columns or [],
-        measures=measures or [],
+        fields=fields or [],
+        metrics=metrics or [],
         aggregations=aggregations or [],
-        joins=joins or [],
+        relationships=relationships or [],
         hidden=hidden,
         description=description,
     )
@@ -54,22 +54,22 @@ def _find_table(catalog: FacadeCatalog, *, schema: str, table: str) -> FacadeTab
 
 
 def test_empty_catalog_round_trip() -> None:
-    catalog = build_catalog(models_by_datasource={})
+    catalog = build_catalog(datasets_by_datasource={})
     assert catalog.catalog_name == CATALOG_NAME
     assert catalog.schemas == []
 
 
 def test_single_table_basic_metrics_and_dimensions() -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [model]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     metric_names = {m.name for m in table.metrics}
     # row_count synthetic.
@@ -78,7 +78,7 @@ def test_single_table_basic_metrics_and_dimensions() -> None:
     assert "id_count" in metric_names
     assert "id_count_distinct" in metric_names
     assert "id_sum" not in metric_names
-    # Numeric DOUBLE column → full numeric agg suite minus parametrics.
+    # Numeric DOUBLE field → full numeric agg suite minus parametrics.
     assert "revenue_sum" in metric_names
     assert "revenue_avg" in metric_names
     assert "revenue_max" in metric_names
@@ -86,7 +86,7 @@ def test_single_table_basic_metrics_and_dimensions() -> None:
     assert "revenue_weighted_avg" not in metric_names
     assert "revenue_percentile" not in metric_names
     assert "revenue_corr" not in metric_names
-    # TEXT column → count, min, max, first, last only.
+    # TEXT field → count, min, max, first, last only.
     assert "status_count" in metric_names
     assert "status_min" in metric_names
     assert "status_sum" not in metric_names
@@ -97,27 +97,27 @@ def test_single_table_basic_metrics_and_dimensions() -> None:
     by_name = {d.name: d for d in table.dimensions}
     assert by_name["ordered_at"].is_time is True
     assert by_name["status"].is_time is False
-    # PK column is exposed as a dimension despite the metric-agg clamp.
+    # PK field is exposed as a dimension despite the metric-agg clamp.
     assert by_name["id"].dimension_ref == "id"
 
 
 def test_hidden_model_excluded() -> None:
-    visible = _model(name="orders", columns=[Column(name="x", type=DataType.INT)])
-    hidden = _model(name="ghost", hidden=True, columns=[Column(name="x", type=DataType.INT)])
-    cat = build_catalog(models_by_datasource={"ds1": [visible, hidden]})
+    visible = _dataset(name="orders", fields=[DatasetField(name="x", datatype=DataType.INTEGER)])
+    hidden = _dataset(name="ghost", hidden=True, fields=[DatasetField(name="x", datatype=DataType.INTEGER)])
+    cat = build_catalog(datasets_by_datasource={"ds1": [visible, hidden]})
     table_names = {t.name for t in cat.schemas[0].tables}
     assert table_names == {"orders"}
 
 
 def test_hidden_column_excluded() -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
-        columns=[
-            Column(name="public", type=DataType.INT),
-            Column(name="secret", type=DataType.INT, hidden=True),
+        fields=[
+            DatasetField(name="public", datatype=DataType.INTEGER),
+            DatasetField(name="secret", datatype=DataType.INTEGER, hidden=True),
         ],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [model]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     dim_names = {d.name for d in table.dimensions}
     metric_names = {m.name for m in table.metrics}
@@ -128,60 +128,60 @@ def test_hidden_column_excluded() -> None:
 
 
 def test_row_count_collision_renames_to_underscore(caplog) -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
-        columns=[
-            # User has a literal column named row_count — synthetic must rename.
-            Column(name="row_count", type=DataType.INT),
+        fields=[
+            # User has a literal field named row_count — synthetic must rename.
+            DatasetField(name="row_count", datatype=DataType.INTEGER),
         ],
     )
     with caplog.at_level(logging.WARNING):
-        cat = build_catalog(models_by_datasource={"ds1": [model]})
+        cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     metric_names = {m.name for m in table.metrics}
     assert "_row_count" in metric_names
-    # The user's column-derived metrics still exist normally.
+    # The user's field-derived metrics still exist normally.
     assert "row_count_sum" in metric_names
     # The synthetic count(*) is now named _row_count.
     synthetic = next(m for m in table.metrics if m.name == "_row_count")
-    assert synthetic.measure_formula == "count(*)"
+    assert synthetic.metric_expression == "count(*)"
     assert any("renaming the synthetic" in r.message for r in caplog.records)
 
 
 def test_row_count_collision_warning_has_no_colon_spelling(caplog) -> None:
-    model = _model(name="orders", columns=[Column(name="row_count", type=DataType.INT)])
+    model = _dataset(name="orders", fields=[DatasetField(name="row_count", datatype=DataType.INTEGER)])
     with caplog.at_level(logging.WARNING):
-        build_catalog(models_by_datasource={"ds1": [model]})
+        build_catalog(datasets_by_datasource={"ds1": [model]})
     messages = [r.getMessage() for r in caplog.records if "renaming the synthetic" in r.getMessage()]
     assert messages
     assert not any(":count" in msg for msg in messages)
 
 
 def test_saved_model_measure_emitted_with_declared_type() -> None:
-    measure = ModelMeasure(name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE,
+    measure = DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.FLOAT,
                             label="AOV", description="Avg order value")
-    model = _model(
+    model = _dataset(
         name="orders",
-        columns=[Column(name="revenue", type=DataType.DOUBLE)],
-        measures=[measure],
+        fields=[DatasetField(name="revenue", datatype=DataType.FLOAT)],
+        metrics=[measure],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [model]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     aov = next(m for m in table.metrics if m.name == "aov")
-    assert aov.measure_formula == "aov"
-    assert aov.data_type == DataType.DOUBLE
+    assert aov.metric_expression == "aov"
+    assert aov.data_type == DataType.FLOAT
     assert aov.label == "AOV"
     assert aov.description == "Avg order value"
 
 
 def test_saved_model_measure_without_type_carries_none() -> None:
-    measure = ModelMeasure(name="aov", formula="sum(revenue) / count(*)")
-    model = _model(
+    measure = DatasetMetric(name="aov", expression="sum(revenue) / count(*)")
+    model = _dataset(
         name="orders",
-        columns=[Column(name="revenue", type=DataType.DOUBLE)],
-        measures=[measure],
+        fields=[DatasetField(name="revenue", datatype=DataType.FLOAT)],
+        metrics=[measure],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [model]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     aov = next(m for m in table.metrics if m.name == "aov")
     assert aov.data_type is None  # Wire schema from LIMIT 0 will fill in.
@@ -189,19 +189,19 @@ def test_saved_model_measure_without_type_carries_none() -> None:
 
 def test_custom_aggregation_with_params_skipped() -> None:
     # Custom agg with no params → eligible per rule 4.
-    cheap_agg = Aggregation(name="my_count", formula="COUNT(DISTINCT {value})")
+    cheap_agg = Aggregation(name="my_count", expression="COUNT(DISTINCT {value})")
     # Custom agg with params → skipped per rule 4.
     parametric = Aggregation(
         name="my_weighted",
-        formula="SUM({value} * {weight}) / SUM({weight})",
+        expression="SUM({value} * {weight}) / SUM({weight})",
         params=[AggregationParam(name="weight", sql="weight_col")],
     )
-    model = _model(
+    model = _dataset(
         name="orders",
-        columns=[Column(name="revenue", type=DataType.DOUBLE)],
+        fields=[DatasetField(name="revenue", datatype=DataType.FLOAT)],
         aggregations=[cheap_agg, parametric],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [model]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     metric_names = {m.name for m in table.metrics}
     assert "revenue_my_count" in metric_names
@@ -209,85 +209,85 @@ def test_custom_aggregation_with_params_skipped() -> None:
 
 
 def test_explicit_allowed_aggregations_intersection() -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
-        columns=[
-            Column(
+        fields=[
+            DatasetField(
                 name="revenue",
-                type=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 allowed_aggregations=["sum", "avg"],  # narrow whitelist
             ),
         ],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [model]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     metric_names = {m.name for m in table.metrics if m.name.startswith("revenue_")}
     assert metric_names == {"revenue_sum", "revenue_avg"}
 
 
 def test_single_hop_join_expansion() -> None:
-    orders = _model(
+    orders = _dataset(
         name="orders",
-        columns=[Column(name="customer_id", type=DataType.INT)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        fields=[DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [orders, customers]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [orders, customers]})
     table = _find_table(cat, schema="ds1", table="orders")
     dim_names = {d.name: d.dimension_ref for d in table.dimensions}
     # Local dim plus single-hop joined dims (region + id).
     assert dim_names["customers.region"] == "customers.region"
     assert dim_names["customers.id"] == "customers.id"
-    metric_names = {m.name: m.measure_formula for m in table.metrics}
-    # Joined model row_count.
+    metric_names = {m.name: m.metric_expression for m in table.metrics}
+    # Joined dataset row_count.
     assert metric_names["customers.row_count"] == "count(customers.*)"
-    # Joined column-agg pairing — region is TEXT, count is eligible.
+    # Joined field-agg pairing — region is TEXT, count is eligible.
     assert metric_names["customers.region_count"] == "count(customers.region)"
 
 
 def test_diamond_join_produces_two_distinct_paths() -> None:
-    orders = _model(
+    orders = _dataset(
         name="orders",
-        columns=[
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="warehouse_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="warehouse_id", datatype=DataType.INTEGER),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
         ],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
-    warehouses = _model(
+    warehouses = _dataset(
         name="warehouses",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
-    regions = _model(
+    regions = _dataset(
         name="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     cat = build_catalog(
-        models_by_datasource={"ds1": [orders, customers, warehouses, regions]},
+        datasets_by_datasource={"ds1": [orders, customers, warehouses, regions]},
     )
     table = _find_table(cat, schema="ds1", table="orders")
     dim_names = {d.name for d in table.dimensions}
@@ -298,25 +298,25 @@ def test_diamond_join_produces_two_distinct_paths() -> None:
 
 def test_reverse_hop_dimensions_enumerated() -> None:
     # orders declares the only edge; the customers table still exposes the
-    # reverse-path orders dims (DEV-1853).
-    orders = _model(
+    # reverse-path orders dims.
+    orders = _dataset(
         name="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        joins=[ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(
+            to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [orders, customers]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [orders, customers]})
     table = _find_table(cat, schema="ds1", table="customers")
     dim_names = {d.name for d in table.dimensions}
     assert "orders.status" in dim_names
@@ -325,31 +325,31 @@ def test_reverse_hop_dimensions_enumerated() -> None:
 def test_row_preserving_flags_by_direction_and_cardinality() -> None:
     # Forward m2o/1:1/unknown hops keep the root grain; a declared 1:N, the
     # inverted side of a m2o, an inverted unknown, and any path through a
-    # fan-out hop do not (DEV-1853 browse-mode star scope).
-    orders = _model(
+    # fan-out hop do not (browse-mode star scope).
+    orders = _dataset(
         name="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                      cardinality=JoinCardinality.MANY_TO_ONE),
-            ModelJoin(target_model="items", join_pairs=[["id", "order_id"]],
-                      cardinality=JoinCardinality.ONE_TO_MANY),
-            ModelJoin(target_model="receipts", join_pairs=[["id", "order_id"]],
-                      cardinality=JoinCardinality.ONE_TO_ONE),
-            ModelJoin(target_model="notes", join_pairs=[["id", "order_id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
+                      cardinality=RelationshipCardinality.MANY_TO_ONE),
+            DatasetRelationship(to="items", from_columns=["id"], to_columns=["order_id"],
+                      cardinality=RelationshipCardinality.ONE_TO_MANY),
+            DatasetRelationship(to="receipts", from_columns=["id"], to_columns=["order_id"],
+                      cardinality=RelationshipCardinality.ONE_TO_ONE),
+            DatasetRelationship(to="notes", from_columns=["id"], to_columns=["order_id"]),
         ],
     )
     others = [
-        _model(name=n, columns=[
-            Column(name="order_id", type=DataType.INT),
-            Column(name="tag", type=DataType.TEXT),
+        _dataset(name=n, fields=[
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="tag", datatype=DataType.STRING),
         ])
         for n in ("customers", "items", "receipts", "notes")
     ]
-    cat = build_catalog(models_by_datasource={"ds1": [orders, *others]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [orders, *others]})
 
     flags = {
         d.name: d.row_preserving
@@ -381,15 +381,15 @@ def test_row_preserving_flags_by_direction_and_cardinality() -> None:
 
 
 def test_bfs_depth_limit_truncates() -> None:
-    a = _model(name="a", columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-                joins=[ModelJoin(target_model="b", join_pairs=[["id", "id"]])])
-    b = _model(name="b", columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-                joins=[ModelJoin(target_model="c", join_pairs=[["id", "id"]])])
-    c = _model(name="c", columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-                joins=[ModelJoin(target_model="d", join_pairs=[["id", "id"]])])
-    d = _model(name="d", columns=[Column(name="leaf", type=DataType.TEXT)])
+    a = _dataset(name="a", fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+                relationships=[DatasetRelationship(to="b", from_columns=["id"], to_columns=["id"])])
+    b = _dataset(name="b", fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+                relationships=[DatasetRelationship(to="c", from_columns=["id"], to_columns=["id"])])
+    c = _dataset(name="c", fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+                relationships=[DatasetRelationship(to="d", from_columns=["id"], to_columns=["id"])])
+    d = _dataset(name="d", fields=[DatasetField(name="leaf", datatype=DataType.STRING)])
     cat = build_catalog(
-        models_by_datasource={"ds1": [a, b, c, d]},
+        datasets_by_datasource={"ds1": [a, b, c, d]},
         bfs_depth=2,
     )
     table_a = _find_table(cat, schema="ds1", table="a")
@@ -401,16 +401,16 @@ def test_bfs_depth_limit_truncates() -> None:
 
 
 def test_table_type_view_for_sql_backed_model() -> None:
-    view_model = SlayerModel(
+    view_model = SlayerDataset(
         name="custom_view",
         data_source="ds1",
         sql="SELECT 1 AS id, 'a' AS label",
-        columns=[
-            Column(name="id", type=DataType.INT),
-            Column(name="label", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER),
+            DatasetField(name="label", datatype=DataType.STRING),
         ],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [view_model]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [view_model]})
     tbl = _find_table(cat, schema="ds1", table="custom_view")
     assert tbl.table_type == "VIEW"
 
@@ -420,31 +420,31 @@ def test_default_bfs_depth_constant_is_three() -> None:
 
 
 def test_multiple_datasources_keep_disjoint_schemas() -> None:
-    m1 = _model(name="t", data_source="dsA", columns=[Column(name="x", type=DataType.INT)])
-    m2 = _model(name="t", data_source="dsB", columns=[Column(name="x", type=DataType.INT)])
-    cat = build_catalog(models_by_datasource={"dsA": [m1], "dsB": [m2]})
+    m1 = _dataset(name="t", data_source="dsA", fields=[DatasetField(name="x", datatype=DataType.INTEGER)])
+    m2 = _dataset(name="t", data_source="dsB", fields=[DatasetField(name="x", datatype=DataType.INTEGER)])
+    cat = build_catalog(datasets_by_datasource={"dsA": [m1], "dsB": [m2]})
     schemas = {s.name: s for s in cat.schemas}
     assert set(schemas) == {"dsA", "dsB"}
-    # Same model name, different schemas — both surface.
+    # Same dataset name, different schemas — both surface.
     assert {t.name for t in schemas["dsA"].tables} == {"t"}
     assert {t.name for t in schemas["dsB"].tables} == {"t"}
 
 
 def test_no_time_dimension_drops_first_last_aggregations() -> None:
-    """DEV-1558 live-Metabase repro: a model with no time dimension
+    """Live-Metabase repro: a dataset with no time dimension
     must NOT expose ``<col>_first`` / ``<col>_last`` aggregations
     because the engine can't resolve them — Metabase's flat fingerprint
     scan ``SELECT name_first FROM products`` would error with
     ``Aggregation 'first' requires a time column``."""
-    no_time = _model(
+    no_time = _dataset(
         name="products",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="price", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="price", datatype=DataType.FLOAT),
         ],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [no_time]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [no_time]})
     table = _find_table(cat, schema="ds1", table="products")
     metric_names = {m.name for m in table.metrics}
     assert "name_first" not in metric_names
@@ -460,16 +460,16 @@ def test_no_time_dimension_drops_first_last_aggregations() -> None:
 def test_default_time_dimension_keeps_first_last_aggregations() -> None:
     """When ``default_time_dimension`` is set, the engine can resolve
     flat ``<col>:first`` calls, so the facade exposes them."""
-    with_default = SlayerModel(
+    with_default = SlayerDataset(
         name="orders", data_source="ds1", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
         default_time_dimension="ordered_at",
     )
-    cat = build_catalog(models_by_datasource={"ds1": [with_default]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [with_default]})
     table = _find_table(cat, schema="ds1", table="orders")
     metric_names = {m.name for m in table.metrics}
     assert "name_first" in metric_names
@@ -477,27 +477,27 @@ def test_default_time_dimension_keeps_first_last_aggregations() -> None:
 
 
 def test_metric_data_type_for_aggregations_uses_coarse_inference() -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
-        columns=[
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="flag", type=DataType.BOOLEAN),
+        fields=[
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="flag", datatype=DataType.BOOLEAN),
         ],
     )
-    cat = build_catalog(models_by_datasource={"ds1": [model]})
+    cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     by_name = {m.name: m for m in table.metrics}
-    # COUNT-family → INT regardless of column type.
-    assert by_name["revenue_count"].data_type == DataType.INT
-    assert by_name["status_count_distinct"].data_type == DataType.INT
+    # COUNT-family → INT regardless of field type.
+    assert by_name["revenue_count"].data_type == DataType.INTEGER
+    assert by_name["status_count_distinct"].data_type == DataType.INTEGER
     # SUM of DOUBLE → DOUBLE.
-    assert by_name["revenue_sum"].data_type == DataType.DOUBLE
+    assert by_name["revenue_sum"].data_type == DataType.FLOAT
     # SUM of BOOLEAN → INT (boolean SUM is integer in every supported dialect).
-    assert by_name["flag_sum"].data_type == DataType.INT
+    assert by_name["flag_sum"].data_type == DataType.INTEGER
     # AVG of any numeric → DOUBLE.
-    assert by_name["revenue_avg"].data_type == DataType.DOUBLE
-    # MIN/MAX preserve column type.
-    assert by_name["ordered_at_max"].data_type == DataType.TIMESTAMP
-    assert by_name["status_min"].data_type == DataType.TEXT
+    assert by_name["revenue_avg"].data_type == DataType.FLOAT
+    # MIN/MAX preserve field type.
+    assert by_name["ordered_at_max"].data_type == DataType.DATETIME
+    assert by_name["status_min"].data_type == DataType.STRING

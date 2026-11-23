@@ -1,0 +1,107 @@
+{
+ "source": "tests/test_dev2063_grain_guarantee.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=band)",
+    "name": "bt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=band)",
+    "name": "bt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, ordered_at)",
+    "name": "v"
+   },
+   "new": {
+    "expression": "last(amount, ordered_at)",
+    "name": "v"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, ordered_at)",
+    "name": "v"
+   },
+   "new": {
+    "expression": "last(amount, ordered_at)",
+    "name": "v"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "city",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "city",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=band)",
+    "name": "bt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=band)",
+    "name": "bt"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 231,
+   "reason": "not fully literal"
+  }
+ ]
+}

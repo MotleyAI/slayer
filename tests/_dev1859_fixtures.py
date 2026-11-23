@@ -1,7 +1,7 @@
-"""Shared fixtures for DEV-1859 leg C — attached parameters on row-level sources.
+"""Shared fixtures for attached parameters on row-level sources.
 
-Two graphs: the DEV-1840 associate graph (orders→customers→regions) for the
-association shapes, and the DEV-1847 sales graph (with a ``wsum`` custom
+Two graphs: the ``_dev1840_fixtures`` associate graph (orders→customers→regions) for the
+association shapes, and the ``_dev1847_fixtures`` sales graph (with a ``wsum`` custom
 aggregation appended) for the ordinary/ungrained/re-aggregation shapes. Every
 oracle is a reduction over the raw seed rows — the double-entry reference the
 executed suites assert against, runnable standalone.
@@ -13,42 +13,42 @@ from collections import defaultdict
 from statistics import mean
 from typing import Dict, List, Optional
 
-from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
 
 from tests._dev1840_fixtures import (
     _CUSTOMERS_ROWS as _DEV1840_CUSTOMERS,
     _ORDERS_ROWS,
     _REGIONS_ROWS as _DEV1840_REGIONS,
-    dev1840_models,
+    dev1840_datasets,
 )
 from tests._dev1847_fixtures import (
     DataType,
     _SALES_ROWS_WIDE,
-    dev1847_models,
+    dev1847_datasets,
 )
 
 # --------------------------------------------------------------------------- #
-# Models — the sales graph with a ``wsum`` = SUM(value * weight) custom agg.
+# Datasets — the sales graph with a ``wsum`` = SUM(value * weight) custom agg.
 # --------------------------------------------------------------------------- #
 _WSUM = Aggregation(
-    name="wsum", formula="SUM({value} * {weight})",
+    name="wsum", expression="SUM({value} * {weight})",
     params=[AggregationParam(name="weight", sql="amount")],
 )
 
 
-def sales_wsum_models() -> List[SlayerModel]:
-    """``dev1847_models()`` with ``wsum`` appended to the sales model (weight
-    defaults to the ``amount`` column; every leg-C use passes it explicitly)."""
-    models = dev1847_models()
+def sales_wsum_datasets() -> List[SlayerDataset]:
+    """``dev1847_datasets()`` with ``wsum`` appended to the sales dataset (weight
+    defaults to the ``amount`` field; every leg-C use passes it explicitly)."""
+    models = dev1847_datasets()
     next(m for m in models if m.name == "sales").aggregations.append(_WSUM)
     return models
 
 
-def customers_wsum_models() -> List[SlayerModel]:
+def customers_wsum_datasets() -> List[SlayerDataset]:
     """The associate graph with ``wsum`` on customers (weight default ``spend``)."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     next(m for m in models if m.name == "customers").aggregations.append(
-        Aggregation(name="wsum", formula="SUM({value} * {weight})",
+        Aggregation(name="wsum", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="spend")]),
     )
     return models
@@ -57,7 +57,7 @@ def customers_wsum_models() -> List[SlayerModel]:
 # --------------------------------------------------------------------------- #
 # Raw-row projections.
 # --------------------------------------------------------------------------- #
-#: region_id -> region name (DEV-1840).
+#: region_id -> region name.
 _REGION_NAME = {rid: name for (rid, name, _pop) in _DEV1840_REGIONS}
 #: customer id -> (region_id, spend).
 _CUST = {c[0]: (c[1], c[4]) for c in _DEV1840_CUSTOMERS}
@@ -256,7 +256,7 @@ def assoc_wavg_new_without_c4() -> Optional[float]:
                   for c in distinct_customers_by_status()["new"] if c != 4])
 
 
-def cross_model_param_by_status() -> Dict[str, Optional[float]]:
+def cross_dataset_param_by_status() -> Dict[str, Optional[float]]:
     """``amount:weighted_avg(weight=sum(customers.spend,
     partition_by=customers.regions.name))`` rooted at orders, by status — each
     order weighted by its customer's region SPEND total."""
@@ -268,8 +268,8 @@ def cross_model_param_by_status() -> Dict[str, Optional[float]]:
 
 
 __all__ = [
-    "Aggregation", "AggregationParam", "Column", "DataType", "SlayerModel",
-    "sales_wsum_models", "customers_wsum_models",
+    "Aggregation", "AggregationParam", "DatasetField", "DataType", "SlayerDataset",
+    "sales_wsum_datasets", "customers_wsum_datasets",
     "region_amount_totals", "region_spend_totals",
     "distinct_customers_by_status", "amount_totals_by_status",
     "sales_region_amount_totals", "sales_region_row_counts",
@@ -279,5 +279,5 @@ __all__ = [
     "ordinary_avg_amount_global", "mixed_plus_param_by_region",
     "ungrained_wsum_row_by_region", "ungrained_wsum_assoc_by_status",
     "ungrained_wsum_reagg_by_region", "literal_source_wsum_by_region",
-    "cross_model_param_by_status",
+    "cross_dataset_param_by_status",
 ]

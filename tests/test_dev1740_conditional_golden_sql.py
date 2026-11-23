@@ -11,7 +11,7 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1740_fixtures import dev1740_models
+from tests._dev1740_fixtures import dev1740_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -22,50 +22,50 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def _cases() -> dict:
     return {
         "measure/simple": _q(
-            dimensions=["region"],
-            measures=[
-                {"formula": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
-                 "name": "big"},
+            dimensions=["orders.region"],
+            metrics=[
+                {"metric": "CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0 END",
+                 "alias": "big"},
             ],
         ),
         "measure/nested": _q(
-            dimensions=["region"],
-            measures=[
-                {"formula": "CASE WHEN sum(amount) >= 14000 THEN 2 "
-                            "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END",
-                 "name": "tier"},
+            dimensions=["orders.region"],
+            metrics=[
+                {"metric": "CASE WHEN sum(orders.amount) >= 14000 THEN 2 "
+                            "WHEN sum(orders.amount) >= 8000 THEN 1 ELSE 0 END",
+                 "alias": "tier"},
             ],
         ),
         "measure/iif": _q(
-            dimensions=["region"],
-            measures=[{"formula": "iif(sum(amount) >= 10000, 1, 0)", "name": "big"}],
+            dimensions=["orders.region"],
+            metrics=[{"metric": "iif(sum(orders.amount) >= 10000, 1, 0)", "alias": "big"}],
         ),
         "measure/missing_else_null": _q(
-            dimensions=["region"],
-            measures=[
-                {"formula": "CASE WHEN sum(amount) >= 10000 THEN 1 END", "name": "big"},
+            dimensions=["orders.region"],
+            metrics=[
+                {"metric": "CASE WHEN sum(orders.amount) >= 10000 THEN 1 END", "alias": "big"},
             ],
         ),
         "filter/case_predicate": _q(
-            dimensions=["region"],
-            filters=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
-            measures=[{"formula": "sum(amount)", "name": "rev"}],
+            dimensions=["orders.region"],
+            filter=["CASE WHEN sum(orders.amount) >= 10000 THEN 1 ELSE 0 END == 1"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "rev"}],
         ),
     }
 
 
 async def _generate_one(query: SlayerQuery, dialect: str):
-    models = dev1740_models()
+    models = dev1740_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

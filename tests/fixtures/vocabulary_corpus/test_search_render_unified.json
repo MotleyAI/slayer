@@ -1,0 +1,53 @@
+{
+ "source": "tests/test_search_render_unified.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(amount) / count(*)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(amount) / count(*)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "paid_only_sum",
+    "formula": "SUM({col})"
+   },
+   "new": {
+    "name": "paid_only_sum",
+    "expression": "SUM({col})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  }
+ ]
+}

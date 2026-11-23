@@ -1,4 +1,4 @@
-"""Aggregates are virtual models: an attached aggregate equals the same aggregate
+"""Aggregates are virtual datasets: an attached aggregate equals the same aggregate
 materialised on its own, NULL grain cell included, however the query is rooted.
 Executed on SQLite + DuckDB.
 
@@ -61,11 +61,11 @@ async def app_null_engine(request):
 
 
 def _cross(prefix: str = "") -> list:
-    return [{"formula": f"sum({prefix}orders.amount)", "name": "s"},
-            {"formula": f"count({prefix}orders.id)", "name": "n"}]
+    return [{"metric": f"sum({prefix}orders.amount)", "alias": "s"},
+            {"metric": f"count({prefix}orders.id)", "alias": "n"}]
 
 
-LOCAL = [{"formula": "sum(amount)", "name": "s"}, {"formula": "count(id)", "name": "n"}]
+LOCAL = [{"metric": "sum(orders.amount)", "alias": "s"}, {"metric": "count(orders.id)", "alias": "n"}]
 
 
 def _assert_cells(actual: dict, expected: dict) -> None:
@@ -82,21 +82,21 @@ class TestOrphanNullCell:
     async def test_null_region_cell_holds_orphans(self, base_engine, mode):
         """The NULL-region cell holds c4's order plus the customerless order: 47 / 2."""
         resp = await base_engine.execute(q({
-            "source_model": "customers", "dimensions": ["regions.name"],
-            "measures": _cross(), "to_many_handling": mode}))
-        dim = "customers.regions.name"
-        assert float(cells(resp, dim, "customers.s")[None]) == pytest.approx(
+            "population": "customers", "dimensions": ["regions.name"],
+            "metrics": _cross(), "to_many_handling": mode}))
+        dim = "regions.name"
+        assert float(cells(resp, dim, "s")[None]) == pytest.approx(
             ORPHAN_NULL_REGION_SUM)
-        assert cells(resp, dim, "customers.n")[None] == ORPHAN_NULL_REGION_COUNT
+        assert cells(resp, dim, "n")[None] == ORPHAN_NULL_REGION_COUNT
 
     async def test_inferred_population(self, base_engine):
         resp = await base_engine.execute(q({
-            "dimensions": ["customers.regions.name"], "measures": _cross()}))
+            "dimensions": ["customers.regions.name"], "metrics": _cross()}))
         assert resp.population == "customers"
         dim = "customers.regions.name"
-        assert float(cells(resp, dim, "customers.s")[None]) == pytest.approx(
+        assert float(cells(resp, dim, "s")[None]) == pytest.approx(
             ORPHAN_NULL_REGION_SUM)
-        assert cells(resp, dim, "customers.n")[None] == ORPHAN_NULL_REGION_COUNT
+        assert cells(resp, dim, "n")[None] == ORPHAN_NULL_REGION_COUNT
 
 
 def _case(payload, dim, grain, population, source, id_):
@@ -105,17 +105,17 @@ def _case(payload, dim, grain, population, source, id_):
 
 
 PARITY_CASES = [
-    _case({"source_model": "customers", "dimensions": ["plan_code"], "measures": _cross()},
+    _case({"population": "customers", "dimensions": ["customers.plan_code"], "metrics": _cross()},
           "customers.plan_code", "customers.plan_code",
           (SUM_BY_PLAN, COUNT_BY_PLAN), (SUM_BY_PLAN, COUNT_BY_PLAN), "single-hop-dangling"),
-    _case({"source_model": "customers", "dimensions": ["regions.name"], "measures": _cross()},
-          "customers.regions.name", "customers.regions.name",
+    _case({"population": "customers", "dimensions": ["regions.name"], "metrics": _cross()},
+          "regions.name", "customers.regions.name",
           (SUM_BY_REGION, COUNT_BY_REGION), (SUM_BY_REGION, COUNT_BY_REGION), "multi-hop-grain"),
-    _case({"source_model": "regions", "dimensions": ["name"], "measures": _cross("customers.")},
+    _case({"population": "regions", "dimensions": ["regions.name"], "metrics": _cross("customers.")},
           "regions.name", "customers.regions.name",
           (SUM_BY_REGION, COUNT_BY_REGION), (SUM_BY_REGION, COUNT_BY_REGION),
           "multi-hop-source-null-name"),
-    _case({"source_model": "stores", "dimensions": ["city"], "measures": _cross()},
+    _case({"population": "stores", "dimensions": ["stores.city"], "metrics": _cross()},
           "stores.city", "stores.city",
           (STORE_SUM_BY_CITY, STORE_COUNT_BY_CITY), (SUM_BY_CITY, COUNT_BY_CITY),
           "partial-composite"),
@@ -123,7 +123,7 @@ PARITY_CASES = [
 
 
 def _local(grain: str) -> dict:
-    return {"source_model": "orders", "dimensions": [grain], "measures": LOCAL}
+    return {"population": "orders", "dimensions": [grain], "metrics": LOCAL}
 
 
 class TestParityWithMaterialisedAggregate:
@@ -133,9 +133,8 @@ class TestParityWithMaterialisedAggregate:
         """Every population cell, NULL included, equals the materialised row (or the empty value)."""
         vm = await materialise(vm_engine, name="vm", payload=_local(case["grain"]))
         resp = await vm_engine.execute(q({**case["payload"], "to_many_handling": mode}))
-        root = case["payload"]["source_model"]
-        s = cells(resp, case["dim"], f"{root}.s")
-        n = cells(resp, case["dim"], f"{root}.n")
+        s = cells(resp, case["dim"], "s")
+        n = cells(resp, case["dim"], "n")
         assert_parity(s, vm["s"], empty=None)
         assert_parity(n, vm["n"], empty=0)
         _assert_cells(s, case["population"][0])
@@ -147,8 +146,8 @@ class TestParityWithMaterialisedAggregate:
         grain = case["grain"]
         vm = await materialise(vm_engine, name="vm", payload=_local(grain))
         resp = await vm_engine.execute(q(_local(grain)))
-        s = cells(resp, f"orders.{grain}", "orders.s")
-        n = cells(resp, f"orders.{grain}", "orders.n")
+        s = cells(resp, grain, "s")
+        n = cells(resp, grain, "n")
         assert None in s
         assert_parity(s, vm["s"], empty=None)
         assert_parity(n, vm["n"], empty=0)
@@ -156,47 +155,47 @@ class TestParityWithMaterialisedAggregate:
         _assert_cells(n, case["source"][1])
 
 
-SPEND = {"formula": "sum(customers.spend)", "name": "c"}
-AMOUNT = {"formula": "sum(amount)", "name": "a"}
+SPEND = {"metric": "sum(customers.spend)", "alias": "c"}
+AMOUNT = {"metric": "sum(orders.amount)", "alias": "a"}
 
 
 def _orders_assoc(**kw) -> dict:
-    return {"source_model": "orders", "to_many_handling": "associate",
-            "dimensions": ["status"], **kw}
+    return {"population": "orders", "to_many_handling": "associate",
+            "dimensions": ["orders.status"], **kw}
 
 
 class TestSpellingInvariantAssociation:
     @pytest.mark.parametrize("formula", [
         "sum(customers.spend)",
-        "sum(customers.spend, partition_by=status)",
+        "sum(customers.spend, partition_by=orders.status)",
     ])
     async def test_orders_rooted_null_cell_holds_the_orderless_customer(
             self, null_engine, formula):
-        """NULL-status cell = c1 (owner) + c7 (no orders) = 155 in every measure spelling."""
+        """NULL-status cell = c1 (owner) + c7 (no orders) = 155 in every metric spelling."""
         resp = await null_engine.execute(q(_orders_assoc(
-            measures=[{"formula": formula, "name": "c"}])))
-        _assert_cells(cells(resp, "orders.status", "orders.c"), SPEND_BY_STATUS)
+            metrics=[{"metric": formula, "alias": "c"}])))
+        _assert_cells(cells(resp, "orders.status", "c"), SPEND_BY_STATUS)
 
     async def test_customers_rooted_twin_agrees(self, null_engine):
         resp = await null_engine.execute(q({
-            "source_model": "customers", "to_many_handling": "associate",
+            "population": "customers", "to_many_handling": "associate",
             "dimensions": ["orders.status"],
-            "measures": [{"formula": "sum(spend)", "name": "c"}]}))
-        _assert_cells(cells(resp, "customers.orders.status", "customers.c"),
+            "metrics": [{"metric": "sum(customers.spend)", "alias": "c"}]}))
+        _assert_cells(cells(resp, "orders.status", "c"),
                       SPEND_BY_STATUS)
 
     async def test_filter_only_reads_the_same_null_cell(self, null_engine):
         """Only the NULL cell (155) lies in (120, 200)."""
         resp = await null_engine.execute(q(_orders_assoc(
-            measures=[AMOUNT],
-            filters=["sum(customers.spend) > 120", "sum(customers.spend) < 200"])))
+            metrics=[AMOUNT],
+            filter=["sum(customers.spend) > 120", "sum(customers.spend) < 200"])))
         assert [r["orders.status"] for r in resp.data] == [None]
 
     async def test_order_only_reads_the_same_null_cell(self, null_engine):
         """|spend − 200|: NULL 45, new 90, ok 220."""
         resp = await null_engine.execute(q(_orders_assoc(
-            measures=[AMOUNT],
-            order=[{"column": "abs(sum(customers.spend) - 200)", "direction": "asc"}])))
+            metrics=[AMOUNT],
+            order=[{"field": "abs(sum(customers.spend) - 200)", "direction": "asc"}])))
         assert [r["orders.status"] for r in resp.data] == ORDER_KEY_STATUS_ORDER
 
 
@@ -204,14 +203,14 @@ class TestRowFilterNarrowsTheVirtualModel:
     async def test_orderless_customer_fails_the_row_filter(self, app_null_engine):
         """channel='app': NULL-status cell = c5 only (80), never c7's null-extended row (135)."""
         resp = await app_null_engine.execute(q(_orders_assoc(
-            measures=[SPEND], filters=["channel = 'app'"])))
-        _assert_cells(cells(resp, "orders.status", "orders.c"), APP_SPEND_BY_STATUS)
+            metrics=[SPEND], filter=["orders.channel = 'app'"])))
+        _assert_cells(cells(resp, "orders.status", "c"), APP_SPEND_BY_STATUS)
 
 
 class TestCompositeGrainNullCell:
     async def test_home_side_and_back_hop_dimensions(self, app_null_engine):
         """(South, NULL) holds c5's NULL-status order and the orderless c7: 80 + 55."""
         resp = await app_null_engine.execute(q(_orders_assoc(
-            dimensions=["customers.regions.name", "status"], measures=[SPEND])))
-        by = rows_by(resp, "orders.customers.regions.name", "orders.status")
-        _assert_cells({k: v["orders.c"] for k, v in by.items()}, SPEND_BY_REGION_STATUS)
+            dimensions=["customers.regions.name", "orders.status"], metrics=[SPEND])))
+        by = rows_by(resp, "customers.regions.name", "orders.status")
+        _assert_cells({k: v["c"] for k, v in by.items()}, SPEND_BY_REGION_STATUS)

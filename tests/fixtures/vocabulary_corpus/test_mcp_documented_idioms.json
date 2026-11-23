@@ -1,0 +1,228 @@
+{
+ "source": "tests/test_mcp_documented_idioms.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "order_date",
+      "granularity": "month",
+      "date_range": [
+       "2025-02-01",
+       "2025-03-31"
+      ]
+     }
+    ],
+    "measures": [
+     {
+      "formula": "time_shift(sum(amount), 1)",
+      "name": "next"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "order_date",
+      "granularity": "month",
+      "date_range": [
+       "2025-02-01",
+       "2025-03-31"
+      ]
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "time_shift(sum(amount), 1)",
+      "alias": "next"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "regions.name"
+    ],
+    "measures": [
+     {
+      "formula": "count(customers.id)",
+      "name": "n_customers"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "regions.name"
+    ],
+    "metrics": [
+     {
+      "metric": "count(customers.id)",
+      "alias": "n_customers"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "measures": [
+     "count(*)"
+    ],
+    "order": [
+     {
+      "column": "sum(amount)",
+      "direction": "desc"
+     }
+    ],
+    "limit": 2
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "metrics": [
+     "count(*)"
+    ],
+    "order": [
+     {
+      "field": "sum(amount)",
+      "direction": "desc"
+     }
+    ],
+    "limit": 2
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(orders.amount)",
+    "name": "ordered"
+   },
+   "new": {
+    "expression": "sum(orders.amount)",
+    "name": "ordered"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(orders.amount)",
+    "name": "ordered"
+   },
+   "new": {
+    "expression": "sum(orders.amount)",
+    "name": "ordered"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(orders.amount)",
+    "name": "ordered"
+   },
+   "new": {
+    "expression": "sum(orders.amount)",
+    "name": "ordered"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "ranked",
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "measures": [
+     {
+      "formula": "rank(sum(amount), direction='desc')",
+      "name": "rnk"
+     }
+    ]
+   },
+   "new": {
+    "name": "ranked",
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ],
+    "metrics": [
+     {
+      "metric": "rank(sum(amount), direction='desc')",
+      "alias": "rnk"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ranked",
+    "dimensions": [
+     "customers__name",
+     "rnk"
+    ],
+    "filters": [
+     "customers__name == 'Alice'"
+    ]
+   },
+   "new": {
+    "population": "ranked",
+    "dimensions": [
+     "customers__name",
+     "rnk"
+    ],
+    "filter": [
+     "customers__name == 'Alice'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     {
+      "formula": "ntile(sum(orders.amount), n=4)",
+      "name": "quartile"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     {
+      "metric": "ntile(sum(orders.amount), n=4)",
+      "alias": "quartile"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 16,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 17,
+   "reason": "unclassifiable"
+  }
+ ]
+}

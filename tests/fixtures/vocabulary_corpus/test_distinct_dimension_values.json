@@ -1,0 +1,401 @@
+{
+ "source": "tests/test_distinct_dimension_values.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "created_at",
+    "granularity": "day"
+   },
+   "new": {
+    "field": "created_at",
+    "granularity": "day"
+   }
+  },
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "created_at",
+    "granularity": "day"
+   },
+   "new": {
+    "field": "created_at",
+    "granularity": "day"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "created_at",
+    "granularity": "day"
+   },
+   "new": {
+    "field": "created_at",
+    "granularity": "day"
+   }
+  },
+  {
+   "kind": "dimension",
+   "old": {
+    "name": "region",
+    "model": "customers"
+   },
+   "new": {
+    "field": "customers.region"
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "metric": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 107,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 219,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 229,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 240,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 253,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 271,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 284,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 312,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 324,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 335,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 346,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 357,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 360,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 370,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 373,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 383,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 395,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 406,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 425,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 435,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 438,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 447,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 467,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 481,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 501,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 504,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 519,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 542,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 557,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 572,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 586,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 589,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 602,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 626,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 634,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 654,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 660,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 722,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 727,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 728,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 729,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 730,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 731,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 757,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 775,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 798,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 821,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 854,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 905,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 949,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 959,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 965,
+   "reason": "not fully literal"
+  }
+ ]
+}

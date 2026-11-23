@@ -1,0 +1,77 @@
+{
+ "source": "tests/test_dev1841_association_errors.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend)",
+    "name": "lastspend"
+   },
+   "new": {
+    "expression": "last(customers.spend)",
+    "name": "lastspend"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='90d')",
+    "name": "win"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='90d')",
+    "name": "win"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.vip_spend)",
+    "name": "vip"
+   },
+   "new": {
+    "expression": "sum(customers.vip_spend)",
+    "name": "vip"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(customers.spend, weight=customers.spend)",
+    "name": "wavg"
+   },
+   "new": {
+    "expression": "weighted_avg(customers.spend, weight=customers.spend)",
+    "name": "wavg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum(customers.spend)",
+    "name": "wsum"
+   },
+   "new": {
+    "expression": "wsum(customers.spend)",
+    "name": "wsum"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  }
+ ]
+}

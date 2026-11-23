@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import ModelExtension
+from slayer.core.query import DatasetExtension, QueryMetric
 from tests._dev1824_fixtures import (
     BAND35,
-    ModelMeasure,
     SlayerQuery,
     make_exec_engine,
     q,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -33,36 +33,36 @@ async def exec_engine(request):
 def _stages(**stage2_kwargs) -> list:
     stage1 = q(
         name="banded",
-        dimensions=["region", {"expression": BAND35, "name": "band"}],
-        measures=[ModelMeasure(formula="sum(amount)", name="bt")],
+        dimensions=["orders.region", {"field": BAND35, "alias": "band"}],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="bt")],
     )
-    stage2 = SlayerQuery(source_model="banded", extensions=[ModelExtension(source_name="banded")], **stage2_kwargs)
+    stage2 = SlayerQuery(population="banded", extensions=[DatasetExtension(dataset="banded")], **stage2_kwargs)
     return [stage1, stage2]
 
 
 class TestDownstreamStageConsumesRegroupedDimension:
-    async def test_select_order_and_reaggregate_over_band(self, exec_engine) -> None:
+    async def test_select_order_and_reaggregate_over_band(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
-            dimensions=["band"],
-            measures=[ModelMeasure(formula="sum(bt)", name="total")],
-            order=[{"column": "band", "direction": "desc"}],
+            dimensions=["banded.band"],
+            metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
+            order=[{"field": "banded.band", "direction": "desc"}],
         ))
         # Exact public result keys: upstream stage name + PUBLIC column names.
-        assert resp.columns == ["banded.band", "banded.total"]
-        got = [(int(r["banded.band"]), float(r["banded.total"])) for r in resp.data]
+        assert resp.columns == ["banded.band", "total"]
+        got = [(int(r["banded.band"]), float(r["total"])) for r in resp.data]
         assert got == [
             (1, pytest.approx(150.0)),  # 40 + 50 + 60
             (0, pytest.approx(60.0)),
         ]
 
-    async def test_filter_on_band_in_downstream_stage(self, exec_engine) -> None:
+    async def test_filter_on_band_in_downstream_stage(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
-            dimensions=["region"],
-            filters=["band == 1"],
-            measures=[ModelMeasure(formula="sum(bt)", name="total")],
+            dimensions=["banded.region"],
+            filter=["banded.band == 1"],
+            metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         ))
-        assert resp.columns == ["banded.region", "banded.total"]
-        got = {r["banded.region"]: float(r["banded.total"]) for r in resp.data}
+        assert resp.columns == ["banded.region", "total"]
+        got = {r["banded.region"]: float(r["total"]) for r in resp.data}
         assert got == {
             "North": pytest.approx(40.0),
             "South": pytest.approx(50.0),
@@ -71,10 +71,10 @@ class TestDownstreamStageConsumesRegroupedDimension:
 
 
 class TestNoInternalNamesLeak:
-    async def test_response_surface_is_placeholder_free(self, exec_engine) -> None:
+    async def test_response_surface_is_placeholder_free(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
-            dimensions=["band"],
-            measures=[ModelMeasure(formula="sum(bt)", name="total")],
+            dimensions=["banded.band"],
+            metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         ))
         assert all("__regroup__" not in c for c in resp.columns)
         for row in resp.data:
@@ -86,8 +86,8 @@ class TestNoInternalNamesLeak:
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(_stages(
-            dimensions=["band"],
-            measures=[ModelMeasure(formula="sum(bt)", name="total")],
+            dimensions=["banded.band"],
+            metrics=[QueryMetric(metric="sum(banded.bt)", alias="total")],
         ), dry_run=True)
         assert resp.sql is not None
         assert "__regroup__" not in resp.sql

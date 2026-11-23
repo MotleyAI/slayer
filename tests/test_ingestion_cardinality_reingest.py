@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.live_schema.schema_drift import IdempotentIngestResult
 from slayer.database.client import SlayerSQLClient
@@ -55,7 +55,7 @@ def _create_schema(db_path: str) -> None:
         )
 
 
-async def _setup(workspace: Path) -> tuple:
+async def _setup(workspace: Path) -> tuple[YAMLStorage, DatasourceConfig]:
     db_path = str(workspace / "live.db")
     _create_schema(db_path)
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
@@ -65,8 +65,8 @@ async def _setup(workspace: Path) -> tuple:
     return storage, ds
 
 
-def _order_join(model):
-    return next(j for j in model.joins if j.target_model == "customers")
+def _order_relationship(dataset: SlayerDataset):
+    return next(j for j in dataset.relationships if j.to == "customers")
 
 
 class TestFillsMetadataAndPersists:
@@ -75,30 +75,34 @@ class TestFillsMetadataAndPersists:
     ) -> None:
         storage, ds = await _setup(workspace)
 
-        # Simulate legacy persisted data: join without a cardinality.
-        orders = await storage.get_model("orders", data_source="ds")
-        orders.joins[0] = _order_join(orders).model_copy(update={"cardinality": None})
-        await storage.save_model(orders)
+        # Simulate legacy persisted data: relationship without a cardinality.
+        orders = await storage.get_dataset("orders", data_source="ds")
+        assert orders is not None
+        orders.relationships[0] = _order_relationship(orders).model_copy(update={"cardinality": None})
+        await storage.save_dataset(orders)
 
         await _ingest(datasource=ds, storage=storage)
 
-        reloaded = await storage.get_model("orders", data_source="ds")
+        reloaded = await storage.get_dataset("orders", data_source="ds")
+        assert reloaded is not None
         # Refilled AND persisted (reloaded from storage proves the save).
-        assert _order_join(reloaded).cardinality is JoinCardinality.MANY_TO_ONE
+        assert _order_relationship(reloaded).cardinality is RelationshipCardinality.MANY_TO_ONE
 
     async def test_reingest_sets_unique_and_persists(self, workspace: Path) -> None:
         storage, ds = await _setup(workspace)
 
-        customers = await storage.get_model("customers", data_source="ds")
-        email = next(c for c in customers.columns if c.name == "email")
-        idx = customers.columns.index(email)
-        customers.columns[idx] = email.model_copy(update={"unique": False})
-        await storage.save_model(customers)
+        customers = await storage.get_dataset("customers", data_source="ds")
+        assert customers is not None
+        email = next(c for c in customers.fields if c.name == "email")
+        idx = customers.fields.index(email)
+        customers.fields[idx] = email.model_copy(update={"unique": False})
+        await storage.save_dataset(customers)
 
         await _ingest(datasource=ds, storage=storage)
 
-        reloaded = await storage.get_model("customers", data_source="ds")
-        email = next(c for c in reloaded.columns if c.name == "email")
+        reloaded = await storage.get_dataset("customers", data_source="ds")
+        assert reloaded is not None
+        email = next(c for c in reloaded.fields if c.name == "email")
         assert email.unique is True
 
 
@@ -109,42 +113,46 @@ class TestAdditiveContract:
         storage, ds = await _setup(workspace)
 
         # A deliberate user override that disagrees with the structural guess.
-        orders = await storage.get_model("orders", data_source="ds")
-        orders.joins[0] = _order_join(orders).model_copy(
-            update={"cardinality": JoinCardinality.ONE_TO_ONE}
+        orders = await storage.get_dataset("orders", data_source="ds")
+        assert orders is not None
+        orders.relationships[0] = _order_relationship(orders).model_copy(
+            update={"cardinality": RelationshipCardinality.ONE_TO_ONE}
         )
-        await storage.save_model(orders)
+        await storage.save_dataset(orders)
 
         await _ingest(datasource=ds, storage=storage)
 
-        reloaded = await storage.get_model("orders", data_source="ds")
-        assert _order_join(reloaded).cardinality is JoinCardinality.ONE_TO_ONE
+        reloaded = await storage.get_dataset("orders", data_source="ds")
+        assert reloaded is not None
+        assert _order_relationship(reloaded).cardinality is RelationshipCardinality.ONE_TO_ONE
 
     async def test_reingest_does_not_downgrade_user_unique(
         self, workspace: Path
     ) -> None:
         storage, ds = await _setup(workspace)
 
-        # User marked a column unique that has no DB constraint.
-        customers = await storage.get_model("customers", data_source="ds")
-        region = next(c for c in customers.columns if c.name == "region")
-        idx = customers.columns.index(region)
-        customers.columns[idx] = region.model_copy(update={"unique": True})
-        await storage.save_model(customers)
+        # User marked a field unique that has no DB constraint.
+        customers = await storage.get_dataset("customers", data_source="ds")
+        assert customers is not None
+        region = next(c for c in customers.fields if c.name == "region")
+        idx = customers.fields.index(region)
+        customers.fields[idx] = region.model_copy(update={"unique": True})
+        await storage.save_dataset(customers)
 
         await _ingest(datasource=ds, storage=storage)
 
-        reloaded = await storage.get_model("customers", data_source="ds")
-        region = next(c for c in reloaded.columns if c.name == "region")
+        reloaded = await storage.get_dataset("customers", data_source="ds")
+        assert reloaded is not None
+        region = next(c for c in reloaded.fields if c.name == "region")
         assert region.unique is True
 
 
 class TestLegacyJoinTargetNormalisation:
-    """DEV-1743: a ``__`` join target is a LEGAL model name now, so a join to a
-    faithfully-named ``__`` model is preserved across re-ingest — never rewritten
+    """A ``__`` relationship target is a LEGAL dataset name now, so a relationship to a
+    faithfully-named ``__`` dataset is preserved across re-ingest — never rewritten
     to a sanitized spelling. (Genuine old-world healing — a raw target with no
-    model but a sanitized one that does — is handled by the [C2] adopt-stored-name
-    pre-pass in ``ingest_datasource_idempotent`` plus ``_repair_legacy_join_targets``.)
+    dataset but a sanitized one that does — is handled by the [C2] adopt-stored-name
+    pre-pass in ``ingest_datasource_idempotent`` plus ``_repair_legacy_relationship_targets``.)
     """
 
     async def test_dunder_join_target_is_preserved_across_reingest(
@@ -168,13 +176,13 @@ class TestLegacyJoinTargetNormalisation:
         await _ingest(datasource=ds, storage=storage)
 
         # The faithful target is what fresh ingest already wrote.
-        visits = await storage.get_model("visits", data_source="ds")
-        assert [j.target_model for j in visits.joins] == ["reports__patient__drug"]
+        visits = await storage.get_dataset("visits", data_source="ds")
+        assert [j.to for j in visits.relationships] == ["reports__patient__drug"]
 
         await _ingest(datasource=ds, storage=storage)
 
-        reloaded = await storage.get_model("visits", data_source="ds")
-        assert [j.target_model for j in reloaded.joins] == ["reports__patient__drug"]
+        reloaded = await storage.get_dataset("visits", data_source="ds")
+        assert [j.to for j in reloaded.relationships] == ["reports__patient__drug"]
 
     async def test_colliding_legacy_targets_do_not_break_reingest(
         self, workspace: Path
@@ -184,7 +192,7 @@ class TestLegacyJoinTargetNormalisation:
         Repairing on the name alone would point both at `a_b`, and the
         duplicate-target guard in `_merge_joins_strict` would then turn a
         tolerated (if dangling) store into a hard re-ingest failure. Only the
-        join whose pairs match the fresh one is the join the bug produced.
+        relationship whose pairs match the fresh one is the relationship the bug produced.
 
         Looped, so this also covers idempotence: a repaired target sanitizes
         to itself and later runs are no-ops.
@@ -204,24 +212,24 @@ class TestLegacyJoinTargetNormalisation:
         storage = YAMLStorage(base_dir=str(workspace / "store"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db)
         await storage.save_datasource(ds)
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="src", sql_table="src", data_source="ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="x", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="x", datatype=DataType.INTEGER),
             ],
-            joins=[
-                # Matches the fresh join's pairs — this is the one to repair.
-                ModelJoin(target_model="a__b", join_pairs=[["x", "id"]]),
+            relationships=[
+                # Matches the fresh relationship's pairs — this is the one to repair.
+                DatasetRelationship(to="a__b", from_columns=["x"], to_columns=["id"]),
                 # Sanitizes to the same name but has different pairs, so it is
-                # somebody else's join and must be left alone.
-                ModelJoin(target_model="a___b", join_pairs=[["id", "id"]]),
+                # somebody else's relationship and must be left alone.
+                DatasetRelationship(to="a___b", from_columns=["id"], to_columns=["id"]),
             ],
         ))
 
         for _ in range(3):
             await _ingest(datasource=ds, storage=storage)
-            reloaded = await storage.get_model("src", data_source="ds")
-            targets = [j.target_model for j in reloaded.joins]
+            reloaded = await storage.get_dataset("src", data_source="ds")
+            targets = [j.to for j in reloaded.relationships]
             assert targets == ["a_b", "a___b"], targets
             assert len(targets) == len(set(targets))

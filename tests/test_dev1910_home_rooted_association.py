@@ -1,8 +1,8 @@
-"""DEV-1910 — the association producer roots at the aggregate's home dataset,
+"""The association producer roots at the aggregate's home dataset,
 so a home entity absent from the query population still counts in the cells its
-own join path reaches. Executed oracles on SQLite + DuckDB.
+own relationship path reaches. Executed oracles on SQLite + DuckDB.
 
-Under ``to_many_handling: "associate"`` a cross-model aggregate over an
+Under ``to_many_handling: "associate"`` a cross-dataset aggregate over an
 unattributable dimension aggregates over its own home rows, each once (Axioms 3,
 4, 8); an entity whose path reaches no related row sits in the NULL cell.
 
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1840_fixtures import dev1840_models
+from tests._dev1840_fixtures import dev1840_datasets
 from tests._dev1841_fixtures import (
     ASSOC_BASIC_SPEND_BY_STATUS,
     assoc_q as assoc_status_q,
@@ -70,26 +70,26 @@ async def null_engine(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def null_engine_reverse(request):
     """Null-status seed with customers owning the orders 1:N edge, so the fanning
-    derived column ``customers.last_status = orders.status`` exists."""
+    derived field ``customers.last_status = orders.status`` exists."""
     async for e in make_null_status_engine(
-            request, models=dev1840_models(declare_reverse=True)):
+            request, datasets=dev1840_datasets(declare_reverse=True)):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def weak_engine(request):
-    async for e in make_exec_engine(request, models=dev1840_models(strong_plans=False)):
+    async for e in make_exec_engine(request, datasets=dev1840_datasets(strong_plans=False)):
         yield e
 
 
 class TestIssueBar:
     async def test_home_entity_absent_from_population_counts(self, engine):
-        """South cross-model spend includes c7 (zero orders); local amount cell unchanged; cells warn."""
+        """South cross-dataset spend includes c7 (zero orders); local amount cell unchanged; cells warn."""
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP], measures=[SPEND_SUM, AMOUNT_SUM],
+            dimensions=[BAD_POP], metrics=[SPEND_SUM, AMOUNT_SUM],
             to_many_handling="associate"))
-        spend = bad_pop_vals(resp, "orders.csp")
-        amount = bad_pop_vals(resp, "orders.amt")
+        spend = bad_pop_vals(resp, "csp")
+        amount = bad_pop_vals(resp, "amt")
         for cell, expected in SPEND_BY_BAD_POP.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
         for cell, expected in AMOUNT_BY_BAD_POP.items():
@@ -101,9 +101,9 @@ class TestHostFilterHomeSideDimension:
     async def test_app_filter_couples_to_the_home_side_dimension(self, engine):
         """channel='app' restricts to app customers pre-aggregation, by bad_pop: North 250, South 140; c7 out."""
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP], measures=[SPEND_SUM],
-            filters=["channel = 'app'"], to_many_handling="associate"))
-        spend = bad_pop_vals(resp, "orders.csp")
+            dimensions=[BAD_POP], metrics=[SPEND_SUM],
+            filter=["orders.channel = 'app'"], to_many_handling="associate"))
+        spend = bad_pop_vals(resp, "csp")
         for cell, expected in APP_SPEND_BY_BAD_POP.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
 
@@ -112,9 +112,9 @@ class TestMixedHomeAndPopulationRootDimensions:
     async def test_c7_only_reaches_a_cell_the_population_lacks(self, engine):
         """By (bad_pop, status): South shows only (230, ok) = c3+c5 = 140; c7 reaches only (230, NULL)."""
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP, "status"], measures=[SPEND_SUM],
+            dimensions=[BAD_POP, "orders.status"], metrics=[SPEND_SUM],
             to_many_handling="associate"))
-        cells = bad_pop_status_cells(resp, "orders.csp")
+        cells = bad_pop_status_cells(resp, "csp")
         south = {k: v for k, v in cells.items() if k[0] == 230.0}
         assert float(south[(230.0, "ok")]) == pytest.approx(MIXED_SOUTH_OK)
         assert sum(float(v) for v in south.values()) == pytest.approx(MIXED_SOUTH_OK)
@@ -126,9 +126,9 @@ class TestBackHopNullCell:
     async def test_null_status_cell_holds_the_orderless_entity(self, null_engine):
         """Orders-rooted: NULL-status cell = c1 (owner) + c7 (no orders) = 155, as customers-rooted."""
         resp = await null_engine.execute(orders_q(
-            dimensions=["status"], measures=[SPEND_SUM],
+            dimensions=["orders.status"], metrics=[SPEND_SUM],
             to_many_handling="associate"))
-        spend = status_vals(resp, "orders.csp")
+        spend = status_vals(resp, "csp")
         for cell, expected in SPEND_BY_STATUS_NULLSEED.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
 
@@ -138,10 +138,10 @@ class TestDerivedDimensionCrossingBack:
             self, null_engine_reverse):
         """customers.last_status (crosses back to orders): NULL cell = c1 + c7 = 155."""
         resp = await null_engine_reverse.execute(orders_q(
-            dimensions=["customers.last_status"], measures=[SPEND_SUM],
+            dimensions=["customers.last_status"], metrics=[SPEND_SUM],
             to_many_handling="associate"))
-        spend = {k[0]: v["orders.csp"]
-                 for k, v in rows_by(resp, "orders.customers.last_status").items()}
+        spend = {k[0]: v["csp"]
+                 for k, v in rows_by(resp, "customers.last_status").items()}
         for cell, expected in SPEND_BY_STATUS_NULLSEED.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
 
@@ -151,9 +151,9 @@ class TestCustomersRootedTwinKeepsItsNullCell:
         """Customers-rooted (home == host): the LEFT JOIN keeps orderless c7 in
         the NULL cell alongside c1."""
         resp = await null_engine.execute(cust_q(
-            dimensions=["orders.status"], measures=[LOCAL_SPEND_SUM],
+            dimensions=["orders.status"], metrics=[LOCAL_SPEND_SUM],
             to_many_handling="associate"))
-        spend = status_vals(resp, "customers.sp", root="customers")
+        spend = status_vals(resp, "sp")
         for cell, expected in SPEND_BY_STATUS_NULLSEED.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
 
@@ -163,13 +163,13 @@ class TestDiceSlice:
         """Law dice–slice (exact in associate): the 230 (South) cell of a
         bad_pop group-by equals filtering to bad_pop = 230 — 195 both ways."""
         sliced = await engine.execute(orders_q(
-            dimensions=[BAD_POP], measures=[SPEND_SUM],
+            dimensions=[BAD_POP], metrics=[SPEND_SUM],
             to_many_handling="associate"))
-        slice_val = float(bad_pop_vals(sliced, "orders.csp")[230.0])
+        slice_val = float(bad_pop_vals(sliced, "csp")[230.0])
         diced = await engine.execute(orders_q(
-            measures=[SPEND_SUM], filters=[f"{BAD_POP} = 230"],
+            metrics=[SPEND_SUM], filter=[f"{BAD_POP} = 230"],
             to_many_handling="associate"))
-        dice_val = float(diced.data[0]["orders.csp"])
+        dice_val = float(diced.data[0]["csp"])
         assert slice_val == pytest.approx(DICE_SLICE_SOUTH)
         assert dice_val == pytest.approx(DICE_SLICE_SOUTH)
         assert slice_val == pytest.approx(dice_val)
@@ -180,9 +180,9 @@ class TestTwoHopHome:
         """A metric homed two hops away (regions) associates over distinct
         regions per bad_pop cell — one region per cell: 100 / 200."""
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP], measures=[REGION_POP_SUM],
+            dimensions=[BAD_POP], metrics=[REGION_POP_SUM],
             to_many_handling="associate"))
-        pop = bad_pop_vals(resp, "orders.rp")
+        pop = bad_pop_vals(resp, "rp")
         for cell, expected in REGION_POP_BY_BAD_POP.items():
             assert float(pop[cell]) == pytest.approx(expected), cell
 
@@ -193,9 +193,9 @@ class TestCompositeBackHop:
         distinct stores per status cell across the composite reverse hop:
         ok 1100, new 800."""
         resp = await engine.execute(orders_q(
-            dimensions=["status"], measures=[STORE_RENT_SUM],
+            dimensions=["orders.status"], metrics=[STORE_RENT_SUM],
             to_many_handling="associate"))
-        rent = status_vals(resp, "orders.rent")
+        rent = status_vals(resp, "rent")
         for cell, expected in RENT_BY_STATUS.items():
             assert float(rent[cell]) == pytest.approx(expected), cell
 
@@ -206,9 +206,9 @@ class TestLocalSameBranchCoupling:
         dimension bind to ONE order — ok = c3+c5 = 140, never the decoupled app
         total 390."""
         resp = await engine.execute(cust_q(
-            dimensions=["orders.status"], measures=[LOCAL_SPEND_SUM],
-            filters=["orders.channel = 'app'"], to_many_handling="associate"))
-        spend = status_vals(resp, "customers.sp", root="customers")
+            dimensions=["orders.status"], metrics=[LOCAL_SPEND_SUM],
+            filter=["orders.channel = 'app'"], to_many_handling="associate"))
+        spend = status_vals(resp, "sp")
         assert float(spend["ok"]) == pytest.approx(LOCAL_COUPLED_OK)
         assert float(spend["ok"]) != pytest.approx(LOCAL_DECOUPLED_OK)
 
@@ -218,34 +218,34 @@ class TestParameterTyping:
         """A weight the home determines (customers.spend) is picked once per
         distinct customer; South's weighted average includes c7."""
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP], measures=[SPEND_WAVG_HOME],
+            dimensions=[BAD_POP], metrics=[SPEND_WAVG_HOME],
             to_many_handling="associate"))
-        wa = bad_pop_vals(resp, "orders.wa")
+        wa = bad_pop_vals(resp, "wa")
         assert float(wa[230.0]) == pytest.approx(SPEND_WAVG_SOUTH)
         assert float(wa[230.0]) != pytest.approx(SPEND_WAVG_SOUTH_C7_DROPPED)
 
     async def test_fanning_host_column_weight_is_picked_across_the_reverse_hop(self, engine):
-        """A fanning host column weight (orders.amount) is picked once per
+        """A fanning host field weight (orders.amount) is picked once per
         customer across the hop; c7's NULL weight drops it, South = 75."""
         resp = await engine.execute(orders_q(
-            dimensions=[BAD_POP], measures=[SPEND_WAVG_AMOUNT],
+            dimensions=[BAD_POP], metrics=[SPEND_WAVG_AMOUNT],
             to_many_handling="associate"))
-        wa = bad_pop_vals(resp, "orders.wa")
+        wa = bad_pop_vals(resp, "wa")
         assert float(wa[230.0]) == pytest.approx(SPEND_WAVG_AMOUNT_SOUTH)
 
 
 class TestAssociationRestrictedConjunctEntry:
     async def test_inlined_conjunct_carries_the_semi_join_pushed_entry(self, weak_engine):
         """The one fanning conjunct restricts at two levels (Axiom 2.9): the
-        population spine (measure=None, DEV-1909) and the home-rooted association
-        producer's membership (measure='csp', dev-1910). Both are reported; the
+        population spine (metric=None) and the home-rooted association
+        producer's membership (metric='csp'). Both are reported; the
         executed values are the restricted membership."""
         resp = await weak_engine.execute(assoc_status_q(
-            dimensions=["status"], measures=[SPEND_SUM],
-            filters=["customers.plans.level = 'basic'"]))
-        spend = status_vals(resp, "orders.csp")
+            dimensions=["orders.status"], metrics=[SPEND_SUM],
+            filter=["customers.plans.level = 'basic'"]))
+        spend = status_vals(resp, "csp")
         for cell, expected in ASSOC_BASIC_SPEND_BY_STATUS.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
         infos = pushed_filter_infos(resp)
-        assert {i.measure for i in infos} == {None, "csp"}, infos
+        assert {i.metric for i in infos} == {None, "csp"}, infos
         assert all("basic" in i.filter_text for i in infos)

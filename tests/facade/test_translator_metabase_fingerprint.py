@@ -1,6 +1,6 @@
-"""Translator tests for Metabase v0.62 fingerprint queries (DEV-1558 B5).
+"""Translator tests for Metabase v0.62 fingerprint queries.
 
-Metabase's field-value rescan emits two SQL shapes against the model path
+Metabase's field-value rescan emits two SQL shapes against the dataset path
 (not the catalog executor):
 
 * ``SELECT SUBSTRING("public"."customers"."name", 1, 1234) AS "substring4476"
@@ -17,8 +17,7 @@ The translator must:
       logging a WARNING that the wrapper was dropped.
 
 The hygiene allowlist (Phase 1): ``SUBSTRING``, ``SUBSTR``, ``LEFT``,
-``RIGHT``, ``UPPER``, ``LOWER``, ``TRIM``, ``LENGTH``. Same set DEV-1378 lifted
-into the DSL allowlist for WHERE-clause use.
+``RIGHT``, ``UPPER``, ``LOWER``, ``TRIM``, ``LENGTH``. Same set as the DSL allowlist for WHERE-clause use.
 """
 
 from __future__ import annotations
@@ -28,31 +27,32 @@ import logging
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import QueryResult, TranslationError, translate
 
 
 def _catalog() -> FacadeCatalog:
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source="jaffle", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="email", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="email", datatype=DataType.STRING),
         ],
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="total", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="total", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [customers, orders]})
+    return build_catalog(datasets_by_datasource={"jaffle": [customers, orders]})
 
 
 def _translate(sql: str):
@@ -74,7 +74,7 @@ def test_four_part_catalog_qualified_column_resolves() -> None:
     )
     result = _translate(sql)
     assert isinstance(result, QueryResult)
-    aliases = [projected for _alias, projected in result.column_name_mapping]
+    aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["customer_id"]
 
 
@@ -93,7 +93,7 @@ def test_three_part_qualified_column_in_select_resolves() -> None:
     sql = 'SELECT "public"."orders"."customer_id" AS "customer_id" FROM "public"."orders" LIMIT 10000'
     result = _translate(sql)
     assert isinstance(result, QueryResult)
-    aliases = [projected for _alias, projected in result.column_name_mapping]
+    aliases = [projected for _alias, projected in result.field_name_mapping]
     assert "customer_id" in aliases
 
 
@@ -106,7 +106,7 @@ def test_three_part_qualified_column_multiple_columns() -> None:
     )
     result = _translate(sql)
     assert isinstance(result, QueryResult)
-    aliases = [projected for _alias, projected in result.column_name_mapping]
+    aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["customer_id", "total", "created_at"]
     assert result.query.limit == 10000
 
@@ -135,17 +135,17 @@ def test_qualified_table_exact_match_wins_over_public_alias() -> None:
     distinct table, ``public.X`` must resolve via exact match instead of
     short-circuiting to the bare-name lookup (which would silently pick
     a different schema's same-named table)."""
-    public_orders = SlayerModel(
+    public_orders = SlayerDataset(
         name="orders", data_source="public", sql_table="orders",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="public_only_col", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="public_only_col", datatype=DataType.STRING)],
     )
-    jaffle_orders = SlayerModel(
+    jaffle_orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="jaffle_only_col", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="jaffle_only_col", datatype=DataType.STRING)],
     )
-    catalog = build_catalog(models_by_datasource={
+    catalog = build_catalog(datasets_by_datasource={
         "public": [public_orders], "jaffle": [jaffle_orders],
     })
     # ``public.orders`` should resolve to the actual ``public`` schema
@@ -177,11 +177,11 @@ def test_hygiene_wrapper_dropped_around_bare_column(fn: str, caplog) -> None:
     with caplog.at_level(logging.DEBUG, logger="slayer.facade.translator"):
         result = _translate(sql)
     assert isinstance(result, QueryResult)
-    aliases = [projected for _alias, projected in result.column_name_mapping]
+    aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["out"]
     # The wrapper is silently dropped — the underlying projection is just the
     # bare `name` dimension; the engine response key is `customers.name`.
-    engine_alias = next(a for a, _ in result.column_name_mapping)
+    engine_alias = next(a for a, _ in result.field_name_mapping)
     assert engine_alias.endswith(".name")
     # Plan: log includes the specific function name; exactly one entry
     # per dropped wrapper (so a multi-projection SQL gets multiple lines).
@@ -237,7 +237,7 @@ def test_metabase_fingerprint_customers_corpus_16() -> None:
     )
     result = _translate(sql)
     assert isinstance(result, QueryResult)
-    aliases = [projected for _alias, projected in result.column_name_mapping]
+    aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["substring4476", "substring4477"]
     assert result.query.limit == 10000
 
@@ -245,14 +245,14 @@ def test_metabase_fingerprint_customers_corpus_16() -> None:
 def test_translate_accepts_lazy_catalog_executor_factory() -> None:
     """Codex round 16: ``translate(catalog_sql_executor=...)`` accepts
     a zero-arg factory so the pg facade doesn't pay the DuckDB
-    materialisation cost on non-catalog (model) queries. The factory
+    materialisation cost on non-catalog (dataset) queries. The factory
     is only invoked when ``is_catalog_only(parsed)`` is True."""
     call_count = {"n": 0}
 
     class _RecordingExecutor:
         def execute(self, *, parsed, sql):
             return RowBatch(
-                columns=[FacadeColumn(name="x", type=DataType.INT)],
+                columns=[FacadeColumn(name="x", type=DataType.INTEGER)],
                 rows=[{"x": 1}],
             )
 
@@ -260,7 +260,7 @@ def test_translate_accepts_lazy_catalog_executor_factory() -> None:
         call_count["n"] += 1
         return _RecordingExecutor()
 
-    # Model-path query — must NOT instantiate the executor.
+    # Dataset-path query — must NOT instantiate the executor.
     translate(
         "SELECT customer_id FROM orders",
         _catalog(), dialect="postgres",
@@ -288,26 +288,25 @@ def test_metabase_fingerprint_orders_corpus_17() -> None:
     )
     result = _translate(sql)
     assert isinstance(result, QueryResult)
-    aliases = [projected for _alias, projected in result.column_name_mapping]
+    aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["customer_id", "total", "created_at"]
     assert result.query.limit == 10000
 
 
 def test_aggregate_over_three_part_qualified_column() -> None:
-    """SUM("public"."orders"."total") resolves to the `sum(total)` metric on the orders model, not to a
-    bogus `sum(public.orders.total)` lookup."""
+    """SUM("public"."orders"."total") resolves to `sum(orders.total)`, not a bogus `sum(public.orders.total)`."""
     sql = (
         'SELECT SUM("public"."orders"."total") AS "total_sum" '
         'FROM "public"."orders"'
     )
     result = _translate(sql)
     assert isinstance(result, QueryResult)
-    aliases = [projected for _alias, projected in result.column_name_mapping]
+    aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["total_sum"]
-    def _formula(m):
-        return m["formula"] if isinstance(m, dict) else m.formula
-    measure_formulas = [_formula(m) for m in (result.query.measures or [])]
-    assert "sum(total)" in measure_formulas
+    def _formula(m: QueryMetric | dict[str, str]) -> str:
+        return m["metric"] if isinstance(m, dict) else m.metric
+    measure_formulas = [_formula(m) for m in (result.query.metrics or [])]
+    assert "sum(orders.total)" in measure_formulas
 
 
 def test_order_by_three_part_qualified_column() -> None:
@@ -322,25 +321,17 @@ def test_order_by_three_part_qualified_column() -> None:
 
 
 def test_where_filter_on_three_part_qualified_column_passes_through() -> None:
-    """WHERE filters on 3-part-qualified columns are normalised via
-    strip_prefix before they land in SlayerQuery.filters, because the
-    engine's Mode-B DSL only accepts single-dot paths. Pin the resulting
-    filter so a regression where the unstripped 3-part form leaks
-    through would fail loudly."""
+    """WHERE filters on 3-part-qualified columns land in SlayerQuery.filter as `dataset.field`, schema stripped."""
     sql = (
         'SELECT "public"."orders"."customer_id" AS "customer_id" '
         'FROM "public"."orders" WHERE "public"."orders"."total" > 0'
     )
     result = _translate(sql)
     assert isinstance(result, QueryResult)
-    filters = result.query.filters or []
-    # The serialised filter must NOT carry the 3-part-qualified column
-    # ref; the leading public.orders prefix is stripped.
+    filters = result.query.filter or []
     assert filters
     assert all("public" not in f for f in filters)
-    assert all("orders.total" not in f for f in filters)
-    # The bare column name survives.
-    assert any("total" in f for f in filters)
+    assert any("orders.total" in f for f in filters)
 
 
 def test_hygiene_wrapper_around_bare_column_rejected() -> None:
@@ -365,7 +356,7 @@ def test_hygiene_wrapper_around_two_part_column_rejected() -> None:
 def test_metabase_gui_question_count_orders_corpus_20() -> None:
     """Corpus #20 — Metabase's compiled GUI question (`COUNT of orders`):
     ``SELECT COUNT(*) AS "count" FROM "public"."orders"``.  This rides on
-    the aggregate-SQL → metric mapping (`COUNT(*)` → `count(*)`) plus
+    the aggregate-SQL → metric mapping (`COUNT(*)` → `count(orders.*)`) plus
     the 3-part / 2-part qualified `"public"."orders"` table reference."""
     sql = (
         '-- Metabase:: userID: 1 queryType: MBQL queryHash: a54de39466cbf3e8\n'
@@ -373,13 +364,10 @@ def test_metabase_gui_question_count_orders_corpus_20() -> None:
     )
     result = _translate(sql)
     assert isinstance(result, QueryResult)
-    aliases = [projected for _alias, projected in result.column_name_mapping]
+    aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["count"]
-    assert result.query.source_model == "orders"
-    # Underlying engine measure is `count(*)` (the canonical count-all form).
-    # The measures list carries pydantic ModelMeasure-shaped entries; accept
-    # both dict and attribute access.
-    def _formula(m):
-        return m["formula"] if isinstance(m, dict) else m.formula
-    measure_formulas = [_formula(m) for m in (result.query.measures or [])]
-    assert "count(*)" in measure_formulas
+    assert result.query.population == "orders"
+    def _formula(m: QueryMetric | dict[str, str]) -> str:
+        return m["metric"] if isinstance(m, dict) else m.metric
+    measure_formulas = [_formula(m) for m in (result.query.metrics or [])]
+    assert "count(orders.*)" in measure_formulas

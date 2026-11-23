@@ -1,16 +1,16 @@
-"""DEV-1706 Stage 2 — host-base migration characterization guards.
+"""Host-base migration characterization guards.
 
 These pin behavior that the ScopeFrame rewire MUST preserve byte-for-byte. They
 pass BEFORE the migration (they describe current behavior) and must keep passing
 AFTER it — they are the behavior-preservation gate, not feature tests.
 
 1. Join-order byte parity (Codex H3): a query mixing several join-registration
-   carriers (joined dim, WHERE filter, Column.filter, derived agg source) plus a
+   carriers (joined dim, WHERE filter, DatasetField.filter, derived agg source) plus a
    shared prefix must emit its LEFT JOINs in the same first-seen order after the
    collectors are replaced by the single resolver. The resolver's ``join_paths``
    OrderedSet must reproduce the collectors' insertion order, not just membership.
 
-2. The cross-model host-rooted placeholder (generator.py:5123) LIMIT-1 semantics
+2. The cross-dataset host-rooted placeholder (generator.py:5123) LIMIT-1 semantics
    (Codex H4 / D-J): a host-local filter crossing a join must still gate the whole
    result and collapse the host to a single row, with its join in scope.
 """
@@ -23,8 +23,8 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.sql.scope_check import assert_scope_closed
 from tests._engine_helpers import _engine_generate
 
@@ -59,36 +59,36 @@ def _cte_body(sql: str, name_pattern: str) -> str:
     raise AssertionError(f"Unbalanced parens in:\n{sql}")
 
 
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="population", sql="population", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-            Column(name="balance", sql="balance", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
-def _warehouses() -> SlayerModel:
-    return SlayerModel(
+def _warehouses() -> SlayerDataset:
+    return SlayerDataset(
         name="warehouses", sql_table="warehouses", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -96,38 +96,38 @@ class TestJoinOrderParity:
     async def test_diamond_mixed_carriers_emit_deterministic_join_order(self) -> None:
         # A DIAMOND (orders → customers → regions AND orders → warehouses →
         # regions) reaches ``regions`` via two distinct path aliases
-        # (customers__regions vs warehouses__regions). DEV-1709: the derived
-        # agg SOURCE crossing the warehouses branch now ISOLATES host-rooted;
+        # (customers__regions vs warehouses__regions). The derived
+        # agg SOURCE crossing the warehouses branch ISOLATES host-rooted;
         # the row-level carriers (joined dim + multi-hop WHERE filter) stay in
         # the host ``_base``. Deterministic first-seen join order applies PER
         # SCOPE: the base emits customers, customers__regions; the isolation
         # CTE (which inherits the host dims + ROW filter and adds the agg
         # source) emits customers, customers__regions, warehouses,
         # warehouses__regions.
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="warehouse_id", sql="warehouse_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="wh_pop", sql="warehouses.regions.population",
-                       type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="warehouse_id", expression="warehouse_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="wh_pop", expression="warehouses.regions.population",
+                       datatype=DataType.FLOAT),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-                ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+                DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
             ],
         )
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="customers.region_id")],    # joined dim
-            measures=[ModelMeasure(formula="sum(wh_pop)")],         # derived source (warehouses)
-            filters=["customers.regions.population > 100"],        # WHERE (customers→regions)
+            population="orders",
+            dimensions=[QueryDimension(field="customers.region_id")],    # joined dim
+            metrics=[QueryMetric(metric="sum(orders.wh_pop)")],         # derived source (warehouses)
+            filter=["customers.regions.population > 100"],        # WHERE (customers→regions)
         )
         sql = await _engine_generate(
-            query=query, model=orders,
-            extra_models=[_customers(), _warehouses(), _regions()],
+            query=query, dataset=orders,
+            extra_datasets=[_customers(), _warehouses(), _regions()],
         )
         assert "_cm_" in sql, f"crossing agg source must isolate:\n{sql}"
         # Each alias appears exactly once per scope; every prefix precedes its
@@ -143,125 +143,107 @@ class TestJoinOrderParity:
         assert_scope_closed(sql)
 
 
-class TestPlaceholderLimitOne:
-    async def test_host_local_filter_keeps_limit_1(self) -> None:
-        # A cross-model measure (customers.balance:sum) drives the _cm_ path; a
-        # host-local ROW filter (amount > 100, no join, not routed to the CTE)
-        # forces the host-rooted placeholder (gen:5123) to fire with LIMIT 1 so
-        # the CROSS JOIN to the scalar _cm_ does not duplicate the aggregate,
-        # while WHERE still gates the whole result (D-J LIMIT-1 semantics).
-        orders = SlayerModel(
+def _exists_text(sql: str) -> str:
+    """Every EXISTS restriction of ``sql``, normalized to one quote-free line."""
+    tree = sqlglot.parse_one(sql, dialect="postgres")
+    return " ".join(" ".join(e.sql(dialect="postgres").split()).replace('"', "") for e in tree.find_all(exp.Exists))
+
+
+class TestUnitHostFilters:
+    async def test_host_local_filter_restricts_by_association(self) -> None:
+        # The unit row always exists (Law 10); the host filter restricts the cross-dataset aggregate by association.
+        orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.balance)")],
-            filters=["amount > 100"],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            filter=["orders.amount > 100"],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
-        assert "LIMIT 1" in sql                       # placeholder collapses host to one row
-        assert "amount > 100" in sql or "amount > 100" in sql.replace('"', "")
+        assert "LIMIT 1" not in sql
+        assert "amount > 100" in _exists_text(sql)
         assert_scope_closed(sql)
 
-    async def test_host_local_crossing_filter_pulls_join_into_placeholder(self) -> None:
-        # D-J placeholder join registration (Round 6 / Codex): the cross-model
-        # measure (customers.balance:sum) empties the host base, and a host-local
-        # ROW filter that CROSSES a *different* join (shippers.code = 'X' — not
-        # reachable from the customers CTE root, so not routed there) must pull
-        # its LEFT JOIN into the placeholder FROM through the SAME single resolver
-        # the main host base uses (_resolve_where_filter_joins_via_scope). Without
-        # the join, the placeholder WHERE references an unbound alias. LIMIT 1
-        # still collapses the host to a single row.
-        shippers = SlayerModel(
+    async def test_host_local_crossing_filter_joins_inside_the_restriction(self) -> None:
+        # The unit row always exists (Law 10); a host filter crossing another join restricts the cross-dataset
+        # aggregate by association, its join inside that restriction.
+        shippers = SlayerDataset(
             name="shippers", sql_table="shippers", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="code", sql="code", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="code", expression="code", datatype=DataType.STRING),
             ],
         )
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="shipper_id", sql="shipper_id", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="shipper_id", expression="shipper_id", datatype=DataType.FLOAT),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-                ModelJoin(target_model="shippers", join_pairs=[["shipper_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+                DatasetRelationship(to="shippers", from_columns=["shipper_id"], to_columns=["id"]),
             ],
         )
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.balance)")],
-            filters=["shippers.code = 'X'"],
+            population="orders",
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            filter=["shippers.code = 'X'"],
         )
         sql = await _engine_generate(
-            query=query, model=orders,
-            extra_models=[_customers(), _regions(), shippers],
+            query=query, dataset=orders,
+            extra_datasets=[_customers(), _regions(), shippers],
         )
-        # Scope the assertions to the placeholder SELECT itself (the one-row
-        # ``_placeholder`` scan with LIMIT 1) so a regression that moves the join
-        # or predicate to another query block can't pass (CodeRabbit).
-        tree = sqlglot.parse_one(sql, dialect="postgres")
-        placeholder = next(
-            (
-                s for s in tree.find_all(exp.Select)
-                if s.args.get("limit") is not None
-                and any(p.alias_or_name == "_placeholder" for p in s.expressions)
-            ),
-            None,
-        )
-        assert placeholder is not None, f"no placeholder SELECT found in:\n{sql}"
-        ph = " ".join(placeholder.sql(dialect="postgres").split()).replace('"', "")
-        assert "LIMIT 1" in ph                          # placeholder collapses host
-        # the crossing filter's LEFT JOIN + predicate live in the SAME placeholder.
-        assert "LEFT JOIN shippers AS shippers" in ph
-        assert "shippers.code = 'X'" in ph
+        restriction = _exists_text(sql)
+        assert "LIMIT 1" not in sql
+        assert "JOIN shippers AS orders__shippers" in restriction
+        assert "code = 'X'" in restriction
         assert_scope_closed(sql)
 
 
 class TestTypedJoinKeyMixedCaseQuoted:
     async def test_mixed_case_join_key_quoted_in_typed_on_clause(self) -> None:
-        # DEV-1645 regression guard on the TYPED pipeline: ``_build_from_and_joins``
+        # Mixed-case quoting regression guard on the TYPED pipeline: ``_build_from_and_joins``
         # builds the LEFT JOIN ON keys as AST (not via the legacy string-parse
         # path), so a mixed-case physical join key (``CustId``) must be quoted
         # there too — otherwise a case-folding backend resolves ``custid`` and
         # the query fails at execution (only the Postgres integration suite,
-        # which runs the typed engine, caught this; the DEV-1645 unit test uses
+        # which runs the typed engine, caught this; the original unit test uses
         # the legacy ``generate(enriched=)`` path and did not).
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
-            columns=[
-                Column(name="CustId", sql="CustId", type=DataType.DOUBLE, primary_key=True),
-                Column(name="balance", sql="balance", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="CustId", expression="CustId", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
             ],
         )
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="cust_ref", sql="cust_ref", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="cust_ref", expression="cust_ref", datatype=DataType.FLOAT),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["cust_ref", "CustId"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["cust_ref"], to_columns=["CustId"])],
         )
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="balance", model="customers")],
+            population="orders",
+            dimensions=[QueryDimension(field="customers.balance")],
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[customers],
+            query=query, dataset=orders, extra_datasets=[customers],
         )
         norm = " ".join(sql.split())
         assert "LEFT JOIN" in norm

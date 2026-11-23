@@ -1,0 +1,96 @@
+{
+ "source": "tests/test_dev1746_pagination.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "spend"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "spend"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.spend)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.spend)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "created_at",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "created_at",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  }
+ ]
+}

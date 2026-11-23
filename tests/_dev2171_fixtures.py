@@ -12,13 +12,12 @@ from collections.abc import Callable, Coroutine, Generator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-import pytest
 import sqlalchemy as sa
 import yaml
 from sqlalchemy import event
 
 from slayer.cli import main as cli_main
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
@@ -27,8 +26,6 @@ from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import OSIDocument
 from slayer.database.client import SlayerSQLClient, SqlClient
 from slayer.database import engine_factory
 from slayer.sql.dialects import dialect_for_sa_backend
@@ -36,9 +33,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import build_exec_engine, disposable_engine
 
 DS = "ds"
-
-#: Reading a physical column whose name a different column holds; DEV-2175 lifts these.
-MASKED = pytest.mark.xfail(strict=True, reason="DEV-2175: physical name held by a different column")
 
 ORDERS_DDL = (
     "CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR, state VARCHAR, amount INTEGER, "
@@ -116,12 +110,12 @@ def import_cube(cubes: Iterable[dict[str, Any]], *, views: Iterable[dict[str, An
     return converter.convert()
 
 
-def import_dbt(semantic_models: Iterable[dict[str, Any]], *, regular_models: Iterable[dict[str, Any]] = (),
+def import_dbt(semantic_models: Iterable[dict[str, Any]], *, regular_datasets: Iterable[dict[str, Any]] = (),
                metrics: Iterable[dict[str, Any]] = (), db: Path | None = None,
                target_dialect: str | None = None) -> ConversionResult:
     """Convert dbt mappings, typing against ``db`` when given."""
     project = DbtProject.model_validate({
-        "semantic_models": list(semantic_models), "regular_models": list(regular_models), "metrics": list(metrics),
+        "semantic_models": list(semantic_models), "regular_models": list(regular_datasets), "metrics": list(metrics),
     })
     if db is None:
         return DbtToSlayerConverter(project=project, data_source=DS, target_dialect=target_dialect).convert()
@@ -130,47 +124,36 @@ def import_dbt(semantic_models: Iterable[dict[str, Any]], *, regular_models: Ite
     return converter.convert()
 
 
-def import_osi(*documents: dict[str, Any], db: Path, target_dialect: str = "duckdb") -> ConversionResult:
-    """Convert current-spec OSI document mappings against ``db``."""
-    return convert_osi([OSIDocument.model_validate(d) for d in documents], db=db, target_dialect=target_dialect)
+# ── dataset inspection ────────────────────────────────────────────────────
+
+def datasets_of(result: CubeConversionResult | ConversionResult) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in result.datasets}
 
 
-def convert_osi(docs: list[OSIDocument], *, db: Path, target_dialect: str = "duckdb") -> ConversionResult:
-    converter = OsiToSlayerConverter(documents=docs, data_source=DS, target_dialect=target_dialect)
-    collect_over_db(lambda client: converter.collect_metadata(client=client), db=db)
-    return converter.convert()
-
-
-# ── model inspection ──────────────────────────────────────────────────────
-
-def models_of(result: CubeConversionResult | ConversionResult) -> dict[str, SlayerModel]:
-    return {m.name: m for m in result.models}
-
-
-def column(model: SlayerModel, name: str) -> Column:
-    col = model.get_column(name)
-    assert col is not None, f"column {name!r} missing on {model.name}: {[c.name for c in model.columns]}"
+def field_of(dataset: SlayerDataset, name: str) -> DatasetField:
+    col = dataset.get_field(name)
+    assert col is not None, f"field {name!r} missing on {dataset.name}: {[c.name for c in dataset.fields]}"
     return col
 
 
-def source_column(model: SlayerModel, measure: str) -> Column:
-    """The column a single-aggregation measure aggregates."""
-    found = model.get_measure(measure)
-    assert found is not None, f"measure {measure!r} missing on {model.name}"
-    parsed = parse_expr(found.formula)
-    assert isinstance(parsed, AggCall), found.formula
-    assert isinstance(parsed.source, Ref), found.formula
-    return column(model, parsed.source.name)
+def source_field(dataset: SlayerDataset, metric: str) -> DatasetField:
+    """The field a single-aggregation metric aggregates."""
+    found = dataset.get_metric(metric)
+    assert found is not None, f"metric {metric!r} missing on {dataset.name}"
+    parsed = parse_expr(found.text)
+    assert isinstance(parsed, AggCall), found.expression
+    assert isinstance(parsed.source, Ref), found.expression
+    return field_of(dataset, parsed.source.name)
 
 
-def has_measure(result: CubeConversionResult | ConversionResult, model: str, measure: str) -> bool:
-    found = models_of(result).get(model)
-    return found is not None and found.get_measure(measure) is not None
+def has_metric(result: CubeConversionResult | ConversionResult, dataset: str, metric: str) -> bool:
+    found = datasets_of(result).get(dataset)
+    return found is not None and found.get_metric(metric) is not None
 
 
-def has_column(result: CubeConversionResult | ConversionResult, model: str, name: str) -> bool:
-    found = models_of(result).get(model)
-    return found is not None and found.get_column(name) is not None
+def has_field(result: CubeConversionResult | ConversionResult, dataset: str, name: str) -> bool:
+    found = datasets_of(result).get(dataset)
+    return found is not None and found.get_field(name) is not None
 
 
 def cube_issues(result: CubeConversionResult, name: str, *, severity: str | None = None) -> list[CubeConversionIssue]:
@@ -192,14 +175,14 @@ def typing_notes(messages: Iterable[str]) -> list[str]:
 
 # ── execution ─────────────────────────────────────────────────────────────
 
-def _save_order(models: Iterable[SlayerModel]) -> list[SlayerModel]:
-    """Join targets before the models joining them, cube views last."""
-    return sorted(models, key=lambda m: ((m.meta or {}).get("cube_kind") == "view", bool(m.joins)))
+def _save_order(datasets: Iterable[SlayerDataset]) -> list[SlayerDataset]:
+    """Relationship targets before the datasets relating to them, cube views last."""
+    return sorted(datasets, key=lambda m: ((m.meta or {}).get("cube_kind") == "view", bool(m.relationships)))
 
 
-async def rows(*, models: Iterable[SlayerModel], db: Path, payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Save ``models`` (validated) over ``db`` and run one query, disposing every engine."""
-    engine = await build_exec_engine(str(db), dialect="duckdb", models=_save_order(models), datasource=DS,
+async def rows(*, datasets: Iterable[SlayerDataset], db: Path, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Save ``datasets`` (validated) over ``db`` and run one query, disposing every engine."""
+    engine = await build_exec_engine(str(db), dialect="duckdb", datasets=_save_order(datasets), datasource=DS,
                                      validate=True)
     try:
         return (await engine.execute(payload)).data
@@ -208,53 +191,53 @@ async def rows(*, models: Iterable[SlayerModel], db: Path, payload: dict[str, An
         engine_factory.invalidate_engine(DatasourceConfig(name=DS, type="duckdb", database=str(db)))
 
 
-async def value(*, models: Iterable[SlayerModel], db: Path, model: str, formula: str,
+async def value(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, expression: str,
                 variables: dict[str, Any] | None = None) -> Any:
-    """The single value of ``formula`` over ``model``."""
-    payload: dict[str, Any] = {"source_model": model, "measures": [{"formula": formula, "name": "v"}]}
+    """The single value of ``expression`` over ``dataset``."""
+    payload: dict[str, Any] = {"population": dataset, "metrics": [{"metric": expression, "alias": "v"}]}
     if variables is not None:
         payload["variables"] = variables
-    (row,) = await rows(models=models, db=db, payload=payload)
-    return row[f"{model}.v"]
+    (row,) = await rows(datasets=datasets, db=db, payload=payload)
+    return row["v"]
 
 
-async def counts_by(*, models: Iterable[SlayerModel], db: Path, model: str, dimension: str,
+async def counts_by(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, dimension: str,
                     variables: dict[str, Any] | None = None) -> dict[Any, int]:
-    """Row counts of ``model`` grouped by ``dimension``."""
-    payload: dict[str, Any] = {"source_model": model, "dimensions": [dimension],
-                               "measures": [{"formula": "count(*)", "name": "n"}]}
+    """Row counts of ``dataset`` grouped by ``dimension``."""
+    payload: dict[str, Any] = {"population": dataset, "dimensions": [f"{dataset}.{dimension}"],
+                               "metrics": [{"metric": f"count({dataset}.*)", "alias": "n"}]}
     if variables is not None:
         payload["variables"] = variables
-    out = await rows(models=models, db=db, payload=payload)
-    return {r[f"{model}.{dimension}"]: r[f"{model}.n"] for r in out}
+    out = await rows(datasets=datasets, db=db, payload=payload)
+    return {r[f"{dataset}.{dimension}"]: r["n"] for r in out}
 
 
-async def by_id(*, models: Iterable[SlayerModel], db: Path, model: str, dimension: str) -> list[Any]:
-    """``dimension`` per row of ``model``, ordered by ``id``."""
-    out = await rows(models=models, db=db, payload={
-        "source_model": model, "dimensions": ["id", dimension], "order": [{"column": "id"}]})
-    return [r[f"{model}.{dimension}"] for r in out]
+async def by_id(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, dimension: str) -> list[Any]:
+    """``dimension`` per row of ``dataset``, ordered by ``id``."""
+    out = await rows(datasets=datasets, db=db, payload={
+        "population": dataset, "dimensions": ["orders.id", f"{dataset}.{dimension}"], "order": [{"field": "orders.id"}]})
+    return [r[f"{dataset}.{dimension}"] for r in out]
 
 
-async def drift_entries(*, models: Iterable[SlayerModel], db: Path, base_dir: Path) -> list[dict[str, Any]]:
-    """``validate_models`` findings for ``models`` saved over ``db``."""
+async def drift_entries(*, datasets: Iterable[SlayerDataset], db: Path, base_dir: Path) -> list[dict[str, Any]]:
+    """``validate_datasets`` findings for ``datasets`` saved over ``db``."""
     ds = DatasourceConfig(name=DS, type="duckdb", database=str(db))
     storage = YAMLStorage(base_dir=str(base_dir))
     await storage.save_datasource(ds)
-    for model in _save_order(models):
-        await storage.save_model(model)
+    for model in _save_order(datasets):
+        await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return [e.model_dump(mode="json") for e in await engine.validate_models(data_source=DS)]
+        return [e.model_dump(mode="json") for e in await engine.validate_datasets(data_source=DS)]
     finally:
         engine.close()
         engine_factory.invalidate_engine(ds)
 
 
-def deletes(found: Iterable[dict[str, Any]], *, model: str) -> list[dict[str, Any]]:
-    """Findings that delete ``model`` or remove any of its columns or measures."""
-    return [e for e in found if e.get("model_name") == model
-            and (e.get("tool") == "delete_model" or (e.get("remove") or {}))]
+def deletes(found: Iterable[dict[str, Any]], *, dataset: str) -> list[dict[str, Any]]:
+    """Findings that delete ``dataset`` or remove any of its fields or metrics."""
+    return [e for e in found if e.get("dataset_name") == dataset
+            and (e.get("tool") == "delete_dataset" or (e.get("remove") or {}))]
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
@@ -283,9 +266,9 @@ def save_datasource(store: Path, *, name: str = DS, database: Path) -> None:
         DatasourceConfig(name=name, type="duckdb", database=str(database))))
 
 
-def stored_model(store: Path, name: str) -> SlayerModel:
-    model = asyncio.run(YAMLStorage(base_dir=str(store)).get_model(name))
-    assert model is not None, f"model {name!r} not saved under {store}"
+def stored_dataset(store: Path, name: str) -> SlayerDataset:
+    model = asyncio.run(YAMLStorage(base_dir=str(store)).get_dataset(name))
+    assert model is not None, f"dataset {name!r} not saved under {store}"
     return model
 
 

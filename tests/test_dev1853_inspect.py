@@ -1,6 +1,6 @@
-"""DEV-1853 — both orientations are visible on inspection and audit surfaces.
+"""Both orientations are visible on inspection and audit surfaces.
 
-Inspecting a model lists reverse-reachable neighbors with the cardinality
+Inspecting a dataset lists reverse-reachable neighbors with the cardinality
 oriented for traversal from the inspected side; the safety audit reports each
 edge once with per-orientation provability.
 """
@@ -10,32 +10,32 @@ from __future__ import annotations
 import json
 import tempfile
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine.cardinality.join_safety import audit_join_safety
-from slayer.inspect.model_render import render_model_inspection
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.engine.cardinality.relationship_safety import RelationshipSafetyFinding, audit_relationship_safety
+from slayer.inspect.dataset_render import render_dataset_inspection
 from slayer.inspect.service import InspectService
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="ds", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
         ],
-        joins=[ModelJoin(target_model="customers",
-                         join_pairs=[["customer_id", "id"]],
-                         cardinality=JoinCardinality.MANY_TO_ONE)],
+        relationships=[DatasetRelationship(to="customers",
+                         from_columns=["customer_id"], to_columns=["id"],
+                         cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="ds", sql_table="customers",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="name", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="name", datatype=DataType.STRING)],
     )
 
 
@@ -43,8 +43,8 @@ async def _storage(tmpdir: str) -> YAMLStorage:
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
-    await storage.save_model(_orders())
-    await storage.save_model(_customers())
+    await storage.save_dataset(_orders())
+    await storage.save_dataset(_customers())
     return storage
 
 
@@ -52,8 +52,8 @@ class TestInspectShowsIncomingEdges:
     async def test_markdown_lists_the_oriented_reverse_hop(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _storage(d)
-            md = await render_model_inspection(
-                model=_customers(), storage=storage, engine=None,
+            md = await render_dataset_inspection(
+                dataset=_customers(), storage=storage, engine=None,
                 format="markdown")
             assert "orders" in md
             assert "one_to_many" in md
@@ -61,8 +61,8 @@ class TestInspectShowsIncomingEdges:
     async def test_json_payload_carries_the_reverse_hop(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _storage(d)
-            out = await render_model_inspection(
-                model=_customers(), storage=storage, engine=None,
+            out = await render_dataset_inspection(
+                dataset=_customers(), storage=storage, engine=None,
                 format="json")
             text = json.dumps(json.loads(out))
             assert '"orders"' in text
@@ -74,24 +74,24 @@ class TestCollectionSurfaceListsReverseNeighbors:
         with tempfile.TemporaryDirectory() as d:
             storage = await _storage(d)
             out = await InspectService(storage=storage).inspect(
-                reference=None, entity_type="model", format="json")
+                reference=None, entity_type="dataset", format="json")
             data = json.loads(out)
             ds = next(x for x in data["datasources"] if x["data_source"] == "ds")
-            customers = next(m for m in ds["models"] if m["name"] == "customers")
-            assert "orders" in customers["joins_to"]
+            customers = next(m for m in ds["datasets"] if m["name"] == "customers")
+            assert "orders" in customers["relationships_to"]
 
 
-def _edge_finding(findings):
+def _edge_finding(findings: list[RelationshipSafetyFinding]) -> RelationshipSafetyFinding:
     matches = [f for f in findings
-               if f.model == "orders" and f.target_model == "customers"]
+               if f.dataset == "orders" and f.to == "customers"]
     assert len(matches) == 1
     return matches[0]
 
 
 class TestAuditReportsBothOrientations:
     def test_declared_many_to_one_edge_explains_both_directions(self) -> None:
-        finding = _edge_finding(audit_join_safety(
-            models=[_orders(), _customers()]))
+        finding = _edge_finding(audit_relationship_safety(
+            datasets=[_orders(), _customers()]))
         assert finding.forward_provably_to_one is True
         assert finding.reverse_provably_to_one is False
 
@@ -99,24 +99,24 @@ class TestAuditReportsBothOrientations:
         # billing FK is unique (reverse structurally provable); shipping FK is
         # not — each edge's finding must reflect ITS orientation, never the
         # sibling's.
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders", data_source="ds", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="billing_customer_id", type=DataType.INT,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="billing_customer_id", datatype=DataType.INTEGER,
                        unique=True),
-                Column(name="shipping_customer_id", type=DataType.INT),
+                DatasetField(name="shipping_customer_id", datatype=DataType.INTEGER),
             ],
-            joins=[
-                ModelJoin(target_model="customers",
-                          join_pairs=[["billing_customer_id", "id"]],
+            relationships=[
+                DatasetRelationship(to="customers",
+                          from_columns=["billing_customer_id"], to_columns=["id"],
                           name="billing"),
-                ModelJoin(target_model="customers",
-                          join_pairs=[["shipping_customer_id", "id"]],
+                DatasetRelationship(to="customers",
+                          from_columns=["shipping_customer_id"], to_columns=["id"],
                           name="shipping"),
             ],
         )
-        findings = audit_join_safety(models=[orders, _customers()])
+        findings = audit_relationship_safety(datasets=[orders, _customers()])
         assert len(findings) == 2
         billing, shipping = findings
         assert billing.reverse_provably_to_one is True
@@ -124,9 +124,9 @@ class TestAuditReportsBothOrientations:
 
     def test_unproven_edge_reports_both_orientations_unproven(self) -> None:
         orders = _orders()
-        orders.joins[0].cardinality = None
+        orders.relationships[0].cardinality = None
         customers = _customers()
-        customers.columns[0].primary_key = False
-        finding = _edge_finding(audit_join_safety(models=[orders, customers]))
+        customers.fields[0].primary_key = False
+        finding = _edge_finding(audit_relationship_safety(datasets=[orders, customers]))
         assert finding.forward_provably_to_one is False
         assert finding.reverse_provably_to_one is False

@@ -2,7 +2,7 @@
 
 Mode A SQL-mode filter validator. Pre-rejects DSL
 constructs (aggregation references, transform calls, raw OVER) and
-extracts column-shaped identifier tokens. Does not invoke sqlglot —
+extracts field-shaped identifier tokens. Does not invoke sqlglot —
 dialect-aware parsing happens at SQL generation time.
 """
 from __future__ import annotations
@@ -18,69 +18,69 @@ class TestSqlPredicateAccepts:
     def test_arbitrary_function_call_passes(self) -> None:
         pf = parse_sql_predicate("json_extract(metadata, '$.active') = 1")
         assert pf.sql == "json_extract(metadata, '$.active') = 1"
-        assert "metadata" in pf.columns
+        assert "metadata" in pf.fields
 
     def test_coalesce_function_passes(self) -> None:
         pf = parse_sql_predicate("coalesce(status, 'unknown') = 'active'")
         assert pf.sql == "coalesce(status, 'unknown') = 'active'"
-        assert "status" in pf.columns
+        assert "status" in pf.fields
 
     def test_case_when_passes(self) -> None:
         pf = parse_sql_predicate("CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1")
         assert "CASE WHEN" in pf.sql
-        assert "status" in pf.columns
+        assert "status" in pf.fields
 
     def test_dialect_specific_operator_passes(self) -> None:
         # Postgres jsonb contains operator. parse_sql_predicate does NOT parse
-        # SQL — it just rejects DSL constructs and extracts column tokens.
+        # SQL — it just rejects DSL constructs and extracts field tokens.
         pf = parse_sql_predicate("payload @> '{\"k\": 1}'")
         assert "@>" in pf.sql
-        assert "payload" in pf.columns
+        assert "payload" in pf.fields
 
     def test_lower_function_passes(self) -> None:
         pf = parse_sql_predicate("lower(status) = 'active'")
         assert pf.sql == "lower(status) = 'active'"
-        assert "status" in pf.columns
+        assert "status" in pf.fields
 
 
 class TestSqlPredicateColumnExtraction:
-    """``ParsedFilter.columns`` regex-extracts column-shaped tokens."""
+    """``ParsedFilter.fields`` regex-extracts field-shaped tokens."""
 
     def test_single_dot_column_kept_intact(self) -> None:
         pf = parse_sql_predicate("orders.status = 'active'")
-        assert "orders.status" in pf.columns
+        assert "orders.status" in pf.fields
 
     def test_double_underscore_join_path_kept_intact(self) -> None:
-        # `__`-delimited join aliases are valid Mode A syntax; downstream
-        # join detection (enrichment._scan_filter_column_ref) splits on
+        # `__`-delimited relationship-path aliases are valid Mode A syntax; downstream
+        # relationship detection splits on
         # the dunder.
         pf = parse_sql_predicate("customers__regions.name = 'EU'")
-        assert "customers__regions.name" in pf.columns
+        assert "customers__regions.name" in pf.fields
 
     def test_function_head_excluded_from_columns(self) -> None:
-        # ``json_extract`` is the function being called, not a column.
+        # ``json_extract`` is the function being called, not a field.
         pf = parse_sql_predicate("json_extract(metadata, '$.x') = 1")
-        assert "json_extract" not in pf.columns
-        assert "metadata" in pf.columns
+        assert "json_extract" not in pf.fields
+        assert "metadata" in pf.fields
 
     def test_string_literals_stripped_before_extraction(self) -> None:
-        # ``status`` would also be a column-shaped token if literal stripping
+        # ``status`` would also be a field-shaped token if literal stripping
         # didn't happen, since `'status'` looks like it.
         pf = parse_sql_predicate("note = 'status active'")
-        # ``note`` is a real column ref; ``status`` and ``active`` are inside
-        # the literal and must NOT appear as columns.
-        assert "note" in pf.columns
-        assert "status" not in pf.columns
-        assert "active" not in pf.columns
+        # ``note`` is a real field ref; ``status`` and ``active`` are inside
+        # the literal and must NOT appear as fields.
+        assert "note" in pf.fields
+        assert "status" not in pf.fields
+        assert "active" not in pf.fields
 
     def test_sql_keywords_excluded_from_columns(self) -> None:
         # ``AND`` / ``OR`` / ``IS`` / ``NULL`` etc. are SQL keywords, not
-        # column refs; ``_bare_column_refs`` filters them out.
+        # field refs; ``_bare_field_refs`` filters them out.
         pf = parse_sql_predicate("status IS NOT NULL AND amount > 0")
-        assert "status" in pf.columns
-        assert "amount" in pf.columns
+        assert "status" in pf.fields
+        assert "amount" in pf.fields
         for kw in ("AND", "OR", "NOT", "IS", "NULL"):
-            assert kw not in pf.columns
+            assert kw not in pf.fields
 
 
 class TestSqlPredicateRejects:

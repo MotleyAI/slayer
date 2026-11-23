@@ -1,0 +1,165 @@
+{
+ "source": "tests/test_dev1954_stale_spelling.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "region_amounts",
+    "join_pairs": [
+     [
+      "id",
+      "customers__region_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "region_amounts",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "customers__region_id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ],
+    "name": "hr2"
+   },
+   "new": {
+    "to": "regions",
+    "name": "hr2",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "pq",
+    "join_pairs": [
+     [
+      "id",
+      "customers__region_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "pq",
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "customers__region_id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "min(customers.hr.pop)",
+    "name": "explicit"
+   },
+   "new": {
+    "expression": "min(customers.hr.pop)",
+    "name": "explicit"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ],
+    "name": "buyer"
+   },
+   "new": {
+    "to": "customers",
+    "name": "buyer",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "min(customers.hr.pop)",
+    "name": "customers__hr__custom"
+   },
+   "new": {
+    "expression": "min(customers.hr.pop)",
+    "name": "customers__hr__custom"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "min(customers__hr__pop_max)",
+    "name": "customers__hr__lo"
+   },
+   "new": {
+    "expression": "min(customers__hr__pop_max)",
+    "name": "customers__hr__lo"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "amt2"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "amt2"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 149,
+   "reason": "unclassifiable"
+  }
+ ]
+}

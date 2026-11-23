@@ -1,0 +1,158 @@
+{
+ "source": "tests/test_dev1859_transform_row_leaf.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(weight)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "cumsum(weight)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(qty, direction='desc')",
+    "name": "t"
+   },
+   "new": {
+    "expression": "rank(qty, direction='desc')",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(weight > 0)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "consecutive_periods(weight > 0)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(ordered_at, direction='desc')",
+    "name": "t"
+   },
+   "new": {
+    "expression": "rank(ordered_at, direction='desc')",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(qty, direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(qty, direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(weight, direction='desc')",
+    "name": "t"
+   },
+   "new": {
+    "expression": "rank(weight, direction='desc')",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(weight)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "cumsum(weight)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(weight, partition_by=store))",
+    "name": "t"
+   },
+   "new": {
+    "expression": "cumsum(sum(weight, partition_by=store))",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(weight * qty, direction='desc')",
+    "name": "t"
+   },
+   "new": {
+    "expression": "rank(weight * qty, direction='desc')",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(change(sum(revenue)))",
+    "name": "t"
+   },
+   "new": {
+    "expression": "last(change(sum(revenue)))",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(revenue))",
+    "name": "ch"
+   },
+   "new": {
+    "expression": "change(sum(revenue))",
+    "name": "ch"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 191,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 227,
+   "reason": "not fully literal"
+  }
+ ]
+}

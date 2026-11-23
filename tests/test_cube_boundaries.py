@@ -1,7 +1,7 @@
 """Negative validator-boundary tests.
 
 A naive converter would let collisions / reserved names / broken SQL throw a
-`ValidationError` and lose the whole model. The converter must instead route
+`ValidationError` and lose the whole dataset. The converter must instead route
 them to the report and emit what it safely can — `convert()` never raises.
 """
 
@@ -22,7 +22,7 @@ DS = "test_ds"
 
 def _convert(project: CubeProject):
     result = CubeToSlayerConverter(project=project, data_source=DS).convert()
-    return {m.name: m for m in result.models}, result.report
+    return {m.name: m for m in result.datasets}, result.report
 
 
 @pytest.mark.parametrize("name", ["cumsum", "rank"])
@@ -33,12 +33,12 @@ def test_measure_named_after_transform_is_imported(name):
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, _ = _convert(project)
-    assert models["orders"].get_measure(name) is not None
+    assert models["orders"].get_metric(name) is not None
 
 
 def test_dimension_measure_name_overlap_does_not_raise():
     """A dimension and a measure that would share a name (SLayer forbids the
-    overlap) must be disambiguated, not crash the model."""
+    overlap) must be disambiguated, not crash the dataset."""
     project = CubeProject(cubes=[CubeCube(
         name="orders", sql_table="public.orders",
         measures=[CubeMeasure(name="revenue", type="sum", sql="{CUBE}.amount")],
@@ -47,8 +47,8 @@ def test_dimension_measure_name_overlap_does_not_raise():
     )])
     models, _ = _convert(project)
     orders = models["orders"]
-    col_names = {c.name for c in orders.columns}
-    measure_names = {m.name for m in orders.measures}
+    col_names = {c.name for c in orders.fields}
+    measure_names = {m.name for m in orders.metrics}
     assert not (col_names & measure_names)  # disjoint after disambiguation
 
 
@@ -65,7 +65,7 @@ def test_whole_run_survives_one_broken_cube():
 
 
 def test_structurally_broken_column_sql_dropped_via_offline_validation():
-    """Codex #7: a translated Column.sql that doesn't parse as SQL must be caught
+    """Codex #7: a translated DatasetField.sql that doesn't parse as SQL must be caught
     by the offline validation pass and dropped (complex_sql), not persisted to
     blow up later at enrichment."""
     project = CubeProject(cubes=[CubeCube(
@@ -76,13 +76,13 @@ def test_structurally_broken_column_sql_dropped_via_offline_validation():
         ],
     )])
     models, report = _convert(project)
-    assert models["orders"].get_column("broken") is None
-    assert models["orders"].get_column("id") is not None
+    assert models["orders"].get_field("broken") is None
+    assert models["orders"].get_field("id") is not None
     assert any(i.category == CubeIssueCategory.COMPLEX_SQL for i in report.issues)
 
 
 def test_cube_name_with_illegal_chars_is_reported_not_fatal():
-    """A Cube name containing `.`/`:` (rejected by SlayerModel.name) must be
+    """A Cube name containing `.`/`:` (rejected by SlayerDataset.name) must be
     routed to the report, not crash the run."""
     project = CubeProject(cubes=[
         CubeCube(name="weird.name", sql_table="public.x"),
@@ -96,8 +96,8 @@ def test_cube_name_with_illegal_chars_is_reported_not_fatal():
 
 
 def test_join_on_without_equality_yields_no_empty_join_pairs():
-    """An ON with no equality must drop the join (never construct ModelJoin with
-    empty join_pairs, which the validator rejects)."""
+    """An ON with no equality must drop the join (never construct DatasetRelationship
+    with empty from_columns/to_columns, which the validator rejects)."""
     project = CubeProject(cubes=[
         CubeCube(name="orders", sql_table="public.orders",
                  joins=[CubeJoin(name="customers", relationship="many_to_one",
@@ -107,5 +107,5 @@ def test_join_on_without_equality_yields_no_empty_join_pairs():
                  dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")]),
     ])
     models, report = _convert(project)
-    assert models["orders"].joins == []
+    assert models["orders"].relationships == []
     assert any(i.category == CubeIssueCategory.UNSUPPORTED_JOIN for i in report.issues)

@@ -1,7 +1,7 @@
-"""Shared DEV-1868 closure-sweep constants: formulas + hand-computed oracles.
+"""Shared closure-sweep constants: expressions + hand-computed oracles.
 
-W1/W2/W3 run on the DEV-1836 stack (orders → customers → {regions, segments});
-the series-shift suite runs on the DEV-1846 stack (sales → regions), plus a
+W1/W2/W3 run on the ``_dev1836_fixtures`` stack (orders → customers → {regions, segments});
+the series-shift suite runs on the ``_dev1846_fixtures`` stack (sales → regions), plus a
 tiny month-end ``daily`` stack for the many-to-one calendar-shift edge.
 Oracles derive from the seed data below and those modules' docstrings.
 Underscore-prefixed so pytest skips collection.
@@ -14,13 +14,13 @@ from typing import AsyncIterator, Optional
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._engine_helpers import seeded_exec_engine
 from slayer.storage.sqlite_conn import transaction
 
 # --------------------------------------------------------------------------- #
-# W1 — cross-model first/last × partition_by (DEV-1836 stack).
+# W1 — cross-dataset first/last × partition_by (``_dev1836_fixtures`` stack).
 # --------------------------------------------------------------------------- #
 LAST_TIER = "last(customers.spend, customers.signup_at, partition_by=customers.tier)"
 FIRST_REGION = (
@@ -41,18 +41,13 @@ LAST_SPEND_BY_REGION = {"North": 150.0, "South": 60.0, None: 40.0}
 AMOUNT_BY_REGION_NAME = {"North": 60.0, "South": 10.0, None: 47.0}
 
 # --------------------------------------------------------------------------- #
-# W2 — cross-model partitioned aggregates nested in transforms.
+# W2 — cross-dataset partitioned aggregates nested in transforms.
 # --------------------------------------------------------------------------- #
-#: cumsum(spend:sum(partition_by=tier)) per (tier, order month): the attached
-#: per-tier total (160/150/40) accumulates over each tier's order months.
-CUMSUM_PART_BY_TIER_MONTH = {
-    ("gold", "2024-01"): 160.0,
-    ("gold", "2024-02"): 320.0,
-    ("gold", "2024-03"): 480.0,
-    ("silver", "2024-02"): 150.0,
-    ("bronze", "2024-03"): 40.0,
-    (None, "2024-03"): None,
-}
+#: The (tier, order month) cells of the W2 queries.
+TIER_MONTHS = frozenset({("gold", "2024-01"), ("gold", "2024-02"), ("gold", "2024-03"),
+                         ("silver", "2024-02"), ("bronze", "2024-03"), (None, "2024-03")})
+#: rank(spend:sum(partition_by=tier), direction='desc'): tier totals 160/150/40; the NULL tier's is NULL.
+RANK_PART_BY_TIER = {"gold": 1, "silver": 2, "bronze": 3, None: None}
 #: change(last-by-region) per (regions.name, order month): constant series →
 #: NULL at each region's first month, 0 after.
 CHANGE_LAST_BY_REGION_MONTH = {
@@ -64,7 +59,7 @@ CHANGE_LAST_BY_REGION_MONTH = {
 }
 
 # --------------------------------------------------------------------------- #
-# W3 — composites with cross-model operands (dims = customers.tier).
+# W3 — composites with cross-dataset operands (dims = customers.tier).
 # --------------------------------------------------------------------------- #
 RATIO_BY_TIER = {"gold": 0.25, "silver": 0.2, "bronze": 1.0, None: None}
 ROUND_BY_TIER = {"gold": 4.0, "silver": 5.0, "bronze": 1.0, None: None}
@@ -74,7 +69,7 @@ SUM_MINUS_MAX_BY_TIER = {"gold": 60.0, "silver": 0.0, "bronze": 0.0, None: None}
 SPEND_OVER_POP_BY_REGION = {"North": 2.5, "South": 0.3, None: None}
 
 # --------------------------------------------------------------------------- #
-# Series-shift oracles (DEV-1846 stack; monthly revenue 60/100/60).
+# Series-shift oracles (``_dev1846_fixtures`` stack; monthly revenue 60/100/60).
 # --------------------------------------------------------------------------- #
 CUMSUM_REVENUE = {"2024-01": 60.0, "2024-02": 160.0, "2024-03": 220.0}
 SHIFTED_CUMSUM = {"2024-01": None, "2024-02": 60.0, "2024-03": 160.0}
@@ -115,14 +110,14 @@ SHIFTED_CUMSUM_MONTH_END = {
 }
 
 
-def daily_model() -> SlayerModel:
-    return SlayerModel(
+def daily_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="daily", data_source="test", sql_table="daily",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -151,7 +146,7 @@ async def make_daily_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     dialect = request.param
     seed = _seed_daily_duckdb if dialect == "duckdb" else _seed_daily_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=[daily_model()],
+        dialect=dialect, seed=seed, datasets=[daily_dataset()],
     ) as (engine, _db):
         yield engine
 

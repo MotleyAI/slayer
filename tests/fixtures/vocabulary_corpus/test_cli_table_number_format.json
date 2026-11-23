@@ -1,0 +1,39 @@
+{
+ "source": "tests/test_cli_table_number_format.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "sum(order_total)"
+    ],
+    "order": [
+     {
+      "column": "status",
+      "direction": "asc"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "sum(order_total)"
+    ],
+    "order": [
+     {
+      "field": "status",
+      "direction": "asc"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,4 +1,4 @@
-"""Formula-level parse checks: functional aggregation spellings, order-column normalization,
+"""Expression-level parse checks: functional aggregation spellings, order-field normalization,
 filter injection hardening and string hygiene, all over the one Mode-B parser."""
 
 import warnings
@@ -6,7 +6,7 @@ import warnings
 import pytest
 
 from slayer.core.models import Aggregation
-from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
+from slayer.core.query import OrderItem
 from slayer.core.syntax import AggCall, BoolOp, Cmp, Literal, Ref, ScalarCall, parse_expr
 
 
@@ -86,51 +86,51 @@ class TestAggregationNameValidation:
 
     def test_rejects_transform_name(self) -> None:
         with pytest.raises(ValueError, match="conflicts with a built-in transform"):
-            Aggregation(name="cumsum", formula="SUM({value})")
+            Aggregation(name="cumsum", expression="SUM({value})")
 
     def test_rejects_time_shift(self) -> None:
         with pytest.raises(ValueError, match="conflicts with a built-in transform"):
-            Aggregation(name="time_shift", formula="SUM({value})")
+            Aggregation(name="time_shift", expression="SUM({value})")
 
     def test_allows_non_conflicting_name(self) -> None:
-        agg = Aggregation(name="rolling_avg", formula="AVG({value})")
+        agg = Aggregation(name="rolling_avg", expression="AVG({value})")
         assert agg.name == "rolling_avg"
 
     def test_allows_builtin_override(self) -> None:
         """Built-in names like 'sum' that are also in ALL_TRANSFORMS (first/last) are fine."""
-        agg = Aggregation(name="sum")  # built-in override, no formula needed
+        agg = Aggregation(name="sum")  # built-in override, no expression needed
         assert agg.name == "sum"
 
 
 class TestOrderColumnNormalization:
-    """Order column normalization with function-style syntax."""
+    """Order field normalization with function-style syntax."""
 
     def test_funcstyle_sum(self) -> None:
         # The author's functional spelling is preserved — the item
-        # carries a placeholder + raw_formula, resolved at binding.
-        item = OrderItem(column="sum(revenue)", direction="desc")
-        assert item.column.name == _FUNCSTYLE_PENDING
-        assert item.raw_formula == "sum(revenue)"
+        # carries a placeholder + raw_expression, resolved at binding.
+        item = OrderItem(field="sum(revenue)", direction="desc")
+        assert item.ref is None
+        assert item.raw_expression == "sum(revenue)"
 
     def test_funcstyle_count_star(self) -> None:
-        item = OrderItem(column="count(*)", direction="desc")
-        assert item.column.name == _FUNCSTYLE_PENDING
-        assert item.raw_formula == "count(*)"
+        item = OrderItem(field="count(*)", direction="desc")
+        assert item.ref is None
+        assert item.raw_expression == "count(*)"
 
     def test_plain_name_unchanged(self) -> None:
-        item = OrderItem(column="revenue_sum", direction="desc")
-        assert item.column.name == "revenue_sum"
-        assert item.raw_formula is None
+        item = OrderItem(field="revenue_sum", direction="desc")
+        assert item.field == "revenue_sum"
+        assert item.raw_expression is None
 
     def test_parameterized_agg_preserved(self) -> None:
-        item = OrderItem.model_validate({"column": "last(revenue, ordered_at)", "direction": "desc"})
-        assert item.column.name == _FUNCSTYLE_PENDING
-        assert item.raw_formula == "last(revenue, ordered_at)"
+        item = OrderItem.model_validate({"field": "last(revenue, ordered_at)", "direction": "desc"})
+        assert item.ref is None
+        assert item.raw_expression == "last(revenue, ordered_at)"
 
     def test_weighted_avg_args_preserved(self) -> None:
-        item = OrderItem.model_validate({"column": "weighted_avg(price, weight=qty)", "direction": "asc"})
-        assert item.column.name == _FUNCSTYLE_PENDING
-        assert item.raw_formula == "weighted_avg(price, weight=qty)"
+        item = OrderItem.model_validate({"field": "weighted_avg(price, weight=qty)", "direction": "asc"})
+        assert item.ref is None
+        assert item.raw_expression == "weighted_avg(price, weight=qty)"
 
 
 class TestStringHygieneFilters:

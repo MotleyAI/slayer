@@ -32,8 +32,8 @@ from tests._usage_reporting_helpers import (
 from tests.flight.test_handlers import _make_handlers
 from tests.pg_facade.test_connection import _query, _run, _startup, _terminate
 
-_QUERY = {"source_model": "orders", "measures": ["sum(amount)"]}
-_FAILING_QUERY = {"source_model": "no_such_model", "measures": ["count(*)"]}
+_QUERY = {"population": "orders", "metrics": ["sum(orders.amount)"]}
+_FAILING_QUERY = {"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}
 _T0 = datetime.datetime(2026, 5, 4, 12, 0, tzinfo=datetime.timezone.utc)
 _TODAY = "2026-05-04"
 

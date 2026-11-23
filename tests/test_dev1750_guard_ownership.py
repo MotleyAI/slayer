@@ -1,4 +1,4 @@
-"""DEV-1750 / DEV-1836 / DEV-1838 — where the work for a ``time_shift`` inner
+"""Where the work for a ``time_shift`` inner
 aggregate lives, pinned at the planner level (Codex test-review F1).
 
 A TARGET-GRAIN inner desugars onto a target-rooted regroup producer; a
@@ -10,34 +10,35 @@ rather than only by an executed-value diff.
 
 from __future__ import annotations
 
-from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
+from slayer.core.keys import AggregateKey, FieldKey, TransformKey
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1750_fixtures import (
-    ModelMeasure,
     SlayerQuery,
-    customers_model,
-    line_items_model,
+    customers_dataset,
+    line_items_dataset,
     month_td,
-    orders_model,
-    regions_model,
+    orders_dataset,
+    regions_dataset,
 )
 
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=orders_model(),
-        referenced_models=[customers_model(), regions_model(), line_items_model()],
+        population=orders_dataset(),
+        referenced_datasets=[customers_dataset(), regions_dataset(), line_items_dataset()],
     )
 
 
-def _plan(formula: str, *, name: str = "prev"):
+def _plan(expression: str, *, name: str = "prev"):
     return plan_query(
         query=SlayerQuery(
-            source_model="orders", time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=formula, name=name)],
+            population="orders", time_dimensions=month_td(),
+            metrics=[QueryMetric(metric=expression, alias=name)],
         ),
         bundle=_bundle(),
     )
@@ -76,28 +77,28 @@ def _attach_answering(planned, key):
 
 class TestGuardOwnership:
     def test_b_host_rooted_inner_is_owned_by_a_host_rooted_plan(self) -> None:
-        """(b) ``time_shift(wscaled_sum(amount))`` — DEV-1838 D5 migrates the
+        """(b) ``time_shift(wscaled_sum(amount))`` — the planner migrates the
         crossing-fragment inner onto the regroup primitive: the shift wraps a
         placeholder answered by a HOST-rooted producer attach."""
-        planned = _plan("time_shift(wscaled_sum(amount), -1)")
+        planned = _plan("time_shift(wscaled_sum(orders.amount), -1)")
         layer = next(
             layer for layer in planned.transform_layers if layer.op == "time_shift"
         )
         out_slot = next(s for s in _all_slots(planned) if s.id in layer.slot_ids)
         assert isinstance(out_slot.key, TransformKey), out_slot.key
         inner = out_slot.key.input
-        assert isinstance(inner, ColumnKey), inner
+        assert isinstance(inner, FieldKey), inner
         assert inner.leaf.startswith("__regroup__"), inner
         attach = next(
             a for a in planned.regroup_attach_plans
             if any(sub.placeholder == inner for sub in a.substitutions)
         )
-        assert attach.producer_root_model is None  # rooted at the host
+        assert attach.producer_root_dataset is None  # rooted at the host
 
     def test_c_target_grain_inner_is_a_regroup_attach(self) -> None:
-        """(c) ``time_shift(sum(customers.spend))`` — DEV-1836 migrates the
+        """(c) ``time_shift(sum(customers.spend))`` — the planner migrates the
         target-grain inner onto the regroup primitive: the time_shift wraps a
-        regroup placeholder, the query owns a regroup attach, and no cross-model
+        regroup placeholder, the query owns a regroup attach, and no cross-dataset
         plan is produced."""
         planned = _plan("time_shift(sum(customers.spend), -1)")
         assert planned.regroup_attach_plans
@@ -107,19 +108,19 @@ class TestGuardOwnership:
         out_slot = next(s for s in _all_slots(planned) if s.id in layer.slot_ids)
         assert isinstance(out_slot.key, TransformKey), out_slot.key
         inner = out_slot.key.input
-        assert isinstance(inner, ColumnKey), inner
+        assert isinstance(inner, FieldKey), inner
         assert inner.leaf.startswith("__regroup__"), inner
 
     def test_a_local_inner_stays_inline(self) -> None:
-        """(a) ``time_shift(sum(amount))`` beside a cross-model sibling — the shift's
+        """(a) ``time_shift(sum(amount))`` beside a cross-dataset sibling — the shift's
         OWN inner aggregate is local, so no producer attach answers it (it stays
         an inline ``_base`` aggregate, and it renders)."""
         planned = plan_query(
             query=SlayerQuery(
-                source_model="orders", time_dimensions=month_td(),
-                measures=[
-                    ModelMeasure(formula="sum(customers.spend)", name="cm"),
-                    ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+                population="orders", time_dimensions=month_td(),
+                metrics=[
+                    QueryMetric(metric="sum(customers.spend)", alias="cm"),
+                    QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
                 ],
             ),
             bundle=_bundle(),

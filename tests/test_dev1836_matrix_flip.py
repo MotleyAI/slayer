@@ -1,5 +1,5 @@
 """The compatibility-matrix cells flip: row regroup attaches
-coexist with cross-model measures, cross-model sources become legal in
+coexist with cross-dataset metrics, cross-dataset sources become legal in
 computed dimensions, and intermediate-hop dimensions execute (design D4, F3).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Cross-model aggregates
@@ -16,6 +16,7 @@ moved to its supported table — that flip is enforced there, not here.)
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -23,18 +24,21 @@ import pytest
 import slayer
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.ir.planned import RegroupAttachPlan
 from slayer.sql.scope_check import assert_scope_closed
+
+from slayer.core.query import QueryMetric
 
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
     AMOUNT_BY_CHANNEL,
-    ModelMeasure,
     POP_TOTAL,
     SPEND_BAND,
     SPEND_BY_BAND,
     SPEND_TOTAL,
     broadcast_warnings,
-    dev1836_models,
+    dev1836_datasets,
     make_exec_engine,
     q,
     rows_by,
@@ -42,28 +46,28 @@ from tests._dev1836_fixtures import (
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_backend(request):
+async def exec_backend(request: pytest.FixtureRequest) -> AsyncIterator[tuple[str, SlayerQueryEngine]]:
     async for engine in make_exec_engine(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 #: A local aggregation-derived (row attach) dimension: channel totals band.
 LOCAL_BAND = {
-    "expression": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
-    "name": "band",
+    "field": "CASE WHEN sum(orders.amount, partition_by=orders.channel) > 30 THEN 1 ELSE 0 END",
+    "alias": "band",
 }
 #: A bare partitioned aggregate as a dimension.
-LOCAL_BARE = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
+LOCAL_BARE = {"field": "sum(orders.amount, partition_by=orders.channel)", "alias": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1836_models()
+    models = dev1836_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
@@ -74,124 +78,124 @@ async def _dry_scope_closed(engine, query, dialect) -> None:
 
 
 class TestRowAttachWithCrossModelMeasure:
-    """The former generator guard: row regroup attach × cross-model measure."""
+    """The former generator guard: row regroup attach × cross-dataset metric."""
 
     async def test_band_dim_with_cm_executes(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=[LOCAL_BAND], measures=[M, CM], to_many_handling="broadcast")
+        query = q(dimensions=[LOCAL_BAND], metrics=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.band")
+        by = rows_by(resp, "band")
         assert set(by) == {(1,), (0,)}
-        assert float(by[(1,)]["orders.m"]) == pytest.approx(
+        assert float(by[(1,)]["m"]) == pytest.approx(
             AMOUNT_BY_CHANNEL["web"],
         )
-        assert float(by[(0,)]["orders.m"]) == pytest.approx(
+        assert float(by[(0,)]["m"]) == pytest.approx(
             AMOUNT_BY_CHANNEL["app"],
         )
-        # The band derives from host-local columns: unattributable → broadcast.
+        # The band derives from host-local fields: unattributable → broadcast.
         for row in resp.data:
-            assert float(row["orders.cm"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["cm"]) == pytest.approx(SPEND_TOTAL)
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_bare_dim_with_cm_executes(self, exec_backend):
         _, engine = exec_backend
-        resp = await engine.execute(q(dimensions=[LOCAL_BARE], measures=[M, CM], to_many_handling="broadcast"))
-        by = rows_by(resp, "orders.ct")
+        resp = await engine.execute(q(dimensions=[LOCAL_BARE], metrics=[M, CM], to_many_handling="broadcast"))
+        by = rows_by(resp, "ct")
         assert set(by) == {(87.0,), (30.0,)}
         for row in resp.data:
-            assert float(row["orders.cm"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["cm"]) == pytest.approx(SPEND_TOTAL)
 
     async def test_adding_cm_keeps_the_band_grain(self, exec_backend):
         _, engine = exec_backend
-        solo = await engine.execute(q(dimensions=[LOCAL_BAND], measures=[M]))
-        both = await engine.execute(q(dimensions=[LOCAL_BAND], measures=[M, CM]))
-        solo_by = rows_by(solo, "orders.band")
-        both_by = rows_by(both, "orders.band")
+        solo = await engine.execute(q(dimensions=[LOCAL_BAND], metrics=[M]))
+        both = await engine.execute(q(dimensions=[LOCAL_BAND], metrics=[M, CM]))
+        solo_by = rows_by(solo, "band")
+        both_by = rows_by(both, "band")
         assert set(solo_by) == set(both_by)
         for key, row in both_by.items():
-            assert float(row["orders.m"]) == pytest.approx(
-                float(solo_by[key]["orders.m"]),
+            assert float(row["m"]) == pytest.approx(
+                float(solo_by[key]["m"]),
             )
 
     async def test_rank_dim_with_cm_executes(self, exec_backend):
-        """Transform-root dimension family × cross-model measure."""
+        """Transform-root dimension family × cross-dataset metric."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": "rank(sum(amount, partition_by=channel), direction='desc')",
-                         "name": "rr"}],
-            measures=[M, CM], to_many_handling="broadcast",
+            dimensions=[{"field": "rank(sum(orders.amount, partition_by=orders.channel), direction='desc')",
+                         "alias": "rr"}],
+            metrics=[M, CM], to_many_handling="broadcast",
         ))
-        by = {int(k[0]): row for k, row in rows_by(resp, "orders.rr").items()}
+        by = {int(k[0]): row for k, row in rows_by(resp, "rr").items()}
         # Channel totals rank descending: web 87 → 1, app 30 → 2.
         assert set(by) == {1, 2}
-        assert float(by[1]["orders.m"]) == pytest.approx(AMOUNT_BY_CHANNEL["web"])
-        assert float(by[2]["orders.m"]) == pytest.approx(AMOUNT_BY_CHANNEL["app"])
+        assert float(by[1]["m"]) == pytest.approx(AMOUNT_BY_CHANNEL["web"])
+        assert float(by[2]["m"]) == pytest.approx(AMOUNT_BY_CHANNEL["app"])
         for row in resp.data:
-            assert float(row["orders.cm"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["cm"]) == pytest.approx(SPEND_TOTAL)
 
     async def test_mixed_dim_with_cm_executes(self, exec_backend):
-        """Union-grain (mixed) dimension family × cross-model measure."""
+        """Union-grain (mixed) dimension family × cross-dataset metric."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "expression": ("rank(sum(amount, partition_by=channel) - "
-                               "sum(amount, partition_by=status), direction='desc')"),
-                "name": "mr",
+                "field": ("rank(sum(orders.amount, partition_by=orders.channel) - "
+                               "sum(orders.amount, partition_by=orders.status), direction='desc')"),
+                "alias": "mr",
             }],
-            measures=[M, CM], to_many_handling="broadcast",
+            metrics=[M, CM], to_many_handling="broadcast",
         ))
-        by = {int(k[0]): row for k, row in rows_by(resp, "orders.mr").items()}
+        by = {int(k[0]): row for k, row in rows_by(resp, "mr").items()}
         # (channel−status) deltas at the union grain, ranked descending:
         # (web,ok)=30→1, (web,new)=27→2, (app,ok)=-27→3, (app,new)=-30→4.
         expected_m = {1: 47.0, 2: 40.0, 3: 10.0, 4: 20.0}
         assert set(by) == set(expected_m)
         for mr, expected in expected_m.items():
-            assert float(by[mr]["orders.m"]) == pytest.approx(expected), mr
-            assert float(by[mr]["orders.cm"]) == pytest.approx(SPEND_TOTAL), mr
+            assert float(by[mr]["m"]) == pytest.approx(expected), mr
+            assert float(by[mr]["cm"]) == pytest.approx(SPEND_TOTAL), mr
 
     def test_cm_rides_the_regroup_primitive(self):
-        """Plan structure: the migrated cross-model measure is a combined-phase
-        regroup attach; the bespoke cross-model plan list is empty/gone."""
+        """Plan structure: the migrated cross-dataset metric is a combined-phase
+        regroup attach; the bespoke cross-dataset plan list is empty/gone."""
         planned = plan_query(
-            query=q(dimensions=[LOCAL_BAND], measures=[M, CM]), bundle=_bundle(),
+            query=q(dimensions=[LOCAL_BAND], metrics=[M, CM]), bundle=_bundle(),
         )
         phases = {p.attach_phase for p in planned.regroup_attach_plans}
         assert phases == {"row", "combined"}
 
 
 class TestCrossModelSourceInComputedDimension:
-    """The former stage_planner guard: a cross-model aggregate source inside a
+    """The former stage_planner guard: a cross-dataset aggregate source inside a
     computed dimension needs a target-rooted producer."""
 
     async def test_spend_band_dimension_executes(self, exec_backend):
         dialect, engine = exec_backend
         query = q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
+            metrics=[M],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.sband")
+        by = rows_by(resp, "sband")
         assert set(by) == {("hi",), ("lo",)}
         for band, expected in AMOUNT_BY_BAND.items():
-            assert float(by[(band,)]["orders.m"]) == pytest.approx(expected), band
+            assert float(by[(band,)]["m"]) == pytest.approx(expected), band
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_spend_band_coexists_with_cm_measure(self, exec_backend):
-        """The D4 load-bearing cell: the cross-model measure's producer groups
+        """The D4 load-bearing cell: the cross-dataset metric's producer groups
         by a computed dimension whose own producer nests inside it."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, CM],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
+            metrics=[M, CM],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.sband")
+        by = rows_by(resp, "sband")
         assert set(by) == {("hi",), ("lo",)}
         for band in ("hi", "lo"):
-            assert float(by[(band,)]["orders.m"]) == pytest.approx(
+            assert float(by[(band,)]["m"]) == pytest.approx(
                 AMOUNT_BY_BAND[band],
             ), band
-            assert float(by[(band,)]["orders.cm"]) == pytest.approx(
+            assert float(by[(band,)]["cm"]) == pytest.approx(
                 SPEND_BY_BAND[band],
             ), band
         await _dry_scope_closed(engine, query, dialect)
@@ -199,14 +203,14 @@ class TestCrossModelSourceInComputedDimension:
     def test_nested_attach_lives_inside_the_producer_plan(self):
         planned = plan_query(
             query=q(
-                dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-                measures=[M, CM],
+                dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
+                metrics=[M, CM],
             ),
             bundle=_bundle(),
         )
 
-        def _all_nested(plans) -> list:
-            out = []
+        def _all_nested(plans: list[RegroupAttachPlan]) -> list[RegroupAttachPlan]:
+            out: list[RegroupAttachPlan] = []
             for p in plans:
                 inner = p.producer_plan.regroup_attach_plans
                 out.extend(inner)
@@ -224,17 +228,19 @@ class TestCrossModelSourceInComputedDimension:
 class TestIntermediateHopDimensions:
     """The former generator raise for shared-grain dims on intermediate hops."""
 
-    async def test_intermediate_hop_dim_associates_by_default(self, exec_backend):
+    async def test_intermediate_hop_dim_associates_by_default(
+        self, exec_backend: tuple[str, SlayerQueryEngine],
+    ):
         """A region's population is not attributable per customer, so by default each
         tier aggregates the distinct regions its customers reach."""
         _, engine = exec_backend
         kw = {"dimensions": ["customers.tier"],
-              "measures": [M, ModelMeasure(formula="sum(customers.regions.pop)", name="pop")]}
+              "metrics": [M, QueryMetric(metric="sum(customers.regions.pop)", alias="pop")]}
         default = await engine.execute(q(**kw))
         assoc = await engine.execute(q(**kw, to_many_handling="associate"))
         assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
         (w,) = [w for w in default.warnings or [] if w.kind == "associated"]
-        assert "pop" in w.measure
+        assert "pop" in w.metric
 
     async def test_intermediate_hop_dim_executes_and_broadcasts(self, exec_backend):
         """customers.tier lies on an intermediate hop of the pop aggregate's
@@ -244,18 +250,18 @@ class TestIntermediateHopDimensions:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[M, ModelMeasure(formula="sum(customers.regions.pop)",
-                                      name="pop")],
+            metrics=[M, QueryMetric(metric="sum(customers.regions.pop)",
+                                      alias="pop")],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query)
-        assert set(rows_by(resp, "orders.customers.tier")) == {
+        assert set(rows_by(resp, "customers.tier")) == {
             ("gold",), ("silver",), ("bronze",), (None,),
         }
         for row in resp.data:
-            assert float(row["orders.pop"]) == pytest.approx(POP_TOTAL)
+            assert float(row["pop"]) == pytest.approx(POP_TOTAL)
         (w,) = broadcast_warnings(resp)
-        assert "pop" in w.measure
+        assert "pop" in w.metric
         await _dry_scope_closed(engine, query, dialect)
 
 

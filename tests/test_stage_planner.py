@@ -1,14 +1,14 @@
-"""Stage 7a.7 (DEV-1450) — stage planner tests.
+"""Stage planner tests.
 
 The stage planner orchestrates multi-stage ``source_queries`` DAGs:
 
 1. Topologically sorts a list of ``SlayerQuery`` stages.
 2. For each stage in order, parses → binds → plans (using
-   ProjectionPlanner + the cross-model planner Protocol).
+   ProjectionPlanner + the cross-dataset planner Protocol).
 3. Downstream stages bind against the upstream stage's
-   ``StageSchema`` (flat namespace — DEV-1449).
+   ``StageSchema`` (flat namespace).
 4. Each stage's emitted ``StageSchema`` uses the user-supplied ``name``
-   as the column alias (DEV-1448).
+   as the column alias.
 
 Dormant in 7a — no engine wiring. Stage 7b cuts ``engine.execute`` /
 ``engine.save_model`` over to this orchestrator.
@@ -19,58 +19,58 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import IllegalScopeReferenceError
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.errors import UnknownReferenceError
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query, plan_stages
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="prod",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="region_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[
-            ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
+        relationships=[
+            DatasetRelationship(
+                to="customers",
+                from_columns=["customer_id"], to_columns=["id"],
             ),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         data_source="prod",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="revenue", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
         ],
-        joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
         ],
     )
 
 
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions",
         data_source="prod",
         sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -78,8 +78,8 @@ def _regions() -> SlayerModel:
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=_orders(),
-        referenced_models=[_customers(), _regions()],
+        population=_orders(),
+        referenced_datasets=[_customers(), _regions()],
     )
 
 
@@ -90,7 +90,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestSingleStage:
     def test_simple_aggregation(self):
-        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         # One slot in projection.
         assert len(planned.projection) == 1
@@ -101,9 +101,9 @@ class TestSingleStage:
 
     def test_dimension_plus_measure(self):
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
-            "dimensions": ["status"],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         # Two projection slots: status (row) + amount_sum (aggregate).
@@ -111,9 +111,9 @@ class TestSingleStage:
 
     def test_filter_in_planned_query(self):
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
-            "filters": ["status == 'paid'"],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "filter": ["orders.status == 'paid'"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         # One typed mask per filter conjunct.
@@ -121,30 +121,30 @@ class TestSingleStage:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1448 acceptance: user `name` on join-traversed measure
+# Acceptance: user `name` on relationship-traversed metric
 # ---------------------------------------------------------------------------
 
 
 class TestUserNameAlias:
     def test_named_measure_becomes_stage_schema_column(self):
-        # Stage 1 declares `{"formula": "customers.revenue:sum", "name": "rev_sum"}`.
+        # Stage 1 declares `{"metric": "sum(customers.revenue)", "alias": "rev_sum"}`.
         # The stage's emitted StageSchema must include a column named
-        # "rev_sum" — DEV-1448 contract.
+        # "rev_sum".
         q = SlayerQuery(
-            source_model="orders",
-            measures=[
-                {"formula": "sum(customers.revenue)", "name": "rev_sum"},
+            population="orders",
+            metrics=[
+                {"metric": "sum(customers.revenue)", "alias": "rev_sum"},
             ],
-            dimensions=["status"],
+            dimensions=["orders.status"],
         )
         planned = plan_query(query=q, bundle=_bundle())
         assert planned.stage_schema is not None
-        col_names = [c.name for c in planned.stage_schema.columns]
+        col_names = [c.name for c in planned.stage_schema.fields]
         assert "rev_sum" in col_names
 
 
 # ---------------------------------------------------------------------------
-# DEV-1449 acceptance: downstream stage references upstream by flat name
+# Downstream stage references upstream by flat name
 # ---------------------------------------------------------------------------
 
 
@@ -155,14 +155,14 @@ class TestDownstreamStageFlatRefs:
         # `amount_sum` by flat name.
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
-            "dimensions": ["status"],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         stage2 = SlayerQuery.model_validate({
-            "source_model": "stage1",
-            "measures": [{"formula": "max(amount_sum)"}],
-            "dimensions": ["status"],
+            "population": "stage1",
+            "metrics": [{"metric": "max(stage1.amount_sum)"}],
+            "dimensions": ["stage1.status"],
         })
         planned_stages = plan_stages(
             queries=[stage1, stage2], bundle=_bundle(),
@@ -171,26 +171,27 @@ class TestDownstreamStageFlatRefs:
         # Stage 1 emitted a StageSchema with amount_sum.
         s1 = planned_stages[0]
         assert s1.stage_schema is not None
-        s1_names = [c.name for c in s1.stage_schema.columns]
+        s1_names = [c.name for c in s1.stage_schema.fields]
         assert "amount_sum" in s1_names
 
     def test_dotted_ref_in_downstream_stage_raises(self):
         # In stage 2 (StageSchema scope), dotted refs are illegal.
         stage1 = SlayerQuery(
             name="stage1",
-            source_model="orders",
-            measures=[{"formula": "sum(customers.revenue)",
-                       "name": "robot_details__modelseriesval"}],
-            dimensions=["status"],
+            population="orders",
+            metrics=[{"metric": "sum(customers.revenue)",
+                       "alias": "robot_details__modelseriesval"}],
+            dimensions=["orders.status"],
         )
-        stage2 = SlayerQuery(
-            source_model="stage1",
-            measures=[{"formula": "robot_details.modelseriesval"}],
-            dimensions=["status"],
-        )
+        stage2 = SlayerQuery.model_validate({
+            "population": "stage1",
+            "metrics": [{"metric": "stage1.robot_details.modelseriesval"}],
+            "dimensions": ["stage1.status"],
+        })
         bundle = _bundle()
-        with pytest.raises(IllegalScopeReferenceError):
+        with pytest.raises(UnknownReferenceError) as ei:
             plan_stages(queries=[stage1, stage2], bundle=bundle)
+        assert "robot_details__modelseriesval" in (ei.value.suggestion or "")
 
 
 # ---------------------------------------------------------------------------
@@ -205,17 +206,17 @@ class TestTopoSort:
         # topo-sort them. The root (last entry) stays last by contract.
         stage_a = SlayerQuery.model_validate({
             "name": "stage_a",
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
-            "dimensions": ["status"],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         stage_b = SlayerQuery.model_validate({
             "name": "stage_b",
-            "source_model": "stage_a",
-            "measures": [{"formula": "max(amount_sum)"}],
-            "dimensions": ["status"],
+            "population": "stage_a",
+            "metrics": [{"metric": "max(stage_a.amount_sum)"}],
+            "dimensions": ["stage_a.status"],
         })
-        root = SlayerQuery(source_model="stage_b", dimensions=["status"])
+        root = SlayerQuery(population="stage_b", dimensions=["stage_b.status"])
         planned = plan_stages(
             queries=[stage_b, stage_a, root], bundle=_bundle(),
         )
@@ -229,19 +230,19 @@ class TestTopoSort:
     def test_duplicate_stage_names_rejected(self):
         s1 = SlayerQuery.model_validate({
             "name": "dup",
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
-            "dimensions": ["status"],
+            "population": "orders",
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         s2 = SlayerQuery.model_validate({
             "name": "dup",
-            "source_model": "orders",
-            "measures": [{"formula": "max(amount)"}],
-            "dimensions": ["status"],
+            "population": "orders",
+            "metrics": [{"metric": "max(orders.amount)"}],
+            "dimensions": ["orders.status"],
         })
         root = SlayerQuery(
-            source_model="dup",
-            dimensions=["status"],
+            population="dup",
+            dimensions=["dup.status"],
         )
         bundle = _bundle()
         with pytest.raises(ValueError, match="[Dd]uplicate stage"):
@@ -251,17 +252,17 @@ class TestTopoSort:
         # stage_a depends on stage_b, stage_b depends on stage_a — cycle.
         a = SlayerQuery(
             name="stage_a",
-            source_model="stage_b",
-            dimensions=["status"],
+            population="stage_b",
+            dimensions=["stage_b.status"],
         )
         b = SlayerQuery(
             name="stage_b",
-            source_model="stage_a",
-            dimensions=["status"],
+            population="stage_a",
+            dimensions=["stage_a.status"],
         )
         root = SlayerQuery(
-            source_model="stage_a",
-            dimensions=["status"],
+            population="stage_a",
+            dimensions=["stage_a.status"],
         )
         bundle = _bundle()
         with pytest.raises(ValueError, match="[Cc]ycle"):
@@ -270,18 +271,18 @@ class TestTopoSort:
 
 class TestStageSchemaMultiAlias:
     def test_multi_alias_emits_separate_columns(self):
-        # Two declared measures with the same key but different names
+        # Two declared metrics with the same key but different names
         # share a slot. The StageSchema should expose BOTH aliases.
         q = SlayerQuery(
-            source_model="orders",
-            measures=[
-                {"formula": "sum(amount)", "name": "rev1"},
-                {"formula": "sum(amount)", "name": "rev2"},
+            population="orders",
+            metrics=[
+                {"metric": "sum(orders.amount)", "alias": "rev1"},
+                {"metric": "sum(orders.amount)", "alias": "rev2"},
             ],
-            dimensions=["status"],
+            dimensions=["orders.status"],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        col_names = [c.name for c in planned.stage_schema.columns]
+        col_names = [c.name for c in planned.stage_schema.fields]
         # Both aliases present.
         assert "rev1" in col_names
         assert "rev2" in col_names

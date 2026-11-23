@@ -11,12 +11,13 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.database import engine_factory
+from slayer.storage.document_keys import dataset_in, keys_for
 from slayer.storage.migrations import CURRENT_VERSIONS
-from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, measure_total, raw_store, run
+from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, metric_total, raw_store, run
 
 _COLUMNS = [
     {"name": "order_id", "type": "INT", "primary_key": True},
@@ -30,12 +31,14 @@ DISTINCT_TOTAL = 8.0
 
 
 def _model_doc(*, version: int, measures: list[dict], name: str = "orders", **extra: Any) -> dict:
-    return {"version": version, "name": name, "sql_table": "orders", "data_source": DS, "columns": _COLUMNS,
-            "measures": measures, **extra}
+    """``orders`` stored at ``version``, spelled as that version stores it."""
+    doc = {"version": version, "name": name, "sql_table": "orders", "data_source": DS, "columns": _COLUMNS,
+           "measures": measures, **extra}
+    return dataset_in(doc, keys_for(entity="SlayerModel", version=version))
 
 
 def _formulas(doc: dict) -> list[str]:
-    return [m.formula for m in SlayerModel.model_validate(doc).measures]
+    return [m.text for m in SlayerDataset.model_validate(doc).metrics]
 
 
 def _query(*, version: int, **fields: Any) -> SlayerQuery:
@@ -44,10 +47,10 @@ def _query(*, version: int, **fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 22
-        assert CURRENT_VERSIONS["SlayerQuery"] == 14
+        assert CURRENT_VERSIONS["SlayerModel"] == 28
+        assert CURRENT_VERSIONS["SlayerQuery"] == 18
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 10
+        assert CURRENT_VERSIONS["Memory"] == 13
 
 
 #: (stored v17 text, the text it loads as).
@@ -70,30 +73,30 @@ class TestDistinctRewrite:
     @pytest.mark.parametrize(("stored", "loaded"), DISTINCT_CASES)
     def test_query_fields(self, stored: str, loaded: str) -> None:
         query = _query(version=8, measures=[stored], filters=[f"{stored} > 1"])
-        assert [m.formula for m in query.measures or []] == [loaded]
-        assert query.filters == [f"{loaded} > 1"]
+        assert [m.metric for m in query.metrics or []] == [loaded]
+        assert query.filter == [f"{loaded} > 1"]
 
     def test_saved_query_stage(self) -> None:
         doc = {"version": 17, "name": "rev_q", "data_source": DS,
                "source_queries": [{"version": 8, "source_model": "orders",
                                    "measures": [{"formula": "sum(distinct)", "name": "d"}]}]}
-        model = SlayerModel.model_validate(doc)
+        model = SlayerDataset.model_validate(doc)
         stage = (model.source_queries or [])[0]
-        assert [m.formula for m in stage.measures or []] == ['sum("distinct")']
+        assert [m.metric for m in stage.metrics or []] == ['sum("distinct")']
 
     def test_memory_query(self) -> None:
         query = {"version": 8, "source_model": "orders", "measures": ["sum(distinct)"]}
         mem = Memory.model_validate(memory_v2(memory_id="m", version=6, query=query))
         assert mem.query is not None
-        assert [m.formula for m in mem.query.measures or []] == ['sum("distinct")']
+        assert [m.metric for m in mem.query.metrics or []] == ['sum("distinct")']
 
     def test_a_current_document_is_not_rewritten(self) -> None:
         doc = _model_doc(version=CURRENT_VERSIONS["SlayerModel"], measures=[{"name": "x", "formula": "sum(distinct)"}])
         assert _formulas(doc) == ["sum(distinct)"]
 
     def test_a_client_query_is_not_rewritten(self) -> None:
-        query = SlayerQuery.model_validate({"source_model": "orders", "measures": ["sum(distinct)"]})
-        assert [m.formula for m in query.measures or []] == ["sum(distinct)"]
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(distinct)"]})
+        assert [m.metric for m in query.metrics or []] == ["sum(distinct)"]
 
 
 @pytest.fixture
@@ -121,11 +124,11 @@ class TestDistinctResults:
         doc = _model_doc(version=17, measures=[{"name": "total", "formula": "sum(distinct)"}])
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=distinct_ds,
                                   models=[doc])
-        model = await storage.get_model("orders", data_source=DS)
+        model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
-        assert [m.formula for m in model.measures] == ['sum("distinct")']
-        resp = await run(storage, {"source_model": "orders", "measures": ["total"]})
-        assert measure_total(resp, measure="total") == DISTINCT_TOTAL
+        assert [m.expression for m in model.metrics] == ['sum("distinct")']
+        resp = await run(storage, {"population": "orders", "metrics": ["orders.total"]})
+        assert metric_total(resp, metric="total") == DISTINCT_TOTAL
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_memory_query_sums_the_column(self, tmp_path: Path, distinct_ds: DatasourceConfig,
@@ -136,7 +139,7 @@ class TestDistinctResults:
                                   memories=[memory_v2(memory_id="m_d", version=6, query=query)])
         mem = await storage.get_memory("m_d")
         assert mem.query is not None
-        assert measure_total(await run(storage, mem.query), measure="d") == DISTINCT_TOTAL
+        assert metric_total(await run(storage, mem.query), metric="d") == DISTINCT_TOTAL
 
 
 @contextmanager
@@ -172,8 +175,8 @@ class TestOldGrammarGate:
         doc = _model_doc(version=15, name="gate_probe", measures=[{"name": n, "formula": t} for n, t in NEW_ONLY],
                          filters=[BETWEEN])
         with _messages(caplog) as messages:
-            model = SlayerModel.model_validate(doc)
-        assert [m.formula for m in model.measures] == [t for _, t in NEW_ONLY]
+            model = SlayerDataset.model_validate(doc)
+        assert [m.expression for m in model.metrics] == [t for _, t in NEW_ONLY]
         assert model.filters == [BETWEEN]
         missing = [n for n, t in NEW_ONLY if not _warned(messages, document="gate_probe", field=(n, t))]
         assert missing == [], messages
@@ -200,21 +203,21 @@ class TestOldGrammarGate:
         doc = _model_doc(version=15, name="gate_probe", measures=[
             {"name": "m_secret", "formula": f"count(*) FILTER (WHERE email = '{secret}' || '')"}])
         with _messages(caplog) as messages:
-            SlayerModel.model_validate(doc)
+            SlayerDataset.model_validate(doc)
         assert _warned(messages, document="gate_probe", field=("m_secret",)), messages
         assert not [m for m in messages if secret in m], messages
 
     @pytest.mark.parametrize("pad", [" ", "\n  "], ids=["space", "newline"])
     def test_old_text_with_leading_whitespace_is_upgraded(self, pad: str) -> None:
         query = _query(version=6, filters=[f'{pad}status == "paid"'])
-        assert query.filters == [f"{pad}status = 'paid'"]
+        assert query.filter == [f"{pad}status = 'paid'"]
 
     def test_saved_query(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:
             query = _query(version=6, name="gate_q", filters=[BETWEEN, 'status == "paid"'],
                            dimensions=[{"expression": "status | region", "name": "tag"}])
-        assert query.filters == [BETWEEN, "status = 'paid'"]
-        assert [getattr(d, "expression") for d in query.dimensions or []] == ["status || region"]
+        assert query.filter == [BETWEEN, "status = 'paid'"]
+        assert [d.field for d in query.dimensions or []] == ["status || region"]
         assert _warned(messages, document="gate_q", field=(BETWEEN, "filters")), messages
 
     def test_memory(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -223,7 +226,7 @@ class TestOldGrammarGate:
         with _messages(caplog) as messages:
             mem = Memory.model_validate(memory_v2(memory_id="m_gate", version=4, query=query))
         assert mem.query is not None
-        assert mem.query.filters == [BETWEEN]
-        assert [m.formula for m in mem.query.measures or []] == ["sum(a || b)"]
+        assert mem.query.filter == [BETWEEN]
+        assert [m.metric for m in mem.query.metrics or []] == ["sum(a || b)"]
         assert _warned(messages, document="m_gate", field=(BETWEEN, "filters")), messages
         assert _warned(messages, document="m_gate", field=("sum(a || b)", "ab")), messages

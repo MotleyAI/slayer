@@ -117,13 +117,13 @@ def _serve(*, table: str, catalog: FacadeCatalog) -> RowBatch:
 
 def _serve_metrics(*, catalog: FacadeCatalog) -> RowBatch:
     columns = [
-        FacadeColumn(name="catalog_name", type=DataType.TEXT),
-        FacadeColumn(name="schema_name", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="metric_name", type=DataType.TEXT),
-        FacadeColumn(name="description", type=DataType.TEXT),
-        FacadeColumn(name="data_type", type=DataType.TEXT),
-        FacadeColumn(name="label", type=DataType.TEXT),
+        FacadeColumn(name="catalog_name", type=DataType.STRING),
+        FacadeColumn(name="schema_name", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="metric_name", type=DataType.STRING),
+        FacadeColumn(name="description", type=DataType.STRING),
+        FacadeColumn(name="data_type", type=DataType.STRING),
+        FacadeColumn(name="label", type=DataType.STRING),
     ]
     rows: list[dict] = []
     for sch in catalog.schemas:
@@ -143,13 +143,13 @@ def _serve_metrics(*, catalog: FacadeCatalog) -> RowBatch:
 
 def _serve_dimensions(*, catalog: FacadeCatalog) -> RowBatch:
     columns = [
-        FacadeColumn(name="catalog_name", type=DataType.TEXT),
-        FacadeColumn(name="schema_name", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="dimension_name", type=DataType.TEXT),
-        FacadeColumn(name="description", type=DataType.TEXT),
-        FacadeColumn(name="data_type", type=DataType.TEXT),
-        FacadeColumn(name="label", type=DataType.TEXT),
+        FacadeColumn(name="catalog_name", type=DataType.STRING),
+        FacadeColumn(name="schema_name", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="dimension_name", type=DataType.STRING),
+        FacadeColumn(name="description", type=DataType.STRING),
+        FacadeColumn(name="data_type", type=DataType.STRING),
+        FacadeColumn(name="label", type=DataType.STRING),
         FacadeColumn(name="is_time", type=DataType.BOOLEAN),
     ]
     rows: list[dict] = []
@@ -171,8 +171,8 @@ def _serve_dimensions(*, catalog: FacadeCatalog) -> RowBatch:
 
 def _serve_schemata(*, catalog: FacadeCatalog) -> RowBatch:
     columns = [
-        FacadeColumn(name="catalog_name", type=DataType.TEXT),
-        FacadeColumn(name="schema_name", type=DataType.TEXT),
+        FacadeColumn(name="catalog_name", type=DataType.STRING),
+        FacadeColumn(name="schema_name", type=DataType.STRING),
     ]
     rows = [
         {"catalog_name": catalog.catalog_name, "schema_name": sch.name}
@@ -183,10 +183,10 @@ def _serve_schemata(*, catalog: FacadeCatalog) -> RowBatch:
 
 def _serve_tables(*, catalog: FacadeCatalog) -> RowBatch:
     columns = [
-        FacadeColumn(name="table_catalog", type=DataType.TEXT),
-        FacadeColumn(name="table_schema", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="table_type", type=DataType.TEXT),
+        FacadeColumn(name="table_catalog", type=DataType.STRING),
+        FacadeColumn(name="table_schema", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="table_type", type=DataType.STRING),
     ]
     rows: list[dict] = []
     for sch in catalog.schemas:
@@ -204,24 +204,24 @@ def _serve_columns(*, catalog: FacadeCatalog) -> RowBatch:
     """One row per metric AND per dimension on every table, flattened
     into the JDBC ``COLUMNS`` shape. BI tools introspecting a "table"
     via the wire-facade driver see this as the column list of the
-    underlying semantic model.
+    underlying SLayer dataset.
 
-    DEV-1567: cross-model entries are excluded — they leak as dotted
+    Cross-dataset entries are excluded — they leak as dotted
     "columns" that Metabase / dbt fingerprint scans then project, landing
-    a dotted name in ``SlayerQuery.measures[*].name`` (Pydantic rejects
+    a dotted name in ``SlayerQuery.metrics[*].name`` (Pydantic rejects
     the dot). Catalog-namespaced surfaces (``INFORMATION_SCHEMA.METRICS``
     / ``.DIMENSIONS``) and the catalog SQL fingerprint hash continue to
     use the raw ``tbl.metrics`` / ``tbl.dimensions``.
     """
     columns = [
-        FacadeColumn(name="table_catalog", type=DataType.TEXT),
-        FacadeColumn(name="table_schema", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="column_name", type=DataType.TEXT),
-        FacadeColumn(name="ordinal_position", type=DataType.INT),
-        FacadeColumn(name="data_type", type=DataType.TEXT),
-        FacadeColumn(name="is_nullable", type=DataType.TEXT),  # Postgres YES/NO
-        FacadeColumn(name="column_kind", type=DataType.TEXT),  # METRIC / DIMENSION
+        FacadeColumn(name="table_catalog", type=DataType.STRING),
+        FacadeColumn(name="table_schema", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="column_name", type=DataType.STRING),
+        FacadeColumn(name="ordinal_position", type=DataType.INTEGER),
+        FacadeColumn(name="data_type", type=DataType.STRING),
+        FacadeColumn(name="is_nullable", type=DataType.STRING),  # Postgres YES/NO
+        FacadeColumn(name="column_kind", type=DataType.STRING),  # METRIC / DIMENSION
     ]
     rows: list[dict] = []
     for sch in catalog.schemas:

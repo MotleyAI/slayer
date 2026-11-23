@@ -1,0 +1,56 @@
+version: 0.3.0.dev0
+name: m
+datasets:
+- name: orders
+  source: db.s.orders
+  fields:
+  - name: customer_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: customer_id
+  - name: product_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: product_id
+  - name: variant_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: variant_id
+- name: customers
+  source: db.s.customers
+  primary_key:
+  - id
+  unique_keys:
+  - - email
+  fields:
+  - name: id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: id
+  - name: email
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: email
+  - name: region
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: region
+  - name: tenant_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: tenant_id
+relationships:
+- name: orders_to_customers
+  from: orders
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - region

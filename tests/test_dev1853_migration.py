@@ -16,12 +16,13 @@ import tempfile
 import pytest
 import yaml
 
-from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.join_walker import edges_between, resolve_hop
-from slayer.core.models import DatasourceConfig
+from slayer.core.errors import AmbiguousRelationshipPathError
+from slayer.core.relationship_walker import edges_between, resolve_hop
+from slayer.core.models import DatasourceConfig, DatasetRelationship
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 
 def test_v10_is_current_and_registered() -> None:
@@ -111,12 +112,12 @@ async def _seed_sqlite(db_path: str, payloads: list[dict]) -> SQLiteStorage:
     return storage
 
 
-async def _joins_after_load(storage) -> tuple[list, list]:
-    orders = await storage.get_model("orders", data_source="ds")
-    customers = await storage.get_model("customers", data_source="ds")
+async def _relationships_after_load(storage: StorageBackend) -> tuple[list[DatasetRelationship], list[DatasetRelationship]]:
+    orders = await storage.get_dataset("orders", data_source="ds")
+    customers = await storage.get_dataset("customers", data_source="ds")
     assert orders is not None
     assert customers is not None
-    return orders.joins, customers.joins
+    return orders.relationships, customers.relationships
 
 
 class TestMirroredPairCollapses:
@@ -124,17 +125,17 @@ class TestMirroredPairCollapses:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(
                 d, [_orders_v9([_fwd()]), _customers_v9([_rev()])])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert len(orders_joins) == 1
-            assert orders_joins[0].target_model == "customers"
+            assert orders_joins[0].to == "customers"
             assert customers_joins == []
 
     async def test_survivor_traverses_both_ways(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(
                 d, [_orders_v9([_fwd()]), _customers_v9([_rev()])])
-            orders = await storage.get_model("orders", data_source="ds")
-            customers = await storage.get_model("customers", data_source="ds")
+            orders = await storage.get_dataset("orders", data_source="ds")
+            customers = await storage.get_dataset("customers", data_source="ds")
             assert orders is not None
             assert customers is not None
             assert len(edges_between(source=orders, target=customers)) == 1
@@ -144,7 +145,7 @@ class TestMirroredPairCollapses:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_sqlite(
                 f"{d}/s.db", [_orders_v9([_fwd()]), _customers_v9([_rev()])])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert len(orders_joins) == 1
             assert customers_joins == []
 
@@ -152,18 +153,18 @@ class TestMirroredPairCollapses:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(
                 d, [_orders_v9([_fwd()]), _customers_v9([_rev()])])
-            customers = await storage.get_model("customers", data_source="ds")
+            customers = await storage.get_dataset("customers", data_source="ds")
             assert customers is not None
-            assert customers.joins == []
-            orders = await storage.get_model("orders", data_source="ds")
+            assert customers.relationships == []
+            orders = await storage.get_dataset("orders", data_source="ds")
             assert orders is not None
-            assert len(orders.joins) == 1
+            assert len(orders.relationships) == 1
 
     async def test_dedup_is_persisted_and_version_bumped(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(
                 d, [_orders_v9([_fwd()]), _customers_v9([_rev()])])
-            await _joins_after_load(storage)
+            await _relationships_after_load(storage)
             on_disk = yaml.safe_load(
                 open(os.path.join(d, "models", "ds", "customers.yaml")).read())
             assert not on_disk.get("joins")
@@ -173,8 +174,8 @@ class TestMirroredPairCollapses:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(
                 d, [_orders_v9([_fwd()]), _customers_v9([_rev()])])
-            first = await _joins_after_load(storage)
-            second = await _joins_after_load(storage)
+            first = await _relationships_after_load(storage)
+            second = await _relationships_after_load(storage)
             assert [len(j) for j in first] == [len(j) for j in second] == [1, 0]
 
 
@@ -186,7 +187,7 @@ class TestKeepRuleTiebreaks:
                 _orders_v9([_fwd(cardinality=None)]),
                 _customers_v9([_rev(cardinality="one_to_many")]),
             ])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert orders_joins == []
             assert len(customers_joins) == 1
 
@@ -196,7 +197,7 @@ class TestKeepRuleTiebreaks:
                 _orders_v9([_fwd(cardinality=None)]),
                 _customers_v9([_rev(cardinality=None)]),
             ])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             # ("customers", "orders") < ("orders", "customers")
             assert len(customers_joins) == 1
             assert orders_joins == []
@@ -210,17 +211,17 @@ class TestNonExactPairsAreKept:
                 _customers_v9([_rev(pairs=[["name", "customer_id"]],
                                     cardinality=None)]),
             ])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert len(orders_joins) == 1
             assert len(customers_joins) == 1
-            orders = await storage.get_model("orders", data_source="ds")
-            customers = await storage.get_model("customers", data_source="ds")
+            orders = await storage.get_dataset("orders", data_source="ds")
+            customers = await storage.get_dataset("customers", data_source="ds")
             assert orders is not None
             assert customers is not None
             models = {"orders": orders, "customers": customers}
-            with pytest.raises(AmbiguousJoinPathError):
+            with pytest.raises(AmbiguousRelationshipPathError):
                 resolve_hop(current=customers, token="orders",
-                            models_by_name=models)
+                            datasets_by_name=models)
 
     async def test_different_join_types_both_survive(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -228,7 +229,7 @@ class TestNonExactPairsAreKept:
                 _orders_v9([_fwd(join_type="inner")]),
                 _customers_v9([_rev(join_type="left")]),
             ])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert len(orders_joins) == 1
             assert len(customers_joins) == 1
 
@@ -238,7 +239,7 @@ class TestNonExactPairsAreKept:
                 _orders_v9([_fwd(cardinality="many_to_one")]),
                 _customers_v9([_rev(cardinality="many_to_one")]),
             ])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert len(orders_joins) == 1
             assert len(customers_joins) == 1
 
@@ -247,9 +248,9 @@ class TestMissingPeer:
     async def test_absent_counterpart_leaves_the_document_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(d, [_orders_v9([_fwd()])])
-            orders = await storage.get_model("orders", data_source="ds")
+            orders = await storage.get_dataset("orders", data_source="ds")
             assert orders is not None
-            assert len(orders.joins) == 1
+            assert len(orders.relationships) == 1
             assert orders.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
@@ -261,7 +262,7 @@ class TestNamedMirrorsSurvive:
                 _orders_v9([_fwd()]),
                 _customers_v9([{**_rev(), "name": "back"}]),
             ])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert len(orders_joins) == 1
             assert len(customers_joins) == 1
             assert customers_joins[0].name == "back"
@@ -272,12 +273,12 @@ class TestNamedMirrorsSurvive:
                 _orders_v9([_fwd()]),
                 _customers_v9([{**_rev(), "name": "back"}]),
             ])
-            customers = await storage.get_model("customers", data_source="ds")
-            orders = await storage.get_model("orders", data_source="ds")
+            customers = await storage.get_dataset("customers", data_source="ds")
+            orders = await storage.get_dataset("orders", data_source="ds")
             assert customers is not None
-            assert len(customers.joins) == 1
+            assert len(customers.relationships) == 1
             assert orders is not None
-            assert len(orders.joins) == 1
+            assert len(orders.relationships) == 1
 
     async def test_one_sided_name_repeated_loads_change_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -285,8 +286,8 @@ class TestNamedMirrorsSurvive:
                 _orders_v9([_fwd()]),
                 _customers_v9([{**_rev(), "name": "back"}]),
             ])
-            await _joins_after_load(storage)
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            await _relationships_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert len(orders_joins) == 1
             assert len(customers_joins) == 1
 
@@ -296,7 +297,7 @@ class TestNamedMirrorsSurvive:
                 _orders_v9([{**_fwd(), "name": "fwd"}]),
                 _customers_v9([{**_rev(), "name": "back"}]),
             ])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert len(orders_joins) == 1
             assert len(customers_joins) == 1
 
@@ -306,7 +307,7 @@ class TestNamedMirrorsSurvive:
                 _orders_v9([{**_fwd(), "name": "link"}]),
                 _customers_v9([{**_rev(), "name": "link"}]),
             ])
-            orders_joins, customers_joins = await _joins_after_load(storage)
+            orders_joins, customers_joins = await _relationships_after_load(storage)
             assert len(orders_joins) == 1
             assert orders_joins[0].name == "link"
             assert customers_joins == []

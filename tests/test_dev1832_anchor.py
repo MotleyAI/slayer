@@ -1,4 +1,4 @@
-"""DEV-1832 task 1.2 — the one source-anchor accessor and its AST guard (D1).
+"""The one source-anchor accessor and its AST guard (D1).
 
 ``source_anchor_path`` / ``source_leaf_paths`` (``slayer.core.keys``) answer
 "where does this aggregation source live" for every source shape. The AST guard
@@ -20,15 +20,15 @@ import slayer.sql
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     ScalarCallKey,
     StarKey,
 )
 
 
-def _col(path=(), leaf="amount") -> ColumnKey:
-    return ColumnKey(path=tuple(path), leaf=leaf)
+def _col(path=(), leaf="amount") -> FieldKey:
+    return FieldKey(path=tuple(path), leaf=leaf)
 
 
 class TestSourceAnchorPath:
@@ -85,8 +85,8 @@ class TestSourceLeafPaths:
         assert set(keys.source_leaf_paths(src)) == {("customers",), ("customers", "regions")}
 
     def test_parallel_named_edges_yield_distinct_paths(self):
-        # Two named joins to the same target model carry distinct path segments
-        # (the join name), so their leaves are distinct paths, anchored at ().
+        # Two named relationships to the same target dataset carry distinct path
+        # segments (the relationship name), so their leaves are distinct paths, anchored at ().
         src = ArithmeticKey(op="-", operands=(
             _col(("opener",), "score"), _col(("closer",), "score")))
         assert set(keys.source_leaf_paths(src)) == {("opener",), ("closer",)}

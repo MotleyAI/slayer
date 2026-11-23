@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dev1919_home_rooted_attached_inputs.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  }
+ ]
+}

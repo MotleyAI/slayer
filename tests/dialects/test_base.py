@@ -47,8 +47,8 @@ from tests._dev1965_fixtures import (
 
 def test_default_build_date_trunc_month() -> None:
     d = SqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="postgres")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH)
+    col = exp.column("created_at", table="orders")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME)
     sql = out.sql(dialect=d.sqlglot_name)
     assert "DATE_TRUNC" in sql.upper()
     assert "MONTH" in sql.upper()
@@ -57,8 +57,8 @@ def test_default_build_date_trunc_month() -> None:
 def test_default_build_date_trunc_casts_non_column_to_timestamp() -> None:
     """Non-column operands get an explicit timestamp CAST."""
     d = SqlDialect()
-    literal_expr = sqlglot.parse_one("'2025-01-01'", dialect="postgres")
-    out = d.build_date_trunc(literal_expr, TimeGranularity.MONTH)
+    literal_expr = exp.Literal.string("2025-01-01")
+    out = d.build_date_trunc(col_expr=literal_expr, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME)
     assert "CAST" in out.sql(dialect=d.sqlglot_name).upper()
 
 
@@ -69,7 +69,7 @@ def test_default_build_date_trunc_idempotent_on_already_cast() -> None:
         this=sqlglot.parse_one("'2025-01-01'", dialect="postgres"),
         to=exp.DataType.build("TIMESTAMP"),
     )
-    out = d.build_date_trunc(cast_expr, TimeGranularity.MONTH)
+    out = d.build_date_trunc(col_expr=cast_expr, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME)
     sql = out.sql(dialect=d.sqlglot_name)
     # one CAST inside the DATE_TRUNC, not two nested
     assert sql.upper().count("CAST") == 1
@@ -79,9 +79,9 @@ def test_default_build_date_trunc_idempotent_on_already_cast() -> None:
 
 
 def _date_add(count: int, unit: TimeGranularity) -> Expression:
-    col = exp.column("created_at")
+    col = exp.column("orders.created_at")
     return SqlDialect().build_date_add(
-        expr=col, count=exp.Literal.number(count), unit=unit, operand=DataType.TIMESTAMP,
+        expr=col, count=exp.Literal.number(count), unit=unit, operand=DataType.DATETIME,
     )
 
 
@@ -264,14 +264,14 @@ def test_oracle_overrides_log10_and_log2_to_false() -> None:
 # Outer wrap over a transform chain (postgres): the chain's WITH sits on the
 # statement; the public projection reads the ``_outer`` derived table.
 
-_DESC_CREATED = [{"column": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "orders.created_at", "direction": "desc"}]
 
 
 async def test_chain_outer_wrap_basic_shape() -> None:
     """``SELECT <quoted public> FROM (<chain final select>) AS _outer``."""
     top = parse(await gen(cumsum_chain(), dialect="postgres"), "postgres")
     assert [e.sql(dialect="postgres") for e in top.expressions] == [
-        '"orders.created_at"', '"orders.running"',
+        '"orders.created_at"', '"running"',
     ]
     assert "orders.amount_sum" in outer_derived(top).named_selects
 
@@ -290,7 +290,7 @@ async def test_chain_outer_wrap_with_order() -> None:
 
 async def test_chain_outer_wrap_hidden_order_by_names_the_carried_alias() -> None:
     """A non-projected sort key resolves to the alias the chain carries."""
-    sql = await gen(cumsum_chain(order=[{"column": "max(amount)", "direction": "desc"}]),
+    sql = await gen(cumsum_chain(order=[{"field": "max(orders.amount)", "direction": "desc"}]),
                     dialect="postgres")
     assert outer_order(sql, "postgres") == [("orders.amount_max", "", True)], sql
 
@@ -367,7 +367,7 @@ def test_backslash_escapes_strings_is_bool() -> None:
     assert isinstance(SqliteDialect().backslash_escapes_strings, bool)
 
 
-def test_backslash_escapes_derivation_guards_missing_string_escapes(monkeypatch) -> None:
+def test_backslash_escapes_derivation_guards_missing_string_escapes(monkeypatch: pytest.MonkeyPatch) -> None:
     """A reshaped tokenizer STRING_ESCAPES raises a clear RuntimeError."""
     base_mod._sqlglot_backslash_escapes.cache_clear()
     tokenizer_cls = Dialect.get_or_raise("postgres").tokenizer_class

@@ -1,4 +1,4 @@
-"""Persist what kind of database object backs a model."""
+"""Persist what kind of database object backs a dataset."""
 from __future__ import annotations
 
 import tempfile
@@ -13,12 +13,12 @@ from pydantic import ValidationError
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import (
     _additive_merge_existing,
     ingest_datasource_idempotent,
-    introspect_table_to_model,
+    introspect_table_to_dataset,
     list_ingestable_objects,
 )
 from slayer.database.client import SlayerSQLClient
@@ -99,7 +99,7 @@ class TestClassification:
         _, ds = _ds(workspace, _TABLE_AND_VIEW)
         client = SlayerSQLClient(datasource=ds)
         try:
-            model = await introspect_table_to_model(
+            model = await introspect_table_to_dataset(
                 client=client,
                 table_name="orders",
                 ref=None,
@@ -119,40 +119,40 @@ class TestClassification:
 class TestPersistence:
     async def test_round_trips_through_yaml_storage(self, workspace: Path) -> None:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
-        model = SlayerModel(
+        model = SlayerDataset(
             name="v_orders",
             sql_table="v_orders",
             data_source="ds",
             source_kind="view",
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
-        await storage.save_model(model)
-        loaded = await storage.get_model("v_orders", data_source="ds")
+        await storage.save_dataset(model)
+        loaded = await storage.get_dataset("v_orders", data_source="ds")
         assert loaded is not None
         assert loaded.source_kind == "view"
 
     async def test_round_trips_through_sqlite_storage(self, workspace: Path) -> None:
         storage = SQLiteStorage(db_path=str(workspace / "slayer.db"))
-        model = SlayerModel(
+        model = SlayerDataset(
             name="mv_orders",
             sql_table="mv_orders",
             data_source="ds",
             source_kind="materialized_view",
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
-        await storage.save_model(model)
-        loaded = await storage.get_model("mv_orders", data_source="ds")
+        await storage.save_dataset(model)
+        loaded = await storage.get_dataset("mv_orders", data_source="ds")
         assert loaded is not None
         assert loaded.source_kind == "materialized_view"
 
     def test_defaults_to_none(self) -> None:
-        """Hand-authored and sql-mode models have no live object, so None is correct."""
+        """Hand-authored and sql-mode datasets have no live object, so None is correct."""
         assert (
-            SlayerModel(name="m", sql_table="t", data_source="ds").source_kind
+            SlayerDataset(name="m", sql_table="t", data_source="ds").source_kind
             is None
         )
         assert (
-            SlayerModel(
+            SlayerDataset(
                 name="m", sql="SELECT 1", data_source="ds"
             ).source_kind
             is None
@@ -160,7 +160,7 @@ class TestPersistence:
 
     def test_rejects_an_unknown_kind(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerModel(
+            SlayerDataset(
                 name="m", sql_table="t", data_source="ds", source_kind="temp_table"
             )
 
@@ -174,7 +174,7 @@ class TestMigration:
     def test_current_version_is_at_least_8(self) -> None:
         current = CURRENT_VERSIONS["SlayerModel"]
         assert current >= 8  # v8 added source_kind; bumped to 9
-        assert SlayerModel(
+        assert SlayerDataset(
             name="m", sql_table="t", data_source="ds"
         ).version == current
 
@@ -191,8 +191,8 @@ class TestMigration:
         assert migrated["version"] == CURRENT_VERSIONS["SlayerModel"]
 
     def test_v7_payload_loads_with_unknown_source_kind(self) -> None:
-        """A pre-existing model cannot know what backed it — None is correct."""
-        model = SlayerModel.model_validate(
+        """A pre-existing dataset cannot know what backed it — None is correct."""
+        model = SlayerDataset.model_validate(
             {
                 "version": 7,
                 "name": "orders",
@@ -228,7 +228,7 @@ class TestSourceKindRefresh:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
 
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
-        first = await storage.get_model("foo", data_source="ds")
+        first = await storage.get_dataset("foo", data_source="ds")
         assert first is not None
         assert first.source_kind == "view"
 
@@ -242,7 +242,7 @@ class TestSourceKindRefresh:
             )
 
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
-        second = await storage.get_model("foo", data_source="ds")
+        second = await storage.get_dataset("foo", data_source="ds")
         assert second is not None
         assert second.source_kind == "table", (
             "source_kind went stale — the refresh must also bypass the "
@@ -260,7 +260,7 @@ class TestSourceKindRefresh:
         )
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
-        first = await storage.get_model("foo", data_source="ds")
+        first = await storage.get_dataset("foo", data_source="ds")
         assert first is not None
         assert first.source_kind == "table"
 
@@ -270,12 +270,12 @@ class TestSourceKindRefresh:
             )
 
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
-        second = await storage.get_model("foo", data_source="ds")
+        second = await storage.get_dataset("foo", data_source="ds")
         assert second is not None
         assert second.source_kind == "view"
 
     async def test_refresh_reports_the_change(self, workspace: Path) -> None:
-        """A kind change with no column change must still surface as a ModelAddition."""
+        """A kind change with no field change must still surface as a DatasetAddition."""
         db_path, ds = _ds(
             workspace,
             """
@@ -292,24 +292,24 @@ class TestSourceKindRefresh:
             )
 
         result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
-        addition = next(a for a in result.additions if a.model_name == "foo")
+        addition = next(a for a in result.additions if a.dataset_name == "foo")
         assert addition.kind_change == "view → table"
 
     async def test_none_never_erases_a_known_value(self, workspace: Path) -> None:
-        """A fresh model with kind None must not wipe a persisted value."""
-        persisted = SlayerModel(
+        """A fresh dataset with kind None must not wipe a persisted value."""
+        persisted = SlayerDataset(
             name="foo",
             sql_table="foo",
             data_source="ds",
             source_kind="view",
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
-        fresh = SlayerModel(
+        fresh = SlayerDataset(
             name="foo",
             sql_table="foo",
             data_source="ds",
             source_kind=None,
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         outcome = _additive_merge_existing(persisted=persisted, fresh=fresh)
         assert outcome.kind_changed is False
@@ -317,19 +317,19 @@ class TestSourceKindRefresh:
 
     def test_no_op_merge_preserves_the_early_return_contract(self) -> None:
         """An identical re-ingest must still short-circuit."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="foo",
             sql_table="foo",
             data_source="ds",
             source_kind="table",
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         outcome = _additive_merge_existing(
             persisted=model, fresh=model.model_copy(deep=True)
         )
         assert outcome.merged is model
-        assert outcome.new_columns == []
-        assert outcome.widened_columns == []
+        assert outcome.new_fields == []
+        assert outcome.widened_fields == []
         assert outcome.kind_changed is False
 
     async def test_identical_reingest_is_still_a_no_op(
@@ -342,5 +342,5 @@ class TestSourceKindRefresh:
         result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         for addition in result.additions:
             assert addition.created is False
-            assert addition.new_columns == []
+            assert addition.new_fields == []
             assert addition.kind_change is None

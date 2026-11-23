@@ -1,0 +1,34 @@
+{
+ "source": "tests/test_dev2101_importer_dependencies.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "wsum",
+    "formula": "SUM({value} * {weight})"
+   },
+   "new": {
+    "name": "wsum",
+    "expression": "SUM({value} * {weight})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  }
+ ]
+}

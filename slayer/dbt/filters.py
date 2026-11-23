@@ -33,27 +33,31 @@ _ENTITY_RE = re.compile(
 
 def convert_dbt_filter(
     filter_str: str,
-    source_model_name: str,
+    population_name: str,
     entity_registry: EntityRegistry,
-    model_entity_names: dict[str, str] | None = None,
+    dataset_entity_names: dict[str, str] | None = None,
     all_semantic_models: dict[str, DbtSemanticModel] | None = None,
 ) -> str:
     """Convert a dbt Jinja filter string to a SLayer filter string.
 
     Args:
         filter_str: The raw dbt filter, e.g. "{{ Dimension('claim_amount__has_loss_payment') }} = 1"
-        source_model_name: Name of the model this filter is defined on.
+        population_name: Name of the model this filter is defined on.
         entity_registry: Registry mapping entity names to primary models.
-        model_entity_names: {entity_name: entity_type} for entities defined on the source model.
+        dataset_entity_names: {entity_name: entity_type} for entities defined on the source model.
             Used to determine if an entity reference is local (primary) or remote (foreign).
         all_semantic_models: {model_name: DbtSemanticModel} for all parsed models.
             Used to verify whether a dimension actually exists on the source model when
             the entity is local.  When the dimension is missing locally, peer models
             sharing the same primary entity are searched and the result is qualified.
     """
-    model_entity_names = model_entity_names or {}
+    dataset_entity_names = dataset_entity_names or {}
     all_semantic_models = all_semantic_models or {}
     result = filter_str
+
+    def _is_local_dimension(dim_name: str) -> bool:
+        source_sm = all_semantic_models.get(population_name)
+        return source_sm is not None and any(d.name == dim_name for d in source_sm.dimensions)
 
     # Replace {{ Dimension('entity__dim_name') }} references
     def _replace_dimension(match: re.Match) -> str:
@@ -61,12 +65,11 @@ def convert_dbt_filter(
         dim_name = match.group(2)
 
         # Check if entity is the source model's own primary entity
-        entity_type = model_entity_names.get(entity_name)
+        entity_type = dataset_entity_names.get(entity_name)
         if entity_type in ("primary", "unique"):
             # Verify the dimension actually exists on the source model
-            source_sm = all_semantic_models.get(source_model_name)
-            if source_sm and any(d.name == dim_name for d in source_sm.dimensions):
-                return dim_name  # Local dimension — bare name
+            if _is_local_dimension(dim_name):
+                return f"{population_name}.{dim_name}"  # a bare name would read the source column
 
             # Dimension not on source — search peer models sharing the same entity
             # Sort by model name for deterministic selection when multiple peers match
@@ -75,7 +78,7 @@ def convert_dbt_filter(
                 key=lambda item: item[0],
             )
             for peer_name, _ in peer_models:
-                if peer_name == source_model_name:
+                if peer_name == population_name:
                     continue
                 peer_sm = all_semantic_models.get(peer_name)
                 if peer_sm and any(d.name == dim_name for d in peer_sm.dimensions):
@@ -86,13 +89,13 @@ def convert_dbt_filter(
                 logger.warning(
                     "Cannot resolve peer dimension '%s' for entity '%s' on model '%s': "
                     "all_semantic_models not provided — falling back to bare name",
-                    dim_name, entity_name, source_model_name,
+                    dim_name, entity_name, population_name,
                 )
             return dim_name
 
         # Foreign entity — resolve to target_model.dim
         target_model = entity_registry.resolve_entity_to_model(entity_name)
-        if target_model and target_model != source_model_name:
+        if target_model and target_model != population_name:
             return f"{target_model}.{dim_name}"
 
         # Fallback: use bare name (might be on same model under a different entity name)
@@ -102,7 +105,8 @@ def convert_dbt_filter(
 
     # Replace {{ TimeDimension('name', 'granularity') }} → just the name
     def _replace_time_dimension(match: re.Match) -> str:
-        return match.group(1)
+        name = match.group(1)
+        return f"{population_name}.{name}" if _is_local_dimension(name) else name
 
     result = _TIME_DIMENSION_RE.sub(_replace_time_dimension, result)
 

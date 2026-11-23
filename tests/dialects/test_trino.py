@@ -21,7 +21,7 @@ from slayer.sql.dialects import _tier2, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects._tier2 import PrestoDialect
 from slayer.sql.dialects.trino import PrestoFamilyDialect, TrinoDialect
 
-from tests._dev1737_fixtures import dt_model
+from tests._dev1737_fixtures import dt_dataset
 from tests._engine_helpers import _engine_generate
 
 TG = TimeGranularity
@@ -114,7 +114,7 @@ def test_trino_explain_statements() -> None:
 ])
 def test_literal_count_is_quoted(dialect, count: int, unit: TimeGranularity, expected: str) -> None:
     node = dialect.build_date_add(
-        expr=exp.column("d"), count=exp.Literal.number(count), unit=unit, operand=DataType.TIMESTAMP,
+        expr=exp.column("d"), count=exp.Literal.number(count), unit=unit, operand=DataType.DATETIME,
     )
     assert _sql(dialect, node) == expected
 
@@ -123,7 +123,7 @@ def test_literal_count_is_quoted(dialect, count: int, unit: TimeGranularity, exp
 @pytest.mark.parametrize("count,expected", [(2, "d + (2 * INTERVAL '7' DAY)"), (-3, "d - (3 * INTERVAL '7' DAY)")])
 def test_week_count_is_day_multiple(dialect, count: int, expected: str) -> None:
     node = dialect.build_date_add(
-        expr=exp.column("d"), count=exp.Literal.number(count), unit=TG.WEEK, operand=DataType.TIMESTAMP,
+        expr=exp.column("d"), count=exp.Literal.number(count), unit=TG.WEEK, operand=DataType.DATETIME,
     )
     assert _sql(dialect, node) == expected
 
@@ -136,14 +136,14 @@ def test_week_count_is_day_multiple(dialect, count: int, expected: str) -> None:
 ])
 def test_computed_count_multiplies_quoted_unit(dialect, unit: TimeGranularity, expected: str) -> None:
     node = dialect.build_date_add(
-        expr=exp.column("d"), count=exp.column("n"), unit=unit, operand=DataType.TIMESTAMP,
+        expr=exp.column("d"), count=exp.column("n"), unit=unit, operand=DataType.DATETIME,
     )
     assert _sql(dialect, node) == expected
 
 
 @_family
 def test_week_sunday_truncation_quotes_intervals(dialect) -> None:
-    sql = _sql(dialect, dialect.build_date_trunc(exp.column("d"), TG.WEEK_SUNDAY))
+    sql = _sql(dialect, dialect.build_date_trunc(col_expr=exp.column("d"), granularity=TG.WEEK_SUNDAY, operand=DataType.DATETIME))
     assert sql == "DATE_TRUNC('WEEK', CAST(d + INTERVAL '1' DAY AS TIMESTAMP)) - INTERVAL '1' DAY"
 
 
@@ -197,7 +197,7 @@ def test_iso_calendar_parts(dialect, part: DatePart, field: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _diff(dialect, unit: TimeGranularity, operand: DataType = DataType.TIMESTAMP) -> str:
+def _diff(dialect, unit: TimeGranularity, operand: DataType = DataType.DATETIME) -> str:
     node = dialect.build_date_diff(unit=unit, start=exp.column("a"), end=exp.column("b"), operand=operand)
     return _sql(dialect, node).upper()
 
@@ -218,7 +218,8 @@ def test_week_gap_uses_day_date_diff(dialect, unit: TimeGranularity) -> None:
 @_family
 def test_week_gap_operands(dialect) -> None:
     assert (
-        "DATE_DIFF('DAY', CAST(DATE_TRUNC('WEEK', A) AS DATE), CAST(DATE_TRUNC('WEEK', B) AS DATE))"
+        "DATE_DIFF('DAY', CAST(DATE_TRUNC('WEEK', CAST(A AS TIMESTAMP)) AS DATE), "
+        "CAST(DATE_TRUNC('WEEK', CAST(B AS TIMESTAMP)) AS DATE))"
         in _diff(dialect, TG.WEEK)
     )
 
@@ -228,7 +229,8 @@ def test_week_gap_operands(dialect) -> None:
 def test_sub_day_gap_uses_second_date_diff(dialect, unit: TimeGranularity) -> None:
     sql = _diff(dialect, unit)
     trunc = unit.value.upper()
-    assert f"DATE_DIFF('SECOND', DATE_TRUNC('{trunc}', A), DATE_TRUNC('{trunc}', B))" in sql, sql
+    assert (f"DATE_DIFF('SECOND', DATE_TRUNC('{trunc}', CAST(A AS TIMESTAMP)), "
+            f"DATE_TRUNC('{trunc}', CAST(B AS TIMESTAMP)))") in sql, sql
     assert "TO_UNIXTIME" not in sql, sql
     assert "EPOCH" not in sql, sql
 
@@ -301,29 +303,30 @@ def test_percentile_is_approx_percentile(dialect) -> None:
 # ---------------------------------------------------------------------------
 
 _DATE_QUERY = SlayerQuery.model_validate({
-    "source_model": "dt",
+    "population": "dt",
     "dimensions": [
-        "id",
-        {"expression": "date_add(d1, 1, 'month')", "name": "a"},
-        {"expression": "date_add(d1, 2, 'hour')", "name": "b"},
-        {"expression": "date_add(t1, n, 'day')", "name": "c"},
-        {"expression": "date_diff('day', d1, d2)", "name": "e"},
-        {"expression": "date_diff('second', t1, t2)", "name": "f"},
-        {"expression": "date_part('iso_year', d1)", "name": "g"},
-        {"expression": "date_part('day_of_week', t1)", "name": "h"},
+        "dt.id",
+        {"field": "date_add(dt.d1, 1, 'month')", "alias": "a"},
+        {"field": "date_add(dt.d1, 2, 'hour')", "alias": "b"},
+        {"field": "date_add(dt.t1, dt.n, 'day')", "alias": "c"},
+        {"field": "date_diff('day', dt.d1, dt.d2)", "alias": "e"},
+        {"field": "date_diff('second', dt.t1, dt.t2)", "alias": "f"},
+        {"field": "date_part('iso_year', dt.d1)", "alias": "g"},
+        {"field": "date_part('day_of_week', dt.t1)", "alias": "h"},
     ],
 })
 
 
 async def _date_query_sql(ds_type: str) -> str:
-    return await _engine_generate(query=_DATE_QUERY, model=dt_model(), dialect=ds_type)
+    return await _engine_generate(query=_DATE_QUERY, dataset=dt_dataset(), dialect=ds_type)
 
 
 async def test_trino_date_query_uses_fixed_grammar() -> None:
     sql = await _date_query_sql("trino")
     assert not _UNQUOTED_INTERVAL.search(sql), sql
+    flat = re.sub(r"\(\s+", "(", " ".join(sql.replace('"', "").split()))
     for fragment in ("YEAR_OF_WEEK", "DAY_OF_WEEK", "DATE_DIFF('DAY'", "DATE_DIFF('SECOND'", "CAST(dt.d1 AS TIMESTAMP)"):
-        assert fragment in sql.replace('"', ""), sql
+        assert fragment in flat, sql
 
 
 @pytest.mark.parametrize("ds_type", ["presto", "athena"])

@@ -1,0 +1,54 @@
+{
+ "source": "tests/test_joined_path_dimension_names.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "cr",
+    "dimensions": [
+     "region_id",
+     "revenue"
+    ]
+   },
+   "new": {
+    "population": "cr",
+    "dimensions": [
+     "region_id",
+     "revenue"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 290,
+   "reason": "not fully literal"
+  }
+ ]
+}

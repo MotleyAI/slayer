@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple
 
 import sqlglot
@@ -11,24 +11,24 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from slayer.core.time_spine import TIME_SPINE_MODEL
+from slayer.core.time_spine import TIME_SPINE_DATASET
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import (
     AggregateKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     ListSetKey,
     Phase,
     StarKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    column_leaf,
-    column_path,
+    field_leaf,
+    field_path,
     source_anchor_path,
 )
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.refs import (
     EXPRESSION_SOURCE_KINDS,
     agg_kwarg_canonical_str,
@@ -37,9 +37,10 @@ from slayer.core.refs import (
     key_display,
     partition_by_suffix,
 )
-from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_measure_text, legacy_result_name_seed
+from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_metric_text, legacy_result_name_seed
 from slayer.sql._identifier_fit import fit_identifier
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, get_dialect
+from slayer.sql.dialects.base import LIST_POSITION
 from slayer.sql.naming_bijection import (  # noqa: F401
     _ALIAS_SEP,
     decode_alias,
@@ -114,7 +115,7 @@ class AliasAllocator(BaseModel):
         self, *, root: str, path: Tuple[str, ...], limit: Optional[int] = None,
     ) -> str:
         """JOIN alias for cumulative ``path`` under ``root``, memoized so a chain leaf
-        (``("a","b")``→``a__b``) stays distinct from a model literally named ``a__b``."""
+        (``("a","b")``→``a__b``) stays distinct from a dataset literally named ``a__b``."""
         if not path:
             return root
         key = (root, path)
@@ -154,13 +155,21 @@ def result_key(*, source_relation: str, path: Tuple[str, ...] = (), leaf: str) -
             f"result_key leaf must not contain '.': {leaf!r}. Pass hops via "
             f"`path`, or use result_key_from_alias for a canonical dotted alias."
         )
-    if path and path[0] == TIME_SPINE_MODEL:
+    if path and path[0] == TIME_SPINE_DATASET:
         return ".".join((*path, leaf))
     return ".".join((source_relation, *path, leaf))
 
 
 def result_key_from_alias(*, source_relation: str, alias: str) -> str:
-    return f"{source_relation}.{alias}"
+    """A projected public ``alias``'s result key: the alias itself (a query entry's public name is its key, which
+    never carries the population); ``source_relation`` is unused and kept for callers' symmetry."""
+    del source_relation
+    return alias
+
+
+def internal_result_key(*, source_relation: str, name: str) -> str:
+    """The result key of a slot projected under an internal (non-public) name."""
+    return f"{source_relation}.{name}"
 
 
 def time_trunc_result_key(
@@ -172,7 +181,7 @@ def time_trunc_result_key(
     declared_name: str,
 ) -> str:
     """Dotted result key for a joined time-trunc slot, appending ``.<granularity>``
-    when a same-column collision suffixed its declared name. Shared by
+    when a same-field collision suffixed its declared name. Shared by
     the response-metadata and SQL-alias paths so the two never diverge."""
     base = result_key(source_relation=source_relation, path=path, leaf=leaf)
     suffix = f".{granularity}"
@@ -180,27 +189,29 @@ def time_trunc_result_key(
 
 
 def _joined_row_path(slot: "ValueSlot") -> Optional[Tuple[Tuple[str, ...], str]]:
-    """``(path, leaf)`` of a ROW slot reading a joined column, else ``None``."""
+    """``(path, leaf)`` of a ROW slot reading a joined field, else ``None``."""
     if slot.phase != Phase.ROW:
         return None
     key = slot.key.source if isinstance(slot.key, ListSetKey) else slot.key
-    if isinstance(key, ColumnKey):
+    if isinstance(key, FieldKey):
         path, leaf = key.path, key.leaf
-    elif isinstance(key, ColumnSqlKey):
-        path, leaf = key.path, key.column_name
-    elif isinstance(key, TimeTruncKey) and isinstance(key.source, (ColumnKey, ColumnSqlKey)):
-        path, leaf = column_path(key.source), column_leaf(key.source)
+    elif isinstance(key, FieldSqlKey):
+        path, leaf = key.path, key.field_name
+    elif isinstance(key, TimeTruncKey) and isinstance(key.source, (FieldKey, FieldSqlKey)):
+        path, leaf = field_path(key.source), field_leaf(key.source)
     else:
         return None
     return (path, leaf) if path else None
 
 
 def slot_result_key(*, slot: "ValueSlot", alias: str, source_relation: str) -> str:
-    """Result key of one projected ``alias`` of ``slot``: a user-chosen alias keys by itself,
-    any other alias of a joined ROW slot by its canonical path."""
-    joined = None if alias in slot.explicit_aliases else _joined_row_path(slot)
+    """Result key of one projected ``alias`` of ``slot``: a public alias keys by itself; an internal name of a
+    joined ROW slot by its canonical path, of any other slot under the relation."""
+    if alias in slot.public_aliases:
+        return alias
+    joined = _joined_row_path(slot)
     if joined is None:
-        return result_key_from_alias(source_relation=source_relation, alias=alias)
+        return internal_result_key(source_relation=source_relation, name=alias)
     path, leaf = joined
     if isinstance(slot.key, TimeTruncKey):
         return time_trunc_result_key(
@@ -241,18 +252,40 @@ def flat_name(dotted: str, *, strip_relation: Optional[str] = None) -> str:
 
 OUTER_WRAP_ALIAS = "_outer"
 STAGE_INNER_ALIAS = "_stage_inner"
-#: A keyless association home's per-query row number (``__slayer_`` is reserved at save time: no model column collides).
-ROW_IDENTITY_COLUMN = "__slayer_row_id"
+#: A keyless association home's per-query row number (``__slayer_`` is reserved at save time: no dataset field collides).
+ROW_IDENTITY_FIELD = "__slayer_row_id"
 
 
-def with_row_identity(model: SlayerModel) -> SlayerModel:
-    """``model`` keyed by its per-query row number, which the relation door mints."""
-    row_id = Column.model_construct(name=ROW_IDENTITY_COLUMN, type=DataType.INT, primary_key=True)
-    return model.model_copy(update={"columns": [*model.columns, row_id]})
+def with_row_identity(dataset: SlayerDataset) -> SlayerDataset:
+    """``dataset`` keyed by its per-query row number, which the relation door mints."""
+    row_id = DatasetField.model_construct(name=ROW_IDENTITY_FIELD, datatype=DataType.INTEGER, primary_key=True)
+    return dataset.model_copy(update={"fields": [*dataset.fields, row_id]})
 
 
 def is_row_identity(key: ValueKey) -> bool:
-    return isinstance(key, ColumnKey) and not key.path and key.leaf == ROW_IDENTITY_COLUMN
+    return isinstance(key, FieldKey) and not key.path and key.leaf == ROW_IDENTITY_FIELD
+
+
+def with_list_position(child: SlayerDataset) -> SlayerDataset:
+    """List child ``child`` with each element's position in its list, which its positioned relation emits."""
+    position = DatasetField.model_construct(name=LIST_POSITION, datatype=DataType.INTEGER, primary_key=True)
+    return child.model_copy(update={"fields": [*child.fields, position]})
+
+
+def identified_datasets(
+    *, root: SlayerDataset, entity_keys: Sequence[ValueKey], datasets_by_name: Mapping[str, SlayerDataset],
+) -> Tuple[SlayerDataset, list[SlayerDataset]]:
+    """Association root ``root`` and the parent it reads, each carrying the row identity or list position
+    ``entity_keys`` read; the parent is listed only when numbered."""
+    reads = {(tuple(k.path), k.leaf) for k in entity_keys if isinstance(k, FieldKey)}
+    if root.list_of is None:
+        return (with_row_identity(root) if ((), ROW_IDENTITY_FIELD) in reads else root), []
+    parent_name, list_field = root.list_of
+    if ((), LIST_POSITION) in reads:
+        root = with_list_position(root)
+    if ((list_field,), ROW_IDENTITY_FIELD) not in reads:
+        return root, []
+    return root, [with_row_identity(datasets_by_name[parent_name])]
 
 
 # Written out, not ``\W``: Python's ``\W`` is Unicode-aware and would let non-ASCII letters into a bare ASCII identifier.
@@ -284,29 +317,29 @@ def cte_name_from_alias(
 # The four alias-derivation profiles, named so impossible combinations can't be built.
 AggAliasProfile = Literal[
     # ``_cm_`` CTE + projection alias: prefixes source relation AND path; no leaf → star.
-    "cross_model_cte",
+    "cross_dataset_cte",
     # The aggregate's output column inside its producer CTE: bare canonical name.
     "cte_schema",
     # A hidden slot's declared name: bare; no leaf → explicit ``_agg_<name>``, not a star.
     "declared_name",
-    # A formula's public alias: path relative to the stage; DECLINES (None) on a no-leaf source.
-    "stage_formula",
+    # An expression's public alias: path relative to the stage; DECLINES (None) on a no-leaf source.
+    "stage_expression",
 ]
 
-_PROFILES_WITHOUT_RELATION = ("cte_schema", "declared_name", "stage_formula")
+_PROFILES_WITHOUT_RELATION = ("cte_schema", "declared_name", "stage_expression")
 
 
 def _strip_anchor(key: ValueKey, anchor: Tuple[str, ...]) -> ValueKey:
-    """``key`` with ``anchor`` removed from its row-level column paths; attached constituents untouched."""
+    """``key`` with ``anchor`` removed from its row-level field paths; attached constituents untouched."""
     if isinstance(key, (AggregateKey, TransformKey)):
         return key
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+    if isinstance(key, (FieldKey, FieldSqlKey)):
         return key.model_copy(update={"path": key.path[len(anchor):]})
     return key.map_children(lambda child: _strip_anchor(child, anchor))
 
 
 def expression_source_leaf(source: ValueKey) -> str:
-    """Result-key leaf of an expression aggregate source: its formula text relative to its home path."""
+    """Result-key leaf of an expression aggregate source: its expression text relative to its home path."""
     anchor = source_anchor_path(source)
     rendered = _strip_anchor(source, anchor) if anchor else source
     return auto_name_from_expression(key_display(rendered))
@@ -316,16 +349,16 @@ _PLAIN_SOURCE_RE = re.compile(r"\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?")
 _PLAIN_NAME_RE = re.compile(r"[a-zA-Z_]\w*")
 
 
-def formula_text_alias(parsed: object) -> str:
-    """The public alias of a parsed measure formula: ``<source>_<agg>`` for a bare aggregation of a plainly named
-    column or star, else the sanitised legacy naming seed."""
+def expression_text_alias(parsed: object) -> str:
+    """The public alias of a parsed metric expression: ``<source>_<agg>`` for a bare aggregation of a plainly named
+    field or star, else the sanitised legacy naming seed."""
     if (isinstance(parsed, AggCall) and not parsed.args and not parsed.kwargs and parsed.filter is None
             and isinstance(parsed.source, (Ref, DottedRef, StarSource)) and _PLAIN_NAME_RE.fullmatch(parsed.agg)):
-        base = canonical_measure_text(parsed.source)
+        base = canonical_metric_text(parsed.source)
         if _PLAIN_SOURCE_RE.fullmatch(base):
             if base.endswith(".*"):
-                return f"{base[:-2]}.{canonical_agg_name(measure_name='*', aggregation_name=parsed.agg)}"
-            return canonical_agg_name(measure_name=base, aggregation_name=parsed.agg)
+                return f"{base[:-2]}.{canonical_agg_name(metric_name='*', aggregation_name=parsed.agg)}"
+            return canonical_agg_name(metric_name=base, aggregation_name=parsed.agg)
     return auto_name_from_expression(legacy_result_name_seed(parsed))
 
 
@@ -343,10 +376,10 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     source_relation: Optional[str] = None,
 ) -> Optional[str]:
     """The single canonical-aggregate-alias derivation; ``profile`` picks the caller's contract."""
-    if profile == "cross_model_cte":
+    if profile == "cross_dataset_cte":
         if source_relation is None:
             raise ValueError(
-                "canonical_aggregate_alias(profile='cross_model_cte') requires "
+                "canonical_aggregate_alias(profile='cross_dataset_cte') requires "
                 "source_relation — the alias is anchored at the query root.",
             )
     elif profile in _PROFILES_WITHOUT_RELATION:
@@ -358,28 +391,28 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     else:
         raise ValueError(
             f"Unknown canonical-aggregate-alias profile {profile!r}; "
-            f"expected one of {('cross_model_cte', *_PROFILES_WITHOUT_RELATION)}.",
+            f"expected one of {('cross_dataset_cte', *_PROFILES_WITHOUT_RELATION)}.",
         )
 
     is_star = isinstance(key.source, StarKey)
     leaf = getattr(key.source, "leaf", None) or getattr(
-        key.source, "column_name", None,
+        key.source, "field_name", None,
     )
     if leaf is None and isinstance(key.source, EXPRESSION_SOURCE_KINDS):
         leaf = expression_source_leaf(key.source)
 
-    if profile in ("cross_model_cte", "cte_schema"):
-        measure_name: str = leaf or "*"
+    if profile in ("cross_dataset_cte", "cte_schema"):
+        metric_name: str = leaf or "*"
     elif is_star:
-        measure_name = "*"
+        metric_name = "*"
     elif leaf is None:
         # declared_name: explicit placeholder, NOT the star form; stage_formula declines.
         return f"_agg_{key.agg}" if profile == "declared_name" else None
     else:
-        measure_name = leaf
+        metric_name = leaf
 
     canonical = canonical_agg_name(
-        measure_name=measure_name,
+        metric_name=metric_name,
         aggregation_name=key.agg,
         agg_args=[_alias_param(a) for a in key.args] or None,
         agg_kwargs={k: _alias_param(v) for k, v in key.kwargs} or None,
@@ -397,10 +430,10 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     if profile in ("cte_schema", "declared_name"):
         return canonical
 
-    # A source's anchor carries its join path, so ``count(customers.*)`` keeps the hop.
+    # A source's anchor carries its relationship path, so ``count(customers.*)`` keeps the hop.
     path: Tuple[str, ...] = source_anchor_path(key.source)
 
-    if profile == "stage_formula":
+    if profile == "stage_expression":
         return (".".join(path) + "." if path else "") + canonical
 
     assert source_relation is not None  # guaranteed by the validation above

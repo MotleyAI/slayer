@@ -1,0 +1,143 @@
+{
+ "source": "tests/test_doc_examples.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s",
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "store_id"
+    ]
+   },
+   "new": {
+    "name": "s",
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "store_id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "measures": [
+     "max(_count)"
+    ]
+   },
+   "new": {
+    "population": "s",
+    "metrics": [
+     "max(_count)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "measures": [
+     "max(_count)"
+    ]
+   },
+   "new": {
+    "population": "s",
+    "metrics": [
+     "max(_count)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stores",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "stores",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stores",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "stores",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(order_total)",
+     "change_pct(sum(order_total))"
+    ],
+    "dimensions": [
+     "stores.name",
+     "date_trunc('month', ordered_at)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(order_total)",
+     "change_pct(sum(order_total))"
+    ],
+    "dimensions": [
+     "stores.name",
+     "date_trunc('month', ordered_at)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 149,
+   "reason": "not a standalone query: ValidationError"
+  }
+ ]
+}

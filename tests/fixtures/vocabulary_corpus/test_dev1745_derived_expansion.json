@@ -1,0 +1,333 @@
+{
+ "source": "tests/test_dev1745_derived_expansion.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "deep_pop",
+      "name": "deep_pop"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "m0"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "deep_pop",
+      "alias": "deep_pop"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "m0"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "status",
+      "name": "status"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(deep_pop)",
+      "name": "m0"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "status",
+      "alias": "status"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(deep_pop)",
+      "alias": "m0"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "status",
+      "name": "status"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "m0"
+     }
+    ],
+    "filters": [
+     "deep_pop > 100"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "status",
+      "alias": "status"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "m0"
+     }
+    ],
+    "filter": [
+     "deep_pop > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "alias_local",
+      "name": "alias_local"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "m0"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "alias_local",
+      "alias": "alias_local"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "m0"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "deep_live",
+      "name": "deep_live"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "m0"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "deep_live",
+      "alias": "deep_live"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "m0"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "deep_pop",
+      "name": "deep_pop"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "m0"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "deep_pop",
+      "alias": "deep_pop"
+     }
+    ],
+    "metrics": [
+     {
+      "metric": "sum(amount)",
+      "alias": "m0"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  }
+ ]
+}

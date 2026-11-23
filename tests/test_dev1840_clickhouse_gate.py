@@ -18,7 +18,7 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.errors import ForcedFilterError, SlayerError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.policy import (
     ColumnFilterRuleset,
     JoinFilterRule,
@@ -34,24 +34,24 @@ from slayer.sql.dialects.clickhouse import _attach_ch_correlated_setting
 from slayer.sql.generator import generate_planned_stages
 from slayer.sql.session_policy import apply_session_policy
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.core.query import QueryMetric
 
 from tests._ch_fake_http import FakeClickHouse, fake_ch_engine, route_engine
 from tests._dev1840_fixtures import (
-    ModelMeasure,
     SPEND_BAND_170,
     bundle,
-    dev1840_models,
+    dev1840_datasets,
     gen,
     q,
 )
 
 _SETTING = "allow_experimental_correlated_subqueries"
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
-PUSHED = q(dimensions=["customers.tier"], measures=[M, CM],
-           filters=["channel = 'app'"])
+PUSHED = q(dimensions=["customers.tier"], metrics=[M, CM],
+           filter=["orders.channel = 'app'"])
 
 _ORDERS_RULE = JoinFilterRule(
     target_table="orders", join_path=("orders.customer_id = customers.id",),
@@ -61,8 +61,8 @@ _ORDERS_RULE = JoinFilterRule(
 async def _ch_engine(tmp_path, *, policy: SessionPolicy | None = None) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="clickhouse"))
-    for model in dev1840_models():
-        await storage.save_model(model, _validate=False)
+    for model in dev1840_datasets():
+        await storage.save_dataset(model, _validate=False)
     return SlayerQueryEngine(storage=storage, policy=policy)
 
 
@@ -107,15 +107,15 @@ def _version_probe(ch_server: ChServer, raw: str | None) -> FakeClickHouse:
 class TestPlanPredicate:
     def test_false_without_any_filter(self):
         planned = plan_query(
-            query=q(dimensions=["customers.tier"], measures=[M, CM]),
+            query=q(dimensions=["customers.tier"], metrics=[M, CM]),
             bundle=bundle(),
         )
         assert plan_has_semi_join_filters(planned) is False
 
     def test_false_on_an_inline_filter(self):
         planned = plan_query(
-            query=q(dimensions=["customers.tier"], measures=[CM],
-                    filters=["customers.regions.name = 'North'"]),
+            query=q(dimensions=["customers.tier"], metrics=[CM],
+                    filter=["customers.regions.name = 'North'"]),
             bundle=bundle(),
         )
         assert plan_has_semi_join_filters(planned) is False
@@ -126,8 +126,8 @@ class TestPlanPredicate:
 
     def test_true_when_only_a_nested_producer_pushes(self):
         planned = plan_query(
-            query=q(dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
-                    measures=[M], filters=["channel = 'app'"]),
+            query=q(dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
+                    metrics=[M], filter=["orders.channel = 'app'"]),
             bundle=bundle(),
         )
         assert plan_has_semi_join_filters(planned) is True
@@ -186,8 +186,8 @@ class TestVersionGate:
         engine = await _ch_engine(tmp_path)
         sql = await _dry_sql(
             engine,
-            q(dimensions=["customers.tier"], measures=[CM],
-              filters=["customers.plans.level = 'basic'"]),
+            q(dimensions=["customers.tier"], metrics=[CM],
+              filter=["customers.plans.level = 'basic'"]),
         )
         assert _SETTING not in sql
         assert fake.permission_checks() == 0
@@ -273,11 +273,11 @@ class TestOnlyEmittedStagesGate:
         fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
         engine = await _ch_engine(tmp_path)
         unused = PUSHED.model_copy(update={"name": "unused"})
-        await engine.storage.save_model(
-            SlayerModel(name="qb", data_source="test", source_queries=[unused, q(dimensions=["status"], measures=[M])]),
+        await engine.storage.save_dataset(
+            SlayerDataset(name="qb", data_source="test", source_queries=[unused, q(dimensions=["orders.status"], metrics=[M])]),
             _validate=False,
         )
-        sql = await _dry_sql(engine, q(source_model="qb", dimensions=["status"]))
+        sql = await _dry_sql(engine, q(population="qb", dimensions=["qb.status"]))
         assert "EXISTS" not in sql.upper()
         assert _SETTING not in sql
         assert fake.permission_checks() == 0
@@ -303,11 +303,11 @@ class TestPolicyNeedsNoProbe:
         ],
         ids=["join", "anchor_only", "column"],
     )
-    async def test_policy_only_query_sends_nothing(self, tmp_path, ch_server, monkeypatch, ruleset):
+    async def test_policy_only_query_sends_nothing(self, tmp_path, ch_server, monkeypatch: pytest.MonkeyPatch, ruleset):
         fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
         engine = await _ch_engine(tmp_path, policy=SessionPolicy(ruleset=ruleset))
         monkeypatch.setattr(engine, "_column_present", _always_present)
-        sql = await _dry_sql(engine, q(measures=[M]))
+        sql = await _dry_sql(engine, q(metrics=[M]))
         assert fake.requests == []
         assert _SETTING not in sql
         assert "EXISTS" not in sql.upper()
@@ -373,10 +373,10 @@ class TestGeneratorAttachesTheSetting:
         assert sql.count(f"{_SETTING} = 1") == 1
 
     def test_inline_statement_carries_none(self):
-        sql = _generated(q(dimensions=["customers.tier"], measures=[CM]), dialect="clickhouse")
+        sql = _generated(q(dimensions=["customers.tier"], metrics=[CM]), dialect="clickhouse")
         assert _SETTING not in sql
 
-    async def test_gating_adds_no_reparse_of_the_rendered_statement(self, tmp_path, ch_server, monkeypatch):
+    async def test_gating_adds_no_reparse_of_the_rendered_statement(self, tmp_path, ch_server, monkeypatch: pytest.MonkeyPatch):
         """sql §3.1: the engine attaches nothing by re-parsing; ClickHouse parses no more than DuckDB."""
         ch_server.start(version="25.4.1.1", readonly=0)
         real = sqlglot.parse_one
@@ -401,7 +401,7 @@ class TestOtherDialects:
         sql = await gen(PUSHED, dialect="duckdb")
         assert _SETTING not in sql
 
-    async def test_non_gated_dialect_runs_no_probe(self, monkeypatch):
+    async def test_non_gated_dialect_runs_no_probe(self, monkeypatch: pytest.MonkeyPatch):
         async def boom(self):  # NOSONAR(S7503) — must stay async
             raise AssertionError("non-gated dialects need no server profile")
 

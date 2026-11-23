@@ -1,4 +1,4 @@
-"""DEV-1567: cross-model metrics and dimensions must not surface through
+"""Cross-dataset metrics and dimensions must not surface through
 the flat-column catalog probes BI tools introspect (pg_attribute,
 INFORMATION_SCHEMA.COLUMNS). They must remain visible via the
 catalog-shaped views (INFORMATION_SCHEMA.METRICS / .DIMENSIONS) and the
@@ -7,19 +7,19 @@ catalog fingerprint hash so cache invalidation still tracks them.
 The leak (before this fix):
 
 1. ``FacadeCatalog._metric_expansion`` and ``_dimension_expansion`` pre-
-   expand cross-model entries with dotted names (``customers.row_count``,
+   expand cross-dataset entries with dotted names (``customers.row_count``,
    ``customers.regions.population_sum``).
 2. INFORMATION_SCHEMA.COLUMNS (slayer/facade/info_schema.py:_serve_columns)
    and pg_catalog.pg_attribute (slayer/facade/catalog_sql.py:_column_specs)
    flatten ``tbl.dimensions + tbl.metrics`` into a single rowset.
 3. Metabase reads the flat view, caches the dotted "columns", and emits
    ``SELECT "customers.row_count" FROM orders``-style fingerprint queries
-   that lead to dotted ``SlayerQuery.measures[*].name`` Pydantic rejection.
+   that lead to dotted ``SlayerQuery.metrics[*].name`` Pydantic rejection.
 
-Fix: keep ``tbl.metrics`` / ``tbl.dimensions`` raw, but filter cross-model
+Fix: keep ``tbl.metrics`` / ``tbl.dimensions`` raw, but filter cross-dataset
 entries (``"." in name``) at the flat-view rendering step. The translator's
-``metrics_by_name`` / ``metrics_by_formula`` / ``dims_by_name`` lookups
-keep using the raw views so hand-written cross-model SQL still resolves.
+``metrics_by_name`` / ``metrics_by_expression`` / ``dims_by_name`` lookups
+keep using the raw views so hand-written cross-dataset SQL still resolves.
 """
 
 from __future__ import annotations
@@ -28,10 +28,10 @@ from __future__ import annotations
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.facade.catalog import (
     FacadeCatalog,
@@ -53,21 +53,21 @@ from slayer.facade.catalog_sql import _fingerprint as graph_fingerprint
 from slayer.facade.info_schema import _serve_columns
 
 
-def _model(
+def _dataset(
     *,
     name: str,
-    columns: list[Column],
-    joins: list[ModelJoin] | None = None,
-    measures: list[ModelMeasure] | None = None,
+    fields: list[DatasetField],
+    relationships: list[DatasetRelationship] | None = None,
+    metrics: list[DatasetMetric] | None = None,
     aggregations: list[Aggregation] | None = None,
-) -> SlayerModel:
-    return SlayerModel(
+) -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         data_source="jaffle",
         sql_table=name,
-        columns=columns,
-        joins=joins or [],
-        measures=measures or [],
+        fields=fields,
+        relationships=relationships or [],
+        metrics=metrics or [],
         aggregations=aggregations or [],
     )
 
@@ -79,27 +79,27 @@ def _find_table(catalog: FacadeCatalog, *, table: str) -> FacadeTable:
 
 
 def _orders_customers_catalog() -> FacadeCatalog:
-    """Standard fixture: ``orders → customers`` single-hop join, both with
-    a typed column set that produces a non-trivial cross-model fan-out."""
-    orders = _model(
+    """Standard fixture: ``orders → customers`` single-hop relationship, both with
+    a typed field set that produces a non-trivial cross-dataset fan-out."""
+    orders = _dataset(
         name="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="total", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="total", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="email", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="email", datatype=DataType.STRING),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders, customers]})
+    return build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
 
 
 # --- local_metrics / local_dimensions helpers --------------------------------
@@ -110,13 +110,13 @@ def test_local_metrics_excludes_cross_model_entries() -> None:
     orders = _find_table(cat, table="orders")
     locals_ = local_metrics(orders)
     names = {m.name for m in locals_}
-    # All cross-model expansion entries are excluded.
+    # All cross-dataset expansion entries are excluded.
     assert not any("." in n for n in names)
 
 
 def test_local_metrics_excludes_synthetic_row_count() -> None:
     """The rule-1 ``row_count`` metric (name='row_count',
-    measure_formula='*:count') is catalog fan-out, not user-authored.
+    metric_expression='*:count') is catalog fan-out, not user-authored.
     BI tools see ``row_count`` as a queryable "column", emit
     ``SELECT row_count FROM orders`` fingerprint queries, and explode
     the wire response. Strip it from the flat-view path."""
@@ -143,15 +143,15 @@ def test_local_metrics_excludes_same_model_column_builtin_agg_entries() -> None:
 
 def test_local_metrics_excludes_same_model_custom_aggregation_metrics() -> None:
     """The rule-4 ``<col>_<custom_agg>`` cartesian is also catalog
-    fan-out — same rule as builtin column×agg."""
-    orders = _model(
+    fan-out — same rule as builtin field×agg."""
+    orders = _dataset(
         name="orders",
-        columns=[Column(name="amount", type=DataType.DOUBLE)],
+        fields=[DatasetField(name="amount", datatype=DataType.FLOAT)],
         aggregations=[
-            Aggregation(name="my_count", formula="COUNT(DISTINCT {value})"),
+            Aggregation(name="my_count", expression="COUNT(DISTINCT {value})"),
         ],
     )
-    cat = build_catalog(models_by_datasource={"jaffle": [orders]})
+    cat = build_catalog(datasets_by_datasource={"jaffle": [orders]})
     table = _find_table(cat, table="orders")
     locals_ = local_metrics(table)
     names = {m.name for m in locals_}
@@ -159,21 +159,21 @@ def test_local_metrics_excludes_same_model_custom_aggregation_metrics() -> None:
 
 
 def test_local_metrics_keeps_saved_model_measures() -> None:
-    """The rule-2 saved ``ModelMeasure`` (name == measure_formula) IS
+    """The rule-2 saved ``DatasetMetric`` (name == metric_expression) IS
     user-authored — the user typed the name. It belongs in the flat
     view so BI tools can project / aggregate against it by name."""
-    orders = _model(
+    orders = _dataset(
         name="orders",
-        columns=[Column(name="revenue", type=DataType.DOUBLE)],
-        measures=[
-            ModelMeasure(
+        fields=[DatasetField(name="revenue", datatype=DataType.FLOAT)],
+        metrics=[
+            DatasetMetric(
                 name="aov",
-                formula="sum(revenue) / count(*)",
-                type=DataType.DOUBLE,
+                expression="sum(revenue) / count(*)",
+                datatype=DataType.FLOAT,
             ),
         ],
     )
-    cat = build_catalog(models_by_datasource={"jaffle": [orders]})
+    cat = build_catalog(datasets_by_datasource={"jaffle": [orders]})
     table = _find_table(cat, table="orders")
     locals_ = local_metrics(table)
     names = {m.name for m in locals_}
@@ -186,7 +186,7 @@ def test_local_dimensions_excludes_cross_model_entries() -> None:
     locals_ = local_dimensions(orders)
     names = {d.name for d in locals_}
     assert not any("." in n for n in names)
-    # Same-model dimensions survive.
+    # Same-dataset dimensions survive.
     assert "id" in names
     assert "customer_id" in names
     assert "total" in names
@@ -196,28 +196,28 @@ def test_local_dimensions_excludes_cross_model_entries() -> None:
 def test_local_dimensions_excludes_multi_hop_entries() -> None:
     """Multi-hop dimensions like ``customers.regions.name`` also carry a
     dot and must be filtered out."""
-    orders = _model(
+    orders = _dataset(
         name="orders",
-        columns=[Column(name="customer_id", type=DataType.INT)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        fields=[DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
-    regions = _model(
+    regions = _dataset(
         name="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     cat = build_catalog(
-        models_by_datasource={"jaffle": [orders, customers, regions]},
+        datasets_by_datasource={"jaffle": [orders, customers, regions]},
     )
     table = _find_table(cat, table="orders")
     raw_names = {d.name for d in table.dimensions}
@@ -231,7 +231,7 @@ def test_local_dimensions_excludes_multi_hop_entries() -> None:
 
 
 def test_raw_metrics_still_carry_cross_model_entries() -> None:
-    """Sanity: the catalog itself still has cross-model entries on the raw
+    """Sanity: the catalog itself still has cross-dataset entries on the raw
     view. Only the flatten step filters them."""
     cat = _orders_customers_catalog()
     orders = _find_table(cat, table="orders")
@@ -318,29 +318,29 @@ def test_pg_description_attnum_within_local_range() -> None:
     pg_attribute attnum space — no orphan descriptions past the local
     column count."""
 
-    orders = _model(
+    orders = _dataset(
         name="orders",
-        columns=[
-            Column(
-                name="id", type=DataType.INT, primary_key=True,
+        fields=[
+            DatasetField(
+                name="id", datatype=DataType.INTEGER, primary_key=True,
                 description="order pk",
             ),
-            Column(name="customer_id", type=DataType.INT, description="fk"),
-            Column(name="total", type=DataType.DOUBLE, description="ord total"),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER, description="fk"),
+            DatasetField(name="total", datatype=DataType.FLOAT, description="ord total"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
-        columns=[
-            Column(
-                name="id", type=DataType.INT, primary_key=True,
+        fields=[
+            DatasetField(
+                name="id", datatype=DataType.INTEGER, primary_key=True,
                 description="cust pk",
             ),
-            Column(name="name", type=DataType.TEXT, description="cust name"),
+            DatasetField(name="name", datatype=DataType.STRING, description="cust name"),
         ],
     )
-    cat = build_catalog(models_by_datasource={"jaffle": [orders, customers]})
+    cat = build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
 
     rel = _build_pg_description(cat)
     for sch in cat.schemas:
@@ -367,11 +367,11 @@ def test_is_columns_excludes_dotted_column_name() -> None:
     assert "total" in column_names
 
 
-# --- INFORMATION_SCHEMA.METRICS / DIMENSIONS still include cross-model -------
+# --- INFORMATION_SCHEMA.METRICS / DIMENSIONS still include cross-dataset -----
 
 
 def test_is_metrics_still_includes_cross_model_entries() -> None:
-    """The catalog-namespaced metrics view must still expose cross-model
+    """The catalog-namespaced metrics view must still expose cross-dataset
     metrics — that's the proper place for them and the regression guard
     against an over-eager filter."""
 
@@ -393,38 +393,38 @@ def test_is_dimensions_still_includes_cross_model_entries() -> None:
 
 
 def test_graph_fingerprint_changes_when_cross_model_metric_changes() -> None:
-    """Cache invalidation must still fire when a cross-model metric's
+    """Cache invalidation must still fire when a cross-dataset metric's
     underlying data shifts. The filter does NOT extend to the fingerprint
     hash — graph_fingerprint sees the raw view."""
 
-    orders = _model(
+    orders = _dataset(
         name="orders",
-        columns=[
-            Column(name="customer_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
-    def _customers_with_revenue_type(revenue_type: DataType) -> SlayerModel:
-        return _model(
+    def _customers_with_revenue_type(revenue_type: DataType) -> SlayerDataset:
+        return _dataset(
             name="customers",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="revenue", type=revenue_type),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="revenue", datatype=revenue_type),
             ],
         )
 
     cat_a = build_catalog(
-        models_by_datasource={
-            "jaffle": [orders, _customers_with_revenue_type(DataType.DOUBLE)],
+        datasets_by_datasource={
+            "jaffle": [orders, _customers_with_revenue_type(DataType.FLOAT)],
         }
     )
     cat_b = build_catalog(
-        models_by_datasource={
-            "jaffle": [orders, _customers_with_revenue_type(DataType.INT)],
+        datasets_by_datasource={
+            "jaffle": [orders, _customers_with_revenue_type(DataType.INTEGER)],
         }
     )
-    # Both catalogs have a cross-model metric ``customers.revenue_sum``;
+    # Both catalogs have a cross-dataset metric ``customers.revenue_sum``;
     # the type change is invisible on the flat-column probe (entry is
     # filtered out there) but must still shift the fingerprint.
     fp_a = graph_fingerprint(cat_a, "jaffle")

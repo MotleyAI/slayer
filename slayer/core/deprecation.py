@@ -1,9 +1,11 @@
-"""The one door for deprecations scheduled for removal: a call to ``warn_deprecated``, ``raise_moved`` or
-``deprecated_input`` is the tag.
+"""The one door for code scheduled for removal: a call to ``warn_deprecated``, ``raise_moved``, ``deprecated_input``
+or ``scheduled_notice`` is the tag.
 
 ``tests/test_law_removal_tripwire.py`` scans for these calls and fails once the package's
 major version reaches a call's ``removal``.
 """
+
+from __future__ import annotations
 
 import contextlib
 import os
@@ -14,9 +16,9 @@ from typing import NoReturn
 
 import pydantic
 
-from slayer.core.warnings import DeprecatedInputWarning
+from slayer.core import warnings as payloads  # a module reference: warnings reaches this module through vocabulary
 
-# Frames under these directories never supply input; a deprecated input form is attributed past them.
+# Frames under these directories are never the caller a warning names.
 _INTERNAL_DIRS = (
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep,
     os.path.abspath(pydantic.__path__[0]) + os.sep,
@@ -36,7 +38,7 @@ def warn_deprecated(message: str, *, removal: str, stacklevel: int = 2) -> None:
 class DeprecatedInputFutureWarning(FutureWarning):
     """Carrier ``FutureWarning`` for a ``DeprecatedInputWarning`` payload — one wording on both channels."""
 
-    def __init__(self, payload: DeprecatedInputWarning) -> None:
+    def __init__(self, payload: payloads.DeprecatedInputWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
@@ -44,21 +46,22 @@ class DeprecatedInputFutureWarning(FutureWarning):
         return self.payload.human_message()
 
 
-def _outside_caller_stacklevel() -> int:
-    """``warnings.warn``'s ``stacklevel`` (from ``deprecated_input``) of the first frame outside SLayer and pydantic."""
-    frame = sys._getframe(2)  # deprecated_input's caller
-    level = 2
+def outside_stacklevel() -> int:
+    """``stacklevel``, counted from this function's caller, of the first frame outside SLayer and pydantic."""
+    frame = sys._getframe(1)
+    level = 1
     while frame.f_back is not None and os.path.abspath(frame.f_code.co_filename).startswith(_INTERNAL_DIRS):
         frame = frame.f_back
         level += 1
     return level
 
 
-def deprecated_input(old: str, new: str, *, removal: str) -> DeprecatedInputWarning:
+def deprecated_input(old: str, new: str, *, removal: str, emit: bool = True) -> payloads.DeprecatedInputWarning:
     """Report converting the input form ``old`` to ``new``: one ``FutureWarning`` at the first line outside SLayer
-    that supplied it, and the payload the caller keeps with the converted input. ``removal`` as in ``warn_deprecated``."""
-    payload = DeprecatedInputWarning(old=old, new=new, removal=removal)
-    warnings.warn(DeprecatedInputFutureWarning(payload), stacklevel=_outside_caller_stacklevel())
+    that supplied it (none when ``emit`` is off), and the payload. ``removal`` as in ``warn_deprecated``."""
+    payload = payloads.DeprecatedInputWarning(old=old, new=new, removal=removal)
+    if emit:
+        warnings.warn(DeprecatedInputFutureWarning(payload), stacklevel=outside_stacklevel())
     return payload
 
 
@@ -66,6 +69,12 @@ def raise_moved(old: str, new: str, *, removal: str) -> NoReturn:
     """Raise an ``ImportError`` saying ``old`` moved to ``new`` in SLayer 2.0; ``removal`` as in ``warn_deprecated``."""
     del removal  # read statically by the tripwire
     raise ImportError(f"{old} moved to {new} in SLayer 2.0")
+
+
+def scheduled_notice(message: str, *, removal: str) -> str:
+    """``message``, an informational notice dropped in ``removal``; it emits nothing, its caller surfaces it."""
+    del removal  # read statically by the tripwire
+    return message
 
 
 @contextlib.contextmanager

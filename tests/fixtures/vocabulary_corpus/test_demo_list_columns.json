@@ -1,0 +1,60 @@
+{
+ "source": "tests/test_demo_list_columns.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "item_skus.value"
+    ],
+    "measures": [
+     {
+      "formula": "count(item_skus.*)",
+      "name": "units"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "item_skus.value"
+    ],
+    "metrics": [
+     {
+      "metric": "count(item_skus.*)",
+      "alias": "units"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "items",
+    "dimensions": [
+     "sku"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "units"
+     }
+    ]
+   },
+   "new": {
+    "population": "items",
+    "dimensions": [
+     "sku"
+    ],
+    "metrics": [
+     {
+      "metric": "count(*)",
+      "alias": "units"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,4 +1,4 @@
-"""Storage-layer tests for the Embedding sidecar table (DEV-1386).
+"""Storage-layer tests for the Embedding sidecar table.
 
 Parameterised across the two real storage backends (YAML + SQLite) so
 every contract — upsert, fetch, list, prefix cascade — is verified
@@ -18,10 +18,10 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.embeddings.models import Embedding, EntityKind
 from slayer.storage.base import StorageBackend
@@ -79,10 +79,10 @@ async def test_get_unknown_returns_none(storage: StorageBackend) -> None:
 
 async def test_save_is_idempotent_upsert(storage: StorageBackend) -> None:
     """Re-saving the same (canonical_id, model) replaces the row in place."""
-    first = _embed(canonical_id="ds.m.col", kind="column", text_hash="h-a")
+    first = _embed(canonical_id="ds.m.col", kind="field", text_hash="h-a")
     second = _embed(
         canonical_id="ds.m.col",
-        kind="column",
+        kind="field",
         text_hash="h-b",
         vector=[9.9, 9.9, 9.9],
     )
@@ -124,13 +124,13 @@ async def test_delete_for_canonical_prefix_cascades(
 ) -> None:
     """delete_embeddings_for_canonical wipes every row whose
     canonical_id starts with the supplied prefix — used by the
-    delete_model / delete_datasource cascade."""
+    delete_dataset / delete_datasource cascade."""
     rows_to_seed = [
-        _embed(canonical_id="ds_a.orders", kind="model"),
-        _embed(canonical_id="ds_a.orders.id", kind="column"),
-        _embed(canonical_id="ds_a.orders.revenue", kind="column"),
-        _embed(canonical_id="ds_a.customers", kind="model"),
-        _embed(canonical_id="ds_b.orders", kind="model"),
+        _embed(canonical_id="ds_a.orders", kind="dataset"),
+        _embed(canonical_id="ds_a.orders.id", kind="field"),
+        _embed(canonical_id="ds_a.orders.revenue", kind="field"),
+        _embed(canonical_id="ds_a.customers", kind="dataset"),
+        _embed(canonical_id="ds_b.orders", kind="dataset"),
     ]
     for row in rows_to_seed:
         await storage.save_embedding(row)
@@ -183,36 +183,36 @@ async def test_delete_memory_cascades_embedding(
 async def test_delete_model_cascades_subtree_embeddings(
     storage: StorageBackend,
 ) -> None:
-    """``delete_model`` on the ABC wrapper must drop the model doc
-    embedding plus every column / measure / aggregation embedding
-    keyed by the model's canonical prefix."""
-    # Seed a model so the ABC delete wrapper can resolve it.
+    """``delete_dataset`` on the ABC wrapper must drop the dataset doc
+    embedding plus every field / metric / aggregation embedding
+    keyed by the dataset's canonical prefix."""
+    # Seed a dataset so the ABC delete wrapper can resolve it.
     ds = DatasourceConfig(
         name="dsx", type="postgres", host="h", database="d",
     )
     await storage.save_datasource(ds)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="dsx",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-        measures=[ModelMeasure(name="rev", formula="sum(id)")],
-        aggregations=[Aggregation(name="custom_agg", formula="SUM({x})")],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+        metrics=[DatasetMetric(name="rev", expression="sum(id)")],
+        aggregations=[Aggregation(name="custom_agg", expression="SUM({x})")],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
 
     seeds: list[tuple[str, EntityKind]] = [
-        ("dsx.orders", "model"),
-        ("dsx.orders.id", "column"),
-        ("dsx.orders.rev", "measure"),
+        ("dsx.orders", "dataset"),
+        ("dsx.orders.id", "field"),
+        ("dsx.orders.rev", "metric"),
         ("dsx.orders.custom_agg", "aggregation"),
-        ("dsx.customers", "model"),
-        ("other.orders", "model"),
+        ("dsx.customers", "dataset"),
+        ("other.orders", "dataset"),
     ]
     for cid, kind in seeds:
         await storage.save_embedding(_embed(canonical_id=cid, kind=kind))
 
-    await storage.delete_model("orders", data_source="dsx")
+    await storage.delete_dataset("orders", data_source="dsx")
 
     remaining = {
         r.canonical_id for r in await storage.list_embeddings(
@@ -226,18 +226,18 @@ async def test_delete_datasource_cascades_descendants(
     storage: StorageBackend,
 ) -> None:
     """``delete_datasource`` cascades every embedding under the
-    datasource prefix — datasource doc + every model / column /
-    measure / aggregation under it."""
+    datasource prefix — datasource doc + every dataset / field /
+    metric / aggregation under it."""
     ds = DatasourceConfig(
         name="dsx", type="postgres", host="h", database="d",
     )
     await storage.save_datasource(ds)
     seeds: list[tuple[str, EntityKind]] = [
         ("dsx", "datasource"),
-        ("dsx.orders", "model"),
-        ("dsx.orders.id", "column"),
+        ("dsx.orders", "dataset"),
+        ("dsx.orders.id", "field"),
         ("other", "datasource"),
-        ("other.orders", "model"),
+        ("other.orders", "dataset"),
     ]
     for cid, kind in seeds:
         await storage.save_embedding(_embed(canonical_id=cid, kind=kind))
@@ -253,14 +253,14 @@ async def test_delete_datasource_cascades_descendants(
 
 
 # ---------------------------------------------------------------------------
-# Prefix-greedy delete regressions (DEV-1405)
+# Prefix-greedy delete regressions
 # ---------------------------------------------------------------------------
 
 
 async def test_delete_for_canonical_does_not_match_numeric_siblings(
     storage: StorageBackend,
 ) -> None:
-    """REGRESSION (DEV-1405): the previous LIKE 'memory:4%' pattern
+    """REGRESSION: the previous LIKE 'memory:4%' pattern
     nuked memory:42, memory:43, memory:400 along with memory:4. The
     fix matches exact id OR strict ``.``-descendant — memory ids never
     have descendants, so only memory:4 must go."""
@@ -281,7 +281,7 @@ async def test_delete_for_canonical_does_not_match_numeric_siblings(
 async def test_delete_for_canonical_does_not_match_char_sibling_ds(
     storage: StorageBackend,
 ) -> None:
-    """REGRESSION (DEV-1405): deleting ds ``orders`` must not nuke
+    """REGRESSION: deleting ds ``orders`` must not nuke
     ``orders_archive`` or ``orders123``."""
     for cid in (
         "orders",
@@ -309,7 +309,7 @@ async def test_delete_for_canonical_does_not_match_char_sibling_ds(
 async def test_delete_for_canonical_does_not_match_char_sibling_model(
     storage: StorageBackend,
 ) -> None:
-    """REGRESSION (DEV-1405): deleting model ``orders.customers`` must
+    """REGRESSION: deleting dataset ``orders.customers`` must
     not nuke ``orders.customers_v2``."""
     for cid in (
         "orders.customers",
@@ -331,7 +331,7 @@ async def test_delete_for_canonical_does_not_match_char_sibling_model(
 
 
 # ---------------------------------------------------------------------------
-# Batched APIs (DEV-1405)
+# Batched APIs
 # ---------------------------------------------------------------------------
 
 
@@ -408,7 +408,7 @@ async def test_get_embeddings_for_canonical_ids_filters_by_model(
 
 async def test_yaml_init_creates_embeddings_db() -> None:
     """YAMLStorage must persist embeddings to ``<base_dir>/embeddings.db``
-    (the SQLite sidecar), not ``embeddings.yaml`` (DEV-1405)."""
+    (the SQLite sidecar), not ``embeddings.yaml``."""
     with tempfile.TemporaryDirectory() as tmp:
         store = YAMLStorage(base_dir=tmp)
         await store.save_embedding(_embed(canonical_id="memory:1"))

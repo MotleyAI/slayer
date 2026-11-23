@@ -1,0 +1,59 @@
+{
+ "source": "tests/test_dev2102_extensions_ir.py",
+ "pairs": [
+  {
+   "kind": "query_metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "metric": "count(*)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": []
+   },
+   "new": {
+    "metrics": []
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 20,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 25,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 27,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -27,10 +27,10 @@ from tests._dev1948_fixtures import (
     CUSTOMER_AMOUNT_BY_TIER,
     SPEND_BY_TIER,
     chain_list,
-    customers_model,
-    inline_join_list,
+    customers_dataset,
+    inline_relationship_list,
     make_dev1948_engine,
-    orders_model,
+    orders_dataset,
     pop_check_list,
     producer_at_sibling_list,
     root_over_b,
@@ -41,7 +41,7 @@ from tests._dev1948_fixtures import (
     stage_b,
     stage_c,
     stage_x,
-    stored_join_collision_list,
+    stored_relationship_collision_list,
     three_reads_list,
 )
 
@@ -127,7 +127,7 @@ class _Capture:
         return out
 
 
-async def _capture(engine, queries, monkeypatch) -> _Capture:
+async def _capture(engine, queries, monkeypatch: pytest.MonkeyPatch) -> _Capture:
     cap = _Capture(monkeypatch)
     await engine.execute(queries, dry_run=True)
     return cap
@@ -142,39 +142,39 @@ class TestExecution:
     async def test_chain_in_every_supply_order(self, exec_engine, order) -> None:
         by_name = {"x": stage_x(), "c": stage_c(), "b": stage_b()}
         resp = await exec_engine.execute([*(by_name[n] for n in order), root_over_b()])
-        assert rows_by(resp.data, key="b.c__tr", value="b.total") == AMOUNT_BY_TIER
+        assert rows_by(resp.data, key="b.c__tr", value="total") == AMOUNT_BY_TIER
 
     def test_inline_model_joining_a_sibling_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="(?i)inline"):
-            inline_join_list()
+            inline_relationship_list()
 
     async def test_one_stage_reads_three_siblings(self, exec_engine) -> None:
         resp = await exec_engine.execute(three_reads_list())
-        assert rows_by(resp.data, key="p.x__tier", value="p.total") == CUSTOMER_AMOUNT_BY_TIER
+        assert rows_by(resp.data, key="p.x__tier", value="total") == CUSTOMER_AMOUNT_BY_TIER
 
     async def test_semi_join_over_a_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(semi_join_list())
-        assert rows_by(resp.data, key="b.status", value="b.total") == BIG_SPENDER_AMOUNT_BY_STATUS
+        assert rows_by(resp.data, key="b.status", value="total") == BIG_SPENDER_AMOUNT_BY_STATUS
 
     async def test_producer_rooted_at_a_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(producer_at_sibling_list())
-        assert rows_by(resp.data, key="s.tr", value="s.total") == SPEND_BY_TIER
+        assert rows_by(resp.data, key="s.tr", value="total") == SPEND_BY_TIER
 
     async def test_shared_producer_across_stages(self, exec_engine) -> None:
         resp = await exec_engine.execute(shared_producer_list())
-        assert rows_by(resp.data, key="s2.status", value="s2.total") == AMOUNT_BY_STATUS
+        assert rows_by(resp.data, key="s2.status", value="total") == AMOUNT_BY_STATUS
 
     async def test_stored_join_resolves_to_the_model_not_a_sibling(self, exec_engine) -> None:
-        resp = await exec_engine.execute(stored_join_collision_list())
-        assert rows_by(resp.data, key="b.customers__tier", value="b.total") == AMOUNT_BY_TIER
+        resp = await exec_engine.execute(stored_relationship_collision_list())
+        assert rows_by(resp.data, key="b.customers__tier", value="total") == AMOUNT_BY_TIER
 
     def test_nested_source_queries_rejected(self) -> None:
         outer = {"name": "outer", "source_queries": [
-            {"source_model": "x", "dimensions": ["tier"], "measures": [{"formula": "sum(total_spend)", "name": "s"}]}]}
+            {"population": "x", "dimensions": ["x.tier"], "metrics": [{"metric": "sum(x.total_spend)", "alias": "s"}]}]}
         with pytest.raises(ValueError, match=r"(?is)inline.*named stages?|named stages?.*inline"):
             SlayerQuery.model_validate({
-                "name": "n", "source_model": outer, "dimensions": ["tier"],
-                "measures": [{"formula": "sum(s)", "name": "s3"}]})
+                "name": "n", "population": outer, "dimensions": ["customers.tier"],
+                "metrics": [{"metric": "sum(s)", "alias": "s3"}]})
 
 
 # --------------------------------------------------------------------------- #
@@ -194,14 +194,14 @@ _READS_CASES = {
 
 class TestPlanStages:
     @pytest.mark.parametrize("case", list(_READS_CASES))
-    async def test_order_and_stage_reads(self, sqlite_engine, monkeypatch, case) -> None:
+    async def test_order_and_stage_reads(self, sqlite_engine, monkeypatch: pytest.MonkeyPatch, case) -> None:
         build, expected = _READS_CASES[case]
         cap = await _capture(sqlite_engine, build(), monkeypatch)
         canonical = [cap.display(q.name) for q in topologically_order_stages(cap.queries)[:-1]]
         assert cap.stage_names()[:-1] == canonical
         assert cap.reads() == expected
 
-    async def test_chain_order_is_supply_order_invariant(self, sqlite_engine, monkeypatch) -> None:
+    async def test_chain_order_is_supply_order_invariant(self, sqlite_engine, monkeypatch: pytest.MonkeyPatch) -> None:
         cap = await _capture(
             sqlite_engine, [stage_b(), stage_c(), stage_x(), root_over_b()], monkeypatch)
         assert cap.stage_names() == ["x", "c", "b", "<root>"]
@@ -209,15 +209,15 @@ class TestPlanStages:
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
-        dialect="postgres", source_model=orders_model(), referenced_models=[customers_model()],
+        dialect="postgres", population=orders_dataset(), referenced_datasets=[customers_dataset()],
     )
 
 
 def _q(name, source, **kw) -> SlayerQuery:
-    kw.setdefault("dimensions", ["status"] if source == "orders" else [])
-    kw.setdefault("measures", [{"formula": "sum(amount)", "name": "amt"}]
-                  if source == "orders" else [{"formula": "sum(amt)", "name": "total"}])
-    return SlayerQuery(name=name, source_model=source, **kw)
+    kw.setdefault("dimensions", ["orders.status"] if source == "orders" else [])
+    kw.setdefault("metrics", [{"metric": "sum(orders.amount)", "alias": "amt"}]
+                  if source == "orders" else [{"metric": f"sum({source}.amt)", "alias": "total"}])
+    return SlayerQuery(name=name, population=source, **kw)
 
 
 class TestPlanStagesDirect:
@@ -268,7 +268,7 @@ class TestPlanStagesDirect:
 class TestDeclaredEdges:
     @pytest.mark.parametrize("case", list(_READS_CASES))
     async def test_every_entry_declares_its_statement_reads(
-        self, sqlite_engine, monkeypatch, case,
+        self, sqlite_engine, monkeypatch: pytest.MonkeyPatch, case,
     ) -> None:
         build, _ = _READS_CASES[case]
         cap = await _capture(sqlite_engine, build(), monkeypatch)
@@ -283,14 +283,14 @@ class TestDeclaredEdges:
             relation, hoisted = entries[-1], entries[:-1]
             assert {h.name for h in hoisted} <= set(relation.depends_on), (stage, relation.depends_on)
 
-    async def test_root_producer_entries_are_declared(self, sqlite_engine, monkeypatch) -> None:
+    async def test_root_producer_entries_are_declared(self, sqlite_engine, monkeypatch: pytest.MonkeyPatch) -> None:
         cap = await _capture(sqlite_engine, root_producer_list(), monkeypatch)
         root_entries = cap.segments()["<root>"]
         assert root_entries, "the root's producer CTEs are hoisted into the chain"
         assert all("c" in e.depends_on for e in root_entries)
 
     async def test_later_stage_body_reuse_declares_the_shared_producer(
-        self, sqlite_engine, monkeypatch,
+        self, sqlite_engine, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         cap = await _capture(sqlite_engine, shared_producer_list(), monkeypatch)
         segments = cap.segments()
@@ -299,7 +299,7 @@ class TestDeclaredEdges:
             s1_hoisted, segments["s2"][-1].depends_on)
 
     async def test_stage_consumer_is_popped_after_its_render(
-        self, sqlite_engine, monkeypatch,
+        self, sqlite_engine, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         cap = await _capture(sqlite_engine, pop_check_list(), monkeypatch)
         segments = cap.segments()
@@ -316,7 +316,7 @@ class TestDeclaredEdges:
 # 1.4 Dependency order is a checked precondition of the generator.
 # --------------------------------------------------------------------------- #
 class TestOrderPrecondition:
-    async def test_reader_before_its_sibling_raises(self, sqlite_engine, monkeypatch) -> None:
+    async def test_reader_before_its_sibling_raises(self, sqlite_engine, monkeypatch: pytest.MonkeyPatch) -> None:
         cap = await _capture(sqlite_engine, producer_at_sibling_list(), monkeypatch)
         x, c, s, root = cap.planned
         with pytest.raises(ValueError) as exc:

@@ -13,7 +13,7 @@ from slayer import cli
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.demo import jaffle_shop
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cli_inprocess import run_cli_in_process
@@ -39,7 +39,7 @@ def _make_args(**overrides):
 
 
 class TestDemoKeywordDispatch:
-    def test_demo_keyword_routes_to_demo_handler(self, monkeypatch):
+    def test_demo_keyword_routes_to_demo_handler(self, monkeypatch: pytest.MonkeyPatch):
         called = {}
 
         def fake_handler(*args, **kwargs):
@@ -54,7 +54,7 @@ class TestDemoKeywordDispatch:
 
         assert "args" in called, "expected demo handler to be invoked"
 
-    def test_demo_keyword_is_case_insensitive(self, monkeypatch):
+    def test_demo_keyword_is_case_insensitive(self, monkeypatch: pytest.MonkeyPatch):
         called = []
         monkeypatch.setattr(
             cli,
@@ -71,7 +71,7 @@ class TestDemoKeywordDispatch:
 
         assert len(called) == 2
 
-    def test_non_demo_connection_string_falls_through(self, monkeypatch):
+    def test_non_demo_connection_string_falls_through(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
             cli,
             "_run_datasources_create_demo",
@@ -90,7 +90,7 @@ class TestDemoKeywordDispatch:
 
 
 class TestServeMcpDemoHook:
-    def test_serve_demo_flag_calls_prepare_demo(self, monkeypatch):
+    def test_serve_demo_flag_calls_prepare_demo(self, monkeypatch: pytest.MonkeyPatch):
         calls = []
         monkeypatch.setattr(
             cli, "_prepare_demo", lambda *args, **kwargs: calls.append("prepare")
@@ -109,7 +109,7 @@ class TestServeMcpDemoHook:
 
         assert calls == ["prepare", "uvicorn:APP:h:1"]
 
-    def test_mcp_demo_flag_calls_prepare_demo(self, monkeypatch):
+    def test_mcp_demo_flag_calls_prepare_demo(self, monkeypatch: pytest.MonkeyPatch):
         calls = []
         monkeypatch.setattr(
             cli, "_prepare_demo", lambda *args, **kwargs: calls.append("prepare")
@@ -131,7 +131,7 @@ class TestServeMcpDemoHook:
 
 
 class TestJafgenCmdResolution:
-    def test_prefers_current_interpreter_when_package_importable(self, monkeypatch):
+    def test_prefers_current_interpreter_when_package_importable(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: object())
         monkeypatch.setattr(
             jaffle_shop.shutil,
@@ -146,20 +146,20 @@ class TestJafgenCmdResolution:
         assert "jafgen" in cmd[2]
         assert cmd[-1] == "3"
 
-    def test_falls_back_to_path_lookup(self, monkeypatch):
+    def test_falls_back_to_path_lookup(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: None)
         monkeypatch.setattr(jaffle_shop.shutil, "which", lambda name: "/usr/bin/jafgen")
 
         assert jaffle_shop._jafgen_cmd(2) == ["/usr/bin/jafgen", "2"]
 
-    def test_missing_everywhere_raises_install_hint(self, monkeypatch):
+    def test_missing_everywhere_raises_install_hint(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: None)
         monkeypatch.setattr(jaffle_shop.shutil, "which", lambda name: None)
 
         with pytest.raises(RuntimeError, match="pip install jafgen"):
             jaffle_shop._jafgen_cmd(1)
 
-    def test_years_clamped_to_minimum_one(self, monkeypatch):
+    def test_years_clamped_to_minimum_one(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: object())
 
         assert jaffle_shop._jafgen_cmd(0)[-1] == "1"
@@ -182,14 +182,14 @@ def _setup_demo(storage: YAMLStorage, storage_path: Path) -> tuple:
 
 class TestEnsureDemoDatasourceScoping:
     def test_lookups_scoped_with_models_in_multiple_datasources(self, tmp_path, jaffle_generator):
-        # Bare list_models()/get_model() raise on storages whose models span
-        # several datasources (DEV-1330); the demo must scope every lookup to
+        # Bare list_datasets()/get_dataset() raise on storages whose datasets span
+        # several datasources; the demo must scope every lookup to
         # its own datasource.
         storage = YAMLStorage(base_dir=str(tmp_path))
         _setup_demo(storage, tmp_path)
         jaffle_shop.run_sync(
-            storage.save_model(
-                SlayerModel(name="unrelated", sql_table="unrelated", data_source="other_ds")
+            storage.save_dataset(
+                SlayerDataset(name="unrelated", sql_table="unrelated", data_source="other_ds")
             )
         )
 
@@ -201,19 +201,19 @@ class TestEnsureDemoDatasourceScoping:
 
 
 class TestDemoEnrichment:
-    def _orders_model(self):
-        return SlayerModel(
+    def _orders_dataset(self):
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="jaffle_shop",
-            columns=[
-                Column(name="id", type=DataType.TEXT, primary_key=True),
-                Column(name="customer_id", type=DataType.TEXT),
-                Column(name="ordered_at", type=DataType.DATE),
-                Column(name="store_id", type=DataType.TEXT),
-                Column(name="subtotal", type=DataType.DOUBLE),
-                Column(name="tax_paid", type=DataType.DOUBLE),
-                Column(name="order_total", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.STRING, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.STRING),
+                DatasetField(name="ordered_at", datatype=DataType.DATE),
+                DatasetField(name="store_id", datatype=DataType.STRING),
+                DatasetField(name="subtotal", datatype=DataType.FLOAT),
+                DatasetField(name="tax_paid", datatype=DataType.FLOAT),
+                DatasetField(name="order_total", datatype=DataType.FLOAT),
             ],
         )
 
@@ -221,27 +221,27 @@ class TestDemoEnrichment:
         assert set(jaffle_shop.DEMO_ENRICHMENT) == set(jaffle_shop.TABLE_NAMES)
 
     def test_applies_labels_measures_and_aggregations(self):
-        model = self._orders_model()
+        model = self._orders_dataset()
         assert jaffle_shop.apply_demo_enrichment(model) is True
 
         assert model.description is not None
         assert model.default_time_dimension == "ordered_at"
-        by_name = {c.name: c for c in model.columns}
+        by_name = {c.name: c for c in model.fields}
         assert by_name["order_total"].label == "Order Total"
         assert by_name["order_total"].format.type == NumberFormatType.CURRENCY
-        assert "total_revenue" in {m.name for m in model.measures}
+        assert "total_revenue" in {m.name for m in model.metrics}
         assert "weighted_avg" in {a.name for a in model.aggregations}
 
     def test_idempotent_second_run_is_noop(self):
-        model = self._orders_model()
+        model = self._orders_dataset()
         jaffle_shop.apply_demo_enrichment(model)
         snapshot = model.model_dump()
         assert jaffle_shop.apply_demo_enrichment(model) is False
         assert model.model_dump() == snapshot
 
     def test_preserves_user_edits(self):
-        model = self._orders_model()
-        by_name = {c.name: c for c in model.columns}
+        model = self._orders_dataset()
+        by_name = {c.name: c for c in model.fields}
         by_name["order_total"].label = "My Label"
         model.description = "My description"
         jaffle_shop.apply_demo_enrichment(model)
@@ -251,9 +251,9 @@ class TestDemoEnrichment:
         assert by_name["subtotal"].label == "Net Sales"
 
     def test_auto_default_format_replaced_custom_format_preserved(self):
-        model = self._orders_model()
-        by_name = {c.name: c for c in model.columns}
-        # Auto-ingestion stamps a bare FLOAT format on numeric columns — the
+        model = self._orders_dataset()
+        by_name = {c.name: c for c in model.fields}
+        # Auto-ingestion stamps a bare FLOAT format on numeric fields — the
         # curated currency format must win over it.
         by_name["order_total"].format = NumberFormat(type=NumberFormatType.FLOAT)
         # A user-tuned format must survive.
@@ -265,49 +265,49 @@ class TestDemoEnrichment:
         assert by_name["subtotal"].format.symbol == "€"
 
     def test_duplicate_measure_names_not_added(self):
-        model = self._orders_model()
-        model.measures = [ModelMeasure(name="total_revenue", formula="sum(subtotal)")]
+        model = self._orders_dataset()
+        model.metrics = [DatasetMetric(name="total_revenue", expression="sum(subtotal)")]
         jaffle_shop.apply_demo_enrichment(model)
-        revenue = [m for m in model.measures if m.name == "total_revenue"]
+        revenue = [m for m in model.metrics if m.name == "total_revenue"]
         assert len(revenue) == 1
-        assert revenue[0].formula == "sum(subtotal)"
+        assert revenue[0].expression == "sum(subtotal)"
 
     def test_unknown_model_untouched(self):
-        model = SlayerModel(name="unrelated", sql_table="t", data_source="other")
+        model = SlayerDataset(name="unrelated", sql_table="t", data_source="other")
         assert jaffle_shop.apply_demo_enrichment(model) is False
 
     def test_non_table_backed_model_skipped(self):
-        # The curated spec assumes the physical jaffle tables — a demo model
+        # The curated spec assumes the physical jaffle tables — a demo dataset
         # redefined as sql-mode or query-backed must be left alone.
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql="SELECT 1 AS id",
             data_source="jaffle_shop",
         )
         assert jaffle_shop.apply_demo_enrichment(model) is False
-        assert model.measures == []
+        assert model.metrics == []
         assert model.description is None
 
     def test_spec_objects_are_copied_not_shared(self):
-        model_a = self._orders_model()
-        model_b = self._orders_model()
+        model_a = self._orders_dataset()
+        model_b = self._orders_dataset()
         jaffle_shop.apply_demo_enrichment(model_a)
         jaffle_shop.apply_demo_enrichment(model_b)
 
-        measure_a = next(m for m in model_a.measures if m.name == "total_revenue")
+        measure_a = next(m for m in model_a.metrics if m.name == "total_revenue")
         measure_a.label = "Mutated"
-        measure_b = next(m for m in model_b.measures if m.name == "total_revenue")
+        measure_b = next(m for m in model_b.metrics if m.name == "total_revenue")
         assert measure_b.label == "Total Revenue"
         spec_measure = next(
             m
-            for m in jaffle_shop.DEMO_ENRICHMENT["orders"].measures
+            for m in jaffle_shop.DEMO_ENRICHMENT["orders"].metrics
             if m.name == "total_revenue"
         )
         assert spec_measure.label == "Total Revenue"
 
-        fmt_a = next(c for c in model_a.columns if c.name == "order_total").format
+        fmt_a = next(c for c in model_a.fields if c.name == "order_total").format
         fmt_a.symbol = "€"
-        fmt_b = next(c for c in model_b.columns if c.name == "order_total").format
+        fmt_b = next(c for c in model_b.fields if c.name == "order_total").format
         assert fmt_b.symbol == "$"
 
     def test_setup_saves_enriched_models(self, tmp_path, jaffle_generator):
@@ -315,24 +315,24 @@ class TestDemoEnrichment:
         _setup_demo(storage, tmp_path)
         for table in jaffle_shop.TABLE_NAMES:
             jaffle_shop.run_sync(
-                storage.save_model(
-                    SlayerModel(
+                storage.save_dataset(
+                    SlayerDataset(
                         name=table,
                         sql_table=table,
                         data_source="jaffle_shop",
-                        columns=[Column(name="id", type=DataType.TEXT, primary_key=True)],
+                        fields=[DatasetField(name="id", datatype=DataType.STRING, primary_key=True)],
                     )
                 )
             )
 
         _, models, _ = _setup_demo(storage, tmp_path)
 
-        # Returned models are enriched, and the enrichment was persisted.
+        # Returned datasets are enriched, and the enrichment was persisted.
         assert all(m.description is not None for m in models)
         stored_orders = jaffle_shop.run_sync(
-            storage.get_model(name="orders", data_source="jaffle_shop")
+            storage.get_dataset(name="orders", data_source="jaffle_shop")
         )
-        assert "order_count" in {m.name for m in stored_orders.measures}
+        assert "order_count" in {m.name for m in stored_orders.metrics}
 
 
 class TestResolveDemoDbPath:
@@ -349,7 +349,7 @@ class TestResolveDemoDbPath:
 
 
 class TestBuildJaffleShopIdempotency:
-    def test_returns_false_and_reshifts_when_db_exists(self, tmp_path, monkeypatch):
+    def test_returns_false_and_reshifts_when_db_exists(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         db = tmp_path / "jaffle_shop.duckdb"
         # An up-to-date (bundled-schema) DuckDB file, so the reuse path applies.
         conn = duckdb.connect(str(db))

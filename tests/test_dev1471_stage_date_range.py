@@ -1,4 +1,4 @@
-"""A two-bound date_range on a stage time dimension filters the outer stage's rows before its aggregation, exactly as a model-scope range filters a model."""
+"""A two-bound date_range on a stage time dimension filters the outer stage's rows before its aggregation, exactly as a dataset-scope range filters a dataset."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from tests._dev1471_fixtures import (
     BACKENDS,
     date_str,
     make_engine,
-    orders_model,
+    orders_dataset,
     orders_table_spec,
 )
 from tests._engine_helpers import _where_text
@@ -29,9 +29,9 @@ _ROWS = [
 ]
 
 _INNER = SlayerQuery.model_validate({
-    "name": "s1", "source_model": "orders",
-    "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
-    "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    "name": "s1", "population": "orders",
+    "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TG.MONTH)],
+    "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
 })
 
 
@@ -39,7 +39,7 @@ async def _exec(backend: str, tmp: str, outer: SlayerQuery):
     engine = await make_engine(
         backend, base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
-        tables=[orders_table_spec(_ROWS)], models=[orders_model()],
+        tables=[orders_table_spec(_ROWS)], datasets=[orders_dataset()],
     )
     return await engine.execute(query=[_INNER, outer])
 
@@ -47,12 +47,12 @@ async def _exec(backend: str, tmp: str, outer: SlayerQuery):
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_stage_date_range_restricts_outer_stage(backend: str) -> None:
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
+        "population": "s1",
         "time_dimensions": [TimeDimension(
-            dimension="created_at", granularity=TG.MONTH,
+            field="s1.created_at", granularity=TG.MONTH,
             date_range=["2025-02-01", "2025-03-31"],
         )],
-        "measures": [{"formula": "sum(rev)"}],
+        "metrics": [{"metric": "sum(s1.rev)"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec(backend, tmp, outer)
@@ -68,12 +68,12 @@ async def test_stage_date_range_restricts_outer_stage(backend: str) -> None:
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_stage_date_range_on_coarser_rebucketing(backend: str) -> None:
     outer = SlayerQuery.model_validate({
-        "source_model": "s1",
+        "population": "s1",
         "time_dimensions": [TimeDimension(
-            dimension="created_at", granularity=TG.YEAR,
+            field="s1.created_at", granularity=TG.YEAR,
             date_range=["2025-02-01", "2025-03-31"],
         )],
-        "measures": [{"formula": "sum(rev)"}],
+        "metrics": [{"metric": "sum(s1.rev)"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec(backend, tmp, outer)

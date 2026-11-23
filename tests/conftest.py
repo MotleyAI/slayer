@@ -9,6 +9,7 @@ import sys
 import tempfile
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from filelock import FileLock
@@ -16,7 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer import async_utils
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.demo import jaffle_shop
 from slayer.embeddings import client as embedding_client
 from slayer.database import engine_factory
@@ -26,6 +27,9 @@ from tests import _emitted_reparse_law as emitted_reparse_law
 from tests import _statement_render_law as statement_render_law
 from tests._dev1824_fixtures import make_exec_engine
 from tests._usage_reporting_capture import CaptureServer
+
+if TYPE_CHECKING:
+    from tests._otel_helpers import OtelCapture
 
 pytest_plugins = ["tests._sharding", "tests._async_engine_release_law", "pytester"]
 
@@ -153,6 +157,29 @@ def usage_reporting_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _otel_off_by_default() -> Iterator[None]:
+    """Our own test runs never export telemetry, and no ``OTEL_*`` setting of the shell reaches them."""
+    with pytest.MonkeyPatch.context() as mp:
+        for name in [name for name in os.environ if name.startswith("OTEL_")]:
+            mp.delenv(name)
+        mp.setenv("SLAYER_OTEL", "off")
+        yield
+
+
+@pytest.fixture
+def otel_env() -> Iterator["OtelCapture"]:
+    """The probe listener on private in-memory providers; removed again after the test."""
+    from tests._otel_helpers import OtelCapture  # ALLOW(import-not-top): optional extra
+
+    capture = OtelCapture.build()
+    capture.instrument()
+    try:
+        yield capture
+    finally:
+        capture.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _dispose_engines_at_session_end() -> Iterator[None]:
     """Resource-leak gate: dispose the factory cache and force a collection at session
     end, inside the last test's teardown — while pytest's warning filters and
@@ -193,7 +220,7 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
     Two reasons:
 
     * Without this, tests that exercise the real write paths
-      (``save_memory`` / ``ingest`` / ``edit_model``) would attempt
+      (``save_memory`` / ``ingest`` / ``edit_dataset``) would attempt
       live ``litellm.aembedding`` calls — costing money on a dev
       machine that has ``OPENAI_API_KEY`` set, and emitting per-entity
       bubble-up warnings on CI that doesn't.
@@ -245,17 +272,17 @@ def _no_emitted_statement_reparse(
 
 
 @pytest.fixture
-def sample_model() -> SlayerModel:
-    return SlayerModel(
+def sample_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test_ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -276,7 +303,7 @@ def sample_datasource() -> DatasourceConfig:
 @pytest.fixture
 async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
     """A YAMLStorage seeded with a single ``mydb`` datasource
-    and a minimal ``orders`` model (id PK + amount column). Shared by
+    and a minimal ``orders`` dataset (id PK + amount field). Shared by
     every memory-reference test that just needs *some* live entity to resolve
     memory references against; centralised here to keep the per-test
     setup blocks from drifting into Sonar duplication-density failures.
@@ -288,14 +315,14 @@ async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
                 name="mydb", type="sqlite", database=":memory:",
             )
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="mydb",
-                columns=[
-                    Column(name="id", sql="id", primary_key=True),
-                    Column(name="amount", sql="amount"),
+                fields=[
+                    DatasetField(name="id", expression="id", primary_key=True),
+                    DatasetField(name="amount", expression="amount"),
                 ],
             )
         )
@@ -304,7 +331,7 @@ async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_engine(request):
-    """Executing engine over the shared dev1739-family models, one per backend.
+    """Executing engine over the shared dev1739-family datasets, one per backend.
 
     Modules built on another fixture family override this locally.
     """

@@ -13,8 +13,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
-from slayer.core.errors import AmbiguousModelError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.errors import AmbiguousDatasetError
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.engine.population.inference import infer_population
@@ -25,7 +25,7 @@ from slayer.search import graph as search_graph
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     DS,
     HIDDEN_TOKEN,
@@ -91,7 +91,7 @@ class TestInspect:
     @pytest.mark.parametrize("name", sorted(VISIBLE_TO_FIN))
     async def test_visible_model_never_names_hr(self, pair: Pair, name: str, compact: bool, fmt: str) -> None:
         out = await InspectService(storage=pair.fin).inspect(
-            reference=f"{DS}.{name}", entity_type="model", compact=compact, format=fmt,
+            reference=f"{DS}.{name}", entity_type="dataset", compact=compact, format=fmt,
         )
         assert name in out
         assert leaks(out) == []
@@ -99,7 +99,7 @@ class TestInspect:
     @pytest.mark.parametrize("compact", [True, False])
     @pytest.mark.parametrize("fmt", ["markdown", "json"])
     async def test_collection_lists_only_visible_models(self, pair: Pair, compact: bool, fmt: str) -> None:
-        out = await InspectService(storage=pair.fin).inspect(reference=None, entity_type="model", compact=compact, format=fmt)
+        out = await InspectService(storage=pair.fin).inspect(reference=None, entity_type="dataset", compact=compact, format=fmt)
         assert "fin_report" in out
         assert leaks(out) == []
         assert UNLOADABLE not in out
@@ -111,12 +111,12 @@ class TestInspect:
     @pytest.mark.parametrize("reference", [f"{DS}.hr", "hr", f"{DS}.hr.dept", "hr_summary", f"{DS}.fin.hr.dept"])
     async def test_hidden_reference_reads_like_a_missing_one(self, pair: Pair, reference: str) -> None:
         def inspect(storage):
-            return InspectService(storage=storage).inspect(reference=reference, entity_type="model", compact=False)
+            return InspectService(storage=storage).inspect(reference=reference, entity_type="dataset", compact=False)
 
         assert await outcome(inspect(pair.fin)) == await outcome(inspect(pair.reference.storage))
 
     async def test_models_summary_never_names_hr(self, pair: Pair) -> None:
-        text = await mcp_text(pair.fin, "models_summary", datasource_name=DS)
+        text = await mcp_text(pair.fin, "datasets_summary", datasource_name=DS)
         assert "fin_report" in text
         assert leaks(text) == []
 
@@ -124,29 +124,29 @@ class TestInspect:
 class TestJoinPruning:
     @pytest.mark.parametrize("name", ["fin", "pub_link"])
     async def test_join_to_hidden_model_is_omitted(self, pair: Pair, name: str) -> None:
-        pruned = await pair.fin.get_model(name, data_source=DS)
-        full = await pair.everything.get_model(name, data_source=DS)
+        pruned = await pair.fin.get_dataset(name, data_source=DS)
+        full = await pair.everything.get_dataset(name, data_source=DS)
         assert pruned is not None
         assert full is not None
-        assert [j.target_model for j in full.joins] == ["hr"]
-        assert pruned.joins == []
+        assert [j.to for j in full.relationships] == ["hr"]
+        assert pruned.relationships == []
 
     async def test_pruning_does_not_change_the_stored_model(self, pair: Pair) -> None:
-        await pair.fin.get_model("fin", data_source=DS)
-        stored = await pair.full.storage.get_model("fin", data_source=DS)
+        await pair.fin.get_dataset("fin", data_source=DS)
+        stored = await pair.full.storage.get_dataset("fin", data_source=DS)
         assert stored is not None
-        assert [j.target_model for j in stored.joins] == ["hr"]
+        assert [j.to for j in stored.relationships] == ["hr"]
 
     async def test_dangling_join_is_kept(self, pair: Pair) -> None:
-        pruned = await pair.fin.get_model("dangling", data_source=DS)
-        full = await pair.everything.get_model("dangling", data_source=DS)
+        pruned = await pair.fin.get_dataset("dangling", data_source=DS)
+        full = await pair.everything.get_dataset("dangling", data_source=DS)
         assert pruned is not None
         assert pruned == full
-        assert [j.target_model for j in pruned.joins] == ["ghost"]
+        assert [j.to for j in pruned.relationships] == ["ghost"]
 
     async def test_dangling_join_inspects_as_for_bypass(self, pair: Pair) -> None:
         def inspect(storage):
-            return InspectService(storage=storage).inspect(reference=f"{DS}.dangling", entity_type="model", compact=False)
+            return InspectService(storage=storage).inspect(reference=f"{DS}.dangling", entity_type="dataset", compact=False)
 
         out = await inspect(pair.fin)
         assert "ghost" in out
@@ -192,33 +192,33 @@ class TestSearch:
         assert leaks(" ".join(response.warnings)) == []
 
     async def test_graph_holds_only_visible_models_and_joins(self, pair: Pair) -> None:
-        models = await search_graph.get_filtered_ids("MATCH (m:Model) RETURN m.id AS id", pair.fin)
+        models = await search_graph.get_filtered_ids("MATCH (m:Dataset) RETURN m.id AS id", pair.fin)
         assert models == {f"{DS}.{n}" for n in VISIBLE_TO_FIN}
-        joined = await search_graph.get_filtered_ids("MATCH (a:Model)-[:JOINS]->(b:Model) RETURN b.id AS id", pair.fin)
+        joined = await search_graph.get_filtered_ids("MATCH (a:Dataset)-[:RELATIONSHIPS]->(b:Dataset) RETURN b.id AS id", pair.fin)
         assert [i for i in joined if leaks(i)] == []
 
 
 class TestQueries:
     async def test_visible_model_queries_normally(self, pair: Pair) -> None:
-        kind, text = await engine_outcome(pair.fin, {"source_model": "fin", "measures": [{"formula": "sum(amount)", "name": "total"}]})
+        kind, text = await engine_outcome(pair.fin, {"population": "fin", "metrics": [{"metric": "sum(fin.amount)", "alias": "total"}]})
         assert kind == "ok"
         assert str(LEDGER_TOTAL) in text
 
     @pytest.mark.parametrize("query", [
-        {"source_model": "hr", "measures": [{"formula": "count(*)"}]},
-        {"source_model": "hr_summary", "measures": [{"formula": "sum(total)"}]},
-        {"source_model": "pay", "measures": [{"formula": "sum(gross)"}]},
-        {"source_model": "fin", "dimensions": ["hr.dept"], "measures": [{"formula": "sum(amount)"}]},
-        {"source_model": "fin", "measures": [{"formula": "sum(hr.salary)"}]},
-        {"source_model": "fin", "measures": [{"formula": "sum(amount)"}], "filters": ["hr.dept = 'eng'"]},
-        {"source_model": "fin",
-         "extensions": [{"source_name": "fin", "joins": [{"target_model": "hr", "join_pairs": [["staff_id", "id"]]}]}],
-         "dimensions": ["hr.dept"]},
-        {"source_model": "fin", "dimensions": ["dept"], "measures": [{"formula": "sum(amount)"}]},
-        {"source_model": "fin", "dimensions": ["hrr.dept"], "measures": [{"formula": "sum(amount)"}]},
-        {"source_model": "pub_link", "dimensions": ["salary"]},
-        {"dimensions": ["hr.dept"]},
-        {"dimensions": ["fin.id", "hr.dept"]},
+        {"population": "hr", "metrics": [{"metric": "count(hr.*)"}]},
+        {"population": "hr_summary", "metrics": [{"metric": "sum(hr_summary.total)"}]},
+        {"population": "pay", "metrics": [{"metric": "sum(pay.gross)"}]},
+        {"population": "fin", "dimensions": ["fin.hr.dept"], "metrics": [{"metric": "sum(fin.amount)"}]},
+        {"population": "fin", "metrics": [{"metric": "sum(fin.hr.salary)"}]},
+        {"population": "fin", "metrics": [{"metric": "sum(fin.amount)"}], "filter": ["fin.hr.dept = 'eng'"]},
+        {"population": "fin",
+         "extensions": [{"dataset": "fin", "relationships": [{"to": "hr", "from_columns": ["staff_id"], "to_columns": ["id"]}]}],
+         "dimensions": ["fin.hr.dept"]},
+        {"population": "fin", "dimensions": ["fin.dept"], "metrics": [{"metric": "sum(fin.amount)"}]},
+        {"population": "fin", "dimensions": ["fin.hrr.dept"], "metrics": [{"metric": "sum(fin.amount)"}]},
+        {"population": "pub_link", "dimensions": ["pub_link.salary"]},
+        {"dimensions": ["fin.hr.dept"]},
+        {"dimensions": ["fin.id", "fin.hr.dept"]},
     ], ids=[
         "root", "query-backed-root", "reader-root", "hop", "hop-measure", "hop-filter", "join-target",
         "short-form", "typo", "pruned-neighbour", "rootless", "rootless-hop",
@@ -230,7 +230,7 @@ class TestQueries:
 class TestRootInference:
     async def test_population_inference_picks_visible_root(self, pair: Pair) -> None:
         choice = await infer_population(query=SlayerQuery.model_validate({"dimensions": ["fin.staff_id"]}), storage=pair.fin)
-        assert choice.model_name == "fin"
+        assert choice.dataset_name == "fin"
 
     @pytest.mark.parametrize("dimensions", [["hr.dept"], ["fin.staff_id", "hr.dept"]])
     async def test_population_inference_through_hidden_model_fails_like_deleted(
@@ -244,7 +244,7 @@ class TestRootInference:
     async def test_recommend_root_never_names_hr(self, pair: Pair) -> None:
         engine = SlayerQueryEngine(storage=pair.fin)
         try:
-            rec = await engine.recommend_root_model(items=["fin.amount", "pub.label"])
+            rec = await engine.recommend_population(items=["fin.amount", "pub.label"])
         finally:
             engine.close()
         assert leaks(rec.model_dump_json()) == []
@@ -254,7 +254,7 @@ class TestRootInference:
         async def recommend(storage):
             engine = SlayerQueryEngine(storage=storage)
             try:
-                return await engine.recommend_root_model(items=items)
+                return await engine.recommend_population(items=items)
             finally:
                 engine.close()
 
@@ -278,7 +278,7 @@ class TestValidateModels:
     async def test_view_reports_no_hidden_drift(self, pair: Pair) -> None:
         engine = SlayerQueryEngine(storage=pair.fin)
         try:
-            entries = await engine.validate_models(data_source=DS)
+            entries = await engine.validate_datasets(data_source=DS)
         finally:
             engine.close()
         dumped = json.dumps([e.model_dump(mode="json") for e in entries])
@@ -295,17 +295,17 @@ class TestBareNameAmbiguity:
             for ds in ("east", "west"):
                 await storage.save_datasource(DatasourceConfig(name=ds, type="sqlite", database=os.path.join(tmp, "x.db")))
             for ds, tags in (("east", []), ("west", ["hr"])):
-                await storage.save_model(SlayerModel(
+                await storage.save_dataset(SlayerDataset(
                     name="shared", sql_table="t", data_source=ds, access_tags=tags,
-                    columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                    fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
                 ), _validate=False)
             yield storage
 
     async def test_name_resolves_to_the_visible_copy(self, two_datasources: YAMLStorage) -> None:
-        with pytest.raises(AmbiguousModelError):
-            await two_datasources.resolve_model_identity("shared")
+        with pytest.raises(AmbiguousDatasetError):
+            await two_datasources.resolve_dataset_identity("shared")
         fin = AccessFilteredStorage(two_datasources, tags={"fin"}, bypass=False)
-        assert await fin.resolve_model_identity("shared") == ("east", "shared")
-        model = await fin.get_model("shared")
+        assert await fin.resolve_dataset_identity("shared") == ("east", "shared")
+        model = await fin.get_dataset("shared")
         assert model is not None
         assert model.data_source == "east"

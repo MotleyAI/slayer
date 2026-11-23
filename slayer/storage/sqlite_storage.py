@@ -1,4 +1,4 @@
-"""SQLite-based storage for models and datasources.
+"""SQLite-based storage for datasets and datasources.
 
 v4: the ``models`` table has a composite ``(data_source, name)``
 primary key so two datasources can share a table name without collision. A
@@ -11,16 +11,17 @@ import asyncio
 import json
 import os
 import sqlite3
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
 from typing import Any
 
 from sqlglot import exp
 
 from slayer.core.errors import StoredDocumentLoadError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import (
+    DATASOURCE_NAME,
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
@@ -35,6 +36,7 @@ from slayer.storage.sidecar_embedding_store import (
 from slayer.storage.sqlite_conn import open_connection, transaction
 from slayer.storage.migrations import stamp_stored
 from slayer.storage.v4_migration import migrate_sqlite_schema
+from slayer.storage.document_keys import keys_for
 
 
 _PRIORITY_KEY = "datasource_priority"
@@ -154,6 +156,14 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS semantic_models (
+                    data_source TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    PRIMARY KEY (data_source, name)
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -194,12 +204,12 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             counter = f.read(28)[24:28]
         return f"{counter.hex()}:{stat_key(self.db_path)}"
 
-    def _save_model_sync(self, model: SlayerModel) -> None:
-        data = json.dumps(without_none(model.model_dump(mode="json")))
+    def _save_dataset_sync(self, dataset: SlayerDataset) -> None:
+        data = json.dumps(without_none(dataset.model_dump(mode="json")))
         with transaction(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO models (data_source, name, data) VALUES (?, ?, ?)",
-                (model.data_source, model.name, data),
+                (dataset.data_source, dataset.name, data),
             )
 
     def _list_all_identities_sync(self) -> list[tuple[str, str]]:
@@ -209,7 +219,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             ).fetchall()
         return [(r[0], r[1]) for r in rows]
 
-    def _get_model_sync(self, data_source: str, name: str) -> str | None:
+    def _get_dataset_sync(self, data_source: str, name: str) -> str | None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT data FROM models WHERE data_source = ? AND name = ?",
@@ -217,13 +227,66 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             ).fetchone()
         return row[0] if row else None
 
-    def _delete_model_sync(self, data_source: str, name: str) -> bool:
+    def _delete_dataset_sync(self, data_source: str, name: str) -> bool:
         with transaction(self.db_path) as conn:
             cursor = conn.execute(
                 "DELETE FROM models WHERE data_source = ? AND name = ?",
                 (data_source, name),
             )
             return cursor.rowcount > 0
+
+    def _save_semantic_model_sync(self, data_source: str, name: str, text: str) -> None:
+        with transaction(self.db_path) as conn:
+            conn.execute("INSERT OR REPLACE INTO semantic_models (data_source, name, text) VALUES (?, ?, ?)",
+                         (data_source, name, text))
+
+    def _get_semantic_model_sync(self, data_source: str, name: str) -> str | None:
+        with transaction(self.db_path) as conn:
+            row = conn.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?",
+                               (data_source, name)).fetchone()
+        return row[0] if row else None
+
+    def _list_semantic_models_sync(self) -> list[tuple[str, str]]:
+        with transaction(self.db_path) as conn:
+            rows = conn.execute("SELECT data_source, name FROM semantic_models ORDER BY data_source, name").fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def _delete_semantic_model_sync(self, data_source: str, name: str) -> bool:
+        with transaction(self.db_path) as conn:
+            return conn.execute("DELETE FROM semantic_models WHERE data_source = ? AND name = ?",
+                                (data_source, name)).rowcount > 0
+
+    def _patch_semantic_model_sync(self, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+        with open_connection(self.db_path, isolation_level=None) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?",
+                                   (data_source, name)).fetchone()
+                if row is None:
+                    raise ValueError(f"semantic model {name!r} of datasource {data_source!r} not found")
+                text = patch(row[0])
+                conn.execute("UPDATE semantic_models SET text = ? WHERE data_source = ? AND name = ?",
+                             (text, data_source, name))
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        return text
+
+    async def _save_semantic_model_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        await asyncio.to_thread(self._save_semantic_model_sync, data_source, name, text)
+
+    async def _get_semantic_model_text_impl(self, *, data_source: str, name: str) -> str | None:
+        return await asyncio.to_thread(self._get_semantic_model_sync, data_source, name)
+
+    async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
+        return await asyncio.to_thread(self._list_semantic_models_sync)
+
+    async def _delete_semantic_model_row(self, *, data_source: str, name: str) -> bool:
+        return await asyncio.to_thread(self._delete_semantic_model_sync, data_source, name)
+
+    async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+        return await asyncio.to_thread(self._patch_semantic_model_sync, data_source, name, patch)
 
     def _save_datasource_sync(self, datasource: DatasourceConfig) -> None:
         data = json.dumps(without_none(datasource.model_dump(mode="json")))
@@ -278,36 +341,36 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # --- Async interface ---
 
-    async def _save_model_impl(self, model: SlayerModel) -> None:
-        await asyncio.to_thread(self._save_model_sync, model)
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        await asyncio.to_thread(self._save_dataset_sync, dataset)
 
-    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+    async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
         return await asyncio.to_thread(self._list_all_identities_sync)
 
-    async def get_model(
+    async def get_dataset(
         self,
         name: str,
         data_source: str | None = None,
-    ) -> SlayerModel | None:
+    ) -> SlayerDataset | None:
         target = await self._resolve_target_or_none(name, data_source=data_source)
         if target is None:
             return None
         data_source, name = target
-        raw = await asyncio.to_thread(self._get_model_sync, data_source, name)
+        raw = await asyncio.to_thread(self._get_dataset_sync, data_source, name)
         if not raw:
             return None
-        with stored_document_boundary(kind="model", name=name, data_source=data_source):
+        with stored_document_boundary(kind="dataset", name=name, data_source=data_source):
             return await self._migrate_and_refine_on_load(
                 name=name, data=json.loads(raw), data_source=data_source,
             )
 
-    async def _load_raw_model_dict(
+    async def _load_raw_dataset_dict(
         self, *, name: str, data_source: str,
     ) -> dict | None:
         """Read the stored JSON verbatim (no migration / no
         validation) for sibling-hop resolution during the legacy-``__``
         rewrite. Returns ``None`` when the row is absent, corrupt or not a mapping."""
-        raw = await asyncio.to_thread(self._get_model_sync, data_source, name)
+        raw = await asyncio.to_thread(self._get_dataset_sync, data_source, name)
         if not raw:
             return None
         try:
@@ -333,7 +396,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         with transaction(self.db_path) as conn:
             conn.execute(sql, params)
 
-    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+    async def _write_raw_dataset_dict(self, *, name: str, data_source: str, data: dict) -> None:
         await asyncio.to_thread(
             self._update_sync, "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
             (json.dumps(data), data_source, name),
@@ -352,31 +415,33 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
         await asyncio.to_thread(self._update_sync, "UPDATE memories SET data = ? WHERE id = ?", (json.dumps(data), memory_id))
 
-    async def _delete_model_row(
+    async def _delete_dataset_row(
         self, *, data_source: str, name: str,
     ) -> bool:
-        return await asyncio.to_thread(self._delete_model_sync, data_source, name)
+        return await asyncio.to_thread(self._delete_dataset_sync, data_source, name)
 
-    def _update_column_sampled_sync(
-        self, *, data_source: str, model_name: str,
-        column_name: str, sampled: str | None,
+    def _update_field_sampled_sync(
+        self, *, data_source: str, dataset_name: str,
+        field_name: str, sampled: str | None,
         sampled_values: list[str] | None,
         distinct_count: int | None,
     ) -> None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT data FROM models WHERE data_source = ? AND name = ?",
-                (data_source, model_name),
+                (data_source, dataset_name),
             ).fetchone()
             if not row:
                 raise ValueError(
-                    f"update_column_sampled: model {model_name!r} in datasource "
+                    f"update_field_sampled: dataset {dataset_name!r} in datasource "
                     f"{data_source!r} not found."
                 )
             data = json.loads(row[0])
-            cols = data.get("columns") or []
+            version = data.get("version")
+            fields_key = keys_for(entity="SlayerModel", version=version if isinstance(version, int) else 1).fields
+            cols = data.get(fields_key) or []
             for col in cols:
-                if isinstance(col, dict) and col.get("name") == column_name:
+                if isinstance(col, dict) and col.get("name") == field_name:
                     _write_sample_fields(
                         col,
                         sampled=sampled,
@@ -386,31 +451,31 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                     break
             else:
                 raise ValueError(
-                    f"update_column_sampled: column {column_name!r} not found "
-                    f"on model {model_name!r} in datasource {data_source!r}."
+                    f"update_field_sampled: field {field_name!r} not found "
+                    f"on dataset {dataset_name!r} in datasource {data_source!r}."
                 )
             conn.execute(
                 "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
-                (json.dumps(data), data_source, model_name),
+                (json.dumps(data), data_source, dataset_name),
             )
 
-    async def update_column_sampled(
+    async def update_field_sampled(
         self,
         *,
         data_source: str,
-        model_name: str,
-        column_name: str,
+        dataset_name: str,
+        field_name: str,
         sampled: str | None,
         sampled_values: list[str] | None,
         distinct_count: int | None,
     ) -> None:
         await asyncio.to_thread(
-            self._update_column_sampled_sync,
-            data_source=data_source, model_name=model_name,
-            column_name=column_name, sampled=sampled,
+            self._update_field_sampled_sync,
+            data_source=data_source, dataset_name=dataset_name,
+            field_name=field_name, sampled=sampled,
             sampled_values=sampled_values, distinct_count=distinct_count,
         )
-        self._forget_raw(data_source=data_source, name=model_name)
+        self._forget_raw(data_source=data_source, name=dataset_name)
 
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await asyncio.to_thread(self._save_datasource_sync, datasource)
@@ -420,7 +485,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         # SQLite lookup is parameterised so injection isn't the risk —
         # validation here keeps the public ABC contract uniform across
         # backends.
-        _validate_path_component(name, kind="datasource name")
+        _validate_path_component(name, kind=DATASOURCE_NAME)
         raw = await asyncio.to_thread(self._get_datasource_sync, name)
         if raw is None:
             return None

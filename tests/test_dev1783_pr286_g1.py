@@ -26,7 +26,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from slayer.core.keys import ColumnKey, Phase, TransformKey
+from slayer.core.enums import DataType
+from slayer.core.keys import FieldKey, Phase, TransformKey
 from slayer.ir.planned import ValueSlot
 from slayer.sql.generator import SQLGenerator
 
@@ -38,12 +39,12 @@ def _render_ntile(n) -> str:
     """Render an ``ntile(revenue:sum, n=<n>)`` transform through the generator's
     window-transform path, with a minimally-materialised input slot."""
     gen = SQLGenerator(dialect="postgres")
-    input_key = ColumnKey(path=(), leaf="revenue")
+    input_key = FieldKey(path=(), leaf="revenue")
     nt_key = TransformKey(op="ntile", input=input_key, kwargs=(("n", n),))
-    in_slot = ValueSlot(
+    in_slot = ValueSlot(type=DataType.INTEGER,
         id="s_in", key=input_key, declared_name="revenue", phase=Phase.ROW,
     )
-    nt_slot = ValueSlot(
+    nt_slot = ValueSlot(type=DataType.INTEGER,
         id="s_nt", key=nt_key, declared_name="bucket", phase=Phase.POST,
     )
     return gen._render_window_transform_sql(
@@ -51,7 +52,7 @@ def _render_ntile(n) -> str:
         slots_by_id={"s_in": in_slot, "s_nt": nt_slot},
         slot_id_by_key={input_key: "s_in", nt_key: "s_nt"},
         available_alias_by_slot_id={"s_in": "revenue"},
-        planned_query=SimpleNamespace(projection=[]),
+        planned_query=SimpleNamespace(projection=[], grain=[]),
     ).sql(dialect="postgres")
 
 
@@ -66,7 +67,7 @@ class TestNtileNIsNormalised:
     def test_bool_is_rejected(self) -> None:
         """``True`` is an ``int`` subclass, so ``isinstance(n, int)`` used to
         wave it through to ``NTILE(...)``."""
-        nt_key = TransformKey(op="ntile", input=ColumnKey(path=(), leaf="x"),
+        nt_key = TransformKey(op="ntile", input=FieldKey(path=(), leaf="x"),
                               kwargs=(("n", True),))
         # Guard: only meaningful if the model kept the bool as a bool.
         if dict(nt_key.kwargs).get("n") is not True:

@@ -68,13 +68,13 @@ cardinality) and the remediation. Silent first-match selection MUST NOT occur.
 - **THEN** the query fails with the same error form naming both candidate edges
 
 ### Requirement: Edge names disambiguate paths
-A join MAY declare a `name`. A path segment matching an incident edge's name SHALL
-traverse that edge from either endpoint, whether or not the pair is ambiguous, in
-model SQL and query references alike. Result columns and metadata SHALL carry the
-path's canonical spelling (the edge name for a named edge, whichever spelling was
-typed), and downstream consumers (response metadata, time-dimension ownership,
-ordering, filters, multi-stage scopes) SHALL resolve the traversal target from the
-resolved edge, never by reading path tokens as model names.
+A join MAY declare a `name`. A segment of a reference's explicit route — any segment after its anchor
+(`queries/references`) — or of a model-SQL path that matches an incident edge's name SHALL traverse that edge
+from either endpoint, whether or not the pair is ambiguous. An edge name SHALL NOT be a query reference's first
+segment. Result columns and metadata SHALL carry the route's canonical spelling (the edge name for a named
+edge, whichever spelling was typed), and downstream consumers (response metadata, time-dimension ownership,
+ordering, filters, multi-stage scopes) SHALL resolve the traversal target from the resolved edge, never by
+reading path tokens as model names.
 
 #### Scenario: Named hop resolves an ambiguous pair
 - **WHEN** the two `orders`↔`customers` edges are named `billing_customer` and
@@ -83,7 +83,7 @@ resolved edge, never by reading path tokens as model names.
   `orders.billing_customer.name`
 
 #### Scenario: Names are direction-agnostic
-- **WHEN** a query rooted at `customers` references `sum(billing_customer.amount)`
+- **WHEN** a query with population `customers` references `sum(customers.billing_customer.amount)`
 - **THEN** the same token traverses the same edge in reverse, reaching `orders`
 
 #### Scenario: Named paths carry correct terminal metadata
@@ -93,33 +93,30 @@ resolved edge, never by reading path tokens as model names.
   model-name path
 
 #### Scenario: A named edge typed by its model name answers under the edge name
-- **WHEN** `customers`→`regions` is a single edge named `hr` and a query rooted at
-  `orders` selects the dimension `customers.regions.rname` and the measure
+- **WHEN** `customers`→`regions` is a single edge named `hr` and a query with population
+  `orders` selects the dimension `customers.regions.rname` and the metric
   `max(customers.regions.pop)`
-- **THEN** the result keys are `orders.customers.hr.rname` and
-  `orders.customers.hr.pop_max`, with the same label, format and type metadata as
-  the edge-name spelling
+- **THEN** the result keys are `customers.hr.rname` and `customers.hr.pop_max`, with the
+  same label, format and type metadata as the edge-name spelling
 
 ### Requirement: Edge names are validated at save time
-An edge name SHALL be rejected at save when it equals any model name in the
-datasource or duplicates another edge name incident to either endpoint model.
-Saving a model whose name equals an edge name stored in its datasource SHALL be
-rejected likewise — edge names and model names share one path-segment namespace.
-Validation SHALL warn when a parallel edge set contains any unnamed edge — an unnamed parallel edge is unaddressable. Name characters follow model-name
-identifier rules.
+An edge name SHALL be rejected at save when it duplicates another edge name incident to either endpoint model. An edge name MAY equal a model name: a hop segment SHALL resolve as "A hop segment naming both an edge and another edge's target is ambiguous" specifies. Validation SHALL warn when a parallel edge set contains any unnamed edge — an unnamed parallel edge is unaddressable. Name characters follow model-name identifier rules.
 
 #### Scenario: Name colliding with a model is rejected
-- **WHEN** a model saves a join named like an existing model in the datasource
-- **THEN** the save fails with an error naming the collision
+- **WHEN** a model saves a join named like an existing model in the datasource, and no other edge of the model targets that model
+- **THEN** the save succeeds, and a path segment with that name resolves to the named edge
 
 #### Scenario: Model named like an existing edge is rejected
-- **WHEN** `orders` stores an edge named `returns` and a new model `returns` is saved in the same
-  datasource
-- **THEN** the save fails with an error naming the edge and the model that declares it
+- **WHEN** `orders` stores an edge named `returns` targeting `refunds`, and a new model `returns` is saved in the same datasource
+- **THEN** the save succeeds, `orders.returns` resolves to the edge into `refunds`, and `returns` is a dataset anchor
 
 #### Scenario: Unnamed parallel edges warn
 - **WHEN** a save leaves parallel edges between one pair of models and at least one is unnamed
 - **THEN** validation warns that the unnamed edge cannot be addressed (bare token ambiguous)
+
+#### Scenario: Duplicate incident edge names are rejected
+- **WHEN** `orders` declares two edges named `buyer`
+- **THEN** the save fails with an error naming the duplicate
 
 ### Requirement: Exact-inverse declarations are redundant
 Declaring a join that is the exact inverse of an existing edge on the counterpart
@@ -180,7 +177,7 @@ first. No search SHALL route through the time spine: a route may begin or end th
 #### Scenario: Equal-length routes prefer the to-one hop
 - **WHEN** `a` declares `to_b` (`a`→`b`, many-to-one) and `b` declares `to_a` (`b`→`a`, many-to-one), and
   root recommendation attaches a measure on `b` to the root `a`
-- **THEN** the emitted path is `to_b`, never the fanning reverse traversal of `to_a`
+- **THEN** the emitted path is the item as written, resolving through `to_b`, never the fanning reverse traversal of `to_a`
 
 #### Scenario: An unaddressable pair is reported, not silently dropped
 - **WHEN** `orders` declares two unnamed joins to `addresses` and root recommendation is given `orders.id`
@@ -207,7 +204,7 @@ traversable hop.
 ### Requirement: Paths resolve to one canonical spelling
 Every resolved join path SHALL be spelled canonically: per hop, the traversed edge's
 declared name, else its traversal-target model's name. Query references, saved
-measures, auto-routed short forms, model SQL (`Column.sql`, `Column.filter`, model
+measures, routed anchors, model SQL (`DatasetField.sql`, `DatasetField.filter`, model
 filters) and definition defaults SHALL all resolve to that spelling, so two spellings
 of one edge denote one value: one join, one slot, one home, and identical results.
 Persisted models SHALL keep their authored spelling; error messages SHALL quote the
@@ -247,9 +244,9 @@ typed spelling.
 - **THEN** the default resolves to the same value and home as `customers.hr.pop`
 
 #### Scenario: An auto-routed short form through a named edge is canonical
-- **WHEN** a query rooted at `orders` selects the short form `regions.rname`, which
-  routes uniquely through the `hr` edge
-- **THEN** the result key is `orders.customers.hr.rname`
+- **WHEN** a query rooted at `orders` selects `regions.rname`, whose anchor is reached
+  uniquely through the `hr` edge
+- **THEN** the result key is `regions.rname`, and the join path is spelled `customers.hr`
 
 #### Scenario: Spelling twins share one cached result
 - **WHEN** the result cache is enabled and the same query is executed once with
@@ -260,7 +257,7 @@ typed spelling.
 ### Requirement: Join mutations address one edge
 Model-editing surfaces SHALL address a join by its edge reference — the target model's name when it is
 the only join from the model to that target, else the edge name — or by an exact reference
-(`target_model`, `name`, `join_pairs`). A reference matching several joins SHALL fail with an error
+(`to`, `name`, `from_columns`, `to_columns`). A reference matching several joins SHALL fail with an error
 listing the candidates; it MUST NOT act on the first match or on every match. A join upsert SHALL
 update the join matching its name, else its target and key pairs, else the sole join to its target;
 an unnamed upsert matching none of these whose target the model already joins SHALL be rejected,
@@ -268,20 +265,20 @@ asking for a name.
 
 #### Scenario: Remove one of two parallel edges
 - **WHEN** `orders` joins `addresses` twice, named `billing_address` and `shipping_address`, and
-  `edit_model` removes the join `billing_address`
+  `edit_dataset` removes the join `billing_address`
 - **THEN** only the billing edge is removed
 
 #### Scenario: Ambiguous target reference fails
-- **WHEN** `orders` holds two unnamed joins to `addresses` and `edit_model` removes the join `addresses`
+- **WHEN** `orders` holds two unnamed joins to `addresses` and `edit_dataset` removes the join `addresses`
 - **THEN** the edit fails listing both candidates with their key pairs, and no join is removed
 
 #### Scenario: Name an unnamed parallel edge
-- **WHEN** an upsert carries `target_model` `addresses`, the key pairs of one of two unnamed joins to
+- **WHEN** an upsert carries `to` `addresses`, the key pairs of one of two unnamed joins to
   `addresses`, and `name` `billing_address`
 - **THEN** that join receives the name and the other join is unchanged
 
 #### Scenario: Exact reference removes exactly one edge
-- **WHEN** `edit_model` removes `{target_model: addresses, join_pairs: [[shipping_address_id, id]]}`
+- **WHEN** `edit_dataset` removes `{to: addresses, from_columns: [shipping_address_id], to_columns: [id]}`
   from a model with two unnamed joins to `addresses`
 - **THEN** only the matching join is removed
 
@@ -311,19 +308,6 @@ spelling.
   `orders.customer_id = customers.id`, and only `orders → customers` is declared
 - **THEN** the translation traverses the declared edge in reverse, with no dynamic join added
 
-### Requirement: Directed FK cycles keep literal-edge-first resolution
-Inside a directed FK cycle a path token SHALL bind the incident edge it names even when a to-one route
-to the same model exists; the route is reached only by spelling it. Population inference over a
-directed cycle SHALL fail closed when every candidate root is blocked by a fanning literal edge.
-
-#### Scenario: Token binds the direct fanning edge
-- **WHEN** `x → y → z → x` are the FK edges and a query rooted at `x` sums `z.amount`
-- **THEN** it sums over the `z` rows referencing each `x`, not the `z` reached via `y`
-
-#### Scenario: Rootless query across a directed 3-cycle fails closed
-- **WHEN** a query without `source_model` selects `x.v`, `y.v` and `z.v` over `x → y → z → x`
-- **THEN** it fails with the no-viable-candidate error, and succeeds once `source_model` is given
-
 ### Requirement: An extension join repeating a stored edge is that edge
 
 A join declared by a query extension of model `M` towards `T` SHALL be matched against every edge between `M` and `T` in the query object's join graph. That covers stored edges declared on either model, a stored query-backed model's declared joins, and edges added by the query's other extensions. Each candidate SHALL be compared in the `M → T` orientation: an edge declared `T → M` has its key pairs swapped and its cardinality inverted.
@@ -351,15 +335,15 @@ A join declared by a query extension of model `M` towards `T` SHALL be matched a
 
 #### Scenario: Declared join type does not split the edge
 - **WHEN** the stored `orders → customers` edge is LEFT and an extension of `orders` declares it INNER with the same pairs
-- **THEN** it is the stored edge, traversed as LEFT, and `customers.<column>` stays unambiguous
+- **THEN** it is the stored edge, traversed as LEFT, and `customers.<field>` stays unambiguous
 
 #### Scenario: Alias resolves to the stored edge under its canonical spelling
 - **WHEN** an extension declares the stored `orders → customers` edge under the name `c`, and the query selects both `c.name` and `customers.region`
-- **THEN** `customers` is joined once, and the result keys read `customers.name` and `customers.region`
+- **THEN** `customers` is joined once, and the result keys are `orders.customers.name` and `customers.region`
 
 #### Scenario: Alias selects one of two parallel stored edges
 - **WHEN** `orders` stores `billing_address` and `shipping_address` edges to `addresses` on different pairs, and an extension declares the billing pairs under the name `b`
-- **THEN** `b.city` reads the billing address and its result key is spelled `billing_address.city`
+- **THEN** `b.city` reads the billing address and its result key is spelled `orders.billing_address.city`
 
 #### Scenario: Several candidates with equal pairs are ambiguous
 - **WHEN** two stored edges between `orders` and `addresses` share one key-pair set and an unnamed extension join declares that set
@@ -386,5 +370,37 @@ A join declared by a query extension of model `M` towards `T` SHALL be matched a
 - **THEN** the query fails naming both names
 
 #### Scenario: Multi-hop and cyclic query-local chains
-- **WHEN** extensions add `a → b` and `b → c` as new edges and a query rooted at `a` selects `b.c.<column>`, or extensions close a cycle `a → b → a` on different pairs
+- **WHEN** extensions add `a → b` and `b → c` as new edges and a query rooted at `a` selects `b.c.<field>`, or extensions close a cycle `a → b → a` on different pairs
 - **THEN** the chain resolves over the query-local edges, and the cycle's hops resolve by their names exactly as stored edges in a cycle do
+
+### Requirement: Directed FK cycles take the to-one path
+Inside a directed FK cycle a reference anchored at a model of the cycle SHALL take the population's only to-one
+path to it, even when a fanning edge connects the population to it directly; the direct edge is reached only
+by spelling it as an explicit route. Population inference over a directed cycle SHALL fail closed when no
+candidate is uniquely best.
+
+#### Scenario: The anchor takes the to-one path
+- **WHEN** `x → y → z → x` are the FK edges and a query with population `x` sums `z.amount`
+- **THEN** it sums over the `z` reached through `x → y → z`, and `sum(x.z.amount)` sums over the `z` rows referencing each `x`
+
+#### Scenario: Rootless query across a directed 3-cycle fails closed
+- **WHEN** a query without a population selects `x.v`, `y.v` and `z.v` over `x → y → z → x`
+- **THEN** it fails with the no-unique-candidate error, and succeeds once a population is given
+
+### Requirement: A hop segment naming both an edge and another edge's target is ambiguous
+When a path segment after a dataset names an edge of that dataset and is also the name of the target dataset of a different edge of that dataset, the reference SHALL fail with a typed ambiguity error naming both readings and the remedy of spelling the hop by the other edge's name. A segment naming only one of them SHALL resolve to it.
+
+#### Scenario: Both readings exist
+- **WHEN** `orders` has an edge named `customers` targeting `regions` and an edge named `orders_to_customers` targeting `customers`, and a query reads `orders.customers.name`
+- **THEN** the query fails with a typed ambiguity error naming the edge `customers` and the edge `orders_to_customers`
+
+### Requirement: Self-relationships are accepted and take no part in paths
+A relationship whose target is its own dataset SHALL be accepted at save and load. It SHALL take no part in route search, path resolution, association or population inference. A reference that spells a hop over a self-relationship SHALL fail with a typed error stating that self-relationships are not traversable.
+
+#### Scenario: A self-relationship loads and stays inert
+- **WHEN** `employees` declares the relationship `manager` from `manager_id` to its own `id`, and a query asks for `count(employees.*)` by `employees.department`
+- **THEN** the dataset saves and the query returns each department's employee count
+
+#### Scenario: Spelling the self-relationship fails
+- **WHEN** a query reads `employees.manager.name`
+- **THEN** the query fails with a typed error stating that self-relationships are not traversable

@@ -1,0 +1,154 @@
+{
+ "source": "tests/test_dev1726_cte_case_folding.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.Rev)",
+    "name": "up"
+   },
+   "new": {
+    "expression": "sum(customers.Rev)",
+    "name": "up"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.rev)",
+    "name": "down"
+   },
+   "new": {
+    "expression": "sum(customers.rev)",
+    "name": "down"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'month')",
+    "name": "Foo"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'month')",
+    "name": "Foo"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(max(revenue), -2, 'month')",
+    "name": "foo"
+   },
+   "new": {
+    "expression": "time_shift(max(revenue), -2, 'month')",
+    "name": "foo"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(revenue) > 0)",
+    "name": "Foo"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(revenue) > 0)",
+    "name": "Foo"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(revenue) > 100)",
+    "name": "foo"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(revenue) > 100)",
+    "name": "foo"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 276,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 282,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 283,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 284,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 293,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 298,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 299,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 300,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 307,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 310,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 328,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 331,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 426,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 429,
+   "reason": "not fully literal"
+  }
+ ]
+}

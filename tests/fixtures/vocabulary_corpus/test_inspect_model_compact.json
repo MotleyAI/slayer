@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_inspect_model_compact.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  }
+ ]
+}

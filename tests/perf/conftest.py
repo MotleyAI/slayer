@@ -12,7 +12,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -30,52 +30,52 @@ from .seed import Dataset, generate_dataset, seed_database
 # SLayer model definitions for the benchmark schema
 # ---------------------------------------------------------------------------
 
-def _build_orders_model(ds_name: str) -> SlayerModel:
-    return SlayerModel(
+def _build_orders_dataset(ds_name: str) -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source=ds_name,
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="shop_id", sql="shop_id", type=DataType.DOUBLE),
-            Column(name="category", sql="category", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="completed_at", sql="completed_at", type=DataType.TIMESTAMP),
-            Column(name="cancelled_at", sql="cancelled_at", type=DataType.TIMESTAMP),
-            Column(name="total_cost", sql="cost", type=DataType.DOUBLE),
-            Column(name="avg_cost", sql="cost", type=DataType.DOUBLE),
-            Column(name="min_cost", sql="cost", type=DataType.DOUBLE),
-            Column(name="max_cost", sql="cost", type=DataType.DOUBLE),
-            Column(name="latest_cost", sql="cost", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="shop_id", expression="shop_id", datatype=DataType.FLOAT),
+            DatasetField(name="category", expression="category", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="completed_at", expression="completed_at", datatype=DataType.DATETIME),
+            DatasetField(name="cancelled_at", expression="cancelled_at", datatype=DataType.DATETIME),
+            DatasetField(name="total_cost", expression="cost", datatype=DataType.FLOAT),
+            DatasetField(name="avg_cost", expression="cost", datatype=DataType.FLOAT),
+            DatasetField(name="min_cost", expression="cost", datatype=DataType.FLOAT),
+            DatasetField(name="max_cost", expression="cost", datatype=DataType.FLOAT),
+            DatasetField(name="latest_cost", expression="cost", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _build_shops_model(ds_name: str) -> SlayerModel:
-    return SlayerModel(
+def _build_shops_dataset(ds_name: str) -> SlayerDataset:
+    return SlayerDataset(
         name="shops",
         sql_table="shops",
         data_source=ds_name,
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
     )
 
 
-def _build_customers_model(ds_name: str) -> SlayerModel:
-    return SlayerModel(
+def _build_customers_dataset(ds_name: str) -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source=ds_name,
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="segment", sql="segment", type=DataType.TEXT),
-            Column(name="primary_shop_id", sql="primary_shop_id", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="segment", expression="segment", datatype=DataType.STRING),
+            DatasetField(name="primary_shop_id", expression="primary_shop_id", datatype=DataType.FLOAT),
         ],
     )
 
@@ -143,16 +143,16 @@ async def _create_env(order_count: int) -> BenchEnv:
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(ds)
 
-    await storage.save_model(_build_orders_model("bench"))
-    await storage.save_model(_build_shops_model("bench"))
-    await storage.save_model(_build_customers_model("bench"))
+    await storage.save_dataset(_build_orders_dataset("bench"))
+    await storage.save_dataset(_build_shops_dataset("bench"))
+    await storage.save_dataset(_build_customers_dataset("bench"))
 
     slayer_engine = SlayerQueryEngine(storage=storage)
 
     # Warmup: run a simple query to prime DB caches and connection pool
     await slayer_engine.execute(query=SlayerQuery.model_validate({
-        "source_model": "orders",
-        "measures": [{"formula": "count(*)"}],
+        "population": "orders",
+        "metrics": [{"metric": "count(*)"}],
     }))
 
     return slayer_engine, dataset

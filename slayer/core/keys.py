@@ -39,23 +39,29 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from slayer.core.enums import (
     AXIS_COLLAPSING_TRANSFORMS,
-    INTEGER_AGGREGATIONS,
-    LIST_AGGREGATIONS,
-    NUMERIC_ONLY_AGGREGATIONS,
+    AggregationValueClass,
     DataType,
     DatePart,
-    RANK_FAMILY_TRANSFORMS,
+    INTEGER_AGGREGATIONS,
+    LIST_AGGREGATIONS,
+    NUMERIC_DATATYPES,
+    NUMERIC_ONLY_AGGREGATIONS,
     RANKED_AGGREGATIONS,
+    RANK_FAMILY_TRANSFORMS,
     SUB_DAY_GRANULARITIES,
+    TEMPORAL_DATATYPES,
     TimeGranularity,
+    TypeKind,
+    classify_aggregation,
+    kind_of,
 )
 from slayer.core.format import NumberFormat
-from slayer.core.granularity import CustomGranularity, Granularity
+from slayer.core.granularity import CustomGranularity, Granularity, bucket_type
 from slayer.core.time_points import parse_temporal_value
 
 
-# Regroup-consumed aggregates are substituted by a ColumnKey with this leaf
-# prefix; a source model may not declare a real column with it during regroup.
+# Regroup-consumed aggregates are substituted by a FieldKey with this leaf
+# prefix; a source dataset may not declare a real field with it during regroup.
 REGROUP_LEAF_PREFIX = "__regroup__"
 
 
@@ -78,7 +84,7 @@ def _spec(
     return ScalarSpec(min_args=low, max_args=high, sql_passthrough=sql, result=result, numeric=numeric)
 
 
-_TEXT, _BOOL, _INT, _DOUBLE = DataType.TEXT, DataType.BOOLEAN, DataType.INT, DataType.DOUBLE
+_TEXT, _BOOL, _INT, _DOUBLE = DataType.STRING, DataType.BOOLEAN, DataType.INTEGER, DataType.FLOAT
 
 
 def _library(low: int, high: Optional[int], *, result: Optional[DataType] = None, numeric: bool = False) -> ScalarSpec:
@@ -136,11 +142,12 @@ LIST_FUNCTIONS: frozenset[str] = frozenset({"contains", "contains_any", "contain
 LIST_ONLY_FUNCTIONS: frozenset[str] = frozenset({"contains_any", "contains_all"})
 # Names the parser rewrites into a library call or a time bucket; reserved like the functions.
 SCALAR_SPELLINGS: frozenset[str] = frozenset({
-    "strpos", "date_trunc", "json_extract", "json_extract_scalar", "json_extract_path_text",
+    "strpos", "iff", "cardinality", "array_length", "array_contains", "datediff", "dateadd", "current_timestamp",
+    "date_trunc", "json_extract", "json_extract_scalar", "json_extract_path_text",
     "jsonb_extract_path_text",
 })
 RESERVED_SCALAR_NAMES: frozenset[str] = SCALAR_FUNCTIONS | SCALAR_SPELLINGS
-TEXT_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.TEXT)
+TEXT_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.STRING)
 BOOLEAN_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.BOOLEAN)
 # Scalars that read every argument as a number.
 NUMERIC_ARG_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.numeric)
@@ -306,12 +313,12 @@ def _typed_kwargs(kwargs):
     return tuple((k, _typed_leaf(v)) for k, v in kwargs)
 
 
-class ColumnKey(_LeafKey, frozen=True):
-    """Row-level reference to a base column on a model.
+class FieldKey(_LeafKey, frozen=True):
+    """Row-level reference to a base field on a dataset.
 
-    ``path`` is the join walk from the query's source model to the terminal
-    model — empty for local refs, non-empty for joined refs; ``leaf`` is the
-    column name. Local and cross-model refs share this shape (P3).
+    ``path`` is the relationship walk from the query's source dataset to the terminal
+    dataset — empty for local refs, non-empty for joined refs; ``leaf`` is the
+    field name. Local and cross-dataset refs share this shape (P3).
     """
 
     path: Tuple[str, ...] = ()
@@ -322,16 +329,16 @@ class ColumnKey(_LeafKey, frozen=True):
         return Phase.ROW
 
 
-class ColumnSqlKey(_LeafKey, frozen=True):
-    """Reference to a derived column (whose ``Column.sql`` is set).
+class FieldSqlKey(_LeafKey, frozen=True):
+    """Reference to a derived field (whose ``DatasetField.sql`` is set).
 
-    The expansion AST is recovered from the model at binding time — the key only
-    carries identity. ``path`` works like ``ColumnKey.path``.
+    The expansion AST is recovered from the dataset at binding time — the key only
+    carries identity. ``path`` works like ``FieldKey.path``.
     """
 
     path: Tuple[str, ...] = ()
-    model: str
-    column_name: str
+    dataset: str
+    field_name: str
 
     @property
     def phase(self) -> Phase:
@@ -340,10 +347,10 @@ class ColumnSqlKey(_LeafKey, frozen=True):
 
 class SqlFragmentKey(_FrozenKey, frozen=True):
     """A bound aggregation-parameter expression: canonical Mode-A ``template`` whose
-    ``{r<i>}`` placeholders stand for ``refs[i]`` (absolute column keys). Phase ROW."""
+    ``{r<i>}`` placeholders stand for ``refs[i]`` (absolute field keys). Phase ROW."""
 
     template: str
-    refs: Tuple[ColumnKey | ColumnSqlKey, ...] = ()
+    refs: Tuple[FieldKey | FieldSqlKey, ...] = ()
 
     @property
     def phase(self) -> Phase:
@@ -363,7 +370,7 @@ class SqlFragmentKey(_FrozenKey, frozen=True):
 class TimeTruncKey(_FrozenKey, frozen=True):
     """A row-level value truncated to a granularity, keyed by (source, granularity).
 
-    ``source`` is any row-level key, a column being the one-leaf case.
+    ``source`` is any row-level key, a field being the one-leaf case.
     ``granularity`` is resolved: built-in, or a datasource definition.
     """
 
@@ -385,21 +392,21 @@ class TimeTruncKey(_FrozenKey, frozen=True):
         return self.model_copy(update={"source": source}) if m.changed else self
 
 
-def column_leaf(col: ColumnKey | ColumnSqlKey) -> str:
-    """Leaf column name of a ``TimeTruncKey.source`` regardless of kind."""
-    return getattr(col, "leaf", None) or getattr(col, "column_name")
+def field_leaf(col: FieldKey | FieldSqlKey) -> str:
+    """Leaf field name of a ``TimeTruncKey.source`` regardless of kind."""
+    return getattr(col, "leaf", None) or getattr(col, "field_name")
 
 
-def column_path(col: ColumnKey | ColumnSqlKey) -> Tuple[str, ...]:
-    """Join path of a ``TimeTruncKey.source`` regardless of kind."""
+def field_path(col: FieldKey | FieldSqlKey) -> Tuple[str, ...]:
+    """Relationship path of a ``TimeTruncKey.source`` regardless of kind."""
     return col.path
 
 
 class StarKey(_LeafKey, frozen=True):
     """Sentinel source for ``count(*)`` aggregations.
 
-    ``path`` is empty for the local star and non-empty for a cross-model star
-    (``count(customers.*)`` → ``path=("customers",)``), mirroring ``ColumnKey.path``.
+    ``path`` is empty for the local star and non-empty for a cross-dataset star
+    (``count(customers.*)`` → ``path=("customers",)``), mirroring ``FieldKey.path``.
     """
 
     path: Tuple[str, ...] = ()
@@ -437,25 +444,25 @@ class LiteralKey(_LeafKey, frozen=True):
 # ---------------------------------------------------------------------------
 
 
-# Beyond column / star sources, an aggregate may take a row-level
-# same-model EXPRESSION source (``sum(amount - cost)``) — the bound tree reuses
+# Beyond field / star sources, an aggregate may take a row-level
+# same-dataset EXPRESSION source (``sum(amount - cost)``) — the bound tree reuses
 # the existing row-level composites, so hash/equality/serialization come from
 # the canonical tree and formatting variants intern to one key.
 # A re-aggregation's source resolves entirely to attached values, so
 # the source may itself be an ``AggregateKey`` (or a composite of them — carried
 # by the Arithmetic/ScalarCall operands, which already admit any ValueKey).
 AggregateSource = Union[
-    ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey,
+    FieldKey, FieldSqlKey, StarKey, TimeTruncKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
     "InKey", "TimePointCmpKey", "CastKey", "ListSetKey",
 ]
 # Positional and kwarg arg values share one union: `last(amount, created_at)` binds a
-# ranking column, `weighted_avg(weight=qty * 2)` a row-level expression,
+# ranking field, `weighted_avg(weight=qty * 2)` a row-level expression,
 # `weighted_avg(weight=count(id, partition_by=…))` an aggregate, and
 # `weighted_avg(weight=rank(sum(amount, partition_by=…), direction='desc'))` a grained transform —
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
-    ColumnKey, ColumnSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
+    FieldKey, FieldSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
     "ScalarCallKey", "ArithmeticKey", "CastKey", "InKey", TimeTruncKey, "LiteralKey",
     Decimal, str, bool, None,
 ]
@@ -472,14 +479,14 @@ def _sort_kwargs_tuple(v):
 class AggregateKey(_FrozenKey, frozen=True):
     """Identity for an aggregation slot (P3).
 
-    Local and cross-model aggregates share this shape: ``source.path`` empty for
+    Local and cross-dataset aggregates share this shape: ``source.path`` empty for
     local, non-empty for joined. ``args``/``kwargs`` carry parameters (numeric
     scalars pre-normalized to Decimal; identifier kwargs arrive as
-    ``ColumnKey``/``ColumnSqlKey``; kwargs canonicalized to sorted order). A
-    ``Column.filter`` rides its source ``ColumnSqlKey``, not the
+    ``FieldKey``/``FieldSqlKey``; kwargs canonicalized to sorted order). A
+    ``DatasetField.filter`` rides its source ``FieldSqlKey``, not the
     aggregate.
 
-    ``locus`` names where a cross-model aggregate is evaluated:
+    ``locus`` names where a cross-dataset aggregate is evaluated:
     ``"target"`` (default) rooted at the target, one value per target row-group;
     ``"host"`` rooted at the host, one value per host group (needed by the
     order wrap). It participates in identity — the two are different
@@ -496,7 +503,7 @@ class AggregateKey(_FrozenKey, frozen=True):
     # The ``FILTER (WHERE …)`` condition; a built-in lowers it as an input mask, any other aggregation as its
     # producer's row restriction.
     filter: Optional["ValueKey"] = None
-    # The built-in aggregation's semantics (its owner declares no formula for ``agg``); not part of identity.
+    # The built-in aggregation's semantics (its owner declares no expression for ``agg``); not part of identity.
     builtin: bool = Field(default=True, repr=False)
 
     @field_validator("kwargs", mode="before")
@@ -562,14 +569,14 @@ class AggregateKey(_FrozenKey, frozen=True):
         )
 
 
-# Rerooting is type-preserving — a ColumnKey in, a ColumnKey out.
+# Rerooting is type-preserving — a FieldKey in, a FieldKey out.
 _RerootableT = TypeVar("_RerootableT")
 
 
 def _map_path_ref(ref, *, map_path):
-    """Apply ``map_path`` to a single embedded reference's join ``path``.
+    """Apply ``map_path`` to a single embedded reference's relationship ``path``.
 
-    Per-leaf half of the path-map visitor: ``ColumnKey``/``ColumnSqlKey``/
+    Per-leaf half of the path-map visitor: ``FieldKey``/``FieldSqlKey``/
     ``StarKey`` carry a ``path``; other fields ride along via ``model_copy``. A
     scalar (no ``path``), or a ``path`` left untouched, short-circuits the copy.
     """
@@ -586,10 +593,10 @@ def _map_path_ref(ref, *, map_path):
 def reroot_aggregate_key(
     key: "AggregateKey", *, target_path: Tuple[str, ...],
 ) -> "AggregateKey":
-    """Re-anchor a cross-model ``AggregateKey`` into its target's local scope.
+    """Re-anchor a cross-dataset ``AggregateKey`` into its target's local scope.
 
-    A thin alias for :func:`reroot_value_key`; a ``Column.filter`` rides its
-    source ``ColumnSqlKey``, recovered from the model at expansion.
+    A thin alias for :func:`reroot_value_key`; a ``DatasetField.filter`` rides its
+    source ``FieldSqlKey``, recovered from the dataset at expansion.
     """
     return reroot_value_key(key, target_path=target_path)
 
@@ -806,13 +813,19 @@ MIRRORED_TIME_POINT_OP: Dict[TimePointOp, TimePointOp] = {"=": "=", "!=": "!=", 
 class TimePointCmpKey(_FrozenKey, frozen=True):
     """Transient ``operand <op> '<point>'`` against a time-point string, resolved away by the checker before planning.
 
-    ``op`` is operand-left; a literal-left spelling is stored mirrored with ``literal_on_left`` set.
+    ``op`` is operand-left; a literal-left spelling is stored mirrored with ``literal_on_left`` set. A date-only
+    ``point`` is its whole day under ``in`` / ``not in`` or when ``whole_day`` (a ``date_range`` bound), else midnight.
     """
 
     op: TimePointOp
     operand: "ValueKey"
     point: str
     literal_on_left: bool = False
+    whole_day: bool = False
+
+    @property
+    def reads_whole_day(self) -> bool:
+        return self.whole_day or self.op in ("in", "not in")
 
     @property
     def phase(self) -> Phase:
@@ -832,13 +845,13 @@ class TimePointCmpKey(_FrozenKey, frozen=True):
 class InKey(_FrozenKey, frozen=True):
     """Typed identity for a ``col IN (lit, …)`` / ``NOT IN`` predicate.
 
-    A column LHS and a fixed tuple of ``LiteralKey``
+    A field LHS and a fixed tuple of ``LiteralKey``
     RHS operands (LiteralKey so equality is type-stable). ``negated`` flips IN vs
     NOT IN. Phase is the max of child phases (P8); the renderer emits
     ``exp.In`` (wrapped in ``exp.Not``).
     """
 
-    column: "ValueKey"
+    field: "ValueKey"
     values: Tuple[LiteralKey, ...]
     negated: bool = False
 
@@ -861,14 +874,14 @@ class InKey(_FrozenKey, frozen=True):
         return max(c.phase for c in self.children())
 
     def children(self) -> Tuple["ValueKey", ...]:
-        return (self.column, *self.values)
+        return (self.field, *self.values)
 
     def map_children(
         self, fn: Callable[["ValueKey"], "ValueKey"],
     ) -> "InKey":
         m = _ChildMapper(fn)
         update = {
-            "column": m(self.column),
+            "field": m(self.field),
             "values": tuple(m(v) for v in self.values),
         }
         return self.model_copy(update=update) if m.changed else self
@@ -920,8 +933,8 @@ def list_set_key(source: "ValueKey") -> "ListSetKey":
 
 
 ValueKey = Union[
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     TimeTruncKey,
     StarKey,
     LiteralKey,
@@ -1072,8 +1085,8 @@ class KindPolicy(BaseModel):
 
 
 KIND_POLICY: dict[type, KindPolicy] = {
-    ColumnKey: KindPolicy(slottable=True),
-    ColumnSqlKey: KindPolicy(slottable=True),
+    FieldKey: KindPolicy(slottable=True),
+    FieldSqlKey: KindPolicy(slottable=True),
     TimeTruncKey: KindPolicy(slottable=True),
     StarKey: KindPolicy(),
     LiteralKey: KindPolicy(),
@@ -1092,7 +1105,7 @@ SLOT_COMPOSITE_KINDS: Tuple[type, ...] = tuple(k for k, p in KIND_POLICY.items()
 
 
 def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
-    """Rewrite every embedded join ``path`` in ``key`` through ``map_path``.
+    """Rewrite every embedded relationship ``path`` in ``key`` through ``map_path``.
 
     Total & fail-closed behind :func:`reroot_value_key` / :func:`prepend_value_key`:
     path-carrying leaves map here, every other kind routes through
@@ -1101,7 +1114,7 @@ def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
         return key
-    if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
+    if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
         return cast(_RerootableT, _map_path_ref(key, map_path=map_path))
     if not isinstance(key, _FrozenKey):
         raise TypeError(
@@ -1226,7 +1239,7 @@ def _operand_grain(
         if k.op in AXIS_COLLAPSING_TRANSFORMS and k.time_key is not None:
             return grain - {k.time_key}
         return grain
-    if isinstance(k, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+    if isinstance(k, (FieldKey, FieldSqlKey, TimeTruncKey)):
         return Grain.of([k]) if leaf_grain is None else leaf_grain
     grain = Grain.EMPTY
     for c in k.children():
@@ -1285,7 +1298,7 @@ def reroot_value_key(
 def prepend_value_key(
     key: _RerootableT, *, host_path: Tuple[str, ...],
 ) -> _RerootableT:
-    """Prefix every embedded join ``path`` with ``host_path`` (PREPEND direction),
+    """Prefix every embedded relationship ``path`` with ``host_path`` (PREPEND direction),
     re-anchoring a target-local bound tree into the host's coordinate system.
 
     Inverse of ``reroot_value_key(key, target_path=host_path)``. ``host_path == ()``
@@ -1328,7 +1341,7 @@ def substitute_value_keys(
 
 
 # Conditional branch typing — Postgres CASE semantics.
-_NUMERIC_TYPES = frozenset({DataType.INT, DataType.DOUBLE})
+_NUMERIC_TYPES = NUMERIC_DATATYPES
 
 
 def join_conditional_branch_types(
@@ -1359,16 +1372,16 @@ def _joined_known_types(a: DataType, b: DataType) -> Optional[DataType]:
     if a == b:
         return a
     if a in _NUMERIC_TYPES and b in _NUMERIC_TYPES:
-        return DataType.DOUBLE
+        return DataType.FLOAT
     if {a, b} <= _NUMERIC_TYPES | {DataType.BOOLEAN}:
         # A boolean beside a number is its integer.
         return b if a is DataType.BOOLEAN else a
     if a in TEMPORAL_TYPES and b in TEMPORAL_TYPES:
-        return DataType.TIMESTAMP
+        return DataType.DATETIME
     return None
 
 
-TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP})
+TEMPORAL_TYPES = TEMPORAL_DATATYPES
 # Aggregations whose value is one of their inputs, so they keep a temporal type.
 _TEMPORAL_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 # Scalars returning one of their value arguments: name → value-argument positions (None = all).
@@ -1403,52 +1416,65 @@ def _is_null_arg(arg: object) -> bool:
     return arg is None or (isinstance(arg, LiteralKey) and arg.value is None)
 
 
-# The declared type of a column leaf (``ColumnKey`` / ``ColumnSqlKey``), ``None`` when unknown.
-ColumnTypeFn = Callable[[Any], Optional[DataType]]
+# The declared type of a field leaf (``FieldKey`` / ``FieldSqlKey``), ``None`` when unknown.
+FieldTypeFn = Callable[[Any], Optional[DataType]]
 
 
-def temporal_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
-    """DATE / TIMESTAMP when ``key`` is provably temporal, else ``None``; column leaves type via ``column_type``."""
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
-        t = column_type(key)
+def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
+    """DATE / TIMESTAMP when ``key`` is provably temporal, else ``None``; field leaves type via ``field_type``."""
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        t = field_type(key)
         return t if t in TEMPORAL_TYPES else None
     if isinstance(key, TimeTruncKey):
-        return temporal_type(key.source, column_type=column_type)
-    if isinstance(key, LiteralKey):
-        key = key.value
-    if isinstance(key, datetime):
-        return DataType.TIMESTAMP
-    if isinstance(key, date):
-        return DataType.DATE
-    if isinstance(key, AggregateKey):
-        from_source = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
-        return temporal_type(key.source, column_type=column_type) if from_source else None
+        source = temporal_type(key.source, field_type=field_type)
+        return None if source is None else bucket_type(source, key.granularity)
+    if isinstance(key, (LiteralKey, date)):
+        return _literal_temporal_type(key.value if isinstance(key, LiteralKey) else key)
+    if isinstance(key, (AggregateKey, TransformKey)):
+        return _derived_temporal_type(key, field_type=field_type)
     if isinstance(key, ScalarCallKey):
-        return _scalar_temporal_type(key, column_type=column_type)
+        return _scalar_temporal_type(key, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type if key.data_type in TEMPORAL_TYPES else None
     return None
 
 
+def _derived_temporal_type(key: AggregateKey | TransformKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
+    """An aggregate's or transform's type when it keeps its input's (``max``, ``lag``, …), else ``None``."""
+    if isinstance(key, AggregateKey):
+        keeps = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
+        return temporal_type(key.source, field_type=field_type) if keeps else None
+    return temporal_type(key.input, field_type=field_type) if key.op in _VALUE_PRESERVING_TRANSFORMS else None
+
+
+def _literal_temporal_type(value: object) -> Optional[DataType]:
+    if isinstance(value, datetime):
+        return DataType.DATETIME
+    return DataType.DATE if isinstance(value, date) else None
+
+
 _CLOCK_TYPES: Mapping[str, DataType] = MappingProxyType({
-    "now": DataType.TIMESTAMP, "current_date": DataType.DATE,
+    "now": DataType.DATETIME, "current_date": DataType.DATE,
 })
 
 
-def _scalar_temporal_type(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+def _scalar_temporal_type(key: ScalarCallKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
     if key.name in _CLOCK_TYPES:
         return _CLOCK_TYPES[key.name]
     if key.name == "date_add" and len(key.args) == 3:
-        base = temporal_type(key.args[0], column_type=column_type)
+        base = temporal_type(key.args[0], field_type=field_type)
         return None if base is None else date_add_type(base, TimeGranularity(unit_word(key.args[2])))
     values = [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
-    types = [temporal_type(a, column_type=column_type) for a in values if not _is_null_arg(a)]
+    types = [temporal_type(a, field_type=field_type) for a in values if not _is_null_arg(a)]
     if not types or None in types:
         return None
     # NULLIF returns its first argument (or NULL); the second is only compared.
     if key.name == "nullif" and not _is_null_arg(key.args[0]):
         return types[0]
-    return DataType.TIMESTAMP if DataType.TIMESTAMP in types else DataType.DATE
+    stamps = {t for t in types if kind_of(t) is TypeKind.TIMESTAMP}
+    if not stamps:
+        return DataType.DATE
+    return stamps.pop() if len(stamps) == 1 else DataType.DATETIME
 
 
 # Aggregations whose value is one of their (boolean) inputs.
@@ -1459,26 +1485,26 @@ _BOOLEAN_BRANCH_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyT
 })
 
 
-def boolean_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
-    """Whether ``key``'s value is certainly boolean; column leaves type via ``column_type``."""
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return column_type(key) is DataType.BOOLEAN
+def boolean_valued(key: object, *, field_type: FieldTypeFn) -> bool:
+    """Whether ``key``'s value is certainly boolean; field leaves type via ``field_type``."""
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        return field_type(key) is DataType.BOOLEAN
     if isinstance(key, LiteralKey):
         return isinstance(key.value, bool)
     if is_boolean_shaped(cast("ValueKey", key)):
         return True
     if isinstance(key, AggregateKey):
-        return key.agg.lower() in _BOOLEAN_PRESERVING_AGGS and boolean_valued(key.source, column_type=column_type)
+        return key.agg.lower() in _BOOLEAN_PRESERVING_AGGS and boolean_valued(key.source, field_type=field_type)
     if isinstance(key, TransformKey):
-        return key.op in AXIS_COLLAPSING_TRANSFORMS and boolean_valued(key.input, column_type=column_type)
+        return key.op in AXIS_COLLAPSING_TRANSFORMS and boolean_valued(key.input, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type is DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
-        return _scalar_boolean_valued(key, column_type=column_type)
+        return _scalar_boolean_valued(key, field_type=field_type)
     return False
 
 
-def _scalar_boolean_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
+def _scalar_boolean_valued(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bool:
     if key.name in BOOLEAN_RESULT_SCALARS:
         return True
     if key.name not in _BOOLEAN_BRANCH_SCALARS:
@@ -1486,7 +1512,7 @@ def _scalar_boolean_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> 
     positions = _BOOLEAN_BRANCH_SCALARS[key.name]
     returned = key.args if positions is None else [key.args[i] for i in positions if i < len(key.args)]
     branches = [a for a in returned if not _is_null_arg(a)]
-    return bool(branches) and all(boolean_valued(a, column_type=column_type) for a in branches)
+    return bool(branches) and all(boolean_valued(a, field_type=field_type) for a in branches)
 
 
 # Integer-preserving operators and scalars, for typing an expression built from booleans.
@@ -1517,53 +1543,53 @@ _NUMBER_RESULT_SCALARS = NUMERIC_ARG_SCALARS | frozenset(
 _NUMBER_RESULT_TRANSFORMS = frozenset({*RANK_FAMILY_TRANSFORMS, "consecutive_periods"})
 
 
-def numeric_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+def numeric_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly a number (a boolean reads as one only beside a number)."""
     if _is_number_literal(key):
         return True
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return column_type(key) in _NUMERIC_TYPES
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        return field_type(key) in _NUMERIC_TYPES
     if isinstance(key, ArithmeticKey):
         return key.op in _ARITHMETIC_OPS
     if isinstance(key, AggregateKey):
         agg = key.agg.lower()
         if agg in INTEGER_AGGREGATIONS or agg in NUMERIC_ONLY_AGGREGATIONS:
             return True
-        return agg in _BOOLEAN_PRESERVING_AGGS and numeric_valued(key.source, column_type=column_type)
+        return agg in _BOOLEAN_PRESERVING_AGGS and numeric_valued(key.source, field_type=field_type)
     if isinstance(key, TransformKey):
-        return key.op in _NUMBER_RESULT_TRANSFORMS or numeric_valued(key.input, column_type=column_type)
+        return key.op in _NUMBER_RESULT_TRANSFORMS or numeric_valued(key.input, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type in _NUMERIC_TYPES
     if isinstance(key, ScalarCallKey):
-        return _scalar_numeric_valued(key, column_type=column_type)
+        return _scalar_numeric_valued(key, field_type=field_type)
     return False
 
 
-def _scalar_numeric_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
+def _scalar_numeric_valued(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bool:
     if key.name in _NUMBER_RESULT_SCALARS:
         return True
     branches = [key.args[i] for i in value_arg_positions(key.name, len(key.args)) if not _is_null_arg(key.args[i])]
-    numbers = [numeric_valued(a, column_type=column_type) for a in branches]
-    return any(numbers) and all(n or boolean_valued(a, column_type=column_type) for a, n in zip(branches, numbers))
+    numbers = [numeric_valued(a, field_type=field_type) for a in branches]
+    return any(numbers) and all(n or boolean_valued(a, field_type=field_type) for a, n in zip(branches, numbers))
 
 
 _INTEGER_RESULT_AGGS = frozenset({"count", "count_distinct", "count_distinct_approx"})
 
 
-def integer_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+def integer_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly an integer (booleans read as 0 / 1 count)."""
-    if _is_int_literal(key) or boolean_valued(key, column_type=column_type):
+    if _is_int_literal(key) or boolean_valued(key, field_type=field_type):
         return True
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return column_type(key) is DataType.INT
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        return field_type(key) is DataType.INTEGER
     if isinstance(key, CastKey):
-        return key.data_type is DataType.INT
+        return key.data_type is DataType.INTEGER
     if isinstance(key, ArithmeticKey):
-        return key.op in _INT_OPS and all(integer_valued(o, column_type=column_type) for o in key.operands)
+        return key.op in _INT_OPS and all(integer_valued(o, field_type=field_type) for o in key.operands)
     if isinstance(key, AggregateKey):
-        return _aggregate_integer_valued(key, column_type=column_type)
+        return _aggregate_integer_valued(key, field_type=field_type)
     if isinstance(key, ScalarCallKey):
-        return _scalar_integer_valued(key, column_type=column_type)
+        return _scalar_integer_valued(key, field_type=field_type)
     return False
 
 
@@ -1576,9 +1602,9 @@ def reads_no_rows(key: ValueKey) -> bool:
     )
 
 
-def integer_text_valued(key: ValueKey, *, column_type: ColumnTypeFn) -> bool:
+def integer_text_valued(key: ValueKey, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key`` certainly prints as integer text: an integer, not a bare boolean, with every literal plain digits."""
-    if not integer_valued(key, column_type=column_type) or boolean_valued(key, column_type=column_type):
+    if not integer_valued(key, field_type=field_type) or boolean_valued(key, field_type=field_type):
         return False
     return not any(_not_plain_digits(a) for k in walk_value_keys(key) for a in _literals_of(k))
 
@@ -1595,66 +1621,110 @@ def _not_plain_digits(value: object) -> bool:
     return isinstance(value, Decimal) and value.as_tuple().exponent != 0
 
 
-def _aggregate_integer_valued(key: AggregateKey, *, column_type: ColumnTypeFn) -> bool:
+def _aggregate_integer_valued(key: AggregateKey, *, field_type: FieldTypeFn) -> bool:
     agg = key.agg.lower()
     return agg in _INTEGER_RESULT_AGGS or (
-        agg in ("sum", "min", "max", "first", "last") and integer_valued(key.source, column_type=column_type)
+        agg in ("sum", "min", "max", "first", "last") and integer_valued(key.source, field_type=field_type)
     )
 
 
-def _scalar_integer_valued(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
+def _scalar_integer_valued(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bool:
     spec = SCALAR_SPECS.get(key.name)
-    if spec is not None and spec.result is DataType.INT:
+    if spec is not None and spec.result is DataType.INTEGER:
         return True
     if key.name not in _INT_SCALARS and key.name not in _VALUE_ARG_SCALARS:
         return False
     if key.name == "round" and len(key.args) > 1:
         return False
     values = [a for a in key.args if not _is_null_arg(a)]
-    return bool(values) and all(integer_valued(a, column_type=column_type) for a in values)
+    return bool(values) and all(integer_valued(a, field_type=field_type) for a in values)
 
 
 def _boolean_positions(
-    children: Sequence[object], positions: Iterable[int], *, column_type: ColumnTypeFn,
+    children: Sequence[object], positions: Iterable[int], *, field_type: FieldTypeFn,
 ) -> FrozenSet[int]:
-    return frozenset(i for i in positions if i < len(children) and boolean_valued(children[i], column_type=column_type))
+    return frozenset(i for i in positions if i < len(children) and boolean_valued(children[i], field_type=field_type))
 
 
-def _arithmetic_numeric_booleans(key: ArithmeticKey, *, column_type: ColumnTypeFn) -> FrozenSet[int]:
+def _arithmetic_numeric_booleans(key: ArithmeticKey, *, field_type: FieldTypeFn) -> FrozenSet[int]:
     everywhere = range(len(key.operands))
     if key.op in _ARITHMETIC_OPS:
-        return _boolean_positions(key.operands, everywhere, column_type=column_type)
+        return _boolean_positions(key.operands, everywhere, field_type=field_type)
     if key.op not in PREDICATE_COMPARISON_OPS or key.op in _NULL_TEST_OPS or len(key.operands) != 2:
         return frozenset()
-    found = _boolean_positions(key.operands, everywhere, column_type=column_type)
+    found = _boolean_positions(key.operands, everywhere, field_type=field_type)
     other = [o for i, o in enumerate(key.operands) if i not in found]
-    return found if len(found) == 1 and numeric_valued(other[0], column_type=column_type) else frozenset()
+    return found if len(found) == 1 and numeric_valued(other[0], field_type=field_type) else frozenset()
 
 
-def _scalar_numeric_booleans(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> FrozenSet[int]:
+def _scalar_numeric_booleans(key: ScalarCallKey, *, field_type: FieldTypeFn) -> FrozenSet[int]:
     if key.name in NUMERIC_ARG_SCALARS:
-        return _boolean_positions(key.args, range(len(key.args)), column_type=column_type)
-    if key.name in _BOOLEAN_BRANCH_SCALARS and not boolean_valued(key, column_type=column_type):
+        return _boolean_positions(key.args, range(len(key.args)), field_type=field_type)
+    if key.name in _BOOLEAN_BRANCH_SCALARS and not boolean_valued(key, field_type=field_type):
         positions = _BOOLEAN_BRANCH_SCALARS[key.name]
         return _boolean_positions(
-            key.args, range(len(key.args)) if positions is None else positions, column_type=column_type,
+            key.args, range(len(key.args)) if positions is None else positions, field_type=field_type,
         )
     return frozenset()
 
 
-def numeric_boolean_positions(key: object, *, column_type: ColumnTypeFn) -> FrozenSet[int]:
-    """Child positions of ``key`` (operands, arguments, an IN column at 0) holding a boolean read as a number."""
+def numeric_boolean_positions(key: object, *, field_type: FieldTypeFn) -> FrozenSet[int]:
+    """Child positions of ``key`` (operands, arguments, an IN field at 0) holding a boolean read as a number."""
     if isinstance(key, ArithmeticKey):
-        return _arithmetic_numeric_booleans(key, column_type=column_type)
+        return _arithmetic_numeric_booleans(key, field_type=field_type)
     if isinstance(key, InKey):
         numbers = any(_is_number_literal(v) for v in key.values)
-        return frozenset({0}) if numbers and boolean_valued(key.column, column_type=column_type) else frozenset()
+        return frozenset({0}) if numbers and boolean_valued(key.field, field_type=field_type) else frozenset()
     if isinstance(key, ScalarCallKey):
-        return _scalar_numeric_booleans(key, column_type=column_type)
+        return _scalar_numeric_booleans(key, field_type=field_type)
     return frozenset()
 
 
-def _boolean_int_expression(key: object, *, column_type: ColumnTypeFn) -> bool:
+_TEMPORAL_PAIR_OPS = frozenset({"==", "=", "!=", "<>", "<", "<=", ">", ">=", "is distinct from", "is not distinct from"})
+
+
+def _date_beside_timestamp(types: Sequence[Optional[DataType]]) -> Optional[int]:
+    """The DATE's position among two types that are a DATE and a timestamp, else ``None``."""
+    kinds = [kind_of(t) for t in types]
+    if len(kinds) != 2 or set(kinds) != {TypeKind.DATE, TypeKind.TIMESTAMP}:
+        return None
+    return kinds.index(TypeKind.DATE)
+
+
+def temporal_pair(key: object, *, field_type: FieldTypeFn) -> Optional[Tuple[DataType, DataType]]:
+    """The operand types of a comparison between two non-literal temporal values, else ``None``."""
+    if not isinstance(key, ArithmeticKey) or key.op.lower() not in _TEMPORAL_PAIR_OPS or len(key.operands) != 2:
+        return None
+    if any(isinstance(o, LiteralKey) for o in key.operands):
+        return None
+    left, right = (temporal_type(o, field_type=field_type) for o in key.operands)
+    return None if left is None or right is None else (left, right)
+
+
+def mixed_nullif(key: object, *, field_type: FieldTypeFn) -> Optional[int]:
+    """The DATE argument's position of a ``nullif`` comparing a DATE with a timestamp, else ``None``."""
+    if not isinstance(key, ScalarCallKey) or key.name != "nullif" or len(key.args) != 2:
+        return None
+    return _date_beside_timestamp([temporal_type(a, field_type=field_type) for a in key.args])
+
+
+def date_promotion_positions(key: object, *, field_type: FieldTypeFn) -> FrozenSet[int]:
+    """Child positions of ``key`` holding a DATE read as its midnight timestamp: a comparison's DATE beside a
+    timestamp, and a timestamp-typed conditional's DATE value arguments."""
+    pair = temporal_pair(key, field_type=field_type)
+    if pair is not None:
+        position = _date_beside_timestamp(pair)
+        return frozenset() if position is None else frozenset({position})
+    if (isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS
+            and kind_of(value_type(key, field_type=field_type)) is TypeKind.TIMESTAMP):
+        return frozenset(
+            i for i in value_arg_positions(key.name, len(key.args))
+            if temporal_type(key.args[i], field_type=field_type) is DataType.DATE
+        )
+    return frozenset()
+
+
+def _boolean_int_expression(key: object, *, field_type: FieldTypeFn) -> bool:
     """An integer built only from booleans and integer literals (``coalesce(flag, 0)``, ``(a > 1) + 1``)."""
     if isinstance(key, ArithmeticKey) and key.op in _INT_OPS:
         children = key.operands
@@ -1667,30 +1737,30 @@ def _boolean_int_expression(key: object, *, column_type: ColumnTypeFn) -> bool:
         return False
     values = [c for c in children if not _is_null_arg(c)]
     leaves_ok = all(
-        _is_int_literal(c) or boolean_valued(c, column_type=column_type)
-        or _boolean_int_expression(c, column_type=column_type)
+        _is_int_literal(c) or boolean_valued(c, field_type=field_type)
+        or _boolean_int_expression(c, field_type=field_type)
         for c in values
     )
     return leaves_ok and any(not _is_number_literal(c) for c in values)
 
 
-def aggregation_source_type(source: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+def aggregation_source_type(source: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     """The type an aggregation reads from ``source``: BOOLEAN when boolean-valued, INT when built from booleans and
-    integer literals, ARRAY for an element set, a column's, cast's or conditional's type, else ``None``."""
+    integer literals, ARRAY for an element set, a field's, cast's or conditional's type, else ``None``."""
     if isinstance(source, ListSetKey):
         return DataType.ARRAY
-    if boolean_valued(source, column_type=column_type):
+    if boolean_valued(source, field_type=field_type):
         return DataType.BOOLEAN
-    if _boolean_int_expression(source, column_type=column_type):
-        return DataType.INT
-    if isinstance(source, (ColumnKey, ColumnSqlKey, CastKey)) or (
+    if _boolean_int_expression(source, field_type=field_type):
+        return DataType.INTEGER
+    if isinstance(source, (FieldKey, FieldSqlKey, CastKey)) or (
             isinstance(source, ScalarCallKey) and source.name in CONDITIONAL_SCALARS):
-        return value_type(source, column_type=column_type)
+        return value_type(source, field_type=field_type)
     return None
 
 
-# The element type of a list-typed column leaf (``None`` when the leaf is not a list or unknown).
-ColumnElementFn = Callable[[Any], Optional[DataType]]
+# The element type of a list-typed field leaf (``None`` when the leaf is not a list or unknown).
+FieldElementFn = Callable[[Any], Optional[DataType]]
 # Transforms whose value is one of their operand's values.
 _VALUE_PRESERVING_TRANSFORMS = frozenset({"lag", "lead", "time_shift", "first", "last"})
 
@@ -1708,14 +1778,14 @@ CONDITIONAL_SCALARS = frozenset({"iif", "coalesce", "ifnull", "greatest", "least
 
 
 def _fold_branch_types(
-    key: ScalarCallKey, *, column_type: ColumnTypeFn,
+    key: ScalarCallKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn] = None,
 ) -> Tuple[Optional[DataType], Optional[Tuple[DataType, DataType]]]:
     """``(joined type, None)`` over a conditional's returned arguments, else ``(None, the first pair that cannot
     join)``; an untyped or UNKNOWN argument is absorbed."""
     joined: Optional[DataType] = None
     for arg in _returned_args(key):
-        t = value_type(arg, column_type=column_type)
-        if t is None or t is DataType.UNKNOWN:
+        t = value_type(arg, field_type=field_type, aggregate_type=aggregate_type)
+        if t is None or t.is_opaque:
             continue
         if joined is not None:
             shared = _joined_known_types(joined, t)
@@ -1727,49 +1797,49 @@ def _fold_branch_types(
 
 
 def conditional_branch_conflict(
-    key: ScalarCallKey, *, column_type: ColumnTypeFn,
+    key: ScalarCallKey, *, field_type: FieldTypeFn,
 ) -> Optional[Tuple[DataType, DataType]]:
     """The first two branch types of a value-returning conditional that cannot share a type, else ``None``."""
     if key.name not in CONDITIONAL_SCALARS:
         return None
-    return _fold_branch_types(key, column_type=column_type)[1]
+    return _fold_branch_types(key, field_type=field_type)[1]
 
 
-def list_valued(key: object, *, column_type: ColumnTypeFn) -> bool:
+def list_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly a list."""
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return column_type(key) is DataType.ARRAY
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        return field_type(key) is DataType.ARRAY
     if isinstance(key, (ArrayLiteralKey, ListSetKey)):
         return True
     if isinstance(key, AggregateKey):
         return key.builtin and key.agg.lower() in LIST_AGGREGATIONS
     if isinstance(key, TransformKey):
-        return key.op in _VALUE_PRESERVING_TRANSFORMS and list_valued(key.input, column_type=column_type)
+        return key.op in _VALUE_PRESERVING_TRANSFORMS and list_valued(key.input, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type is DataType.ARRAY
     if isinstance(key, ScalarCallKey) and key.name in _VALUE_ARG_SCALARS:
         returned = _returned_args(key)
-        return bool(returned) and all(list_valued(a, column_type=column_type) for a in returned)
+        return bool(returned) and all(list_valued(a, field_type=field_type) for a in returned)
     return False
 
 
-def is_list_call(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> bool:
+def is_list_call(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bool:
     """A list-function call over a list (``contains`` / ``length`` over TEXT keep their string meaning)."""
     if key.name in LIST_ONLY_FUNCTIONS:
         return True
-    return key.name in LIST_FUNCTIONS and bool(key.args) and list_valued(key.args[0], column_type=column_type)
+    return key.name in LIST_FUNCTIONS and bool(key.args) and list_valued(key.args[0], field_type=field_type)
 
 
 def elements_as_numbers(values: "ValueKey", *, text: bool) -> CastKey:
     """``values``' elements read one at a time as numbers (``text``: TEXT elements, through ``TRY_CAST``)."""
-    return CastKey(source=values, type_text="DOUBLE", data_type=DataType.DOUBLE, try_=text)
+    return CastKey(source=values, type_text="DOUBLE", data_type=DataType.FLOAT, try_=text)
 
 
-def numbers_read_list(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> Optional[CastKey]:
+def numbers_read_list(key: ScalarCallKey, *, field_type: FieldTypeFn) -> Optional[CastKey]:
     """The second list of a ``contains_any`` / ``contains_all`` built by ``elements_as_numbers``, else ``None``."""
     other = key.args[1] if key.name in LIST_ONLY_FUNCTIONS and len(key.args) == 2 else None
-    if isinstance(other, CastKey) and other.data_type is DataType.DOUBLE and list_valued(
-            other.source, column_type=column_type):
+    if isinstance(other, CastKey) and other.data_type is DataType.FLOAT and list_valued(
+            other.source, field_type=field_type):
         return other
     return None
 
@@ -1779,71 +1849,192 @@ def literal_type(value: object) -> Optional[DataType]:
     if isinstance(value, bool):
         return DataType.BOOLEAN
     if isinstance(value, Decimal):
-        return DataType.INT if value == value.to_integral_value() else DataType.DOUBLE
+        return DataType.INTEGER if value == value.to_integral_value() else DataType.FLOAT
     if isinstance(value, str):
-        return DataType.TEXT
+        return DataType.STRING
     if isinstance(value, datetime):
-        return DataType.TIMESTAMP
+        return DataType.DATETIME
     if isinstance(value, date):
         return DataType.DATE
     return None
 
 
-def value_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataType]:
-    """``key``'s type where it is certain, else ``None``."""
+# An expression aggregation's declared or inferred result type, ``None`` when its expression cannot be typed.
+AggregateTypeFn = Callable[["AggregateKey"], Optional[DataType]]
+
+
+def aggregation_result_type(
+    *, metric_name: Optional[str], aggregation: str, source_type: Optional[DataType],
+) -> Tuple[Optional[DataType], Optional[DataType]]:
+    """A built-in aggregation's ``(type, element type)``: COUNT → INT, the float classes → DOUBLE, PRESERVING →
+    ``source_type``, LIST → a list of ``source_type``."""
+    cls = classify_aggregation(metric_name=metric_name, aggregation=aggregation, source_type=source_type)
+    if cls is AggregationValueClass.COUNT:
+        return DataType.INTEGER, None
+    if cls is AggregationValueClass.LIST:
+        return DataType.ARRAY, source_type or DataType.OPAQUE
+    if cls is AggregationValueClass.PRESERVING:
+        return source_type, None
+    return DataType.FLOAT, None
+
+
+def _aggregate_value_type(
+    key: AggregateKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    """An expression aggregation: declared → inferred → its input's type (INT over ``*``); a built-in by its class."""
+    if not key.builtin and aggregate_type is not None:
+        declared = aggregate_type(key)
+        if declared is not None:
+            return declared
+    star = isinstance(key.source, StarKey)
+    source_type = None if star else (
+        aggregation_source_type(key.source, field_type=field_type)
+        or value_type(key.source, field_type=field_type, aggregate_type=aggregate_type)
+    )
+    if not key.builtin:
+        return DataType.INTEGER if star else source_type
+    agg = key.agg.lower()
+    return aggregation_result_type(metric_name="*" if star else None, aggregation=agg, source_type=source_type)[0]
+
+
+def _transform_value_type(
+    key: TransformKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    if key.op in _NUMBER_RESULT_TRANSFORMS and key.op != "percent_rank":
+        return DataType.INTEGER
+    if key.op in ("change_pct", "percent_rank"):
+        return DataType.FLOAT
+    inner = value_type(key.input, field_type=field_type, aggregate_type=aggregate_type)
+    if key.op == "cumsum":
+        return aggregation_result_type(metric_name=None, aggregation="sum", source_type=inner)[0]
+    if key.op == "change":
+        return _arithmetic_result_type("-", [inner, inner])
+    return inner
+
+
+def _arithmetic_result_type(op: str, types: Sequence[Optional[DataType]]) -> Optional[DataType]:
+    """``+ - * %`` over integers (booleans read as theirs) is INT, over exact numbers with a DECIMAL among them
+    DECIMAL; any other number mix (or ``/``) DOUBLE."""
+    if any(t is None for t in types) or op not in _INT_OPS:
+        return DataType.FLOAT
+    if all(t in (DataType.INTEGER, DataType.BOOLEAN) for t in types):
+        return DataType.INTEGER
+    if DataType.DECIMAL in types and all(t in _EXACT_NUMBER_TYPES for t in types):
+        return DataType.DECIMAL
+    return DataType.FLOAT
+
+
+_EXACT_NUMBER_TYPES = frozenset({DataType.INTEGER, DataType.BOOLEAN, DataType.DECIMAL})
+
+
+def value_type(
+    key: object, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn] = None,
+) -> Optional[DataType]:
+    """``key``'s type; ``None`` only for NULL or an unresolvable field leaf."""
     if isinstance(key, LiteralKey):
         return literal_type(key.value)
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return column_type(key)
-    if list_valued(key, column_type=column_type):
-        return DataType.ARRAY
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        return field_type(key)
     if isinstance(key, CastKey):
-        return None if key.data_type is DataType.UNKNOWN else key.data_type
+        return None if kind_of(key.data_type) is TypeKind.UNKNOWN else key.data_type
+    if isinstance(key, AggregateKey):
+        return _aggregate_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    if isinstance(key, TransformKey):
+        return _transform_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    return _row_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+
+
+def _row_value_type(
+    key: object, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    if list_valued(key, field_type=field_type):
+        return DataType.ARRAY
     if isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS:
-        return _fold_branch_types(key, column_type=column_type)[0]
-    if boolean_valued(key, column_type=column_type):
+        return _fold_branch_types(key, field_type=field_type, aggregate_type=aggregate_type)[0]
+    if isinstance(key, ScalarCallKey) and key.name == "nullif" and key.args:
+        # Its first argument or NULL: that argument's resolved type (an opaque one kept).
+        return value_type(key.args[0], field_type=field_type, aggregate_type=aggregate_type)
+    if boolean_valued(key, field_type=field_type):
         return DataType.BOOLEAN
-    temporal = temporal_type(key, column_type=column_type)
+    if isinstance(key, ArithmeticKey) and key.op in _ARITHMETIC_OPS:
+        # A NULL literal operand is absorbed; all-NULL is NULL-only (``None``).
+        operands = [o for o in key.operands if not _is_null_arg(o)]
+        if not operands:
+            return None
+        return _arithmetic_result_type(key.op, [
+            value_type(o, field_type=field_type, aggregate_type=aggregate_type) for o in operands])
+    return _computed_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+
+
+def _computed_value_type(
+    key: object, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    temporal = temporal_type(key, field_type=field_type)
     if temporal is not None:
         return temporal
-    if integer_valued(key, column_type=column_type):
-        return DataType.INT
-    if numeric_valued(key, column_type=column_type):
-        return DataType.DOUBLE
+    if isinstance(key, ScalarCallKey) and key.name in _INT_SCALARS and key.args and (
+            SCALAR_SPECS.get(key.name) is None or SCALAR_SPECS[key.name].result is None):
+        return _int_scalar_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    if integer_valued(key, field_type=field_type):
+        return DataType.INTEGER
+    if numeric_valued(key, field_type=field_type):
+        return DataType.FLOAT
     if isinstance(key, ScalarCallKey):
-        return _scalar_value_type(key, column_type=column_type)
-    if isinstance(key, AggregateKey) and key.agg.lower() in _TEMPORAL_PRESERVING_AGGS:
-        return value_type(key.source, column_type=column_type)
+        return _scalar_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    if isinstance(key, TimeTruncKey):
+        return value_type(key.source, field_type=field_type, aggregate_type=aggregate_type)
     return None
 
 
-def _scalar_value_type(key: ScalarCallKey, *, column_type: ColumnTypeFn) -> Optional[DataType]:
+def _int_scalar_type(
+    key: ScalarCallKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    """``abs`` / ``round`` / … from its operands' resolved types: ``mod`` as ``%``; otherwise a DECIMAL first operand
+    keeps DECIMAL, integers (or booleans) stay INT unless ``round`` takes digits, any other number is DOUBLE;
+    all-NULL is ``None``."""
+    types = [value_type(a, field_type=field_type, aggregate_type=aggregate_type)
+             for a in key.args if not _is_null_arg(a)]
+    if not types:
+        return None
+    if key.name == "mod":
+        return _arithmetic_result_type("%", types)
+    if types[0] is DataType.DECIMAL:
+        return DataType.DECIMAL
+    digits = key.name == "round" and len(key.args) > 1
+    if not digits and all(t in (DataType.INTEGER, DataType.BOOLEAN) for t in types):
+        return DataType.INTEGER
+    return DataType.FLOAT
+
+
+def _scalar_value_type(
+    key: ScalarCallKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn] = None,
+) -> Optional[DataType]:
     spec = SCALAR_SPECS.get(key.name)
     if spec is not None and spec.result is not None:
         return spec.result
-    types = {value_type(a, column_type=column_type) for a in _returned_args(key)}
+    types = {value_type(a, field_type=field_type, aggregate_type=aggregate_type) for a in _returned_args(key)}
     return types.pop() if len(types) == 1 else None
 
 
 def list_element_type(
-    key: object, *, column_type: ColumnTypeFn, column_element: ColumnElementFn,
+    key: object, *, field_type: FieldTypeFn, field_element: FieldElementFn,
 ) -> Optional[DataType]:
     """The element type of a list-valued ``key`` (``None`` when unknown, e.g. ``[]``)."""
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return column_element(key)
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        return field_element(key)
     if isinstance(key, ArrayLiteralKey):
         types = {literal_type(v.value) for v in key.values}
         return types.pop() if len(types) == 1 else None
     if isinstance(key, AggregateKey):
-        return value_type(key.source, column_type=column_type) if list_valued(key, column_type=column_type) else None
+        return value_type(key.source, field_type=field_type) if list_valued(key, field_type=field_type) else None
     if isinstance(key, TransformKey):
-        return list_element_type(key.input, column_type=column_type, column_element=column_element)
+        return list_element_type(key.input, field_type=field_type, field_element=field_element)
     if isinstance(key, ListSetKey):
-        return list_element_type(key.source, column_type=column_type, column_element=column_element)
+        return list_element_type(key.source, field_type=field_type, field_element=field_element)
     if isinstance(key, CastKey):
         return key.element_type
     if isinstance(key, ScalarCallKey):
-        types = {list_element_type(a, column_type=column_type, column_element=column_element)
+        types = {list_element_type(a, field_type=field_type, field_element=field_element)
                  for a in _returned_args(key)} - {None}
         return types.pop() if len(types) == 1 else None
     return None
@@ -1859,7 +2050,7 @@ def unit_word(arg: object) -> str:
 
 def date_add_type(base: DataType, unit: TimeGranularity) -> DataType:
     """``date_add``'s result type: a DATE stays a DATE for day-or-coarser units."""
-    return DataType.DATE if base is DataType.DATE and unit not in SUB_DAY_GRANULARITIES else DataType.TIMESTAMP
+    return DataType.DATE if base is DataType.DATE and unit not in SUB_DAY_GRANULARITIES else DataType.DATETIME
 
 
 def conditional_number_format(
@@ -1899,7 +2090,7 @@ def restricts_own_rows(key: ValueKey) -> TypeGuard[AggregateKey]:
 
 
 # Row-valued aggregation parameters a FILTER masks (literals and attached values are not rows).
-_ROW_INPUT_KINDS = (ColumnKey, ColumnSqlKey, SqlFragmentKey)
+_ROW_INPUT_KINDS = (FieldKey, FieldSqlKey, SqlFragmentKey)
 
 
 def input_masked(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
@@ -1923,20 +2114,11 @@ def is_local_partitioned_agg(k: ValueKey) -> bool:
     )
 
 
-def is_cross_model_agg(k: ValueKey) -> bool:
-    """A cross-model AggregateKey (source lives on another model); a host-grain wrap (locus="host") is excluded."""
-    return (
-        isinstance(k, AggregateKey)
-        and bool(source_anchor_path(k.source))
-        and k.locus != "host"
-    )
-
-
 def is_local_combined_regroup_ref(
     k: ValueKey, *, row_agg_set: frozenset = frozenset(),
 ) -> bool:
     """A LOCAL aggregate attached at the COMBINED SELECT (explicit ``partition_by=``
-    or a bare windowed/first/last measure); ``row_agg_set`` aggregates excluded."""
+    or a bare windowed/first/last metric); ``row_agg_set`` aggregates excluded."""
     return (
         isinstance(k, AggregateKey)
         and not source_anchor_path(k.source)
@@ -2090,7 +2272,7 @@ def operand_constituents(source: ValueKey) -> List[ValueKey]:
 
 
 def source_row_leaves(source: ValueKey) -> List[ValueKey]:
-    """The top-level ROW-level column leaves of an aggregation source (not
+    """The top-level ROW-level field leaves of an aggregation source (not
     descending through an attached constituent — a nested aggregate or a grained
     transform — whose own leaves are opaque)."""
     out: List[ValueKey] = []
@@ -2098,7 +2280,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
     def _walk(k: ValueKey) -> None:
         if isinstance(k, (AggregateKey, TransformKey)):
             return
-        if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
+        if isinstance(k, (FieldKey, FieldSqlKey, StarKey)):
             out.append(k)
             return
         for c in k.children():
@@ -2109,7 +2291,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
 
 
 def parameter_row_leaves(value) -> List[ValueKey]:
-    """The row-level column leaves of an aggregation parameter value; a scalar, a
+    """The row-level field leaves of an aggregation parameter value; a scalar, a
     marker string or an attached value (aggregate / transform) has none."""
     if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey)):
         return []
@@ -2117,7 +2299,7 @@ def parameter_row_leaves(value) -> List[ValueKey]:
 
 
 def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
-    """Join paths of the row-level column/star leaves of an aggregation source.
+    """Relationship paths of the row-level field/star leaves of an aggregation source.
 
     Attached constituents — nested aggregates and grained transforms — are opaque
     (they contribute their grain, not a source leaf); a literal-only source yields
@@ -2127,7 +2309,7 @@ def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
     def _walk(k: ValueKey) -> None:
         if isinstance(k, (AggregateKey, TransformKey)):
             return
-        if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
+        if isinstance(k, (FieldKey, FieldSqlKey, StarKey)):
             out.append(k.path)
             return
         for c in k.children():
@@ -2139,7 +2321,7 @@ def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
 
 def source_anchor_path(source: ValueKey) -> Tuple[str, ...]:
     """Where an aggregation source lives: the longest common prefix of its
-    row-level leaves' paths. A bare column/star yields its own path; a
+    row-level leaves' paths. A bare field/star yields its own path; a
     literal-only or fully-attached source yields ``()`` (the root)."""
     paths = source_leaf_paths(source)
     if not paths:
@@ -2159,7 +2341,7 @@ def _grain_transform_inner_aggregates(
     t: TransformKey, *, query_grain: Grain,
 ) -> TransformKey:
     """Grain every ungrained, non-windowed, LOCAL aggregate under ``t.input`` at
-    ``query_grain`` — a cross-model or windowed or already-explicit inner is left
+    ``query_grain`` — a cross-dataset or windowed or already-explicit inner is left
     untouched. Post-order over ``map_children``."""
     def _grain(node: ValueKey) -> ValueKey:
         rebuilt = node.map_children(_grain)

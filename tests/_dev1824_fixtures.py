@@ -1,13 +1,13 @@
-"""Shared fixtures for DEV-1824 — the deferred ``partition_by=`` shapes
+"""Shared fixtures for the deferred ``partition_by=`` shapes
 (``window=``, ``first``/``last``, transform nesting, filter references) and the
 computed-dimension symmetry lifts.
 
-Reuses the DEV-1739 models and dataset verbatim (``tests/_dev1739_fixtures.py``:
+Reuses the ``_dev1739_fixtures`` datasets and seed data verbatim (``tests/_dev1739_fixtures.py``:
 ``orders`` with region/city/channel/ordered_at, ``orders → customers → regions``)
 and adds the hand-computed oracles for the newly lifted shapes.
 
-Oracle derivations (from the DEV-1739 rows)
--------------------------------------------
+Oracle derivations (from the ``_dev1739_fixtures`` rows)
+--------------------------------------------------------
 orders (id, cust, region, city, channel, amount, status, ordered_at):
    1  c1  North  CityA  web   10  ok    2024-01-10
    2  c1  North  CityA  app   20  ok    2024-01-20
@@ -34,7 +34,7 @@ TRAILING_45D_REGION   the duration-sensitive variant: 45d back from Feb's end
                       window boundary, so bucket-end conventions cannot flip
                       any value.
 REGION_LAST/_FIRST    amount:last/first(partition_by=region), ranked by
-                      ordered_at (model default_time_dimension): North last is
+                      ordered_at (dataset default_time_dimension): North last is
                       row 4 (Feb 15 → 30), first row 1 (Jan 10 → 10); South last
                       row 6 (Mar 5 → 25), first row 5 (25); NULL row 7 (60).
 REGION_MONTH_LAST     amount:last(partition_by=[region, ordered_at]) at month
@@ -51,25 +51,25 @@ GRAND_TOTAL           210.
 from __future__ import annotations
 
 from tests._dev1739_fixtures import (  # noqa: F401 — re-exported fixture surface
-    ColumnRef,
-    ModelMeasure,
+    FieldRef,
+    DatasetMetric,
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
     approx_sum,
     cm_cte_bodies,
-    customers_model,
-    dev1739_models,
+    customers_dataset,
+    dev1739_datasets,
     gen,
     make_exec_engine,
     month_key,
     month_td,
-    orders_model,
-    regions_model,
+    orders_dataset,
+    regions_dataset,
     rows_by,
 )
 
-dev1824_models = dev1739_models
+dev1824_datasets = dev1739_datasets
 
 REGION_TOTAL = {"North": 100.0, "South": 50.0, None: 60.0}
 CITY_TOTAL = {
@@ -109,7 +109,7 @@ RCM_GROUPS = frozenset({
     ("South", "CityC", "2024-03"), (None, "CityD", "2024-03"),
 })
 
-BAND35 = "CASE WHEN sum(amount, partition_by=city) > 35 THEN 1 ELSE 0 END"
+BAND35 = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 35 THEN 1 ELSE 0 END"
 #: Band value per (region, city) under BAND35.
 BAND35_OF = {
     ("North", "CityA"): 0, ("North", "CityB"): 1, ("North", None): 0,
@@ -118,17 +118,17 @@ BAND35_OF = {
 
 
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 __all__ = [
-    "BAND35", "BAND35_OF", "CITY_TOTAL", "ColumnRef", "GRAND_TOTAL",
-    "ModelMeasure", "RCM_GROUPS", "RC_GROUPS", "REGION_FIRST", "REGION_LAST",
+    "BAND35", "BAND35_OF", "CITY_TOTAL", "FieldRef", "GRAND_TOTAL",
+    "DatasetMetric", "RCM_GROUPS", "RC_GROUPS", "REGION_FIRST", "REGION_LAST",
     "REGION_LAST_AT", "REGION_MONTH_LAST", "REGION_MONTH_TOTAL", "REGION_TOTAL",
     "SlayerQuery", "TRAILING_45D_REGION", "TRAILING_90D_REGION",
     "TimeDimension", "TimeGranularity",
-    "approx_sum", "cm_cte_bodies", "customers_model", "dev1824_models",
-    "dev1739_models", "gen", "make_exec_engine", "month_key", "month_td",
-    "orders_model", "q", "regions_model", "rows_by",
+    "approx_sum", "cm_cte_bodies", "customers_dataset", "dev1824_datasets",
+    "dev1739_datasets", "gen", "make_exec_engine", "month_key", "month_td",
+    "orders_dataset", "q", "regions_dataset", "rows_by",
 ]

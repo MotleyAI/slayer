@@ -18,9 +18,13 @@ for o in ORDERS:
     STATUS_COUNTS[o[4]] = STATUS_COUNTS.get(o[4], 0) + 1
 
 # Repeated string literals hoisted to constants (Sonar python:S1192).
-COUNT_MEASURE = "count(*)"
 ORDERS_COUNT = "orders._count"
 QUERY_PATH = "/query"
+
+
+def count_metric(population):
+    """The row count of ``population``."""
+    return f"count({population}.*)"
 
 BASE_URL = "http://localhost:5143"
 
@@ -58,25 +62,25 @@ def check(name, condition):
         _failed += 1
 
 
-def check_column_types(model_name, expected_types):
-    """Assert /models/{name} returns the expected DataType strings.
+def check_field_types(dataset_name, expected_types):
+    """Assert /datasets/{name} returns the expected DataType strings.
 
-    expected_types: dict mapping column name to DataType .value string
-        (e.g. "DOUBLE", "TEXT", "TIMESTAMP", "DATE"). Columns absent
+    expected_types: dict mapping field name to DataType .value string
+        (e.g. "Float", "String", "DateTime", "Date"). Fields absent
         from the dict are ignored — different dialects expose different
-        column sets, and this helper is a positive-coverage check, not
+        field sets, and this helper is a positive-coverage check, not
         an exhaustive schema comparison.
     """
-    model = api("GET", f"/models/{model_name}")
-    columns_by_name = {c["name"]: c for c in model.get("columns", [])}
-    for col_name, expected_type in expected_types.items():
-        col = columns_by_name.get(col_name)
-        check(f"{model_name}.{col_name} exists", col is not None)
-        if col is None:
+    dataset = api("GET", f"/datasets/{dataset_name}")
+    fields_by_name = {f["name"]: f for f in dataset.get("fields", [])}
+    for field_name, expected_type in expected_types.items():
+        fld = fields_by_name.get(field_name)
+        check(f"{dataset_name}.{field_name} exists", fld is not None)
+        if fld is None:
             continue
-        actual = col.get("type")
+        actual = fld.get("datatype")
         check(
-            f"{model_name}.{col_name} type = {expected_type} (got {actual!r})",
+            f"{dataset_name}.{field_name} datatype = {expected_type} (got {actual!r})",
             actual == expected_type,
         )
 
@@ -91,7 +95,7 @@ def summary():
 
 
 def run_common_checks():
-    """Run checks common to all database examples. Returns the ingested (non-built-in) models."""
+    """Run checks common to all database examples. Returns the ingested (non-built-in) datasets."""
     # --- Health check ---
     print("API health:")
     try:
@@ -102,16 +106,16 @@ def run_common_checks():
         print("\nMake sure docker compose is running: docker compose up -d")
         sys.exit(1)
 
-    # --- Models ---
-    print("\nModels:")
-    models = api("GET", "/models")
-    model_names = [m["name"] for m in models]
-    check("models endpoint returns list", len(models) > 0)
-    check("orders model exists", "orders" in model_names)
-    check("customers model exists", "customers" in model_names)
-    check("products model exists", "products" in model_names)
-    check("regions model exists", "regions" in model_names)
-    check("built-in time_spine listed", "time_spine" in model_names)
+    # --- Datasets ---
+    print("\nDatasets:")
+    datasets = api("GET", "/datasets")
+    dataset_names = [d["name"] for d in datasets]
+    check("datasets endpoint returns list", len(datasets) > 0)
+    check("orders dataset exists", "orders" in dataset_names)
+    check("customers dataset exists", "customers" in dataset_names)
+    check("products dataset exists", "products" in dataset_names)
+    check("regions dataset exists", "regions" in dataset_names)
+    check("built-in time_spine listed", "time_spine" in dataset_names)
 
     # --- Queries ---
     print("\nQueries:")
@@ -120,8 +124,8 @@ def run_common_checks():
         "POST",
         QUERY_PATH,
         {
-            "source_model": "orders",
-            "measures": [COUNT_MEASURE],
+            "population": "orders",
+            "metrics": [count_metric("orders")],
         },
     )
     check(f"total orders = {TOTAL_ORDERS}", result["data"][0][ORDERS_COUNT] == TOTAL_ORDERS)
@@ -130,9 +134,9 @@ def run_common_checks():
         "POST",
         QUERY_PATH,
         {
-            "source_model": "orders",
-            "measures": [COUNT_MEASURE],
-            "dimensions": ["status"],
+            "population": "orders",
+            "metrics": [count_metric("orders")],
+            "dimensions": ["orders.status"],
         },
     )
     by_status = {r["orders.status"]: r[ORDERS_COUNT] for r in result["data"]}
@@ -143,9 +147,9 @@ def run_common_checks():
         "POST",
         QUERY_PATH,
         {
-            "source_model": "orders",
-            "measures": [COUNT_MEASURE],
-            "filters": ["status = 'completed'"],
+            "population": "orders",
+            "metrics": [count_metric("orders")],
+            "filter": ["orders.status = 'completed'"],
         },
     )
     check(
@@ -157,10 +161,10 @@ def run_common_checks():
         "POST",
         QUERY_PATH,
         {
-            "source_model": "orders",
-            "measures": [COUNT_MEASURE],
-            "dimensions": ["customer_id"],
-            "order": [{"column": "count", "direction": "desc"}],
+            "population": "orders",
+            "metrics": [count_metric("orders")],
+            "dimensions": ["orders.customer_id"],
+            "order": [{"field": count_metric("orders"), "direction": "desc"}],
             "limit": 3,
         },
     )
@@ -170,8 +174,8 @@ def run_common_checks():
         "POST",
         QUERY_PATH,
         {
-            "source_model": "products",
-            "measures": [COUNT_MEASURE],
+            "population": "products",
+            "metrics": [count_metric("products")],
         },
     )
     check("8 products total", result["data"][0]["products._count"] == 8)
@@ -180,8 +184,8 @@ def run_common_checks():
         "POST",
         QUERY_PATH,
         {
-            "source_model": "customers",
-            "measures": [COUNT_MEASURE],
+            "population": "customers",
+            "metrics": [count_metric("customers")],
         },
     )
     check("10 customers total", result["data"][0]["customers._count"] == 10)
@@ -192,7 +196,7 @@ def run_common_checks():
     check("datasource exists", len(datasources) > 0)
     check("demo datasource", any(d["name"] == "demo" for d in datasources))
 
-    return [m for m in models if m["name"] != "time_spine"]
+    return [d for d in datasets if d["name"] != "time_spine"]
 
 
 def _percentile_cont(values, p):
@@ -210,8 +214,8 @@ def _percentile_cont(values, p):
     return s[lo] + (rank - lo) * (s[hi] - s[lo])
 
 
-def check_median_percentile(measure="quantity"):
-    """Run median + percentile against a numeric measure on the orders model.
+def check_median_percentile(field="quantity"):
+    """Run median + percentile against a numeric field on the orders dataset.
 
     Compares against reference values computed in Python from the seed data so
     this works for any database whose dialect SLayer supports for these aggs.
@@ -230,21 +234,21 @@ def check_median_percentile(measure="quantity"):
         "POST",
         QUERY_PATH,
         {
-            "source_model": "orders",
-            "measures": [
-                f"median({measure})",
-                f"percentile({measure}, p=0.25)",
-                f"percentile({measure}, p=0.75)",
+            "population": "orders",
+            "metrics": [
+                f"median(orders.{field})",
+                f"percentile(orders.{field}, p=0.25)",
+                f"percentile(orders.{field}, p=0.75)",
             ],
         },
     )
     row = result["data"][0]
-    got_median = float(row[f"orders.{measure}_median"])
-    got_p25 = float(row[f"orders.{measure}_percentile_p_0_25"])
-    got_p75 = float(row[f"orders.{measure}_percentile_p_0_75"])
+    got_median = float(row[f"orders.{field}_median"])
+    got_p25 = float(row[f"orders.{field}_percentile_p_0_25"])
+    got_p75 = float(row[f"orders.{field}_percentile_p_0_75"])
 
     # Tolerance covers float drift across dialects without masking real bugs.
-    check(f"median({measure}) = {expected_median}", abs(got_median - expected_median) < 1e-6)
+    check(f"median({field}) = {expected_median}", abs(got_median - expected_median) < 1e-6)
     check(f"percentile(p=0.25) = {expected_p25}", abs(got_p25 - expected_p25) < 1e-6)
     check(f"percentile(p=0.75) = {expected_p75}", abs(got_p75 - expected_p75) < 1e-6)
 
@@ -260,7 +264,7 @@ def _covariance(xs, ys, *, ddof):
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (n - ddof)
 
 
-def check_stddev_var(measure="quantity"):
+def check_stddev_var(field="quantity"):
     """1-arg stat aggregates: stddev_samp/_pop, var_samp/_pop.
 
     Safe on every Tier-1 dialect (incl. MySQL — these are native there).
@@ -268,11 +272,11 @@ def check_stddev_var(measure="quantity"):
     print("\nStddev / variance:")
 
     # ORDERS tuple is (id, customer_id, product_id, quantity, status, created_at);
-    # honour the requested `measure` so non-default callers compare against the
+    # honour the requested `field` so non-default callers compare against the
     # right baseline. Earlier draft hard-coded `o[3]` regardless of the arg
     # — flagged by CodeRabbit on PR #82.
     field_index = {"id": 0, "customer_id": 1, "product_id": 2, "quantity": 3}
-    values = [o[field_index[measure]] for o in ORDERS]
+    values = [o[field_index[field]] for o in ORDERS]
     expected_stddev_samp = statistics.stdev(values)
     expected_stddev_pop = statistics.pstdev(values)
     expected_var_samp = statistics.variance(values)
@@ -282,40 +286,40 @@ def check_stddev_var(measure="quantity"):
         "POST",
         QUERY_PATH,
         {
-            "source_model": "orders",
-            "measures": [
-                f"stddev_samp({measure})",
-                f"stddev_pop({measure})",
-                f"var_samp({measure})",
-                f"var_pop({measure})",
+            "population": "orders",
+            "metrics": [
+                f"stddev_samp(orders.{field})",
+                f"stddev_pop(orders.{field})",
+                f"var_samp(orders.{field})",
+                f"var_pop(orders.{field})",
             ],
         },
     )
     row = result["data"][0]
-    got_stddev_samp = float(row[f"orders.{measure}_stddev_samp"])
-    got_stddev_pop = float(row[f"orders.{measure}_stddev_pop"])
-    got_var_samp = float(row[f"orders.{measure}_var_samp"])
-    got_var_pop = float(row[f"orders.{measure}_var_pop"])
+    got_stddev_samp = float(row[f"orders.{field}_stddev_samp"])
+    got_stddev_pop = float(row[f"orders.{field}_stddev_pop"])
+    got_var_samp = float(row[f"orders.{field}_var_samp"])
+    got_var_pop = float(row[f"orders.{field}_var_pop"])
 
     check(
-        f"stddev_samp({measure}) = {expected_stddev_samp}",
+        f"stddev_samp({field}) = {expected_stddev_samp}",
         abs(got_stddev_samp - expected_stddev_samp) < 1e-6,
     )
     check(
-        f"stddev_pop({measure}) = {expected_stddev_pop}",
+        f"stddev_pop({field}) = {expected_stddev_pop}",
         abs(got_stddev_pop - expected_stddev_pop) < 1e-6,
     )
     check(
-        f"var_samp({measure}) = {expected_var_samp}",
+        f"var_samp({field}) = {expected_var_samp}",
         abs(got_var_samp - expected_var_samp) < 1e-6,
     )
     check(
-        f"var_pop({measure}) = {expected_var_pop}",
+        f"var_pop({field}) = {expected_var_pop}",
         abs(got_var_pop - expected_var_pop) < 1e-6,
     )
 
 
-def check_corr_covar(measure="quantity", other="customer_id"):
+def check_corr_covar(field="quantity", other="customer_id"):
     """2-arg stat aggregates: corr, covar_samp, covar_pop.
 
     Safe to call for all Tier-1 dialects including MySQL and T-SQL (SQL Server):
@@ -327,7 +331,7 @@ def check_corr_covar(measure="quantity", other="customer_id"):
     # ORDERS tuple is (id, customer_id, product_id, quantity, status, created_at)
     # so `quantity` = orders[3], `customer_id` = orders[1].
     field_index = {"id": 0, "customer_id": 1, "product_id": 2, "quantity": 3}
-    xs = [o[field_index[measure]] for o in ORDERS]
+    xs = [o[field_index[field]] for o in ORDERS]
     ys = [o[field_index[other]] for o in ORDERS]
 
     expected_corr = statistics.correlation(xs, ys)
@@ -338,53 +342,53 @@ def check_corr_covar(measure="quantity", other="customer_id"):
         "POST",
         QUERY_PATH,
         {
-            "source_model": "orders",
-            "measures": [
-                f"corr({measure}, other={other})",
-                f"covar_samp({measure}, other={other})",
-                f"covar_pop({measure}, other={other})",
+            "population": "orders",
+            "metrics": [
+                f"corr(orders.{field}, other=orders.{other})",
+                f"covar_samp(orders.{field}, other=orders.{other})",
+                f"covar_pop(orders.{field}, other=orders.{other})",
             ],
         },
     )
     row = result["data"][0]
-    got_corr = float(row[f"orders.{measure}_corr_other_{other}"])
-    got_covar_samp = float(row[f"orders.{measure}_covar_samp_other_{other}"])
-    got_covar_pop = float(row[f"orders.{measure}_covar_pop_other_{other}"])
+    got_corr = float(row[f"orders.{field}_corr_other_{other}"])
+    got_covar_samp = float(row[f"orders.{field}_covar_samp_other_{other}"])
+    got_covar_pop = float(row[f"orders.{field}_covar_pop_other_{other}"])
 
     check(
-        f"corr({measure}, {other}) = {expected_corr}",
+        f"corr({field}, {other}) = {expected_corr}",
         abs(got_corr - expected_corr) < 1e-6,
     )
     check(
-        f"covar_samp({measure}, {other}) = {expected_covar_samp}",
+        f"covar_samp({field}, {other}) = {expected_covar_samp}",
         abs(got_covar_samp - expected_covar_samp) < 1e-6,
     )
     check(
-        f"covar_pop({measure}, {other}) = {expected_covar_pop}",
+        f"covar_pop({field}, {other}) = {expected_covar_pop}",
         abs(got_covar_pop - expected_covar_pop) < 1e-6,
     )
 
 
 def check_rollup(expect_rollup=True):
-    """Check join-based cross-model queries on the orders model."""
-    print("\nJoins:")
-    orders_model = api("GET", "/models/orders")
-    join_targets = [j["target_model"] for j in orders_model.get("joins", [])]
-    has_joins = len(join_targets) > 0
+    """Check relationship-based cross-dataset queries on the orders dataset."""
+    print("\nRelationships:")
+    orders_dataset = api("GET", "/datasets/orders")
+    relationship_targets = [r["to"] for r in orders_dataset.get("relationships", [])]
+    has_relationships = len(relationship_targets) > 0
 
     if expect_rollup:
-        check("joins present", has_joins)
-        if has_joins:
+        check("relationships present", has_relationships)
+        if has_relationships:
             result = api(
                 "POST",
                 QUERY_PATH,
                 {
-                    "source_model": "orders",
-                    "measures": [COUNT_MEASURE],
+                    "population": "orders",
+                    "metrics": [count_metric("orders")],
                     "dimensions": ["products.category"],
                 },
             )
-            by_cat = {r["orders.products.category"]: r[ORDERS_COUNT] for r in result["data"]}
+            by_cat = {r["products.category"]: r[ORDERS_COUNT] for r in result["data"]}
             check("query by product category works", len(by_cat) > 0)
             check(f"all categories sum to {TOTAL_ORDERS}", sum(by_cat.values()) == TOTAL_ORDERS)
 
@@ -392,12 +396,12 @@ def check_rollup(expect_rollup=True):
                 "POST",
                 QUERY_PATH,
                 {
-                    "source_model": "orders",
-                    "measures": [COUNT_MEASURE],
+                    "population": "orders",
+                    "metrics": [count_metric("orders")],
                     "dimensions": ["customers.regions.name"],
                 },
             )
-            by_region = {r["orders.customers.regions.name"]: r[ORDERS_COUNT] for r in result["data"]}
-            check("transitive join by region works", len(by_region) > 0)
+            by_region = {r["customers.regions.name"]: r[ORDERS_COUNT] for r in result["data"]}
+            check("transitive relationship by region works", len(by_region) > 0)
     else:
-        check("no joins (expected)", not has_joins)
+        check("no relationships (expected)", not has_relationships)
