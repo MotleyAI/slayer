@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.errors import UnknownReferenceError
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.engine.ossie_l3 import _relabelled
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -233,6 +234,38 @@ async def test_a_qualified_order_key_is_the_field_beside_an_alias_of_its_flatten
     assert response.data == [{"orders.id": 1000, "orders__amount": -20}]
 
 
+@pytest.mark.parametrize("hop", ["regions", "REGIONS"])
+async def test_a_routed_order_key_is_the_field_beside_an_alias_of_its_flattened_name(tmp_path: Path,
+                                                                                   hop: str) -> None:
+    sql = """
+CREATE TABLE regions (id VARCHAR PRIMARY KEY, score INTEGER);
+INSERT INTO regions VALUES ('R1', 1), ('R2', 2);
+CREATE TABLE customers (id VARCHAR PRIMARY KEY, region_id VARCHAR);
+INSERT INTO customers VALUES ('C1', 'R1'), ('C2', 'R2');
+CREATE TABLE orders (id VARCHAR PRIMARY KEY, customer_id VARCHAR);
+INSERT INTO orders VALUES ('O1', 'C1'), ('O2', 'C2');
+"""
+    datasets = [
+        SlayerDataset(name="regions", sql_table="regions", data_source=DS, fields=[
+            DatasetField(name="id", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="score", datatype=DataType.INTEGER)]),
+        SlayerDataset(name="customers", sql_table="customers", data_source=DS, fields=[
+            DatasetField(name="id", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.STRING)],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])]),
+        SlayerDataset(name="orders", sql_table="orders", data_source=DS, fields=[
+            DatasetField(name="id", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.STRING)],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])]),
+    ]
+    async with sql_engine(tmp_path, sql=sql, datasets=datasets) as engine:
+        response = await engine.execute({
+            "population": "orders",
+            "dimensions": ["orders.id", {"field": "-regions.score", "alias": f"{hop}__score"}],
+            "order": [{"field": f"{hop}.score", "direction": "desc"}], "limit": 1})
+    assert [list(r.values()) for r in response.data] == [["O2", -2]]
+
+
 async def test_a_qualified_order_key_is_the_field_beside_count_star(tmp_path: Path) -> None:
     tallies = SlayerDataset(name="orders", sql_table="orders", data_source=DS, fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
@@ -243,6 +276,15 @@ async def test_a_qualified_order_key_is_the_field_beside_count_star(tmp_path: Pa
         response = await engine.execute({"dimensions": ["orders.id"], "population": "orders", "metrics": ["count(*)"],
                                          "order": [{"field": "orders.count", "direction": "desc"}], "limit": 1})
     assert [list(r.values()) for r in response.data] == [[4, 1]]
+
+
+async def test_a_qualified_order_key_naming_a_saved_metric_is_never_count_star(tmp_path: Path) -> None:
+    orders = ORDERS_ONLY.model_copy(update={"metrics": [DatasetMetric(name="count", expression="sum(amount)")]})
+    query = {"dimensions": ["orders.id"], "population": "orders", "metrics": ["count(*)"],
+             "order": [{"field": "orders.count", "direction": "desc"}], "limit": 1}
+    async with sql_engine(tmp_path, sql=ORDER_SQL, datasets=[orders]) as engine:
+        with pytest.raises(UnknownReferenceError, match="saved metric"):
+            await engine.execute(query)
 
 
 async def test_raw_rows_read_a_dimension_named_like_a_saved_metric_as_the_dimension(tmp_path: Path) -> None:

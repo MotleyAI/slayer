@@ -214,16 +214,14 @@ def _expr_has_metric_ref(
 
 
 def _names_member(*, scope: DatasetScope, bundle: ResolvedSourceBundle, ref: Optional[FieldRef]) -> bool:
-    """Whether a qualified ``ref`` names a field or saved metric reachable from the host."""
-    host = scope.population
-    if ref is None or ref.dataset is None or host is None:
+    """Whether the binder resolves a qualified ``ref``, no alias consulted, to a field or saved metric."""
+    if ref is None or ref.dataset is None or scope.population is None:
         return False
-    parts = drop_root_qualifier(ref.parts, root_spelling(scope), quoted=ref.quoted_parts)
-    walked = _walk_dotted(source_dataset=host, hops=list(parts[:-1]), bundle=bundle) if len(parts) > 1 else (host, ())
-    if walked is None:
+    try:
+        bind_expr(parsed=parse_expr(ref.spelling), scope=scope, bundle=bundle, allow_metrics=True)
+    except SlayerError:
         return False
-    terminal, quoted = walked[0], ref.quoted_parts[-1]
-    return terminal.get_field(ref.name, quoted=quoted) is not None or terminal.get_metric(ref.name, quoted=quoted) is not None
+    return True
 
 
 def _reject_metric_refs_for_raw_rows(
