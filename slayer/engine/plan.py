@@ -652,13 +652,17 @@ def bind_read_datasets(
         "population": population, "referenced_datasets": referenced, "unbound_datasets": unbound,
         "unresolved_datasets": {**bundle.unresolved_datasets, **rebuilt},
     })
-    if not rebuilt:
-        return out
-    # Rebuilt from their stored definitions: resolved as the statement's datasets were, among bound peers.
-    resolved = {name: resolve_rebound(d, bundle=out) for name, d in rebuilt.items()}
-    return out.model_copy(update={
+    return _resolve_rebuilt(out, rebuilt=rebuilt) if rebuilt else out
+
+
+def _resolve_rebuilt(bundle: ResolvedSourceBundle, *, rebuilt: Mapping[str, SlayerDataset]) -> ResolvedSourceBundle:
+    """``bundle`` with the ``rebuilt`` datasets (bound from their stored definitions) resolved as the statement's
+    datasets were, among its bound peers."""
+    resolved = {name: resolve_rebound(d, bundle=bundle) for name, d in rebuilt.items()}
+    population = bundle.population
+    return bundle.model_copy(update={
         "population": None if population is None else resolved.get(population.name, population),
-        "referenced_datasets": [resolved.get(d.name, d) for d in referenced],
+        "referenced_datasets": [resolved.get(d.name, d) for d in bundle.referenced_datasets],
     })
 
 
