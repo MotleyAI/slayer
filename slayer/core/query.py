@@ -24,6 +24,7 @@ from pydantic import (
 )
 from typing_extensions import deprecated
 
+from slayer.core.assignment import AtomicAssignment
 from slayer.core.deprecation import deprecated_input
 from slayer.core.direction import normalize_direction
 from slayer.core import vocabulary
@@ -736,7 +737,7 @@ def _advertised_keys(model: type[BaseModel]) -> str:
     return ", ".join(f"`{k}`" for k in model.model_json_schema(mode="validation").get("properties", {}))
 
 
-class QueryInput(BaseModel):
+class QueryInput(AtomicAssignment):
     """A query input object: a key it does not read is refused; an assignment is validated, and a failed one leaves
     the object unchanged."""
 
@@ -757,24 +758,6 @@ class QueryInput(BaseModel):
                 keys = cls._HINTS.get(unknown[0]) or f"{cls._WHAT} takes {_advertised_keys(cls)}"
                 raise UnknownKeyError(key=unknown[0], path=unknown[0], keys=keys)
         return data
-
-    def _before_assign(self, name: str) -> None:
-        """Clear state derived from field ``name`` so the assignment's validation derives it afresh."""
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name not in type(self).model_fields:
-            super().__setattr__(name, value)
-            return
-        state = (dict(self.__dict__), set(self.__pydantic_fields_set__), dict(self.__pydantic_private__ or {}))
-        try:
-            self._before_assign(name)
-            super().__setattr__(name, value)
-        except Exception:
-            object.__setattr__(self, "__dict__", state[0])
-            object.__setattr__(self, "__pydantic_fields_set__", state[1])
-            if self.__pydantic_private__ is not None:
-                object.__setattr__(self, "__pydantic_private__", state[2])
-            raise
 
 
 def _without_none(data: dict[str, Any]) -> dict[str, Any]:

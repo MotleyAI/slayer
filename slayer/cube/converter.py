@@ -1082,7 +1082,7 @@ class CubeToSlayerConverter:
         found = found or declared or _implied(build.field_aggs.get(col.name, []))
         if found is None:
             return False
-        col.datatype, col.element_type = found
+        col.assign(datatype=found[0], element_type=found[1])
         if col.datatype not in NUMERIC_DATATYPES:
             col.format = None
         return True

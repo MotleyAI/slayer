@@ -1,0 +1,41 @@
+name: Expensive-job gate
+
+# Called by a workflow before a job that bills per run (Snowflake, BigQuery). On a pull-request push the job runs
+# only if the PR was just opened, the job never finished on the PR, the push archives the PR's OpenSpec change, or
+# the job's last finished run failed; other events always run it. The caller's own conditions still apply.
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: The calling workflow's file name, e.g. ci.yml.
+        type: string
+        required: true
+      job:
+        description: The expensive job's name as the Actions API reports it.
+        type: string
+        required: true
+    outputs:
+      run:
+        description: "'true' if the expensive job should run."
+        value: ${{ jobs.gate.outputs.run }}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # The caller's job must grant the same: a called workflow can't raise its token's permissions.
+    permissions:
+      contents: read
+      actions: read  # the job's earlier runs on this PR
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide whether ${{ inputs.job }} runs
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_WORKFLOW: ${{ inputs.workflow }}
+          GATE_JOB: ${{ inputs.job }}
+        run: python3 -m scripts.expensive_ci_gate --workflow "$GATE_WORKFLOW" --job "$GATE_JOB"

@@ -674,7 +674,7 @@ class DbtToSlayerConverter:
             (t for a in aggs if (t := implied_type(a)) is not None), None)
         if found is None:
             return dimension or not aggs
-        col.datatype, col.element_type = found
+        col.assign(datatype=found[0], element_type=found[1])
         if col.datatype not in NUMERIC_DATATYPES:
             col.format = None
         return True
