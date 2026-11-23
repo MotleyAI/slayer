@@ -2796,16 +2796,15 @@ def _check_param_partition_keys(*, agg: AggregateKey, alias: str, context: "_Pro
         check_partition_keys_attributable(
             alias=alias, root_name=home.name, explicit=True,
             unattributable=_unattributable_param_keys(
-                value, partition_keys=value.partition_keys, target_path=target_path, home=home, context=context,
+                partition_keys=value.partition_keys, target_path=target_path, home=home, context=context,
             ),
         )
 
 
 def _unattributable_param_keys(
-    value: AggregateKey, *, partition_keys: Grain, target_path: Tuple[str, ...], home: SlayerDataset,
-    context: "_ProducerSynthesisContext",
+    *, partition_keys: Grain, target_path: Tuple[str, ...], home: SlayerDataset, context: "_ProducerSynthesisContext",
 ) -> List[Tuple[str, str]]:
-    """``(display, reason)`` for each of ``value``'s explicit partition keys its home cannot attribute."""
+    """``(display, reason)`` for each explicit partition key ``home`` cannot attribute."""
     host, bundle = context.host_dataset, context.bundle
     home_datasets = {**bundle.datasets_by_name, host.name: host, home.name: home}
     home_bundle = bundle.rerooted(home)
