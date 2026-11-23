@@ -15,6 +15,7 @@ from slayer.core.time_spine import TIME_SPINE_DATASET
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import (
+    display_token,
     AggregateKey,
     FieldKey,
     FieldSqlKey,
@@ -431,7 +432,7 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
         return canonical
 
     # A source's anchor carries its relationship path, so ``count(customers.*)`` keeps the hop.
-    path: Tuple[str, ...] = source_anchor_path(key.source)
+    path: Tuple[str, ...] = tuple(display_token(t) for t in source_anchor_path(key.source))
 
     if profile == "stage_expression":
         return (".".join(path) + "." if path else "") + canonical

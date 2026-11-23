@@ -64,6 +64,24 @@ from slayer.core.time_points import parse_temporal_value
 # prefix; a source dataset may not declare a real field with it during regroup.
 REGROUP_LEAF_PREFIX = "__regroup__"
 
+#: A path's first hop naming an aggregation's frame dataset: reached by no join from the reading dataset (reserved).
+ANCHOR_TOKEN_PREFIX = "__slayer_anchor__"
+
+
+def anchor_token(name: str) -> str:
+    """The anchor hop to dataset ``name``."""
+    return ANCHOR_TOKEN_PREFIX + name
+
+
+def token_anchor(token: str) -> Optional[str]:
+    """The dataset an anchor hop ``token`` names, else ``None``."""
+    return token[len(ANCHOR_TOKEN_PREFIX):] if token.startswith(ANCHOR_TOKEN_PREFIX) else None
+
+
+def display_token(token: str) -> str:
+    """A path token as a reference spells it: an anchor hop by its dataset."""
+    return token_anchor(token) or token
+
 
 class ScalarSpec(BaseModel, frozen=True):
     """One allowlisted Mode-B scalar: accepted argument counts (``max_args=None``
@@ -323,6 +341,8 @@ class FieldKey(_LeafKey, frozen=True):
 
     path: Tuple[str, ...] = ()
     leaf: str
+    #: A query reference anchored off its reading dataset: the anchor's name and canonical route (Principle 1).
+    anchor: Optional[Tuple[str, ...]] = None
 
     @property
     def phase(self) -> Phase:
@@ -339,6 +359,7 @@ class FieldSqlKey(_LeafKey, frozen=True):
     path: Tuple[str, ...] = ()
     dataset: str
     field_name: str
+    anchor: Optional[Tuple[str, ...]] = None
 
     @property
     def phase(self) -> Phase:
@@ -1065,7 +1086,7 @@ Grain.EMPTY = Grain(keys=frozenset())
 
 VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)
 # Key fields spelled only when set, so a key without one keeps its historical spelling.
-OPTIONAL_KEY_FIELDS = frozenset({"filter"})
+OPTIONAL_KEY_FIELDS = frozenset({"filter", "anchor"})
 #: Key fields outside identity (never spelled into a name).
 NON_IDENTITY_KEY_FIELDS = frozenset({"builtin"})
 
@@ -1312,6 +1333,103 @@ def prepend_value_key(
         return host_path + tuple(path)
 
     return _map_value_key(key, map_path=_prepend)
+
+
+def is_framed_path(path: Tuple[str, ...]) -> bool:
+    """``path`` starts with an anchor hop."""
+    return bool(path) and token_anchor(path[0]) is not None
+
+
+def _framed_leaves(key: _RerootableT, *, token: str) -> _RerootableT:
+    """``key``'s row leaves prefixed with ``token`` (an already-framed one kept); attached values are opaque."""
+    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)):
+        return key
+    if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
+        return key if is_framed_path(key.path) else cast(_RerootableT, key.model_copy(update={"path": (token, *key.path)}))
+    return cast(_RerootableT, key.map_children(lambda c: _framed_leaves(c, token=token)))
+
+
+def _unanchored_leaves(key: _RerootableT) -> _RerootableT:
+    """``key``'s row leaves without their anchored spelling (read from one frame, their path is their identity);
+    attached values are opaque."""
+    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)):
+        return key
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        return key if key.anchor is None else cast(_RerootableT, key.model_copy(update={"anchor": None}))
+    return cast(_RerootableT, key.map_children(_unanchored_leaves))
+
+
+def interior_unanchored(key: AggregateKey) -> AggregateKey:
+    """``key`` with its interior's references keyed by their path from its frame alone."""
+    return key.model_copy(update={
+        "source": _unanchored_leaves(key.source),
+        "args": tuple(_unanchored_leaves(a) for a in key.args),
+        "kwargs": tuple((k, _unanchored_leaves(v)) for k, v in key.kwargs),
+        "filter": None if key.filter is None else _unanchored_leaves(key.filter),
+    })
+
+
+def framed_aggregate(key: AggregateKey, *, frame: str) -> AggregateKey:
+    """``key`` with its interior (source, parameters, ``FILTER``) read from dataset ``frame`` (semantics Axiom 2.6);
+    its grain and nested attached values keep their own coordinates."""
+    token = anchor_token(frame)
+    return key.model_copy(update={
+        "source": _framed_leaves(key.source, token=token),
+        "args": tuple(_framed_leaves(a, token=token) for a in key.args),
+        "kwargs": tuple((k, _framed_leaves(v, token=token)) for k, v in key.kwargs),
+        "filter": None if key.filter is None else _framed_leaves(key.filter, token=token),
+    })
+
+
+def compose_frame(
+    key: _RerootableT, *, frame: str, host_path: Callable[[], Tuple[str, ...]],
+) -> _RerootableT:
+    """A value bound on dataset ``frame`` read by another dataset: every aggregation's interior framed at ``frame``,
+    every other reference prefixed with ``host_path()`` (the reader's route to ``frame``, asked only when needed)."""
+    if not isinstance(key, _FrozenKey):
+        return key
+    if isinstance(key, AggregateKey):
+        framed = framed_aggregate(key, frame=frame)
+        return cast(_RerootableT, framed.model_copy(update={
+            "source": _compose_nested(framed.source, frame=frame, host_path=host_path),
+            "args": tuple(_compose_nested(a, frame=frame, host_path=host_path) for a in framed.args),
+            "kwargs": tuple((k, _compose_nested(v, frame=frame, host_path=host_path)) for k, v in framed.kwargs),
+            "partition_keys": None if key.partition_keys is None else Grain.of(
+                _composed_grain(p, frame=frame, host_path=host_path) for p in key.partition_keys),
+        }))
+    if isinstance(key, TransformKey):
+        return cast(_RerootableT, key.model_copy(update={
+            "input": compose_frame(key.input, frame=frame, host_path=host_path),
+            "partition_keys": Grain.of(_composed_grain(p, frame=frame, host_path=host_path) for p in key.partition_keys),
+            "time_key": None if key.time_key is None else _composed_grain(key.time_key, frame=frame, host_path=host_path),
+        }))
+    if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
+        return _composed_grain(key, frame=frame, host_path=host_path)
+    return cast(_RerootableT, key.map_children(lambda c: compose_frame(c, frame=frame, host_path=host_path)))
+
+
+def _compose_nested(key: _RerootableT, *, frame: str, host_path: Callable[[], Tuple[str, ...]]) -> _RerootableT:
+    """Inside a framed interior: a nested attached value is composed in turn; row leaves are already framed."""
+    if not isinstance(key, _FrozenKey) or isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
+        return key
+    if isinstance(key, (AggregateKey, TransformKey)):
+        return compose_frame(key, frame=frame, host_path=host_path)
+    return cast(_RerootableT, key.map_children(lambda c: _compose_nested(c, frame=frame, host_path=host_path)))
+
+
+def _composed_grain(key: _RerootableT, *, frame: str, host_path: Callable[[], Tuple[str, ...]]) -> _RerootableT:
+    """A grain reference bound on ``frame``, read through the reader's route to it, keeping its anchored spelling."""
+    def leaf(k: ValueKey) -> ValueKey:
+        if isinstance(k, (FieldKey, FieldSqlKey)):
+            anchor = k.anchor if k.anchor is not None else (frame, *k.path)
+            return k.model_copy(update={"path": (*host_path(), *k.path), "anchor": anchor})
+        if isinstance(k, StarKey):
+            return k.model_copy(update={"path": (*host_path(), *k.path)})
+        if isinstance(k, (AggregateKey, TransformKey)):
+            return compose_frame(k, frame=frame, host_path=host_path)
+        return k.map_children(leaf)
+
+    return cast(_RerootableT, leaf(cast(ValueKey, key)))
 
 
 def substitute_value_keys(

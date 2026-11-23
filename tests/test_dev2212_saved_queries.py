@@ -173,7 +173,6 @@ async def test_a_spliced_stage_reads_its_supply_with_its_dataset_variables(backe
     assert {r["saved.region"]: r["rev"] for r in spliced.data}["WEST"] == 300
 
 
-@pytest.mark.xfail(strict=True, reason="DEV-2392: a joined dataset's own Mode-A variables are never substituted")
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_spliced_stage_reads_a_non_host_supply_with_its_dataset_variables(backend: str) -> None:
     returns = returns_dataset().model_copy(update={"filters": ["amount > {m}"], "query_variables": {"m": 15}})

@@ -21,7 +21,7 @@ from slayer.core.syntax import (
 )
 from slayer.core.models import SlayerDataset
 from slayer.core.time_spine import TIME_SPINE_DATASET, axis_field, is_spine_query, reads_spine
-from slayer.engine.population.anchors import anchor_route, find_anchor
+from slayer.engine.population.anchors import anchor_route, find_anchor, source_frame
 from slayer.engine.population.inference import (
     DimensionAnchor,
     _OK,
@@ -32,7 +32,6 @@ from slayer.engine.population.inference import (
     _walk_terminal_dataset,
     determination_items,
     dimension_anchor,
-    metric_anchor_names,
     probe_item,
     spine_factor_out,
 )
@@ -133,12 +132,27 @@ def _leaf_paths(agg: AggCall, *, owner: Optional[str]) -> tuple[list[tuple[str, 
     return paths, inner
 
 
+def _frame(paths: list[tuple[str, ...]], *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[str]:
+    """The dataset a source whose leaves are anchored apart is read from (semantics Axiom 2.6), else ``None``."""
+    anchors = [datasets_by_name.get(p[0]) for p in paths if p]
+    if len(anchors) != len(paths) or any(a is None for a in anchors) or len({a.name for a in anchors if a}) < 2:
+        return None
+    try:
+        frame = source_frame([a for a in anchors if a is not None], datasets_by_name=datasets_by_name,
+                             spell=lambda d: d.spelling)
+    except UnresolvableDimensionRelationshipError:
+        return None
+    return frame.name if frame is not None else None
+
+
 def _home(agg: AggCall, *, owner: Optional[str], datasets_by_name: dict[str, SlayerDataset]) -> Optional[str]:
-    """The stored dataset ``agg`` is counted over: where its leaves' common path ends (a second-order aggregation's
-    constituents' home)."""
+    """The stored dataset ``agg`` is counted over: where its leaves' common path ends, or the dataset leaves anchored
+    apart are read from (a second-order aggregation's constituents' home)."""
     paths, inner = _leaf_paths(agg, owner=owner)
     if not paths:
         return next((h for c in inner if (h := _home(c, owner=owner, datasets_by_name=datasets_by_name))), None)
+    if owner is None and (frame := _frame(paths, datasets_by_name=datasets_by_name)) is not None:
+        return frame
     common = paths[0]
     for p in paths[1:]:
         i = 0
@@ -292,49 +306,6 @@ def first_metric_anchor(query: SlayerQuery) -> Optional[str]:
     return None
 
 
-def _routes(*, reader: SlayerDataset, home: str, datasets_by_name: dict[str, SlayerDataset]) -> bool:
-    """Whether ``reader`` reaches ``home`` unambiguously (or meets it as a product)."""
-    target = datasets_by_name.get(home)
-    if target is None or home == reader.name:
-        return True
-    try:
-        anchor_route(reader=reader, anchor=target, datasets_by_name=datasets_by_name)
-    except UnresolvableDimensionRelationshipError:
-        return False
-    return True
-
-
-def _require_route(*, reader: SlayerDataset, home: str, datasets_by_name: dict[str, SlayerDataset]) -> None:
-    """Raise the typed ambiguity error when ``reader`` has no unambiguous route to ``home``."""
-    target = datasets_by_name.get(home)
-    if target is not None and home != reader.name:
-        anchor_route(reader=reader, anchor=target, datasets_by_name=datasets_by_name)
-
-
-def anchored_rows(query: SlayerQuery, *, datasets_by_name: dict[str, SlayerDataset]) -> Optional[RowPlan]:
-    """A named population that cannot route to a metric's home: the stage is planned from that home, its rows the
-    population's cells (the population's reading of the home never decides a value, Axiom 6); else ``None``.
-    DEV-2388 removes it: aggregations bind from their own anchor."""
-    population = query.population_name
-    reader = datasets_by_name.get(population or "")
-    has_dims = bool(query.dimensions or query.time_dimensions)
-    if reader is None or population is None or not query.metrics or not query.distinct_dimension_values \
-            or not has_dims:
-        return None
-    free = query.model_copy(update={"population": None})
-    unroutable = sorted(a for a in metric_anchor_names(free)
-                        if a in datasets_by_name and not _routes(reader=reader, home=a, datasets_by_name=datasets_by_name))
-    if not unroutable:
-        return None
-    filters = _field_filters(free, datasets_by_name=datasets_by_name)
-    for f in filters:
-        for r in _all_filter_refs(f, root=None)[0]:
-            _require_route(reader=reader, home=r.split(".")[0], datasets_by_name=datasets_by_name)
-    cells = _cells(free, population=population, filters=filters)
-    return RowPlan(population=unroutable[0], supply=RowSupply(branches=(RowSupplyBranch(cells=cells),), anchor=population),
-                   row_sources=(population,), reported=population)
-
-
 def _connected(*, home: str, target: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> bool:
     """Whether a join path (ambiguous or not) leads from ``home`` to ``target``."""
     reader = datasets_by_name.get(home)
@@ -456,8 +427,9 @@ def plan_rows(
     if not sources.needs_anchor and len(sources.homes) == 1:
         return RowPlan(population=sources.homes[0], supply=RowSupply(anchor=_single(anchor.datasets)), row_sources=row_sources,
                        reported=anchor.display)
-    # A supplying home hosts the stage: a re-aggregation's carrier is built over the host's rows.
-    population = (sources.homes or anchor_datasets or (first_metric_anchor(query),))[0]
+    # The host is only the binder's scope, which no value or refusal depends on: the dimension anchor, else a
+    # full-grain home.
+    population = _single(anchor.datasets) or (sources.homes or anchor_datasets or (first_metric_anchor(query),))[0]
     if population is None:
         anchor.required()
         raise ValueError("an inferred query with metrics names no dataset")

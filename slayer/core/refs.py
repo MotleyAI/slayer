@@ -11,6 +11,7 @@ from typing import Any, Callable, cast
 from slayer.core.enums import GRANULARITY_NAMES
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
+    display_token,
     MIRRORED_TIME_POINT_OP,
     OPTIONAL_KEY_FIELDS,
     AggregateKey,
@@ -202,9 +203,9 @@ def _partition_key_display(key: Any) -> str:
     if isinstance(key, (TimeTruncKey, ListSetKey)):
         key = key.source
     if isinstance(key, FieldKey):
-        parts = [*key.path, key.leaf]
+        parts = [*map(display_token, key.path), key.leaf]
     elif isinstance(key, FieldSqlKey):
-        parts = [*key.path, key.field_name]
+        parts = [*map(display_token, key.path), key.field_name]
     else:
         parts = [legacy_key_str(key)]
     return _NON_IDENT_RE.sub("_", "_".join(parts)).strip("_")
@@ -283,11 +284,11 @@ def _fragment_display(key: SqlFragmentKey) -> str:
 
 def _leaf_display(key: ValueKey) -> str | None:
     if isinstance(key, FieldKey):
-        return ".".join((*key.path, key.leaf))
+        return ".".join((*map(display_token, key.path), key.leaf))
     if isinstance(key, FieldSqlKey):
-        return ".".join((*key.path, key.field_name))
+        return ".".join((*map(display_token, key.path), key.field_name))
     if isinstance(key, StarKey):
-        return ".".join((*key.path, "*"))
+        return ".".join((*map(display_token, key.path), "*"))
     if isinstance(key, LiteralKey):
         return _scalar_display(key.value)
     return None
@@ -380,7 +381,7 @@ def agg_kwarg_canonical_str(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, (FieldKey, FieldSqlKey)):
-        return ".".join((*value.path, value.leaf if isinstance(value, FieldKey) else value.field_name))
+        return ".".join((*map(display_token, value.path), value.leaf if isinstance(value, FieldKey) else value.field_name))
     if isinstance(value, AggregateKey):
         return _agg_key_canonical_str(value)
     if isinstance(value, TransformKey):
