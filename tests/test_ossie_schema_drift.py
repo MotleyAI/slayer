@@ -1,5 +1,5 @@
 """The weekly Ossie drift check over the vendored corpus (identical, reformatted, drifted, unreachable upstream), the
-corpus file list and its byte identity, and the harvest of upstream's validator test documents."""
+corpus file list and its byte identity, the harvest of upstream's validator test documents, and re-vendoring."""
 
 from __future__ import annotations
 
@@ -7,7 +7,10 @@ import datetime
 import hashlib
 import http.client
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 import types
 import urllib.error
 from collections.abc import Callable
@@ -373,3 +376,368 @@ def test_the_session_hooks_wrap_test_modules_and_write_accepted_documents(monkey
     plugin.pytest_sessionfinish(cast(pytest.Session, session), 0)
     written = [yaml.safe_load(p.read_text(encoding="utf-8")) for p in out.glob("*.yaml")]
     assert written == [ORDERS]
+
+
+# --------------------------------------------------------------------------- #
+# Re-vendoring from an apache/ossie checkout
+# --------------------------------------------------------------------------- #
+SPEC_TEXT = ("core-spec/spec.md", "core-spec/spec.yaml", "core-spec/expression_language.md",
+             "core-spec/relational_semantics.md", "core-spec/wide_table_semantics.md", "core-spec/spec_layers.md")
+EXPRESSION_FIXTURES = ("compliance/expressions/valid.txt", "compliance/expressions/invalid.txt")
+CHECKOUT_FILES: dict[str, bytes] = {
+    "LICENSE": b"Apache License\n",
+    "NOTICE": b"Apache Ossie\n",
+    SCHEMA: b'{"type": "object"}\n',
+    "core-spec/spec.md": b"# Spec\r\nCRLF kept\r\n",
+    "core-spec/spec.yaml": b"spec: 1\n",
+    "core-spec/expression_language.md": b"# Expressions",
+    "core-spec/relational_semantics.md": b"# Relational\n",
+    "core-spec/wide_table_semantics.md": b"# Wide table\n",
+    "core-spec/spec_layers.md": b"# Layers\n",
+    "compliance/expressions/valid.txt": b"SUM(amount)\n",
+    "compliance/expressions/invalid.txt": b"1 +\n",
+    "examples/shop.yaml": b"version: 0.3.0.dev0\nname: shop\n",
+    "validation/validate.py": b"# validator\n",
+    "python/src/ossie/_loading.py": b"# loader\n",
+}
+UNMANAGED = {"README.md": b"# Ossie\n", "website/index.md": b"# Site\n"}
+COMMIT_DATE = "2026-11-21T10:00:00+00:00"
+
+
+def _git(cwd: Path, *args: str) -> str:
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@example.com", "GIT_AUTHOR_DATE": COMMIT_DATE, "GIT_COMMITTER_DATE": COMMIT_DATE}
+    return subprocess.run(["git", "-c", "core.autocrlf=false", *args], cwd=cwd, env=env, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def _checkout(root: Path, files: dict[str, bytes], *, links: dict[str, Path] | None = None) -> Path:
+    """A throwaway git repo holding ``files`` (and symlinks ``links``), committed once."""
+    root.mkdir(parents=True)
+    _git(root, "init", "-q")
+    for path, data in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_bytes(data)
+    for path, target in (links or {}).items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).symlink_to(target)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "snapshot")
+    return root
+
+
+def _corpus(root: Path, *, listed: dict[str, bytes], local: dict[str, bytes] | None = None) -> Path:
+    """A previous corpus whose provenance lists ``listed``, plus unlisted ``local`` fixtures and one harvested file."""
+    for path, data in {**listed, **(local or {}), "harvested/old.yaml": b"old: 1\n"}.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_bytes(data)
+    provenance = {"repository": "apache/ossie", "commit": "0" * 40, "committed": "2026-01-01",
+                  "harvested": "harvested/", "files": {p: _git_blob_sha(d) for p, d in listed.items()}}
+    (root / "provenance.yaml").write_text(yaml.safe_dump(provenance, sort_keys=False), encoding="utf-8")
+    return root
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def _fake_harvest(monkeypatch: pytest.MonkeyPatch, *, code: int = 0) -> list[Path]:
+    """``harvest`` writing one document into its ``out``; returns the checkouts it was called with."""
+    seen: list[Path] = []
+
+    def fake(*, checkout: Path, out: Path) -> int:
+        seen.append(checkout)
+        if code == drift_check.EXIT_SAME:
+            out.mkdir(parents=True, exist_ok=True)
+            for stale in out.glob("*.yaml"):
+                stale.unlink()
+            (out / "abc123def456.yaml").write_text("version: 0.3.0.dev0\n", encoding="utf-8")
+        return code
+
+    monkeypatch.setattr(drift_check, "harvest", fake)
+    return seen
+
+
+def _vendor(checkout: Path, corpus: Path) -> int:
+    return drift_check.cli(["--vendor", str(checkout), "--out", str(corpus)])
+
+
+def test_vendor_copies_the_managed_files_byte_for_byte(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", {**CHECKOUT_FILES, **UNMANAGED})
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    seen = _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    tree = _tree(corpus)
+    assert {p: tree.get(p) for p in CHECKOUT_FILES} == CHECKOUT_FILES
+    assert not set(UNMANAGED) & set(tree)
+    assert [p.resolve() for p in seen] == [checkout.resolve()]
+    assert sorted(p for p in tree if p.startswith("harvested/")) == ["harvested/abc123def456.yaml"]
+
+
+def test_vendor_writes_provenance_with_computed_blob_shas(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={})
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    provenance = yaml.safe_load((corpus / "provenance.yaml").read_text(encoding="utf-8"))
+    assert provenance["repository"] == "apache/ossie"
+    assert provenance["commit"] == _git(checkout, "rev-parse", "HEAD")
+    assert str(provenance["committed"]) == "2026-11-21"
+    assert provenance["harvested"] == "harvested/"
+    assert provenance["files"] == {p: _git(checkout, "hash-object", p) for p in CHECKOUT_FILES}
+    assert {*SPEC_TEXT, *EXPRESSION_FIXTURES} <= set(provenance["files"])
+
+
+def test_vendor_removes_only_files_the_previous_provenance_listed(monkeypatch: pytest.MonkeyPatch,
+                                                                 tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/gone.yaml": b"gone\n", "examples/shop.yaml": b"old\n"},
+                     local={"examples/local_only.yaml": b"mine\n", "README.local": b"notes\n"})
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    tree = _tree(corpus)
+    assert "examples/gone.yaml" not in tree
+    assert tree["examples/local_only.yaml"] == b"mine\n"
+    assert tree["README.local"] == b"notes\n"
+    assert "examples/gone.yaml" not in yaml.safe_load((corpus / "provenance.yaml").read_text(encoding="utf-8"))["files"]
+
+
+def test_a_failed_harvest_keeps_the_corpus(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Spec scenario: A failed re-vendor keeps the corpus."""
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/gone.yaml": b"gone\n", "examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    _fake_harvest(monkeypatch, code=drift_check.EXIT_HARVEST)
+    assert _vendor(checkout, corpus) != drift_check.EXIT_SAME
+    assert _tree(corpus) == before
+
+
+def test_vendor_refuses_a_provenance_path_escaping_the_corpus(monkeypatch: pytest.MonkeyPatch,
+                                                             tmp_path: Path) -> None:
+    outside = tmp_path / "escape.txt"
+    outside.write_bytes(b"precious\n")
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    provenance = yaml.safe_load((corpus / "provenance.yaml").read_text(encoding="utf-8"))
+    provenance["files"]["../escape.txt"] = _git_blob_sha(b"precious\n")
+    (corpus / "provenance.yaml").write_text(yaml.safe_dump(provenance, sort_keys=False), encoding="utf-8")
+    before = _tree(corpus)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) != drift_check.EXIT_SAME
+    assert outside.read_bytes() == b"precious\n"
+    assert _tree(corpus) == before
+
+
+def test_vendor_refuses_a_checkout_link_escaping_the_checkout(monkeypatch: pytest.MonkeyPatch,
+                                                             tmp_path: Path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"secret\n")
+    files = {p: d for p, d in CHECKOUT_FILES.items() if p != "validation/validate.py"}
+    checkout = _checkout(tmp_path / "ossie", files, links={"validation/validate.py": secret})
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) != drift_check.EXIT_SAME
+    assert _tree(corpus) == before
+
+
+def test_vendor_refuses_a_checkout_missing_a_managed_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", {p: d for p, d in CHECKOUT_FILES.items() if p != "core-spec/spec.md"})
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    seen = _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert seen == []
+    assert _tree(corpus) == before
+
+
+def test_vendor_refuses_a_checkout_with_uncommitted_managed_changes(monkeypatch: pytest.MonkeyPatch,
+                                                                     tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    (checkout / "examples" / "shop.yaml").write_bytes(b"edited\n")
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    seen = _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert seen == []
+    assert _tree(corpus) == before
+
+
+def test_vendor_refuses_a_checkout_with_a_staged_deletion(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    _git(checkout, "rm", "-q", "examples/shop.yaml")
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    seen = _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert seen == []
+    assert _tree(corpus) == before
+
+
+def test_vendor_copies_head_blobs_through_line_ending_conversion(monkeypatch: pytest.MonkeyPatch,
+                                                                 tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    _git(checkout, "config", "core.autocrlf", "true")
+    for path in CHECKOUT_FILES:
+        (checkout / path).unlink()
+    subprocess.run(["git", "checkout", "--", "."], cwd=checkout, check=True, capture_output=True)
+    assert (checkout / "core-spec" / "spec.yaml").read_bytes() == b"spec: 1\r\n"
+    corpus = _corpus(tmp_path / "corpus", listed={})
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    tree = _tree(corpus)
+    assert {p: tree.get(p) for p in CHECKOUT_FILES} == CHECKOUT_FILES
+
+
+def _backup_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """The directory the re-vendor's backup temp directory is redirected to."""
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    real_mkdtemp = tempfile.mkdtemp
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda *args, **kwargs: str(saved)
+                        if kwargs.get("prefix") == "ossie-vendor-backup-" else real_mkdtemp(*args, **kwargs))
+    return saved
+
+
+def test_a_successful_vendor_leaves_no_backup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    saved = _backup_dir(monkeypatch, tmp_path)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    assert not saved.exists()
+
+
+def test_a_failed_backup_leaves_the_corpus_untouched(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                     capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    saved = _backup_dir(monkeypatch, tmp_path)
+    _fake_harvest(monkeypatch)
+    real = Path.write_bytes
+
+    def failing(self: Path, data: bytes) -> int:
+        if self.is_relative_to(saved):
+            raise OSError("disk full")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", failing)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert "could not back up the corpus" in capsys.readouterr().err
+    assert _tree(corpus) == before
+    assert not saved.exists()
+
+
+def test_an_uncreatable_backup_directory_leaves_the_corpus_untouched(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                                     capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    real_mkdtemp = tempfile.mkdtemp
+
+    def failing(*args: Any, **kwargs: Any) -> str:
+        if kwargs.get("prefix") == "ossie-vendor-backup-":
+            raise OSError("no space")
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", failing)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert "Re-vendor refused: could not back up the corpus" in capsys.readouterr().err
+    assert _tree(corpus) == before
+
+
+def test_a_backup_that_cannot_be_removed_is_named(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                  capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    saved = _backup_dir(monkeypatch, tmp_path)
+    _fake_harvest(monkeypatch)
+
+    real_rmtree = shutil.rmtree
+
+    def stuck(path: Any, *args: Any, **kwargs: Any) -> None:
+        if Path(path) == saved:
+            raise OSError("busy")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", stuck)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    assert f"Could not remove the corpus backup {saved}" in capsys.readouterr().err
+
+
+def test_a_failed_rollback_saves_the_backups_and_says_so(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                         capsys: pytest.CaptureFixture[str]) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/shop.yaml": b"old\n"})
+    saved = _backup_dir(monkeypatch, tmp_path)
+    _fake_harvest(monkeypatch)
+    real = Path.write_bytes
+
+    def failing(self: Path, data: bytes) -> int:
+        if self.is_relative_to(corpus) and (data == CHECKOUT_FILES["validation/validate.py"] or data == b"old\n"):
+            raise OSError("disk full")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", failing)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    err = capsys.readouterr().err
+    assert "NOT fully rolled back" in err
+    assert "examples/shop.yaml" in err
+    assert str(saved) in err
+    assert (saved / "examples" / "shop.yaml").read_bytes() == b"old\n"
+
+
+def test_vendor_refuses_a_destination_link_escaping_the_corpus(monkeypatch: pytest.MonkeyPatch,
+                                                              tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={})
+    (corpus / "examples").symlink_to(elsewhere, target_is_directory=True)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_vendor_refuses_a_harvested_link_escaping_the_corpus(monkeypatch: pytest.MonkeyPatch,
+                                                             tmp_path: Path) -> None:
+    outside = tmp_path / "outside.yaml"
+    outside.write_bytes(b"precious\n")
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={})
+    (corpus / "harvested" / "abc123def456.yaml").symlink_to(outside)
+    _fake_harvest(monkeypatch)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert outside.read_bytes() == b"precious\n"
+
+
+def test_a_failed_write_rolls_the_corpus_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={"examples/gone.yaml": b"gone\n", "examples/shop.yaml": b"old\n"})
+    before = _tree(corpus)
+    _fake_harvest(monkeypatch)
+    real = Path.write_bytes
+
+    def failing(self: Path, data: bytes) -> int:
+        if self.name == "validate.py" and data == CHECKOUT_FILES["validation/validate.py"]:
+            raise OSError("disk full")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", failing)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_VENDOR
+    assert _tree(corpus) == before
+    assert not (corpus / "core-spec").exists()
+
+
+def test_the_corpus_vendors_the_spec_text_and_expression_fixtures() -> None:
+    assert {*SPEC_TEXT, *EXPRESSION_FIXTURES} <= set(PROVENANCE["files"])
+
+
+def test_ci_runs_the_agg_shape_tests_on_the_newest_sqlglot() -> None:
+    workflow = yaml.safe_load((drift_check.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["sqlglot-latest"]["steps"]
+    commands = [step.get("run", "") for step in steps]
+    assert any("pip install --upgrade" in c and "sqlglot[c]" in c for c in commands)
+    assert any("pytest" in c and "tests/test_dev2394_agg_shapes.py" in c for c in commands)

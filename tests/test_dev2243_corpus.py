@@ -106,6 +106,23 @@ def _is_agg_call(node: exp.Expr) -> bool:
     return type(node).__name__ == "Agg" or (isinstance(node, exp.Anonymous) and node.name.upper() == "AGG")
 
 
+def _agg_argument(node: exp.Expr) -> exp.Expr | None:
+    """An ``AGG`` call's single argument, in either sqlglot shape."""
+    if type(node).__name__ == "Agg":
+        return node.this
+    args = node.expressions if isinstance(node, exp.Anonymous) else []
+    return args[0] if len(args) == 1 else None
+
+
+def _agg_columns(tree: exp.Expr) -> list[exp.Column]:
+    return [a for n in tree.walk() if _is_agg_call(n) and isinstance(a := _agg_argument(n), exp.Column)]
+
+
+def _evaluates_source_measure(tree: exp.Expr) -> bool:
+    """Calls ``AGG(source.measure)``, which no SLayer source can evaluate (Ossie rule 9)."""
+    return any(c.table.casefold() == "source" for c in _agg_columns(tree))
+
+
 def _aggregated(node: exp.Expr) -> bool:
     """Inside an aggregate call, its FILTER clause or an ``AGG(d.m)`` call."""
     parent = node.parent
@@ -158,15 +175,35 @@ def expected_outcomes(data: dict[str, Any]) -> dict[str, str]:
                     if (t := _parse(_expression_text(f.get("expression") or {}))) is not None and t.find(exp.Window)}
         for metric in dataset.get("metrics") or []:
             tree = _parse(_expression_text(metric["expression"]))
-            unevaluable = tree is not None and (tree.find(exp.Window) is not None or any(
-                not c.table and c.name in windowed for c in tree.find_all(exp.Column)))
+            unevaluable = tree is not None and (tree.find(exp.Window) is not None or _evaluates_source_measure(tree)
+                                                or any(not c.table and c.name in windowed
+                                                       for c in tree.find_all(exp.Column)))
             outcomes[f"{dataset['name']}.{metric['name']}"] = "unevaluable" if unevaluable else "compiled"
     metric_names = {m["name"].casefold() for m in data.get("metrics") or []}
+    trees: dict[str, exp.Expr | None] = {}
     for metric in data.get("metrics") or []:
-        tree = _parse(_expression_text(metric["expression"]))
+        tree = trees[metric["name"]] = _parse(_expression_text(metric["expression"]))
         unevaluable = tree is not None and (tree.find(exp.Window) is not None
                                             or _model_scoped_rejection(tree, metric_names=metric_names) is not None)
         outcomes[metric["name"]] = "unevaluable" if unevaluable else "compiled"
+    return _propagated(outcomes, trees)
+
+
+def _propagated(outcomes: dict[str, str], trees: dict[str, exp.Expr | None]) -> dict[str, str]:
+    """Model-scoped metrics reaching an unevaluable metric (``AGG(d.m)`` or a bare model-scoped name) are too."""
+    blocked = {k.casefold() for k, v in outcomes.items() if v == "unevaluable"}
+    changed = True
+    while changed:
+        changed = False
+        for name, tree in trees.items():
+            if name.casefold() in blocked or tree is None:
+                continue
+            reached = {f"{c.table}.{c.name}".casefold() for c in _agg_columns(tree)}
+            reached |= {c.name.casefold() for c in tree.find_all(exp.Column) if not c.table}
+            if reached & blocked:
+                blocked.add(name.casefold())
+                outcomes[name] = "unevaluable"
+                changed = True
     return outcomes
 
 

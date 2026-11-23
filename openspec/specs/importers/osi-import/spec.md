@@ -48,7 +48,7 @@ A document whose root holds a `semantic_model` key and that does not declare `0.
 - **THEN** the stored document's metric reads `SUM(orders.amount)`, it answers by bare name, and the report lists the rewrite
 
 ### Requirement: Invalid documents are refused with every reason
-A document that is not valid Ossie SHALL be refused with every reason, each naming its entity: a root mixing both shapes or holding neither, an empty or malformed `semantic_model`, a wrapper declaring `0.3.0.dev0`, a key Ossie does not define, a duplicate name (compared as Ossie compares identifiers), a key or relationship naming an undeclared field, mismatched relationship key lengths, a relationship naming a dataset outside the document, a metric reference that breaks Ossie's metric scoping, an expression with neither `sql` nor a `dialects` entry, and an extension whose `data` is not a JSON object. A refused document SHALL store nothing; the other files of the same import SHALL still be imported, and the command SHALL exit non-zero when any file was refused.
+A document that is not valid Ossie SHALL be refused with every reason, each naming its entity: a root mixing both shapes or holding neither, an empty or malformed `semantic_model`, a wrapper declaring `0.3.0.dev0`, a key Ossie does not define, a key repeated within one mapping, a scalar its YAML tag cannot construct, a duplicate name (compared as Ossie compares identifiers), a key or relationship naming an undeclared field, mismatched relationship key lengths, a relationship naming a dataset outside the document, a metric reference that breaks Ossie's metric scoping, an expression with neither `sql` nor a `dialects` entry, and an extension whose `data` is not a JSON object. A refused document SHALL store nothing; the other files of the same import SHALL still be imported, and the command SHALL exit non-zero when any file was refused.
 
 #### Scenario: Every reason is listed
 - **WHEN** a document has a duplicate field name in `orders` and a relationship naming the undeclared field `customer_ref`
@@ -69,6 +69,10 @@ A document that is not valid Ossie SHALL be refused with every reason, each nami
 #### Scenario: Ontology document
 - **WHEN** a file is an Ossie ontology or ontology-mapping document (no root `datasets` and no `semantic_model`)
 - **THEN** that file is refused with an error naming it as not a semantic-model document
+
+#### Scenario: A repeated key is refused in flat and legacy documents
+- **WHEN** a flat `0.3.0.dev0` document, and separately a legacy `semantic_model:` document, each repeat the key `source` in one dataset
+- **THEN** each file is refused with an error naming the key `source`, and neither stores anything
 
 ### Requirement: The shipped example is a valid current-spec document
 The worked example `docs/examples/13_osi_import/shop.osi.yaml` SHALL validate against the pinned upstream Ossie schema, SHALL import as a native document, and SHALL answer every query of its example notebook.
