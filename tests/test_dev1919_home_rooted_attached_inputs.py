@@ -374,7 +374,7 @@ class TestFailClosedEveryMode:
 
     @pytest.mark.parametrize("mode", [None, "associate"])
     async def test_parameter_key_fanning_from_its_own_home_undetermined(self, dev1900_engine, mode):
-        """Scenario: Attached parameter whose own partition key fans from its own home fails closed."""
+        """Scenario: Attached parameter whose own partition key fans from its own home fails with the per-mode error."""
         q = mode_q(mode, dimensions=["orders.status"], metrics=[_m(OWN_FAN_BADPOP)])
         with pytest.raises(SlayerError) as ei:
             await dev1900_engine.execute(q)

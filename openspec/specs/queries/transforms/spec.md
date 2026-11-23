@@ -235,7 +235,7 @@ aligned to the bucket it is the bucket containing the offset instant.
   carries the prior month's share of it — gold Apr 0.1, NULL where the prior
   month has no rows for the tier — by executed values
 
-#### Scenario: Partition key across a fanning hop stays a typed error
+#### Scenario: Shifted leaf with a fanning partition key associates per bucket
 
 - **WHEN** a query rooted at `customers` by `orders.status` and signup month
   requests `time_shift(sum(spend, partition_by=[orders.status, signup_at]), -1)`,

@@ -998,7 +998,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
   error naming that column — the parameter's own producer fails closed even
   though the enclosing aggregation never inspects it
 
-#### Scenario: Attached parameter whose own partition key fans from its own home fails closed
+#### Scenario: Attached parameter whose own partition key fans from its own home fails with the per-mode error
 - **WHEN** a query rooted at `orders` over `[status]`, and again over
   `[customers.regions.bad_pop]`, selects
   `weighted_avg(amount, weight=sum(customers.regions.pop, partition_by=customers.regions.bad_pop))`
