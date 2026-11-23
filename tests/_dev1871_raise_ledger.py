@@ -219,10 +219,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_SP, function="_assert_attach_covers_producer_grain", exc="ValueError",
          message="Regroup attach join keys do not match the producer's grouping grain; the join must cover the complete grain or it changes cardinality.",
          category="internal", family="internal", user=False, owner="compiler"),
-    _row(module=_EE, function="check_partition_key_attributable", exc="PartitionKeyError",
-         message="The partition_by field '…' …; every partition key must be attributable from the aggregate's root."
+    _row(module=_EE, function="check_partition_key_analysable", exc="PartitionKeyError",
+         message="The partition_by field '…' has a definition whose relationship paths cannot be analysed, so its attributability from the aggregate's home is unknown."
          + AT + "…"
-         + SUGGEST + "…",
+         + SUGGEST + "Partition by a field whose definition references other fields by name.",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_cross_dataset_inputs_safe", exc="UnsafeRelationshipInputError",
          message="The cross-dataset aggregate reads an input across an unproven relationship hop to … from …."
@@ -275,10 +275,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_cross_dataset_source_resolves", exc="UnsafeRelationshipInputError",
          message="Cross-dataset aggregate source path … does not resolve to a dataset from ….",
          category="checker", family="cross-model", user=True, owner="checker"),
-    _row(module=_EE, function="check_cross_dataset_partition_keys_attributable", exc="PartitionKeyError",
-         message="The cross-dataset aggregate declares partition_by=…, which …; every explicit partition key must be attributable from …."
+    _row(module=_EE, function="check_partition_keys_attributable", exc="PartitionKeyError",
+         message="The aggregate declares partition_by=…, which …; outside association every explicit partition key must be attributable from …."
          + AT + "metric …"
-         + SUGGEST + "…",
+         + SUGGEST + "Omit to_many_handling (or set 'associate') to compute at that grain over the distinct … rows, or declare relationship cardinality or a covering unique key on the target.",
          category="checker", family="cross-model", user=True, owner="checker"),
     _row(module=_EE, function="check_windowed_time_axis_attributable", exc="TimeAxisError",
          message="The windowed aggregate has no active time dimension."

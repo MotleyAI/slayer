@@ -197,12 +197,19 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 
 ### Requirement: Explicit grain and window on cross-model aggregates
 Cross-model aggregates SHALL accept `partition_by=`, `window=`, and `first`/`last`.
-Under `"broadcast"` and `"error"` modes, every explicit partition key MUST be
-attributable from the aggregate's root — an unattributable key is a hard error naming
-the remedy. When the mode is omitted or `"associate"`, an explicit partition key not
-attributable from the root is legal: the aggregate attributes at the declared grain by distinct-entity
-association (per `queries/attribution-modes`), without warning (requested grain) — a
-`first`/`last` or windowed aggregate included. A windowed aggregate — cross-model or
+The explicit-key rule below SHALL hold alike for cross-model aggregates and for local
+aggregates rooted at the query population; keys across a product hop keep
+`queries/unrelated-datasets`. Under `"broadcast"` and `"error"` modes,
+every explicit partition key MUST be attributable from the aggregate's home — an
+unattributable key is a hard error naming the key and both remedies (omitting the mode,
+and declaring cardinality or a covering unique key). When the mode is omitted or
+`"associate"`, an explicit partition key not attributable from the home is legal: the
+aggregate attributes at the declared grain by distinct-entity association (per
+`queries/attribution-modes` › Unattributable explicit partition keys resolve per the
+mode), without warning (requested grain) — a `first`/`last` or windowed aggregate
+included. An unattributable time partition key associates per bucket: a home row
+counts once in each bucket one of its associated rows falls in, so a home row whose
+associated rows span several buckets counts in each of them. A windowed aggregate — cross-model or
 rooted at the query population — whose query's active time dimension is not attributable
 from its home dataset associates by its frame when the mode is omitted or `"associate"`
 (per `queries/attribution-modes` › Ranked and windowed association), never a fanning join
@@ -245,6 +252,55 @@ remedies, association among them — broadcasting cannot drop the window's own a
 - **WHEN** the same query runs under `"broadcast"` or `"error"`, with or without the filter
 - **THEN** the query fails at plan time with a typed error naming `orders.ordered_at` and the
   remedies, association among them, containing no issue reference
+
+#### Scenario: Local aggregate with a fanning partition key associates
+- **WHEN** a query rooted at `customers` by `orders.status` selects
+  `sum(spend, partition_by=orders.status)`, omitting the mode and again under `"associate"`
+- **THEN** both runs return ok 420, new 290 and NULL 55 (the customer with no orders), with
+  no warning, by executed values on SQLite and DuckDB
+
+#### Scenario: Local first/last with a fanning partition key associates
+- **WHEN** a query rooted at `customers` by `orders.status` selects
+  `last(spend, signup_at, partition_by=orders.status)`, omitting the mode and again under
+  `"associate"`
+- **THEN** both runs return ok 30, new 40 and NULL 55, with no warning, by executed values
+
+#### Scenario: Local windowed aggregate with a fanning partition key associates
+- **WHEN** a query rooted at `customers` by `orders.status` and signup month selects
+  `sum(spend, window='1y', partition_by=orders.status)`, omitting the mode and again under
+  `"associate"`
+- **THEN** both runs return ok Jan 100, Feb 250, Mar 310, Apr 420; new Jan 100, Feb 250,
+  Mar 290; and NULL Apr 55, with no warning, by executed values
+
+#### Scenario: A fanning partition key and a fanning window axis read one related row
+- **WHEN** a query rooted at `customers` by `orders.status` and order month selects
+  `sum(spend, window='1y', partition_by=orders.status)` on data where one customer (spend
+  1000) has a `new` order in March 2024 and an `ok` order in January 2023, omitting the mode
+- **THEN** that customer counts in (new, 2024-03) and not in (ok, 2024-03), whose value is
+  the spend of the customers with an `ok` order in the cell's frame, so the status and the
+  time of one order decide membership together, by executed values
+
+#### Scenario: Local fanning time partition key associates per bucket
+- **WHEN** a query rooted at `customers` by order month selects
+  `sum(spend, partition_by=orders.ordered_at)`, omitting the mode and again under
+  `"associate"`
+- **THEN** both runs return Jan 100, Feb 150, Mar 100, Apr 110 and NULL 55, with no warning,
+  by executed values
+
+#### Scenario: A home row spanning buckets counts in each
+- **WHEN** one customer (spend 1000, gold) has orders in January 2023 and March 2024, and a
+  query rooted at `customers` by order month selects `sum(spend, partition_by=orders.ordered_at)`,
+  and a query rooted at `orders` by order month selects
+  `sum(cumsum(sum(customers.spend, partition_by=[customers.tier, orders.ordered_at])))`
+- **THEN** the first returns 2023-01 1000 and 2024-03 1100 (60 + 40 + 1000), and the second
+  returns 2023-01 1000, 2024-01 1100, 2024-02 150, 2024-03 2200 and 2024-04 2420, by executed
+  values on SQLite and DuckDB
+
+#### Scenario: Local fanning partition keys refuse outside association
+- **WHEN** any of the local queries above runs under `"broadcast"` or `"error"`
+- **THEN** it fails at plan time with a typed partition-key error naming the key and both
+  remedies, containing no issue reference and never describing the aggregate as
+  cross-dataset
 
 ### Requirement: Cross-model aggregates compose in expressions and dimensions
 Cross-model aggregates SHALL be legal wherever local aggregates are: in arithmetic and scalar-call composites (including mixed with local aggregates and with aggregates from different joined models in one expression), inside transforms, in dimension expressions, in filters, and in ORDER BY. Composite legality is uniform across the composite's own shape: a cross-model operand SHALL compile whether the composite combines it with local aggregates, with literals, with several cross-model operands, or wraps it in scalar calls — the compiled route never depends on which seam the composite would otherwise render through, and no composite shape reaches an internal not-supported seam error. A computed dimension whose expression columns are all attributable from a metric's root participates in that metric's grain; otherwise it is unattributable to the metric and resolves per `to_many_handling`. Consumption-position rules match local aggregates exactly: a combined-position consumer of a cross-model partitioned aggregate needs query-dimension partition keys (per the partitioned-aggregates combined-consumer requirement), while row-scope references to a computed dimension's own aggregate stay legal at any partition grain.

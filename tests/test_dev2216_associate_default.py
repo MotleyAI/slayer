@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import PartitionKeyError, SlayerError, UnsafeRelationshipInputError
+from slayer.core.errors import SlayerError, UnsafeRelationshipInputError
 from slayer.core.warnings import DICE_SLICE_HINT
 from slayer.core.query import QueryMetric
 
@@ -222,11 +222,13 @@ class TestModeResolution:
         with pytest.raises(UnsafeRelationshipInputError, match="unproven relationship hop"):
             await crossing_engine.execute(query)
 
-    async def test_partition_key_fanning_from_its_host_fails_by_default(self, fanning_engine) -> None:
-        query = _q(None, population="regions", dimensions=["regions.bad_pop"],
-                   metrics=[QueryMetric(metric="sum(regions.pop, partition_by=regions.bad_pop)", alias="w")])
-        with pytest.raises(PartitionKeyError, match="region_events"):
-            await fanning_engine.execute(query)
+    async def test_partition_key_fanning_from_its_host_associates_by_default(self, fanning_engine) -> None:
+        resp = await fanning_engine.execute(_q(
+            None, population="regions", dimensions=["regions.bad_pop"],
+            metrics=[QueryMetric(metric="sum(regions.pop, partition_by=regions.bad_pop)", alias="w")]))
+        assert {float(r["regions.bad_pop"]): float(r["w"]) for r in resp.data} == {150.0: 100.0, 230.0: 200.0}
+        assert not associated_warnings(resp)
+        assert not broadcast_warnings(resp)
 
     async def test_local_ranked_aggregate_follows_the_mode(self, engine) -> None:
         kw = {"population": "customers", "dimensions": ["orders.status"],

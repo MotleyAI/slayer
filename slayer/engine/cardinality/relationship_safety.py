@@ -55,8 +55,7 @@ from slayer.engine.reference_closure import (
     definition_refs,
     key_closure,
 )
-from slayer.engine.elaborate_env import check_partition_key_attributable
-from slayer.engine.cardinality.unrelated import crosses_product_hop
+from slayer.engine.elaborate_env import check_partition_key_analysable
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import AggregateHomes
 from slayer.engine.cardinality.inference import (
@@ -630,36 +629,26 @@ def broadcast_reason(
     return UNREACHABLE_NO_PATH
 
 
-def assert_partition_key_attributable(
-    *, pk: ValueKey, label: str,
-    scope: DatasetScope, bundle: ResolvedSourceBundle,
+def assert_partition_key_analysable(
+    *, pk: ValueKey, label: str, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> None:
-    """A partition key whose own dependency closure crosses a fanning hop from its anchor (Principle 1) is
-    unattributable in every mode; the checker raises. Whether its aggregation's home reaches it is the planner's."""
+    """An aggregate's partition key fails closed in every mode only when a reference's closure is unanalysable from
+    that reference's anchor (Principle 1); an unattributable one resolves at the mode gate."""
     host_m = scope.population
     if host_m is None:
         return
-    datasets_by_name = bundle.datasets_by_name
-    if crosses_product_hop(host=host_m, path=key_host_path(pk), datasets_by_name=datasets_by_name):
-        return  # a row-level read across a product hop: the checker refuses it (Axiom 3.1)
-    universe = {**datasets_by_name, host_m.name: host_m}
+    universe = {**bundle.datasets_by_name, host_m.name: host_m}
     for r in _grain_references(pk):
         spelling = r.anchor if r.anchor is not None else (host_m.name, *r.path)
         anchor = universe.get(spelling[0])
         if anchor is None:
             continue
         at_anchor = r.model_copy(update={"path": spelling[1:], "anchor": None})
-        anchored_bundle = bundle.rerooted(anchor)
-        if key_attributable_from_root(
-            key=at_anchor, target_path=(), root_dataset=anchor, datasets_by_name=universe,
-            bundle=anchored_bundle, host_dataset=anchor,
-        ):
-            continue
-        check_partition_key_attributable(
-            label=label, pk=pk, attributable=False, reason=key_broadcast_reason(
-                key=at_anchor, target_path=(), root_dataset=anchor, datasets_by_name=universe,
-                bundle=anchored_bundle, host_dataset=anchor,
-            ),
+        check_partition_key_analysable(
+            label=label, pk=pk,
+            analysable=key_closure(
+                key=at_anchor, anchor_dataset=anchor, anchor_relation=anchor.name, bundle=bundle.rerooted(anchor),
+            ) is not None,
         )
 
 

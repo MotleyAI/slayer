@@ -12,21 +12,24 @@ from slayer.core.models import SlayerDataset
 from slayer.core.keys import (
     AggregateKey,
     ConsumerNode,
+    FieldKey,
+    FieldSqlKey,
     Grain,
+    TimeTruncKey,
     TransformKey,
     ValueKey,
     attached_inputs,
     transform_operand_grain,
-    walk_value_keys,
     is_kernel_requiring,
     is_reaggregation_key,
     is_row_attach_root,
     restricts_own_rows,
     walk_consumer_positions,
+    walk_value_keys,
     window_kwarg_of,
 )
 from slayer.core.scope import DatasetScope
-from slayer.engine.compile.shift import _series_mode
+from slayer.engine.compile.shift import _series_mode, is_placeholder
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
     combined_kind,
@@ -39,11 +42,12 @@ from slayer.engine.elaborate_env import (
 from slayer.engine.cardinality.relationship_safety import (
     crossing_local_root_predicate,
     grain_member_attributable,
+    key_host_path,
     reads_population_spine,
 )
 from slayer.ir.elaborated import ConjunctTyping
 from slayer.ir.planned import MaskTyping
-from slayer.ir.prebound import PreboundQuery
+from slayer.ir.prebound import PreboundQuery, walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import AggregateHomes
 
@@ -169,23 +173,33 @@ class _Walker:
             self.out.append(d)
 
     def local_broadcasts(self, k: ValueKey) -> bool:
-        """A local aggregate (plain, ranked or windowed) grouped by a dimension unattributable from the host, or a
-        partitioned windowed one whose window axis is: both go through the mode gate."""
+        """A local aggregate (plain, ranked or windowed) whose grain member — explicit key or query dimension — or
+        partitioned window axis is unattributable from the host goes through the mode gate."""
         host = self.host
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
             or self.homes.target_rooted(k) or k.locus == "host" or self.crossing(k)
+            or any(is_placeholder(r) for r in walk_value_keys(k.source))  # a lowered re-aggregation outer
         ):
             return False
         if k.partition_keys is not None:
-            # A requested key the host does not determine resolves per the mode axis (it is safe from its own
-            # anchor, or the checker refused it), as does a fanning window axis.
-            return any(not self._attributable(p, host=host) for p in k.partition_keys) or (
+            # A requested key the host reaches but does not determine resolves per the mode axis, as does a fanning
+            # window axis.
+            return any(self._associable_key(pk, host=host) for pk in k.partition_keys) or (
                 window_kwarg_of(k) is not None and self.active_td is not None
-                and not self._attributable(self.active_td, host=host))
+                and not self._attributable(self.active_td, host=host)
+            )
         # The population's spine is counted over each home's own axis, never the product.
         return any(
             reads_population_spine(g, host=host) or not self._attributable(g, host=host) for g in self.grain
+        )
+
+    def _associable_key(self, pk: ValueKey, *, host: SlayerDataset) -> bool:
+        """An explicit key the host reaches through relationships but does not attribute; a key from across a
+        product hop resolves on the unrelated-dataset path instead."""
+        return not self._attributable(pk, host=host) and all(
+            walk_key_path(dataset=host, path=key_host_path(r), bundle=self.bundle) is not None
+            for r in walk_value_keys(pk) if isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey))
         )
 
     def _attributable(self, key: ValueKey, *, host: SlayerDataset) -> bool:
@@ -207,7 +221,7 @@ class _Walker:
                                 declared=declared)
                 continue
             if is_dimension_transform_root(k) or is_grained_aggregate(k):
-                self.emit(k, "row", _input_routing(k, homes=self.homes))
+                self.emit(k, "row", "target_rooted" if self.local_broadcasts(k) else _input_routing(k, homes=self.homes))
             self.row_attach(k, attach_pk=False)
 
     def row_attach(self, k: ValueKey, *, attach_pk: bool, names: Sequence[str] = ()) -> None:
@@ -260,16 +274,24 @@ class _Walker:
             self.emit(k, "combined", "shifted",
                       series=False if self.transforms.spine else _series_mode(k.input, to_original={}))
         kind = combined_kind(k, homes=self.homes)
-        associates = self.local_broadcasts(k)
-        if kind is not None and not associates and self.classes.combined_admits(n, position=position, root=root):
-            if kind == "local":
-                self.emit(k, "combined", "local_producer", names=names)
-            else:
-                self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
-        if associates:
-            self.emit(k, "combined", "target_rooted", names=names)
-        elif _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
+        admitted = kind is not None and self.classes.combined_admits(n, position=position, root=root)
+        if self.local_broadcasts(k):
+            # A partitioned one is consumed combined only where admitted, like its local twin.
+            if kind is None or admitted:
+                self.emit(k, "combined", "target_rooted", names=names)
+            return
+        if admitted:
+            self._emit_admitted_combined(k, local=kind == "local", names=names, declared=declared)
+        if _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
             self.emit(k, "combined", "local_producer", names=names)
+
+    def _emit_admitted_combined(
+        self, k: ValueKey, *, local: bool, names: Tuple[str, ...], declared: Optional[DataType],
+    ) -> None:
+        if local:
+            self.emit(k, "combined", "local_producer", names=names)
+        else:
+            self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
 
     def inline_row_attach_roots(self) -> None:
         """Emit each row-attach root no producer disposition routes, with its inputs."""
@@ -280,7 +302,8 @@ class _Walker:
             ns = tuple(names)
             self.emit(root, "combined", "inline", names=ns)
             for d in row_attach_inputs(root, names=ns, homes=self.homes):
-                self.emit(d.root, d.phase, d.routing, names=d.consumer_public_names)
+                routing = "target_rooted" if self.local_broadcasts(d.root) else d.routing
+                self.emit(d.root, d.phase, routing, names=d.consumer_public_names)
 
 
 def discover_roots(
