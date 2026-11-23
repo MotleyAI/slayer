@@ -1,40 +1,41 @@
 ## Why
 
-On load, a stored query's legacy time literals (`'2024/01/01'`, zone offsets) are repaired only where the compared
-column resolves through a hand-rolled raw-dict walk that follows forward-declared joins one adjacent hop at a time. A
-reference the binder resolves — a short-form route over several hops, a hop over a join declared on the peer (a reverse
-edge), or a column a query extension declares — keeps its legacy literal, and the stored query fails with
-`TimeLiteralError` when it runs. The repair also reads Mode-B filter text with sqlglot, against system axiom 8 (one
-reader of Mode B).
+On load, a stored query's legacy time literals (`'2024/01/01'`, zone offsets) are repaired, and its date-only comparisons
+keep their whole-day meaning, only where storage's own raw-dict walker can type the compared column. That walker has no
+short-form routing and ignores quoting, so a routed DATE or TIMESTAMP column keeps its legacy literal (the query then
+fails with `TimeLiteralError`) or silently compares with midnight. The repair also reads Mode-B text with sqlglot, against
+system axiom 8 (one reader of Mode B).
 
 ## What Changes
 
-- The repair resolves each compared column exactly as the binder does, through the shared static resolver
-  (`engine.extensions.query_scopes` / `QueryScope.resolve`): extensions applied, own qualifier dropped, incident hop in
-  either declared direction, else a unique short-form route. The raw-dict resolver (`_stored_column_type`,
-  `_query_host`, the raw `_extended` helper) is deleted.
-- The shared static resolver honours per-segment quoting, as the binder does; existing callers are unchanged.
-- The resolver reads typed in-memory views of the datasource's stored models, built by the same dict-upgrade steps a
-  model load runs (no live refinement, no write-back, no filter repair); a view that fails is skipped, as the engine
-  skips an unloadable peer.
-- A memory's query reads the datasource storage identity resolution picks (priority applied).
-- `core.syntax` gains a span reader of string literals compared directly with a column reference; storage no longer
-  parses Mode-B text with sqlglot.
-- An ambiguous, unresolvable or non-temporal comparison stays verbatim, as today.
+- One typed step rewrites a stored query's literals before extension inlining and qualification: each compared reference
+  is resolved by the binder's resolver (`resolve_path`), the pre-2.0 reading qualification keeps, over the typed datasets
+  qualification reads; an extension-declared column is typed by the inliner's own lookup.
+- The step covers both the legacy-literal repair and the whole-day upgrade of stored queries, memories included; a
+  dataset's own formulas and field filters keep their current typing.
+- A memory's query is typed in the datasource its qualification reads (datasource priority applied).
+- The shared resolver honours per-segment quoting, and qualification keeps a quoted leaf quoted.
+- `core.syntax` gains a reader of string literals compared with a reference; storage no longer parses Mode-B text with
+  sqlglot.
+- A comparison the step cannot type is left as written; qualification then keeps or refuses the document, as today.
 
 ## Capabilities
 
 ### New Capabilities
 
 ### Modified Capabilities
-- `models/stored-upgrade`: "Stored legacy filter literals are repaired on load" resolves the compared column as the
-  binder does — joins in either direction, a unique short-form route, query extensions, quoting.
+- `models/stored-upgrade`: the legacy-literal repair and the whole-day upgrade type the compared column as the binder
+  resolves it — a short-form route, joins in either direction, extension columns, quoting; a memory's query is typed in
+  the datasource its qualification reads; qualification keeps a quoted leaf quoted.
 
 ## Impact
 
-- `slayer/storage/base.py` (repair, typed views, shared dict-upgrade method), `slayer/storage/legacy_time_literals.py`
-  (span splice only), `slayer/core/syntax.py` (literal-comparison span reader), `slayer/engine/extensions.py`
-  (quoting through `resolve_path` / `QueryScope.resolve`).
-- Tests: `tests/test_stored_upgrade_filter_literals.py`, `tests/_stored_upgrade_fixtures.py`, a `core.syntax` reader
-  test.
+- `slayer/storage/base.py` (the typed step in one guarded conversion scope with inlining and qualification),
+  `slayer/storage/date_only_migration.py` (query and memory upgrades become version stamps),
+  `slayer/storage/legacy_time_literals.py` (no sqlglot), `slayer/storage/qualified_references.py` (shared population
+  choice, quoting), `slayer/storage/extension_fields.py` (exposed column lookup), `slayer/core/syntax.py` (literal
+  comparison reader), `slayer/core/date_only.py` (per-segment quoting), `slayer/engine/extensions.py` and the resolvers
+  below it (quoting).
+- Tests: `tests/test_stored_upgrade_filter_literals.py`, `tests/_stored_upgrade_fixtures.py`,
+  `tests/test_syntax_literal_comparisons.py`, `tests/test_resolve_path_quoting.py`, whole-day upgrade tests.
 - No API, MCP or REST change; no new dependency; no architecture-model change expected.

@@ -1,91 +1,100 @@
 ## Context
 
-See proposal.md (Why). Current state:
-- `StorageBackend._repair_query_filters` (`slayer/storage/base.py`) finds sites with `legacy_literal_sites`
-  (`slayer/storage/legacy_time_literals.py`, a `sqlglot.parse_one` of the Mode-B filter) and types the compared column
-  with `_stored_column_type`, a raw-dict walk of forward joins, one adjacent hop per qualifier.
-- DEV-2102 (merged into this branch) added the static resolver with binder semantics: `engine.extensions.query_scopes`
-  builds per-stage `QueryScope`s (extensions overlaid and merged into the join graph, sibling-stage hosts, respelling)
-  and `QueryScope.resolve` / `resolve_path` resolve hops as the binder does (own qualifier dropped, walk with incident
-  edge-name precedence in either declared direction, a lone unmatched hop short-form routed). Drift, the memory
-  resolver and `model_reads` already read through it. It ignores quoting today.
-- A model load deliberately reads peers raw (`_cached_raw_model_dict`, never mutated, memoised per `load_models` pass)
-  so the load pipeline never recurses.
-- The engine's bundle builder skips unloadable peers (`DocumentLoadFailures.skip`).
+See proposal.md (Why). Current state on main (2.0 storage):
+- `StorageBackend._migrated_dataset` (`slayer/storage/base.py`) runs, for a below-current dataset: the migration chain,
+  `_repair_source_query_filters` (legacy literals: sqlglot sites from `storage/legacy_time_literals.py`, typed by
+  `StoredDatasets.field_type`), `_inlined_source_queries` (extension fields), `_qualified_source_queries`; a current
+  document holding an older nested stage runs only qualification. Memories run the same steps in `_memory_from_stored`.
+- The whole-day upgrade of stored queries is the SlayerQuery v14→15 migration (`storage/date_only_migration.upgrade_query`),
+  typed by `StoredDatasets.field_type` through the `typing_with` context; its sites come from `core.date_only`.
+- `StoredDatasets.field_type` is a raw-dict walker: incident edges either direction and the spine, but no short-form
+  routing and no quoting.
+- Inlining and qualification read typed datasets from `_converting_datasets` (`get_dataset`, the documents converting
+  excluded through `_INLINING`); qualification resolves each pre-2.0 reference with `resolve_path` from the population
+  (`qualified_references._Stage`), infers a root-less population (`_inferred_population`), picks the datasource with
+  priority (`_datasource_of`), and builds the stage universe (`_stage_universe`).
+- `resolve_path` / `resolve_anchored_path` and the matchers below them (`drop_root_hop`, `find_anchor`, `resolve_hop`,
+  short-form routing, `walk`) match unquoted.
 
-Principles that apply: system §3.8 one reader of Mode B; §3.5 async-first; §3.6 Pydantic, never dataclasses; §3.2 model
-truth (storage → engine, storage → core, engine → ir arrows exist; no `.c4` change expected); storage §3.3 versioned
-persistence (the repair stays part of the load-time upgrade) and §3.3.1 (target) a load never writes — views write
-nothing.
+Principles that apply: system §3.8 one reader of Mode B; §3.2 model truth (storage → engine, storage → core, engine →
+core arrows exist; no `.c4` change expected); §3.6 Pydantic, never dataclasses; §3.5 async-first; storage §3.3 versioned
+persistence (the rewrites stay part of the load-time upgrade).
+
+**Symptom:** a routed or quoted DATE / TIMESTAMP operand keeps its legacy literal (`TimeLiteralError` at run time) or
+loses its whole-day meaning. **Structural cause:** storage types operands with a second reference resolver that must agree
+with the binder by hand. **Fix:** type with the binder's resolver over the typed datasets qualification already reads.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- One reference resolver: the repair, drift, the memory resolver and `model_reads` share `resolve_path`, and it agrees
-  with the binder, quoting included.
-- One Mode-B reader: storage stops parsing Mode-B text.
-- One dict-upgrade path: a typed view of a stored model equals what its load produces, bar live refinement.
+- One reference resolver for stored-query literal typing, shared with qualification, quoting included.
+- One typing for every literal of a stored query (legacy repair and whole-day upgrade).
+- One Mode-B reader: storage stops parsing Mode-B text with sqlglot.
 
 **Non-Goals:**
-- Live refinement of below-v8 peers inside views: their untyped columns stay verbatim, as today.
+- Typing a dataset's own formulas and field filters (they read dotted paths from their own dataset, with no short-form
+  routing, and are not qualified): they stay on `StoredDatasets`.
 - Time-dimension `date_range` repair: unchanged.
-- Widening axiom 8's enforcement test to sqlglot (telling Mode-A from Mode-B sqlglot uses apart is out of scope).
+- Live refinement of below-v8 peers: their untyped columns stay untyped.
+- How `_converting_datasets` loads peers.
 
 ## Decisions
 
-1. **Relation to DEV-2102 (#583): merge its branch into this one now; PR base stays `main`.** Weighed: wait for #583 to
-   merge; test against main's root-only extension. Taken because the user is merging #583 now and case (c) needs its
-   `extensions`. (user)
-2. **The repair is a static reader on `query_scopes` / `QueryScope.resolve`; `_stored_column_type`, `_query_host` and
-   the raw `_extended` helper are deleted.** Weighed: patching the raw walk with reverse edges and routing. Rejected:
-   it keeps a second resolver that must agree with the binder by hand — the bug class itself. (default)
-3. **Axiom 8: site detection moves into a `core.syntax` span reader; storage stops parsing Mode-B with sqlglot.**
-   Weighed: keep the sqlglot parse and replace only the resolution. Taken: the resolved reference must be the one the
-   binder reads, quoting included; sqlglot's reading of Mode-B (`==`, Mode-B functions, quoted segments) can differ.
-   The reader follows `legacy_spans` / `call_spans`: it reads through the shared `_read`, yields nothing when the text
-   does not parse, and each string-literal token records its offset outside node identity (as `Placeholder.start`).
-   Each item: the literal's value and source span `[start, end)`, and the other operand's reference parts (`Ref` → one,
-   `DottedRef` → its parts) with per-segment quoting. Covered: `=`/`==`, `!=`/`<>`, `<`, `<=`, `>`, `>=` in either
-   operand order (parenthesised too), and each element of an all-literal `IN` / `NOT IN` list. (user)
-4. **Typed models come from in-memory views, built by one dict-upgrade method shared with `_model_from_stored`** (stamp,
-   custom-bucket rewrite, migration, `__`-alias rewrite, join-key canonicalisation and declaration, exact-inverse
-   dedup), then validated into `SlayerModel`; views skip live refinement, write-back and filter repair. Weighed:
-   loading peers typed through `get_model` / `load_models`. Rejected: short-form routing needs the whole datasource,
-   so a typed load recurses into the model being loaded — the raw-read design exists to prevent that. (default)
-5. **Every view starts from a deep copy of the cached raw document**, so building views never mutates the shared
-   `_RAW_PASS` cache nor another view's working copy. (codex)
-6. **Views run the per-model pipeline against raw peers, not in datasource-wide phases.** Rejected (codex): migrating
-   every document first, then running the cross-model steps on the normalised snapshot. Reason: a view must equal what
-   the model's own load produces, and that load runs per model against raw peers; phases would let the repair and the
-   runtime binder see different models. Raw peers are load-order independent. (rejected, codex)
-7. **A view that fails to build or validate is skipped**, as the engine's bundle builder skips an unloadable peer, so
-   the repair routes over the graph the query will run on. Rejected (codex): marking routes through a failed peer
-   unresolved — stricter than the binder. A test pins that an unloadable peer does not block an unrelated repair.
-   (default; test from codex)
-8. **Memories use the same views**, so a memory load causes no model write-backs. (default)
-9. **Datasource choice: a query-backed model's stages read its own datasource; a memory's query reads the datasource
-   storage identity resolution picks for its source (priority applied).** `query_scopes` gets that one datasource; a
-   genuinely ambiguous identity stays verbatim. Replaces the plan's "other than exactly one scope → verbatim".
-   (codex)
-10. **`resolve_path` / `QueryScope.resolve` take optional per-hop quoting**, threaded into the root-qualifier drop and
-    the walk; the repair reads the leaf with its quote flag. Existing callers pass none, so their behaviour is
-    unchanged. Weighed: leave any quoted reference verbatim. Taken: cleaner, and it brings the shared resolver to the
-    binder's semantics. (codex)
-11. **Repair flow.** Only when some filter has a legacy-literal site: the stored query migrates as today; the stage list
-    (a query-backed model's `source_queries`, or a memory's single query) validates into `SlayerQuery` objects
-    (failure → no repair); per stage, each site resolves through its scope (host when no hops); only DATE / TIMESTAMP
-    repair. A sibling-stage host has untyped columns, so a bare reference on it stays verbatim; hops off it through
-    extension joins resolve normally. Only `filters` change; every other character of a repaired filter is kept.
-    (default)
-12. **Operator coverage is pinned by tests** asserting the selected spans and the exact repaired text for `==`, `<>`,
-    every ordering operator, parenthesised comparisons, and all-literal versus mixed `IN` / `NOT IN`. (codex)
+1. **Re-plan against main 2.0 instead of amending the plan written before it.** (user)
+2. **The typed rewrites resolve references with the binder's resolver over typed datasets; the raw walker is not
+   patched.** Weighed: adding routing and quoting to `StoredDatasets.field_type`. Rejected: it keeps a second resolver
+   agreeing with the binder by hand — the bug class itself. (default, structural)
+3. **The whole-day upgrade of stored queries moves with the legacy repair into one typed step.** Weighed: moving only the
+   legacy repair (the issue's wording). Rejected: two typings in one query — a slashed `'2024/01/01'` would get its
+   whole-day meaning on a routed column while `'2024-01-01'` would not. The SlayerQuery v14→15 and Memory v10→11
+   migrations become version stamps; `typing_with` / `needs_typing` remain for a dataset's own texts. (user)
+4. **The typed step runs after migration and before extension inlining and qualification, typing each compared reference
+   with `resolve_path` from the population — the pre-2.0 reading qualification keeps.** A leaf naming a stored extension
+   column on the resolved dataset is typed by its declared type through the inliner's own lookup
+   (`storage/extension_fields.py`), exposed not duplicated; inlining then carries the rewritten literal into its cast.
+   Weighed: typing the qualified stage with `resolve_anchored_path`. Rejected: an inlined extension column is a cast or
+   bare expression by then, so the reader would have to type expressions. (user)
+5. **The plan's earlier side-effect-free typed views are superseded: the step reads `_converting_datasets`**, the
+   universe inlining and qualification already read; the hygiene test (raw reads unmutated, bytes equal across load
+   orders) already holds on it. (default; supersedes an earlier user answer made against the pre-2.0 code)
+6. **Quoting reaches every matcher.** `resolve_path` / `resolve_anchored_path` take optional per-hop `quoted` flags,
+   threaded through `drop_root_hop`, `find_anchor`, `resolve_hop`, short-form route selection and `walk`; none passed
+   behaves as today. The typed step and the qualifier pass each reference's parsed flags; a quoted leaf matches its field
+   exactly; the qualifier keeps a quoted leaf double-quoted when it respells the path, so its reading after qualification
+   is the one the step typed. (default: one reading; propagation from codex)
+7. **A dataset's own texts stay on `StoredDatasets`.** (default)
+8. **A memory's query is typed in the datasource its qualification reads** (`_datasource_of`: priority applied), replacing
+   the whole-day rule "the datasource of the stored model its source names, else the store's only datasource"; the
+   requirement and its spine-memory scenario are rewritten, and a two-datasource scenario added. (default: one universe;
+   requirement edit from codex)
+9. **Untypable → left as written; refusal stays qualification's.** (default)
+10. **A population naming an earlier stage types from the stage host the static readers build** (`_sibling_host`: the
+    output fields its extension joins name, untyped): a bare reference stays verbatim, a hop over the stage's extension
+    join is typed. (codex)
+11. **Typing, inlining and qualification run in one guarded conversion scope**: one `_INLINING` token for the document and
+    one read of the typed universe, so the step cannot load the document it converts. (codex)
+12. **The conversion runs each operation whenever a nested stage needs it, whatever the container's version**, so a
+    current document holding an older nested stage is typed and inlined, not only qualified. (codex)
+13. **A root-less stage types from the population qualification infers**, through qualification's own inference, shared
+    not copied. (codex)
+14. **Site reading.** `core.syntax.literal_comparisons` (Pydantic items: value, source span `[start, end)`, the other
+    operand's parts and per-segment quoting) reads through the shared parser, recording each string literal's offset
+    outside node identity, and yields nothing on unparseable text; it covers `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, `>=`
+    in either operand order, parenthesised, and each element of an all-literal `IN` / `NOT IN`. `core.date_only` sites
+    carry per-segment quoting. `storage/legacy_time_literals.py` keeps normalisation, `date_range` repair and the span
+    splice, with no sqlglot. (user, from the earlier plan)
+15. **Legacy repair keeps `NOT IN`, `==` and `<>`** beyond main's listed operators. Rejected (codex): restricting the
+    repair to main's list — a legacy literal in those layouts fails at run time just the same; the requirement text is
+    widened. (rejected, codex)
+16. **The extension test expects main's inlined form** (`CAST(... AS DATE) >= '2024-01-01'`). (user)
 
 ## Risks / Trade-offs
 
-- [Views cost a dict upgrade of every datasource model] → built only when a filter has a legacy-literal site, once per
-  load pass per datasource (memoised with the pass).
-- [Factoring `_model_from_stored`'s dict steps could change a load] → the existing stored-upgrade suites and the
-  0.10.2 / 1.8.2 corpus tests must pass unchanged.
-- [Recording literal offsets in the shared parser could change parsed-node identity] → offsets sit outside equality
-  and hashing, as `Placeholder.start`; the full suite guards it.
-- [A below-v8 peer lacks column types without refinement] → its literals stay verbatim, as today (non-goal).
+- [The binder's reading differs from the raw walker's spine rules or another whole-day scenario] → every existing
+  whole-day, inlining and qualification scenario must pass unchanged; a divergence is raised, not folded.
+- [Moving the whole-day upgrade out of the migration chain breaks idempotency or the interrupted-load guarantee] → the
+  step stays gated by each nested document's own version and runs before the write-back; the idempotency and
+  interrupted-load scenarios guard it.
+- [Recording literal offsets in the shared parser changes node identity] → offsets sit outside equality and hashing; the
+  full suite guards it.
+- [A below-v8 peer lacks column types] → its operands stay untyped (non-goal).
