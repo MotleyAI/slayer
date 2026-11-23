@@ -55,6 +55,9 @@ string literal, matched case-insensitively, from that function's closed set:
   `day_of_year`, `hour`, `minute`, `second`;
 - `date_diff` and `date_add`: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`,
   `quarter`, `year`.
+The `part` of `date_part` MAY also be written as a bare word from that set or from the date-part
+aliases, as `EXTRACT` takes it (Ossie's `DATE_PART(MONTH, x)`), with the same meaning as its quoted
+spelling.
 Any other value, and any non-literal (a column, a `{variable}` that does not substitute to a listed
 word, an expression), SHALL be rejected before binding with an error listing the accepted values.
 Differently-cased spellings of the same unit SHALL intern to the same value.
@@ -73,6 +76,10 @@ Differently-cased spellings of the same unit SHALL intern to the same value.
 
 #### Scenario: Unit case folds
 - **WHEN** one measure uses `date_part('MONTH', created_at)` and another `date_part('month', created_at)`
+- **THEN** both resolve to the same value
+
+#### Scenario: Bare part word
+- **WHEN** one measure uses `date_part(MONTH, created_at)` and another `date_part('month', created_at)`
 - **THEN** both resolve to the same value
 
 ### Requirement: date_part extracts calendar components with ISO week conventions
