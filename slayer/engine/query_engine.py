@@ -28,7 +28,10 @@ from pydantic import (
 from slayer.async_utils import run_sync
 from slayer.core import probes
 from slayer.core.deprecation import outside_stacklevel
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, DataType, RelationshipCardinality, TimeGranularity
+from slayer.core.enums import (
+    DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, Conformance, DataType, RelationshipCardinality, TimeGranularity,
+)
+from slayer.core.ossie_conformance import parse_conformance
 from slayer.core.errors import (
     AggregationArgumentError,
     AmbiguousDatasetError,
@@ -145,6 +148,7 @@ from slayer.engine.cache import (
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
 from slayer.engine.legacy_references import Conversions, anchor_names, convert_refinement, qualified_input
 from slayer.engine.model_scoped import expand_model_scoped, model_scope
+from slayer.engine.ossie_l3 import execute_strict
 from slayer.engine.population.anchors import anchor_route, unknown_metric, unqualified_count
 from slayer.core.names import qualified_reference
 from slayer.core.keys import AggregateKey, CastKey, FieldKey, FieldSqlKey, ListSetKey, TimeTruncKey, ValueKey
@@ -743,6 +747,15 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerDateOnlyMidnightWarning(w), stacklevel=outside_stacklevel())
 
 
+def _projection_ordered(expected: List[str], rows: List[Dict[str, Any]]) -> List[str]:
+    """The result's columns in projection order, never a row's key order: the expected ones a row carries, then any
+    others it carries."""
+    if not rows:
+        return list(expected)
+    keys = list(rows[0])
+    return [c for c in expected if c in rows[0]] + [k for k in keys if k not in expected]
+
+
 class SlayerResponse(BaseModel):
     """Response from a SLayer query."""
 
@@ -1247,7 +1260,11 @@ class SlayerQueryEngine:
         data_source: Optional[str] = None,
         cache: bool = False,
         refine: "QueryRefinement | dict | None" = None,
+        conformance: "Conformance | str" = Conformance.SLAYER,
     ) -> SlayerResponse:
+        if parse_conformance(conformance) is Conformance.OSSIE_L3:
+            return await execute_strict(self, query, variables=variables, dry_run=dry_run, explain=explain,
+                                        data_source=data_source, cache=cache, refine=refine, run=self.execute)
         runtime_kwarg = variables or {}
         deprecations: List[DeprecatedInputWarning] = []
         with collect_legacy_spellings() as legacy, announced_by_caller():
@@ -1331,6 +1348,18 @@ class SlayerQueryEngine:
 
         return main_query, named_queries, prefer_data_source, ()
 
+    async def saved_query_stages(
+        self, name: str, *, refine: "QueryRefinement | dict | None" = None, data_source: Optional[str] = None,
+    ) -> "tuple[List[SlayerQuery], Optional[str], Dict[str, Any]]":
+        """A saved query's stages after ``refine`` as stored (variables unlayered), its final stage last, the datasource
+        it runs on, and the dataset's variable defaults."""
+        run = resolve_run_input(name, refine)
+        assert isinstance(run, SavedQueryRun)
+        defaults: Dict[str, Any] = {}
+        main, named, pinned, _chain = await self._normalize_by_name(
+            run=run, runtime_kwarg={}, prefer_data_source=data_source, deprecations_out=[], defaults_out=defaults)
+        return [*named.values(), main], pinned, defaults
+
     async def _normalize_by_name(
         self,
         *,
@@ -1338,9 +1367,11 @@ class SlayerQueryEngine:
         runtime_kwarg: Dict[str, Any],
         prefer_data_source: Optional[str],
         deprecations_out: List[DeprecatedInputWarning],
+        defaults_out: Optional[Dict[str, Any]] = None,
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], Tuple[str, ...]]":
         """Normalize a run-by-name input into the shared prepare tuple (``prefer_data_source`` pins the lookup).
-        The deprecations of the stored stages and the refinement go to ``deprecations_out``."""
+        The deprecations of the stored stages and the refinement go to ``deprecations_out``; given ``defaults_out``,
+        the dataset's variable defaults go there instead of into the final stage."""
         name = run.name
         dataset = await self.storage.get_dataset(name, data_source=prefer_data_source)
         if dataset is None:
@@ -1366,6 +1397,9 @@ class SlayerQueryEngine:
             dataset = dataset.model_copy(update={
                 "source_queries": [*earlier, refine_query(saved=final, refinement=refinement)],
             })
+        if defaults_out is not None:
+            defaults_out.update(dataset.query_variables)
+            dataset = dataset.model_copy(update={"query_variables": {}})
         main_query, named_queries = self._stages_of_dataset(dataset=dataset, runtime_kwarg=runtime_kwarg)
         return main_query, named_queries, prefer_data_source, (dataset.name,)
 
@@ -1939,7 +1973,7 @@ class SlayerQueryEngine:
             )
 
         result = await self._run_data_query(prepared=prepared, client=client)
-        columns = prepared.expected_columns if not result.rows else []  # [] triggers auto-derive
+        columns = _projection_ordered(prepared.expected_columns, result.rows)
         response = SlayerResponse(
             data=result.rows, columns=columns, sql=prepared.sql,
             attributes=prepared.attributes, warnings=[*prepared.slack_warnings, *result.warnings],
@@ -2125,7 +2159,7 @@ class SlayerQueryEngine:
             prepared=prepared, client=client, cache=self._cache
         )
         result = await self._run_data_query(prepared=prepared, client=client)
-        columns = prepared.expected_columns if not result.rows else []
+        columns = _projection_ordered(prepared.expected_columns, result.rows)
         response = SlayerResponse(
             data=result.rows, columns=columns, sql=prepared.sql,
             attributes=prepared.attributes, warnings=[*prepared.slack_warnings, *result.warnings],
@@ -2500,11 +2534,12 @@ class SlayerQueryEngine:
         data_source: Optional[str] = None,
         cache: bool = False,
         refine: "QueryRefinement | dict | None" = None,
+        conformance: "Conformance | str" = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Synchronous wrapper for execute(), run through ``run_sync``."""
         return self.run_sync(self.execute(
             query, variables=variables, dry_run=dry_run,
-            explain=explain, data_source=data_source, cache=cache, refine=refine,
+            explain=explain, data_source=data_source, cache=cache, refine=refine, conformance=conformance,
         ))
 
     async def _scope_bare_name_to_datasource(

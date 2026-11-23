@@ -61,6 +61,8 @@ Pass `client_factory=` to run every database access through your own client — 
 
 Each also takes `variables=` — runtime values for `{placeholders}`, overriding saved defaults.
 
+`query`, `sql` and `explain` (and their sync twins) take `conformance="ossie-l3"` to run the strict [Ossie Layer 3 binding](../interfaces/ossie-layer-3.md); a refusal raises `OssieQueryError`, in remote mode too.
+
 ```python
 # Multi-stage DAG
 client.query_sync([

@@ -7,13 +7,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from slayer.core.enums import DataType
+from slayer.core.errors import OssieErrorCode
 from slayer.core.field_expression import Expression
 from slayer.core.ossie_validity import semantic_errors
 from slayer.core.slayer_extension import checked
 
 __all__ = [
     "OSSIE_VERSION", "AIContext", "AIContextObject", "DialectExpression", "Dimension", "NonportableExtension",
-    "ModelScopedMetric", "OssieDataset", "OssieDatatype", "OssieExpression", "OssieField", "OssieMetric",
+    "MetricProblem", "ModelScopedAnalysis", "ModelScopedMetric", "OssieDataset", "OssieDatatype", "OssieExpression", "OssieField", "OssieMetric",
     "OssieRelationship", "SemanticModelDocument", "ossie_validity_errors", "shape_problem",
 ]
 
@@ -126,6 +127,23 @@ class SemanticModelDocument(_Extensible):
     metrics: list[OssieMetric] | None = None
 
 
+class MetricProblem(BaseModel):
+    """Why Ossie Layer 3 rejects a query naming a model-scoped metric; ``evaluable`` when SLayer evaluates it anyway."""
+
+    code: OssieErrorCode
+    reason: str
+    evaluable: bool = False
+
+
+class ModelScopedAnalysis(BaseModel):
+    """A model-scoped metric's components (each aggregate call's home dataset), the model-scoped metrics it names bare
+    (case-folded), and its problems in reading order."""
+
+    homes: list[str] = []
+    metrics: list[str] = []
+    problems: list[MetricProblem] = []
+
+
 class ModelScopedMetric(BaseModel):
     """A document's top-level metric: a query-level expression any query names bare."""
 
@@ -138,6 +156,7 @@ class ModelScopedMetric(BaseModel):
     datatype: DataType | None = None
     #: Why SLayer cannot evaluate it yet; set on load, read when a query names it.
     load_warning: str | None = None
+    analysis: ModelScopedAnalysis = ModelScopedAnalysis()
 
 
 def _has_custom_extensions(node: Any) -> bool:

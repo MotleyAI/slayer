@@ -22,9 +22,10 @@ from pydantic import BaseModel, Field
 from slayer import usage_reporting
 from slayer import otel
 from slayer.async_utils import run_sync
+from slayer.core.enums import Conformance
 from slayer.core.deprecation import deprecations_on_one_line
 from slayer.core.document_text import parse_document_text
-from slayer.core.errors import SlayerError, UnreadableDocumentError
+from slayer.core.errors import OssieQueryError, SlayerError, UnreadableDocumentError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
@@ -199,7 +200,10 @@ def _one_line(text: str) -> str:
 
 
 def _error_line(exc: Exception) -> str:
-    """One stderr line: a SLayer error's message, else class + message + the ``--debug`` hint."""
+    """One stderr line: a strict refusal as its own message, a SLayer error's message after ``Error:``, else class +
+    message + the ``--debug`` hint."""
+    if isinstance(exc, OssieQueryError):
+        return _one_line(str(exc))
     if isinstance(exc, SlayerError):
         return "Error: " + _one_line(str(exc))
     first = next((line.strip() for line in str(exc).splitlines() if line.strip()), "")
@@ -613,6 +617,9 @@ examples:
 
   # Run a saved query by name, refined with an extra dimension
   slayer query monthly_revenue --refine '{"dimensions": ["orders.status"]}'
+
+  # Run an Ossie Layer 3 query under the strict binding
+  slayer query '{"dimensions": ["customers.region"], "metrics": ["orders.total_revenue"]}' --conformance ossie-l3
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -633,6 +640,12 @@ examples:
     )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
     query_parser.add_argument("--explain", action="store_true", help="Run the database's EXPLAIN on the query")
+    query_parser.add_argument(
+        "--conformance",
+        choices=[c.value for c in Conformance],
+        default=Conformance.SLAYER.value,
+        help="slayer (default) or ossie-l3: accept only Ossie Layer 3 queries, with Ossie's error codes and output names",
+    )
     query_parser.add_argument(
         "--refine",
         default=None,
@@ -1872,7 +1885,8 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
     query: Any = query_input
     if is_json:
         query = json.loads(query_input)
-        if isinstance(query, list) and not query:
+        # The strict binding refuses any list itself, with its code.
+        if isinstance(query, list) and not query and args.conformance != Conformance.OSSIE_L3.value:
             raise SystemExit("Query list cannot be empty.")
     if args.dry_run:
         usage_reporting.mark_dry_run()
@@ -1883,6 +1897,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         dry_run=bool(args.dry_run),
         explain=bool(args.explain),
         refine=refine,
+        conformance=args.conformance,
     )
     usage_reporting.observe_executed(result)
 

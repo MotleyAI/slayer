@@ -86,71 +86,84 @@ def display_token(token: str) -> str:
 class ScalarSpec(BaseModel, frozen=True):
     """One allowlisted Mode-B scalar: accepted argument counts (``max_args=None``
     is variadic), whether its call is literally the same SQL function, its fixed
-    result type (``None``: one of its value arguments' types) and whether it reads
-    every argument as a number."""
+    result type (``None``: one of its value arguments' types), whether it reads
+    every argument as a number, and whether Ossie Layer 1 defines a function of this
+    name with SLayer's meaning (``ossie``)."""
 
     min_args: int
     max_args: Optional[int] = None
     sql_passthrough: bool = True
     result: Optional[DataType] = None
     numeric: bool = False
+    ossie: bool = False
 
 
 def _spec(
     low: int, high: Optional[int], *, sql: bool = True, result: Optional[DataType] = None, numeric: bool = False,
+    ossie: bool = False,
 ) -> ScalarSpec:
-    return ScalarSpec(min_args=low, max_args=high, sql_passthrough=sql, result=result, numeric=numeric)
+    return ScalarSpec(min_args=low, max_args=high, sql_passthrough=sql, result=result, numeric=numeric, ossie=ossie)
 
 
 _TEXT, _BOOL, _INT, _DOUBLE = DataType.STRING, DataType.BOOLEAN, DataType.INTEGER, DataType.FLOAT
 
 
-def _library(low: int, high: Optional[int], *, result: Optional[DataType] = None, numeric: bool = False) -> ScalarSpec:
+def _library(
+    low: int, high: Optional[int], *, result: Optional[DataType] = None, numeric: bool = False, ossie: bool = False,
+) -> ScalarSpec:
     """A library function: the same-named SQL function, lowered per dialect to its one meaning."""
-    return _spec(low, high, result=result, numeric=numeric)
+    return _spec(low, high, result=result, numeric=numeric, ossie=ossie)
 
 
 # The one canonical Mode-B scalar allowlist (C12); every other scalar set derives
 # from it. Arity is enforced because sqlglot silently mis-handles wrong-arity calls.
 SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
-    "nullif": _spec(2, 2), "coalesce": _spec(1, None), "ifnull": _spec(2, 2),
-    "ln": _spec(1, 1, numeric=True), "log10": _spec(1, 1, numeric=True), "log2": _spec(1, 1, numeric=True),
-    "log": _spec(1, 2, numeric=True), "exp": _spec(1, 1, numeric=True), "sqrt": _spec(1, 1, numeric=True),
-    "pow": _spec(2, 2, numeric=True), "power": _spec(2, 2, numeric=True),
-    "abs": _spec(1, 1, numeric=True), "floor": _spec(1, 1, numeric=True), "ceil": _spec(1, 1, numeric=True),
-    "round": _spec(1, 2, numeric=True), "ceiling": _spec(1, 1, numeric=True), "sign": _spec(1, 1, numeric=True),
-    "trunc": _spec(1, 1, numeric=True),  # 2-arg form silently drops digits on SQLite
-    "mod": _spec(2, 2, numeric=True),
+    "nullif": _spec(2, 2, ossie=True), "coalesce": _spec(1, None, ossie=True), "ifnull": _spec(2, 2, ossie=True),
+    "ln": _spec(1, 1, numeric=True, ossie=True), "log10": _spec(1, 1, numeric=True, ossie=True),
+    "log2": _spec(1, 1, numeric=True),
+    "log": _spec(1, 2, numeric=True), "exp": _spec(1, 1, numeric=True, ossie=True),
+    "sqrt": _spec(1, 1, numeric=True, ossie=True),
+    "pow": _spec(2, 2, numeric=True), "power": _spec(2, 2, numeric=True, ossie=True),
+    "abs": _spec(1, 1, numeric=True, ossie=True), "floor": _spec(1, 1, numeric=True, ossie=True),
+    "ceil": _spec(1, 1, numeric=True, ossie=True),
+    "round": _spec(1, 2, numeric=True, ossie=True), "ceiling": _spec(1, 1, numeric=True, ossie=True),
+    "sign": _spec(1, 1, numeric=True, ossie=True),
+    "trunc": _spec(1, 1, numeric=True, ossie=True),  # 2-arg form silently drops digits on SQLite
+    "mod": _spec(2, 2, numeric=True, ossie=True),
     # Scalar min/max, NULLs ignored; min two args because 1-arg MAX/MIN parse as the aggregate on SQLite.
-    "greatest": _library(2, None), "least": _library(2, None),
-    "lower": _spec(1, 1, result=_TEXT), "upper": _spec(1, 1, result=_TEXT), "trim": _spec(1, 1, result=_TEXT),
-    "length": _spec(1, 1, result=_INT),
+    "greatest": _library(2, None, ossie=True), "least": _library(2, None, ossie=True),
+    "lower": _spec(1, 1, result=_TEXT, ossie=True), "upper": _spec(1, 1, result=_TEXT, ossie=True),
+    "trim": _spec(1, 1, result=_TEXT, ossie=True),
+    "length": _spec(1, 1, result=_INT, ossie=True),
     # Trims take the string only; 2-arg strip-set form deferred (DEV-1793).
-    "ltrim": _spec(1, 1, result=_TEXT), "rtrim": _spec(1, 1, result=_TEXT),
-    "replace": _spec(3, 3, result=_TEXT), "substr": _spec(2, 3, result=_TEXT),
-    "substring": _spec(2, 3, result=_TEXT), "instr": _spec(2, 2, result=_INT),
-    "concat": _spec(1, None, result=_TEXT),
-    "left": _library(2, 2, result=_TEXT), "right": _library(2, 2, result=_TEXT),
+    "ltrim": _spec(1, 1, result=_TEXT, ossie=True), "rtrim": _spec(1, 1, result=_TEXT, ossie=True),
+    "replace": _spec(3, 3, result=_TEXT, ossie=True), "substr": _spec(2, 3, result=_TEXT),
+    "substring": _spec(2, 3, result=_TEXT, ossie=True), "instr": _spec(2, 2, result=_INT),
+    "concat": _spec(1, None, result=_TEXT, ossie=True),
+    "left": _library(2, 2, result=_TEXT, ossie=True), "right": _library(2, 2, result=_TEXT, ossie=True),
     "starts_with": _library(2, 2, result=_BOOL), "ends_with": _library(2, 2, result=_BOOL),
-    "contains": _library(2, 2, result=_BOOL),
+    "contains": _library(2, 2, result=_BOOL, ossie=True),
     "contains_any": _library(2, 2, result=_BOOL), "contains_all": _library(2, 2, result=_BOOL),
     "lpad": _library(2, 3, result=_TEXT), "rpad": _library(2, 3, result=_TEXT),
     "reverse": _library(1, 1, result=_TEXT), "repeat": _library(2, 2, result=_TEXT),
-    "split_part": _library(3, 3, result=_TEXT), "concat_ws": _library(2, None, result=_TEXT),
+    "split_part": _library(3, 3, result=_TEXT, ossie=True), "concat_ws": _library(2, None, result=_TEXT),
     "chr": _library(1, 1, result=_TEXT), "ascii": _library(1, 1, result=_INT),
-    "div": _library(2, 2, numeric=True), "pi": _library(0, 0, result=_DOUBLE),
-    **{name: _library(1, 1, result=_DOUBLE, numeric=True) for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
-    "atan2": _library(2, 2, result=_DOUBLE, numeric=True), "cbrt": _library(1, 1, result=_DOUBLE, numeric=True),
-    "regexp_like": _library(2, 3, result=_BOOL), "regexp_extract": _library(2, 3, result=_TEXT),
-    "regexp_replace": _library(3, 4, result=_TEXT), "json_value": _library(2, 2, result=_TEXT),
+    "div": _library(2, 2, numeric=True), "pi": _library(0, 0, result=_DOUBLE, ossie=True),
+    **{name: _library(1, 1, result=_DOUBLE, numeric=True, ossie=True)
+       for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
+    "atan2": _library(2, 2, result=_DOUBLE, numeric=True, ossie=True),
+    "cbrt": _library(1, 1, result=_DOUBLE, numeric=True),
+    "regexp_like": _library(2, 3, result=_BOOL, ossie=True),
+    "regexp_extract": _library(2, 3, result=_TEXT, ossie=True),
+    "regexp_replace": _library(3, 4, result=_TEXT, ossie=True), "json_value": _library(2, 2, result=_TEXT),
     "like": _spec(2, 2, sql=False, result=_BOOL),  # emits the LIKE operator
     "ilike": _spec(2, 2, sql=False, result=_BOOL),  # case-insensitive LIKE on every dialect
     "iif": _spec(3, 3, sql=False),  # emits CASE WHEN
-    "date_part": _spec(2, 2, sql=False, result=_INT),
+    "date_part": _spec(2, 2, sql=False, result=_INT, ossie=True),
     "date_diff": _spec(3, 3, sql=False, result=_INT),
     "date_add": _spec(3, 3, sql=False),
     "interval": _spec(2, 2, sql=False),  # parse-time spelling of date_add
-    "current_date": _spec(0, 0, sql=False),
+    "current_date": _spec(0, 0, sql=False, ossie=True),
     "now": _spec(0, 0, sql=False),
 })
 

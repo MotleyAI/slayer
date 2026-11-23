@@ -490,10 +490,10 @@ class TestCrossModelRenameCollisionGuards:
             f"'revenue_sum' must carry the declared avg(revenue) body:\n{sql}"
         )
 
-    async def test_cross_model_rename_collides_with_outer_source_column_raises(
+    async def test_cross_model_rename_equal_to_an_outer_source_field_compiles(
         self, tmp_path,
     ) -> None:
-        """A rename colliding with a source field on the outer dataset is rejected."""
+        """A rename equal to a source field on the outer dataset is accepted."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
         await storage.save_dataset(_customers_dataset())
@@ -516,8 +516,8 @@ class TestCrossModelRenameCollisionGuards:
             dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
         )
-        with pytest.raises(ValueError, match=r"matches a source field"):
-            await engine.execute(query=query, dry_run=True)
+        response = await engine.execute(query=query, dry_run=True)
+        assert response.sql
 
     async def test_cross_model_duplicate_explicit_name_raises(
         self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerDataset],

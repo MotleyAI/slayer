@@ -241,7 +241,8 @@ principles every layer obeys.
     - **12.1 Anchored.** A named population may be any dataset; measures never
       change its rows (Law 7).
       [enforced: test:tests/test_law_population_invariance.py]
-    - **12.2 Dimension anchor.** `A` is the smallest dataset determining every
+    - **12.2 Dimension anchor.** `A` is the anchor Ossie qualifies uniquely
+      (Ossie precedence, Principle 4), else the smallest dataset determining every
       dimension, read from dimensions only, an unproven hop counting by
       association (Axiom 8); dimension groups no join path connects take the
       product of their anchors (Axiom 3.1); with no dimensions `A` is the
@@ -358,8 +359,8 @@ All code, old and new, MUST obey these.
    the rest is an explicit route. Each dataset reading the reference — the
    population; an aggregation's source anchor (Axiom 2.6), for its source; its home, for its grain and filters — reaches the anchor over declared relationships, an
    inherited one counting only beside a declared one between the same two
-   datasets: by its only to-one path, else its only route, else the reference is
-   refused as ambiguous. Only when declared relationships give no route are
+   datasets: by its sole Ossie path (Ossie precedence, Principle 4), else its only
+   to-one path, else its only route, else the reference is refused as ambiguous. Only when declared relationships give no route are
    inherited ones added, a single inherited relationship joining the reader to
    the anchor taken first; with no route at all the anchor is unrelated
    (Axiom 3.1). A bare name is a metric. A resolved path is
@@ -382,6 +383,7 @@ All code, old and new, MUST obey these.
    - **2.3** A query carries no Mode A: Mode A is written only in a stored model's definition, and a value a query supplies enters it only as a literal. [enforced: test:tests/test_dev2021_queries_carry_no_mode_a.py]
 3. **Logical names, physical once**: inside a **row definition** — a field's `expression` or `filter`, a dataset's `filters` — a bare name is a source column and a path from the dataset (`d.f`) a field; inside a dataset metric's `expression` a bare name is a field; in both, `source.x` is a source column unless a field is named `source`. A model-scoped metric's `expression` reads like a query: `d.f` is a field anchored at dataset `d`, and a bare name a metric. Every other reference — query fields, relationship keys, unique-key sets — names a field. A source column's spelling is applied once, where a reference becomes SQL or meets the live schema, and is never the key two references are matched on. [enforced: test:tests/test_dev1902_join_key_spelling.py] [enforced: test:tests/test_dev2175_definition_names.py] [enforced: test:tests/test_dev2243_model_scoped_metrics.py]
 4. **Ossie superset**: every input valid under the Ossie core specification is valid here and means what Ossie says it means. An extension may give meaning to input that Ossie leaves undefined or declares invalid, and never changes the result of an Ossie-valid input. [target: DEV-2372]
+   **Ossie precedence**: a route or anchor Ossie determines uniquely — a sole path of declared many-to-one steps, a sole anchor Ossie qualifies — is taken over every other candidate. [enforced: test:tests/test_dev2217_ossie_precedence.py]
 
 ## 5. Notes
 

@@ -343,7 +343,7 @@ Oracles use the DEV-1847 `sales` fixture with `P` = `sum(amount, partition_by=re
 - **THEN** on every row the first equals `x` and the second equals `x` plus 1
 
 ### Requirement: A named computed dimension keys by its name
-A computed dimension with a user-chosen `name` SHALL surface under that name — result key `<name>` in a single query, column `<name>` in any downstream stage or when its query backs a model — whatever its expression, including a bare joined path of any length. A computed dimension without a user-chosen name whose expression is a bare joined path SHALL behave exactly as the plain dotted dimension: result key `<anchor>.<canonical route>.<field>` (`queries/references`), downstream column `<canonical path, __-joined>__<field>`. Every dimension entry SHALL project its own column, including two entries over the same joined path. A query's planned result keys SHALL equal, in projection order, the result keys its rendered SQL returns.
+A computed dimension with a user-chosen `name` SHALL surface under that name — result key `<name>` in a single query, column `<name>` in any downstream stage or when its query backs a model — whatever its expression, including a bare joined path of any length. A computed dimension without a user-chosen name whose expression is a bare joined path SHALL behave exactly as the plain dotted dimension: result key `<anchor>.<canonical route>.<field>` (`queries/references`), downstream column `<canonical path, __-joined>__<field>`. Every dimension entry SHALL project its own column, including two entries over the same joined path. A query's planned result keys SHALL equal, in projection order, the result keys its rendered SQL returns. A user-chosen name MAY equal a field name of any dataset under every conformance: fields are always qualified and names are bare, so the two never meet.
 
 #### Scenario: Named one-hop path in a single query
 - **WHEN** `orders` is queried with dimension `{"field": "customers.region_id", "alias": "region_id"}` and measure `{"metric": "sum(amount)", "alias": "revenue"}`
@@ -382,5 +382,5 @@ A computed dimension with a user-chosen `name` SHALL surface under that name —
 - **THEN** both queries execute with their existing names and values
 
 #### Scenario: A name colliding with a host column is still rejected
-- **WHEN** `orders` (which has a column `region`) is queried with dimension `{"field": "customers.regions.name", "alias": "region"}`
-- **THEN** the query fails with the computed-dimension name-collision error
+- **WHEN** `orders` (which has a field `region`) is queried with dimension `{"field": "customers.regions.name", "alias": "region"}` and measure `revenue = sum(amount)`, under either conformance
+- **THEN** it is no longer rejected: the query executes, keyed `region`, with rows `(RegN, 160)` and `(RegS, 50)`; the name is a result key, and `orders.region` still names the field

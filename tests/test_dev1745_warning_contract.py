@@ -495,6 +495,7 @@ class TestCliEntryPoint:
                 dry_run=True,
                 explain=False,
                 format="table",
+                conformance="slayer",
             )
             _run_query(args)
         captured = capsys.readouterr()

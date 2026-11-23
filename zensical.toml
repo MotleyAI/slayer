@@ -52,6 +52,7 @@ nav = [
   { "Wire Protocols (BI Tools)" = [
     { "Flight SQL" = "interfaces/flight-sql.md" },
     { "SQL API" = "interfaces/pg-facade.md" },
+    { "Ossie Layer 3" = "interfaces/ossie-layer-3.md" },
   ]},
   { "dbt" = [
     { "SLayer vs dbt" = "dbt/slayer_vs_dbt.md" },

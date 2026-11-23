@@ -34,6 +34,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset, is_key_set_unique, relationship_key_error
 from slayer.core.names import match_name
+from slayer.core.ossie_steps import ossie_from
 from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_DATASET, axis_field, is_spine, spine_relationships
 
 __all__ = [
@@ -110,6 +111,8 @@ class OrientedRelationship(BaseModel):
     lateral: str | None = None
     # A query object's local aliases of the edge.
     aliases: tuple[str, ...] = ()
+    # The ``from`` dataset of the semantic-model document relationship it stands for.
+    document_from: str | None = None
 
 
 _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
@@ -215,6 +218,7 @@ def _orient(
         source_spelling=spellings.get(from_dataset),
         target_spelling=spellings.get(to_dataset),
         aliases=relationship.aliases,
+        document_from=relationship.document_from,
     )
 
 
@@ -258,6 +262,26 @@ def provably_to_one(*, edge: OrientedLike, target_dataset: SlayerDataset) -> boo
     True iff the oriented cardinality is m:1/1:1, or the traversal-target fields
     fully cover a unique key-set of ``target_dataset``."""
     return _to_one(cardinality=edge.cardinality, target_keys=[p[1] for p in edge.column_pairs], target=target_dataset)
+
+
+def ossie_step(*, edge: OrientedRelationship, datasets_by_name: dict[str, SlayerDataset]) -> bool:
+    """Is ``edge`` an Ossie step: across a declared relationship from its many side to its one side, between two
+    distinct datasets (``slayer.core.ossie_steps``)?"""
+    source, target = datasets_by_name.get(edge.source_dataset), datasets_by_name.get(edge.to)
+    if (edge.product is not None or edge.lateral is not None or source is None or target is None
+            or source.name == target.name or is_spine(source) or is_spine(target)):
+        return False
+    forward = edge.declaring_dataset == edge.source_dataset
+    declaring, other = (source, target) if forward else (target, source)
+    pairs = edge.column_pairs if forward else [(b, a) for a, b in edge.column_pairs]
+    cardinality = edge.cardinality if forward else invert_cardinality(edge.cardinality)
+    datasets = {declaring.name: declaring, other.name: other}
+    many = ossie_from(
+        declaring=declaring.name, to=other.name, cardinality=cardinality, declaring_keys=[p[0] for p in pairs],
+        to_keys=[p[1] for p in pairs], document_from=edge.document_from,
+        keyed=lambda name, keys: is_key_set_unique(key_fields=list(keys), unique_key_sets=unique_key_sets(datasets[name])),
+    )
+    return many == source.name
 
 
 def _detached_names(datasets_by_name: dict[str, SlayerDataset]) -> frozenset[str]:

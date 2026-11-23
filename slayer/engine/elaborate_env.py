@@ -38,7 +38,6 @@ from slayer.core.errors import (
     DistinctDimensionValuesError,
     DuplicateMetricNameError,
     ListTypeError,
-    MetricNameCollidesWithFieldError,
     DatasetFilterError,
     NameCollisionError,
     ParameterGrainError,
@@ -546,17 +545,8 @@ def type_order_positions(prebound: "PreboundQuery") -> None:
         )
 
 
-def check_computed_dim_name_collision(
-    *, name: str, dataset_name: Optional[str], query_metric_collision: bool,
-) -> None:
-    """A computed dimension's name must not shadow a dataset field/metric or a query metric."""
-    if dataset_name is not None:
-        raise NameCollisionError(
-            summary=f"The computed dimension name collides with an existing "
-            f"field or metric on dataset {dataset_name!r}.",
-            location=f"dimension {name!r}",
-            suggestion="Choose a different name.",
-        )
+def check_computed_dim_name_collision(*, name: str, query_metric_collision: bool) -> None:
+    """A computed dimension's name must not shadow a query metric (a field's name it may)."""
     if query_metric_collision:
         raise NameCollisionError(
             summary="The computed dimension name collides with a query metric "
@@ -594,14 +584,6 @@ def check_metric_dedupe_collision(
             f"one result column {public_name!r} but declare different label/type.",
             suggestion="Rename one (set 'name') to disambiguate.",
         )
-
-
-def check_metric_name_collision(
-    *, name: Optional[str], dataset: str, suggestion: Optional[str] = None,
-) -> None:
-    """A public metric name shadowing a source field raises."""
-    if name is not None:
-        raise MetricNameCollidesWithFieldError(name=name, dataset=dataset, suggestion=suggestion)
 
 
 def check_canonical_alias_shadows_field(

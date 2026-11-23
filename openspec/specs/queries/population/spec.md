@@ -67,7 +67,11 @@ true` without `population` SHALL fail with a typed validation error.
 
 ### Requirement: Dimension-determined default
 
-For a query omitting `population`, the **dimension anchor** SHALL be the model with the
+For a query omitting `population`, when exactly one dataset of the determination items reaches
+the dataset of every other determination item along paths of Ossie steps
+(`queries/ossie-l3-binding` › The strict binding reads the model as an Ossie model) and is a
+viable candidate, that dataset SHALL be the **dimension anchor** (**Ossie precedence**, the anchor
+Ossie qualifies). Otherwise the dimension anchor SHALL be the model with the
 fewest total routed join hops among viable candidates, where a candidate is viable
 iff every determination item binds from it under the prevailing reference grammar
 along a routed chain whose every oriented hop is provably to-one (declared
@@ -139,7 +143,7 @@ dimension anchor undefined.
 #### Scenario: Literal resolution beats short-form reinterpretation
 
 - **WHEN** a candidate reaches a determination item's anchor both by a direct
-  many-to-one relationship and by another to-one path
+  many-to-one relationship and by another path of declared many-to-one steps
 - **THEN** the item is ambiguous from that candidate, which is not viable for it;
   the direct relationship has no precedence
 
@@ -188,6 +192,30 @@ dimension anchor undefined.
   customers.region]` and no metrics
 - **THEN** the dimension anchor is `orders` and the rows are the (status, region) pairs the
   orders reach; with `distinct_dimension_values=false` the same query fails closed
+
+#### Scenario: Ossie's anchor takes precedence over fewer hops
+
+- **WHEN** `a → p → q → b`, `r → b` and `r → a` are many-to-one, `r`'s primary key is `b_id` so
+  `b` reaches `a` to-one in two hops through `r`, and a query without `population` has
+  `dimensions=[a.id, b.name]` and no metrics
+- **THEN** the dimension anchor is `a`, the only dimension dataset that reaches the other along
+  Ossie steps, and the rows are each `a` row with the `b.name` it reaches through `p` and `q`,
+  under every conformance; `b` is not chosen though its total hops are fewer
+
+#### Scenario: Ossie settles a tie between candidates
+
+- **WHEN** `a → b`, `c → a` and `c → b` are many-to-one, `c`'s primary key is `a_id` so `a` and
+  `c` each determine the other, and a query without `population` has
+  `dimensions=[a.b_id, c.b_id]` and no metrics
+- **THEN** the dimension anchor is `c`, the only dimension dataset that reaches the other along
+  Ossie steps, and the query executes from it under every conformance
+
+#### Scenario: Several anchors Ossie qualifies leave native rules in charge
+
+- **WHEN** two or more datasets of the determination items each reach every other's dataset along
+  Ossie steps
+- **THEN** Ossie precedence does not apply and the dimension anchor follows the fewest-hops rule
+  above
 
 ### Requirement: Inference fails closed
 

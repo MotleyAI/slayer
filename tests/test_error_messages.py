@@ -25,7 +25,6 @@ from slayer.core.errors import (
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
     MetricCycleError,
-    MetricNameCollidesWithFieldError,
     MetricRecursionLimitError,
     SlayerError,
     UnknownFunctionError,
@@ -45,8 +44,7 @@ class TestInheritance:
         IllegalScopeReferenceError, IllegalWindowInFilterError,
         AggregationNotAllowedError, UnknownFunctionError,
         MetricRecursionLimitError, MetricCycleError,
-        DuplicateMetricNameError, MetricNameCollidesWithFieldError,
-        CanonicalAliasShadowsFieldError,
+        DuplicateMetricNameError, CanonicalAliasShadowsFieldError,
     ])
     def test_subclasses_slayer_error(self, cls):
         assert issubclass(cls, SlayerError)
@@ -272,16 +270,6 @@ class TestDuplicateMeasureNameError:
             "DuplicateMetricNameError: The metric name is declared more than once.\n"
             "  at metric 'rev'\n"
             "  occurrences: ['measures[0]', 'measures[3]']"
-        )
-
-
-class TestMeasureNameCollidesWithColumnError:
-    def test_basic(self):
-        e = MetricNameCollidesWithFieldError(name="status", dataset="orders")
-        assert str(e) == (
-            "MetricNameCollidesWithFieldError: The declared metric name "
-            "matches a source field on dataset 'orders'.\n"
-            "  at metric 'status'"
         )
 
 

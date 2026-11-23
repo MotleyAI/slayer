@@ -26,6 +26,11 @@ def qualified_reference(*segments: str) -> str:
     return ".".join(spelled_name(s) for s in segments)
 
 
+def normalized_identifier(name: str, *, quoted: bool) -> str:
+    """Ossie Layer 1's normalized identifier: a regular one upper-cased, a quoted one exactly as written."""
+    return name if quoted else name.upper()
+
+
 def match_name(*, name: str, declared: Iterable[str], quoted: bool) -> Optional[str]:
     """The declared spelling ``name`` reaches: an exact match, else (unquoted) the unique case-insensitive one;
     several case-insensitive matches raise ``AmbiguousReferenceError``."""

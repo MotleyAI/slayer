@@ -28,7 +28,9 @@ from slayer.core.warnings import SlayerUnloadableDocumentWarning, UnloadableDocu
 from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
 from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
-from slayer.core.relationship_walker import aggregation_owner, dataset_field_type, terminal_dataset, walk
+from slayer.core.relationship_walker import (
+    aggregation_owner, dataset_field_type, terminal_dataset, unique_key_sets, walk,
+)
 from slayer.core.time_points import parse_temporal_value
 from slayer.core.keys import (
     MIRRORED_TIME_POINT_OP,
@@ -54,6 +56,7 @@ from slayer.core.models import (
     DatasetRelationship,
     DatasetMetric,
     SlayerDataset,
+    is_key_set_unique,
     aggregation_definition,
     relationship_key_error,
     rendered_expression,
@@ -67,6 +70,7 @@ from slayer.sql.ossie_dialects import PORTABLE_READER, expression_digest, ossie_
 from slayer.osi.models import OSSIE_DATATYPES, TEMPORAL_DATATYPES, explicit_description
 from slayer.osi.yaml_writer import dump_yaml
 from slayer.core.ossie_expression import OSIExpression
+from slayer.core.ossie_steps import ossie_from
 from slayer.core.ossie_validity import portable_problem
 from slayer.core.portable_sql import portable_sql
 from slayer.sql.field_expansion import expand_field_definition_parts_sync, expand_derived_refs_sync
@@ -156,13 +160,13 @@ _Shape = tuple[str, str, list[str], list[str]]
 
 
 class _Relationship(BaseModel):
-    """One FK-direction relationship and the SLayer relationships it stands for."""
+    """One FK-direction relationship and the SLayer relationship it stands for."""
 
     from_dataset: str
     to: str
     from_columns: list[str]
     to_columns: list[str]
-    declarations: list[ext.RelationshipDeclaration] = []
+    declaration: ext.RelationshipDeclaration
     name: str = ""
 
 
@@ -605,8 +609,9 @@ class _Exporter:
         return not bad
 
     def _is_key(self, name: str, fields: list[str]) -> bool:
+        """``fields`` hold a unique key of the dataset: one routing proves, or one the document exports."""
         ds = self.osi_datasets[name]
-        return any(set(fields) == set(k) for k in [ds.primary_key, *ds.unique_keys] if k)
+        return is_key_set_unique(key_fields=fields, unique_key_sets=[*unique_key_sets(ds.graph), *ds.unique_keys])
 
     # ---- relationships ----
 
@@ -637,13 +642,9 @@ class _Exporter:
                          f"side; not exported.", severity="dropped", category="relationship", dataset=name,
                          suggestion="Set the relationship's cardinality.")
             return
-        declaration = ext.RelationshipDeclaration(dataset=name, relationship=relationship)
-        rel = next((r for r in self.relationships
-                    if (r.from_dataset, r.to, r.from_columns, r.to_columns) == shape), None)
-        if rel is None:
-            rel = _Relationship(from_dataset=shape[0], to=shape[1], from_columns=shape[2], to_columns=shape[3])
-            self.relationships.append(rel)
-        rel.declarations.append(declaration)
+        self.relationships.append(_Relationship(
+            from_dataset=shape[0], to=shape[1], from_columns=shape[2], to_columns=shape[3],
+            declaration=ext.RelationshipDeclaration(dataset=name, relationship=relationship)))
         plain = (shape == forward and relationship.cardinality is RelationshipCardinality.MANY_TO_ONE
                  and relationship.join_type.value == "left" and relationship.name is None)
         if not plain:
@@ -654,16 +655,12 @@ class _Exporter:
     def _relationship_shape(self, relationship: DatasetRelationship, *, forward: _Shape) -> _Shape | None:
         """``forward`` or its reverse, whichever points from the many side; ``None`` when undeterminable."""
         name, target, sources, targets = forward
-        backward = (target, name, targets, sources)
-        if relationship.cardinality in (RelationshipCardinality.MANY_TO_ONE, RelationshipCardinality.ONE_TO_ONE):
-            return forward
-        if relationship.cardinality is RelationshipCardinality.ONE_TO_MANY:
-            return backward
-        if self._is_key(target, targets):
-            return forward
-        if self._is_key(name, sources):
-            return backward
-        return None
+        many = ossie_from(declaring=name, to=target, cardinality=relationship.cardinality, declaring_keys=sources,
+                          to_keys=targets, keyed=lambda ds, keys: self._is_key(ds, list(keys)),
+                          document_from=relationship.document_from)
+        if many is None:
+            return None
+        return forward if many == name else (target, name, targets, sources)
 
     def _bad_keys(self, side: str, other: str, keys: list[str]) -> list[str]:
         ds = self.osi_datasets[side]
@@ -864,7 +861,7 @@ class _Exporter:
             for taken in [*(doc.get("relationships") or []), *(doc.get("metrics") or [])]:
                 document.allocate(taken["name"])
         for rel in self.relationships:
-            explicit = next((d.relationship.name for d in rel.declarations if d.relationship.name), None)
+            explicit = rel.declaration.relationship.name
             if explicit:
                 rel.name = document.allocate(explicit)
         for metric in dataset_metrics:
@@ -1040,12 +1037,13 @@ class _Exporter:
     def _relationship_entity(self, rel: _Relationship) -> dict[str, Any]:
         entity: dict[str, Any] = {"name": rel.name, "from": rel.from_dataset, "to": rel.to,
                                   "from_columns": rel.from_columns, "to_columns": rel.to_columns}
-        meta = rel.declarations[0].relationship.meta or {}
+        meta = rel.declaration.relationship.meta or {}
         if meta.get("osi_ai_context"):
             entity["ai_context"] = meta["osi_ai_context"]
-        declarations = [d.model_copy(update={"relationship": d.relationship.model_copy(update={"meta": _slayer_meta(d.relationship.meta)})})
-                        for d in rel.declarations]
-        self._extensions(entity, meta, payload=ext.RelationshipPayload(entity=rel.name, declarations=declarations),
+        declared = rel.declaration.relationship
+        declaration = rel.declaration.model_copy(
+            update={"relationship": declared.model_copy(update={"meta": _slayer_meta(declared.meta)})})
+        self._extensions(entity, meta, payload=ext.RelationshipPayload(entity=rel.name, declarations=[declaration]),
                          dataset=rel.from_dataset, ossie=ext.relationship_digest(
                              from_dataset=rel.from_dataset, to=rel.to, from_columns=rel.from_columns,
                              to_columns=rel.to_columns))

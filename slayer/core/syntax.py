@@ -402,14 +402,15 @@ class CallSpan(BaseModel):
 
 
 class _State:
-    """Per-parse scratch: the expression text, the farthest failure offset, the calls and method calls read and,
-    while rewriting, the colon spans."""
+    """Per-parse scratch: the expression text, the farthest failure offset, the calls and method calls read, the
+    non-Ossie spellings rewritten and, while rewriting, the colon spans."""
 
     def __init__(self) -> None:
         self.text = ""
         self.farthest = 0
         self.calls: Dict[Tuple[int, int], CallSpan] = {}
         self.methods: Dict[Tuple[int, int], LegacySpan] = {}
+        self.spellings: Dict[str, None] = {}
         self.spans: Optional[List["_ColonSpan"]] = None
         #: While ``reference_spans`` reads: each reference node by id, with its offsets.
         self.refs: Optional[Dict[int, Tuple[Any, int, int]]] = None
@@ -418,11 +419,21 @@ class _State:
         self.compared: Optional[Dict[int, Any]] = None
 
     def reset(self, text: str) -> None:
-        self.text, self.farthest, self.calls, self.methods = text, 0, {}, {}
+        self.text, self.farthest, self.calls, self.methods, self.spellings = text, 0, {}, {}, {}
 
 
 _STATE = _State()
 _PARSE_LOCK = threading.Lock()
+
+
+def _spelled(kind: str) -> None:
+    """Note a non-Ossie spelling the parser rewrites (``nonossie_spellings``)."""
+    _STATE.spellings.setdefault(kind, None)
+
+
+def _spelled_call(kind: str, node: Any) -> Any:
+    _spelled(kind)
+    return node
 
 
 def _record_failure(_s: str, loc: int, _expr: Any, _err: Any) -> None:
@@ -871,6 +882,7 @@ _JSON_VALUE_RETURNING = (pp.Suppress(_kw("json_value")) + LPAR + expr + COMMA + 
 
 
 def _json_value_returning(toks: List[Any]) -> Cast:
+    _spelled("json_value(… RETURNING …)")
     value, path, type_text = toks
     if type_text not in _RETURNING_TYPES:
         raise _Problem(f"json_value() RETURNING {type_text} is not supported; use one of {', '.join(sorted(_RETURNING_TYPES))}.")
@@ -880,7 +892,7 @@ def _json_value_returning(toks: List[Any]) -> Cast:
 _on(_JSON_VALUE_RETURNING, _json_value_returning)
 _POSITION = _on((pp.Suppress(_kw("position")) + LPAR + _concat_level + pp.Suppress(_kw("in")) + expr + RPAR), lambda toks: ScalarCall(name="instr", args=(toks[1], toks[0])))
 _SUBSTRING = _on((pp.Suppress(_kw("substring")) + LPAR + expr + pp.Suppress(_kw("from")) + expr
-              + pp.Optional(pp.Suppress(_kw("for")) + expr) + RPAR), lambda toks: ScalarCall(name="substr", args=tuple(toks)))
+              + pp.Optional(pp.Suppress(_kw("for")) + expr) + RPAR), lambda toks: _spelled_call("SUBSTRING(… FROM …)", ScalarCall(name="substr", args=tuple(toks))))
 _TRIM_FORM = (_kw("trim") + LPAR + _kw("both", "leading", "trailing")) + _fail(
     "TRIM(BOTH | LEADING | TRAILING …) is not supported; use trim(x), ltrim(x) or rtrim(x).",
 )
@@ -919,6 +931,7 @@ def _interval_count(text: str) -> Literal:
 
 
 def _interval_node(toks: List[Any]) -> ScalarCall:
+    _spelled("INTERVAL literal")
     quantity = toks[0]
     unit_word = toks[1] if len(toks) > 1 else None
     if isinstance(quantity.value, str):
@@ -1022,6 +1035,7 @@ _on(_PRIMARY, _primary_node)
 
 def _fold_casts(toks: pp.ParseResults) -> Any:
     items = list(toks[0])
+    _spelled("::")
     node = items[0]
     for type_text in items[1:]:
         node = Cast(source=node, type_text=type_text)
@@ -1034,6 +1048,7 @@ def _signed(toks: pp.ParseResults) -> Any:
 
 
 def _pow(toks: pp.ParseResults) -> Any:
+    _spelled("**")
     left, right = toks[0]
     return ScalarCall(name="pow", args=(left, right))
 
@@ -1079,6 +1094,7 @@ def _fold_concat(toks: pp.ParseResults) -> Any:
                 raise _Problem(_BARE_ARROW)
             node = ScalarCall(name="concat", args=(node, right))
             continue
+        _spelled(op)
         base, steps = chain if chain is not None else (node, ())
         steps = (*steps, *_arrow_steps(right))
         if op == "->":
@@ -1131,6 +1147,7 @@ def _negated(node: Any, negate: bool) -> Any:
 
 
 def _truth_test(left: Any, toks: List[Any]) -> Any:
+    _spelled("IS TRUE / IS FALSE")
     negate, word = toks[0], toks[1].lower()
     known = Cmp(op=_is_op(True), left=left, right=Literal(value=None))
     test = BoolOp(op="and", operands=(known, left if word == "true" else UnaryOp(op="not", operand=left)))
@@ -1140,6 +1157,7 @@ def _truth_test(left: Any, toks: List[Any]) -> Any:
 def _regex_operator(left: Any, toks: List[Any]) -> Any:
     """``~`` / ``~*`` / ``!~`` / ``!~*`` as ``[NOT] regexp_like(left, p[, 'i'])``."""
     op, pattern = toks
+    _spelled(op)
     flags = (Literal(value="i"),) if op.endswith("*") else ()
     return _negated(ScalarCall(name="regexp_like", args=(left, pattern, *flags)), op.startswith("!"))
 
@@ -1197,14 +1215,14 @@ def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
 _IN_LIST = ((LPAR + _PLACEHOLDER_ATOM + RPAR)
             | _PLACEHOLDER_ATOM
             | _on((LPAR + _SEQ_ITEMS + RPAR), lambda toks: _in_rhs_elements(list(toks[0])))
-            | _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: _in_rhs_elements(list(toks[0])))
-            | _STRING
+            | _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: _spelled_call("IN […]", _in_rhs_elements(list(toks[0]))))
+            | _STRING.copy().add_parse_action(lambda: _spelled("IN '…'"))
             | _fail("the right-hand side of in / not in must be a literal list, e.g. status in ('a', 'b')."))
 
 _CMP_SUFFIX = (
     # SQL ``v = ANY(list)`` is list membership.
     _suffix(_sym(r"==|=", "comparison") + pp.Suppress(_kw("any")) + LPAR + _concat_level + RPAR,
-            lambda left, t: ScalarCall(name="contains", args=(t[1], left)))
+            lambda left, t: _spelled_call("= ANY(…)", ScalarCall(name="contains", args=(t[1], left))))
     | _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
             lambda left, t: _written_comparison(Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "=")))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("distinct")) + pp.Suppress(_kw("from")) + _concat_level,
@@ -1213,7 +1231,7 @@ _CMP_SUFFIX = (
               lambda left, t: Cmp(op=_is_op(t[0]), left=left, right=Literal(value=None)))
     | _suffix(_IS + _NOT_FLAG + (_kw("true", "false")), _truth_test)
     | _suffix(_IS + _NOT_FLAG + _concat_level,
-              lambda left, t: Cmp(op=_is_op(t[0]), left=left, right=t[1]))
+              lambda left, t: _spelled_call("IS <value>", Cmp(op=_is_op(t[0]), left=left, right=t[1])))
     | _suffix(_NOT_FLAG + pp.Suppress(_kw("in")) + _IN_LIST, lambda left, t: _in_comparison(left, t[0], t[1]))
     | _suffix(_NOT_FLAG + pp.Suppress(_kw("between")) + _concat_level + pp.Suppress(_kw("and")) + _concat_level,
               lambda left, t: _negated(BoolOp(op="and", operands=(
@@ -1280,6 +1298,7 @@ class _Reading(BaseModel):
     parsed: Any
     legacy: Tuple[LegacySpan, ...]
     calls: Tuple[CallSpan, ...]
+    spellings: Tuple[str, ...] = ()
 
 
 def parse_expr(text: str) -> ParsedExpr:
@@ -1377,6 +1396,15 @@ def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
         return ()
 
 
+def nonossie_spellings(text: str) -> Tuple[str, ...]:
+    """The spellings Ossie Layer 1 does not define that template ``text`` uses and the parser rewrites (``~``, ``->>``,
+    ``::``, …); none when it does not parse."""
+    try:
+        return _read(_bound_strings(text)).spellings
+    except Exception:  # noqa: BLE001 — unparseable text has no spellings
+        return ()
+
+
 def call_spans(text: str) -> Tuple[CallSpan, ...]:
     """The single-name calls in template ``text``; none when it does not parse."""
     try:
@@ -1431,6 +1459,7 @@ def _reading(text: str) -> _Reading:
         _STATE.reset(text)
         parsed = cast(ParsedExpr, _parse_tree(text))
         methods, calls = list(_STATE.methods.values()), sorted(_STATE.calls.values(), key=lambda c: c.start)
+        spellings = tuple(_STATE.spellings)
     legacy = tuple(sorted([*_text_legacy_spans(text), *methods], key=lambda s: (s.start, s.end)))
     if any(_is_interval(n) for n in walk_parsed(parsed)):
         parsed = _deferred_intervals(parsed, message=(
@@ -1438,7 +1467,7 @@ def _reading(text: str) -> _Reading:
             f"`x + interval(n, unit)`, `interval(n, unit) + x` or `x - interval(n, unit)`; "
             f"otherwise use date_add(x, n, unit)."
         ))
-    return _Reading(parsed=parsed, legacy=legacy, calls=tuple(calls))
+    return _Reading(parsed=parsed, legacy=legacy, calls=tuple(calls), spellings=spellings)
 
 
 _IS_NONE_RE = re.compile(r"\b[Ii][Ss]\s+(?:([Nn][Oo][Tt])\s+)?None\b")
