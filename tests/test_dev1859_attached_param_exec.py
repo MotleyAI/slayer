@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import SlayerError
+from slayer.core.errors import ParameterGrainError, SlayerError
 from slayer.sql.scope_check import assert_scope_closed
 
 from slayer.core.query import QueryMetric
@@ -255,21 +255,57 @@ class TestCrossModelParameterOnLocalRoot:
             assert float(by[(status,)]["w"]) == pytest.approx(expected)
 
     async def test_unattributable_parameter_stays_rejected(self, weak_plans_engine):
-        """Scenario: Undetermined attached parameter stays rejected — a
-        partition key across the unproven customers→plans hop fails with the
-        typed input-safety error, never the deleted attached-parameter remedy
-        and never wrong values."""
+        """Scenario: Undetermined attached parameter stays rejected — under the default
+        mode the parameter's key across the unproven customers→plans hop associates, and
+        the orders grain does not determine it: the typed determination error names the
+        parameter, never wrong values."""
         q = orders_q(
             dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric=("weighted_avg(orders.amount, weight="
                          "sum(customers.spend, partition_by=customers.plans.level))"),
                 alias="w")])
-        with pytest.raises((SlayerError, ValueError)) as ei:
+        with pytest.raises(ParameterGrainError) as ei:
             await weak_plans_engine.execute(q)
         msg = str(ei.value)
         assert "DEV-" not in msg
-        assert "plans" in msg or "level" in msg or "attribut" in msg.lower()
+        assert "weight" in msg
+        assert "determine" in msg.lower()
+
+    @pytest.mark.parametrize("build", [orders_q, assoc_q], ids=["default", "associate"])
+    @pytest.mark.parametrize(("dims", "partition"), [
+        (["orders.status"], "[]"),
+        (["orders.status", "orders.channel"], "[orders.status]"),
+    ], ids=["to_unit", "to_status"])
+    async def test_regrouped_undetermined_parameter_stays_rejected(self, weak_plans_engine, build, dims, partition):
+        """Scenario: Undetermined attached parameter stays rejected — a local root regrouped by its own
+        partition_by= refuses like its ungrouped twin, never with values."""
+        q = build(dimensions=dims, metrics=[QueryMetric(
+            metric=("weighted_avg(orders.amount, weight=sum(customers.spend, "
+                    f"partition_by=customers.plans.level), partition_by={partition})"),
+            alias="w")])
+        with pytest.raises(ParameterGrainError, match="weight"):
+            await weak_plans_engine.execute(q)
+
+    @pytest.mark.parametrize("build", [orders_q, assoc_q], ids=["default", "associate"])
+    async def test_nested_undetermined_parameter_stays_rejected(self, weak_plans_engine, build):
+        """Scenario: Undetermined attached parameter stays rejected — an aggregate nested in the parameter's
+        expression refuses like the direct form."""
+        q = build(dimensions=["orders.status"], metrics=[QueryMetric(
+            metric="weighted_avg(orders.amount, weight=1 + sum(customers.spend, partition_by=customers.plans.level))",
+            alias="w")])
+        with pytest.raises(ParameterGrainError, match="weight"):
+            await weak_plans_engine.execute(q)
+
+    async def test_regrouped_determined_parameter_executes(self, weak_plans_engine):
+        """A regrouped local root whose parameter the order row determines still executes."""
+        resp = await weak_plans_engine.execute(orders_q(
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(
+                metric=("weighted_avg(orders.amount, weight=sum(customers.spend, "
+                        "partition_by=customers.tier), partition_by=[])"),
+                alias="w")]))
+        assert any(r["w"] is not None for r in resp.data)
 
 
 class TestUndeterminedParameterRejected:

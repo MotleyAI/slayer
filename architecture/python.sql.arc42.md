@@ -66,8 +66,9 @@ flowchart TD
    [enforced: test:tests/test_law_no_statement_reparse.py]
    [enforced: test:tests/test_law_no_emitted_reparse.py]
 2. **Dialect quirks live only in `dialects/`** — one file per Tier-1 dialect,
-   data-shaped Tier-2 table; everything not explicitly overridden goes through
-   sqlglot transpilation. No `if dialect == …` outside `dialects/`. [review]
+   data-shaped Tier-2 table, and one for the Ossie document dialect; everything
+   not explicitly overridden goes through sqlglot transpilation. No
+   `if dialect == …` outside `dialects/`. [review]
 3. **One naming authority**: `slayer/sql/naming.py` owns every alias and
    result-key decision (dotted result keys, flat inner names, mangling,
    identifier-length fitting, CTE names). [review]

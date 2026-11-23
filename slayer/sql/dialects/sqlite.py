@@ -606,39 +606,54 @@ _TEXT_UDFS: dict = {
     **{f"slayer_{name}": (1, _nulls(getattr(math, name))) for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
 }
 
+#: Every scalar function SLayer registers on a connection: ``(name, narg, fn, deterministic)``.
+_SCALAR_UDFS: tuple[tuple[str, int, Callable[..., Any], bool], ...] = (
+    *((name, narg, fn, True) for name, (narg, fn) in _TEXT_UDFS.items()),
+    ("ln", 1, _ln, False),
+    ("log10", 1, _log10, False),
+    ("log2", 1, _log2, False),
+    # SQLite >=3.35's built-in ``log(B, X)`` silently returns NULL on domain errors.
+    ("log", 2, _log_base_x, False),
+    ("exp", 1, _exp, False),
+    ("sqrt", 1, _sqrt, False),
+    ("pow", 2, _pow, False),
+    ("power", 2, _pow, False),
+    ("slayer_date_add", 3, _slayer_date_add, False),
+    ("slayer_timestamp_text", 1, _slayer_timestamp_text, True),
+    ("slayer_try_cast", 2, _slayer_try_cast, False),
+    ("slayer_try_cast", 3, _slayer_try_integer, False),
+)
+
+#: Every aggregate SLayer registers, the statistical ones also under the names sqlglot rewrites them to on SQLite.
+_AGGREGATE_UDFS: tuple[tuple[str, int, type], ...] = (
+    ("median", 1, _MedianAgg),
+    ("percentile_cont", 2, _PercentileContAgg),
+    ("percentile_disc", 2, _PercentileDiscAgg),
+    ("stddev_samp", 1, _StddevSampAgg),
+    ("stddev_pop", 1, _StddevPopAgg),
+    ("var_samp", 1, _VarSampAgg),
+    ("variance", 1, _VarSampAgg),
+    ("var_pop", 1, _VarPopAgg),
+    ("variance_pop", 1, _VarPopAgg),
+    ("corr", 2, _CorrAgg),
+    ("covar_samp", 2, _CovarSampAgg),
+    ("covar_pop", 2, _CovarPopAgg),
+)
+
+SLAYER_REGISTERED_FUNCTIONS: frozenset[str] = frozenset(
+    name for name, *_ in (*_SCALAR_UDFS, *_AGGREGATE_UDFS)
+)
+
 
 def register_sqlite_udfs(dbapi_connection) -> None:
     """Register all SLayer SQLite UDFs on a fresh DBAPI connection (idempotent)."""
-    for name, (narg, fn) in _TEXT_UDFS.items():
-        dbapi_connection.create_function(name, narg, fn, deterministic=True)
-    dbapi_connection.create_function("ln", 1, _ln)
-    dbapi_connection.create_function("log10", 1, _log10)
-    dbapi_connection.create_function("log2", 1, _log2)
-    # SQLite >=3.35's built-in ``log(B, X)`` silently returns NULL on domain errors.
-    dbapi_connection.create_function("log", 2, _log_base_x)
-    dbapi_connection.create_function("exp", 1, _exp)
-    dbapi_connection.create_function("sqrt", 1, _sqrt)
-    dbapi_connection.create_function("pow", 2, _pow)
-    dbapi_connection.create_function("power", 2, _pow)
-    dbapi_connection.create_function("slayer_date_add", 3, _slayer_date_add)
-    dbapi_connection.create_function("slayer_timestamp_text", 1, _slayer_timestamp_text, deterministic=True)
-    dbapi_connection.create_function("slayer_try_cast", 2, _slayer_try_cast)
-    dbapi_connection.create_function("slayer_try_cast", 3, _slayer_try_integer)
-
-    dbapi_connection.create_aggregate("median", 1, _MedianAgg)
-    dbapi_connection.create_aggregate("percentile_cont", 2, _PercentileContAgg)
-    dbapi_connection.create_aggregate("percentile_disc", 2, _PercentileDiscAgg)
-
-    # Also under the names sqlglot rewrites them to on SQLite.
-    dbapi_connection.create_aggregate("stddev_samp", 1, _StddevSampAgg)
-    dbapi_connection.create_aggregate("stddev_pop", 1, _StddevPopAgg)
-    dbapi_connection.create_aggregate("var_samp", 1, _VarSampAgg)
-    dbapi_connection.create_aggregate("variance", 1, _VarSampAgg)
-    dbapi_connection.create_aggregate("var_pop", 1, _VarPopAgg)
-    dbapi_connection.create_aggregate("variance_pop", 1, _VarPopAgg)
-    dbapi_connection.create_aggregate("corr", 2, _CorrAgg)
-    dbapi_connection.create_aggregate("covar_samp", 2, _CovarSampAgg)
-    dbapi_connection.create_aggregate("covar_pop", 2, _CovarPopAgg)
+    for name, narg, fn, deterministic in _SCALAR_UDFS:
+        if deterministic:
+            dbapi_connection.create_function(name, narg, fn, deterministic=True)
+        else:
+            dbapi_connection.create_function(name, narg, fn)
+    for name, narg, cls in _AGGREGATE_UDFS:
+        dbapi_connection.create_aggregate(name, narg, cls)
 
 
 def _like_source(pattern: LikePattern) -> str:
@@ -1075,6 +1090,8 @@ class SqliteDialect(SqlDialect):
     def rewrite_parsed_ast(self, tree: Expression) -> Expression:
         """Emit JSON extraction in the ``json_extract(...)`` function-call form."""
         return rewrite_sqlite_json_extract(tree)
+
+    slayer_registered_functions: ClassVar[frozenset[str]] = SLAYER_REGISTERED_FUNCTIONS
 
     def register_udfs(self, dbapi_connection) -> None:
         """Register the Python aggregate / scalar UDFs on the connection."""

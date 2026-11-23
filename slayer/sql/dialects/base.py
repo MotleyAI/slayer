@@ -1954,6 +1954,9 @@ class SqlDialect(BaseModel):
             return rows
         return [self._rekey_row(row=row, mapping=mapping) for row in rows]
 
+    #: The functions ``register_udfs`` registers: SLayer's own, not the database's.
+    slayer_registered_functions: ClassVar[frozenset[str]] = frozenset()
+
     def register_udfs(self, dbapi_connection) -> None:  # NOSONAR(S1172) — no-op hook default; overrides use it
         """Hook: register UDFs on every fresh connection."""
         return None

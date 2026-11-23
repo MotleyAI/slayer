@@ -40,6 +40,11 @@ project, asserting comment import and idempotent re-ingest semantics, then
 deleting it. The service account therefore needs dataset create/delete rights
 in the billing project (e.g. `roles/bigquery.user`), not just `jobUser`.
 
+BigQuery and Snowflake bill per query, so on a pull request their CI jobs run
+only on the first push, on the push that archives the PR's OpenSpec change,
+and after a failed run (`.github/workflows/expensive-job-gate.yml`). Every push
+to `main` runs them.
+
 [List fields](concepts/queries.md#list-fields), the list functions and `collect` run on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino and Presto, and fail at plan time on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle.
 On ClickHouse, an element filter on a list reached through a relationship, like any filter across a to-many hop, needs server 25.4 or later, while a list field of the query's own dataset filters on every version. A filter across a to-many hop in a query that also reads a list's elements needs 25.8 or later. A dataset filter that reads a joined dataset across a hop not proven to-one also needs 25.4 or later.
 

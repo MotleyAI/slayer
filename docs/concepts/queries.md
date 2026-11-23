@@ -25,6 +25,8 @@ A key a query, refinement or entry does not read is refused with an `UnknownKeyE
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
+Every Ossie Layer 3 query is a valid query here, with Ossie's rows; to have SLayer also refuse what Ossie refuses, with Ossie's error codes and output names, run it under the [Ossie Layer 3 binding](../interfaces/ossie-layer-3.md).
+
 A query carries no tenant scoping of its own. To force every query through an engine to one tenant's rows — joins and sub-queries included — configure a policy at engine construction; see [Row-Level Security](row-level-security.md).
 
 ## Dimensions
@@ -829,6 +831,7 @@ filter is applied, never erroring, in every mode.
 Example: `{"population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(customers.spend)"]}` gives each status the spend of the distinct customers with an order in it.
 To repeat a value across such a dimension instead, give the aggregate `partition_by=` with the dimensions it
 is attributable to: `sum(customers.spend, partition_by=[])` repeats the total on every status.
+An explicit `partition_by=` key the aggregate's home does not determine resolves by the same mode, local or cross-dataset: rooted at `customers` by `orders.status`, `sum(customers.spend, partition_by=orders.status)` gives each status the spend of its distinct customers without a warning, and is a typed error under `error`.
 
 Association serves every aggregate. A dataset without a primary key uses a
 per-query row identity. This includes datasets with a standalone unique field that may

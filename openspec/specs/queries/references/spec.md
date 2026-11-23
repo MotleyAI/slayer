@@ -45,7 +45,7 @@ In every position of a query (dimensions, time dimensions, metrics and their agg
 
 ### Requirement: The anchor is reached by its only to-one path
 
-A query SHALL reach a reference's anchor from its **reading dataset** as follows: an aggregation's source anchor (`queries/semantics` › An aggregation binds from its own anchor) for the references of that aggregation's source, parameters, definition defaults, `FILTER (WHERE …)` and ranking key; an aggregation's home for that aggregation's grain dimensions and for the filter conjuncts restricting its rows; the dimension anchor for the dimensions and filters it supplies or is restricted by; and the population for every other reference. The population SHALL never be the reading dataset of a reference inside an aggregation. Each spelling of a reference SHALL be routed on its own by every reading dataset: two spellings reaching the same column from the population are still two references, so the order in which a query writes them never decides either one's path. When the anchor is the reading dataset, the path SHALL be empty. When the reading dataset is an aggregation's home and the reference is anchored where that aggregation's source is anchored, the path SHALL be the source's own written path from that anchor to the home, traversed back. When exactly one path from the reading dataset to the anchor has every hop provably to-one on its traversal orientation, that path SHALL be taken, whatever other routes exist. When no such path exists and exactly one simple route exists, that route SHALL be taken. When two or more to-one paths exist, or none exists and two or more routes exist, the reference SHALL fail with a typed ambiguity error naming each executable explicit spelling; a direct relationship SHALL have no precedence over a longer path. This rule SHALL run over the **declared** relationships: the datasets' own, the query's extension relationships, and any relationship a stage inherits that lies beside a declared one between the same two datasets. Only when they give no route SHALL inherited relationships be added: a single inherited relationship joining the reading dataset directly to the anchor SHALL then be taken, else the rule SHALL run over all relationships. When no route exists, the anchor SHALL be an unrelated dataset (`queries/unrelated-datasets`). Routes never cross the time spine. Binding, the planning of every aggregation rooted at its home, population inference, population recommendation, schema-drift attribution and the stored-query migration SHALL use this one rule, so they never disagree about which path a reference takes.
+A query SHALL reach a reference's anchor from its **reading dataset** as follows: an aggregation's home for that aggregation's grain dimensions and for the filter conjuncts restricting its rows, the dimension anchor for the dimensions and filters it supplies or is restricted by, and the population for every other reference. When the anchor is the reading dataset, the path SHALL be empty. When the reading dataset is an aggregation's home and the reference is anchored where that aggregation's source is anchored, the path SHALL be the source's own written path from that anchor to the home, traversed back. When exactly one path from the reading dataset to the anchor consists of Ossie steps (`queries/ossie-l3-binding` › The strict binding reads the model as an Ossie model), that path SHALL be taken, whatever other routes exist (**Ossie precedence**). Otherwise, when exactly one path from the reading dataset to the anchor has every hop provably to-one on its traversal orientation, that path SHALL be taken, whatever other routes exist. When no such path exists and exactly one simple route exists, that route SHALL be taken. When no path of Ossie steps is sole and two or more to-one paths exist, or none exists and two or more routes exist, the reference SHALL fail with a typed ambiguity error naming each executable explicit spelling; a direct relationship SHALL have no precedence over a longer path. This rule SHALL run over the **declared** relationships: the datasets' own, the query's extension relationships, and any relationship a stage inherits that lies beside a declared one between the same two datasets. Only when they give no route SHALL inherited relationships be added: a single inherited relationship joining the reading dataset directly to the anchor SHALL then be taken, else the rule SHALL run over all relationships. When no route exists, the anchor SHALL be an unrelated dataset (`queries/unrelated-datasets`). Routes never cross the time spine. Binding, the planning of every aggregation rooted at its home, population inference, population recommendation, schema-drift attribution and the stored-query migration SHALL use this one rule, so they never disagree about which path a reference takes.
 
 #### Scenario: One to-one path wins over fanning routes
 - **WHEN** `orders → customers` and `orders → managers` are many-to-one, `managers → customers` is one-to-many, and a query with `population: "orders"` selects `customers.region`
@@ -60,12 +60,12 @@ A query SHALL reach a reference's anchor from its **reading dataset** as follows
 - **THEN** it takes the direct relationship and executes
 
 #### Scenario: A unique fanning route is taken
-- **WHEN** a query with `population: "customers"` filters `orders.status = 'open'` and the only route from `customers` to `orders` is the reversed `orders → customers` relationship
-- **THEN** the population takes that route, keeping each customer with an open order of its own
+- **WHEN** a query with `population: "customers"` measures `sum(orders.amount)` and the only route from `customers` to `orders` is the reversed `orders → customers` relationship
+- **THEN** it takes that route and each customer's value is the sum of its own orders
 
 #### Scenario: Several fanning routes are refused
-- **WHEN** `customers` reaches `orders` both by the reversed `orders → customers` relationship and through `managers` with no to-one path, and a query with `population: "customers"` filters `orders.status = 'open'`
-- **THEN** it fails with the ambiguity error naming each explicit spelling; measuring `sum(orders.amount)` by `customers.name` without that filter executes instead, the source binding from `orders` and the home reaching `customers` by its only to-one path
+- **WHEN** `customers` reaches `orders` both by the reversed `orders → customers` relationship and through `managers` with no to-one path, and a query with `population: "customers"` measures `sum(orders.amount)`
+- **THEN** it fails with the ambiguity error naming each explicit spelling
 
 #### Scenario: An inherited detour never makes a declared path ambiguous
 - **WHEN** `orders` declares a relationship to `customers` and to `clients`, `clients` declares a to-one relationship to the query-backed dataset `cust_rev`, whose grain `customer_id` inherits a to-one relationship to `customers`, and a query with `population: "orders"` reads `customers.tier`
@@ -76,7 +76,7 @@ A query SHALL reach a reference's anchor from its **reading dataset** as follows
 - **THEN** it fails with the typed ambiguity error naming `per_customer.buyer.name` and `per_customer.payer.name`
 
 #### Scenario: A single direct inherited relationship is taken first
-- **WHEN** stage `s` is grouped by `customers.id`, inheriting relationships to `orders` and to `events`, and a query with `population: "s"` filters `orders.amount > 10`
+- **WHEN** stage `s` is grouped by `customers.id`, inheriting relationships to `orders` and to `events`, and a query with `population: "s"` measures `sum(orders.amount)`
 - **THEN** it reads `orders` over `s → orders`, not the detour `s → events → customers → orders`
 
 #### Scenario: An unrelated anchor spelled like a relationship of the reader is read as the anchor
@@ -106,6 +106,14 @@ A query SHALL reach a reference's anchor from its **reading dataset** as follows
 #### Scenario: Two spellings of one column are each routed from the home
 - **WHEN** `orders → customers → regions → managers` and `orders → managers` are many-to-one, and a query with `population: "customers"` measures `sum(customers.orders.amount)` grouped by `customers.regions.managers.name` and `managers.name`, once in each order
 - **THEN** both fail with the same ambiguity error naming the two spellings of `managers` from `orders`, the home: `managers.name` is anchored at `managers`, which `orders` reaches by two to-one paths, whichever dimension is written first
+
+#### Scenario: A reversed to-one hop never makes Ossie's path ambiguous
+- **WHEN** `a → b`, `c → a` and `c → b` are many-to-one, `c`'s primary key is `a_id` so `a` also reaches `c` to-one, and a query without `population` has dimensions `b.name` and `a.id`
+- **THEN** `a` reads `b` over `a → b`, the only path of Ossie steps, and the query returns one row per `a` row with its `b.name`, under every conformance
+
+#### Scenario: Two paths of Ossie steps stay ambiguous
+- **WHEN** `a → b`, `a → c` and `c → b` are all many-to-one and a query with `population: "a"` selects `b.name`
+- **THEN** it fails with the ambiguity error naming `a.b.name` and `a.c.b.name`
 
 ### Requirement: A bare name is a metric
 

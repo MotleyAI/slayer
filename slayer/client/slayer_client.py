@@ -19,13 +19,17 @@ import yaml
 from typing_extensions import deprecated
 
 from slayer.async_utils import run_sync
+from slayer.core.enums import Conformance
+from slayer.core.errors import OssieErrorCode, OssieQueryError
 from slayer.core.format import NumberFormat
+from slayer.core.ossie_conformance import parse_conformance
 from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import PopulationRecommendation
 from slayer.core.vocabulary import method_twin
 from slayer.core.models import SlayerDataset
 from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
 from slayer.engine.query_engine import (
+    REFINE_REQUIRES_NAME,
     ClientFactory,
     FieldMetadata,
     ResponseAttributes,
@@ -57,6 +61,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+_QUERY_PATH = "/query"
 
 
 # Input union for every public query entry point (mirrors ``engine.execute``):
@@ -70,6 +75,18 @@ QueryInput = (
 )
 Refinement = QueryRefinement | Mapping[str, Any] | None
 Variables = Mapping[str, Any] | None
+
+
+def _raise_for_status(resp: Any) -> None:
+    """``raise_for_status``, a strict refusal (a 400 whose ``detail`` carries an Ossie code) raised as itself."""
+    if resp.status_code == 400:
+        try:
+            detail = resp.json().get("detail")
+        except ValueError:
+            detail = None
+        if isinstance(detail, dict) and detail.get("code") in set(OssieErrorCode):
+            raise OssieQueryError.from_detail(detail)
+    resp.raise_for_status()
 
 
 def _semantic_model_path(*, data_source: str, name: str) -> str:
@@ -127,7 +144,7 @@ class SlayerClient:
             resp = await client.request(
                 method=method, url=f"{self.url}{path}", json=json, params=params
             )
-            resp.raise_for_status()
+            _raise_for_status(resp)
             return resp.json()
 
     async def _request_or_none(self, *, method: str, path: str) -> Any | None:
@@ -154,7 +171,7 @@ class SlayerClient:
             resp = client.request(
                 method=method, url=f"{self.url}{path}", json=json, params=params
             )
-            resp.raise_for_status()
+            _raise_for_status(resp)
             return resp.json()
 
     @staticmethod
@@ -225,6 +242,48 @@ class SlayerClient:
         return body
 
     @staticmethod
+    def _strict_body(
+        query: QueryInput, *, refine: Refinement, variables: Variables, dry_run: bool, explain: bool,
+    ) -> Any:
+        """The ``POST /query?conformance=ossie-l3`` body: the query as given (the server judges it), wrapper keys
+        beside it."""
+        if not isinstance(query, (str, SlayerQuery, ABCMapping)):
+            return [SlayerClient._strict_parts(q) for q in query]
+        if isinstance(query, str):
+            body: dict[str, Any] = {"name": query, **SlayerClient._strict_refine(refine)}
+        elif refine is not None:
+            raise ValueError(REFINE_REQUIRES_NAME)
+        else:
+            body = SlayerClient._strict_parts(query)
+        body.update({k: v for k, v in (("variables", dict(variables) if variables else None),
+                                       ("dry_run", dry_run or None), ("explain", explain or None)) if v})
+        return body
+
+    @staticmethod
+    def _strict_parts(query: Any) -> Any:
+        """A query object as the server judges it: the parts it sets (``version`` is bookkeeping), an explicit ``None``
+        kept for refusal."""
+        if isinstance(query, SlayerQuery):
+            parts = query.model_dump(mode="json", exclude_unset=True, exclude={"version"})
+            parts = {**parts, **{n: None for n in query.model_fields_set if getattr(query, n) is None}}
+        elif isinstance(query, ABCMapping):
+            parts = dict(query)
+        else:
+            return query
+        if "name" in parts:
+            # On the wire a top-level ``name`` runs a saved query; in a query object it is no Ossie part.
+            raise OssieQueryError(OssieErrorCode.E_INVALID_QUERY,
+                                  "'name' is not a part of an Ossie query (dimensions, metrics, filter)")
+        return parts
+
+    @staticmethod
+    def _strict_refine(refine: Refinement) -> dict[str, Any]:
+        if refine is None:
+            return {}
+        return {"refine": dict(refine) if isinstance(refine, ABCMapping) else refine.model_dump(
+            mode="json", exclude_unset=True)}
+
+    @staticmethod
     def _normalize_for_engine(query: QueryInput) -> Any:
         """Coerce ``Mapping``/``Sequence`` inputs to concrete ``dict``/``list``
         so ``engine.execute``'s ``isinstance`` dispatch resolves them correctly."""
@@ -289,10 +348,11 @@ class SlayerClient:
         variables: Variables = None,
         dry_run: bool = False,
         explain: bool = False,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Execute a query. Accepts ``SlayerQuery`` / ``dict`` / list-DAG /
         ``str`` (run-by-name, optionally ``refine``-d) — the same union as ``engine.execute``;
-        ``variables`` are runtime placeholder values."""
+        ``variables`` are runtime placeholder values; ``conformance="ossie-l3"`` runs the strict Ossie binding."""
         if self._engine is not None:
             return await self._engine.execute(
                 query=self._normalize_for_engine(query),
@@ -300,28 +360,36 @@ class SlayerClient:
                 dry_run=dry_run,
                 explain=explain,
                 refine=self._normalize_refine(refine),
+                conformance=conformance,
             )
+        if parse_conformance(conformance) is Conformance.OSSIE_L3:
+            body = self._strict_body(query, refine=refine, variables=variables, dry_run=dry_run, explain=explain)
+            return self._parse_response(await self._request(method="POST", path=_QUERY_PATH, json=body,
+                                                            params={"conformance": Conformance.OSSIE_L3.value}))
         deprecations: list[DeprecatedInputWarning] = []
         body = self._build_query_body(
             query, refine=refine, variables=variables, dry_run=dry_run, explain=explain,
             deprecations_out=deprecations,
         )
-        result = await self._request(method="POST", path="/query", json=body)
+        result = await self._request(method="POST", path=_QUERY_PATH, json=body)
         return self._parse_response(result, deprecations=deprecations)
 
     async def sql(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> str:
         """Generate SQL for a query without executing it (same input union)."""
-        sql = (await self.query(query=query, refine=refine, variables=variables, dry_run=True)).sql
+        sql = (await self.query(query=query, refine=refine, variables=variables, dry_run=True,
+                                conformance=conformance)).sql
         assert sql is not None  # a dry run always renders SQL
         return sql
 
     async def explain(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Run the database's EXPLAIN on a query (same input union)."""
-        return await self.query(query=query, refine=refine, variables=variables, explain=True)
+        return await self.query(query=query, refine=refine, variables=variables, explain=True, conformance=conformance)
 
     async def list_datasets(self, data_source: str | None = None) -> list[str]:
         if self._storage is not None:
@@ -623,6 +691,7 @@ class SlayerClient:
         variables: Variables = None,
         dry_run: bool = False,
         explain: bool = False,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Execute a query synchronously (same arguments as ``query``)."""
         if self._engine is not None:
@@ -632,28 +701,36 @@ class SlayerClient:
                 dry_run=dry_run,
                 explain=explain,
                 refine=self._normalize_refine(refine),
+                conformance=conformance,
             )
+        if parse_conformance(conformance) is Conformance.OSSIE_L3:
+            body = self._strict_body(query, refine=refine, variables=variables, dry_run=dry_run, explain=explain)
+            return self._parse_response(self._request_sync(method="POST", path=_QUERY_PATH, json=body,
+                                                           params={"conformance": Conformance.OSSIE_L3.value}))
         deprecations: list[DeprecatedInputWarning] = []
         body = self._build_query_body(
             query, refine=refine, variables=variables, dry_run=dry_run, explain=explain,
             deprecations_out=deprecations,
         )
-        result = self._request_sync(method="POST", path="/query", json=body)
+        result = self._request_sync(method="POST", path=_QUERY_PATH, json=body)
         return self._parse_response(result, deprecations=deprecations)
 
     def sql_sync(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> str:
         """Generate SQL synchronously (same input union)."""
-        sql = self.query_sync(query=query, refine=refine, variables=variables, dry_run=True).sql
+        sql = self.query_sync(query=query, refine=refine, variables=variables, dry_run=True,
+                              conformance=conformance).sql
         assert sql is not None  # a dry run always renders SQL
         return sql
 
     def explain_sync(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Run the database's EXPLAIN synchronously (same input union)."""
-        return self.query_sync(query=query, refine=refine, variables=variables, explain=True)
+        return self.query_sync(query=query, refine=refine, variables=variables, explain=True, conformance=conformance)
 
     def inspect_sync(
         self,

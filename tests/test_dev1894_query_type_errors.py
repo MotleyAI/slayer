@@ -15,7 +15,6 @@ from slayer.core.errors import (
     DimensionTypeError,
     DistinctDimensionValuesError,
     DuplicateMetricNameError,
-    MetricNameCollidesWithFieldError,
     DatasetFilterError,
     NameCollisionError,
     ParameterGrainError,
@@ -201,9 +200,6 @@ async def test_family_error_layout(
 
 
 @pytest.mark.parametrize(("case", "cls", "location"), [
-    pytest.param(lambda: (SlayerQuery(
-        population="orders", dimensions=[QueryDimension(field="orders.id")], metrics=[_m("sum(orders.amount)", "status")],
-    ), [_orders()]), MetricNameCollidesWithFieldError, "metric 'status'", id="measure-collides-with-column"),
     pytest.param(lambda: (SlayerQuery(
         population="orders", dimensions=[QueryDimension(field="orders.status")], metrics=[_m("sum(orders.amount)", "rev2")],
     ), [_orders(extra_fields=(DatasetField(name="amount_sum", datatype=DataType.FLOAT),))]),

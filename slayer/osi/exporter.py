@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any, Literal, cast
 
+import warnings
+
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -17,11 +19,18 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.document_text import edit_text, parse_document_text, without_vendor
-from slayer.core.errors import AmbiguousReferenceError, OssieDocumentInvalidError, SlayerError
+from slayer.core.deprecation import outside_stacklevel
+from slayer.core.errors import (
+    AmbiguousReferenceError, OssieDocumentInvalidError, SlayerError, StoredDocumentLoadError, UnreadableDocumentError,
+)
+from slayer.core.granularity import CustomGranularity
+from slayer.core.warnings import SlayerUnloadableDocumentWarning, UnloadableDocumentWarning
 from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
 from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
-from slayer.core.relationship_walker import aggregation_owner, dataset_field_type, terminal_dataset, walk
+from slayer.core.relationship_walker import (
+    aggregation_owner, dataset_field_type, terminal_dataset, unique_key_sets, walk,
+)
 from slayer.core.time_points import parse_temporal_value
 from slayer.core.keys import (
     MIRRORED_TIME_POINT_OP,
@@ -33,6 +42,7 @@ from slayer.core.keys import (
     SqlFragmentKey,
     StarKey,
     TimePointCmpKey,
+    TimeTruncKey,
     TransformKey,
     ValueKey,
     aggregation_source_type,
@@ -46,6 +56,7 @@ from slayer.core.models import (
     DatasetRelationship,
     DatasetMetric,
     SlayerDataset,
+    is_key_set_unique,
     aggregation_definition,
     relationship_key_error,
     rendered_expression,
@@ -59,12 +70,14 @@ from slayer.sql.ossie_dialects import PORTABLE_READER, expression_digest, ossie_
 from slayer.osi.models import OSSIE_DATATYPES, TEMPORAL_DATATYPES, explicit_description
 from slayer.osi.yaml_writer import dump_yaml
 from slayer.core.ossie_expression import OSIExpression
+from slayer.core.ossie_steps import ossie_from
 from slayer.core.ossie_validity import portable_problem
 from slayer.core.portable_sql import portable_sql
 from slayer.sql.field_expansion import expand_field_definition_parts_sync, expand_derived_refs_sync
 from slayer.sql.root_scope import root_scope_field_ids
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.ossie import OssieDialect
 from slayer.sql.render.aggregates import AggregateSpec, render_aggregate
 from slayer.sql.render.value_expr import AliasFacilities, CompositeFacilities, RenderContext, render_value_key
 
@@ -147,13 +160,13 @@ _Shape = tuple[str, str, list[str], list[str]]
 
 
 class _Relationship(BaseModel):
-    """One FK-direction relationship and the SLayer relationships it stands for."""
+    """One FK-direction relationship and the SLayer relationship it stands for."""
 
     from_dataset: str
     to: str
     from_columns: list[str]
     to_columns: list[str]
-    declarations: list[ext.RelationshipDeclaration] = []
+    declaration: ext.RelationshipDeclaration
     name: str = ""
 
 
@@ -223,6 +236,11 @@ def _refuse_slayer_only(agg: AggregateKey) -> None:
         raise _Refused("is a windowed or partitioned aggregate", _RESTORE)
 
 
+def _calls(tree: exp.Expr) -> set[str]:
+    """The lower-cased names of the functions ``tree`` calls."""
+    return {(f.name if isinstance(f, exp.Anonymous) else f.sql_name()).lower() for f in tree.find_all(exp.Func)}
+
+
 def _outermost_aggregates(key: ValueKey) -> Iterator[AggregateKey]:
     if isinstance(key, AggregateKey):
         yield key
@@ -259,7 +277,8 @@ class _Exporter:
         self.dialect: SqlDialect = dialect_for_ds_type(config.type)
         self.target = self.dialect.sqlglot_name
         self.token = ossie_token(config.type)
-        self.neutral = SqlDialect()
+        self.neutral = OssieDialect()
+        self.granularities = config.granularity_definitions
         self.virtual = virtual
         self.graph: dict[str, SlayerDataset] = {
             name: r if isinstance(r := (resolved or {}).get(name), SlayerDataset) else d for name, d in datasets.items()}
@@ -590,8 +609,9 @@ class _Exporter:
         return not bad
 
     def _is_key(self, name: str, fields: list[str]) -> bool:
+        """``fields`` hold a unique key of the dataset: one routing proves, or one the document exports."""
         ds = self.osi_datasets[name]
-        return any(set(fields) == set(k) for k in [ds.primary_key, *ds.unique_keys] if k)
+        return is_key_set_unique(key_fields=fields, unique_key_sets=[*unique_key_sets(ds.graph), *ds.unique_keys])
 
     # ---- relationships ----
 
@@ -622,13 +642,9 @@ class _Exporter:
                          f"side; not exported.", severity="dropped", category="relationship", dataset=name,
                          suggestion="Set the relationship's cardinality.")
             return
-        declaration = ext.RelationshipDeclaration(dataset=name, relationship=relationship)
-        rel = next((r for r in self.relationships
-                    if (r.from_dataset, r.to, r.from_columns, r.to_columns) == shape), None)
-        if rel is None:
-            rel = _Relationship(from_dataset=shape[0], to=shape[1], from_columns=shape[2], to_columns=shape[3])
-            self.relationships.append(rel)
-        rel.declarations.append(declaration)
+        self.relationships.append(_Relationship(
+            from_dataset=shape[0], to=shape[1], from_columns=shape[2], to_columns=shape[3],
+            declaration=ext.RelationshipDeclaration(dataset=name, relationship=relationship)))
         plain = (shape == forward and relationship.cardinality is RelationshipCardinality.MANY_TO_ONE
                  and relationship.join_type.value == "left" and relationship.name is None)
         if not plain:
@@ -639,16 +655,12 @@ class _Exporter:
     def _relationship_shape(self, relationship: DatasetRelationship, *, forward: _Shape) -> _Shape | None:
         """``forward`` or its reverse, whichever points from the many side; ``None`` when undeterminable."""
         name, target, sources, targets = forward
-        backward = (target, name, targets, sources)
-        if relationship.cardinality in (RelationshipCardinality.MANY_TO_ONE, RelationshipCardinality.ONE_TO_ONE):
-            return forward
-        if relationship.cardinality is RelationshipCardinality.ONE_TO_MANY:
-            return backward
-        if self._is_key(target, targets):
-            return forward
-        if self._is_key(name, sources):
-            return backward
-        return None
+        many = ossie_from(declaring=name, to=target, cardinality=relationship.cardinality, declaring_keys=sources,
+                          to_keys=targets, keyed=lambda ds, keys: self._is_key(ds, list(keys)),
+                          document_from=relationship.document_from)
+        if many is None:
+            return None
+        return forward if many == name else (target, name, targets, sources)
 
     def _bad_keys(self, side: str, other: str, keys: list[str]) -> list[str]:
         ds = self.osi_datasets[side]
@@ -665,7 +677,7 @@ class _Exporter:
             label = f"Metric {slayer_metric.name or slayer_metric.expression!r} on {name!r}"
             try:
                 key = bind_dataset_expression(slayer_metric.text, dataset=ds.graph, datasets=list(self.graph.values()),
-                                         dialect=self.target)
+                                              dialect=self.target, granularities=self.granularities)
             except Exception as exc:  # noqa: BLE001 — an unbindable metric travels verbatim
                 self._carry_metric(ds, slayer_metric, label=f"{label} does not bind ({exc})", needs=set())
                 continue
@@ -714,14 +726,30 @@ class _Exporter:
         readers: list[str] = []
         for agg in aggregates:
             readers.append(self._aggregate_reader(ds, agg))
-        portable = not any(a.agg == "count_distinct_approx" for a in aggregates)
+        portable = not any(a.agg == "count_distinct_approx" for a in aggregates) and not any(
+            isinstance(k, TimeTruncKey) and isinstance(k.granularity, CustomGranularity) for k in walk_value_keys(key))
         scoped = len(set(readers)) == 1 and readers[0] not in self.fixed
         try:
             tree = self._render(ds.graph, _instant_comparisons(key), scoped=scoped, portable=portable)
         except Exception as exc:  # noqa: BLE001 — anything the shared renderer refuses stays SLayer-only
             raise _Refused(f"does not render as standard SQL ({exc})", _RESTORE) from exc
+        if not portable:
+            self._check_dialect_entry(self.graph[readers[0]] if scoped else ds.graph, tree)
         return _Metric(home=ds.dataset.name, metric=metric, scope="dataset" if scoped else "model",
                        dataset=readers[0], tree=tree, portable=portable)
+
+    def _check_dialect_entry(self, receiver: SlayerDataset, tree: exp.Expr) -> None:
+        """Refuse a dialect entry SLayer cannot read back on ``receiver``, or that calls SLayer's own registered
+        functions."""
+        registered = sorted(_calls(tree) & self.dialect.slayer_registered_functions)
+        if registered:
+            raise _Refused(f"renders on {self.token} only through SLayer's own functions {registered}", _RESTORE)
+        try:
+            bind_dataset_expression(tree.sql(dialect=self.target), dataset=receiver, datasets=list(self.graph.values()),
+                                    dialect=self.target, granularities=self.granularities)
+        except Exception as exc:  # noqa: BLE001 — any failure means load could not read the entry
+            raise _Refused(f"renders on {self.token} only as SQL SLayer cannot read back "
+                           f"({str(exc).splitlines()[0]})", _RESTORE) from exc
 
     def _aggregate_reader(self, ds: _Dataset, agg: AggregateKey) -> str:
         """The one dataset ``agg`` reads, or refused."""
@@ -781,7 +809,7 @@ class _Exporter:
         def row(value: ValueKey) -> Expression:
             leaves = [k for k in walk_value_keys(value) if isinstance(k, (FieldKey, FieldSqlKey))]
             slots = {leaf: f"s{i}" for i, leaf in enumerate(leaves)}
-            aliases = AliasFacilities(slot_id_by_key=slots,
+            aliases = AliasFacilities(slotted_kinds=(FieldKey, FieldSqlKey), slot_id_by_key=slots,
                                       value_by_slot_id={s: self._ref(home, k, scoped=scoped) for k, s in slots.items()})
             return _ossie_division(render_value_key(key=value, ctx=RenderContext(
                 dialect=dialect, aliases=aliases, field_type=field_type)))
@@ -833,7 +861,7 @@ class _Exporter:
             for taken in [*(doc.get("relationships") or []), *(doc.get("metrics") or [])]:
                 document.allocate(taken["name"])
         for rel in self.relationships:
-            explicit = next((d.relationship.name for d in rel.declarations if d.relationship.name), None)
+            explicit = rel.declaration.relationship.name
             if explicit:
                 rel.name = document.allocate(explicit)
         for metric in dataset_metrics:
@@ -870,7 +898,8 @@ class _Exporter:
             aggs[str(_SENTINEL + k)] = hit
             text = f"{text[:start]}({_SENTINEL + k}){text[end:]}"
         try:
-            key = bind_dataset_expression(text, dataset=home, datasets=list(self.graph.values()), dialect=self.target)
+            key = bind_dataset_expression(text, dataset=home, datasets=list(self.graph.values()), dialect=self.target,
+                                          granularities=self.granularities)
             tree = self._render(home, _instant_comparisons(key), scoped=False, portable=metric.portable)
         except Exception:  # noqa: BLE001 — the expanded form stands
             return None
@@ -1008,12 +1037,13 @@ class _Exporter:
     def _relationship_entity(self, rel: _Relationship) -> dict[str, Any]:
         entity: dict[str, Any] = {"name": rel.name, "from": rel.from_dataset, "to": rel.to,
                                   "from_columns": rel.from_columns, "to_columns": rel.to_columns}
-        meta = rel.declarations[0].relationship.meta or {}
+        meta = rel.declaration.relationship.meta or {}
         if meta.get("osi_ai_context"):
             entity["ai_context"] = meta["osi_ai_context"]
-        declarations = [d.model_copy(update={"relationship": d.relationship.model_copy(update={"meta": _slayer_meta(d.relationship.meta)})})
-                        for d in rel.declarations]
-        self._extensions(entity, meta, payload=ext.RelationshipPayload(entity=rel.name, declarations=declarations),
+        declared = rel.declaration.relationship
+        declaration = rel.declaration.model_copy(
+            update={"relationship": declared.model_copy(update={"meta": _slayer_meta(declared.meta)})})
+        self._extensions(entity, meta, payload=ext.RelationshipPayload(entity=rel.name, declarations=[declaration]),
                          dataset=rel.from_dataset, ossie=ext.relationship_digest(
                              from_dataset=rel.from_dataset, to=rel.to, from_columns=rel.from_columns,
                              to_columns=rel.to_columns))
@@ -1043,13 +1073,20 @@ async def _expanded_query_backed(
     return virtual
 
 
-async def _stored_documents(*, storage: Any, datasource: str) -> list[tuple[str, str]]:
-    """Each stored semantic-model document's name and text."""
-    documents: list[tuple[str, str]] = []
+async def _stored_documents(*, storage: Any, datasource: str, loaded: set[str],
+                            skipped: list[StoredDocumentLoadError]) -> list[tuple[str, str, Any]]:
+    """The name, text and data of each stored semantic-model document named in ``loaded`` that still reads; one that
+    no longer reads goes to ``skipped``."""
+    documents: list[tuple[str, str, Any]] = []
     for _, name in await storage.list_semantic_models(datasource):
-        text = await storage.get_semantic_model_text(name, data_source=datasource)
-        if text is not None:
-            documents.append((name, text))
+        if name not in loaded:
+            continue
+        try:
+            text = await storage.get_semantic_model_text(name, data_source=datasource)
+            if text is not None:
+                documents.append((name, text, parse_document_text(text)))
+        except (UnreadableDocumentError, OssieDocumentInvalidError) as exc:  # edited since it loaded
+            skipped.append(StoredDocumentLoadError(kind="semantic_model", name=name, data_source=datasource, cause=exc))
     return documents
 
 
@@ -1059,11 +1096,15 @@ def _valid_portable(text: str | None) -> str | None:
     return written if written is not None and portable_problem(written) is None else None
 
 
-def _parsed_document(name: str, text: str) -> Any:
-    try:
-        return parse_document_text(text)
-    except ValueError as exc:
-        raise OssieDocumentInvalidError(name=name, reasons=[str(exc)]) from exc
+def _left_out(skipped: list[StoredDocumentLoadError]) -> list[ConversionWarning]:
+    """A report entry, and an ``unloadable_document`` warning, for each document the export leaves out."""
+    out: list[ConversionWarning] = []
+    for error in skipped:
+        payload = UnloadableDocumentWarning(document_kind="semantic_model", data_source=error.data_source, name=error.name,
+                                            cause=error.cause_text)
+        warnings.warn(SlayerUnloadableDocumentWarning(payload), stacklevel=outside_stacklevel())
+        out.append(ConversionWarning(message=payload.human_message(), category="unloadable_document", severity="dropped"))
+    return out
 
 
 async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: list[str] | None = None,
@@ -1074,20 +1115,28 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
     if config is None:
         raise OsiExportError(f"Datasource {datasource!r} not found.")
     stored = await _stored_datasets(storage=storage, datasource=datasource)
+    skipped = [e for e in (await storage.load_datasets(data_source=datasource))[1] if e.kind == "semantic_model"]
+    documents = await _stored_documents(storage=storage, datasource=datasource, skipped=skipped,
+                                        loaded={d.semantic_model for d in stored.values() if d.semantic_model})
+    readable = {name for name, _, _ in documents}
+    stored = {n: d for n, d in stored.items() if not d.semantic_model or d.semantic_model in readable}
+    left_out = _left_out(skipped)
+    if not stored and skipped:
+        raise skipped[0]  # nothing else to export: the document's own load error
     unknown = [m for m in datasets or [] if m not in stored]
     if unknown:
         raise OsiExportError(f"Unknown dataset(s) in datasource {datasource!r}: {', '.join(unknown)}.")
     selected = sorted(set(datasets)) if datasets is not None else sorted(stored)
     virtual = await _expanded_query_backed(engine=engine, stored=stored, selected=selected)
     resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
-    documents = await _stored_documents(storage=storage, datasource=datasource)
-    parsed = [_parsed_document(name, text) for name, text in documents]
+    parsed = [data for _, _, data in documents]
     members = {d["name"] for doc in parsed for d in doc["datasets"]}
     if datasets is None and len(documents) == 1 and members == set(stored):
         text = documents[0][1] if extensions else edit_text(documents[0][1],
                                                             lambda data: without_vendor(data, ext.VENDOR))
-        return OsiExportResult(document=parse_document_text(text), text=text, warnings=[])
+        return OsiExportResult(document=parse_document_text(text), text=text, warnings=left_out)
     result = _Exporter(config=config, datasets=stored, selected=selected, virtual=virtual, extensions=extensions,
                        resolved=resolved, documents=parsed).run()
+    result.warnings = [*left_out, *result.warnings]
     result.text = dump_yaml(result.document)
     return result

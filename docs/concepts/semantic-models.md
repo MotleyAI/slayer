@@ -44,7 +44,7 @@ A document belongs to the datasource it is stored under, since an Ossie document
 
 The document's `name` must equal its storage name. Loading a document never connects to the database and never writes to storage.
 
-Only Ossie's flat `0.3.0.dev0` shape loads. A key Ossie does not define, at any level, makes the document unloadable with an error naming the key; so do an unknown `version`, the legacy `semantic_model` wrapper and the legacy `custom_extensions` key. Upgrade earlier shapes with [`slayer import-osi`](../osi/osi_import.md). An unloadable document does not affect other documents or datasets.
+Only Ossie's flat `0.3.0.dev0` shape loads. A key Ossie does not define, at any level, makes the document unloadable with an error naming the key; so do an unknown `version`, the legacy `semantic_model` wrapper, the legacy `custom_extensions` key, a YAML or JSON mapping key repeated at any depth (repeated `<<` merge directives are allowed), and a scalar YAML cannot build, such as `2024-02-30`, each named with its line; a save or edit of such text is refused. Upgrade earlier shapes with [`slayer import-osi`](../osi/osi_import.md). An unloadable document does not affect other documents or datasets.
 
 ## What a document becomes
 
@@ -115,13 +115,14 @@ Each dataset's, field's, dataset metric's and relationship's `ai_context`, and i
 
 Settings Ossie has no place for travel in a `nonportable_extensions` entry with `vendor_name: SLAYER` on the entity they belong to: row filters, `hidden`, access tags, custom aggregations, query-backed and `sql`-mode sources, field formats and granularities, a relationship's cardinality or join type, and any definition that is not valid Ossie in its position. A document without a `SLAYER` entry loads as plain Ossie.
 
-`SLAYER` entries are read on every load. An entry that repeats core content applies only while that content is unchanged: after a hand edit of the core, the core wins and `inspect` shows a load warning naming the entity. A malformed entry is ignored with a load warning and affects no other entity.
+`SLAYER` entries are read on every load. An entry that repeats core content applies only while that content is unchanged: after a hand edit of the core, the core wins and `inspect` shows a load warning naming the entity. A malformed entry is ignored with a load warning and affects no other entity, as is a relationship's entry declaring more than one relationship.
 
 ## What loads but cannot be evaluated yet
 
 A valid document can hold entities SLayer cannot evaluate yet:
 
 - a window function (`OVER`);
+- an expression SLayer's expression reader cannot parse, such as the subquery `(SELECT 1)`;
 - a model-scoped metric reading a field unqualified or outside an aggregate;
 - a model-scoped aggregate naming no dataset, such as `COUNT(*)`;
 - a dataset-scoped metric evaluating a source measure with `AGG(source.measure)`;

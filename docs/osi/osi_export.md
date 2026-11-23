@@ -42,7 +42,7 @@ print(result.render_report())
 | a field reading only its own dataset | a field whose expression reads the source's physical columns (other fields of the dataset expanded) |
 | a field with a `filter` | a field `CASE WHEN <filter> THEN <value> END`, masked in every position |
 | `primary_key`, `unique`, imported unique keys | `primary_key`, `unique_keys` |
-| a relationship | a relationship from the many side to the one side (a one-to-many relationship is reversed) |
+| a relationship | its own relationship from the many side to the one side (a one-to-many relationship is reversed), also beside another relationship on the same keys |
 | a metric whose aggregates all read one dataset | a metric on that dataset |
 | a metric whose aggregates read different datasets | a model-scoped metric with `dataset.field` references, and `AGG(dataset.metric)` for each metric it uses |
 | `label`, `description`, imported `ai_context` | `label`, `description`, `ai_context` |
@@ -53,7 +53,7 @@ Each aggregate in a metric is evaluated over the rows of the one dataset it read
 
 ## Expressions
 
-Each form of a field's expression exports as itself: its portable `sql` as `sql`, each `dialects` entry with its text, and an entry for the datasource's dialect (or a field `sql` not yet converted) under that dialect's token (`POSTGRES`, `DUCKDB`, `TSQL`, …). A path to another field of the dataset is replaced by that field's definition; the result stays portable `sql` only when every replaced part is portable, else it becomes the datasource's entry. Datasource SQL is never written as portable `sql`. A source's expression is written in the datasource's dialect. Metric expressions are always standard portable SQL, except an approximate distinct count, which has no portable form and is written only in the datasource's dialect.
+Each form of a field's expression exports as itself: its portable `sql` as `sql`, each `dialects` entry with its text, and an entry for the datasource's dialect (or a field `sql` not yet converted) under that dialect's token (`POSTGRES`, `DUCKDB`, `TSQL`, …). A path to another field of the dataset is replaced by that field's definition; the result stays portable `sql` only when every replaced part is portable, else it becomes the datasource's entry. Datasource SQL is never written as portable `sql`. A source's expression is written in the datasource's dialect. Metric expressions are always standard portable SQL, except an approximate distinct count, which has no portable form and is written only in the datasource's dialect. A time bucket in a metric exports as `DATE_TRUNC('<UNIT>', CAST(x AS TIMESTAMP))`, cast to `DATE` when the bucket is a date; a Sunday week and `date_add` export through `DATEADD`. A datasource-dialect metric entry is written only when SLayer reads it back and it calls none of SLayer's own functions, so a measure bucketing by a custom granularity travels only in the `SLAYER` extension.
 
 ## The SLAYER Extension
 

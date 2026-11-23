@@ -38,7 +38,6 @@ from slayer.core.errors import (
     DistinctDimensionValuesError,
     DuplicateMetricNameError,
     ListTypeError,
-    MetricNameCollidesWithFieldError,
     DatasetFilterError,
     NameCollisionError,
     ParameterGrainError,
@@ -546,17 +545,8 @@ def type_order_positions(prebound: "PreboundQuery") -> None:
         )
 
 
-def check_computed_dim_name_collision(
-    *, name: str, dataset_name: Optional[str], query_metric_collision: bool,
-) -> None:
-    """A computed dimension's name must not shadow a dataset field/metric or a query metric."""
-    if dataset_name is not None:
-        raise NameCollisionError(
-            summary=f"The computed dimension name collides with an existing "
-            f"field or metric on dataset {dataset_name!r}.",
-            location=f"dimension {name!r}",
-            suggestion="Choose a different name.",
-        )
+def check_computed_dim_name_collision(*, name: str, query_metric_collision: bool) -> None:
+    """A computed dimension's name must not shadow a query metric (a field's name it may)."""
     if query_metric_collision:
         raise NameCollisionError(
             summary="The computed dimension name collides with a query metric "
@@ -594,14 +584,6 @@ def check_metric_dedupe_collision(
             f"one result column {public_name!r} but declare different label/type.",
             suggestion="Rename one (set 'name') to disambiguate.",
         )
-
-
-def check_metric_name_collision(
-    *, name: Optional[str], dataset: str, suggestion: Optional[str] = None,
-) -> None:
-    """A public metric name shadowing a source field raises."""
-    if name is not None:
-        raise MetricNameCollidesWithFieldError(name=name, dataset=dataset, suggestion=suggestion)
 
 
 def check_canonical_alias_shadows_field(
@@ -2250,17 +2232,15 @@ def check_transform_partition_keys_in_operand_grain(
                 )
 
 
-def check_partition_key_attributable(
-    *, label: str, pk: ValueKey, attributable: bool, reason: Optional[str],
-) -> None:
-    """A partition key reached over a relationship must be attributable from the aggregate's root; the compiler resolves ``attributable``/``reason``."""
-    if attributable:
+def check_partition_key_analysable(*, label: str, pk: ValueKey, analysable: bool) -> None:
+    """A partition key whose definition cannot be analysed fails closed in every mode."""
+    if analysable:
         return
     raise PartitionKeyError(
-        summary=f"The partition_by field '{dotted_key_display(pk)}' {reason}; "
-        f"every partition key must be attributable from the aggregate's root.",
+        summary=f"The partition_by field '{dotted_key_display(pk)}' has a definition whose relationship "
+        f"paths cannot be analysed, so its attributability from the aggregate's home is unknown.",
         location=label,
-        suggestion=_RELATIONSHIP_REMEDY,
+        suggestion="Partition by a field whose definition references other fields by name.",
     )
 
 
@@ -2306,19 +2286,20 @@ def check_cross_dataset_source_resolves(*, target_path, host_name: str) -> NoRet
     )
 
 
-def check_cross_dataset_partition_keys_attributable(
+def check_partition_keys_attributable(
     *, alias: Optional[str], root_name: str, explicit: bool,
     unattributable: Sequence[Tuple[str, str]],
 ) -> None:
-    """An unattributable EXPLICIT partition key on a cross-dataset aggregate is a hard error; an implicit grain broadcasts instead. ``unattributable`` = compiler-resolved (name, reason) pairs."""
+    """Outside association an unattributable EXPLICIT partition key is an error; an implicit grain broadcasts instead. ``unattributable`` = compiler-resolved (name, reason) pairs."""
     if not explicit or not unattributable:
         return
     name, reason = unattributable[0]
     raise PartitionKeyError(
-        summary=f"The cross-dataset aggregate declares partition_by={name}, which "
-        f"{reason}; every explicit partition key must be attributable from {root_name}.",
+        summary=f"The aggregate declares partition_by={name}, which {reason}; outside association every "
+        f"explicit partition key must be attributable from {root_name}.",
         location=f"metric {alias!r}",
-        suggestion=_RELATIONSHIP_REMEDY,
+        suggestion=f"Omit to_many_handling (or set 'associate') to compute at that grain over the distinct "
+        f"{root_name} rows, or declare relationship cardinality or a covering unique key on the target.",
     )
 
 

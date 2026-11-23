@@ -15,7 +15,6 @@ from slayer.core.errors import (
     DimensionTypeError,
     DistinctDimensionValuesError,
     DuplicateMetricNameError,
-    MetricNameCollidesWithFieldError,
     DatasetFilterError,
     NameCollisionError,
     ParameterGrainError,
@@ -93,7 +92,6 @@ class TestPickle:
     @pytest.mark.parametrize("exc", [
         TimeAxisError(summary="S.", location="measure 'm'", suggestion="Fix."),
         DuplicateMetricNameError(name="total", occurrences=["sum(a)", "sum(b)"]),
-        MetricNameCollidesWithFieldError(name="amount", dataset="orders"),
         CanonicalAliasShadowsFieldError(expression="sum(amount)", canonical="amount_sum", dataset="orders"),
     ], ids=lambda e: type(e).__name__)
     def test_round_trip(self, exc) -> None:
@@ -105,8 +103,7 @@ class TestPickle:
 
 class TestHierarchy:
     @pytest.mark.parametrize("cls", FAMILIES + KEYWORD_REPARENTED + (
-        MetricNameCollidesWithFieldError, CanonicalAliasShadowsFieldError,
-        DuplicateMetricNameError,
+        CanonicalAliasShadowsFieldError, DuplicateMetricNameError,
     ))
     def test_every_family_is_a_query_type_error(self, cls) -> None:
         assert issubclass(cls, QueryTypeError)
@@ -118,8 +115,7 @@ class TestHierarchy:
         assert issubclass(TimeDimensionFieldError, TimeAxisError)
 
     @pytest.mark.parametrize("cls", (
-        MetricNameCollidesWithFieldError, CanonicalAliasShadowsFieldError,
-        DuplicateMetricNameError,
+        CanonicalAliasShadowsFieldError, DuplicateMetricNameError,
     ))
     def test_structured_collisions_are_name_collisions(self, cls) -> None:
         assert issubclass(cls, NameCollisionError)
@@ -132,12 +128,6 @@ class TestStructuredCollisions:
     """Structured constructors and attributes survive the move onto the family schema."""
 
     @pytest.mark.parametrize(("exc", "rendered"), [
-        pytest.param(
-            MetricNameCollidesWithFieldError(name="amount", dataset="orders"),
-            "MetricNameCollidesWithFieldError: The declared metric name matches a source field "
-            "on dataset 'orders'.\n  at metric 'amount'",
-            id="measure-collides",
-        ),
         pytest.param(
             CanonicalAliasShadowsFieldError(expression="sum(amount)", canonical="amount_sum", dataset="orders"),
             "CanonicalAliasShadowsFieldError: The canonical alias 'amount_sum' shadows a source field "
@@ -157,7 +147,6 @@ class TestStructuredCollisions:
         assert exc.suggestion is None
 
     def test_attributes_kept(self) -> None:
-        assert MetricNameCollidesWithFieldError(name="amount", dataset="orders").dataset == "orders"
         exc = CanonicalAliasShadowsFieldError(expression="sum(amount)", canonical="amount_sum", dataset="orders")
         assert (exc.expression, exc.canonical, exc.dataset) == ("sum(amount)", "amount_sum", "orders")
         dup = DuplicateMetricNameError(name="total", occurrences=["sum(a)", "sum(b)"])

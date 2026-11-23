@@ -11,7 +11,11 @@ from typing import Any
 import yaml
 from sqlalchemy.exc import SQLAlchemyError
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import (
     BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr, ValidationError, model_validator,
@@ -21,12 +25,17 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from slayer import usage_reporting
 from slayer import otel
 from slayer.mcp.server import create_mcp_server
+from slayer.core.enums import Conformance
 from slayer.core.errors import (
     AmbiguousDatasetError,
     MemoryNotFoundError,
+    OssieErrorCode,
+    OssieQueryError,
     SchemaDriftError,
+    UnknownConformanceError,
     UnknownKeyError,
 )
+from slayer.core.ossie_conformance import parse_conformance
 from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import (
@@ -455,6 +464,71 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    async def _strict_query(body: Any, *, request: Any) -> tuple[Any, dict[str, bool]]:
+        """A strict request: the run's wrapper keys, the rest of the body the query as submitted; the execution flags
+        as ``request`` validated them."""
+        wrapper: dict[str, Any] = {}
+        if isinstance(body, dict):
+            wrapper = {k: v for k, v in body.items() if k in _RUN_BY_NAME_FIELDS}
+            body = {k: v for k, v in body.items() if k not in _RUN_BY_NAME_FIELDS}
+        flags = {"dry_run": bool(request.dry_run), "explain": bool(request.explain)}
+        name = wrapper.get("name")
+        if name is not None and body:
+            raise OssieQueryError(OssieErrorCode.E_INVALID_QUERY, f"a saved query run by name takes no query parts "
+                                  f"beside its name; put {sorted(body)} in 'refine'")
+        run_query = name if name is not None else body
+        if flags["dry_run"]:
+            usage_reporting.mark_dry_run()
+        usage_reporting.observe_query(run_query)
+        result = await engine.execute(query=run_query, variables=wrapper.get("variables"), refine=wrapper.get("refine"),
+                                      conformance=Conformance.OSSIE_L3, dry_run=flags["dry_run"],
+                                      explain=flags["explain"])
+        usage_reporting.observe_executed(result)
+        return result, flags
+
+    def _query_response(result: Any, *, dry_run: bool, explain: bool, deprecations: Any = ()) -> Response:
+        attrs = result.attributes
+
+        def _convert_meta(d: dict) -> dict[str, FieldMetadataResponse]:
+            return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
+
+        attributes = None
+        if attrs and (attrs.dimensions or attrs.metrics):
+            attributes = AttributesResponse(
+                dimensions=_convert_meta(attrs.dimensions),
+                metrics=_convert_meta(attrs.metrics),
+            )
+        response = QueryResponse(
+            data=result.data,
+            row_count=result.row_count,
+            columns=result.columns,
+            attributes=attributes,
+            warnings=[w.model_dump(mode="json") for w in [*(result.warnings or []), *deprecations]],
+            population=result.population,
+            population_inferred=result.population_inferred,
+            row_sources=list(result.row_sources),
+        )
+        if dry_run or explain:
+            response.sql = result.sql
+        body = {"data": response.data, **response.model_dump(mode="json", exclude={"data"})}
+        return Response(content=encode_json(body), media_type="application/json")
+
+    @app.exception_handler(RequestValidationError)
+    async def _strict_malformed(request: Request, exc: RequestValidationError) -> Any:
+        """Under the strict binding a query body that does not validate is malformed (``E_INVALID_QUERY``)."""
+        conformance = request.query_params.get("conformance") if request.url.path == "/query" else None
+        if conformance is not None:
+            # The conformance is chosen before the body is judged: an unknown one is refused as such.
+            try:
+                chosen = parse_conformance(conformance)
+            except UnknownConformanceError as unknown:
+                return JSONResponse(status_code=400, content={"detail": str(unknown)})
+            if chosen is Conformance.OSSIE_L3:
+                refusal = OssieQueryError(OssieErrorCode.E_INVALID_QUERY,
+                                          f"the request body is malformed: {exc.errors()}")
+                return JSONResponse(status_code=400, content={"detail": jsonable_encoder(refusal.detail())})
+        return await request_validation_exception_handler(request, exc)
+
     @app.post(
         "/query",
         response_model=QueryResponse,
@@ -474,8 +548,13 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     )
     async def query(
         request: QueryRequest | QueryListRequest,
+        http_request: Request,
+        conformance: str = Conformance.SLAYER.value,
     ) -> Response:
         try:
+            if parse_conformance(conformance) is Conformance.OSSIE_L3:
+                result, flags = await _strict_query(await http_request.json(), request=request)
+                return _query_response(result, **flags)
             # Multi-stage DAG: body is ``{"queries": [...], "variables": ...,
             # "dry_run": ..., "explain": ...}``. Mirrors the MCP ``query``
             # tool's list form and ``engine.execute(query=[...])``.
@@ -540,33 +619,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 query=run_query, variables=variables, dry_run=dry_run, explain=explain, **run_kwargs,
             )
             usage_reporting.observe_executed(result)
-            attrs = result.attributes
-
-            def _convert_meta(d: dict) -> dict[str, FieldMetadataResponse]:
-                return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
-
-            attributes = None
-            if attrs and (attrs.dimensions or attrs.metrics):
-                attributes = AttributesResponse(
-                    dimensions=_convert_meta(attrs.dimensions),
-                    metrics=_convert_meta(attrs.metrics),
-                )
-            response = QueryResponse(
-                data=result.data,
-                row_count=result.row_count,
-                columns=result.columns,
-                attributes=attributes,
-                warnings=[
-                    w.model_dump(mode="json") for w in [*(result.warnings or []), *request_deprecations]
-                ],
-                population=result.population,
-                population_inferred=result.population_inferred,
-                row_sources=list(result.row_sources),
-            )
-            if dry_run or explain:
-                response.sql = result.sql
-            body = {"data": response.data, **response.model_dump(mode="json", exclude={"data"})}
-            return Response(content=encode_json(body), media_type="application/json")
+            return _query_response(result, dry_run=dry_run, explain=explain, deprecations=request_deprecations)
+        except OssieQueryError as refusal:
+            raise HTTPException(status_code=400, detail=refusal.detail())
         except SchemaDriftError as drift:
             raise HTTPException(
                 status_code=422,

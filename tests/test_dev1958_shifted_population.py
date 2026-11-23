@@ -10,6 +10,7 @@ from collections import defaultdict
 
 import pytest
 
+from slayer.core.errors import PartitionKeyError
 from slayer.core.query import QueryMetric
 
 from tests._dev1832_fixtures import (
@@ -96,17 +97,17 @@ class TestCrossModelPartitionKey:
         _assert_cells(_cells(resp, "customers.tier"), TIER_SHARE)
 
     async def test_fanning_hop_key_is_typed_error(self, exec_engine) -> None:
-        """Regression guard: the input-safety error, never a value."""
+        """Under ``error`` the explicit key across the fanning hop is a typed partition-key error, never a value."""
         query = orders_q(
             dimensions=["orders.status"], time_dimensions=month_td("orders"),
             metrics=[QueryMetric(
                 metric=f"time_shift(sum(orders.amount) / sum(orders.amount, partition_by=[{EVENT_VALUE}]), -1)",
-                alias="t")])
-        with pytest.raises(ValueError) as ei:
+                alias="t")],
+            to_many_handling="error")
+        with pytest.raises(PartitionKeyError) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value)
         assert "region_events" in msg, msg
-        assert "every partition key must be attributable" in msg, msg
 
 
 # --------------------------------------------------------------------------- #

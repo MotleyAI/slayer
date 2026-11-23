@@ -1,7 +1,8 @@
 """The dimension anchor (semantics Axiom 12.2).
 
-The anchor of a root-less query is the dataset with the fewest routed relationship hops that
-determines every queried dimension, read from the dimensions only — never filters or metrics.
+The anchor of a root-less query is the anchor Ossie qualifies uniquely, else the dataset with the
+fewest routed relationship hops that determines every queried dimension, read from the dimensions
+only — never filters or metrics.
 An unproven hop counts by association (raw rows excepted); dimension groups no join path
 connects take the product of their anchors. The same determination core backs
 ``recommend_population``.
@@ -9,6 +10,8 @@ connects take the product of their anchors. The same determination core backs
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterable
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -23,7 +26,9 @@ from slayer.core.errors import (
     UnresolvableDimensionRelationshipError,
 )
 from slayer.core.names import match_name
-from slayer.core.relationship_search import HopFilter, UnaddressablePair, blocking_pairs, shortest_route, unaddressable_pairs
+from slayer.core.relationship_search import (
+    HopFilter, UnaddressablePair, blocking_pairs, reachable, routes, shortest_route, unaddressable_pairs,
+)
 from slayer.core.relationship_walker import canonical_path, provably_to_one, terminal_dataset, walk
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, declared_aliases
@@ -517,6 +522,45 @@ async def _classification_scopes(
     return scopes, ds_by_dataset
 
 
+async def query_datasource(
+    *, storage: StorageBackend, anchors: Iterable[tuple[str, bool]], metrics: Iterable[tuple[str, bool]] = (),
+) -> str | None:
+    """The single datasource holding every one of ``anchors`` (dataset names) and ``metrics`` (bare model-scoped metric
+    names), each with whether it is quoted, that exists anywhere (``None`` when none does); raises as inference does
+    when several hold them together, or none does."""
+    names_by_ds: dict[str, list[str]] = {}
+    for ds, name in await storage._list_all_dataset_identities():
+        names_by_ds.setdefault(ds, []).append(name)
+    # Each anchor resolves within each datasource, so names differing only in case across datasources never clash.
+    ds_by_anchor = _holders(kind="dataset", refs=anchors, names_by_ds=names_by_ds)
+    metrics = list(metrics)
+    if metrics:
+        datasources = await storage.list_datasources()
+        listed = await asyncio.gather(*(storage.list_model_scoped_metrics(ds) for ds in datasources))
+        metric_names = {ds: [m.name for m in found] for ds, found in zip(datasources, listed)}
+        ds_by_anchor |= _holders(kind="metric", refs=metrics, names_by_ds=metric_names)
+    if not ds_by_anchor:
+        return None
+    return _resolve_datasource(ds_by_dataset=ds_by_anchor, data_source=None, anchors=set(ds_by_anchor))
+
+
+def _holders(
+    *, kind: str, refs: Iterable[tuple[str, bool]], names_by_ds: dict[str, list[str]],
+) -> dict[str, set[str]]:
+    """Each found ref's anchor key → the datasources declaring it."""
+    found: dict[str, set[str]] = {}
+    for name, quoted in refs:
+        for ds, names in names_by_ds.items():
+            if match_name(name=name, declared=names, quoted=quoted) is not None:
+                found.setdefault(_anchor_key(kind, name, quoted), set()).add(ds)
+    return found
+
+
+def _anchor_key(kind: str, name: str, quoted: bool) -> str:
+    """One anchor of ``query_datasource``: its kind, name and quoting tell it apart from every other."""
+    return f"{kind}\x1f{name}\x1f{quoted}"
+
+
 def _resolve_datasource(
     *, ds_by_dataset: dict[str, set[str]], data_source: str | None, anchors: set[str]
 ) -> str:
@@ -770,12 +814,40 @@ def _components(datasets_by_name: dict[str, SlayerDataset]) -> dict[str, str]:
     return {n: find(n) for n in parent}
 
 
+def _ossie_anchor(items: list[str], *, datasets_by_name: dict[str, SlayerDataset]) -> str | None:
+    """The one dataset of a ``dataset.field`` item reaching every other item's dataset along Ossie steps, if unique."""
+    heads: list[str] = []
+    for item in items:
+        try:
+            ref = parse_template(item)
+        except ValueError:
+            return None
+        if not isinstance(ref, DottedRef) or len(ref.parts) != 2:
+            return None
+        anchor = find_anchor(ref.parts[0], quoted=ref.quoted_at(0), reader=None, datasets_by_name=datasets_by_name)
+        if anchor is None:
+            return None
+        heads.append(anchor.name)
+    heads = list(dict.fromkeys(heads))
+    # Reachability first (one bounded search per head), so a missing Ossie route never enumerates every simple path.
+    reach = {h: reachable(root=datasets_by_name[h], datasets_by_name=datasets_by_name, hop_filter=HopFilter.OSSIE)
+             for h in heads}
+    qualified = [h for h in heads if all(
+        o == h or (o in reach[h] and routes(root=datasets_by_name[h], target=o, datasets_by_name=datasets_by_name,
+                                            hop_filter=HopFilter.OSSIE, cap=1)) for o in heads)]
+    return qualified[0] if len(qualified) == 1 else None
+
+
 def _choose_anchor(
     *, items: list[str], candidates: list[str], datasets_by_name: dict[str, SlayerDataset], associate: bool,
 ) -> str:
-    """The unique fewest-hops candidate determining every item, or the reasoned refusal."""
+    """The viable anchor Ossie qualifies uniquely, else the unique fewest-hops candidate determining every item, else
+    the reasoned refusal."""
     verdicts = evaluate_candidates(items=items, candidates=candidates, datasets_by_name=datasets_by_name,
                                    associate=associate)
+    ossie = _ossie_anchor(items, datasets_by_name=datasets_by_name)
+    if ossie is not None and any(v.dataset_name == ossie and v.viable for v in verdicts):
+        return ossie
     winner, tied = select_from_verdicts(verdicts)
     if winner is not None:
         return winner

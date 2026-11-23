@@ -131,6 +131,7 @@ The positional argument is a JSON query if it starts with `{` or `[`, a file pat
 | `--format` | `table` | Output format: `table` (numbers rendered through each field's or metric's `format`, as in MCP output) or `json` (raw values) |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run the database's EXPLAIN on the query |
+| `--conformance` | `slayer` | `ossie-l3` runs the strict [Ossie Layer 3 binding](../interfaces/ossie-layer-3.md); a refusal prints `OssieQueryError: <code>: …` |
 | `--refine` | | Dataset-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
 | `--variables KEY=VALUE` | | Runtime variable, repeatable. Overrides `query.variables` and `dataset.query_variables`. |
 | `--variables-json '{...}'` | | Runtime variables from a JSON object. Mutually exclusive with `--variables`. |

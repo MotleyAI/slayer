@@ -364,15 +364,15 @@ class TestLeftAlone:
         assert mem.query is not None
         assert [list(t.date_range or []) for t in mem.query.time_dimensions or []] == [["2024-03-05", "2024-04-10"]]
 
-    async def test_untyped_column_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
-                                                     caplog: pytest.LogCaptureFixture) -> None:
+    async def test_undeclared_column_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
+                                                        caplog: pytest.LogCaptureFixture) -> None:
         storage = await store(tmp_path, shop_ds, backend=backend,
-                              memories=(memory("m_untyped", query("raw <= '2024-12-31'")),))
+                              memories=(memory("m_untyped", query("missing <= '2024-12-31'")),))
         with logged(caplog) as texts:
             mem = await storage.get_memory("m_untyped")
         assert mem.query is not None
-        assert mem.query.filter == ["orders.raw <= '2024-12-31'"]
-        assert any("m_untyped" in t and "raw <= '2024-12-31'" in t for t in texts), texts
+        assert mem.query.filter == ["orders.missing <= '2024-12-31'"]
+        assert any("m_untyped" in t and "missing <= '2024-12-31'" in t for t in texts), texts
 
     async def test_literal_tested_between_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                              backend: str, caplog: pytest.LogCaptureFixture) -> None:
@@ -438,11 +438,13 @@ class TestVersionGating:
         assert mem.query is not None
         assert [m.expression for e in mem.query.extensions or [] for m in e.metrics or []] == [EARLY_COUNT_UPGRADED]
 
-    async def test_datasource_models_read_only_for_a_date_literal(
+    async def test_raw_datasource_models_read_only_for_an_extension_date_literal(
         self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        extended = query(extensions=[{"source_name": "orders", "measures": [{"name": "early", "formula": EARLY_COUNT}]}])
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(
-            memory("m_plain", query("code = 'zz'")), memory("m_dated", query("created_at <= '2024-12-31'"))))
+            memory("m_plain", query("code = 'zz'")), memory("m_dated", query("created_at <= '2024-12-31'")),
+            memory("m_ext_dated", extended)))
         reads: list[str | None] = []
         stored_models = storage._stored_datasets
 
@@ -452,8 +454,9 @@ class TestVersionGating:
 
         monkeypatch.setattr(storage, "_stored_datasets", counted)
         await storage.get_memory("m_plain")
-        assert reads == []
         await storage.get_memory("m_dated")
+        assert reads == []
+        await storage.get_memory("m_ext_dated")
         assert reads == [DS]
 
     async def test_upgrade_is_idempotent(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:

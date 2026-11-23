@@ -14,7 +14,6 @@ from typing import Any, List
 import pytest
 from sqlglot import exp
 
-from slayer.core.errors import NameCollisionError
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine import query_engine as query_engine_module
@@ -131,13 +130,14 @@ class TestNamedJoinedPathSingleQuery:
         assert resp.columns == ["rid", "revenue"]
         assert _rows(resp, "rid", "revenue") == [(1, 160.0)]
 
-    async def test_name_colliding_with_host_column_rejected(self, exec_engine) -> None:
-        with pytest.raises(NameCollisionError, match="computed dimension name collides"):
-            await exec_engine.execute({
-                "population": "orders",
-                "dimensions": [{"alias": "region", "field": "customers.regions.name"}],
-                "metrics": [REVENUE],
-            })
+    async def test_name_equal_to_a_host_field_is_accepted(self, exec_engine) -> None:
+        resp = await exec_engine.execute({
+            "population": "orders",
+            "dimensions": [{"alias": "region", "field": "customers.regions.name"}],
+            "metrics": [REVENUE],
+        })
+        assert resp.columns == ["region", "revenue"]
+        assert _rows(resp, "region", "revenue") == [("RegN", 160.0), ("RegS", 50.0)]
 
 
 class TestNamedJoinedPathCrossesStage:

@@ -260,6 +260,8 @@ _DISTINCT_ONLY = ("DISTINCT is supported only as count(distinct x), i.e. count_d
                   "i.e. collect(x)")
 #: Calls taking a leading DISTINCT, and the aggregation each spells.
 _DISTINCT_CALLS = {"count": "count_distinct", "array_agg": "collect"}
+_NOT_IN = "not in"
+_IN_OPS = frozenset({"in", _NOT_IN})
 
 
 class _Problem(ValueError):
@@ -400,24 +402,38 @@ class CallSpan(BaseModel):
 
 
 class _State:
-    """Per-parse scratch: the expression text, the farthest failure offset, the calls and method calls read and,
-    while rewriting, the colon spans."""
+    """Per-parse scratch: the expression text, the farthest failure offset, the calls and method calls read, the
+    non-Ossie spellings rewritten and, while rewriting, the colon spans."""
 
     def __init__(self) -> None:
         self.text = ""
         self.farthest = 0
         self.calls: Dict[Tuple[int, int], CallSpan] = {}
         self.methods: Dict[Tuple[int, int], LegacySpan] = {}
+        self.spellings: Dict[str, None] = {}
         self.spans: Optional[List["_ColonSpan"]] = None
         #: While ``reference_spans`` reads: each reference node by id, with its offsets.
         self.refs: Optional[Dict[int, Tuple[Any, int, int]]] = None
+        #: While ``literal_comparisons`` reads: each string literal by id with its offsets, and each written comparison.
+        self.literals: Optional[Dict[int, Tuple[Any, int, int]]] = None
+        self.compared: Optional[Dict[int, Any]] = None
 
     def reset(self, text: str) -> None:
-        self.text, self.farthest, self.calls, self.methods = text, 0, {}, {}
+        self.text, self.farthest, self.calls, self.methods, self.spellings = text, 0, {}, {}, {}
 
 
 _STATE = _State()
 _PARSE_LOCK = threading.Lock()
+
+
+def _spelled(kind: str) -> None:
+    """Note a non-Ossie spelling the parser rewrites (``nonossie_spellings``)."""
+    _STATE.spellings.setdefault(kind, None)
+
+
+def _spelled_call(kind: str, node: Any) -> Any:
+    _spelled(kind)
+    return node
 
 
 def _record_failure(_s: str, loc: int, _expr: Any, _err: Any) -> None:
@@ -527,12 +543,23 @@ def _number(toks: List[Any]) -> Literal:
     return Literal(value=Decimal(text))
 
 
-def _string(toks: List[Any]) -> Literal:
-    return Literal(value=toks[0][1:-1].replace("''", "'"))
+def _string(_s: str, loc: int, toks: pp.ParseResults) -> Literal:
+    raw = _first(toks)
+    node = Literal(value=raw[1:-1].replace("''", "'"))
+    if _STATE.literals is not None:
+        _STATE.literals[id(node)] = (node, loc, loc + len(raw))
+    return node
+
+
+def _written_comparison(node: Any) -> Any:
+    """``node``, recorded for ``literal_comparisons`` as a comparison written in the text."""
+    if _STATE.compared is not None:
+        _STATE.compared[id(node)] = node
+    return node
 
 
 _NUMBER = _on(_t(pp.Regex(r"(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?").set_name("number")), _number)
-_STRING = _on(_t(pp.Regex(r"'(?:[^']|'')*'").set_name("string")), _string)
+_STRING = _t(pp.Regex(r"'(?:[^']|'')*'").set_name("string")).set_parse_action(_string)
 _CONSTANT_WORDS = {"True": True, "False": False, "None": None}
 _SQL_CONSTANT_WORDS = {"true": True, "false": False, "null": None}
 
@@ -855,6 +882,7 @@ _JSON_VALUE_RETURNING = (pp.Suppress(_kw("json_value")) + LPAR + expr + COMMA + 
 
 
 def _json_value_returning(toks: List[Any]) -> Cast:
+    _spelled("json_value(… RETURNING …)")
     value, path, type_text = toks
     if type_text not in _RETURNING_TYPES:
         raise _Problem(f"json_value() RETURNING {type_text} is not supported; use one of {', '.join(sorted(_RETURNING_TYPES))}.")
@@ -864,7 +892,7 @@ def _json_value_returning(toks: List[Any]) -> Cast:
 _on(_JSON_VALUE_RETURNING, _json_value_returning)
 _POSITION = _on((pp.Suppress(_kw("position")) + LPAR + _concat_level + pp.Suppress(_kw("in")) + expr + RPAR), lambda toks: ScalarCall(name="instr", args=(toks[1], toks[0])))
 _SUBSTRING = _on((pp.Suppress(_kw("substring")) + LPAR + expr + pp.Suppress(_kw("from")) + expr
-              + pp.Optional(pp.Suppress(_kw("for")) + expr) + RPAR), lambda toks: ScalarCall(name="substr", args=tuple(toks)))
+              + pp.Optional(pp.Suppress(_kw("for")) + expr) + RPAR), lambda toks: _spelled_call("SUBSTRING(… FROM …)", ScalarCall(name="substr", args=tuple(toks))))
 _TRIM_FORM = (_kw("trim") + LPAR + _kw("both", "leading", "trailing")) + _fail(
     "TRIM(BOTH | LEADING | TRAILING …) is not supported; use trim(x), ltrim(x) or rtrim(x).",
 )
@@ -903,6 +931,7 @@ def _interval_count(text: str) -> Literal:
 
 
 def _interval_node(toks: List[Any]) -> ScalarCall:
+    _spelled("INTERVAL literal")
     quantity = toks[0]
     unit_word = toks[1] if len(toks) > 1 else None
     if isinstance(quantity.value, str):
@@ -1006,6 +1035,7 @@ _on(_PRIMARY, _primary_node)
 
 def _fold_casts(toks: pp.ParseResults) -> Any:
     items = list(toks[0])
+    _spelled("::")
     node = items[0]
     for type_text in items[1:]:
         node = Cast(source=node, type_text=type_text)
@@ -1018,6 +1048,7 @@ def _signed(toks: pp.ParseResults) -> Any:
 
 
 def _pow(toks: pp.ParseResults) -> Any:
+    _spelled("**")
     left, right = toks[0]
     return ScalarCall(name="pow", args=(left, right))
 
@@ -1063,6 +1094,7 @@ def _fold_concat(toks: pp.ParseResults) -> Any:
                 raise _Problem(_BARE_ARROW)
             node = ScalarCall(name="concat", args=(node, right))
             continue
+        _spelled(op)
         base, steps = chain if chain is not None else (node, ())
         steps = (*steps, *_arrow_steps(right))
         if op == "->":
@@ -1115,6 +1147,7 @@ def _negated(node: Any, negate: bool) -> Any:
 
 
 def _truth_test(left: Any, toks: List[Any]) -> Any:
+    _spelled("IS TRUE / IS FALSE")
     negate, word = toks[0], toks[1].lower()
     known = Cmp(op=_is_op(True), left=left, right=Literal(value=None))
     test = BoolOp(op="and", operands=(known, left if word == "true" else UnaryOp(op="not", operand=left)))
@@ -1124,6 +1157,7 @@ def _truth_test(left: Any, toks: List[Any]) -> Any:
 def _regex_operator(left: Any, toks: List[Any]) -> Any:
     """``~`` / ``~*`` / ``!~`` / ``!~*`` as ``[NOT] regexp_like(left, p[, 'i'])``."""
     op, pattern = toks
+    _spelled(op)
     flags = (Literal(value="i"),) if op.endswith("*") else ()
     return _negated(ScalarCall(name="regexp_like", args=(left, pattern, *flags)), op.startswith("!"))
 
@@ -1172,7 +1206,8 @@ def _in_scalar_item(item: Any) -> Literal | Placeholder:
 def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
     """``L IN (M1, M2)`` over lists is ``L = M1 OR L = M2``."""
     if not isinstance(right, _ListItems):
-        return Cmp(op="not in" if negate else "in", left=left, right=right)
+        node = Cmp(op=_NOT_IN if negate else "in", left=left, right=right)
+        return _written_comparison(node) if isinstance(right, TupleLit) else node
     equalities = tuple(Cmp(op="==", left=left, right=item) for item in right.items)
     return _negated(equalities[0] if len(equalities) == 1 else BoolOp(op="or", operands=equalities), negate)
 
@@ -1180,23 +1215,23 @@ def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
 _IN_LIST = ((LPAR + _PLACEHOLDER_ATOM + RPAR)
             | _PLACEHOLDER_ATOM
             | _on((LPAR + _SEQ_ITEMS + RPAR), lambda toks: _in_rhs_elements(list(toks[0])))
-            | _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: _in_rhs_elements(list(toks[0])))
-            | _STRING
+            | _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: _spelled_call("IN […]", _in_rhs_elements(list(toks[0]))))
+            | _STRING.copy().add_parse_action(lambda: _spelled("IN '…'"))
             | _fail("the right-hand side of in / not in must be a literal list, e.g. status in ('a', 'b')."))
 
 _CMP_SUFFIX = (
     # SQL ``v = ANY(list)`` is list membership.
     _suffix(_sym(r"==|=", "comparison") + pp.Suppress(_kw("any")) + LPAR + _concat_level + RPAR,
-            lambda left, t: ScalarCall(name="contains", args=(t[1], left)))
+            lambda left, t: _spelled_call("= ANY(…)", ScalarCall(name="contains", args=(t[1], left))))
     | _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
-            lambda left, t: Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "="))
+            lambda left, t: _written_comparison(Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "=")))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("distinct")) + pp.Suppress(_kw("from")) + _concat_level,
               lambda left, t: Cmp(op="is not distinct from" if t[0] else "is distinct from", left=left, right=t[1]))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("null") | pp.Regex(r"None\b")),
               lambda left, t: Cmp(op=_is_op(t[0]), left=left, right=Literal(value=None)))
     | _suffix(_IS + _NOT_FLAG + (_kw("true", "false")), _truth_test)
     | _suffix(_IS + _NOT_FLAG + _concat_level,
-              lambda left, t: Cmp(op=_is_op(t[0]), left=left, right=t[1]))
+              lambda left, t: _spelled_call("IS <value>", Cmp(op=_is_op(t[0]), left=left, right=t[1])))
     | _suffix(_NOT_FLAG + pp.Suppress(_kw("in")) + _IN_LIST, lambda left, t: _in_comparison(left, t[0], t[1]))
     | _suffix(_NOT_FLAG + pp.Suppress(_kw("between")) + _concat_level + pp.Suppress(_kw("and")) + _concat_level,
               lambda left, t: _negated(BoolOp(op="and", operands=(
@@ -1263,6 +1298,7 @@ class _Reading(BaseModel):
     parsed: Any
     legacy: Tuple[LegacySpan, ...]
     calls: Tuple[CallSpan, ...]
+    spellings: Tuple[str, ...] = ()
 
 
 def parse_expr(text: str) -> ParsedExpr:
@@ -1287,16 +1323,69 @@ def reference_spans(text: str) -> Tuple[ParsedExpr, Mapping[int, Tuple[int, int]
         _STATE.reset(text)
         _STATE.refs = {}
         try:
-            parsed = cast(ParsedExpr, _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)[0])
+            parsed = cast(ParsedExpr, _parse_tree(text))
             found = _STATE.refs
-        except _Problem as problem:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
-        except pp.ParseBaseException as e:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
         finally:
             _STATE.refs = None
     return parsed, MappingProxyType(
         {key: (start, start + len(text[start:end].rstrip())) for key, (_node, start, end) in found.items()})
+
+
+class LiteralComparison(BaseModel):
+    """A string literal ``value`` at ``text[start:end]`` compared directly with the reference ``parts`` (per-segment
+    ``quoted``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    value: str
+    start: int
+    end: int
+    parts: Tuple[str, ...]
+    quoted: Tuple[bool, ...]
+
+
+def _reference_reading(node: Any) -> Optional[Tuple[Tuple[str, ...], Tuple[bool, ...]]]:
+    if isinstance(node, Ref) and not node.evaluated:
+        return (node.name,), (node.quoted,)
+    if isinstance(node, DottedRef) and not node.evaluated:
+        return node.parts, tuple(node.quoted_at(i) for i in range(len(node.parts)))
+    return None
+
+
+def _compared_literals(node: Cmp) -> Iterator[Tuple[Any, Any]]:
+    """``(literal, reference)`` per string literal ``node`` compares directly with a reference."""
+    if node.op in _IN_OPS:
+        if isinstance(node.right, TupleLit):
+            yield from ((e, node.left) for e in node.right.elements)
+        return
+    yield from ((node.right, node.left), (node.left, node.right))
+
+
+@lru_cache(maxsize=8192)
+def literal_comparisons(text: str) -> Tuple[LiteralComparison, ...]:
+    """Each string literal ``text`` compares directly with a column reference — ``=``, ``==``, ``!=``, ``<>``, ``<``,
+    ``<=``, ``>``, ``>=`` either way round, or an element of an all-literal ``[NOT] IN`` list — in source order; none
+    when ``text`` does not parse."""
+    with _PARSE_LOCK:
+        _STATE.reset(text)
+        _STATE.literals, _STATE.compared = {}, {}
+        try:
+            parsed = _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)[0]
+            literals, compared = _STATE.literals, _STATE.compared
+        except (ValueError, pp.ParseBaseException):
+            return ()
+        finally:
+            _STATE.literals = _STATE.compared = None
+    out: List[LiteralComparison] = []
+    written = (n for n in walk_parsed(parsed) if isinstance(n, Cmp) and compared.get(id(n)) is n)
+    for cmp in written:
+        for literal, other in _compared_literals(cmp):
+            reading = _reference_reading(other)
+            located = literals.get(id(literal))
+            if reading is not None and located is not None and located[0] is literal and isinstance(literal.value, str):
+                out.append(LiteralComparison(
+                    value=literal.value, start=located[1], end=located[2], parts=reading[0], quoted=reading[1]))
+    return tuple(sorted(out, key=lambda c: c.start))
 
 
 def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
@@ -1304,6 +1393,15 @@ def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
     try:
         return _read(_bound_strings(text)).legacy
     except Exception:  # noqa: BLE001 — unparseable text has no spans
+        return ()
+
+
+def nonossie_spellings(text: str) -> Tuple[str, ...]:
+    """The spellings Ossie Layer 1 does not define that template ``text`` uses and the parser rewrites (``~``, ``->>``,
+    ``::``, …); none when it does not parse."""
+    try:
+        return _read(_bound_strings(text)).spellings
+    except Exception:  # noqa: BLE001 — unparseable text has no spellings
         return ()
 
 
@@ -1315,22 +1413,53 @@ def call_spans(text: str) -> Tuple[CallSpan, ...]:
         return ()
 
 
+#: Parenthesis depth past which an expression is refused: deeper ones exhaust the parser's recursion.
+MAX_NESTING = 32
+
+
+def _nesting(text: str) -> int:
+    """The deepest parenthesis nesting in ``text``'s code, literals and comments aside."""
+    depth = deepest = 0
+    for region in (r for r in _regions(text) if r.kind == "code"):
+        for ch in text[region.start:region.end]:
+            depth += (ch == "(") - (ch == ")")
+            deepest = max(deepest, depth)
+    return deepest
+
+
+def _parse_tree(text: str) -> Any:
+    """``text`` parsed by the grammar (the caller holds ``_PARSE_LOCK``); raises ``ValueError`` when it does not parse."""
+    if _nesting(text) > MAX_NESTING:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: parentheses nest more than {MAX_NESTING} deep.")
+    try:
+        masked = _mask_placeholders(text)
+        if not masked.strip():
+            raise ValueError("Empty Mode-B expression.")
+        return _EXPRESSION.parse_string(masked, parse_all=True)[0]
+    except _Problem as problem:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
+    except pp.ParseBaseException as e:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
+    except RecursionError:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: it nests too deeply to read.") from None
+
+
 @lru_cache(maxsize=8192)
 def _read(text: str) -> _Reading:
+    try:
+        return _reading(text)
+    except RecursionError:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: it nests too deeply to read.") from None
+
+
+def _reading(text: str) -> _Reading:
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
     with _PARSE_LOCK:
         _STATE.reset(text)
-        try:
-            masked = _mask_placeholders(text)
-            if not masked.strip():
-                raise ValueError("Empty Mode-B expression.")
-            parsed = cast(ParsedExpr, _EXPRESSION.parse_string(masked, parse_all=True)[0])
-        except _Problem as problem:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
-        except pp.ParseBaseException as e:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
+        parsed = cast(ParsedExpr, _parse_tree(text))
         methods, calls = list(_STATE.methods.values()), sorted(_STATE.calls.values(), key=lambda c: c.start)
+        spellings = tuple(_STATE.spellings)
     legacy = tuple(sorted([*_text_legacy_spans(text), *methods], key=lambda s: (s.start, s.end)))
     if any(_is_interval(n) for n in walk_parsed(parsed)):
         parsed = _deferred_intervals(parsed, message=(
@@ -1338,7 +1467,7 @@ def _read(text: str) -> _Reading:
             f"`x + interval(n, unit)`, `interval(n, unit) + x` or `x - interval(n, unit)`; "
             f"otherwise use date_add(x, n, unit)."
         ))
-    return _Reading(parsed=parsed, legacy=legacy, calls=tuple(calls))
+    return _Reading(parsed=parsed, legacy=legacy, calls=tuple(calls), spellings=spellings)
 
 
 _IS_NONE_RE = re.compile(r"\b[Ii][Ss]\s+(?:([Nn][Oo][Tt])\s+)?None\b")
@@ -1503,9 +1632,6 @@ def _in_slot_ordinals(template: Any) -> frozenset[int]:
         for node in walk_parsed(template)
         if isinstance(node, Cmp) and node.op in _IN_OPS and isinstance(node.right, Placeholder)
     )
-
-
-_IN_OPS = frozenset({"in", "not in"})
 
 
 def parse_bound_expr(text: str, variables: Mapping[str, Any]) -> ParsedExpr:
@@ -2400,6 +2526,8 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
     """The canonical lower-case unit (or ``date_part`` part) word of ``arg``, one of ``words``."""
     accepted = ", ".join(words)
     what = "part" if name == "date_part" else "unit"
+    if name == "date_part" and _bare_part(arg, words=words):
+        arg = Literal(value=arg.name)
     if not (isinstance(arg, Literal) and isinstance(arg.value, str)):
         spelled = keyword_spelling(arg)
         raise ValueError(
@@ -2417,6 +2545,14 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
             f"{arg.value!r}; accepted: {accepted}."
         )
     return word
+
+
+def _bare_part(arg: Any, *, words: Tuple[str, ...]) -> bool:
+    """Whether ``arg`` is an unquoted word naming a date part (or its alias), as ``EXTRACT`` takes it."""
+    if not isinstance(arg, Ref) or arg.quoted or arg.evaluated:
+        return False
+    word = arg.name.lower()
+    return word in words or word in DATE_PART_ALIASES or word in AMBIGUOUS_WEEKDAY_NAMES
 
 
 def _folded(node: Any) -> Any:
@@ -2874,12 +3010,8 @@ def rewrite_colon_spans(text: str, *, units: Optional[frozenset[str]] = None) ->
         _STATE.reset(text)
         _STATE.spans = []
         try:
-            _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)
+            _parse_tree(text)
             spans = _STATE.spans
-        except _Problem as problem:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
-        except pp.ParseBaseException as e:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
         finally:
             _STATE.spans = None
     picked = [s for s in spans if units is None or (s.args is None and s.name.casefold() in units)]

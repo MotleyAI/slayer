@@ -16,7 +16,9 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.relationship_walker import OrientedRelationship, addresses_alone, canonical_token, neighbors, provably_to_one
+from slayer.core.relationship_walker import (
+    OrientedRelationship, addresses_alone, canonical_token, neighbors, ossie_step, provably_to_one,
+)
 from slayer.core.models import SlayerDataset
 from slayer.core.time_spine import is_spine
 
@@ -39,10 +41,11 @@ __all__ = [
 
 
 class HopFilter(str, Enum):
-    """Which hops a search may take: every edge, or only provably to-one ones."""
+    """Which hops a search may take: every edge, only provably to-one ones, or only Ossie steps."""
 
     ALL = "all"
     TO_ONE = "to_one"
+    OSSIE = "ossie"
 
 
 class Route(BaseModel):
@@ -80,6 +83,7 @@ class _Hop(BaseModel):
     token: str
     to_one: bool
     addressable: bool
+    ossie: bool
 
 
 class _Graph:
@@ -100,14 +104,14 @@ class _Graph:
                 if target is None:
                     continue
                 hops.append(_Hop(edge=e, token=canonical_token(e), to_one=provably_to_one(edge=e, target_dataset=target),
-                                 addressable=addresses_alone(edge=e, incident=edges)))
+                                 addressable=addresses_alone(edge=e, incident=edges),
+                                 ossie=ossie_step(edge=e, datasets_by_name=self.datasets)))
             hops.sort(key=lambda h: (h.token, h.edge.to))
             self._memo[name] = hops
         return hops
 
     def hops(self, name: str, hop_filter: HopFilter) -> list[_Hop]:
-        return [h for h in self.incident(name)
-                if h.addressable and (hop_filter is HopFilter.ALL or h.to_one)]
+        return [h for h in self.incident(name) if h.addressable and _admits(hop_filter, h)]
 
     def passes(self, name: str, *, root: str) -> bool:
         """A route may continue through ``name``: the root, or anything but the spine."""
@@ -127,6 +131,10 @@ class _Graph:
                     seen.add(h.edge.to)
                     frontier.append(h.edge.to)
         return seen
+
+
+def _admits(hop_filter: HopFilter, hop: _Hop) -> bool:
+    return hop_filter is HopFilter.ALL or (hop.ossie if hop_filter is HopFilter.OSSIE else hop.to_one)
 
 
 def _extend(route: Route, hop: _Hop) -> Route:
@@ -186,7 +194,7 @@ def distances(
             continue
         for hop in graph.incident(node):
             nxt = hop.edge.to
-            if nxt not in dist and (hop_filter is HopFilter.ALL or hop.to_one):
+            if nxt not in dist and _admits(hop_filter, hop):
                 dist[nxt] = dist[node] + 1
                 frontier.append(nxt)
     return dist

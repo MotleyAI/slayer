@@ -12,12 +12,14 @@ from typing import Dict, List, Optional, Protocol, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.errors import ParseError
 
 from slayer.core.errors import (
     AmbiguousRelationshipPathError,
     CircularRelationshipPathError,
     DatasetFieldCycleError,
     LegacyDunderAliasError,
+    ModeASqlParseError,
     UnreachableDefinitionError,
     UnresolvableDimensionRelationshipError,
 )
@@ -568,6 +570,7 @@ def _expand_target_field(
             owner_path=full_path, datasets_by_name=datasets_by_name, dialect=dialect,
             visited=visited, alias_resolver=alias_resolver,
             crossed_paths=crossed_paths, sibling_first=sibling_first,
+            site=(target_dataset.name, target_col.name),
         )
 
     definition = target_col.definition_sql
@@ -629,7 +632,14 @@ def expand_derived_refs_sync(
     # resolver (no relationship path registered). Prequote first — idempotent, so callers
     # that already prequoted (the Mode-A door) are unaffected.
     sql = prequote_reserved_identifiers(sql, dialect=dialect)
-    parsed = sqlglot.parse_one(sql, dialect=dialect)
+    try:
+        parsed = sqlglot.parse_one(sql, dialect=dialect)
+    except ParseError as exc:
+        raise ModeASqlParseError(
+            fragment=sql,
+            location=f"definition of field {'.'.join(site)!r}" if site else f"a definition on dataset {dataset.name!r}",
+            reason=str(exc).splitlines()[0] if str(exc) else None,
+        ) from exc
     root_scope_ids = root_scope_field_ids(parsed=parsed)
     for node, quals, leaf in reference_sites(parsed, root_scope_ids):
         replacement = _process_reference_site(

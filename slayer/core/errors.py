@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
 from typing_extensions import deprecated
 
-from slayer.core.enums import TimeGranularity
+from slayer.core.enums import StrEnum, TimeGranularity
 
 if TYPE_CHECKING:
     from slayer.core.relationship_walker import OrientedRelationship  # noqa: F401
@@ -385,6 +385,76 @@ class QueryTypeError(SlayerError):
         return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
 
 
+class OssieErrorCode(StrEnum):
+    """Ossie Layer 3's error codes (``wide_table_semantics.md`` §8), in precedence order."""
+
+    E_INVALID_QUERY = "E_INVALID_QUERY"
+    E_EMPTY_AGGREGATION_QUERY = "E_EMPTY_AGGREGATION_QUERY"
+    E_NAME_NOT_FOUND = "E_NAME_NOT_FOUND"
+    E_METRIC_IN_DIMENSIONS = "E_METRIC_IN_DIMENSIONS"
+    E_FIELD_IN_METRICS = "E_FIELD_IN_METRICS"
+    E_AGGREGATE_IN_WHERE = "E_AGGREGATE_IN_WHERE"
+    E_WINDOW_IN_WHERE = "E_WINDOW_IN_WHERE"
+    E_CROSS_DATASET_FILTER = "E_CROSS_DATASET_FILTER"
+    E_NAME_COLLISION = "E_NAME_COLLISION"
+    E_UNAGGREGATED_FINER_GRAIN_REFERENCE = "E_UNAGGREGATED_FINER_GRAIN_REFERENCE"
+    E_DEFERRED_WINDOWED_METRIC = "E_DEFERRED_WINDOWED_METRIC"
+    E_AMBIGUOUS_MEASURE_GRAIN = "E_AMBIGUOUS_MEASURE_GRAIN"
+    E_NO_PATH = "E_NO_PATH"
+    E_PARTIAL_DIMENSION_REACHABILITY = "E_PARTIAL_DIMENSION_REACHABILITY"
+    E_NO_ANCHOR = "E_NO_ANCHOR"
+    E_UNSUPPORTED_FILTER_PATH = "E_UNSUPPORTED_FILTER_PATH"
+    E_AMBIGUOUS_PATH = "E_AMBIGUOUS_PATH"
+
+
+class OssieQueryError(SlayerError):
+    """A query the strict Ossie Layer 3 binding refuses, with its §8 code and what fails to reach what."""
+
+    def __init__(
+        self,
+        code: OssieErrorCode | str,
+        summary: str,
+        *,
+        dimension: str | None = None,
+        filter: str | None = None,  # noqa: A002 — Ossie's name for the query part
+        metric: str | None = None,
+        anchor: str | None = None,
+        suggestion: str | None = None,
+    ) -> None:
+        self.code = OssieErrorCode(code)
+        self.summary = summary
+        self.dimension = dimension
+        self.filter = filter
+        self.metric = metric
+        self.anchor = anchor
+        self.suggestion = suggestion
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=f"{self.code}: {summary}", suggestion=suggestion,
+        ))
+
+    def detail(self) -> dict[str, str | None]:
+        """The error as a JSON-ready mapping (REST's ``detail``)."""
+        return {"code": str(self.code), "message": str(self), "summary": self.summary, "dimension": self.dimension,
+                "filter": self.filter, "metric": self.metric, "anchor": self.anchor, "suggestion": self.suggestion}
+
+    @classmethod
+    def from_detail(cls, detail: dict[str, Any]) -> "OssieQueryError":
+        return cls(detail["code"], detail.get("summary") or "", dimension=detail.get("dimension"),
+                   filter=detail.get("filter"), metric=detail.get("metric"), anchor=detail.get("anchor"),
+                   suggestion=detail.get("suggestion"))
+
+    def __reduce__(self):
+        return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
+
+
+class UnknownConformanceError(SlayerError):
+    """A conformance that is neither ``slayer`` nor ``ossie-l3``."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        super().__init__(f"Unknown conformance {value!r}: use 'slayer' (the default) or 'ossie-l3'.")
+
+
 def _rebuild_query_type_error(cls: "type[SlayerError]", args: tuple, state: dict) -> SlayerError:
     """Unpickle without re-running the keyword-only constructor."""
     exc = cls.__new__(cls)
@@ -651,19 +721,6 @@ class DuplicateMetricNameError(NameCollisionError):
             summary="The metric name is declared more than once.",
             location=f"metric {name!r}",
             extras=[("occurrences", repr(self.occurrences))],
-        )
-
-
-class MetricNameCollidesWithFieldError(NameCollisionError):
-    """A declared metric ``name`` matches a source field, so the alias-form filter would bind to the field."""
-
-    def __init__(self, name: str, dataset: str, suggestion: str | None = None) -> None:
-        self.name = name
-        self.dataset = dataset
-        super().__init__(
-            summary=f"The declared metric name matches a source field on dataset {dataset!r}.",
-            location=f"metric {name!r}",
-            suggestion=suggestion,
         )
 
 
@@ -1404,6 +1461,15 @@ class StoredDocumentLoadError(SlayerError, ValueError):
         return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
 
 
+class UnreadableDocumentError(SlayerError, ValueError):
+    """Document text that does not read into data; ``name`` is the root ``name`` it declares, when found."""
+
+    def __init__(self, *, reasons: Sequence[str], name: str | None = None) -> None:
+        self.reasons = list(reasons)
+        self.name = name
+        super().__init__("; ".join(self.reasons))
+
+
 class OssieDocumentInvalidError(SlayerError):
     """A semantic-model document that is not a valid Ossie ``0.3.0.dev0`` document; ``reasons`` lists every reason."""
 
@@ -1574,7 +1640,6 @@ _RENAMED_CLASSES = {
     "JoinKeyError": "RelationshipKeyError",
     "JoinTargetCaseError": "RelationshipTargetCaseError",
     "MeasureCycleError": "MetricCycleError",
-    "MeasureNameCollidesWithColumnError": "MetricNameCollidesWithFieldError",
     "MeasureRecursionLimitError": "MetricRecursionLimitError",
     "ModelFilterCycleError": "DatasetFilterCycleError",
     "ModelFilterError": "DatasetFilterError",
@@ -1627,9 +1692,6 @@ if TYPE_CHECKING:
 
     @deprecated("MeasureCycleError is deprecated; use MetricCycleError", category=None)
     class MeasureCycleError(MetricCycleError): ...
-
-    @deprecated("MeasureNameCollidesWithColumnError is deprecated; use MetricNameCollidesWithFieldError", category=None)
-    class MeasureNameCollidesWithColumnError(MetricNameCollidesWithFieldError): ...
 
     @deprecated("MeasureRecursionLimitError is deprecated; use MetricRecursionLimitError", category=None)
     class MeasureRecursionLimitError(MetricRecursionLimitError): ...

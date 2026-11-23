@@ -8,14 +8,17 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from collections.abc import Callable, Sequence
 from inspect import cleandoc
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import Discriminator, Field, Tag, ValidationError
+from pydantic import (
+    BaseModel, ConfigDict, Discriminator, Field, Tag, TypeAdapter, ValidationError, WrapValidator,
+)
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__, usage_reporting
 from slayer import otel
 from slayer.usage_reporting.payload import USAGE_KEYS
+from slayer.core.enums import Conformance
 from slayer.core.errors import (
     AmbiguousDatasetError,
     MemoryNotFoundError,
@@ -129,11 +132,42 @@ def _query_form(value: Any) -> str:
     return "stages" if isinstance(value, list) else "object"
 
 
+class _SubmittedQuery(BaseModel):
+    """The ``query`` argument as submitted, beside its native reading or why it has none."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    raw: Any
+    parsed: Any = None
+    error: ValidationError | TypeError | None = None
+
+    def native(self) -> Any:
+        """The native reading; raises the native validation error when there is none."""
+        if self.error is not None:
+            raise self.error
+        return self.parsed
+
+
+def _keep_submitted(value: Any, handler: Callable[[Any], Any]) -> _SubmittedQuery:
+    """The strict binding judges the input as submitted, so native validation is recorded, never raised here."""
+    try:
+        return _SubmittedQuery(raw=value, parsed=handler(value))
+    except (ValidationError, TypeError) as exc:
+        return _SubmittedQuery(raw=value, error=exc)
+
+
 #: Validates only the chosen form, so an error never lists the other forms' mismatches.
-QueryArgument = Annotated[
+_QUERY_FORMS = Annotated[
     Annotated[str, Tag("name")] | Annotated[SlayerQuery, Tag("object")] | Annotated[list[SlayerQuery], Tag("stages")],
     Discriminator(_query_form),
 ]
+_QUERY_ADAPTER: TypeAdapter[Any] = TypeAdapter(_QUERY_FORMS)
+QueryArgument = Annotated[_QUERY_FORMS, WrapValidator(_keep_submitted)]
+
+
+def _submitted(query: Any) -> _SubmittedQuery:
+    """``query`` as the tool receives it: already wrapped by its validator, else (a direct call) wrapped here."""
+    return query if isinstance(query, _SubmittedQuery) else _keep_submitted(query, _QUERY_ADAPTER.validate_python)
 
 
 def _check_budget(*, what: str, text: str) -> None:
@@ -606,6 +640,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         dry_run: Annotated[bool, Field(description="Return the generated SQL without executing it.")] = False,
         explain: Annotated[bool, Field(description="Run the database's EXPLAIN and return the query plan.")] = False,
         format: Annotated[str, Field(description='"markdown" (default), "json" or "csv".')] = "markdown",
+        conformance: Annotated[Literal["slayer", "ossie-l3"], Field(
+            description='"slayer" (default) or "ossie-l3": accept only Ossie Layer 3 queries, refusing others with '
+                        "Ossie's error codes, and name columns by Ossie's output names.",
+        )] = "slayer",
     ) -> str:
         """ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Describe the result you want (metrics, dimensions, filters, order) and SLayer writes the SQL, including the joins. A single query can:
         - put several grains on one row: a group's share of its total or of the grand total, the region total next to each city;
@@ -631,14 +669,22 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # detectable, then slice response-side. A run-by-name string is
             # opaque (its stored SQL can't take a pushed-down limit) — cap
             # response-side only.
-            exec_query, capped, cap_hint = _apply_mcp_row_cap(query)
-            usage_reporting.observe_query(query)
+            strict = conformance == Conformance.OSSIE_L3.value
+            # A strict query is judged as submitted and takes no limit: its rows are capped response-side.
+            exec_query: Any
+            submitted = _submitted(query)
+            if strict:
+                exec_query, capped, cap_hint = submitted.raw, True, _CAP_HINT
+            else:
+                exec_query, capped, cap_hint = _apply_mcp_row_cap(submitted.native())
+            usage_reporting.observe_query(submitted.raw if strict else submitted.parsed)
             result = await engine.execute(
                 query=exec_query,
                 variables=variables,
                 dry_run=dry_run,
                 explain=explain,
                 refine=refine,
+                conformance=conformance,
             )
             usage_reporting.observe_executed(result)
             if dry_run:
@@ -1102,27 +1148,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "when editing a dataset — the three source modes are mutually exclusive."
             )
 
-        if sql_table is not None:
-            dataset.sql_table = sql_table
-            dataset.sql = None
-            dataset.source_queries = None
-            dataset_level_change = True
-            changes.append(f"set sql_table to '{sql_table}'")
-        if sql is not None:
-            dataset.sql = sql
-            dataset.sql_table = None
-            dataset.source_queries = None
-            dataset_level_change = True
-            changes.append(f"set sql to '{sql}'")
-        if source_queries is not None:
-            # Switching to query-backed source mode; the cached fields are
-            # refreshed when we save via engine.save_dataset.
-            dataset.source_queries = [SlayerQuery.model_validate(q) for q in source_queries]
-            dataset.sql_table = None
-            dataset.sql = None
-            # Clear the user-managed fields so the cache write succeeds.
-            dataset.fields = []
-            changes.append(f"set source_queries ({len(source_queries)} stage(s))")
         if query_variables is not _UNSET:
             dataset.query_variables = query_variables or {}
             changes.append(
@@ -1184,6 +1209,22 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             if removed:
                 dataset.relationships = without_relationships(dataset=dataset, relationships=removed)
                 dataset_doc_changed = True
+
+        # --- Source switch: after the removals, so the switched dataset is checked without them ---
+        if sql_table is not None:
+            dataset.assign(sql_table=sql_table, sql=None, source_queries=None)
+            dataset_level_change = True
+            changes.append(f"set sql_table to '{sql_table}'")
+        if sql is not None:
+            dataset.assign(sql=sql, sql_table=None, source_queries=None)
+            dataset_level_change = True
+            changes.append(f"set sql to '{sql}'")
+        if source_queries is not None:
+            # Query-backed: the cached fields are cleared here and refreshed by engine.save_dataset.
+            dataset.assign(source_queries=[SlayerQuery.model_validate(q) for q in source_queries],
+                           sql_table=None, sql=None, fields=[])
+            dataset_level_change = True
+            changes.append(f"set source_queries ({len(source_queries)} stage(s))")
 
         # --- Phase 3: Entity upserts ---
         for spec in fields or []:

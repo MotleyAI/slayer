@@ -130,11 +130,11 @@ A query sent by a client SHALL keep being rejected for these shapes.
 
 ### Requirement: Stored legacy filter literals are repaired on load
 
-On load of a stored query, a string literal in a stored `filters` entry SHALL be repaired with the same offset and slash rules when both of these hold:
-- It is a direct comparison operand (`=`, `!=`, `<`, `<=`, `>`, `>=`, either operand order, or any element of an all-literal `IN` list).
-- The other side is a column reference that resolves, through the stored models and their joins, to a DATE or TIMESTAMP column.
+On load of a stored query, a string literal in a stored filter SHALL be repaired with the same offset and slash rules, before its whole-day upgrade and its qualified-reference upgrade, when both of these hold:
+- It is a direct comparison operand (`=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, either operand order, or any element of an all-literal `IN` or `NOT IN` list).
+- The other side is a column reference that the binder reads, from the query's population by the reading its qualified-reference upgrade keeps, as a DATE or TIMESTAMP column: its own qualifier dropped, each hop over a join declared on either model, a lone unmatched hop routed by a unique short-form route, the query's extensions applied, a column an extension declares typed by its declared type, and a double-quoted segment matched only by its exact spelling. A memory's query is read in the datasource its qualified-reference upgrade reads (the datasource priority applied); a population naming an earlier stage reads only the columns that stage's extension joins name, untyped.
 
-A literal whose column cannot be resolved, or that compares a non-temporal column, SHALL be left unchanged.
+A literal whose column cannot be typed, or that compares a non-temporal column, SHALL be left unchanged; the qualified-reference upgrade then keeps or refuses the document.
 
 #### Scenario: An offset literal against a timestamp runs
 
@@ -150,6 +150,51 @@ A literal whose column cannot be resolved, or that compares a non-temporal colum
 
 - **WHEN** stored filters read `status = '2024/01/01'` (a TEXT column) and `ordered_at IN ('2024/01/01', status)`
 - **THEN** both are left unchanged
+
+#### Scenario: A short-form reference routed over two hops is repaired
+
+- **WHEN** a stored query on `orders` filters `regions.opened_on >= '2024/01/01'`, where `opened_on` is a DATE column of `regions`, reached only by the route `orders → customers → regions`
+- **THEN** it loads as `orders.customers.regions.opened_on >= '2024-01-01'` and runs, returning the rows of that route
+
+#### Scenario: A hop over a join declared on the peer is repaired
+
+- **WHEN** a stored query on `orders` filters `customers.signed_up_at >= '2024-01-01T00:00:00Z'`, where the only join between them is declared on `customers`
+- **THEN** the literal is repaired and the query runs
+
+#### Scenario: A column a query extension declares on a routed model is repaired
+
+- **WHEN** a stored query on `orders` extends `regions` with a DATE column `founded_on` reading `opened_on`, and filters `regions.founded_on >= '2024/01/01'`, `regions` reached by short-form routing
+- **THEN** it loads with the column inlined as a DATE cast compared with `'2024-01-01'`, and runs
+
+#### Scenario: A routed non-temporal column stays verbatim
+
+- **WHEN** a stored query on `orders` filters `regions.label = '2024/01/01'`, where `label` is a TEXT column of `regions` reached by short-form routing
+- **THEN** its literal is left unchanged and the query keeps its rows
+
+#### Scenario: Quoted segments are matched by their exact spelling
+
+- **WHEN** a stored query on `orders` filters `"Regions"."Opened_On" >= '2024/01/01'`, where `Regions` holds the DATE column `Opened_On`, and other stored queries spell the hop `"REGIONS"` or the leaf `"OPENED_ON"`
+- **THEN** the first loads repaired and runs, and neither of the others has its literal repaired
+
+#### Scenario: A stage population types only its extension joins
+
+- **WHEN** a stored query-backed model's second stage reads the first stage, extends it with a join to `customers`, and filters `ordered_at >= '2024/01/01'` and `customers.signed_up_at >= '2024-01-01T00:00:00Z'`
+- **THEN** the first literal is left unchanged and the second is repaired
+
+#### Scenario: A population inferred for a root-less query types its references
+
+- **WHEN** a stored query with no population, whose references the qualified-reference upgrade reads from `orders`, filters `regions.opened_on >= '2024/01/01'` reached by short-form routing
+- **THEN** the literal is repaired as from `orders`
+
+#### Scenario: An unloadable model does not block an unrelated repair
+
+- **WHEN** the datasource also stores a model that fails to load, and a stored query's routed DATE comparison does not touch it
+- **THEN** the literal is repaired and the query runs
+
+#### Scenario: A memory's query is repaired against its priority datasource
+
+- **WHEN** a stored memory's query names a model that two datasources hold, only one of which routes to the filtered DATE column, and the datasource priority puts that one first
+- **THEN** the literal is repaired and the query runs there; with the other datasource first, it is left unchanged
 
 ### Requirement: Stored query-backed models drop their cached backing SQL
 
@@ -483,7 +528,7 @@ A converted query-backed model or saved query SHALL be written back at the curre
 
 ### Requirement: Stored date-only comparisons keep their whole-day meaning
 
-On load, a stored model, saved query or memory written before this change — judged by each nested document's own stored version, so a current document holding an older nested query, extension or memory query is upgraded where it nests — SHALL have every Mode-B comparison of a temporal operand with a date-only literal `D` rewritten to the comparison it meant before: `x <= 'D'` → `x < '<D+1>'`; `x > 'D'` → `x >= '<D+1>'`; `x = 'D'` → `x in 'D'`; `x != 'D'` → `x not in 'D'`; `x BETWEEN 'A' AND 'B'` → `(x >= 'A' and x < '<B+1>')` and `x NOT BETWEEN 'A' AND 'B'` → `(x < 'A' or x >= '<B+1>')`, each with only date-only bounds rewritten; a literal on the left mirrored. On the last representable day `9999-12-31`, `< '<D+1>'` SHALL be `<= 'D 23:59:59.999999'` and `>= '<D+1>'` SHALL be `> 'D 23:59:59.999999'`. `x >= 'D'` and `x < 'D'` SHALL be untouched. This covers query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, saved-measure formulas, Mode-B column filters, and every nested saved query, model extension, query-backed model and memory query, with the rest of the text byte-identical and no warning on the response. Whether an operand is temporal SHALL be decided with the models of the document's datasource, the built-in time spine included, where a memory that names no datasource SHALL use the datasource of the stored model its source names, else the store's only datasource: an unquoted model name spelt `time_spine` in any case SHALL name the spine unless a stored model has exactly that spelling, and SHALL be untypable when it also reaches a stored model in another case; a path SHALL reach the spine from any model, a query or extension on the spine SHALL reach the datasource's models, and a path that continues past the spine SHALL be untypable. A comparison with a non-temporal operand, an operand whose type cannot be decided (an untyped column, a missing or unloadable model), a `BETWEEN` whose tested expression is the literal, and a comparison with a variable SHALL be left unchanged, each untypable one with a logged warning naming the document and the text. Mode-A text and `date_range` SHALL be untouched. The upgrade SHALL be idempotent and SHALL complete on the next load when a load is interrupted. Every upgraded query SHALL return the rows it returned before.
+On load, a stored model, saved query or memory written before this change — judged by each nested document's own stored version, so a current document holding an older nested query, extension or memory query is upgraded where it nests — SHALL have every Mode-B comparison of a temporal operand with a date-only literal `D` rewritten to the comparison it meant before: `x <= 'D'` → `x < '<D+1>'`; `x > 'D'` → `x >= '<D+1>'`; `x = 'D'` → `x in 'D'`; `x != 'D'` → `x not in 'D'`; `x BETWEEN 'A' AND 'B'` → `(x >= 'A' and x < '<B+1>')` and `x NOT BETWEEN 'A' AND 'B'` → `(x < 'A' or x >= '<B+1>')`, each with only date-only bounds rewritten; a literal on the left mirrored. On the last representable day `9999-12-31`, `< '<D+1>'` SHALL be `<= 'D 23:59:59.999999'` and `>= '<D+1>'` SHALL be `> 'D 23:59:59.999999'`. `x >= 'D'` and `x < 'D'` SHALL be untouched. This covers query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, saved-measure formulas, Mode-B column filters, and every nested saved query, model extension, query-backed model and memory query, with the rest of the text byte-identical and no warning on the response. Whether an operand is temporal SHALL be decided as the binder reads it, with the models of the datasource the document runs in, the built-in time spine included: a query's operand from the query's population by the reading its qualified-reference upgrade keeps (its own qualifier dropped, each hop over a join declared on either model, a lone unmatched hop routed by a unique short-form route, the query's extensions applied, a column an extension declares typed by its declared type, and a double-quoted segment matched only by its exact spelling), and a saved-measure formula or column filter from its own model; a memory's query SHALL use the datasource its qualified-reference upgrade reads (the datasource priority applied): an unquoted model name spelt `time_spine` in any case SHALL name the spine unless a stored model has exactly that spelling, and SHALL be untypable when it also reaches a stored model in another case; a path SHALL reach the spine from any model, a query or extension on the spine SHALL reach the datasource's models, and a path that continues past the spine SHALL be untypable. A comparison with a non-temporal operand, an operand whose type cannot be decided (an undeclared column, a missing or unloadable model), a `BETWEEN` whose tested expression is the literal, and a comparison with a variable SHALL be left unchanged, each untypable one with a logged warning naming the document and the text. Mode-A text and `date_range` SHALL be untouched. The upgrade SHALL be idempotent and SHALL complete on the next load when a load is interrupted. Every upgraded query SHALL return the rows it returned before.
 
 #### Scenario: Saved query with an inclusive upper bound
 
@@ -507,7 +552,7 @@ On load, a stored model, saved query or memory written before this change — ju
 
 #### Scenario: Untypable operand is left and logged
 
-- **WHEN** a stored query compares a column with no recorded type, or a column of a model that no longer exists, with `<= '2024-12-31'`
+- **WHEN** a stored query compares a column its model does not declare, or a column of a model that no longer exists, with `<= '2024-12-31'`
 - **THEN** it loads byte-identical and a warning naming the document and the comparison is logged
 
 #### Scenario: Current document with an older nested query
@@ -548,7 +593,7 @@ On load, a stored model, saved query or memory written before this change — ju
 #### Scenario: Memory on the spine in a store with one datasource
 
 - **WHEN** a store holds one datasource and a stored memory that names no datasource, rooted at `time_spine`, has the filter `orders.ordered_at <= '2024-01-31'`
-- **THEN** after load it reads `orders.ordered_at < '2024-02-01'`; with a second datasource in the store it loads byte-identical, with a warning naming the memory and the comparison logged
+- **THEN** after load it reads `orders.ordered_at < '2024-02-01'`; with a second datasource in the store also holding `orders`, it is typed in the datasource the datasource priority picks
 
 #### Scenario: Spine reached through an extension's join
 
@@ -563,12 +608,22 @@ On load, a stored model, saved query or memory written before this change — ju
 #### Scenario: Stored names shadow the spine
 
 - **WHEN** a stored query on `orders` filters `time_spine.code <= '2024-01-31'` where `orders` has a stored join named `time_spine` to a model whose `code` is TEXT; a stored model's source query on `orders` filters `time_spine.timestamp <= '2024-01-31'` while a sibling source query is named `time_spine`; and a datasource stores a model named exactly `time_spine` whose `timestamp` column is TEXT, read by a stored query filtering `time_spine.timestamp <= '2024-01-31'`
-- **THEN** the first and third load byte-identical without a warning, and the second loads byte-identical with a warning naming the document and the comparison
+- **THEN** the third loads byte-identical without a warning, and the first and second load byte-identical with a warning naming the document and the comparison
 
 #### Scenario: Legacy time literal on the spine
 
 - **WHEN** a stored query written before legacy time literals were repaired, rooted at `time_spine`, compares `timestamp` with a legacy date literal for `2024-01-31` using `<=`
 - **THEN** after load the literal is repaired and the comparison reads `timestamp < '2024-02-01'`
+
+#### Scenario: A routed operand keeps its whole-day meaning
+
+- **WHEN** a stored query on `orders` written before this upgrade filters `regions.opened_at = '2024-01-01'`, where `opened_at` is a TIMESTAMP column of `regions`, reached only by the route `orders → customers → regions`
+- **THEN** after load the comparison reads `in '2024-01-01'` on the qualified route and the query returns the rows it returned before
+
+#### Scenario: A quoted operand is typed by its exact spelling
+
+- **WHEN** stored queries on `orders` filter `"Regions"."Opened_At" <= '2024-01-31'` and `"Regions"."OPENED_AT" <= '2024-01-31'`, where `Regions` has the TIMESTAMP column `Opened_At` and no column spelt `OPENED_AT`
+- **THEN** the first reads `< '2024-02-01'` after load and the second keeps its comparison as written
 
 ### Requirement: Stored field sql converts to its expression
 
@@ -618,6 +673,7 @@ A stored query written before this change — a saved query, a query-backed mode
 - a rewritten path SHALL be kept only if it resolves back to the same oriented sequence of relationships;
 - an unaliased entry whose references share no anchor SHALL get an alias equal to its column name before this change, so every later stage, query-backed model consumer and `DatasetField.sql` reading that column keeps working;
 - `count(*)` SHALL become `count(<population>.*)`.
+- a double-quoted segment SHALL match only its exact spelling, and a rewritten reference SHALL keep each double-quoted segment of its leaf double-quoted.
 
 A stored query that cannot be converted this way (a dataset it reads is missing, or an old path has no unique explicit spelling) SHALL fail to load through the existing unloadable-document boundary, untouched on disk, with a warning naming the document and the reference. Saved queries and query-backed models SHALL be written back as other migrated documents are; memories SHALL convert on each load.
 
@@ -640,3 +696,7 @@ A stored query that cannot be converted this way (a dataset it reads is missing,
 #### Scenario: A memory's query converts on every load
 - **WHEN** a stored memory holds a query with `population: orders` measuring `count(*)`
 - **THEN** each load reads it as `count(orders.*)`, with no `FutureWarning`, and the stored memory is not rewritten
+
+#### Scenario: A quoted leaf keeps its exact spelling
+- **WHEN** a stored query on `orders` filters `"Regions"."Opened_At" >= '2024-01-01'`, `Regions` reached by the route `orders → customers → Regions`
+- **THEN** it loads with the leaf still spelt `"Opened_At"` on its explicit route

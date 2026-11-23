@@ -97,7 +97,8 @@ class TestUnchangedGuards:
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
-        assert re.search(r"(?i)cross-dataset", str(ei.value))
+        assert "partition_by=region" in str(ei.value)
+        assert "attributable" in str(ei.value)
         assert "__regroup__" not in str(ei.value)
 
     async def test_bare_inner_aggregate_still_rejected(self) -> None:

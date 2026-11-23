@@ -1,38 +1,24 @@
 """Spec: models/semantic-model-documents › Upstream's wide-table cases are the query oracle.
 
 Each case of upstream ``compliance/wide_table/cases`` runs on its fixture model, stored as a native document over the
-fixture's SQL loaded into in-process DuckDB. The corpus root is ``$SLAYER_OSSIE_CORPUS``, defaulting to the vendored
-snapshot.
+fixture's SQL loaded into in-process DuckDB: every case with its ``query.json`` verbatim under
+``conformance="ossie-l3"``, every row case also under the default conformance. The corpus root is
+``$SLAYER_OSSIE_CORPUS``, defaulting to the vendored snapshot.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import re
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import pytest
 from pydantic import BaseModel
 
-from slayer.core.models import DatasourceConfig
-from tests._dev2243_fixtures import CORPUS, make_storage, store_document
-from tests._engine_helpers import owned_query_engine
+from tests._dev2217_fixtures import FIXTURES, STRICT, WIDE_TABLE, fixture_engine, ossie_query_error
 
-ROOT = Path(os.environ.get("SLAYER_OSSIE_CORPUS") or CORPUS)
-WIDE_TABLE = ROOT / "compliance" / "wide_table"
-DS = "wide_table"
-#: Fixture name → (SQL, model), per upstream's wide_table README.
-FIXTURES = {
-    "retail": ("retail/retail.sql", "retail/retail_model.ossie.yaml"),
-    "stores": ("stores/stores.sql", "stores/stores_model.ossie.yaml"),
-    "stores_ambiguous": ("stores/stores.sql", "stores/stores_ambiguous_model.ossie.yaml"),
-}
-ERROR_XFAIL = "DEV-2217: the strict binding does not raise Ossie's error codes yet"
 
 Cell = Decimal | str | None
 
@@ -86,60 +72,27 @@ def translate(query: dict[str, Any]) -> dict[str, Any]:
 
 
 def result_keys(query: dict[str, Any]) -> list[str]:
-    """Each entry's result key, in Ossie's output order: dimensions, then metrics."""
+    """Each entry's native result key, in Ossie's output order: dimensions, then metrics."""
     keys = []
     for kind, entries in (("field", query.get("dimensions") or []), ("metric", query.get("metrics") or [])):
         keys += [entry if isinstance(entry, str) else entry.get("alias") or entry[kind] for entry in entries]
     return keys
 
 
-def ossie_code(exc: BaseException) -> str | None:
-    """The Ossie error code an exception carries."""
-    for attribute in ("ossie_code", "code"):
-        value = getattr(exc, attribute, None)
-        if isinstance(value, str) and value.startswith("E_"):
-            return value
-    found = re.search(r"\bE_[A-Z_]+\b", str(exc))
-    return found.group(0) if found else None
+CASES = sorted(p for p in (WIDE_TABLE / "cases").iterdir() if p.is_dir())
+ROW_CASES = [c for c in CASES if c.name.startswith("a")]
 
 
 def _case_param(case: Path) -> Any:
-    name = case.name
-    marks = []
-    if name.startswith("e"):
-        marks.append(pytest.mark.xfail(strict=True, reason=ERROR_XFAIL))
-    return pytest.param(case, id=name, marks=marks)
+    return pytest.param(case, id=case.name)
 
 
-CASES = sorted(p for p in (WIDE_TABLE / "cases").iterdir() if p.is_dir())
+def _query(case: Path) -> dict[str, Any]:
+    return json.loads((case / "query.json").read_text(encoding="utf-8"))
 
 
-def _load_fixture_data(sql: Path, database: Path) -> None:
-    connection = duckdb.connect(str(database))
-    try:
-        connection.execute(sql.read_text(encoding="utf-8"))
-    finally:
-        connection.close()
-
-
-async def run_case(case: Path, tmp: Path) -> tuple[Expected, dict[str, Any], Any]:
-    """Load the case's fixture and submit its query; returns the expectation, the query and the response."""
-    expected = read_expected(case)
-    sql, model = FIXTURES[expected.fixture]
-    database = tmp / f"oracle_{expected.fixture}.duckdb"
-    _load_fixture_data(WIDE_TABLE / sql, database)
-    storage = make_storage("yaml", tmp)
-    query = json.loads((case / "query.json").read_text(encoding="utf-8"))
-    async with owned_query_engine(storage=storage,
-                                  datasources=[DatasourceConfig(name=DS, type="duckdb", database=str(database))]
-                                  ) as engine:
-        await store_document(storage, (WIDE_TABLE / model).read_text(encoding="utf-8"), data_source=DS)
-        if expected.error is not None:
-            translated = translate(query)
-            with pytest.raises(Exception) as raised:  # noqa: PT011 — the case checks only the Ossie code
-                await engine.execute(translated)
-            return expected, query, raised.value
-        return expected, query, await engine.execute(translate(query))
+def _rows(data: list[dict[str, Any]], keys: list[str]) -> Counter[tuple[Cell, ...]]:
+    return Counter(tuple(_value(row[key]) for key in keys) for row in data)
 
 
 def test_every_case_names_a_known_fixture() -> None:
@@ -148,18 +101,51 @@ def test_every_case_names_a_known_fixture() -> None:
 
 
 @pytest.mark.parametrize("case", [_case_param(c) for c in CASES])
-async def test_wide_table_case(case: Path, tmp_path: Path) -> None:
-    expected, query, outcome = await run_case(case, tmp_path)
-    if expected.error is not None:
-        assert ossie_code(outcome) == expected.error, outcome
-        return
+async def test_wide_table_case_under_strict(case: Path, tmp_path: Path) -> None:
+    expected = read_expected(case)
+    query = _query(case)
+    async with fixture_engine(tmp_path, expected.fixture) as engine:
+        if expected.error is not None:
+            with pytest.raises(ossie_query_error()) as raised:
+                await engine.execute(query, conformance=STRICT)
+            assert raised.value.code == expected.error, raised.value
+            return
+        response = await engine.execute(query, conformance=STRICT)
+    assert response.columns == expected.header
+    assert _rows(response.data, expected.header) == Counter(tuple(row) for row in expected.rows)
+
+
+@pytest.mark.parametrize("case", [_case_param(c) for c in ROW_CASES])
+async def test_wide_table_row_case_under_the_default(case: Path, tmp_path: Path) -> None:
+    expected = read_expected(case)
+    query = _query(case)
+    async with fixture_engine(tmp_path, expected.fixture) as engine:
+        response = await engine.execute(translate(query))
     keys = result_keys(query)
     assert len(keys) == len(expected.header)
-    actual = Counter(tuple(_value(row[key]) for key in keys) for row in outcome.data)
-    assert actual == Counter(tuple(row) for row in expected.rows)
+    assert _rows(response.data, keys) == Counter(tuple(row) for row in expected.rows)
 
 
 async def test_the_model_scoped_metric_components_case(tmp_path: Path) -> None:
     """The model-scoped metric components case."""
-    _, _, response = await run_case(WIDE_TABLE / "cases" / "a08_model_metric_components", tmp_path)
+    case = WIDE_TABLE / "cases" / "a08_model_metric_components"
+    async with fixture_engine(tmp_path, "retail") as engine:
+        response = await engine.execute(_query(case))
     assert response.data == [{"revenue_per_customer": pytest.approx(162.5)}]
+
+
+async def test_error_cases_raise_their_codes_under_strict(tmp_path: Path) -> None:
+    """Error cases raise their codes under strict."""
+    query = _query(WIDE_TABLE / "cases" / "e16_partial_dimension_reachability")
+    async with fixture_engine(tmp_path, "retail") as engine:
+        with pytest.raises(ossie_query_error()) as raised:
+            await engine.execute(query, conformance=STRICT)
+        assert raised.value.code == "E_PARTIAL_DIMENSION_REACHABILITY"
+        assert (await engine.execute(query)).data
+
+
+async def test_output_names_label_the_strict_result(tmp_path: Path) -> None:
+    """Output names label the strict result."""
+    async with fixture_engine(tmp_path, "retail") as engine:
+        response = await engine.execute(_query(WIDE_TABLE / "cases" / "a09_aliases"), conformance=STRICT)
+    assert response.columns == ["area", "revenue"]

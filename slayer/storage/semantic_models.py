@@ -7,6 +7,7 @@ datasource gets an in-memory entry for it, never written back.
 from __future__ import annotations
 
 import functools
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -14,16 +15,23 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from slayer.core.document_text import parse_document_text
-from slayer.core.enums import DataType, JoinType, RelationshipCardinality
-from slayer.core.errors import OssieDocumentInvalidError, StoredDocumentLoadError
-from slayer.core.field_expression import DialectEntry, Expression, ExpressionObject, token
+from slayer.core.enums import DataType
+from slayer.core.errors import (
+    FieldExpressionError, OssieDocumentInvalidError, OssieErrorCode, StoredDocumentLoadError, UnreadableDocumentError,
+)
+from slayer.core.field_expression import (
+    DialectEntry, Expression, ExpressionObject, portable_text, running_form, token,
+)
+from slayer.core.granularity import CustomGranularity, granularity_key
+from slayer.core.syntax import parse_expr
 from slayer.core import slayer_extension as ext
-from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
+from slayer.core.models import DatasetField, DatasetMetric, ExtensionNote, SlayerDataset
 from slayer.core.ossie_validity import (
     SOURCE_MEASURE_REASON, columns, is_agg_call, parse_ossie_sql, reads_source_measure,
 )
 from slayer.core.semantic_model import (
-    ModelScopedMetric, OssieDataset, OssieExpression, SemanticModelDocument, ossie_validity_errors,
+    MetricProblem, ModelScopedAnalysis, ModelScopedMetric, OssieDataset, OssieExpression, SemanticModelDocument,
+    ossie_validity_errors,
 )
 from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.ossie_dialects import (
@@ -32,11 +40,11 @@ from slayer.sql.ossie_dialects import (
 from slayer.storage.document_mapping import core_source
 from slayer.storage.document_extensions import (
     Restored, apply_dataset_entry, apply_field_entry, digest as entry_digest, metric_entry, read_entry,
-    relationship_declarations, relocate_metrics, restore_metrics,
+    relocate_metrics, restore_metrics, restored_relationship,
 )
 
-__all__ = ["Decomposition", "DocumentIndex", "build_index", "chain_warning", "checked_document", "decompose",
-           "expression_datasets", "metric_graph", "unevaluable_chain", "unevaluable_targets",
+__all__ = ["Decomposition", "DocumentIndex", "analyse_model_scoped", "build_index", "chain_warning", "checked_document",
+           "decompose", "expression_datasets", "load_problem", "metric_graph", "unevaluable_chain", "unevaluable_targets",
            "warn_unevaluable_dependents"]
 
 _OSSIE_TYPES = {t.value: t for t in DataType if t is not DataType.ARRAY}
@@ -59,8 +67,8 @@ def checked_document(*, text: str, name: str) -> SemanticModelDocument:
     """``text`` as a valid document named ``name``; raises ``OssieDocumentInvalidError`` with every reason."""
     try:
         data = parse_document_text(text)
-    except ValueError as exc:
-        raise OssieDocumentInvalidError(name=name, reasons=[str(exc)]) from exc
+    except UnreadableDocumentError as exc:
+        raise OssieDocumentInvalidError(name=name, reasons=exc.reasons) from exc
     reasons = ossie_validity_errors(data)
     if not reasons and data["name"] != name:
         reasons = [f"its name {data['name']!r} differs from the name it is stored under ({name!r})"]
@@ -77,6 +85,28 @@ def _windowed(expression: OssieExpression) -> bool:
         if tree is not None and tree.find(exp.Window) is not None:
             return True
     return False
+
+
+def _unparseable(text: str | None) -> str | None:
+    """Why SLayer's expression reader rejects ``text``, else ``None``."""
+    if text is None:
+        return None
+    try:
+        parse_expr(text)
+    except ValueError as exc:
+        return f"is not an expression SLayer can parse: {exc}"
+    return None
+
+
+def _unparseable_field(expression: Expression | None, *, target: str, owner: str) -> str | None:
+    """Why the portable form ``expression`` runs on ``target`` does not parse; ``None`` for a native entry."""
+    if expression is None:
+        return None
+    try:
+        form = running_form(owner=owner, expression=expression, dialect=target)
+    except FieldExpressionError:  # reported when the field is read
+        return None
+    return None if form.native else _unparseable(form.text)
 
 
 def _portable(expression: OssieExpression) -> str | None:
@@ -145,18 +175,21 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: l
     expression, problem = _runnable(field.expression, target=target)
     if expression == field.name:
         expression = None  # reads the column named like the field
-    warning = WINDOW_WARNING if _windowed(field.expression) else problem
     built = DatasetField(
         name=field.name, expression=expression,
         datatype=_OSSIE_TYPES[field.datatype] if field.datatype else None,
         primary_key=field.name in primary, unique=field.name in unique,
-        label=field.label, description=field.description, load_warning=warning,
+        label=field.label, description=field.description,
     )
     label = f"field {field.name!r} of {dataset!r}"
     entry = read_entry(field.nonportable_extensions, kind="field", entity=field.name,
                        ossie=entry_digest(field.expression), label=label, notes=notes)
     built = apply_field_entry(built, entry, notes=notes, label=label, target=target)
-    return built.model_copy(update={"meta": with_ossie_meta(built.meta, field)})
+    warning = None  # a restored expression replaces the document form, so only its own readability counts
+    if built.expression == expression:
+        warning = WINDOW_WARNING if _windowed(field.expression) else problem
+    warning = warning or _unparseable_field(built.expression, target=target, owner=f"Field {field.name!r}")
+    return built.model_copy(update={"meta": with_ossie_meta(built.meta, field), "load_warning": warning})
 
 
 def with_ossie_meta(meta: dict[str, Any] | None, entity: Any) -> dict[str, Any] | None:
@@ -173,7 +206,7 @@ def with_ossie_meta(meta: dict[str, Any] | None, entity: Any) -> dict[str, Any] 
 
 def _metric(metric: Any, *, target: str, windowed_fields: set[str]) -> DatasetMetric:
     expression, problem = _runnable_metric(metric.expression, target=target)
-    warning = problem
+    warning = problem or _unparseable(portable_text(expression))
     if _windowed(metric.expression):
         warning = WINDOW_WARNING
     elif windowed_fields and _reads(metric.expression, windowed_fields):
@@ -223,7 +256,10 @@ def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: st
 
 
 @functools.lru_cache(maxsize=256)
-def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> Decomposition:
+def _decomposed(text: str, name: str, data_source: str, ds_type: str | None,
+                granularities: tuple[str, ...]) -> Decomposition:
+    """``granularities``: the datasource's custom granularities as JSON (a hashable cache key)."""
+    defined = {granularity_key(g.name): g for g in map(CustomGranularity.model_validate_json, granularities)}
     doc = checked_document(text=text, name=name)
     target = ossie_token(ds_type)
     reader = dialect_for_ds_type(ds_type).sqlglot_name
@@ -233,20 +269,10 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
                                  members=members, restored=restored) for d in doc.datasets}
     relocate_metrics(datasets, restored=restored)
     for rel in doc.relationships or []:
-        notes = datasets[rel.from_dataset].extension_notes
-        default = DatasetRelationship(
-            name=rel.name, to=rel.to, from_columns=list(rel.from_columns), to_columns=list(rel.to_columns),
-            cardinality=RelationshipCardinality.MANY_TO_ONE, join_type=JoinType.LEFT,
-        )
-        entry = read_entry(rel.nonportable_extensions, kind="relationship", entity=rel.name,
-                           ossie=ext.relationship_digest(from_dataset=rel.from_dataset, to=rel.to,
-                                                         from_columns=list(rel.from_columns),
-                                                         to_columns=list(rel.to_columns)),
-                           label=f"relationship {rel.name!r}", notes=notes)
-        for owner, declared in relationship_declarations(rel, entry, datasets=datasets, default=default, notes=notes):
-            datasets[owner].relationships.append(
-                declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)}))
-    restore_metrics(datasets, restored=restored, dialect=reader)
+        owner, declared = restored_relationship(rel, datasets=datasets, notes=datasets[rel.from_dataset].extension_notes)
+        datasets[owner].relationships.append(
+            declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)}).from_document(rel.from_dataset))
+    restore_metrics(datasets, restored=restored, dialect=reader, granularities=defined)
     metrics = []
     for m in doc.metrics or []:
         expression, problem = _runnable_metric(m.expression, target=target)
@@ -254,27 +280,33 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
             name=m.name, semantic_model=doc.name, data_source=data_source, expression=expression,
             description=m.description, ai_context=m.ai_context,
             datatype=_OSSIE_TYPES[m.datatype] if m.datatype else None,
-            load_warning=WINDOW_WARNING if _windowed(m.expression) else problem,
+            load_warning=WINDOW_WARNING if _windowed(m.expression) else problem or _unparseable(
+                portable_text(expression)),
         ))
-    names = {m.name.casefold() for m in metrics}
-    for metric in metrics:
-        if metric.load_warning is None:
-            metric.load_warning = model_scoped_problem(metric.expression, metric_names=names)
     notes: list[ExtensionNote] = []
     entry = read_entry(doc.nonportable_extensions, kind="semantic_model", entity=doc.name, ossie=doc.name,
                        label=f"semantic model {doc.name!r}", notes=notes)
+    documented = len(metrics)
     if entry is not None:
         metrics += [ModelScopedMetric(name=m.name, semantic_model=doc.name, data_source=data_source,
                                       expression=m.expression, description=m.description, datatype=m.datatype)
                     for m in entry.payload.metrics]
+    names = {m.name.casefold() for m in metrics}
+    for i, metric in enumerate(metrics):
+        metric.analysis = analyse_model_scoped(metric.expression, metric_names=names)
+        if i < documented and metric.load_warning is None:
+            metric.load_warning = load_problem(metric.analysis)
     chained = warn_unevaluable_dependents(metrics, datasets=list(datasets.values()))
     return Decomposition(name=doc.name, data_source=data_source, datasets=list(datasets.values()), metrics=metrics,
                          notes=notes, chained=chained)
 
 
-def decompose(*, text: str, name: str, data_source: str, ds_type: str | None) -> Decomposition:
-    """``text`` decomposed for a datasource of ``ds_type``; raises ``OssieDocumentInvalidError`` when invalid."""
-    return _decomposed(text, name, data_source, ds_type).model_copy(deep=True)
+def decompose(*, text: str, name: str, data_source: str, ds_type: str | None,
+              granularities: Sequence[CustomGranularity]) -> Decomposition:
+    """``text`` decomposed for a datasource of ``ds_type`` defining ``granularities``; raises
+    ``OssieDocumentInvalidError`` when invalid."""
+    key = tuple(g.model_dump_json() for g in granularities)
+    return _decomposed(text, name, data_source, ds_type, key).model_copy(deep=True)
 
 
 def _aggregated(node: exp.Expr) -> bool:
@@ -295,24 +327,87 @@ def _parsed(expression: Expression) -> exp.Expr | None:
     return tree
 
 
-def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> str | None:
-    """Why SLayer cannot evaluate a model-scoped metric (a field read unqualified or outside an aggregate, an aggregate
-    naming no dataset), else ``None``; an aggregate over several datasets evaluates as in a query."""
+def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> ModelScopedAnalysis:
+    """A model-scoped metric's components, bare metric names and problems (``wide_table_semantics.md`` §5.2)."""
     tree = _parsed(expression)
     if tree is None:
-        return None
+        return ModelScopedAnalysis()
+    problems: list[MetricProblem] = []
+    names: dict[str, None] = {}
     for column in columns(tree, OSSIE_SQL):
-        if _aggregated(column):
-            if not column.table:
-                return f"reads the unqualified field {column.name!r}; qualify it by its dataset"
-        elif column.table:
-            return f"reads {column.table}.{column.name} outside an aggregate"
-        elif column.name.casefold() not in metric_names:
-            return f"reads the unqualified field {column.name!r}; qualify it by its dataset"
-    for aggregate in tree.find_all(exp.AggFunc):
-        if not is_agg_call(aggregate) and not _aggregated(aggregate) and not any(c.table for c in aggregate.find_all(exp.Column)):
-            return f"aggregates {aggregate.sql()} over no dataset; name its dataset, as in COUNT(<dataset>.*)"
-    return None
+        name = column.name.casefold()
+        if not _aggregated(column) and not column.table and name in metric_names:
+            names[name] = None
+            continue
+        problem = _reference_problem(column)
+        if problem is not None:
+            problems.append(problem)
+    homes: dict[str, None] = {}
+    for aggregate in _components(tree):
+        home, problem = _component(aggregate)
+        if problem is not None:
+            problems.append(problem)
+        if home is not None:
+            homes[home] = None
+    if tree.find(exp.Window) is not None:
+        problems.append(MetricProblem(code=OssieErrorCode.E_DEFERRED_WINDOWED_METRIC, reason=WINDOW_WARNING))
+    return ModelScopedAnalysis(homes=list(homes), metrics=list(names), problems=problems)
+
+
+def _reference_problem(column: exp.Column) -> MetricProblem | None:
+    """Why Ossie rejects a field reference that names no metric."""
+    unqualified = f"reads the unqualified field {column.name!r}; qualify it by its dataset"
+    if _aggregated(column):
+        return None if column.table else MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN,
+                                                       reason=unqualified)
+    if column.table:
+        return MetricProblem(code=OssieErrorCode.E_UNAGGREGATED_FINER_GRAIN_REFERENCE,
+                             reason=f"reads {column.table}.{column.name} outside an aggregate")
+    return MetricProblem(code=OssieErrorCode.E_UNAGGREGATED_FINER_GRAIN_REFERENCE, reason=unqualified)
+
+
+def _components(tree: exp.Expr) -> list[exp.Expr]:
+    """The aggregate calls no other aggregate call contains, ``AGG(d.m)`` included; a call's own ``FILTER`` does not
+    contain it."""
+    return [n for n in tree.walk() if (isinstance(n, exp.AggFunc) or is_agg_call(n)) and not _enclosed(n)]
+
+
+def _enclosed(node: exp.Expr) -> bool:
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.AggFunc) or is_agg_call(parent):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _component(aggregate: exp.Expr) -> tuple[str | None, MetricProblem | None]:
+    """An aggregate call's home dataset, and why Ossie rejects it."""
+    # A qualified star (``COUNT(orders.*)``) names its dataset too.
+    tables = {c.table for c in columns(aggregate, OSSIE_SQL) if c.table} | {
+        c.table for c in aggregate.find_all(exp.Column) if isinstance(c.this, exp.Star) and c.table}
+    if is_agg_call(aggregate):
+        return (next(iter(tables)) if len(tables) == 1 else None), None
+    if not tables:
+        return None, MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN, reason=(
+            f"aggregates {aggregate.sql()} over no dataset; name its dataset, as in COUNT(<dataset>.*)"))
+    if len({t.casefold() for t in tables}) > 1:
+        return None, MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN, evaluable=True, reason=(
+            f"aggregates {aggregate.sql()} over several datasets ({', '.join(sorted(tables))})"))
+    home = next(iter(tables))
+    clause = aggregate.parent if isinstance(aggregate.parent, exp.Filter) else None
+    others = sorted({c.table for c in columns(clause.expression, OSSIE_SQL) if c.table.casefold() != home.casefold()}
+                    ) if clause is not None and clause.expression is not None else []
+    if others:
+        return home, MetricProblem(code=OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN, evaluable=True, reason=(
+            f"the FILTER of {aggregate.sql()} reads {', '.join(others)}, not its own dataset {home}"))
+    return home, None
+
+
+def load_problem(analysis: ModelScopedAnalysis) -> str | None:
+    """Why SLayer cannot evaluate the analysed metric: its first problem SLayer does not evaluate, a window aside."""
+    return next((p.reason for p in analysis.problems
+                 if not p.evaluable and p.code is not OssieErrorCode.E_DEFERRED_WINDOWED_METRIC), None)
 
 
 def unevaluable_targets(metrics: list[ModelScopedMetric], *, datasets: list[SlayerDataset]) -> dict[str, tuple[str, str]]:
@@ -408,13 +503,14 @@ class DocumentIndex(BaseModel):
 
 
 def build_index(*, data_source: str, documents: list[tuple[str, str]], standalone: list[str],
-                ds_type: str | None) -> DocumentIndex:
+                ds_type: str | None, granularities: Sequence[CustomGranularity]) -> DocumentIndex:
     """Decompose ``documents`` (``(name, text)``) of ``data_source`` and quarantine every name two owners claim."""
     index = DocumentIndex(data_source=data_source)
     decomposed: list[Decomposition] = []
     for name, text in documents:
         try:
-            decomposed.append(decompose(text=text, name=name, data_source=data_source, ds_type=ds_type))
+            decomposed.append(decompose(text=text, name=name, data_source=data_source, ds_type=ds_type,
+                                        granularities=granularities))
         except Exception as exc:  # noqa: BLE001 — one unloadable document never hides the others
             index.failures.append(StoredDocumentLoadError(kind="semantic_model", name=name, data_source=data_source,
                                                           cause=exc))

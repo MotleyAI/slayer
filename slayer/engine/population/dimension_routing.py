@@ -4,8 +4,9 @@ A short-form dotted ref names only ``Target.field``; this module resolves the
 relationship route from the query root to ``Target`` over the datasource's bidirectional
 multigraph (:mod:`slayer.core.relationship_search`). Trichotomy from route counting:
 unreachable, unique route, or ambiguous (>=2 routes). Ambiguity resolves iff
-exactly one addressable route is fan-out-free — every hop provably many-to-one on
-its traversal orientation. Routed and suggested paths are canonical token sequences.
+exactly one addressable route consists of Ossie steps, else exactly one is fan-out-free —
+every hop provably many-to-one on its traversal orientation. Routed and suggested paths are
+canonical token sequences.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def resolve_route(
 ) -> Tuple[Optional[list[str]], str]:
     """``(route, status)`` where status is ``"ok"`` / ``"ambiguous"`` /
     ``"unreachable"``. A unique full-graph route resolves (even if it fans out);
-    among two or more routes, the sole fan-out-free one resolves."""
+    among two or more routes, the sole path of Ossie steps resolves, else the sole fan-out-free one."""
     if is_spine(root):
         dataset = datasets_by_name.get(target_dataset)
         found = spine_routes(dataset=dataset, datasets_by_name=datasets_by_name) if dataset is not None else []
@@ -47,6 +48,9 @@ def resolve_route(
     if n == 1:
         route = shortest_route(root=root, target=target_dataset, datasets_by_name=datasets_by_name)
         return (list(route.tokens), "ok") if route is not None else (None, "ambiguous")
+    ossie = routes(root=root, target=target_dataset, datasets_by_name=datasets_by_name, hop_filter=HopFilter.OSSIE)
+    if len(ossie) == 1:
+        return list(ossie[0].tokens), "ok"
     safe = routes(root=root, target=target_dataset, datasets_by_name=datasets_by_name, hop_filter=HopFilter.TO_ONE)
     if len(safe) == 1:
         return list(safe[0].tokens), "ok"

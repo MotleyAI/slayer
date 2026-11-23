@@ -58,6 +58,11 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestFieldSqlWaitsForItsDialect::test_saved_where_no_dialect_is_known": 1,
     }),
     *_allow("test_dev2175_stored_upgrade.py", _CONVERSION, {"test_field_sql_is_a_marked_deprecated_input": 1}),
+    *_allow("test_dataset_objects_validate_assignment.py", _CONVERSION, {
+        "TestConstructionNormalizations::test_a_deprecated_sql_naming_one_column_reads_as_the_expression": 1,
+        "TestConstructionNormalizations::test_a_prebuilt_sql_field_placed_in_a_dataset_keeps_its_origin": 1,
+        "TestLinkedAttributes::test_the_final_state_decides_whatever_the_keyword_order": 2,
+    }),
     *_allow("test_dev2175_stored_upgrade.py", _STORED, {
         "items_v": 4,
         "TestStoredFieldSql::test_direct_validation_of_a_stored_document": 1,
@@ -85,6 +90,7 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestColumnShapes::test_a_declared_type_is_kept_as_a_cast": 1,
         "TestColumnShapes::test_a_label_carries_over_where_the_position_holds_one": 1,
         "TestUnconvertible::test_an_extension_of_a_name_several_models_match_fails_to_load": 1,
+        "_quoted_hop_store": 1,
     }),
     *_allow("test_dev2101_stored_upgrade.py", _STORED, {"TestEverySurface::test_mode_a_text_is_untouched": 1}),
     *_allow("test_dev2102_stored_upgrade.py", _STORED, {"<module>": 3}),
@@ -137,6 +143,7 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestSpineOperands::test_extension_column_filter": 1,
         "TestSpineLeftAlone::test_path_continuing_past_the_spine": 1,
     }),
+    *_allow("test_stored_upgrade_filter_literals.py", _STORED, {"<module>": 2}),
 ]
 
 

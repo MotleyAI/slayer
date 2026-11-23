@@ -5,16 +5,19 @@ a source) applies only while its fingerprint matches the entity. An unusable ent
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from typing import Any
 
 from pydantic import BaseModel
 
 from slayer.core import slayer_extension as ext
+from slayer.core.enums import JoinType, RelationshipCardinality
 from slayer.core.field_expression import DialectEntry, ExpressionObject
+from slayer.core.granularity import CustomGranularity
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
 from slayer.core.ossie_expression import OSIExpression
 from slayer.core.query import SlayerQuery
-from slayer.core.semantic_model import OssieExpression
+from slayer.core.semantic_model import OssieExpression, OssieRelationship
 from slayer.engine.binding import bind_dataset_expression
 from slayer.sql.ossie_dialects import expression_digest, source_digest
 
@@ -187,8 +190,10 @@ def relocate_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Resto
         item.home = home.name
 
 
-def restore_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Restored], dialect: str) -> None:
-    """Revert each restored metric that does not bind to its document form, with a note."""
+def restore_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Restored], dialect: str,
+                    granularities: Mapping[str, CustomGranularity]) -> None:
+    """Revert each restored metric that does not bind (under the datasource's ``granularities``) to its document form,
+    with a note."""
     peers = list(datasets.values())
     for item in restored:
         dataset = datasets[item.home]
@@ -196,7 +201,8 @@ def restore_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Restor
         assert i is not None
         metric = dataset.metrics[i]
         try:
-            bind_dataset_expression(metric.text, dataset=dataset, datasets=peers, dialect=dialect)
+            bind_dataset_expression(metric.text, dataset=dataset, datasets=peers, dialect=dialect,
+                                    granularities=granularities)
         except Exception as exc:  # noqa: BLE001 — any binding failure keeps the document form
             del dataset.metrics[i]
             origin = datasets[item.origin]
@@ -206,26 +212,43 @@ def restore_metrics(datasets: dict[str, SlayerDataset], *, restored: list[Restor
                 f"({str(exc).splitlines()[0]}); ignored")))
 
 
-def relationship_declarations(rel: Any, entry: Entry | None, *, datasets: dict[str, SlayerDataset],
-                              default: DatasetRelationship, notes: list[ExtensionNote]) -> list[tuple[str, DatasetRelationship]]:
-    """The ``(dataset, relationship)`` declarations ``rel`` stands for: its entry's when usable, else the default."""
-    fallback = [(rel.from_dataset, default)]
+def restored_relationship(rel: OssieRelationship, *, datasets: Collection[str],
+                          notes: list[ExtensionNote]) -> tuple[str, DatasetRelationship]:
+    """The one ``(dataset, relationship)`` a load restores document relationship ``rel`` as: its ``SLAYER`` entry's sole
+    declaration when usable, else a many-to-one LEFT relationship on ``from``."""
+    entry = read_entry(rel.nonportable_extensions, kind="relationship", entity=rel.name,
+                       ossie=ext.relationship_digest(from_dataset=rel.from_dataset, to=rel.to,
+                                                     from_columns=list(rel.from_columns),
+                                                     to_columns=list(rel.to_columns)),
+                       label=f"relationship {rel.name!r}", notes=notes)
+    default = DatasetRelationship(name=rel.name, to=rel.to, from_columns=list(rel.from_columns),
+                                  to_columns=list(rel.to_columns), cardinality=RelationshipCardinality.MANY_TO_ONE,
+                                  join_type=JoinType.LEFT)
+    return _declared_or(rel, entry, datasets=datasets, notes=notes) or (rel.from_dataset, default)
+
+
+def _declared_or(rel: OssieRelationship, entry: Entry | None, *, datasets: Collection[str],
+                 notes: list[ExtensionNote]) -> tuple[str, DatasetRelationship] | None:
+    """``entry``'s sole declaration when usable; ``None`` (noted when an entry is present) otherwise."""
     if entry is None:
-        return fallback
+        return None
     if not entry.matched:
         notes.append(ExtensionNote(kind="relationship", entity=rel.name,
                                    message=f"relationship {rel.name!r}: {STALE}; read as a many-to-one relationship"))
-        return fallback
-    out = []
-    for declaration in entry.payload.declarations:
-        if declaration.dataset not in datasets or declaration.relationship.to not in datasets:
-            notes.append(ExtensionNote(kind="relationship", entity=rel.name, message=(
-                f"relationship {rel.name!r}: its SLAYER entry declares it on {declaration.dataset!r} to "
-                f"{declaration.relationship.to!r}, which are not both in the document; read as a many-to-one "
-                "relationship")))
-            return fallback
-        out.append((declaration.dataset, declaration.relationship.model_copy()))
-    return out
+        return None
+    declaration = ext.sole_declaration(entry.payload, matched=True)
+    if declaration is None:
+        notes.append(ExtensionNote(kind="relationship", entity=rel.name, message=(
+            f"relationship {rel.name!r}: its SLAYER entry declares {len(entry.payload.declarations)} relationships, "
+            "where one relationship restores exactly one; read as a many-to-one relationship")))
+        return None
+    if declaration.dataset not in datasets or declaration.relationship.to not in datasets:
+        notes.append(ExtensionNote(kind="relationship", entity=rel.name, message=(
+            f"relationship {rel.name!r}: its SLAYER entry declares it on {declaration.dataset!r} to "
+            f"{declaration.relationship.to!r}, which are not both in the document; read as a many-to-one "
+            "relationship")))
+        return None
+    return declaration.dataset, declaration.relationship.model_copy()
 
 
 def source_ossie(source: str, *, reader: str) -> str:
