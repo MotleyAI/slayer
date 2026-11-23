@@ -13,7 +13,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr, ValidationError, model_validator,
+)
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from slayer import usage_reporting
@@ -23,6 +25,7 @@ from slayer.core.errors import (
     AmbiguousDatasetError,
     MemoryNotFoundError,
     SchemaDriftError,
+    UnknownKeyError,
 )
 from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerDataset
@@ -35,6 +38,7 @@ from slayer.core.query import (
     broadcast_already_warned,
     prepare_query_input,
     warn_fresh_broadcast,
+    without_null_version,
 )
 from slayer.core.vocabulary import deprecated_spelling
 from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
@@ -93,6 +97,7 @@ class QueryRequest(BaseModel):
     @classmethod
     def _prepare_query_input(cls, data: Any, handler: ModelWrapValidatorHandler["QueryRequest"]) -> "QueryRequest":
         payloads: list[DeprecatedInputWarning] = []
+        data = without_null_version(data)
         fresh = isinstance(data, dict) and "version" not in data
         if isinstance(data, dict):
             data, payloads = prepare_query_input(data)
@@ -114,6 +119,14 @@ class QueryRequest(BaseModel):
 
 
 _RUN_BY_NAME_FIELDS = frozenset({"name", "variables", "dry_run", "explain", "refine"})
+
+
+def _refuses_unknown_key(exc: ValueError) -> bool:
+    """Whether ``exc`` is, or is a validation error raised by, an unknown-key refusal."""
+    if isinstance(exc, UnknownKeyError):
+        return True
+    return isinstance(exc, ValidationError) and any(
+        isinstance((err.get("ctx") or {}).get("error"), UnknownKeyError) for err in exc.errors())
 
 
 def _dumped(warnings: list[SlayerWarning]) -> list[dict[str, Any]]:
@@ -449,11 +462,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             400: {"description": "Invalid query payload (e.g. missing population/name, mutually exclusive fields, validation error)."},
             422: {
                 "description": (
-                    "Schema drift detected on datasets the query read — it "
-                    "could not run against the live schema. Body shape: "
-                    "``{\"error\": \"schema_drift\", \"datasets\": [...], "
-                    "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
-                    "Run validate_datasets for the same datasource to inspect."
+                    "A query object carries a key it does not read: ``{\"detail\": str}`` or, when "
+                    "caught while parsing the body, ``{\"detail\": [validation error]}``; either names "
+                    "the key. Or schema drift was detected on datasets the query read: "
+                    "``{\"detail\": {\"error\": \"schema_drift\", \"datasets\": [...], "
+                    "\"to_delete\": [ToDeleteEntry], \"original\": str|null}}``; "
+                    "run validate_datasets for the same datasource to inspect."
                 ),
             },
         },
@@ -506,7 +520,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 # A rootless query (no name, no population) is valid —
                 # the engine infers the population. The query must still project
                 # something, which SlayerQuery validation enforces downstream.
-                payload = request.model_dump(exclude_none=True)
+                # Exactly the keys sent, nulls included, so SlayerQuery sees every key it must refuse.
+                payload = request.model_dump(exclude_unset=True)
                 # ``variables`` is consumed at execute() level, not part of
                 # SlayerQuery's filter-substitution variables (those merge
                 # automatically via the kwarg path).
@@ -565,8 +580,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 },
             )
         except ValueError as e:
-            # SlayerError subclasses ValueError; both map to 400.
-            raise HTTPException(status_code=400, detail=str(e))
+            # SlayerError subclasses ValueError; an unknown key is a malformed body (422), the rest 400.
+            raise HTTPException(status_code=422 if _refuses_unknown_key(e) else 400, detail=str(e))
 
     @app.get("/datasets")
     async def list_datasets(
