@@ -12,7 +12,7 @@ from typing import Any, Dict, Hashable, List, Mapping, NoReturn, Optional, Set, 
 
 from pydantic import BaseModel, Field
 
-from slayer.core.errors import QueryBackedCycleError
+from slayer.core.errors import QueryBackedCycleError, VariableError
 from slayer.core.relationship_walker import observe_traversals
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, extension_dataset_names, extension_variable_refs, extract_placeholder_names
@@ -591,19 +591,28 @@ def bind_dataset(dataset: SlayerDataset, *, layers: Mapping[str, Any], bundle: R
     )
 
 
-def bind_read_datasets(bundle: ResolvedSourceBundle, *, layers: Mapping[str, Any]) -> ResolvedSourceBundle:
+def bind_read_datasets(
+    bundle: ResolvedSourceBundle, *, layers: Mapping[str, Any], strict_population: bool = False,
+) -> ResolvedSourceBundle:
     """``bundle`` with its population and every dataset it reads bound under ``layers`` from their unbound
-    definitions, which it keeps for a stage that rebinds under its own."""
+    definitions, which it keeps for a stage that rebinds under its own. A joined dataset whose variables the layers
+    do not all supply keeps its definition (the universe holds datasets no statement reads); with
+    ``strict_population`` the population raises instead."""
     unbound = dict(bundle.unbound_datasets)
 
-    def bound(dataset: SlayerDataset) -> SlayerDataset:
+    def bound(dataset: SlayerDataset, *, strict: bool = False) -> SlayerDataset:
         base = unbound.get(dataset.name, dataset)
-        out = bind_dataset(base, layers=layers, bundle=bundle)
+        try:
+            out = bind_dataset(base, layers=layers, bundle=bundle)
+        except VariableError:
+            if strict:
+                raise
+            return base
         if out is not base:
             unbound.setdefault(dataset.name, base)
         return out
 
-    population = None if bundle.population is None else bound(bundle.population)
+    population = None if bundle.population is None else bound(bundle.population, strict=strict_population)
     referenced = [population if population is not None and m.name == population.name else bound(m)
                   for m in bundle.referenced_datasets]
     return bundle.model_copy(update={
@@ -625,13 +634,11 @@ def plan_stages(
     *,
     queries: List[SlayerQuery],
     bundle: ResolvedSourceBundle,
-    stage_variables: Optional[Mapping[str, Dict[str, Any]]] = None,
 ) -> List[PlannedQuery]:
     """Plan a multi-stage DAG: topo sort, then plan each stage against its own resolved
     source + already-planned siblings' synthetic datasets, splicing every stored
     query-backed dataset a stage reads before it; each plan records its sibling reads
-    and is stamped with its per-stage bundle. A named stage in ``stage_variables`` reads its datasets bound under
-    its own layers."""
+    and is stamped with its per-stage bundle. A named stage reads its datasets bound under its own layers."""
     ordered = topologically_order_stages(queries, displays=bundle.stage_displays)
     planner = _StagePlanner(bundle=bundle, outer_variables=dict(ordered[-1].variables or {}))
     for q in ordered:
@@ -640,6 +647,6 @@ def plan_stages(
             q, chain=bundle.splice_chain, single=len(ordered) == 1,
             stage_dataset=bundle.stage_source_datasets.get(q.name) if named and q.name else None,
             row_supply=bundle.row_supplies.get(q.name or ROOT_STAGE),
-            variables=(stage_variables or {}).get(q.name) if named and q.name else None,
+            variables=bundle.stage_variable_layers.get(q.name) if named and q.name else None,
         )
     return planner.state.planned

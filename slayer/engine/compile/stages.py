@@ -5230,10 +5230,7 @@ def _respellings(
     (auto-names are path- then leaf-prefixed, so re-deriving substitutes both)."""
     path = _value_anchor_path(key)
     if not path:
-        if root is not None and flat.startswith(f"{root.name}__"):
-            # Named by its own dataset (a root-less stage hosted at the aggregate's home).
-            return _prefixed_leaf_variants(prefix=f"{root.name}__", flat=flat, key=key, root=root)
-        return _leaf_variants(rest=flat, key=key, upstream=upstream)[1:]
+        return _unpathed_respellings(flat=flat, key=key, root=root, upstream=upstream)
     head: Tuple[str, ...] = ()
     if is_framed_path(path):
         start = _framed_start(flat=flat, path=path, root=root, datasets_by_name=datasets_by_name)
@@ -5263,6 +5260,16 @@ def _respellings(
         upstream=_field_respellings(terminal.fields if terminal else []),
     )
     return tuple(p + "__" + leaf for p in paths for leaf in leaves)[1:]
+
+
+def _unpathed_respellings(
+    *, flat: str, key: ValueKey, root: Optional[SlayerDataset], upstream: Mapping[str, Tuple[str, ...]],
+) -> Tuple[str, ...]:
+    """Stale spellings of a pathless output; one named by its own dataset (a root-less stage hosted at the
+    aggregate's home) respells its leaf by that dataset's fields."""
+    if root is not None and flat.startswith(f"{root.name}__"):
+        return _prefixed_leaf_variants(prefix=f"{root.name}__", flat=flat, key=key, root=root)
+    return _leaf_variants(rest=flat, key=key, upstream=upstream)[1:]
 
 
 def _prefixed_leaf_variants(*, prefix: str, flat: str, key: ValueKey, root: SlayerDataset) -> Tuple[str, ...]:

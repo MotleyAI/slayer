@@ -90,3 +90,12 @@ async def test_a_spliced_stage_binds_a_joined_dataset_under_its_own_variables(ba
         resp = await run(eng, population="qb", dimensions=["qb.region", "qb.tr"], variables={"m": 20})
     got = {r["qb.region"]: r["qb.tr"] for r in resp.data}
     assert (got["EAST"], got["NORTH"]) == (25, 10)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_an_unread_dataset_missing_a_variable_never_fails_the_query(backend: str) -> None:
+    # returns is in the relationship universe but unread; another variable makes the binder run.
+    async with seed_engine(backend, datasets=_datasets(returns=_no_default_returns())) as eng:
+        resp = await run(eng, population="customers", dimensions=[R], metrics=["customers.customer_count"],
+                         variables={"other": 1})
+    assert {r[R]: r["customers.customer_count"] for r in resp.data} == {"EAST": 2, "WEST": 1, "NORTH": 1}

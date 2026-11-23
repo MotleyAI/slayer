@@ -97,6 +97,8 @@ class ResolvedSourceBundle(BaseModel):
     query: Optional[SlayerQuery] = None
     # Per-named-stage source dataset (sibling-sourced stages omitted).
     stage_source_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
+    # Per-named-stage variable layers (outer, stage, runtime) every dataset the stage reads binds under.
+    stage_variable_layers: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     query_variables: Dict[str, Any] = Field(default_factory=dict)
     # The query's own variable layers (outer, stage, runtime), without any dataset's defaults.
     variable_layers: Dict[str, Any] = Field(default_factory=dict)

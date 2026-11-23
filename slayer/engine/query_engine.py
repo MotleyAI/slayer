@@ -1539,7 +1539,7 @@ class SlayerQueryEngine:
         bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
 
         # Every dataset the statement reads binds its Mode-A surfaces before anything parses them.
-        bundle = bind_read_datasets(bundle, layers=bundle.variable_layers)
+        bundle = bind_read_datasets(bundle, layers=bundle.variable_layers, strict_population=True)
         dataset = bundle.population
         assert dataset is not None
 
@@ -1589,7 +1589,8 @@ class SlayerQueryEngine:
             if source is not None:
                 stage_sources[nm] = bind_dataset(source, layers=layers, bundle=bundle)
         bundle = await self._resolved_bundle(
-            bundle.model_copy(update={"stage_source_datasets": stage_sources, "row_supplies": supplies}),
+            bundle.model_copy(update={"stage_source_datasets": stage_sources, "stage_variable_layers": stage_layers,
+                                     "row_supplies": supplies}),
             datasource=datasource,
         )
 
@@ -1597,7 +1598,7 @@ class SlayerQueryEngine:
             query = _with_default_order(query)
 
         # Plan the DAG (root last) and compose the whole chain as one statement.
-        planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle, stage_variables=stage_layers)
+        planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
         render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
         with collect_stale_spellings() as render_stale_spellings:
             built = build_planned_statement(
