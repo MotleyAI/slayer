@@ -47,9 +47,7 @@ DS2 = "shop2"
 REV = {"formula": "sum(amount)", "name": "rev"}
 #: ``sum(amount)`` per status over every order, and over North customers' orders.
 REV_BY_STATUS = {"ok": 80.0, "new": 70.0, "2024/01/01": 60.0}
-NORTH_REV_BY_STATUS = {"ok": 50.0, "new": 70.0}
-JOIN_TO_CUSTOMERS = {"name": "cust", "target_model": "customers", "join_pairs": [["customer_id", "id"]],
-                     "cardinality": "many_to_one"}
+UNDETERMINED = "datasource cannot be determined"
 
 DatasourceFactory = Callable[[str], DatasourceConfig]
 
@@ -78,8 +76,8 @@ def rootless(*filters: str, **extra: Any) -> dict:
     return {"version": 4, "dimensions": [{"name": "status"}], "measures": [REV], "filters": list(filters), **extra}
 
 
-def rootless_memory(*filters: str) -> dict:
-    return memory_v2(memory_id="m", query=rootless(*filters))
+def rootless_memory(*filters: str, entities: Sequence[str] = ()) -> dict:
+    return memory_v2(memory_id="m", query=rootless(*filters), entities=entities)
 
 
 def shop(data_source: str) -> list[dict]:
@@ -139,18 +137,16 @@ async def test_rootless_memory_loads_on_a_single_datasource_store(
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-@pytest.mark.parametrize(("priority", "dataset"), [
-    pytest.param([DS, DS2], "orders", id="shop-first"),
-    pytest.param([DS2, DS], "customers", id="shop2-first"),
-])
-async def test_datasource_priority_picks_where_a_rootless_memory_is_read(
-    tmp_path: Path, shop_datasource: DatasourceFactory, backend: str, priority: list[str], dataset: str,
+async def test_entities_pin_a_rootless_memory_over_the_priority(
+    tmp_path: Path, shop_datasource: DatasourceFactory, backend: str,
 ) -> None:
+    entities = [f"{DS2}.customers", f"{DS2}.customers.status", f"{DS2}.customers.amount"]
     storage = await store(tmp_path=tmp_path, backend=backend, datasources=[shop_datasource(DS), shop_datasource(DS2)],
-                          models=[*shop(DS), *swapped(DS2)], memories=[rootless_memory()], priority=priority)
+                          models=[*shop(DS), *swapped(DS2)], memories=[rootless_memory(entities=entities)],
+                          priority=[DS, DS2])
     query = await loaded(storage)
-    assert fields(query)[:2] == ([f"{dataset}.status"], [f"sum({dataset}.amount)"])
-    resp = await run_in(storage, query, data_source=priority[0])
+    assert fields(query)[:2] == (["customers.status"], ["sum(customers.amount)"])
+    resp = await run_in(storage, query, data_source=DS2)
     assert by_dimension(resp, dim_suffix="status") == REV_BY_STATUS
 
 
@@ -169,75 +165,55 @@ async def test_rootless_memory_legacy_literal_is_repaired(
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-@pytest.mark.parametrize(("priority", "literal"), [
-    pytest.param([DS, DS2], "'2024-01-01'", id="timestamp-datasource-first"),
-    pytest.param([DS2, DS], "'2024/01/01'", id="text-datasource-first"),
+@pytest.mark.parametrize(("pinned", "literal"), [
+    pytest.param(DS, "'2024-01-01'", id="timestamp-datasource"),
+    pytest.param(DS2, "'2024/01/01'", id="text-datasource"),
 ])
 async def test_rootless_memory_literal_is_typed_in_the_datasource_it_is_read_in(
-    tmp_path: Path, shop_datasource: DatasourceFactory, backend: str, priority: list[str], literal: str,
+    tmp_path: Path, shop_datasource: DatasourceFactory, backend: str, pinned: str, literal: str,
 ) -> None:
     text_orders = in_datasource(typed(orders_v10(), column="ordered_at", type_="TEXT"), DS2)
+    memory = rootless_memory("ordered_at >= '2024/01/01'", entities=[f"{pinned}.orders"])
     storage = await store(tmp_path=tmp_path, backend=backend, datasources=[shop_datasource(DS), shop_datasource(DS2)],
-                          models=[*shop(DS), text_orders, in_datasource(customers_v10(), DS2)],
-                          memories=[rootless_memory("ordered_at >= '2024/01/01'")], priority=priority)
+                          models=[*shop(DS), text_orders, in_datasource(customers_v10(), DS2)], memories=[memory])
     assert (await loaded(storage)).filter == [f"orders.ordered_at >= {literal}"]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-async def test_named_dataset_narrows_the_datasources(
+async def test_entity_pinned_memory_is_read_only_in_its_datasource(
     tmp_path: Path, shop_datasource: DatasourceFactory, backend: str,
 ) -> None:
-    models = [in_datasource(orders_v10(joins=[]), "a_shop"), *shop("b_shop")]
-    storage = await store(tmp_path=tmp_path, backend=backend,
-                          datasources=[shop_datasource("a_shop"), shop_datasource("b_shop")], models=models,
-                          memories=[rootless_memory("customers.region = 'North'")])
-    query = await loaded(storage)
-    assert fields(query)[0] == ["orders.status"]
-    resp = await run_in(storage, query, data_source="b_shop")
-    assert by_dimension(resp, dim_suffix="status") == NORTH_REV_BY_STATUS
-
-
-@pytest.mark.parametrize("backend", BACKENDS)
-async def test_extension_join_target_narrows_the_datasources(
-    tmp_path: Path, shop_datasource: DatasourceFactory, backend: str,
-) -> None:
-    body = {"version": 16, "dimensions": ["status"], "measures": [REV],
-            "extensions": [{"source_name": "orders", "joins": [JOIN_TO_CUSTOMERS]}]}
-    models = [in_datasource(customers_v10(name="orders"), "a_shop"),
-              in_datasource(orders_v10(joins=[]), "b_shop"), in_datasource(customers_v10(), "b_shop")]
-    storage = await store(tmp_path=tmp_path, backend=backend,
-                          datasources=[shop_datasource("a_shop"), shop_datasource("b_shop")], models=models,
-                          memories=[memory_v2(memory_id="m", query=body, version=12)])
-    query = await loaded(storage)
-    assert fields(query)[:2] == (["orders.status"], ["sum(orders.amount)"])
-    resp = await run_in(storage, query, data_source="b_shop")
-    assert by_dimension(resp, dim_suffix="status") == REV_BY_STATUS
-
-
-@pytest.mark.parametrize("backend", BACKENDS)
-async def test_without_a_priority_entry_the_first_datasource_by_name_is_read(
-    tmp_path: Path, shop_datasource: DatasourceFactory, backend: str,
-) -> None:
-    storage = await store(tmp_path=tmp_path, backend=backend,
-                          datasources=[shop_datasource("b_shop"), shop_datasource("a_shop")],
-                          models=[*swapped("b_shop"), *shop("a_shop")], memories=[rootless_memory()])
-    assert fields(await loaded(storage))[:2] == (["orders.status"], ["sum(orders.amount)"])
-
-
-@pytest.mark.parametrize("backend", BACKENDS)
-async def test_no_other_datasource_is_tried(tmp_path: Path, shop_datasource: DatasourceFactory, backend: str) -> None:
     # Guard: already holds on HEAD.
     models = [in_datasource(customers_v10(), DS), *shop(DS2)]
     storage = await store(tmp_path=tmp_path, backend=backend, datasources=[shop_datasource(DS), shop_datasource(DS2)],
-                          models=models, memories=[rootless_memory()], priority=[DS, DS2])
+                          models=models, memories=[rootless_memory(entities=[f"{DS}.customers"])])
+    await assert_fails_to_load(storage, match="status")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("entities", [
+    pytest.param([], id="no-entities"),
+    pytest.param([f"{DS}.gone", "memory:1"], id="no-stored-dataset"),
+    pytest.param([f"{DS}.orders", f"{DS2}.orders.status"], id="both-datasources"),
+])
+async def test_entityless_memory_on_a_multi_datasource_store_fails_to_load(
+    tmp_path: Path, shop_datasource: DatasourceFactory, backend: str, entities: list[str],
+) -> None:
+    storage = await store(tmp_path=tmp_path, backend=backend, datasources=[shop_datasource(DS), shop_datasource(DS2)],
+                          models=[*shop(DS), *shop(DS2)], memories=[rootless_memory(entities=entities)])
+    await assert_fails_to_load(storage, match=UNDETERMINED)
+
+
+async def assert_fails_to_load(storage: StorageBackend, *, match: str) -> None:
+    """Memory ``m`` is skipped by a listing with one warning naming it, and refused by ``get_memory``."""
     failures = DocumentLoadFailures()
     with warnings.catch_warnings(record=True):
         warnings.simplefilter("always")
         assert await storage.list_memories(failures=failures) == []
     [warning] = failures.warnings
     assert warning.name == "m"
-    assert "status" in warning.cause
-    with pytest.raises(StoredDocumentLoadError, match="status"):
+    assert match in warning.cause
+    with pytest.raises(StoredDocumentLoadError, match=match):
         await storage.get_memory("m")
 
 
@@ -298,6 +274,25 @@ async def test_rootless_memory_library_colliding_granularity_is_renamed(tmp_path
     query = await loaded(storage)
     assert granularity_of(query) == "left_granularity"
     assert buckets(await run(storage, query)) == EXPECTED_BUCKETS
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_entity_pinned_memory_custom_granularities_follow_its_datasource(tmp_path: Path, backend: str) -> None:
+    base = str(tmp_path / f"gstore-{backend}")
+    db_path = live_db(base)
+    query = rootless_bucket("left", "created_at:mid_month >= '2025-02-01'")
+    storage = await write_raw_store(
+        backend=backend, base=base,
+        datasources=[datasource_doc(db_path=db_path, name="g1"),
+                     datasource_doc(db_path=db_path, name="g2", granularities=["left", "mid_month"])],
+        datasets=[events_doc(data_source="g1"), events_doc(data_source="g2")],
+        memories=[memory_doc(memory_id="m", query=query, entities=["g2.events"])],
+    )
+    loaded_query = await loaded(storage)
+    assert granularity_of(loaded_query) == "left_granularity"
+    assert loaded_query.filter == [MID_MONTH_FILTER]
+    resp = await run_in(storage, loaded_query, data_source="g2")
+    assert buckets(resp) == {"2025-02-15": EXPECTED_BUCKETS["2025-02-15"]}
 
 
 def spine_bucket(granularity: str, *filters: str) -> dict:

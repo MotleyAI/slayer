@@ -1,4 +1,4 @@
-"""The datasource an unpinned stored query reads when its population names no stored dataset (models/stored-upgrade)."""
+"""The datasource of an unpinned stored memory whose population names no stored dataset (models/stored-upgrade)."""
 
 from __future__ import annotations
 
@@ -6,16 +6,14 @@ from typing import Any
 
 import pytest
 
-from slayer.memories.models import Memory
 from slayer.storage.stored_datasource import (
-    fallback_datasource,
-    query_dataset_names,
-    raw_memory_dataset_names,
+    memory_fallback_population,
+    raw_memory_datasource,
     uses_fallback_datasource,
 )
 from tests._stored_upgrade_fixtures import memory_v2
 
-AB = {"a": {"orders"}, "b": {"orders", "customers"}}
+TWO = [("shop", "orders"), ("shop", "customers"), ("shop2", "orders"), ("shop2", "customers")]
 
 
 class TestTrigger:
@@ -30,91 +28,42 @@ class TestTrigger:
     def test_trigger(self, population: str | None, stored: set[str], expected: bool) -> None:
         assert uses_fallback_datasource(population, stored_names=stored) is expected
 
-
-class TestFallback:
-    @pytest.mark.parametrize(("names", "datasets_by_ds", "priority", "expected"), [
-        pytest.param([], {"b": {"orders"}, "a": {"orders"}}, [], "a", id="no-names-first-by-name"),
-        pytest.param([], {"a": {"orders"}, "b": {"orders"}}, ["b"], "b", id="no-names-priority"),
-        pytest.param(["customers"], AB, [], "b", id="named-holder"),
-        pytest.param(["Customers"], AB, [], "b", id="named-holder-by-case"),
-        pytest.param(["customers"], {**AB, "c": {"customers"}}, ["a", "c", "b"], "c", id="priority-among-holders"),
-        pytest.param(["customers"], {**AB, "c": {"customers"}}, ["a", "c"], "c", id="priority-before-name"),
-        pytest.param(["ghost"], AB, [], "a", id="named-nowhere-every-datasource"),
-        pytest.param(["time_spine"], {"a": {"orders"}, "b": {"orders", "Time_Spine"}}, [], "a",
-                     id="spine-names-ignored"),
-    ])
-    def test_fallback(self, names: list[str], datasets_by_ds: dict[str, set[str]], priority: list[str],
-                      expected: str) -> None:
-        assert fallback_datasource(names, datasets_by_ds=datasets_by_ds, priority=priority) == expected
-
-    def test_no_datasource(self) -> None:
-        assert fallback_datasource([], datasets_by_ds={}, priority=[]) is None
-
-
-JOIN = {"name": "cust", "target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}
-
-#: Raw stored memory queries at an old version, and the dataset names they reference.
-NAMED_CASES = [
-    pytest.param({"dimensions": [{"name": "customers.region"}]}, {"customers"}, id="dimension"),
-    pytest.param({"time_dimensions": [{"dimension": {"name": "customers.signed_up_at"}, "granularity": "year"}]},
-                 {"customers"}, id="time-dimension-structured"),
-    pytest.param({"time_dimensions": [{"dimension": "customers.signed_up_at", "granularity": "year"}]},
-                 {"customers"}, id="time-dimension-text"),
-    pytest.param({"measures": [{"formula": "sum(customers.id)", "name": "n"}]}, {"customers"}, id="metric"),
-    pytest.param({"measures": [{"formula": "customers.id:count", "name": "n"}]}, {"customers"}, id="colon-metric"),
-    pytest.param({"filters": ["customers.region == 'North' and not orders.status"]}, {"customers", "orders"},
-                 id="python-spelled-filter"),
-    pytest.param({"dimensions": [{"name": "status"}], "order": [{"column": {"name": "customers.region"}}]},
-                 {"customers"}, id="order-key"),
-    pytest.param({"order": [{"column": {"name": "_funcstyle_pending"}, "direction": "asc",
-                             "raw_formula": "max(customers.id)"}]}, {"customers"}, id="order-expression"),
-    pytest.param({"main_time_dimension": "customers.signed_up_at", "measures": [{"formula": "sum(amount)", "name": "r"}]},
-                 {"customers"}, id="main-time-dimension"),
-    pytest.param({"dimensions": [{"name": "status"}], "measures": [{"formula": "sum(amount)", "name": "r"}]}, set(),
-                 id="bare-names-only"),
-]
-
-
-def _memory(query: dict[str, Any], *, version: int = 4, memory_version: int = 2) -> dict[str, Any]:
-    return memory_v2(memory_id="m", query={"version": version, **query}, version=memory_version)
-
-
-class TestNameReader:
-    @pytest.mark.parametrize(("query", "expected"), NAMED_CASES)
-    def test_raw_and_validated_agree(self, query: dict[str, Any], expected: set[str]) -> None:
-        raw = _memory(query)
-        validated = Memory.model_validate(raw).query
-        assert validated is not None
-        assert set(raw_memory_dataset_names(raw)) == expected
-        assert set(query_dataset_names(validated)) == expected
-
     @pytest.mark.parametrize(("query", "expected"), [
-        pytest.param({"dimensions": ["customers.region"]}, {"customers"}, id="dimension"),
-        pytest.param({"time_dimensions": [{"dimension": "customers.signed_up_at", "granularity": "year"}]},
-                     {"customers"}, id="time-dimension"),
-        pytest.param({"measures": [{"formula": "sum(customers.id)", "name": "n"}]}, {"customers"}, id="metric"),
-        pytest.param({"filters": ["customers.region == 'North' and not orders.status"]}, {"customers", "orders"},
-                     id="python-spelled-filter"),
-        pytest.param({"main_time_dimension": "customers.signed_up_at",
-                      "measures": [{"formula": "sum(amount)", "name": "r"}]}, {"customers"}, id="main-time-dimension"),
+        pytest.param({"version": 4, "dimensions": [{"name": "status"}]}, (True, None), id="no-population"),
+        pytest.param({"version": 4, "source_model": "time_spine"}, (True, "time_spine"), id="spine"),
+        pytest.param({"version": 16, "population": "time_spine"}, (True, "time_spine"), id="spine-current-keys"),
+        pytest.param({"version": 4, "source_model": "orders"}, (False, "orders"), id="stored-population"),
+        pytest.param({"version": 4, "source_model": "ordrs"}, (False, "ordrs"), id="missing-explicit-population"),
+        pytest.param({"version": 4, "source_model": {"name": "inline", "sql_table": "t", "data_source": "shop"}},
+                     (False, None), id="inline-dataset"),
+        pytest.param({"version": 16, "population": {"dataset": "time_spine", "metrics": []}}, (True, "time_spine"),
+                     id="spine-extension"),
     ])
-    def test_raw_and_validated_agree_at_a_later_version(self, query: dict[str, Any], expected: set[str]) -> None:
-        raw = _memory(query, version=16, memory_version=12)
-        validated = Memory.model_validate(raw).query
-        assert validated is not None
-        assert set(raw_memory_dataset_names(raw)) == set(query_dataset_names(validated)) == expected
-
-    def test_extended_dataset_and_join_target(self) -> None:
-        raw = _memory({"dimensions": ["status"], "extensions": [{"source_name": "orders", "joins": [JOIN]}]},
-                      version=16, memory_version=12)
-        validated = Memory.model_validate(raw).query
-        assert validated is not None
-        assert set(raw_memory_dataset_names(raw)) == set(query_dataset_names(validated)) == {"orders", "customers"}
-
-    def test_unparsable_text_names_nothing(self) -> None:
-        raw = _memory({"dimensions": [{"name": "orders.status"}], "filters": ["customers.region = = ("]})
-        assert set(raw_memory_dataset_names(raw)) == {"orders"}
+    def test_memory_trigger(self, query: dict[str, Any], expected: tuple[bool, str | None]) -> None:
+        assert memory_fallback_population(memory_v2(memory_id="m", query=query), identities=TWO) == expected
 
     @pytest.mark.parametrize("query", [None, "not a query"])
-    def test_no_query_names_nothing(self, query: Any) -> None:
-        assert raw_memory_dataset_names({**memory_v2(memory_id="m", query={}), "query": query}) == []
+    def test_no_query_does_not_trigger(self, query: Any) -> None:
+        data = {**memory_v2(memory_id="m", query={}), "query": query}
+        assert memory_fallback_population(data, identities=TWO) == (False, None)
+
+
+class TestRawDatasource:
+    @pytest.mark.parametrize(("entities", "identities", "expected"), [
+        pytest.param([], [("shop", "orders")], "shop", id="only-datasource"),
+        pytest.param([], TWO, None, id="no-entities-two-datasources"),
+        pytest.param(["shop2.customers"], TWO, "shop2", id="dataset-entity"),
+        pytest.param(["shop2.customers.status", "shop2.customers.amount"], TWO, "shop2", id="leaf-entities"),
+        pytest.param(["shop2"], TWO, None, id="bare-datasource-ignored"),
+        pytest.param(["shop2.customers.region.name"], TWO, None, id="deeper-path-ignored"),
+        pytest.param(["shop2.gone"], TWO, None, id="missing-dataset-ignored"),
+        pytest.param(["Shop2.customers"], TWO, None, id="other-case-ignored"),
+        pytest.param(["memory:5"], TWO, None, id="memory-entity-ignored"),
+        pytest.param(["shop.orders", "shop2.customers"], TWO, None, id="two-datasources"),
+        pytest.param(["shop2.gone", "shop.orders.status"], TWO, "shop", id="pin-beside-ignored"),
+        pytest.param(["shop2.customers"], [("shop", "orders")], "shop", id="stale-pin-only-datasource"),
+        pytest.param([], [], None, id="no-datasource"),
+    ])
+    def test_raw_datasource(self, entities: list[str], identities: list[tuple[str, str]], expected: str | None) -> None:
+        data = memory_v2(memory_id="m", query={"version": 4}, entities=entities)
+        assert raw_memory_datasource(data, identities=identities) == expected
