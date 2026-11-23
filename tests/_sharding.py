@@ -2,11 +2,12 @@
 
 ``--shard K/N`` collects only the K-th of N groups of test modules; every shard
 derives the same grouping from the same checkout, so the N shards partition the
-suite. ``--store-shard-durations PATH`` writes per-module seconds, the input that
-balances the groups. CI uploads each shard's file; to rebalance from a run::
+suite. Each shard runs its heaviest modules first, so none starts in the tail.
+``--store-shard-durations PATH`` writes per-module seconds, the input that
+balances the groups. CI uploads each shard's file; to rebalance from runs::
 
-    gh run download <run-id> -p 'shard-durations-*' -D <dir>
-    poetry run python -m tests._sharding tests/shard_durations.json <dir>/*/shard-durations.json
+    gh run download <run-id> -p 'shard-durations-*' -D <dir>/<run-id>
+    poetry run python -m tests._sharding tests/shard_durations.json <dir>/*/*/shard-durations.json
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ DURATIONS_FILE = Path(__file__).with_name("shard_durations.json")
 
 _PLAN = pytest.StashKey[dict[str, int]]()
 _SHARD = pytest.StashKey[tuple[int, int]]()
+_WEIGHTS = pytest.StashKey[tuple[dict[str, float], float]]()
 
 
 def parse_shard(spec: str) -> tuple[int, int]:
@@ -38,9 +40,14 @@ def parse_shard(spec: str) -> tuple[int, int]:
     return k - 1, n
 
 
+def default_weight(durations: dict[str, float]) -> float:
+    """Weight of a module without a recorded duration: the median."""
+    return statistics.median(durations.values()) if durations else 1.0
+
+
 def assign_shards(*, files: list[str], durations: dict[str, float], count: int) -> dict[str, int]:
     """Longest-first greedy assignment; a module without a recorded duration weighs the median."""
-    default = statistics.median(durations.values()) if durations else 1.0
+    default = default_weight(durations)
     weight = {f: durations.get(f, default) for f in files}
     loads = [0.0] * count
     plan: dict[str, int] = {}
@@ -122,10 +129,10 @@ def pytest_configure(config: pytest.Config) -> None:
     if spec is None:
         return
     index, count = parse_shard(spec)
+    durations = _load_durations(DURATIONS_FILE)
     config.stash[_SHARD] = (index, count)
-    config.stash[_PLAN] = assign_shards(
-        files=_invocation_modules(config), durations=_load_durations(DURATIONS_FILE), count=count,
-    )
+    config.stash[_WEIGHTS] = (durations, default_weight(durations))
+    config.stash[_PLAN] = assign_shards(files=_invocation_modules(config), durations=durations, count=count)
 
 
 def _owned(path: Path, config: pytest.Config) -> bool:
@@ -143,13 +150,16 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Deselect items of other shards' modules, which explicit path arguments still collect."""
+    """Deselect other shards' items (explicit path arguments still collect them), then order heaviest module first."""
     if _PLAN not in config.stash:
         return
     foreign = [item for item in items if not _owned(item.path, config)]
     if foreign:
         config.hook.pytest_deselected(items=foreign)
         items[:] = [item for item in items if _owned(item.path, config)]
+    durations, default = config.stash[_WEIGHTS]
+    modules = {item.path: _key(item.path, config) for item in items}
+    items.sort(key=lambda item: (-durations.get(modules[item.path], default), modules[item.path]))
 
 
 def main(argv: list[str] | None = None) -> None:
