@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from slayer.core.assignment import AtomicAssignment
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import (
     DatasetExtension, OrderItem, QueryDimension, QueryMetric, QueryRefinement, SlayerQuery, TimeDimension,
@@ -39,6 +40,12 @@ INVALID_ASSIGNMENTS: dict[str, tuple[Callable[[], BaseModel], str, Any]] = {
     "OrderItem": (lambda: OrderItem.model_validate({"field": "orders.status"}), "direction", "sideways"),
     "DatasetExtension": (lambda: DatasetExtension.model_validate({"dataset": "orders"}), "dataset", 5),
 }
+
+
+@pytest.mark.parametrize("name", sorted(INVALID_ASSIGNMENTS))
+def test_a_query_input_object_shares_the_dataset_side_atomic_assignment(name: str) -> None:
+    build, _, _ = INVALID_ASSIGNMENTS[name]
+    assert isinstance(build(), AtomicAssignment)
 
 
 class TestInvalidAssignments:

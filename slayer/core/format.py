@@ -7,8 +7,11 @@ import math
 import numbers
 import uuid
 from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from slayer.core.assignment import AtomicAssignment
 
 
 class NumberFormatType(str, Enum):
@@ -23,8 +26,10 @@ class NumberFormatType(str, Enum):
         return self.value
 
 
-class NumberFormat(BaseModel):
+class NumberFormat(AtomicAssignment):
     """Number format specification for metrics and dimensions."""
+
+    model_config = ConfigDict(validate_assignment=True)
 
     type: NumberFormatType = Field(
         default=NumberFormatType.FLOAT,
@@ -40,11 +45,17 @@ class NumberFormat(BaseModel):
         description="Currency symbol (defaults to $ for CURRENCY type, must be None otherwise)",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _default_symbol(cls, data: Any) -> Any:
+        """A currency format without a symbol shows ``$``."""
+        if isinstance(data, dict) and data.get("type") == NumberFormatType.CURRENCY and data.get("symbol") is None:
+            return {**data, "symbol": "$"}
+        return data
+
     @model_validator(mode="after")
     def validate_symbol(self) -> "NumberFormat":
-        """Validate symbol: default to $ for CURRENCY type, forbidden otherwise."""
-        if self.type == NumberFormatType.CURRENCY and self.symbol is None:
-            self.symbol = "$"
+        """A symbol only on a currency format."""
         if self.type != NumberFormatType.CURRENCY and self.symbol is not None:
             raise ValueError("Currency symbol must be None for non-CURRENCY types")
         return self
