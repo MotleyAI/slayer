@@ -630,11 +630,13 @@ built-in count — and every custom aggregation SHALL have the empty value NULL;
 formula-less declaration of a built-in name keeps the built-in's empty value; the
 declaration consulted is the one on the aggregation's owning model. The empty value
 SHALL hold in every position (measure, composite, measure filter, order key, dimension,
-aggregation source, and a transform operand's cells within the transform's domain), in
-every `to_many_handling` mode, and for windowed aggregates. A transform cell outside its
-operand's domain (`queries/transforms` › Transforms evaluate over their operand's domain),
-or with no value (e.g. a `time_shift` whose prior bucket is absent), SHALL stay NULL, and
-no population cell SHALL be fabricated.
+aggregation source, transform operand), in every `to_many_handling` mode, and for
+windowed aggregates. As an aggregation source, the empty value fills an operand cell
+(`queries/semantics` › Second-order aggregation over attached values) that a constituent lacks or
+whose home rows a measure-local filter removes; a cell no constituent's home rows reach is no operand
+cell, and a result row reaching no operand cell takes the outer aggregation's empty value. A
+transform cell with no value (e.g. a `time_shift` whose prior
+bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 
 #### Scenario: Single-hop count of a childless parent is 0
 - **WHEN** a query rooted at `customers` groups by `name` and selects `count(orders.id)`,
@@ -650,8 +652,7 @@ no population cell SHALL be fabricated.
 #### Scenario: Inferred population
 - **WHEN** a query without `population` has `dimensions=[customers.name]` and selects
   `count(orders.id)`
-- **THEN** the population is `customers` and the childless customer has no row (no
-  measure's home rows reach it); with `"population": "customers"` named, its cell holds 0
+- **THEN** the population is `customers` and the childless customer's cell holds 0
 
 #### Scenario: Multi-hop count
 - **WHEN** a query rooted at `regions` groups by `name` and selects
@@ -683,17 +684,18 @@ no population cell SHALL be fabricated.
 
 #### Scenario: Re-aggregation counts the zeros
 - **WHEN** a query rooted at `customers` selects
-  `avg(count(orders.id, partition_by=[name]))`
-- **THEN** the average includes each childless customer as 0 (total orders divided by
-  the number of customers), by executed values
+  `avg(count(orders.id, partition_by=[name]))`, and again with the inner count carrying
+  `FILTER (WHERE orders.status = 'ok')`, where one customer's only order is not `ok`
+- **THEN** the unfiltered average runs over the customers some order reaches (total orders
+  divided by the customers with an order), a childless customer having no operand cell; the
+  filtered average includes the customer whose only order is not `ok` as 0, by executed values
 
 #### Scenario: Transform over a count consumes 0, missing transform cell stays NULL
 - **WHEN** a query rooted at `customers` with a time dimension selects
   `cumsum(count(orders.id))`, `change(count(orders.id))` and
   `time_shift(count(orders.id), -1)`
-- **THEN** `cumsum` reads NULL in a cell whose count has no home rows and accumulates the
-  counts of the cells that have them; `change` and `time_shift` consume the count's 0
-  there; a cell whose shifted prior bucket is absent from the result holds NULL
+- **THEN** a cell whose count operand has no home rows contributes 0 to the transform,
+  and a cell whose shifted prior bucket is absent from the result holds NULL
 
 #### Scenario: Custom formula override stays NULL, formula-less declaration keeps 0
 - **WHEN** the owning model declares an aggregation named `count` with its own `expression`
