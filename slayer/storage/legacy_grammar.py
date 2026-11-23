@@ -6,7 +6,7 @@ Removed together with the stored-upgrade chain; never extended to the current gr
 
 import ast
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 # The 1.9.1 names its ``=``-vs-keyword-argument scanner read.
 _SCALAR_FUNCTIONS = frozenset({
@@ -187,35 +187,65 @@ def _push_hist(hist: _Hist, kind: str, text: str) -> None:
         del hist[0]
 
 
+def _handle_pass_through(tok: str, out: list[str], stack: list[_Frame], hist: _Hist) -> None:
+    out.append(tok)
+
+
+def _handle_ident(tok: str, out: list[str], stack: list[_Frame], hist: _Hist) -> None:
+    out.append(tok)
+    _push_hist(hist, "KW" if tok in _FILTER_KEYWORDS else "NAME", tok)
+
+
+def _handle_other(tok: str, out: list[str], stack: list[_Frame], hist: _Hist) -> None:
+    out.append(tok)
+    _push_hist(hist, "OTHER", tok)
+
+
+def _handle_comma(tok: str, out: list[str], stack: list[_Frame], hist: _Hist) -> None:
+    out.append(tok)
+    _push_hist(hist, "COMMA", tok)
+
+
+def _handle_lparen(tok: str, out: list[str], stack: list[_Frame], hist: _Hist) -> None:
+    stack.append(_classify_paren(hist))
+    out.append(tok)
+    _push_hist(hist, "LPAREN", tok)
+
+
+def _handle_rparen(tok: str, out: list[str], stack: list[_Frame], hist: _Hist) -> None:
+    if stack:
+        stack.pop()
+    out.append(tok)
+    _push_hist(hist, "OTHER", tok)
+
+
+def _handle_op_eq(tok: str, out: list[str], stack: list[_Frame], hist: _Hist) -> None:
+    out.append("=" if _is_kwarg_equals(stack, hist) else "==")
+    _push_hist(hist, "OTHER", tok)
+
+
+_HANDLERS: dict[str, Callable[[str, list[str], list[_Frame], _Hist], None]] = {
+    "ws": _handle_pass_through,
+    "string": _handle_pass_through,
+    "ident": _handle_ident,
+    "number": _handle_other,
+    "op_eq2": _handle_other,
+    "op_eq": _handle_op_eq,
+    "lparen": _handle_lparen,
+    "rparen": _handle_rparen,
+    "lbrack": _handle_other,
+    "rbrack": _handle_other,
+    "comma": _handle_comma,
+    "other": _handle_other,
+}
+
+
 def _rewrite_comparison_equals(text: str) -> str:
     out: list[str] = []
     stack: list[_Frame] = []
     hist: _Hist = []
     for m in _SCAN_TOKEN_RE.finditer(text):
-        kind, tok = m.lastgroup, m.group(0)
-        if kind in ("ws", "string"):
-            out.append(tok)
-        elif kind == "ident":
-            out.append(tok)
-            _push_hist(hist, "KW" if tok in _FILTER_KEYWORDS else "NAME", tok)
-        elif kind == "comma":
-            out.append(tok)
-            _push_hist(hist, "COMMA", tok)
-        elif kind == "lparen":
-            stack.append(_classify_paren(hist))
-            out.append(tok)
-            _push_hist(hist, "LPAREN", tok)
-        elif kind == "rparen":
-            if stack:
-                stack.pop()
-            out.append(tok)
-            _push_hist(hist, "OTHER", tok)
-        elif kind == "op_eq":
-            out.append("=" if _is_kwarg_equals(stack, hist) else "==")
-            _push_hist(hist, "OTHER", tok)
-        else:
-            out.append(tok)
-            _push_hist(hist, "OTHER", tok)
+        _HANDLERS[m.lastgroup or "other"](m.group(0), out, stack, hist)
     return "".join(out)
 
 
@@ -258,7 +288,9 @@ def _rewrite_case_when(text: str) -> str:
     return _rw_value(text, toks, 0, frozenset(), 0)[0]
 
 
-def _rw_value(text: str, toks: list[_Token], i: int, stop_kws: frozenset[str], start_char: int) -> tuple[str, int]:
+def _rw_value(  # NOSONAR(S3776) — frozen 1.9.1 port, suppressed there too; never refactored
+    text: str, toks: list[_Token], i: int, stop_kws: frozenset[str], start_char: int,
+) -> tuple[str, int]:
     parts: list[str] = []
     depth = 0
     last = start_char
@@ -440,7 +472,7 @@ def _rewrite_count_distinct(text: str) -> str:
 # --------------------------------------------------------------------------- #
 # * arguments
 # --------------------------------------------------------------------------- #
-def _preprocess_star_args(text: str) -> str:
+def _preprocess_star_args(text: str) -> str:  # NOSONAR(S3776) — frozen 1.9.1 port, suppressed there too; never refactored
     if "*" not in text:
         return text
     toks = [(m.lastgroup or "", m.group(0)) for m in _SCAN_TOKEN_RE.finditer(text)]
