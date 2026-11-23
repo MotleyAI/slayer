@@ -313,7 +313,7 @@ class TestMcpWiring:
         server = create_mcp_server(storage=storage, _seed_help=False)
         texts = [server.instructions or ""]
         for tool in await server.list_tools():
-            texts.extend([tool.description or "", json.dumps(tool.inputSchema)])
+            texts.extend([tool.description or "", json.dumps(tool.input_schema)])
         refs = set(re.findall(r"memory:(help(?:\.\w+)+)", "\n".join(texts)))
         assert refs, "no help reference advertised"
         assert refs <= set(EXPECTED_HELP_IDS)

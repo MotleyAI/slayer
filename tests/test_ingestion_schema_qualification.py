@@ -1478,7 +1478,7 @@ class TestMcpParity:
         return create_mcp_server(storage=storage)
 
     async def _text(self, server, name, arguments):
-        blocks, _ = await server.call_tool(name=name, arguments=arguments)
+        blocks = (await server.call_tool(name=name, arguments=arguments)).content
         return blocks[0].text
 
     async def test_ingest_tool_accepts_schemas(self, basic_db, tmp_path) -> None:

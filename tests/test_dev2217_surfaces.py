@@ -16,7 +16,7 @@ import httpx
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from slayer import usage_reporting
 from slayer.api.server import create_app
@@ -266,14 +266,14 @@ async def test_unknown_conformance_on_the_remote_client(tmp_path: Path, monkeypa
 # MCP
 # --------------------------------------------------------------------------- #
 async def _mcp_text(server: Any, **arguments: Any) -> str:
-    blocks, _ = await server.call_tool(name="query", arguments=arguments)
+    blocks = (await server.call_tool(name="query", arguments=arguments)).content
     return blocks[0].text
 
 
 async def test_mcp_schema_lists_the_conformance(tmp_path: Path) -> None:
     server = create_mcp_server(storage=await prepare_store(tmp_path), _seed_help=False)
     tool = next(t for t in await server.list_tools() if t.name == "query")
-    prop = tool.inputSchema["properties"]["conformance"]
+    prop = tool.input_schema["properties"]["conformance"]
     assert set(prop.get("enum") or next(o["enum"] for o in prop.get("anyOf", []) if "enum" in o)) == {"slayer",
                                                                                                     STRICT}
 

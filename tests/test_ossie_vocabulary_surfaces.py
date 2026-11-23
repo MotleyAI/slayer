@@ -73,7 +73,7 @@ class TestMcpTools:
     async def test_tool_descriptions_use_the_new_words(self, tmp_path: Path) -> None:
         tools = await create_mcp_server(storage=await seeded(tmp_path), _seed_help=False).list_tools()
         for tool in tools:
-            text = f"{tool.description}\n{json.dumps(tool.inputSchema)}"
+            text = f"{tool.description}\n{json.dumps(tool.input_schema)}"
             assert not RETIRED_WORDS.findall(text), (tool.name, RETIRED_WORDS.findall(text))
             assert not RETIRED_IDENTIFIERS.findall(text), (tool.name, RETIRED_IDENTIFIERS.findall(text))
 

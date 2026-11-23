@@ -79,7 +79,7 @@ async def _make_server(tmp_path: Path):
 
 
 async def _call(server, *, name: str, arguments: dict[str, Any] | None = None) -> str:
-    content_blocks, _ = await server.call_tool(name=name, arguments=arguments or {})
+    content_blocks = (await server.call_tool(name=name, arguments=arguments or {})).content
     return content_blocks[0].text
 
 

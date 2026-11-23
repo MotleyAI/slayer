@@ -24,6 +24,7 @@ from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationsh
 from slayer.core.recommend import PopulationRecommendation
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._mcp_results import text_blocks
 
 
 async def _seed(s: YAMLStorage) -> None:
@@ -70,30 +71,30 @@ async def storage() -> AsyncIterator[YAMLStorage]:
 class TestMcpTool:
     async def test_markdown_names_root(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = text_blocks(await mcp.call_tool(
             name="recommend_population",
             arguments={"items": ["customers.name", "products.category"]},
-        )
+        ))
         text = _text(blocks)
         assert "orders" in text
         assert "customers.name" in text
 
     async def test_json_format(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = text_blocks(await mcp.call_tool(
             name="recommend_population",
             arguments={"items": ["orders.status"], "data_source": "mydb", "format": "json"},
-        )
+        ))
         payload = json.loads(_text(blocks))
         assert payload["population"] == "orders"
         assert payload["reachable"] is True
 
     async def test_no_root_renders_coverage(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = text_blocks(await mcp.call_tool(
             name="recommend_population",
             arguments={"items": ["customers.name", "tickets.subject"], "format": "json"},
-        )
+        ))
         payload = json.loads(_text(blocks))
         assert payload["population"] is None
         assert payload["reachable"] is False
@@ -101,10 +102,10 @@ class TestMcpTool:
 
     async def test_invalid_format_returns_friendly_error(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = text_blocks(await mcp.call_tool(
             name="recommend_population",
             arguments={"items": ["orders.status"], "data_source": "mydb", "format": "xml"},
-        )
+        ))
         assert "failed" in _text(blocks).lower()
 
     async def test_ambiguous_model_returns_friendly_error(self) -> None:
@@ -122,9 +123,9 @@ class TestMcpTool:
                     ],
                 ))
             mcp = create_mcp_server(storage=s)
-            blocks, _ = await mcp.call_tool(
+            blocks = text_blocks(await mcp.call_tool(
                 name="recommend_population", arguments={"items": ["orders.status"]},
-            )
+            ))
             # Routed through the shared MCP ambiguity hint (mentions data_source /
             # multiple datasources), not a bare "failed" string.
             text = _text(blocks).lower()
@@ -261,16 +262,16 @@ class TestUnrelatedFlagSurfaces:
 
     async def test_mcp_json(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = text_blocks(await mcp.call_tool(
             name="recommend_population", arguments={"items": UNRELATED_ITEMS, "format": "json"},
-        )
+        ))
         payload = json.loads(_text(blocks))
         assert payload["population"] == "customers"
         assert _flags(payload) == UNRELATED_FLAGS
 
     async def test_mcp_markdown(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(name="recommend_population", arguments={"items": UNRELATED_ITEMS})
+        blocks = text_blocks(await mcp.call_tool(name="recommend_population", arguments={"items": UNRELATED_ITEMS}))
         assert _flagged_in_text(_text(blocks))
 
     def test_rest(self, storage) -> None:
@@ -320,19 +321,19 @@ class TestRootHintSurfaces:
     # -- MCP ------------------------------------------------------------
     async def test_mcp_feasible_hint_honored(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = text_blocks(await mcp.call_tool(
             name="recommend_population",
             arguments={"items": ["customers.name"], "root_hint": "orders", "format": "json"},
-        )
+        ))
         payload = json.loads(_text(blocks))
         assert payload["population"] == "orders"
 
     async def test_mcp_bad_hint_friendly_error(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(
+        blocks = text_blocks(await mcp.call_tool(
             name="recommend_population",
             arguments={"items": ["orders.status"], "data_source": "mydb", "root_hint": "nope"},
-        )
+        ))
         assert "failed" in _text(blocks).lower()
 
     # -- REST -----------------------------------------------------------

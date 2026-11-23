@@ -98,7 +98,7 @@ def _col(dataset: SlayerDataset | None, name: str) -> DatasetField:
 
 
 async def _call(server, *, name: str, arguments: dict) -> str:
-    blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return blocks[0].text
 
 

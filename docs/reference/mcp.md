@@ -61,6 +61,8 @@ claude mcp add slayer-remote --transport sse --url http://localhost:5143/mcp/sse
 
 This is useful when SLayer runs on a different machine, in Docker, or when multiple agents need to share the same server.
 
+Bound to a loopback address (`slayer serve --host 127.0.0.1`), `/mcp` refuses a request whose `Host` header is not a loopback address with HTTP 421; bound to any other address, including the default `0.0.0.0`, it does not check `Host`.
+
 ### Verify
 
 ```bash

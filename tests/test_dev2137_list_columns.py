@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import pytest
 import sqlalchemy as sa
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import TextContent
 from sqlalchemy.dialects import postgresql
 
@@ -596,7 +596,7 @@ class TestSqlModeElementType:
 async def _mcp(server: Any, *, name: str, arguments: dict[str, Any]) -> str:
     """The tool's text, or its error's when it raises."""
     try:
-        blocks, _ = await server.call_tool(name=name, arguments=arguments)
+        blocks = (await server.call_tool(name=name, arguments=arguments)).content
     except ToolError as exc:
         return str(exc)
     return "\n".join(b.text for b in blocks if isinstance(b, TextContent))

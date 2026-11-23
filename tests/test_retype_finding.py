@@ -370,7 +370,7 @@ class TestOneShape:
         assert rest.status_code == 200, rest.text
         server: Any = create_mcp_server(storage=duck.storage)
         try:
-            blocks, _ = await server.call_tool(name="validate_datasets", arguments={"data_source": "ds"})
+            blocks = (await server.call_tool(name="validate_datasets", arguments={"data_source": "ds"})).content
         finally:
             await server._slayer_engine.aclose()
         mcp = json.loads(blocks[0].text)

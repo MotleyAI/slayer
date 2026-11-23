@@ -14,7 +14,6 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from datetime import timedelta
 from email.parser import HeaderParser
 from pathlib import Path
 from typing import Any
@@ -215,7 +214,7 @@ def cli_leg(opts: Options, queries: list[DocQuery], *, leg: Path) -> list[GateFa
 def _tool_text(result: CallToolResult) -> str:
     """The single text content item of a successful tool result."""
     texts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
-    if result.isError:
+    if result.is_error:
         raise ValueError(f"tool error: {texts[0] if texts else 'no detail'}")
     if len(result.content) != 1 or len(texts) != 1:
         raise ValueError(f"expected one text content item, got {len(result.content)} item(s)")
@@ -223,7 +222,7 @@ def _tool_text(result: CallToolResult) -> str:
 
 
 async def _call(session: ClientSession, opts: Options, *, tool: str, arguments: dict[str, Any]) -> str:
-    result = await session.call_tool(tool, arguments, read_timeout_seconds=timedelta(seconds=opts.mcp_call_timeout))
+    result = await session.call_tool(tool, arguments, read_timeout_seconds=opts.mcp_call_timeout)
     return _tool_text(result)
 
 
@@ -233,7 +232,7 @@ async def mcp_leg(opts: Options, queries: list[DocQuery], *, leg: Path) -> list[
     started = False
     try:
         async with stdio_client(params) as (read, write), ClientSession(
-            read, write, read_timeout_seconds=timedelta(seconds=opts.mcp_start_timeout),
+            read, write, read_timeout_seconds=opts.mcp_start_timeout,
         ) as session:
             await session.initialize()
             started = True
