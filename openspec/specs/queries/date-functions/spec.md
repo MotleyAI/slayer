@@ -50,7 +50,8 @@ be written `date_trunc(unit, x)` (› date_trunc is the granularity call).
 
 ### Requirement: Unit and part arguments are closed string literals
 The `part` argument of `date_part` and the `unit` argument of `date_diff` / `date_add` SHALL be a
-string literal, matched case-insensitively, from that function's closed set:
+string literal (the `part` of `date_part` may instead be a bare word, below), matched
+case-insensitively, from that function's closed set:
 - `date_part`: `year`, `iso_year`, `quarter`, `month`, `week`, `day`, `day_of_week`,
   `day_of_year`, `hour`, `minute`, `second`;
 - `date_diff` and `date_add`: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`,
