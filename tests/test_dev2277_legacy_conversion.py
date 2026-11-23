@@ -13,6 +13,8 @@ from typing import Any
 import pytest
 
 from slayer.core.errors import SlayerError, UnknownReferenceError
+from slayer.core.query import SlayerQuery
+from slayer.engine.legacy_references import Conversions, anchor_names, convert_query
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1954_fixtures import execution_spy
@@ -348,6 +350,33 @@ async def test_a_stage_population_offers_its_output_columns_as_fields(engine: Sl
         {("rev", "s1.rev")},
     )
     assert _column(resp, "rev") == [70.0]
+
+
+async def test_a_stage_population_spelled_in_another_case_offers_its_output_columns(
+        engine: SlayerQueryEngine) -> None:
+    s1 = {"name": "s1", "population": "orders", "dimensions": ["orders.id"],
+          "metrics": [m("sum(orders.amount)", "rev")]}
+    resp = await assert_converts(
+        engine,
+        [s1, {"population": "S1", "metrics": [m("sum(rev)", "rev")], "filter": ["rev > 25"]}],
+        [s1, {"population": "S1", "metrics": [m("sum(S1.rev)", "rev")], "filter": ["S1.rev > 25"]}],
+        {("rev", "S1.rev")},
+    )
+    assert _column(resp, "rev") == [70.0]
+
+
+async def test_an_extension_metric_is_read_only_by_the_stage_declaring_it(engine: SlayerQueryEngine) -> None:
+    s1 = SlayerQuery.model_validate({
+        "name": "s1", "population": "orders", "dimensions": ["orders.status"], "metrics": [m("bonus", "b")],
+        "extensions": [{"dataset": "orders", "metrics": [{"name": "bonus", "expression": "sum(orders.amount)"}]}]})
+    s2 = SlayerQuery.model_validate(_orders(metrics=[m("count(orders.*)", "bonus"), m("bonus * 10", "b10")]))
+    anchors = await anchor_names(engine.storage, [s1, s2], data_source=None)
+
+    def metrics(q: SlayerQuery) -> list[str]:
+        return [x.metric for x in convert_query(q, anchors=anchors, conversions=Conversions(report=False)).metrics or []]
+
+    assert metrics(s1) == ["orders.bonus"]
+    assert metrics(s2) == ["count(orders.*)", "bonus * 10"]
 
 
 async def test_a_query_backed_population_offers_its_output_columns_as_fields(engine: SlayerQueryEngine) -> None:

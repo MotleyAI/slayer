@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Dict, FrozenSet, List, Literal, Optional, Tuple
 
@@ -22,7 +23,8 @@ from slayer.core.relationship_walker import OrientedRelationship, resolve_hop, w
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.names import match_name
 from slayer.core.query import (
-    DatasetExtension, SlayerQuery, computed_dimension_name, declared_aliases, extension_dataset_names, field_ref_of,
+    DatasetExtension, SlayerQuery, TimeDimension, computed_dimension_name, declared_aliases, extension_dataset_names,
+    field_ref_of,
 )
 from slayer.core.scope import DatasetScope
 from slayer.core.syntax import (
@@ -407,27 +409,38 @@ def stage_output_names(query: SlayerQuery) -> List[str]:
     aliases = declared_aliases(query)
     names: List[str] = []
     for d in query.dimensions or []:
-        names.append(d.alias or _reference_column(d.field, root=root) or computed_dimension_name(d.template))
-    for td in query.time_dimensions or []:
-        names.append(td.alias or _reference_column(td.field, root=root) or computed_dimension_name(td.template))
+        names.append(d.alias or _reference_field_name(d.field, root=root) or computed_dimension_name(d.template))
+    names.extend(_time_dimension_field_names(query.time_dimensions or [], root=root))
     for m in query.metrics or []:
-        names.append(m.alias or _reference_column(m.metric, root=root) or _expression_column(
+        names.append(m.alias or _reference_field_name(m.metric, root=root) or _expression_field_name(
             m.metric, root=root, aliases=aliases))
     return list(dict.fromkeys(names))
 
 
-def _column(key: Sequence[str], *, root: Optional[str], head_quoted: bool = False) -> str:
-    """A result key's column: its root qualifier dropped, flattened."""
+def _time_dimension_field_names(tds: Sequence[TimeDimension], *, root: Optional[str]) -> List[str]:
+    """Time-dimension field names; an unaliased one whose source another one shares takes its granularity suffix."""
+    sources = [("ref", f) if (f := _reference_field_name(td.field, root=root)) else ("expr", td.template)
+               for td in tds]
+    shared = Counter(sources)
+    out: List[str] = []
+    for td, source in zip(tds, sources):
+        base = td.alias or (source[1] if source[0] == "ref" else computed_dimension_name(td.template))
+        out.append(f"{base}__{td.granularity}" if td.alias is None and shared[source] > 1 else base)
+    return out
+
+
+def _flat_name(key: Sequence[str], *, root: Optional[str], head_quoted: bool = False) -> str:
+    """A result key's field name: its root qualifier dropped, flattened."""
     return "__".join(drop_root_hop(key, root, head_quoted=head_quoted))
 
 
-def _reference_column(text: str, *, root: Optional[str]) -> Optional[str]:
+def _reference_field_name(text: str, *, root: Optional[str]) -> Optional[str]:
     ref = field_ref_of(text)
-    return None if ref is None else _column(ref.parts, root=root, head_quoted=bool(ref.quoted and ref.quoted[0]))
+    return None if ref is None else _flat_name(ref.parts, root=root, head_quoted=bool(ref.quoted and ref.quoted[0]))
 
 
-def _expression_column(text: str, *, root: Optional[str], aliases: Sequence[str]) -> str:
-    """An unaliased expression's column: named from its references' common head, which leads its key."""
+def _expression_field_name(text: str, *, root: Optional[str], aliases: Sequence[str]) -> str:
+    """An unaliased expression's field name: named from its references' common head, which leads its key."""
     parsed = parse_expr(text)
     paths: List[Tuple[str, ...]] = []
     for node, _agg in walk_references(parsed):
@@ -435,12 +448,7 @@ def _expression_column(text: str, *, root: Optional[str], aliases: Sequence[str]
             paths.append(node.parts[:-1])
         elif not (isinstance(node, Ref) and match_name(name=node.name, declared=aliases, quoted=node.quoted)):
             paths.append(())
-    head = paths[0] if paths else ()
-    for path in paths[1:]:
-        n = 0
-        while n < min(len(head), len(path)) and head[n] == path[n]:
-            n += 1
-        head = head[:n]
+    head = _common_prefix(paths)
 
     def rebased(ref: Ref | DottedRef) -> ParsedExpr:
         if not isinstance(ref, DottedRef):
@@ -452,7 +460,18 @@ def _expression_column(text: str, *, root: Optional[str], aliases: Sequence[str]
             parts=rest, evaluated=ref.evaluated)
 
     name = expression_text_alias(map_refs(parsed, rebased) if head else parsed)
-    return _column((*head, *name.split(".")), root=root)
+    return _flat_name((*head, *name.split(".")), root=root)
+
+
+def _common_prefix(paths: Sequence[Tuple[str, ...]]) -> Tuple[str, ...]:
+    """The longest prefix all ``paths`` share (``()`` for none)."""
+    head = paths[0] if paths else ()
+    for path in paths[1:]:
+        n = 0
+        while n < min(len(head), len(path)) and head[n] == path[n]:
+            n += 1
+        head = head[:n]
+    return head
 
 
 def _extended(

@@ -63,6 +63,15 @@ class AnchorNames(BaseModel):
         except AmbiguousReferenceError:
             return "alias"
 
+    def extended_by(self, *sources: Any) -> "AnchorNames":
+        """These names, each known population also offering the metrics ``sources``' own extensions add to it."""
+        metrics = dict(self.metrics)
+        for e in (e for s in sources for e in getattr(s, "extensions", None) or []):
+            pop = e.dataset.casefold()
+            if pop in self.fields:
+                metrics[pop] = metrics.get(pop, frozenset()) | {m.name for m in e.metrics or [] if m.name}
+        return self.model_copy(update={"metrics": metrics})
+
     def names_model_metric(self, name: str, *, quoted: bool) -> bool:
         return _is_alias(name, declared=list(self.model_metrics), quoted=quoted)
 
@@ -320,7 +329,7 @@ def convert_query(query: SlayerQuery, *, anchors: AnchorNames, conversions: Conv
     population = query.population_name
     if population is None:
         return query
-    converter = _Converter(population=population, aliases=_live_aliases(query), anchors=anchors,
+    converter = _Converter(population=population, aliases=_live_aliases(query), anchors=anchors.extended_by(query),
                            conversions=conversions, edges=_extension_edges(query, population=population))
     data: Dict[str, Any] = {name: getattr(query, name) for name in query.model_fields_set | {"version"}}
     before = dict(data)
@@ -337,8 +346,9 @@ def convert_refinement(
     population = saved.population_name
     if population is None:
         return refinement
-    converter = _Converter(population=population, aliases=_live_aliases(saved, refinement), anchors=anchors,
-                           conversions=conversions, edges=_extension_edges(saved, population=population))
+    converter = _Converter(population=population, aliases=_live_aliases(saved, refinement),
+                           anchors=anchors.extended_by(saved, refinement), conversions=conversions,
+                           edges=_extension_edges(saved, population=population))
     data: Dict[str, Any] = {name: getattr(refinement, name) for name in refinement.model_fields_set}
     converter.entries(data, refinement)
     data = {k: v for k, v in data.items() if k in refinement.model_fields_set}
@@ -368,10 +378,12 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
     aggregations: Dict[str, frozenset[str]] = {}
     heads: Dict[str, frozenset[str]] = {}
     by_stage = {q.name: q for q in queries if q.name}
-    for population in {q.population_name for q in queries if q.population_name} & stage_names:
-        fields[population.casefold()] = frozenset(stage_output_names(by_stage[population]))
-        metrics[population.casefold()] = _extended_metrics(queries, population=population)
-    for population in {q.population_name for q in queries if q.population_name} - stage_names:
+    populations = {q.population_name for q in queries if q.population_name}
+    for population in populations:
+        stage = _stage_named(population, stage_names=stage_names)
+        if stage is not None:
+            fields[population.casefold()] = frozenset(stage_output_names(by_stage[stage]))
+    for population in (p for p in populations if _stage_named(p, stage_names=stage_names) is None):
         found = await _population_dataset(storage, population, identities=identities, chosen=chosen)
         if found is None:
             if is_spine_spelling(population):
@@ -381,8 +393,7 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
         own_fields = _output_names(dataset)
         if own_fields is not None:
             fields[population.casefold()] = own_fields
-            metrics[population.casefold()] = frozenset(
-                [*(m.name for m in dataset.metrics if m.name), *_extended_metrics(queries, population=population)])
+            metrics[population.casefold()] = frozenset(m.name for m in dataset.metrics if m.name)
         aggregations[population.casefold()] = frozenset(a.name.casefold() for a in dataset.aggregations)
         own = [*(f.name for f in dataset.fields), *(r.name for r in dataset.relationships if r.name)]
         if any(not _is_alias(h, declared=[*names, *own], quoted=q) for h, q in dotted):
@@ -403,9 +414,14 @@ def _chosen_data_sources(
     """``data_source`` when pinned, else those the populations name a dataset in (every one when none does)."""
     if data_source:
         return {data_source}
-    sources = {ds for q in queries if (p := q.population_name) and p not in stage_names
+    sources = {ds for q in queries if (p := q.population_name) and _stage_named(p, stage_names=stage_names) is None
                for ds, n in identities if n == _matched(p, identities=identities, data_source=ds)}
     return sources or {ds for ds, _ in identities}
+
+
+def _stage_named(population: str, *, stage_names: set[str]) -> Optional[str]:
+    """The stage ``population`` names, as the binder matches it."""
+    return match_name(name=population, declared=stage_names, quoted=False)
 
 
 def _output_names(dataset: SlayerDataset) -> Optional[frozenset[str]]:
@@ -414,12 +430,6 @@ def _output_names(dataset: SlayerDataset) -> Optional[frozenset[str]]:
         return frozenset(f.name for f in dataset.fields)
     last = (dataset.source_queries or [None])[-1]
     return frozenset(stage_output_names(last)) if isinstance(last, SlayerQuery) else None
-
-
-def _extended_metrics(queries: Sequence[SlayerQuery], *, population: str) -> frozenset[str]:
-    """The metrics ``queries`` extend ``population`` with."""
-    return frozenset(m.name for q in queries for e in q.extensions or [] if e.dataset.casefold() == population.casefold()
-                     for m in e.metrics or [] if m.name)
 
 
 def _dotted_heads(sources: Sequence[Any]) -> List[Tuple[str, bool]]:

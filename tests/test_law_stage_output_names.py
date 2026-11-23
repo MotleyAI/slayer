@@ -30,6 +30,12 @@ CASES: dict[str, list[dict[str, Any]]] = {
     "computed-dimension": [_orders(dimensions=["upper(orders.status)"], metrics=["sum(orders.amount)"])],
     "time-dimension-granularity": [_orders(
         time_dimensions=[{"field": "orders.created_at", "granularity": "month"}], metrics=["orders.revenue"])],
+    "time-dimension-two-granularities": [_orders(
+        time_dimensions=[{"field": "orders.created_at", "granularity": "month"},
+                         {"field": "orders.created_at", "granularity": "year"}], metrics=["count(orders.*)"])],
+    "time-dimension-aliased-sibling": [_orders(
+        time_dimensions=[{"field": "orders.created_at", "granularity": "month", "alias": "m"},
+                         {"field": "orders.created_at", "granularity": "year"}], metrics=["count(orders.*)"])],
     "time-dimension-expression": [_orders(
         time_dimensions=["date_trunc('month', orders.created_at)"], metrics=["count(orders.*)"])],
     "simple-metric": [_orders(dimensions=["orders.status"], metrics=["sum(orders.amount)", "count(orders.*)"])],

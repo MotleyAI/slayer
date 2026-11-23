@@ -205,23 +205,29 @@ def qualified_stages(
     by_name = {q.name: q for q in queries if q.name}
     out: List[SlayerQuery] = []
     for query, todo in zip(queries, pending):
-        if not todo:
-            out.append(query)
-            continue
-        datasets = _stage_universe(query, stages=stages, datasets_by_ds=datasets_by_ds, data_source=data_source,
-                                   priority=priority)
-        # An ambiguous spine spelling is qualified as written: it stays as ambiguous as it was, refused where it runs.
-        name, is_stage = _read_from(query, stages=stages, datasets=datasets)
-        host = datasets[name] if name is not None and not is_stage else None
-        read_from = query if query.population_name is not None else query.model_copy(update={"population": name})
-        names = None if query.population_name is None else _population_names(
-            host=host, stage=by_name.get(name) if is_stage and name is not None else None)
-        qualified = _qualified_stage(
-            _Stage(query=read_from, host=host, stages=stages, datasets_by_name=datasets, names=names), query)
+        qualified = _qualified_pending(query, stages=stages, by_name=by_name, datasets_by_ds=datasets_by_ds,
+                                       data_source=data_source, priority=priority) if todo else query
         out.append(qualified)
         if query.name:
             by_name[query.name] = qualified
     return out
+
+
+def _qualified_pending(
+    query: SlayerQuery, *, stages: frozenset[str], by_name: Mapping[str, SlayerQuery],
+    datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]], data_source: Optional[str], priority: Sequence[str],
+) -> SlayerQuery:
+    """Pending stage ``query`` qualified; ``by_name``: the stages before it, already qualified."""
+    datasets = _stage_universe(query, stages=stages, datasets_by_ds=datasets_by_ds, data_source=data_source,
+                               priority=priority)
+    # An ambiguous spine spelling is qualified as written: it stays as ambiguous as it was, refused where it runs.
+    name, is_stage = _read_from(query, stages=stages, datasets=datasets)
+    host = datasets[name] if name is not None and not is_stage else None
+    stage = by_name.get(name) if is_stage and name is not None else None
+    read_from = query if query.population_name is not None else query.model_copy(update={"population": name})
+    names = None if query.population_name is None else _population_names(host=host, stage=stage)
+    return _qualified_stage(
+        _Stage(query=read_from, host=host, stages=stages, datasets_by_name=datasets, names=names), query)
 
 
 def _population_names(*, host: Optional[SlayerDataset], stage: Optional[SlayerQuery]) -> Optional[_PopulationNames]:
