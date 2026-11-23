@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import date, datetime
+from functools import partial
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, cast
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity, normalize_aggregation_name, TIME_TRANSFORMS
@@ -212,13 +213,29 @@ def _expr_has_metric_ref(
     )
 
 
+def _names_member(*, scope: DatasetScope, bundle: ResolvedSourceBundle, ref: Optional[FieldRef]) -> bool:
+    """Whether a qualified ``ref`` names a field or saved metric reachable from the host."""
+    host = scope.population
+    if ref is None or ref.dataset is None or host is None:
+        return False
+    parts = drop_root_qualifier(ref.parts, root_spelling(scope), quoted=ref.quoted_parts)
+    walked = _walk_dotted(source_dataset=host, hops=list(parts[:-1]), bundle=bundle) if len(parts) > 1 else (host, ())
+    if walked is None:
+        return False
+    terminal, quoted = walked[0], ref.quoted_parts[-1]
+    return terminal.get_field(ref.name, quoted=quoted) is not None or terminal.get_metric(ref.name, quoted=quoted) is not None
+
+
 def _reject_metric_refs_for_raw_rows(
     *, query: SlayerQuery, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> None:
     """Raw-rows mode (``distinct_dimension_values=False``): reject any metric reference in filters/order."""
     src = scope.population
+    # A name a dimension of the query declares (computed or aliased) is that dimension, not a saved metric.
+    declared = {d.name for d in (query.dimensions or []) if d.is_computed and d.name}
+    declared |= {d.alias for d in (query.dimensions or []) if d.alias}
     metric_names: FrozenSet[str] = frozenset(
-        m.name for m in (src.metrics if src is not None else []) if m.name
+        m.name for m in (src.metrics if src is not None else []) if m.name and m.name not in declared
     )
     _reject_metric_refs_in_filters(
         query=query, metric_names=metric_names, scope=scope, bundle=bundle,
@@ -396,6 +413,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # Alias lookup for ORDER BY, checked before bind_expr so aggregate aliases resolve via the registry.
     declared_alias_to_bound: Dict[str, BoundExpr] = {}
     # Public names (aliases) first: a bare name an alias holds is that column, though another entry's leaf matches it.
+    public_names = {dm.public_name for dm in declared_metrics if dm.public_name is not None}
     for dm in declared_metrics:
         if dm.public_name is not None:
             declared_alias_to_bound.setdefault(dm.public_name, dm.bound)
@@ -556,17 +574,23 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 _order_qualifier is None or _order_qualifier == _order_host_name
             )
             # Prefer alias resolution over dataset-scope binding: a bare name is an alias first, a qualified one its full
-            # identity first; try dotted then flattened forms, falling back to raw.
+            # identity first; try dotted then flattened forms, falling back to raw. A qualified key naming a field or
+            # metric is that member, never a user alias spelled like its flattened form or leaf.
+            _flat = _flatten_dotted(full_name)
+            _member = partial(_names_member, scope=scope, bundle=bundle, ref=order_ref)
             if _order_qualifier is None and col_name in declared_alias_to_bound:
                 bo = declared_alias_to_bound[col_name]
             elif full_name in declared_alias_to_bound:
                 bo = declared_alias_to_bound[full_name]
-            elif _flatten_dotted(full_name) in declared_alias_to_bound:
+            elif _flat in declared_alias_to_bound and not (_flat in public_names and _member()):
                 # A joined dim/td is declared flattened; a dotted ORDER BY entry interns onto that slot.
-                bo = declared_alias_to_bound[_flatten_dotted(full_name)]
-            elif _order_host_local and col_name in declared_alias_to_bound:
+                bo = declared_alias_to_bound[_flat]
+            elif (
+                _order_host_local and col_name in declared_alias_to_bound
+                and not (col_name in public_names and _member())
+            ):
                 bo = declared_alias_to_bound[col_name]
-            elif _order_host_local and f"_{col_name}" in declared_alias_to_bound:
+            elif _order_host_local and f"_{col_name}" in declared_alias_to_bound and not _member():
                 # ``count(*)`` surfaces as ``_count``; users order by the bare ``count``.
                 bo = declared_alias_to_bound[f"_{col_name}"]
             elif o.raw_expression:

@@ -135,3 +135,8 @@ async def test_object_entries_with_and_without_alias(engine: SlayerQueryEngine) 
 ])
 async def test_empty_lists_count_as_absent(engine: SlayerQueryEngine, query: dict[str, Any]) -> None:
     await strict_error(engine, query, "E_EMPTY_AGGREGATION_QUERY")
+
+
+async def test_an_alias_with_a_trailing_newline_is_no_identifier(engine: SlayerQueryEngine) -> None:
+    await strict_error(engine, {"metrics": [{"metric": "orders.total_revenue", "alias": "revenue\n"}]},
+                       "E_INVALID_QUERY")

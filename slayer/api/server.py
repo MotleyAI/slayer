@@ -32,6 +32,7 @@ from slayer.core.errors import (
     OssieErrorCode,
     OssieQueryError,
     SchemaDriftError,
+    UnknownConformanceError,
     UnknownKeyError,
 )
 from slayer.core.ossie_conformance import parse_conformance
@@ -515,9 +516,17 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.exception_handler(RequestValidationError)
     async def _strict_malformed(request: Request, exc: RequestValidationError) -> Any:
         """Under the strict binding a query body that does not validate is malformed (``E_INVALID_QUERY``)."""
-        if request.url.path == "/query" and request.query_params.get("conformance") == Conformance.OSSIE_L3.value:
-            refusal = OssieQueryError(OssieErrorCode.E_INVALID_QUERY, f"the request body is malformed: {exc.errors()}")
-            return JSONResponse(status_code=400, content={"detail": jsonable_encoder(refusal.detail())})
+        conformance = request.query_params.get("conformance") if request.url.path == "/query" else None
+        if conformance is not None:
+            # The conformance is chosen before the body is judged: an unknown one is refused as such.
+            try:
+                chosen = parse_conformance(conformance)
+            except UnknownConformanceError as unknown:
+                return JSONResponse(status_code=400, content={"detail": str(unknown)})
+            if chosen is Conformance.OSSIE_L3:
+                refusal = OssieQueryError(OssieErrorCode.E_INVALID_QUERY,
+                                          f"the request body is malformed: {exc.errors()}")
+                return JSONResponse(status_code=400, content={"detail": jsonable_encoder(refusal.detail())})
         return await request_validation_exception_handler(request, exc)
 
     @app.post(

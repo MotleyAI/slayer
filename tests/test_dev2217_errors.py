@@ -365,3 +365,10 @@ async def test_a_name_quoted_and_unquoted_are_two_anchors() -> None:
     """Unquoted ``churn`` is in both datasources, quoted ``"churn"`` only in ``y``: together they settle ``y``."""
     storage = cast(StorageBackend, _CaseHolders())
     assert await query_datasource(storage=storage, anchors=[], metrics=[("churn", False), ("churn", True)]) == "y"
+
+
+def test_a_qualified_star_names_its_aggregates_dataset() -> None:
+    counted = analyse_model_scoped("COUNT(orders.*)", metric_names=set())
+    assert (counted.homes, counted.problems) == (["orders"], [])
+    assert [p.code for p in analyse_model_scoped("COUNT(*)", metric_names=set()).problems] == [
+        errors.OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN]

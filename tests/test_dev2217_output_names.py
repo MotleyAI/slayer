@@ -215,3 +215,40 @@ async def test_labels_hold_when_the_database_returns_keys_out_of_order(tmp_path:
         response = await strict(engine, {"dimensions": ["customers.region"], "metrics": ["orders.total_revenue"]})
     assert response.columns == ["region", "total_revenue"]
     assert sorted((r["region"], r["total_revenue"]) for r in response.data) == [("EAST", 350), ("WEST", 300)]
+
+
+async def test_a_qualified_order_key_is_the_field_beside_a_computed_dimension_of_its_name(tmp_path: Path) -> None:
+    async with sql_engine(tmp_path, sql=ORDER_SQL, datasets=[ORDERS_ONLY]) as engine:
+        response = await engine.execute({
+            "dimensions": ["orders.id", {"field": "-orders.amount", "alias": "amount"}],
+            "order": [{"field": "orders.amount", "direction": "desc"}], "limit": 1})
+    assert response.data == [{"orders.id": 1000, "amount": -20}]
+
+
+async def test_a_qualified_order_key_is_the_field_beside_an_alias_of_its_flattened_name(tmp_path: Path) -> None:
+    async with sql_engine(tmp_path, sql=ORDER_SQL, datasets=[ORDERS_ONLY]) as engine:
+        response = await engine.execute({
+            "dimensions": ["orders.id", {"field": "-orders.amount", "alias": "orders__amount"}],
+            "order": [{"field": "orders.amount", "direction": "desc"}], "limit": 1})
+    assert response.data == [{"orders.id": 1000, "orders__amount": -20}]
+
+
+async def test_a_qualified_order_key_is_the_field_beside_count_star(tmp_path: Path) -> None:
+    tallies = SlayerDataset(name="orders", sql_table="orders", data_source=DS, fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="count", datatype=DataType.INTEGER)])
+    sql = 'CREATE TABLE orders (id INTEGER PRIMARY KEY, "count" INTEGER);\n' \
+          "INSERT INTO orders VALUES (1, 1), (2, 1), (3, 1), (4, 5);"
+    async with sql_engine(tmp_path, sql=sql, datasets=[tallies]) as engine:
+        response = await engine.execute({"dimensions": ["orders.id"], "population": "orders", "metrics": ["count(*)"],
+                                         "order": [{"field": "orders.count", "direction": "desc"}], "limit": 1})
+    assert [list(r.values()) for r in response.data] == [[4, 1]]
+
+
+async def test_raw_rows_read_a_dimension_named_like_a_saved_metric_as_the_dimension(tmp_path: Path) -> None:
+    orders = ORDERS_ONLY.model_copy(update={"metrics": [DatasetMetric(name="total", expression="sum(amount)")]})
+    async with sql_engine(tmp_path, sql=ORDER_SQL, datasets=[orders]) as engine:
+        response = await engine.execute({
+            "dimensions": ["orders.id", {"field": "orders.amount * 10", "alias": "total"}],
+            "order": [{"field": "total", "direction": "desc"}], "limit": 1, "distinct_dimension_values": False})
+    assert response.data == [{"orders.id": 1000, "total": 200}]

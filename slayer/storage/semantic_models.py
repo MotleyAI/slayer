@@ -344,7 +344,9 @@ def _enclosed(node: exp.Expr) -> bool:
 
 def _component(aggregate: exp.Expr) -> tuple[str | None, MetricProblem | None]:
     """An aggregate call's home dataset, and why Ossie rejects it."""
-    tables = {c.table for c in columns(aggregate, OSSIE_SQL) if c.table}
+    # A qualified star (``COUNT(orders.*)``) names its dataset too.
+    tables = {c.table for c in columns(aggregate, OSSIE_SQL) if c.table} | {
+        c.table for c in aggregate.find_all(exp.Column) if isinstance(c.this, exp.Star) and c.table}
     if is_agg_call(aggregate):
         return (next(iter(tables)) if len(tables) == 1 else None), None
     if not tables:

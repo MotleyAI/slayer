@@ -27,7 +27,7 @@ from slayer.core.errors import (
 )
 from slayer.core.names import match_name
 from slayer.core.relationship_search import (
-    HopFilter, UnaddressablePair, blocking_pairs, routes, shortest_route, unaddressable_pairs,
+    HopFilter, UnaddressablePair, blocking_pairs, reachable, routes, shortest_route, unaddressable_pairs,
 )
 from slayer.core.relationship_walker import canonical_path, provably_to_one, terminal_dataset, walk
 from slayer.core.models import SlayerDataset
@@ -532,23 +532,28 @@ async def query_datasource(
     for ds, name in await storage._list_all_dataset_identities():
         names_by_ds.setdefault(ds, []).append(name)
     # Each anchor resolves within each datasource, so names differing only in case across datasources never clash.
-    ds_by_anchor: dict[str, set[str]] = {}
-    for name, quoted in anchors:
-        for ds, names in names_by_ds.items():
-            if match_name(name=name, declared=names, quoted=quoted) is not None:
-                ds_by_anchor.setdefault(_anchor_key("dataset", name, quoted), set()).add(ds)
+    ds_by_anchor = _holders(kind="dataset", refs=anchors, names_by_ds=names_by_ds)
     metrics = list(metrics)
     if metrics:
         datasources = await storage.list_datasources()
         listed = await asyncio.gather(*(storage.list_model_scoped_metrics(ds) for ds in datasources))
         metric_names = {ds: [m.name for m in found] for ds, found in zip(datasources, listed)}
-        for name, quoted in metrics:
-            for ds, names in metric_names.items():
-                if match_name(name=name, declared=names, quoted=quoted) is not None:
-                    ds_by_anchor.setdefault(_anchor_key("metric", name, quoted), set()).add(ds)
+        ds_by_anchor |= _holders(kind="metric", refs=metrics, names_by_ds=metric_names)
     if not ds_by_anchor:
         return None
     return _resolve_datasource(ds_by_dataset=ds_by_anchor, data_source=None, anchors=set(ds_by_anchor))
+
+
+def _holders(
+    *, kind: str, refs: Iterable[tuple[str, bool]], names_by_ds: dict[str, list[str]],
+) -> dict[str, set[str]]:
+    """Each found ref's anchor key → the datasources declaring it."""
+    found: dict[str, set[str]] = {}
+    for name, quoted in refs:
+        for ds, names in names_by_ds.items():
+            if match_name(name=name, declared=names, quoted=quoted) is not None:
+                found.setdefault(_anchor_key(kind, name, quoted), set()).add(ds)
+    return found
 
 
 def _anchor_key(kind: str, name: str, quoted: bool) -> str:
@@ -824,9 +829,12 @@ def _ossie_anchor(items: list[str], *, datasets_by_name: dict[str, SlayerDataset
             return None
         heads.append(anchor.name)
     heads = list(dict.fromkeys(heads))
+    # Reachability first (one bounded search per head), so a missing Ossie route never enumerates every simple path.
+    reach = {h: reachable(root=datasets_by_name[h], datasets_by_name=datasets_by_name, hop_filter=HopFilter.OSSIE)
+             for h in heads}
     qualified = [h for h in heads if all(
-        o == h or routes(root=datasets_by_name[h], target=o, datasets_by_name=datasets_by_name,
-                         hop_filter=HopFilter.OSSIE, cap=1) for o in heads)]
+        o == h or (o in reach[h] and routes(root=datasets_by_name[h], target=o, datasets_by_name=datasets_by_name,
+                                            hop_filter=HopFilter.OSSIE, cap=1)) for o in heads)]
     return qualified[0] if len(qualified) == 1 else None
 
 

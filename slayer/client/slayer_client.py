@@ -265,8 +265,16 @@ class SlayerClient:
         kept for refusal."""
         if isinstance(query, SlayerQuery):
             parts = query.model_dump(mode="json", exclude_unset=True, exclude={"version"})
-            return {**parts, **{n: None for n in query.model_fields_set if getattr(query, n) is None}}
-        return dict(query) if isinstance(query, ABCMapping) else query
+            parts = {**parts, **{n: None for n in query.model_fields_set if getattr(query, n) is None}}
+        elif isinstance(query, ABCMapping):
+            parts = dict(query)
+        else:
+            return query
+        if "name" in parts:
+            # On the wire a top-level ``name`` runs a saved query; in a query object it is no Ossie part.
+            raise OssieQueryError(OssieErrorCode.E_INVALID_QUERY,
+                                  "'name' is not a part of an Ossie query (dimensions, metrics, filter)")
+        return parts
 
     @staticmethod
     def _strict_refine(refine: Refinement) -> dict[str, Any]:

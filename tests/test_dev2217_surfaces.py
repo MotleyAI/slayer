@@ -377,3 +377,23 @@ def test_cli_refuses_an_unknown_conformance(tmp_path: Path) -> None:
     result = _cli(tmp_path, ADMITTED, "--conformance", "ossie")
     assert result.returncode == 2
     assert "ossie-l3" in result.stderr
+
+
+def test_rest_names_the_conformances_before_judging_the_body(rest: TestClient) -> None:
+    response = rest.post("/query", params={"conformance": "ossie"}, json={"metrics": 123})
+    assert response.status_code == 400
+    assert "ossie-l3" in response.text
+    assert "slayer" in response.text
+
+
+async def test_remote_strict_refuses_a_query_object_naming_a_saved_query(tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A query object's ``name`` would run a saved query on the wire; it is no Ossie part, as on the engine."""
+    storage = await prepare_store(tmp_path)
+    await storage.save_dataset(SlayerDataset(name="by_region", data_source=DS,
+                                             source_queries=[SlayerQuery.model_validate(ADMITTED)]))
+    _routed(monkeypatch, create_app(storage=storage))
+    client = SlayerClient(url="http://testserver")
+    with pytest.raises(ossie_query_error()) as raised:
+        await client.query({"name": "by_region"}, conformance=STRICT)
+    assert raised.value.code == "E_INVALID_QUERY"

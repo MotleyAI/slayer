@@ -62,7 +62,7 @@ class _Query(BaseModel):
 
 def _alias(value: Any) -> Tuple[str, bool]:
     """An alias's name and whether it is quoted; raises unless it is one Layer 1 identifier."""
-    if isinstance(value, str) and NAME_PATTERN.match(value):
+    if isinstance(value, str) and NAME_PATTERN.fullmatch(value):
         return value, False
     if isinstance(value, str) and len(value) > 2 and value[0] == value[-1] == '"':
         inner = value[1:-1]

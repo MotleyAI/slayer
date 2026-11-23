@@ -7,11 +7,15 @@ default.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.engine.population.inference import _ossie_anchor
 from tests._dev2217_fixtures import NATIVE, STRICT, rows, run_as, sql_engine, strict_error
 from tests._dev2243_fixtures import dataset, document_text, field, relationship
 
@@ -189,3 +193,33 @@ async def test_several_anchors_ossie_qualifies_leave_native_rules_in_charge(tmp_
         assert response.population == "x"
         assert rows(response) == [("x1", "y1"), ("x2", "y1")]
         await strict_error(engine, {"dimensions": ["x.v", {"field": "y.v", "alias": "y_v"}]}, "E_AMBIGUOUS_PATH")
+
+
+def _diamond_chain(n: int) -> dict[str, SlayerDataset]:
+    """``n0 → … → n{n}`` through many-to-one diamonds, and ``n{n}`` many-to-many to ``goal``: no Ossie route to it."""
+    out: dict[str, SlayerDataset] = {}
+
+    def add(name: str, keys: list[str], rels: list[DatasetRelationship]) -> None:
+        out[name] = SlayerDataset(name=name, sql_table=name, data_source="ds", relationships=rels, fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            *(DatasetField(name=k, datatype=DataType.INTEGER) for k in keys)])
+
+    def to(target: str, key: str, cardinality: RelationshipCardinality) -> DatasetRelationship:
+        return DatasetRelationship(to=target, name=f"{key}_{target}", from_columns=[key], to_columns=["id"],
+                                   cardinality=cardinality)
+
+    m2o = RelationshipCardinality.MANY_TO_ONE
+    for i in range(n):
+        add(f"n{i}", ["l", "r"], [to(f"l{i}", "l", m2o), to(f"r{i}", "r", m2o)])
+        for side in ("l", "r"):
+            add(f"{side}{i}", ["n"], [to(f"n{i + 1}", "n", m2o)])
+    add(f"n{n}", ["g"], [to("goal", "g", RelationshipCardinality.MANY_TO_MANY)])
+    add("goal", [], [])
+    return out
+
+
+def test_ossies_anchor_is_settled_without_walking_every_path() -> None:
+    datasets = _diamond_chain(20)
+    start = time.monotonic()
+    assert _ossie_anchor(["n0.id", "goal.id"], datasets_by_name=datasets) is None
+    assert time.monotonic() - start < 2
