@@ -1,11 +1,13 @@
 # Provenance of the vendored apache/ossie corpus (byte-identical copies at upstream paths, relative to this directory).
 # Each file maps to its upstream git blob sha; harvested/ holds documents harvested from upstream validation/tests.
+# Written by `python scripts/ossie_schema_drift.py --vendor <checkout>`.
 repository: apache/ossie
-commit: 94cf86bd8af44b74863ff40b76d388ab1b037549
-committed: "2026-11-20"
-# Written by `python scripts/ossie_schema_drift.py --harvest <checkout of commit>`; not upstream files.
+commit: d4dca4e9f81c2a49b9e6fd568425132b0c025e3f
+committed: '2026-11-22'
 harvested: harvested/
 files:
+  compliance/expressions/invalid.txt: ae047f6369611bdc42197decce4be89e629366a1
+  compliance/expressions/valid.txt: 598a8ec5701c10f7e120ccfc68ba4d82b1139f0a
   compliance/portability/grader/.gitignore: 7a60b85e148f80966a550e5ab6a762a907c69ca6
   compliance/portability/grader/grade.py: 366b5cae9459d3a70e7a3bfaeee9eca7c2fb0495
   compliance/portability/grader/README.md: a80ebccc4980bc9c43d5bedf6740893c02c4c4a3
@@ -27,8 +29,8 @@ files:
   compliance/portability/m8/m8_ratio_to_total.ossie.yaml: 160b402ce0febf99168cbc8add66b35bf514e370
   compliance/portability/manifest.yaml: 1cefd8abff8f08d962d5499777caccc9b542b4d1
   compliance/portability/README.md: dbbc414f4cda6baaf2349e265bf00003760dc1a5
-  compliance/query/scott/scott_model.ossie.yaml: bbb6efb7fc0091a67aa1ffc4208d4250f729d073
-  compliance/query/scott/scott.sql: b0358ea23a79e98cb1c347b332c55c54d088275e
+  compliance/query/scott/scott.sql: 63b43bb7247a7dabc134ee8895bdbadba2d60ed0
+  compliance/query/scott/scott_model.ossie.yaml: cc7ce1c453e531d80f8ce39bc3cad94ca9fb9fbd
   compliance/wide_table/cases/a01_shared_dimension/expected.txt: b6d1577748e1116018fc969fc9e41e214911d75b
   compliance/wide_table/cases/a01_shared_dimension/query.json: 1af10e1a6a22e9ee5347b0eef4b31047859b8559
   compliance/wide_table/cases/a01_shared_dimension/query.ossie.sql: e456aa8f80deca97cf3815e2b639df628c4a082f
@@ -144,12 +146,18 @@ files:
   compliance/wide_table/cases/e25_ambiguous_path_filter/query.json: a2a9814defe301fd308158c5b81f3e5158913223
   compliance/wide_table/cases/README.md: c5338ce1fc2ba0ef76952b3d52207c93ec12546f
   compliance/wide_table/README.md: 8166f8b827fc69f46312415481c59cff2dd14927
-  compliance/wide_table/retail/retail_model.ossie.yaml: bc89e2f12221f60b921b9a6435d40b2b3609dfb6
   compliance/wide_table/retail/retail.sql: c78df7a7c5c6be5cc0fdee2f4f236f4cbcd3459b
+  compliance/wide_table/retail/retail_model.ossie.yaml: bc89e2f12221f60b921b9a6435d40b2b3609dfb6
+  compliance/wide_table/stores/stores.sql: 41b4889eebc4b4a0939417c55d9f042027e55a0a
   compliance/wide_table/stores/stores_ambiguous_model.ossie.yaml: 20d187ca800560b7e8ae18b4f42e3484cf9db861
   compliance/wide_table/stores/stores_model.ossie.yaml: 0de54e980536b71bdfd3c6b113968f2f071fa8d8
-  compliance/wide_table/stores/stores.sql: 41b4889eebc4b4a0939417c55d9f042027e55a0a
-  core-spec/ossie-schema.json: 6fcbc83e5fb55f4e0087e4284bfe0292760c4fc7
+  core-spec/expression_language.md: fcb4931fcfd67e9c1a7ed1788778fb09e1d5ac19
+  core-spec/ossie-schema.json: 8c9b934034358e203825af8827657fab20c25855
+  core-spec/relational_semantics.md: 3902fb635d137ecba392d0809ab9f5746f3ca159
+  core-spec/spec.md: cefe33b6959de606eb0cb943eb3fea81d6e4205b
+  core-spec/spec.yaml: edf973c5fd97028bb3d0097f3ffb6fa0af079c1a
+  core-spec/spec_layers.md: c152866f6bad8e5c47811c1abbd3936e49529422
+  core-spec/wide_table_semantics.md: 98aa3d2c52667a346bb22c0bb6ba07f8b4cac5e7
   examples/flights.mapping.yaml: eb33ea29d28c4ccdbf27788bdb1cd9a69c33b242
   examples/flights.ontology.yaml: 053e0fc66fa97d6fb6f9feb88e8e9be494ff37ef
   examples/flights.semantic_model.yaml: 02e548f2354fbe0874fa2e31ba3fabdf8f652ae7
@@ -162,5 +170,5 @@ files:
   examples/tpcds_semantic_model.yaml: daa513a21a12ed616d52cb33a4e87ae325d5ff25
   LICENSE: 261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64
   NOTICE: e4bc78e2bb5c7e6df4f7692daa419da3076a9bc5
-  python/src/ossie/_loading.py: 898ed822cb4adae90e915dd06f190737d4e4ab0f
-  validation/validate.py: d52583ace9bb4387cc17c7dec53df4f9948f56f3
+  python/src/ossie/_loading.py: fb889e0a4da45023d2edba1a0972ae619c552c35
+  validation/validate.py: 9af374992ab9d08ef1527d9b99e422fa4baeb6ec
