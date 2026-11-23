@@ -283,7 +283,7 @@ When a metric is renamed via `name`, query filters and ORDER BY entries in the s
 | `**` | `"sum(orders.value) ** 2"` | `POWER(SUM(value), 2)` |
 | `%` | `"sum(orders.quantity) % 12"` | `SUM(quantity) % 12` |
 
-Parentheses work as expected: `"(sum(orders.revenue) - sum(orders.cost)) / count(orders.*)"`. Division by zero is NULL on every backend, and `/` is true division even between integers (`5 / 2` is `2.5`).
+Parentheses work as expected: `"(sum(orders.revenue) - sum(orders.cost)) / count(orders.*)"`, nested up to 32 deep (function calls included). Division by zero is NULL on every backend, and `/` is true division even between integers (`5 / 2` is `2.5`).
 
 Precedence, tightest first: `::`, `**`, unary `-` / `+`, `*` / `/` / `%`, `+` / `-`, `||` / `->` / `->>`, comparisons (`=`, `<`, `IN`, `BETWEEN`, `LIKE`, `IS`, `~`, …), `NOT`, `AND`, `OR` — so `NOT a = b` is `NOT (a = b)` and `'a' || 'b' = 'ab'` is true.
 `**` is right-associative and binds tighter than a sign (`2 ** 3 ** 2` is 512, `-2 ** 2` is -4), and `%` takes the sign of its left operand (`-7 % 3` is -1, `7 % -3` is 1).

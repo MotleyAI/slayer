@@ -350,17 +350,19 @@ class ExtensionFieldInlinedWarning(SlayerWarning):
 
 
 class UnloadableDocumentWarning(SlayerWarning):
-    """A stored dataset or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a memory."""
+    """A stored dataset, semantic model or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a
+    memory."""
 
     kind: Literal["unloadable_document"] = "unloadable_document"
-    document_kind: Literal["dataset", "memory"]
+    document_kind: Literal["dataset", "semantic_model", "memory"]
     data_source: Optional[str] = None
     name: str
     cause: str
 
     def human_message(self) -> str:
         document = f"{self.data_source}.{self.name}" if self.data_source is not None else f"memory:{self.name}"
-        return _single_line(f"skipped stored {self.document_kind} {document!r}, which cannot be loaded: {self.cause}")
+        kind = self.document_kind.replace("_", " ")
+        return _single_line(f"skipped stored {kind} {document!r}, which cannot be loaded: {self.cause}")
 
 
 class NarrowedAccessWarning(SlayerWarning):
