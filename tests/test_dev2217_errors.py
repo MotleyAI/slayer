@@ -117,6 +117,14 @@ async def test_unknown_names_before_a_window_in_the_filter(tmp_path: Path) -> No
         await strict_error(engine, {"dimensions": ["orders.order_id"], "filter": WINDOW_FILTER}, "E_WINDOW_IN_WHERE")
 
 
+async def test_an_unquoted_dataset_name_matches_case_insensitively(tmp_path: Path) -> None:
+    """Identifying the datasource folds an unquoted dataset name and matches a quoted one exactly (Layer 1)."""
+    async with fixture_engine(tmp_path, "retail") as engine:
+        response = await strict(engine, {"dimensions": ["CUSTOMERS.region"], "metrics": ["Orders.total_revenue"]})
+        assert rows(response) == [("EAST", 350.0), ("WEST", 300.0)]
+        await strict_error(engine, {"dimensions": ['"CUSTOMERS".region']}, "E_NAME_NOT_FOUND")
+
+
 async def test_unknown_names_before_filter_errors(tmp_path: Path) -> None:
     """Unknown names before filter errors."""
     await _code(tmp_path, "retail", {"dimensions": ["customers.no_such_field"],

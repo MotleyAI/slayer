@@ -462,9 +462,13 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise OssieQueryError(OssieErrorCode.E_INVALID_QUERY, f"a saved query run by name takes no query parts "
                                   f"beside its name; put {sorted(body)} in 'refine'")
         run_query = name if name is not None else body
+        if flags["dry_run"]:
+            usage_reporting.mark_dry_run()
+        usage_reporting.observe_query(run_query)
         result = await engine.execute(query=run_query, variables=wrapper.get("variables"), refine=wrapper.get("refine"),
                                       conformance=Conformance.OSSIE_L3, dry_run=flags["dry_run"],
                                       explain=flags["explain"])
+        usage_reporting.observe_executed(result)
         return result, flags
 
     def _query_response(result: Any, *, dry_run: bool, explain: bool, deprecations: Any = ()) -> Response:

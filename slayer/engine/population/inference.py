@@ -10,6 +10,7 @@ connects take the product of their anchors. The same determination core backs
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -520,15 +521,17 @@ async def _classification_scopes(
     return scopes, ds_by_dataset
 
 
-async def query_datasource(*, storage: StorageBackend, anchors: set[str]) -> str | None:
-    """The single datasource holding every one of ``anchors`` that exists anywhere (``None`` when none does); raises
-    as inference does when several hold them together, or none does."""
+async def query_datasource(*, storage: StorageBackend, anchors: Iterable[tuple[str, bool]]) -> str | None:
+    """The single datasource holding every one of ``anchors`` (each a name and whether it is quoted) that exists
+    anywhere (``None`` when none does); raises as inference does when several hold them together, or none does."""
     ds_by_dataset: dict[str, set[str]] = {}
     for ds, name in await storage._list_all_dataset_identities():
         ds_by_dataset.setdefault(name, set()).add(ds)
-    if not any(a in ds_by_dataset for a in anchors):
+    found = (match_name(name=name, declared=ds_by_dataset, quoted=quoted) for name, quoted in anchors)
+    spelled = {s for s in found if s is not None}
+    if not spelled:
         return None
-    return _resolve_datasource(ds_by_dataset=ds_by_dataset, data_source=None, anchors=anchors)
+    return _resolve_datasource(ds_by_dataset=ds_by_dataset, data_source=None, anchors=spelled)
 
 
 def _resolve_datasource(

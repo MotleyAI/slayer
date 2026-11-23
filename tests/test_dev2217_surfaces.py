@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from mcp.server.fastmcp.exceptions import ToolError
 
+from slayer import usage_reporting
 from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.models import DatasourceConfig, SlayerDataset
@@ -259,6 +260,39 @@ async def test_mcp_conformance_selects_the_strict_binding(tmp_path: Path) -> Non
     assert str(raised.value).removeprefix("Error executing tool query: ").startswith(
         "OssieQueryError: E_INVALID_QUERY")
     assert await _mcp_text(server, query=LIMITED)
+
+
+MALFORMED = [
+    pytest.param({"metrics": ["orders.total_revenue"], "foo": 1}, id="unknown-part"),
+    pytest.param({"dimensions": [{"field": "customers.region", "foo": 1}]}, id="entry-property"),
+    pytest.param({"metrics": "orders.total_revenue"}, id="wrong-type"),
+    pytest.param({"metrics": [1]}, id="entry-type"),
+]
+
+
+@pytest.mark.parametrize("query", MALFORMED)
+async def test_mcp_judges_the_query_as_submitted(tmp_path: Path, query: dict[str, Any]) -> None:
+    """MCP hands the strict binding the input as submitted, so a malformed query is E_INVALID_QUERY."""
+    server = create_mcp_server(storage=await prepare_store(tmp_path), _seed_help=False)
+    with pytest.raises(ToolError) as strict_raised:
+        await _mcp_text(server, query=query, conformance=STRICT)
+    assert str(strict_raised.value).removeprefix("Error executing tool query: ").startswith(
+        "OssieQueryError: E_INVALID_QUERY")
+    with pytest.raises(ToolError) as native_raised:
+        await _mcp_text(server, query=query)
+    assert "OssieQueryError" not in str(native_raised.value)
+
+
+async def test_strict_usage_reporting_sees_the_query_as_submitted(tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    """REST and MCP report a strict query's features from the input as submitted, as the CLI does."""
+    observed: list[Any] = []
+    monkeypatch.setattr(usage_reporting, "observe_query", observed.append)
+    storage = await prepare_store(tmp_path)
+    assert TestClient(create_app(storage=storage)).post(
+        "/query", params={"conformance": STRICT}, json=ADMITTED).status_code == 200
+    await _mcp_text(create_mcp_server(storage=storage, _seed_help=False), query=ADMITTED, conformance=STRICT)
+    assert observed == [ADMITTED, ADMITTED]
 
 
 async def test_mcp_reaches_the_same_binding(tmp_path: Path) -> None:

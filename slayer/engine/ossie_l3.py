@@ -255,12 +255,12 @@ async def _model(engine: "SlayerQueryEngine", data_source: str) -> _Model:
                   metrics=await engine.storage.list_model_scoped_metrics(data_source))
 
 
-def _heads(query: _Query) -> Tuple[List[str], List[Tuple[str, bool]]]:
-    """The dataset names of the query's dotted references and its bare names, in query order."""
+def _heads(query: _Query) -> Tuple[List[Tuple[str, bool]], List[Tuple[str, bool]]]:
+    """The first segments of the query's dotted references and its bare names, each with whether it is quoted."""
     refs = [*(e.reference for e in (*query.dimensions, *query.metrics)), *query.reading.references]
     heads = [(r.parts[0], r.quoted_at(0)) for r in refs if isinstance(r, DottedRef)]
     bare = [(r.name, r.quoted) for r in refs if isinstance(r, Ref)]
-    return [h for h, _ in heads], bare
+    return heads, bare
 
 
 async def _identify(engine: "SlayerQueryEngine", query: _Query, data_source: Optional[str]) -> str:
@@ -268,7 +268,7 @@ async def _identify(engine: "SlayerQueryEngine", query: _Query, data_source: Opt
     if data_source is not None:
         return data_source
     heads, bare = _heads(query)
-    found = await query_datasource(storage=engine.storage, anchors=set(heads))
+    found = await query_datasource(storage=engine.storage, anchors=heads)
     if found is None and bare:
         found = await _metric_source(engine, bare)
     if found is not None:
