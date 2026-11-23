@@ -178,9 +178,11 @@ class _Walker:
         ):
             return False
         if k.partition_keys is not None:
-            # Requested grain never broadcasts; only a fanning window axis needs association.
-            return window_kwarg_of(k) is not None and self.active_td is not None \
-                and not self._attributable(self.active_td, host=host)
+            # A requested key the host does not determine resolves per the mode axis (it is safe from its own
+            # anchor, or the checker refused it), as does a fanning window axis.
+            return any(not self._attributable(p, host=host) for p in k.partition_keys) or (
+                window_kwarg_of(k) is not None and self.active_td is not None
+                and not self._attributable(self.active_td, host=host))
         # The population's spine is counted over each home's own axis, never the product.
         return any(
             reads_population_spine(g, host=host) or not self._attributable(g, host=host) for g in self.grain

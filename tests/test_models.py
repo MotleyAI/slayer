@@ -1812,13 +1812,13 @@ class TestRootQualifier:
             got, expected = _unaliased(got), _unaliased(expected)
         assert got == expected
 
-    @pytest.mark.parametrize("query", [
-        {"metrics": ["count(customers.orders.id)"]},
-        {"metrics": ["count(orders.*)"], "filter": ["customers.orders.status = 'paid'"]},
-    ], ids=["formula", "filter"])
-    async def test_an_inner_hop_named_like_the_root_is_still_refused(self, query: dict) -> None:
+    async def test_an_inner_hop_named_like_the_root_is_still_refused(self) -> None:
+        query = {"metrics": ["count(orders.*)"], "filter": ["customers.orders.status = 'paid'"]}
         with pytest.raises(Exception, match="customers"):
             await _prefix_sql({"population": "orders", **query})
+
+    async def test_an_aggregation_reads_an_inner_hop_named_like_the_root_from_its_own_frame(self) -> None:
+        assert await _prefix_sql({"population": "orders", "metrics": ["count(customers.orders.id)"]})
 
     @pytest.mark.parametrize("query", [
         {"metrics": ["count(orders.*)"], "filter": ["orders.reorders.status = 'active'"]},

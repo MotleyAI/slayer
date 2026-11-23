@@ -59,6 +59,7 @@ from slayer.core.errors import (
 from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
+    display_token,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
     LIST_FUNCTIONS,
@@ -195,14 +196,14 @@ def _key_display(k: ValueKey) -> str:
     if isinstance(k, AggregateKey):
         leaf = getattr(k.source, "leaf", None) or getattr(k.source, "field_name", None) or "*"
         path = source_anchor_path(k.source)
-        name = f"{k.agg}({'.'.join((*path, leaf))})"
+        name = f"{k.agg}({'.'.join((*map(display_token, path), leaf))})"
         return f"{name} (partition_by)" if k.partition_keys is not None else name
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
     if isinstance(k, TimeTruncKey):
         return _key_display(k.source) if isinstance(k.source, (FieldKey, FieldSqlKey)) else key_display(k.source)
     if isinstance(k, (FieldKey, FieldSqlKey)):
-        return ".".join((*k.path, field_leaf(k)))
+        return ".".join((*map(display_token, k.path), field_leaf(k)))
     return type(k).__name__
 
 
@@ -1273,9 +1274,9 @@ _ANNOUNCED_OPS = frozenset({"<=", ">", "=", "!="})
 def _field_parts(key: object) -> Optional[Tuple[str, ...]]:
     """A field operand's relationship path plus its leaf; ``None`` for anything else."""
     if isinstance(key, FieldKey):
-        return (*key.path, key.leaf)
+        return (*map(display_token, key.path), key.leaf)
     if isinstance(key, FieldSqlKey):
-        return (*key.path, key.field_name)
+        return (*map(display_token, key.path), key.field_name)
     return None
 
 

@@ -125,12 +125,18 @@ class TestFilteredRoot:
         assert [int(r["s"]) for r in resp.data] == [600]
 
     async def test_isolated_aggregate(self, engine):
+        # The returns home reads no done_orders row: every return counts.
         resp = await _run(engine, population="done_orders", metrics=[{"metric": "count(returns.*)", "alias": "n"}])
-        assert [int(r["n"]) for r in resp.data] == [3]
+        assert [int(r["n"]) for r in resp.data] == [4]
 
-    async def test_aggregate_across_a_fanning_path_associates(self, engine):
+    async def test_isolated_aggregate_grouped_by_the_root_reads_its_filtered_rows(self, engine):
+        resp = await _run(engine, population="done_orders", dimensions=["done_orders.id"],
+                          metrics=[{"metric": "count(returns.*)", "alias": "n"}])
+        assert {int(r["done_orders.id"]): int(r["n"]) for r in resp.data} == {1: 2, 2: 1, 3: 0}
+
+    async def test_aggregate_off_the_roots_paths_counts_every_home_row(self, engine):
         resp = await _run(engine, population="done_orders", metrics=[{"metric": "count(shipments.id)", "alias": "n"}])
-        assert [int(r["n"]) for r in resp.data] == [2]
+        assert [int(r["n"]) for r in resp.data] == [4]
 
     async def test_windowed_aggregate(self, engine):
         resp = await _run(

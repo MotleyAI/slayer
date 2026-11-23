@@ -661,8 +661,8 @@ class TestCrossModelConsistency:
         return SlayerQueryEngine(storage=storage), tmp
 
     async def test_source_model_filter_var_applies_to_reroot(self) -> None:
-        # The host's ``amount >= {floor}`` restricts the customers-rooted count to customers with a
-        # passing order; {floor} is substituted wherever it is emitted, and nowhere left raw.
+        # The population's ``amount >= {floor}`` never narrows the customers home, which reads no order;
+        # {floor} is substituted wherever it is emitted, and nowhere left raw.
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
@@ -675,13 +675,13 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            assert _sum(resp, "customers.id_count") == 2
+            assert _sum(resp, "customers.id_count") == 3
             assert "{floor}" not in resp.sql  # no un-substituted placeholder
         finally:
             tmp.cleanup()
 
     async def test_source_model_filter_var_applies_to_reroot_reachable(self) -> None:
-        # The host's dataset filter restricts the customers-rooted count exactly as the same query filter does.
+        # The population's dataset filter restricts only reads of orders; the customers home counts every customer.
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
@@ -694,8 +694,7 @@ class TestCrossModelConsistency:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            # The host's dataset filter restricts the customers-rooted count.
-            assert _sum(resp, "customers.id_count") == 2
+            assert _sum(resp, "customers.id_count") == 3
             # The substituted predicate is emitted where the filter DOES apply,
             # and no placeholder token survives anywhere.
             assert "amount >= 100" in resp.sql
@@ -709,11 +708,8 @@ class TestCrossModelConsistency:
 # ---------------------------------------------------------------------------
 
 class TestDeferredScope:
-    async def test_join_target_var_not_substituted(self) -> None:
-        """A {var} in a RELATIONSHIP-TARGET dataset's DatasetField.sql is NOT substituted:
-        the enclosing query's variable does
-        not reach it, so the stray {var} surfaces an error rather than being
-        silently filled. Stable boundary pin (holds before AND after)."""
+    async def test_join_target_var_substituted(self) -> None:
+        """A {var} in a relationship-target dataset's field SQL binds the query's variable."""
         customers = SlayerDataset(
             name="customers",
             sql_table="customers",
@@ -721,7 +717,6 @@ class TestDeferredScope:
             fields=[
                 DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="name", expression="name", datatype=DataType.STRING),
-                # relationship-target DatasetField.sql var — not substituted → unsupported
                 DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="id * {mult}")]), datatype=DataType.FLOAT),
             ],
         )
@@ -761,14 +756,8 @@ class TestDeferredScope:
                 "metrics": [{"metric": "sum(customers.scaled)"}],
                 "variables": {"mult": 2},
             })
-            # The failure must be about the stray, unsubstituted {mult}: it is
-            # emitted as a bare `mult` column ref, so the DB errors with
-            # "no such column: customers.mult" (a DB error, NOT a substitution
-            # ValueError — precisely because the relationship-target var was not
-            # substituted). The \bmult\b word boundary keeps an unrelated error
-            # mentioning "multiple"/"multi-stage" from satisfying the pin.
-            with pytest.raises(Exception, match=r"\bmult\b"):
-                await engine.execute(q)
+            resp = await engine.execute(q)
+            assert resp.data[0]["customers.scaled_sum"] == pytest.approx(6.0)
         finally:
             tmp.cleanup()
 
