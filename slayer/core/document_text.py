@@ -1,4 +1,5 @@
-"""Round-trip editing of a stored document's text: only the nodes whose values change are rewritten."""
+"""Reading a document's text as Ossie's loader does, and round-trip editing of it: only the nodes whose values change
+are rewritten."""
 
 from __future__ import annotations
 
@@ -21,10 +22,12 @@ __all__ = ["edit_text", "parse_document_text", "plain", "without_vendor"]
 
 _MERGE_TAG = "tag:yaml.org,2002:merge"
 _VALUE_TAG = "tag:yaml.org,2002:value"
+_IN_MAPPING = "while constructing a mapping"
 
 
 class _Loader(yaml.SafeLoader):
-    """``SafeLoader`` reporting a scalar it cannot build as a ``ConstructorError`` at its line."""
+    """``SafeLoader`` reporting a scalar it cannot build as a ``ConstructorError`` at its line, with YAML 1.1 merge
+    precedence (as upstream Ossie's loader)."""
 
     def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
         try:
@@ -32,6 +35,44 @@ class _Loader(yaml.SafeLoader):
         except (ValueError, AttributeError, LookupError) as exc:
             raise ConstructorError(None, None, f"cannot build {node.value!r} as {node.tag.rsplit(':', 1)[-1]}",
                                    node.start_mark) from exc
+
+    def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        merge: list[tuple[yaml.Node, yaml.Node]] = []
+        index = 0
+        while index < len(node.value):
+            key_node, value_node = node.value[index]
+            if key_node.tag == _MERGE_TAG:
+                del node.value[index]
+                merge += self._merge_sources(node, value_node)
+            else:
+                if key_node.tag == _VALUE_TAG:
+                    key_node.tag = "tag:yaml.org,2002:str"
+                index += 1
+        seen: set[int] = set()
+        kept: list[tuple[yaml.Node, yaml.Node]] = []
+        for pair in reversed(merge):  # one copy of each key node, so repeated aliases cannot grow the mapping
+            if id(pair[0]) not in seen:
+                seen.add(id(pair[0]))
+                kept.append(pair)
+        node.value = kept[::-1] + node.value
+
+    def _merge_sources(self, node: yaml.MappingNode, value: yaml.Node) -> list[tuple[yaml.Node, yaml.Node]]:
+        """The pairs ``<<: value`` merges, later sources first so earlier ones win."""
+        if isinstance(value, yaml.MappingNode):
+            self.flatten_mapping(value)
+            return list(value.value)
+        if not isinstance(value, yaml.SequenceNode):
+            raise ConstructorError(_IN_MAPPING, node.start_mark,
+                                   f"expected a mapping or list of mappings for merging, but found {value.tag}",
+                                   value.start_mark)
+        out: list[tuple[yaml.Node, yaml.Node]] = []
+        for sub in reversed(value.value):
+            if not isinstance(sub, yaml.MappingNode):
+                raise ConstructorError(_IN_MAPPING, node.start_mark,
+                                       f"expected a mapping for merging, but found {sub.tag}", sub.start_mark)
+            self.flatten_mapping(sub)
+            out += sub.value
+        return out
 
 
 def _line(node: yaml.Node) -> int:

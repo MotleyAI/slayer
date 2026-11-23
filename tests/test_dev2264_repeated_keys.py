@@ -11,9 +11,11 @@ import pytest
 import yaml
 
 from slayer.core.models import DatasourceConfig
+from slayer.core.warnings import SlayerUnloadableDocumentWarning
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.service import InspectService
 from slayer.osi.exporter import export_osi
+from slayer.osi.parser import parse_osi_path
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.base import StorageBackend
@@ -410,8 +412,12 @@ async def test_export_leaves_out_an_unreadable_document(tmp_path: Path, kind: st
     storage = await hand_placed(kind, tmp_path, text)
     await store_document(storage, SUPPORT)
     async with owned_query_engine(storage=storage) as engine:
-        exported = await export_osi(engine=engine, datasource=DS)
+        with pytest.warns(SlayerUnloadableDocumentWarning):
+            exported = await export_osi(engine=engine, datasource=DS)
     assert exported.text == SUPPORT
+    [note] = [w for w in exported.warnings if w.category == "unloadable_document"]
+    assert "sales" in note.message
+    assert names_problem(note.message, text=text, verdict=verdict, needle=needle, at=at)
 
 
 @pytest.mark.parametrize(("text", "verdict", "needle", "at"), UNREADABLE)
@@ -553,3 +559,9 @@ async def test_a_filtered_export_leaves_out_a_document_edited_unreadable_after_i
         monkeypatch.setattr(storage, "get_semantic_model_text", edited)
         exported = (await export_osi(engine=engine, datasource=DS)).document
     assert {d["name"] for d in exported["datasets"]} == {"returns"}
+
+
+@pytest.mark.parametrize(("text", "verdict", "needle", "at"), UNREADABLE)
+def test_the_osi_parser_skips_an_unreadable_file(tmp_path: Path, text: str, verdict: str, needle: str,
+                                                 at: str) -> None:
+    assert parse_osi_path(write(tmp_path / "bad.yaml", text)) == []

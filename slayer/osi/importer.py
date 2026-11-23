@@ -19,6 +19,7 @@ from slayer.core.document_text import edit_text, parse_document_text
 from slayer.core.errors import UnreadableDocumentError
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.ossie_validity import columns, parse_ossie_sql
+from slayer.core.portable_sql import portable_entity_expression
 from slayer.core.semantic_model import OSSIE_VERSION, ossie_validity_errors
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.ingestion import introspect_table_to_dataset
@@ -223,6 +224,15 @@ def _carried_fields(*, current: SlayerDataset, old: SlayerDataset) -> list[Datas
 
 # ---- the import ---------------------------------------------------------------
 
+def _portable_document(doc: dict[str, Any]) -> None:
+    """Respell every field and metric expression of ``doc`` in place with the canonical portable-SQL writer."""
+    entities = [e for d in doc.get("datasets") or [] if isinstance(d, dict)
+                for e in [*(d.get("fields") or []), *(d.get("metrics") or [])]]
+    for entity in [*entities, *(doc.get("metrics") or [])]:
+        if isinstance(entity, dict) and "expression" in entity:
+            entity["expression"] = portable_entity_expression(entity["expression"])
+
+
 class _Importer:
     def __init__(self, *, storage: Any, data_source: str, engine: SlayerQueryEngine | None) -> None:
         self.storage = storage
@@ -271,6 +281,7 @@ class _Importer:
         upgraded = json.loads(json.dumps(data, default=str))
         legacy = _legacy_extensions(upgraded, owner=f"semantic model {name!r}")
         if changes or legacy:
+            _portable_document(upgraded)
             upgraded["version"] = OSSIE_VERSION
             for key in ("dialects", "vendors"):
                 upgraded.pop(key, None)
@@ -330,6 +341,7 @@ class _Importer:
             self.entry("upgraded", f"legacy version {version or 'unset'} upgraded to {OSSIE_VERSION}", document=name)
             await self._declare_columns(doc)
             self._qualify_metrics(doc)
+            _portable_document(doc)
             await self._store(name, dump_yaml(doc), doc)
 
     async def _declare_columns(self, doc: dict[str, Any]) -> None:

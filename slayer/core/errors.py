@@ -575,19 +575,20 @@ class UnrecognizedStrictValueError(SlayerError):
 
 
 class SpellingConflictError(SlayerError):
-    """One object spells a concept both the pre-2.0 way (``old``) and the Ossie way (``new``)."""
+    """One object spells a concept two ways: ``old`` (its ``spelling``) and ``new``."""
 
-    def __init__(self, *, old: str, new: str) -> None:
+    def __init__(self, *, old: str, new: str, spelling: str = "pre-2.0 spelling") -> None:
         self.old = old
         self.new = new
-        super().__init__(f"Both `{new}` and its pre-2.0 spelling `{old}` are given; keep only `{new}`.")
+        self.spelling = spelling
+        super().__init__(f"Both `{new}` and its {spelling} `{old}` are given; keep only `{new}`.")
 
     def __reduce__(self) -> tuple[Any, ...]:
-        return _rebuild_spelling_conflict, (self.old, self.new)
+        return _rebuild_spelling_conflict, (self.old, self.new, self.spelling)
 
 
-def _rebuild_spelling_conflict(old: str, new: str) -> SpellingConflictError:
-    return SpellingConflictError(old=old, new=new)
+def _rebuild_spelling_conflict(old: str, new: str, spelling: str = "pre-2.0 spelling") -> SpellingConflictError:
+    return SpellingConflictError(old=old, new=new, spelling=spelling)
 
 
 class UnknownKeyError(SlayerError):
@@ -1403,7 +1404,7 @@ class StoredDocumentLoadError(SlayerError, ValueError):
         return _rebuild_query_type_error, (type(self), self.args, self.__dict__)
 
 
-class UnreadableDocumentError(SlayerError):
+class UnreadableDocumentError(SlayerError, ValueError):
     """Document text that does not read into data; ``name`` is the root ``name`` it declares, when found."""
 
     def __init__(self, *, reasons: Sequence[str], name: str | None = None) -> None:

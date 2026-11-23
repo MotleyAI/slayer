@@ -85,6 +85,9 @@ A document that is not valid Ossie SHALL be refused with every reason, each nami
 #### Scenario: An unbuildable scalar is a reason
 - **WHEN** a YAML document's dataset `description` is the untagged value `2024-02-30`
 - **THEN** the import refuses the file naming the value and its line, and the command exits non-zero without a traceback
+#### Scenario: A repeated key is refused in flat and legacy documents
+- **WHEN** a flat `0.3.0.dev0` document, and separately a legacy `semantic_model:` document, each repeat the key `source` in one dataset
+- **THEN** each file is refused with an error naming the key `source`, and neither stores anything
 
 ### Requirement: The shipped example is a valid current-spec document
 The worked example `docs/examples/13_osi_import/shop.osi.yaml` SHALL validate against the pinned upstream Ossie schema, SHALL import as a native document, and SHALL answer every query of its example notebook.

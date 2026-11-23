@@ -124,8 +124,9 @@ from slayer.storage.document_mapping import as_expression, with_dataset, without
 from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle, warn_broken_model_metrics
 from slayer.storage.semantic_model_edits import UNSET, MetricSpec, edited_document, metric_spec, with_datasets
 from slayer.core.document_text import edit_text, parse_document_text
+from slayer.core.portable_sql import portable_expression
 from slayer.storage.semantic_models import (
-    DocumentIndex, build_index, checked_document, decompose, expression_datasets,
+    DocumentIndex, build_index, checked_document, decompose, expression_datasets, metric_graph, unevaluable_targets,
 )
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.live_schema.type_refinement import (
@@ -491,6 +492,17 @@ def with_canonical_spellings(dataset: SlayerDataset) -> tuple[SlayerDataset, lis
     return SlayerDataset.model_validate(rewritten), emit_deprecations(found)
 
 
+def with_portable_sql(dataset: SlayerDataset) -> SlayerDataset:
+    """``dataset`` with each field and metric expression's portable text in the canonical writer's spelling."""
+    fields = [f.model_copy(update={"expression": portable_expression(f.expression)}) if f.expression is not None else f
+              for f in dataset.fields]
+    metrics = [m.model_copy(update={"expression": portable_expression(m.expression)}) for m in dataset.metrics]
+    if [f.expression for f in fields] == [f.expression for f in dataset.fields] and \
+            [m.expression for m in metrics] == [m.expression for m in dataset.metrics]:
+        return dataset
+    return dataset.model_copy(update={"fields": fields, "metrics": metrics})
+
+
 def warn_library_shadows(dataset: SlayerDataset) -> None:
     """One warning per aggregation of ``dataset`` that shadows a library function."""
     for agg in dataset.aggregations:
@@ -776,7 +788,7 @@ class StorageBackend(ABC):
         deprecated Mode-B spelling stored as its twin and a deprecated field ``sql`` as its datasource's entry. Backends
         must NOT override this."""
         if _validate:
-            dataset, _ = with_canonical_spellings(dataset)
+            dataset = with_portable_sql(with_canonical_spellings(dataset)[0])
             datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
             if datasource is not None and not dataset.source_queries:
                 dataset = with_converted_sql(dataset, ds_type=datasource.type)
@@ -858,14 +870,14 @@ class StorageBackend(ABC):
         await self._validate_mode_a_placeholders(dataset)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_dataset_filters(dataset=dataset, reachable=peers)
-        check_evaluated_metrics(dataset=dataset, reachable=peers, model_metrics={
+        stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
+        check_evaluated_metrics(dataset=dataset, reachable=peers, stored=stored, model_metrics={
             m.name for m in await self.list_model_scoped_metrics(dataset.data_source)})
         self._validate_relationship_edges(dataset, peers=peers)
         await self._validate_aggregations(dataset)
         await self._validate_field_granularities(dataset)
         _validate_default_time_dimension(dataset)
         if failures.report:
-            stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
             warn_broken_dependents(dataset=dataset, stored=stored, peers=peers)
             warn_broken_model_metrics(dataset=dataset, stored=stored,
                                       metrics=await self.list_model_scoped_metrics(dataset.data_source))
@@ -1228,14 +1240,21 @@ class StorageBackend(ABC):
         specs = [metric_spec(m) for m in metrics or []]
         current = decompose(text=text, name=name, data_source=data_source, ds_type=ds_type)
         members = [*current.datasets, *moved]
-        others = [m.name for m in await self.list_model_scoped_metrics(data_source) if m.semantic_model != name]
+        other_metrics = [m for m in await self.list_model_scoped_metrics(data_source) if m.semantic_model != name]
+        others = [m.name for m in other_metrics]
         kept = [m.name for m in current.metrics if m.name.casefold() not in {
             n.casefold() for n in [*(remove_metrics or []), *(s["name"] for s in specs)]}]
+        kept_metrics = [m for m in current.metrics if m.name in kept]
         scope = DocumentScope(
             fields={d.name.casefold(): {f.name.casefold() for f in d.fields} for d in members},
             dataset_metrics={d.name.casefold(): {m.name.casefold() for m in d.metrics} for d in members},
             datasource_datasets={n.casefold() for ds, n in await self._list_all_dataset_identities() if ds == data_source},
             model_metrics={n.casefold() for n in [*others, *kept, *(s["name"] for s in specs)]},
+            # Chain warnings may run through a metric this edit replaces; the graph re-derives the live ones.
+            unevaluable=unevaluable_targets(
+                [*other_metrics, *(m for m in kept_metrics if m.name.casefold() not in current.chained)],
+                datasets=members),
+            metric_graph=metric_graph([*other_metrics, *kept_metrics]),
         )
         written = [MetricSpec(s, slayer_only=check_model_metric(name=s["name"], text=MetricSpec(s, slayer_only=False).text,
                                                                 scope=scope)) for s in specs]

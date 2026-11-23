@@ -90,6 +90,8 @@ Ossie does not define a metric that reads another model-scoped metric, or an agg
 
 `AGG(d.m)` evaluates the dataset metric `d.m` as one aggregate and returns the same values as `d.m`. It works in model-scoped metrics, in queries, and in stored dataset metrics, where it follows that definition's own references (`AGG(m)` for a metric of the same dataset, `AGG(path.m)` across a to-one relationship). Its argument must be a single dataset metric: `AGG` of a field, of a model-scoped metric or of any other expression, and `AGG(...) FILTER (WHERE ...)`, are refused.
 
+In a document's portable `sql`, Ossie allows `AGG` only in metrics: as `AGG(dataset.metric)` in a model-scoped metric, and as `AGG(source.measure)` in a dataset-scoped metric, which evaluates a measure of the dataset's source. A field calling `AGG` makes the document invalid, and a dataset metric using any other `AGG` form is stored in its `SLAYER` entry. SLayer loads, stores and exports `AGG(source.measure)` unchanged but cannot evaluate it yet, because its sources expose no measure columns, so a query reading such a metric fails, and so does any model-scoped metric that reads it.
+
 ## One namespace per datasource
 
 A SLayer datasource is the equivalent of one Ossie semantic model, so within a datasource:
@@ -122,7 +124,9 @@ A valid document can hold entities SLayer cannot evaluate yet:
 - a window function (`OVER`);
 - an expression SLayer's expression reader cannot parse, such as the subquery `(SELECT 1)`;
 - a model-scoped metric reading a field unqualified or outside an aggregate;
-- a model-scoped aggregate naming no dataset, such as `COUNT(*)`.
+- a model-scoped aggregate naming no dataset, such as `COUNT(*)`;
+- a dataset-scoped metric evaluating a source measure with `AGG(source.measure)`;
+- a model-scoped metric reaching any of these, directly or through other model-scoped metrics, whose warning names the chain.
 
 Such an entity loads with a warning shown by `inspect`, `datasets_summary`, search and the import report. A query reading it fails with a typed error naming the entity and the reason; nothing else is affected. SLayer refuses to author such an entity itself.
 

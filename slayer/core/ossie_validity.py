@@ -15,7 +15,9 @@ from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import ParseError, TokenError
 
-__all__ = ["PORTABLE_DIALECT", "SQLGLOT_DIALECTS", "parse_ossie_sql", "semantic_errors"]
+__all__ = ["PORTABLE_DIALECT", "SOURCE_MEASURE_REASON", "SQLGLOT_DIALECTS", "agg_arguments", "agg_calls", "columns",
+           "is_agg_call", "parse_ossie_sql", "portable_construct_problem", "portable_problem", "reads_source_measure",
+           "semantic_errors", "source_measure", "unwindowed_aggregates"]
 
 PORTABLE_DIALECT = "OSSIE_SQL_2026"
 #: Ossie dialect tokens upstream syntax-checks, each with its sqlglot reader (``None`` = the default reader).
@@ -217,21 +219,45 @@ def columns(tree: exp.Expr, dialect: str) -> Iterator[exp.Column]:
             yield exp.column(unit.name)
 
 
+#: sqlglot's dedicated ``AGG`` node (from 30.19; ``AGG`` is a generic ``exp.Anonymous`` call before).
+_AGG_NODE: type[exp.Expr] | None = getattr(exp, "Agg", None)
+
+
 def is_agg_call(node: exp.Expr) -> bool:
+    """Whether ``node`` is an ``AGG(…)`` call, in either sqlglot shape."""
+    if _AGG_NODE is not None and isinstance(node, _AGG_NODE):
+        return True
     return isinstance(node, exp.Anonymous) and node.name.upper() == "AGG"
 
 
-def _agg_calls(tree: exp.Expr) -> list[exp.Anonymous]:
-    return [n for n in tree.find_all(exp.Anonymous) if is_agg_call(n)]
+def agg_arguments(call: exp.Expr) -> list[exp.Expr]:
+    """The arguments of an ``AGG(…)`` call, in either sqlglot shape."""
+    if isinstance(call, exp.Anonymous):
+        return list(call.expressions)
+    return [call.this] if call.this is not None else []
 
 
-def _agg_problem(call: exp.Anonymous, *, fields: dict[str, set[str]], dataset_metrics: dict[str, set[str]],
+def agg_calls(tree: exp.Expr) -> Iterator[tuple[exp.Func, list[exp.Expr]]]:
+    """Every ``AGG(…)`` call of ``tree`` with its arguments."""
+    for node in tree.find_all(exp.Func):
+        if is_agg_call(node):
+            yield node, agg_arguments(node)
+
+
+def agg_text(args: list[exp.Expr]) -> str:
+    return f"AGG({', '.join(a.sql() for a in args)})"
+
+
+def _single(args: list[exp.Expr]) -> exp.Expr | None:
+    return args[0] if len(args) == 1 else None
+
+
+def _agg_problem(args: list[exp.Expr], *, fields: dict[str, set[str]], dataset_metrics: dict[str, set[str]],
                  model_metrics: dict[str, str]) -> str | None:
     expected = "AGG takes a single dataset.metric reference to a dataset-scoped metric"
-    args = call.expressions
-    arg = args[0] if len(args) == 1 else None
+    arg = _single(args)
     if not isinstance(arg, exp.Column) or isinstance(arg.this, exp.Star) or arg.args.get("db"):
-        return f"{call.sql()}: {expected}"
+        return f"{agg_text(args)}: {expected}"
     name, table = arg.name.casefold(), arg.table.casefold()
     if not arg.table:
         if name in model_metrics:
@@ -246,12 +272,45 @@ def _agg_problem(call: exp.Anonymous, *, fields: dict[str, set[str]], dataset_me
     return f"AGG({arg.table}.{arg.name}): '{arg.name}' is not a dataset-scoped metric of dataset '{arg.table}'"
 
 
-def _agg_call_problem(call: exp.Anonymous, *, fields: dict[str, set[str]], dataset_metrics: dict[str, set[str]],
-                      model_metrics: dict[str, str]) -> str | None:
-    message = _agg_problem(call, fields=fields, dataset_metrics=dataset_metrics, model_metrics=model_metrics)
+def _agg_call_problem(call: exp.Expr, args: list[exp.Expr], *, fields: dict[str, set[str]],
+                      dataset_metrics: dict[str, set[str]], model_metrics: dict[str, str]) -> str | None:
+    message = _agg_problem(args, fields=fields, dataset_metrics=dataset_metrics, model_metrics=model_metrics)
     if message is None and isinstance(call.parent, exp.Filter):
-        return f"{call.sql()} has a FILTER (WHERE ...) clause; AGG does not take one"
+        return f"{agg_text(args)} has a FILTER (WHERE ...) clause; AGG does not take one"
     return message
+
+
+def source_measure(args: list[exp.Expr]) -> exp.Column | None:
+    """The ``source.measure`` column of an ``AGG`` call's arguments when they are exactly that, else ``None``."""
+    arg = _single(args)
+    if (not isinstance(arg, exp.Column) or isinstance(arg.this, exp.Star) or arg.args.get("db")
+            or arg.table.casefold() != _SOURCE or not arg.name):
+        return None
+    return arg
+
+
+#: Why SLayer cannot evaluate ``AGG(source.measure)`` (Ossie Metric Scoping, rule 9).
+SOURCE_MEASURE_REASON = ("evaluates a measure of its source with AGG(source.<measure>), which SLayer cannot evaluate yet: "
+                         "SLayer's sources expose no measure columns")
+
+
+def reads_source_measure(text: str | None) -> bool:
+    """Whether portable ``text`` calls ``AGG(source.measure)``."""
+    tree, _ = parse_ossie_sql(text, PORTABLE_DIALECT) if text else (None, None)
+    return tree is not None and any(source_measure(args) is not None for _, args in agg_calls(tree))
+
+
+def _source_agg_problem(call: exp.Expr, args: list[exp.Expr], *, field_names: set[str]) -> str | None:
+    """Why an ``AGG`` call of a dataset-scoped metric is not ``AGG(source.measure)`` without ``FILTER`` (Ossie
+    Metric Scoping, rule 7)."""
+    if source_measure(args) is None:
+        return f"{agg_text(args)}: AGG in a dataset-scoped metric takes a single source.measure reference"
+    if _SOURCE in field_names:
+        return (f"{agg_text(args)}: the dataset declares a field named 'source', which takes precedence over the "
+                "source qualifier, so this dataset's metrics cannot refer to source measures")
+    if isinstance(call.parent, exp.Filter):
+        return f"{agg_text(args)} has a FILTER (WHERE ...) clause; AGG does not take one"
+    return None
 
 
 def _expression_agg_errors(e: _Expr, *, model: str, fields: dict[str, set[str]],
@@ -261,16 +320,19 @@ def _expression_agg_errors(e: _Expr, *, model: str, fields: dict[str, set[str]],
     tree, _ = parse_ossie_sql(e.text, e.dialect)
     if tree is None:
         return []
-    calls = _agg_calls(tree)
-    if calls and e.kind != "model_metric":
-        where = "a field expression" if e.kind == "field" else "a dataset-scoped metric"
-        return [f"[Scope] {e.label(model)} calls AGG in {where}. This version allows AGG only in "
-                "model-scoped metrics, as AGG(dataset.metric)."]
+    calls = list(agg_calls(tree))
+    if calls and e.kind == "field":
+        return [f"[Scope] {e.label(model)} calls AGG in a field expression. This version allows AGG only in metrics, "
+                "as AGG(dataset.metric) in a model-scoped metric and AGG(source.measure) in a dataset-scoped metric."]
     out: list[str] = []
-    for call in calls:
-        message = _agg_call_problem(call, fields=fields, dataset_metrics=dataset_metrics, model_metrics=model_metrics)
-        if message:
-            out.append(f"[Reference] {e.label(model)}: {message}")
+    for call, args in calls:
+        if e.kind == "dataset_metric":
+            message = _source_agg_problem(call, args, field_names=fields[e.dataset.casefold()])
+            out += [f"[Scope] {e.label(model)}: {message}"] if message else []
+            continue
+        message = _agg_call_problem(call, args, fields=fields, dataset_metrics=dataset_metrics,
+                                    model_metrics=model_metrics)
+        out += [f"[Reference] {e.label(model)}: {message}"] if message else []
     return out
 
 
@@ -290,7 +352,7 @@ def _agg_rules(data: dict[str, Any], model: str) -> list[str]:
 
 def _scoped_references(tree: exp.Expr, *, dialect: str, names: set[str]) -> tuple[set[str], set[str], bool]:
     """A dataset-scoped metric's qualifiers, undeclared fields and whether it reads ``source.column``, outside AGG."""
-    inside_agg = {id(c) for call in _agg_calls(tree) for c in call.find_all(exp.Column)} \
+    inside_agg = {id(c) for call, _ in agg_calls(tree) for c in call.find_all(exp.Column)} \
         if dialect == PORTABLE_DIALECT else set()
     stars = (c for c in tree.find_all(exp.Column) if isinstance(c.this, exp.Star) and c.table)
     qualifiers: set[str] = set()
@@ -333,14 +395,92 @@ def _metric_scoping(data: dict[str, Any], model: str) -> list[str]:
     return out
 
 
+def portable_construct_problem(tree: exp.Expr) -> str | None:
+    """Why a parsed ``OSSIE_SQL_2026`` expression uses a construct sqlglot reads but the language lacks, if it does."""
+    if tree.find(exp.Interval) is not None:
+        return f"INTERVAL is not part of {PORTABLE_DIALECT}"
+    if any(node.args.get("query") is None and not node.args.get("expressions") for node in tree.find_all(exp.In)):
+        return "IN list must contain at least one value"
+    if tree.find(exp.Alias) is not None:
+        return "expected an expression, found an alias"
+    if any(node.args.get("this") is None and not node.args.get("expressions") for node in tree.find_all(exp.Distinct)):
+        return "DISTINCT requires an argument"
+    return None
+
+
+def portable_problem(text: str) -> str | None:
+    """Why ``text`` is not a valid ``OSSIE_SQL_2026`` expression, if it is not."""
+    tree, problem = parse_ossie_sql(text, PORTABLE_DIALECT)
+    return problem if tree is None else portable_construct_problem(tree)
+
+
 def _sql_syntax(data: dict[str, Any], model: str) -> list[str]:
     out: list[str] = []
     for e in _all_expressions(data):
         if e.superseded:
             continue
-        _, problem = parse_ossie_sql(e.text, e.dialect)
+        tree, problem = parse_ossie_sql(e.text, e.dialect)
+        if tree is not None and e.dialect == PORTABLE_DIALECT:
+            problem = portable_construct_problem(tree)
         if problem is not None:
             out.append(f"[SQL] {e.label(model)}: {problem}")
+    return out
+
+
+#: Aggregates of the expression language sqlglot's default reader parses as an unknown function.
+_AGGREGATES_UNKNOWN_TO_SQLGLOT = frozenset({"APPROX_PERCENTILE"})
+#: What sqlglot puts between a windowed call and its ``Window`` node.
+_WINDOW_WRAPPERS = (exp.Filter, exp.WithinGroup, exp.IgnoreNulls, exp.RespectNulls)
+
+
+def _bare_projection(tree: exp.Expr) -> bool:
+    return (isinstance(tree, exp.Select) and len(tree.expressions) == 1 and not isinstance(tree.expressions[0], exp.Alias)
+            and not any(value for key, value in tree.args.items() if key != "expressions"))
+
+
+def _windowed_call(call: exp.Expr) -> bool:
+    node = call
+    while isinstance(node.parent, _WINDOW_WRAPPERS) and node.arg_key == "this":
+        node = node.parent
+    return isinstance(node.parent, exp.Window) and node.arg_key == "this"
+
+
+def _aggregate_name(call: exp.AggFunc | exp.Anonymous) -> str | None:
+    """The aggregate function ``call`` names; ``None`` for ``AGG`` or a call that is no aggregate."""
+    if is_agg_call(call):
+        return None
+    if isinstance(call, exp.Anonymous):
+        name = call.name.upper()
+        return name if name in _AGGREGATES_UNKNOWN_TO_SQLGLOT else None
+    return call.sql_name()
+
+
+def unwindowed_aggregates(tree: exp.Expr) -> list[str]:
+    """The aggregate functions ``tree`` calls without ``OVER``, each once in order; ``AGG`` and subqueries excluded."""
+    names: list[str] = []
+    for call in tree.find_all(exp.AggFunc, exp.Anonymous, bfs=False):
+        name = _aggregate_name(call)
+        if name is None:
+            continue
+        query = call.find_ancestor(exp.Select)
+        if (query is not None and not (query is tree and _bare_projection(tree))) or _windowed_call(call):
+            continue
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _field_aggregates(data: dict[str, Any], model: str) -> list[str]:
+    out: list[str] = []
+    for e in _all_expressions(data):
+        if e.kind != "field" or e.dialect != PORTABLE_DIALECT or e.superseded:
+            continue
+        tree, _ = parse_ossie_sql(e.text, e.dialect)
+        names = unwindowed_aggregates(tree) if tree is not None else []
+        if names:
+            out.append(f"[Scope] {e.label(model)} calls {', '.join(names)} without an OVER clause in a field "
+                       "expression. A field expression is scalar, with no aggregations: add an OVER clause to make it "
+                       "a window function, or define the aggregation as a metric.")
     return out
 
 
@@ -348,4 +488,4 @@ def semantic_errors(data: dict[str, Any]) -> list[str]:
     """Ossie's semantic errors of a schema-valid document (warnings excluded)."""
     model = data["name"]
     return [*_unique_names(data, model), *_keys_and_references(data, model), *_agg_rules(data, model),
-            *_metric_scoping(data, model), *_sql_syntax(data, model)]
+            *_metric_scoping(data, model), *_field_aggregates(data, model), *_sql_syntax(data, model)]

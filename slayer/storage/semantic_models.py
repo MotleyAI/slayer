@@ -24,7 +24,9 @@ from slayer.core.field_expression import (
 from slayer.core.syntax import parse_expr
 from slayer.core import slayer_extension as ext
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
-from slayer.core.ossie_validity import columns, is_agg_call, parse_ossie_sql
+from slayer.core.ossie_validity import (
+    SOURCE_MEASURE_REASON, columns, is_agg_call, parse_ossie_sql, reads_source_measure,
+)
 from slayer.core.semantic_model import (
     ModelScopedMetric, OssieDataset, OssieExpression, SemanticModelDocument, ossie_validity_errors,
 )
@@ -38,7 +40,9 @@ from slayer.storage.document_extensions import (
     relationship_declarations, relocate_metrics, restore_metrics,
 )
 
-__all__ = ["Decomposition", "DocumentIndex", "build_index", "checked_document", "decompose", "expression_datasets"]
+__all__ = ["Decomposition", "DocumentIndex", "build_index", "chain_warning", "checked_document", "decompose",
+           "expression_datasets", "metric_graph", "unevaluable_chain", "unevaluable_targets",
+           "warn_unevaluable_dependents"]
 
 _OSSIE_TYPES = {t.value: t for t in DataType if t is not DataType.ARRAY}
 WINDOW_WARNING = "uses a window function (OVER), which SLayer cannot evaluate yet"
@@ -52,6 +56,8 @@ class Decomposition(BaseModel):
     datasets: list[SlayerDataset]
     metrics: list[ModelScopedMetric]
     notes: list[ExtensionNote] = []
+    #: Case-folded metrics warned only for reading an unevaluable entity through another.
+    chained: set[str] = set()
 
 
 def checked_document(*, text: str, name: str) -> SemanticModelDocument:
@@ -202,6 +208,8 @@ def _metric(metric: Any, *, target: str, windowed_fields: set[str]) -> DatasetMe
         warning = WINDOW_WARNING
     elif windowed_fields and _reads(metric.expression, windowed_fields):
         warning = "reads a windowed field, which SLayer cannot evaluate yet"
+    elif reads_source_measure(_portable(metric.expression)):
+        warning = SOURCE_MEASURE_REASON
     return DatasetMetric(name=metric.name, expression=expression, description=metric.description,
                          datatype=_OSSIE_TYPES[metric.datatype] if metric.datatype else None, load_warning=warning)
 
@@ -290,8 +298,9 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
         metrics += [ModelScopedMetric(name=m.name, semantic_model=doc.name, data_source=data_source,
                                       expression=m.expression, description=m.description, datatype=m.datatype)
                     for m in entry.payload.metrics]
+    chained = warn_unevaluable_dependents(metrics, datasets=list(datasets.values()))
     return Decomposition(name=doc.name, data_source=data_source, datasets=list(datasets.values()), metrics=metrics,
-                         notes=notes)
+                         notes=notes, chained=chained)
 
 
 def decompose(*, text: str, name: str, data_source: str, ds_type: str | None) -> Decomposition:
@@ -332,9 +341,72 @@ def model_scoped_problem(expression: Expression, *, metric_names: set[str]) -> s
         elif column.name.casefold() not in metric_names:
             return f"reads the unqualified field {column.name!r}; qualify it by its dataset"
     for aggregate in tree.find_all(exp.AggFunc):
-        if not _aggregated(aggregate) and not any(c.table for c in aggregate.find_all(exp.Column)):
+        if not is_agg_call(aggregate) and not _aggregated(aggregate) and not any(c.table for c in aggregate.find_all(exp.Column)):
             return f"aggregates {aggregate.sql()} over no dataset; name its dataset, as in COUNT(<dataset>.*)"
     return None
+
+
+def unevaluable_targets(metrics: list[ModelScopedMetric], *, datasets: list[SlayerDataset]) -> dict[str, tuple[str, str]]:
+    """Every warned dataset metric (``d.m``) and model-scoped metric by case-folded name: ``(spelling, warning)``."""
+    out = {f"{d.name}.{m.name}".casefold(): (f"{d.name}.{m.name}", m.load_warning)
+           for d in datasets for m in d.metrics if m.load_warning is not None}
+    out.update({m.name.casefold(): (m.name, m.load_warning) for m in metrics if m.load_warning is not None})
+    return out
+
+
+def _metric_reads(expression: Expression) -> set[str]:
+    """The ``d.m`` and bare names a model-scoped metric reads, case-folded."""
+    tree = _parsed(expression)
+    return {(f"{c.table}.{c.name}" if c.table else c.name).casefold()
+            for c in (tree.find_all(exp.Column) if tree is not None else [])}
+
+
+def metric_graph(metrics: list[ModelScopedMetric]) -> dict[str, tuple[str, set[str]]]:
+    """Each model-scoped metric by case-folded name: its spelling and what it reads."""
+    return {m.name.casefold(): (m.name, _metric_reads(m.expression)) for m in metrics}
+
+
+def unevaluable_chain(reads: set[str], *, targets: dict[str, tuple[str, str]],
+                      graph: dict[str, tuple[str, set[str]]]) -> tuple[list[str], str] | None:
+    """The shortest chain from ``reads`` through model-scoped metrics (``graph``: folded name → spelling, reads) to an
+    unevaluable target, and that target's warning; cycle-safe."""
+    frontier = [(name, []) for name in sorted(reads)]
+    seen: set[str] = set()
+    while frontier:
+        nxt = []
+        for name, path in frontier:
+            if name in seen:
+                continue
+            seen.add(name)
+            if name in targets:
+                spelling, warning = targets[name]
+                return [*path, spelling], warning
+            if name in graph:
+                spelling, further = graph[name]
+                nxt += [(n, [*path, spelling]) for n in sorted(further)]
+        frontier = nxt
+    return None
+
+
+def chain_warning(chain: list[str], warning: str) -> str:
+    return f"reads {' → '.join(chain)}, which {warning}"
+
+
+def warn_unevaluable_dependents(metrics: list[ModelScopedMetric], *, datasets: list[SlayerDataset]) -> set[str]:
+    """Warn each model-scoped metric reaching an entity SLayer cannot evaluate, naming the chain; the warned names,
+    case-folded."""
+    targets = unevaluable_targets(metrics, datasets=datasets)
+    graph = metric_graph(metrics)
+    warned: set[str] = set()
+    for metric in metrics:
+        if metric.load_warning is not None:
+            continue
+        found = unevaluable_chain(graph[metric.name.casefold()][1] - {metric.name.casefold()}, targets=targets,
+                                  graph=graph)
+        if found is not None:
+            metric.load_warning = chain_warning(*found)
+            warned.add(metric.name.casefold())
+    return warned
 
 
 def expression_datasets(expression: Expression) -> tuple[set[str], set[str]]:
