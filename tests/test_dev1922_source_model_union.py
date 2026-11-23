@@ -27,6 +27,7 @@ from slayer.ir import source_bundle
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1866_fixtures import make_chain_exec_engine
+from tests._query_input_fixtures import refusal
 from slayer.engine.query_engine import SlayerQueryEngine
 
 EXTENSION = {
@@ -56,10 +57,6 @@ def _leaf_types(tp) -> set:
     if origin in (Union, UnionType):
         return set().union(*(_leaf_types(a) for a in get_args(tp)))
     return {tp}
-
-
-def _error_keys(exc: ValidationError) -> set[tuple[str, str]]:
-    return {(e["type"], str(e["loc"][-1])) for e in exc.errors()}
 
 
 def _query(**raw: Any) -> SlayerQuery:
@@ -145,18 +142,17 @@ class TestRejection:
                else {"population": "orders", "extensions": [EXTENSION_WITH_FILTERS]})
         with pytest.raises(ValidationError) as ei:
             _query(**raw)
-        assert _error_keys(ei.value) == {("extra_forbidden", "filters")}
+        assert refusal(ei.value)[0].key == "filters"
 
     def test_source_name_plus_model_keys_is_an_extension_never_a_model(self) -> None:
         with pytest.raises(ValidationError) as ei:
             _query(population={
                 "source_name": "orders", "name": "x", "sql_table": "t", "data_source": "ds",
             })
-        assert _error_keys(ei.value) == {
-            ("extra_forbidden", "name"),
-            ("extra_forbidden", "sql_table"),
-            ("extra_forbidden", "data_source"),
-        }
+        err, _ = refusal(ei.value)
+        assert err.key == "name"
+        for key in ("dataset", "metrics", "relationships"):
+            assert f"`{key}`" in str(err), str(err)
 
     def test_nested_stage_boundary_rejects_too(self) -> None:
         with pytest.raises(ValidationError, match="filters"):
