@@ -487,7 +487,7 @@ class TestUnanalysableKey:
          "rank(sum(regions.pop, partition_by=[regions.name, regions.unparseable]), "
          "partition_by=regions.unparseable, direction='desc')", PartitionKeyError),
         ("transform-dimension", ["regions.unparseable"],
-         "rank(sum(regions.pop), partition_by=regions.unparseable, direction='desc')", SlayerError),
+         "rank(sum(regions.pop), partition_by=regions.unparseable, direction='desc')", ModeASqlParseError),
         ("parameter", ["regions.name"],
          "weighted_avg(regions.pop, weight=sum(regions.pop, partition_by=regions.unparseable))", PartitionKeyError),
     ], ids=lambda v: v if isinstance(v, str) and " " not in v and "(" not in v else None)

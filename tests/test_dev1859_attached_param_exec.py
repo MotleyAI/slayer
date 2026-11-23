@@ -295,7 +295,7 @@ class TestCrossModelParameterOnLocalRoot:
                 metric=("weighted_avg(orders.amount, weight=sum(customers.spend, "
                         "partition_by=customers.tier), partition_by=[])"),
                 alias="w")]))
-        assert {r["w"] for r in resp.data} != {None}
+        assert any(r["w"] is not None for r in resp.data)
 
 
 class TestUndeterminedParameterRejected:
