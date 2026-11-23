@@ -15,17 +15,20 @@ from typing import Any, Optional
 
 import pytest
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import (
+    ModeASqlParseError,
     SlayerError,
     UnrelatedDatasetError,
     UnresolvableDimensionRelationshipError,
     UnsafeRelationshipInputError,
 )
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.field_expression import DialectEntry, ExpressionObject
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
+from tests._dev1945_fixtures import UNPARSEABLE_SQL
 from tests._dev2119_fixtures import bucket
 from tests._dev2212_fixtures import (
     BACKENDS,
@@ -190,6 +193,56 @@ async def test_a_derived_operand_reading_across_an_unproven_hop_is_refused(backe
     _names(err, position="dimension 'x'", operands=("ord_amt",), hops=("to orders",))
 
 
+def _customers_with_tags(*fields: DatasetField) -> SlayerDataset:
+    """``customers`` many-to-many to ``tags`` on the non-unique ``segment``."""
+    rel = DatasetRelationship(to="tags", from_columns=["segment"], to_columns=["segment"],
+                              cardinality=RelationshipCardinality.MANY_TO_MANY)
+    return _plus(customers_dataset(relationships=[rel]), *fields)
+
+
+TAGS = SlayerDataset(name="tags", sql_table="tags", data_source=customers_dataset().data_source, fields=[
+    DatasetField(name="segment", datatype=DataType.STRING), DatasetField(name="tag", datatype=DataType.STRING)])
+TAG_STATEMENTS = (
+    "CREATE TABLE tags (segment VARCHAR, tag VARCHAR)",
+    "INSERT INTO tags SELECT DISTINCT segment, 'a' FROM customers WHERE segment IS NOT NULL",
+    "INSERT INTO tags SELECT DISTINCT segment, 'b' FROM customers WHERE segment IS NOT NULL",
+)
+
+
+def _tags_engine(backend: str, customers: SlayerDataset):
+    return seed_engine(backend, datasets=[*_datasets(customers=customers), TAGS],
+                       extra_statements=(*EXTRA_STATEMENTS, *TAG_STATEMENTS))
+
+
+async def test_a_derived_operand_reading_locally_and_across_a_many_to_many_hop_is_refused(backend: str) -> None:
+    customers = _customers_with_tags(DatasetField(name="mix", datatype=DataType.STRING, expression="region || tags.tag"))
+    async with _tags_engine(backend, customers) as eng:
+        err = await _refused(eng, q(population="customers", metrics=[COUNT],
+                                    dimensions=[{"field": "customers.mix", "alias": "x"}]))
+    _names(err, position="dimension 'x'", operands=("mix",), hops=("to tags",))
+
+
+async def test_a_derived_operand_reading_only_across_a_many_to_many_hop_is_homed_there(backend: str) -> None:
+    customers = _customers_with_tags(DatasetField(name="only", datatype=DataType.STRING, expression="tags.tag"))
+    async with _tags_engine(backend, customers) as eng:
+        resp = await run(eng, population="customers", metrics=[COUNT],
+                         dimensions=[{"field": "customers.only", "alias": "x"}])
+    assert kinds(resp, "associated")
+
+
+@pytest.mark.parametrize("extra", [
+    pytest.param({"dimensions": [{"field": "orders.bad_ts", "alias": "x"}]}, id="dimension"),
+    pytest.param({"time_dimensions": [{"field": "coalesce(orders.bad_ts, orders.ordered_at)", "granularity": "month",
+                                       "alias": "x"}]}, id="time-dimension"),
+])
+async def test_an_unanalysable_derived_operand_keeps_its_resolution_error(backend: str, extra: dict) -> None:
+    bad = DatasetField(name="bad_ts", datatype=DataType.DATE, expression=ExpressionObject(dialects=[
+        DialectEntry(dialect=d, expression=UNPARSEABLE_SQL) for d in ("DUCKDB", "SQLITE")]))
+    async with _engine(backend, orders=_plus(orders_dataset(), bad)) as eng:
+        err = await _refused(eng, q(population="customers", metrics=[COUNT], **extra), error=ModeASqlParseError)
+    assert UNPARSEABLE_SQL in str(err)
+
+
 async def test_an_unproven_hop_determines_nothing(backend: str) -> None:
     async with _engine(backend, customers=customers_dataset(keyed=False),
                        orders=orders_dataset(relationship=to_customers(cardinality=None))) as eng:
@@ -270,6 +323,19 @@ async def test_a_parent_and_child_expression_reads_null_without_a_home_row(backe
     assert kinds(by_expr, "associated")
 
 
+async def test_a_derived_child_operand_reads_null_without_a_home_row(backend: str) -> None:
+    # Declared on customers, but its definition reaches orders: the home is orders.
+    customers = _plus(customers_dataset(),
+                      DatasetField(name="ord_shipped", datatype=DataType.DATE, expression="orders.shipped_at"))
+
+    def query(field: str) -> SlayerQuery:
+        return q(population="customers", metrics=[COUNT], dimensions=[{"field": field, "alias": "t"}])
+    async with _engine(backend, customers=customers) as eng:
+        by_expr = await eng.execute(query("coalesce(customers.ord_shipped, customers.signup_ts)"))
+        by_col = await eng.execute(query("orders.eff_col"))
+    assert _bucketed(by_expr, "t", width=10) == _bucketed(by_col, "t", width=10)
+
+
 async def test_a_parent_and_child_dimension_broadcasts_under_broadcast(backend: str) -> None:
     async with _engine(backend) as eng:
         resp = await run(eng, population="customers", dimensions=[{"field": PARENT_CHILD, "alias": "x"}],
@@ -305,6 +371,45 @@ async def test_a_parent_and_a_child_time_leaf_equal_a_child_column(backend: str)
     assert _bucketed(by_expr, "t") == {"2024-11": 1, "2025-01": 2, "2025-03": 1, None: 1}
     assert _bucketed(by_expr, "t") == _bucketed(by_col, "t")
     assert kinds(by_expr, "associated")
+
+
+@pytest.mark.parametrize("pk", ["x", PARENT_CHILD], ids=["alias", "text"])
+async def test_a_partition_key_names_a_homed_dimension_by_alias_or_text(backend: str, pk: str) -> None:
+    async with _engine(backend) as eng:
+        resp = await run(eng, population="customers", dimensions=[R, {"field": PARENT_CHILD, "alias": "x"}],
+                         metrics=[COUNT, {"metric": f"sum(count(customers.*), partition_by=[{pk}])", "alias": "s"}])
+    assert table(resp, "x", "s") == rows((0, 1), (50, 1), (100, 1), (200, 1), (None, 1))
+
+
+async def test_a_respelled_bucket_order_key_matches_a_homed_time_dimension(backend: str) -> None:
+    td = "case when customers.region = 'EAST' then orders.ordered_at end"
+    async with _engine(backend) as eng:
+        resp = await run(eng, population="customers", metrics=[COUNT],
+                         time_dimensions=[{"field": td, "granularity": "month", "alias": "t"}],
+                         order=[{"field": "date_trunc('month', CASE WHEN customers.region = 'EAST' "
+                                          "THEN orders.ordered_at END)", "nulls": "last"}])
+    assert [bucket(r["t"]) for r in resp.data] == ["2025-01", "2025-02", None]
+
+
+async def test_a_homed_time_dimensions_date_range_reads_its_home(backend: str) -> None:
+    # C4 has no orders but signs up in 2025-02: the range must not admit it through signup_ts.
+    def query(field: str) -> SlayerQuery:
+        return q(population="customers", metrics=[COUNT], time_dimensions=[
+            {"field": field, "granularity": "month", "alias": "t", "date_range": ["2025-02-01", "2025-02-28"]}])
+    async with _engine(backend) as eng:
+        by_expr = await eng.execute(query("coalesce(orders.shipped_at, customers.signup_ts)"))
+        by_col = await eng.execute(query("orders.eff_col"))
+    assert by_expr.data == by_col.data == []
+
+
+async def test_a_homed_time_dimension_checks_only_its_own_leaves(backend: str) -> None:
+    # The NULL guard reads the join column orders.customer_id; recorded as month-grained, it must not refuse a day bucket.
+    orders = orders_dataset().model_copy(update={"fields": [
+        f.model_copy(update={"datatype": DataType.DATE, "granularity": "month"}) if f.name == "customer_id" else f
+        for f in orders_dataset().fields]})
+    td = {"field": "coalesce(orders.shipped_at, customers.signup_ts)", "granularity": "day", "alias": "t"}
+    async with _engine(backend, orders=orders) as eng:
+        await eng.execute(q(population="customers", metrics=[COUNT], time_dimensions=[td]), dry_run=True)
 
 
 @pytest.mark.parametrize("key, direction, expected", [

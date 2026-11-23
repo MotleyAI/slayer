@@ -45,7 +45,7 @@ from slayer.engine.cardinality.relationship_safety import (
 from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.engine.population.anchors import anchor_route, source_frame
 from slayer.engine.population.home_reading import home_frame, home_read
-from slayer.engine.reference_closure import key_closure
+from slayer.engine.reference_closure import field_read_paths, key_closure
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import AggregateHome, AggregateHomes, HomeKind, HomelessOperand, RowExpressionHome
@@ -276,6 +276,20 @@ def row_expression_home(
     its declared dataset and each dataset its definition reaches across a fanning hop; an attached constituent's grain
     members — else the operands that fail."""
     universe = {**bundle.datasets_by_name, host_dataset.name: host_dataset}
+    operands = _home_operands(key, host_dataset=host_dataset, bundle=bundle, universe=universe,
+                              dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket)
+    if isinstance(operands, RowExpressionHome):
+        return operands
+    return _home_of(operands, anchor=source_anchor_path(key), host_dataset=host_dataset, bundle=bundle,
+                    universe=universe)
+
+
+def _home_operands(
+    key: ValueKey, *, host_dataset: SlayerDataset, bundle: ResolvedSourceBundle, universe: Dict[str, SlayerDataset],
+    dim_keys: List[ValueKey], td_keys: List[ValueKey], active_bucket: Optional[ValueKey],
+) -> List[Operand] | RowExpressionHome:
+    """Each row leaf at its declared dataset or the datasets its fanning definition reaches, and each constituent's
+    grain members; or the refusal of a definition crossing an unproven hop."""
     operands: List[Operand] = []
     for leaf in source_row_leaves(key):
         reach = _closure_reach(leaf, host_dataset=host_dataset, bundle=bundle, universe=universe)
@@ -283,8 +297,7 @@ def row_expression_home(
             return reach
         operands.extend((leaf, p) for p in reach or [key_host_path(leaf)])
     operands.extend(_constituent_operands(key, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket))
-    return _home_of(operands, anchor=source_anchor_path(key), host_dataset=host_dataset, bundle=bundle,
-                    universe=universe)
+    return operands
 
 
 def _home_of(
@@ -308,27 +321,23 @@ def _constituent_operands(
     )]
 
 
-def _row_operands(
-    key: ValueKey, *, dim_keys: List[ValueKey], td_keys: List[ValueKey], active_bucket: Optional[ValueKey],
-) -> List[Operand]:
-    """Each row leaf at its declared dataset, and each constituent's grain members."""
-    return [(leaf, key_host_path(leaf)) for leaf in source_row_leaves(key)] + _constituent_operands(
-        key, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
-    )
-
-
-def home_column(key: ValueKey, *, host_dataset: Optional[SlayerDataset], bundle: ResolvedSourceBundle) -> ValueKey:
-    """``key`` read as a column of its home (Axiom 13): NULL on a population row with no home row, when its home
+def as_home_field(key: ValueKey, *, host_dataset: Optional[SlayerDataset], bundle: ResolvedSourceBundle) -> ValueKey:
+    """``key`` read as a field of its home (Axiom 13): NULL on a population row with no home row, when its home
     lies below another operand's dataset."""
-    if host_dataset is None or row_expression_home(
-        key=key, host_dataset=host_dataset, bundle=bundle, dim_keys=[], td_keys=[], active_bucket=None,
-    ).path is None:
+    if host_dataset is None:
         return key
     universe = {**bundle.datasets_by_name, host_dataset.name: host_dataset}
-    operands = _row_operands(key, dim_keys=[], td_keys=[], active_bucket=None)
+    operands = _home_operands(key, host_dataset=host_dataset, bundle=bundle, universe=universe,
+                              dim_keys=[], td_keys=[], active_bucket=None)
+    if isinstance(operands, RowExpressionHome):
+        return key
     path = _home_of(operands, anchor=source_anchor_path(key), host_dataset=host_dataset, bundle=bundle,
                     universe=universe).path
-    if not path or all(p[:len(path)] == path for _, p in operands):
+    reads: Dict[ValueKey, List[Path]] = {}
+    for k, p in operands:
+        reads.setdefault(k, []).append(p)
+    # A derived leaf reading at its home keeps its own definition's reading; only another operand's dataset guards.
+    if not path or all(any(p[:len(path)] == path for p in ps) for ps in reads.values()):
         return key
     chain = follow(root=host_dataset, path=path, datasets_by_name=universe)
     if not chain or not chain[-1].column_pairs:
@@ -355,27 +364,23 @@ def _closure_reach(
     leaf: ValueKey, *, host_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
     universe: Dict[str, SlayerDataset],
 ) -> List[Path] | RowExpressionHome:
-    """The datasets ``leaf``'s definition reaches across a fanning hop, or its refusal when it crosses an unproven
-    one; an unanalysable definition is left to its resolution error."""
+    """Every dataset ``leaf``'s definition reads a field on, when it reads across a fanning hop, or its refusal when it
+    crosses an unproven one; an unanalysable definition is left to its resolution error."""
     path = key_host_path(leaf)
     dataset = walk_key_path(dataset=host_dataset, path=path, bundle=bundle)
     if dataset is None:
         return []
-    closure = key_closure(
-        key=reroot_value_key(leaf, target_path=path), anchor_dataset=dataset,
-        anchor_relation=dataset.name, bundle=bundle,
-    )
-    reached: List[Path] = []
+    rerooted = reroot_value_key(leaf, target_path=path)
+    closure = key_closure(key=rerooted, anchor_dataset=dataset, anchor_relation=dataset.name, bundle=bundle)
+    shown = _operand_display(leaf, host_dataset=host_dataset)
+    fans = False
     for p in closure or ():
-        fans, unproven = _crossing(root=dataset, path=p, universe=universe)
+        fanning, unproven = _crossing(root=dataset, path=p, universe=universe)
         if unproven is not None:
-            return RowExpressionHome(
-                operands=(HomelessOperand(operand=_operand_display(leaf, host_dataset=host_dataset), hop=unproven),),
-                common=dataset.name,
-            )
-        if fans:
-            reached.append((*path, *p))
-    return reached
+            return RowExpressionHome(operands=(HomelessOperand(operand=shown, hop=unproven),), common=dataset.name)
+        fans = fans or fanning
+    reads = field_read_paths(rerooted, anchor_dataset=dataset, bundle=bundle) if fans else ()
+    return [(*path, *p) for p in reads or ()]
 
 
 def _crossing(*, root: SlayerDataset, path: Path, universe: Dict[str, SlayerDataset]) -> Tuple[bool, Optional[str]]:

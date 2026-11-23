@@ -107,7 +107,6 @@ from slayer.engine.population.anchors import (
     unqualified_count,
 )
 from slayer.engine.key_metadata import bundle_dialect, scope_field_type
-from slayer.engine.population.home import home_column
 from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
@@ -330,9 +329,7 @@ def bind_time_dimension(
         raise ValueError(f"time dimension {text!r}: unknown granularity {td.granularity!r}")
     parsed = parse_expr(text)
     if not isinstance(parsed, (Ref, DottedRef)):
-        source = home_column(
-            bind_expr(parsed=parsed, scope=scope, bundle=bundle).value_key, host_dataset=scope.population, bundle=bundle,
-        )
+        source = bind_expr(parsed=parsed, scope=scope, bundle=bundle).value_key
         return BoundTimeDimension(
             bound=BoundExpr(value_key=TimeTruncKey(source=source, granularity=resolved)),
             bucketed_leaves=_bucketed_leaves(source, scope=scope, bundle=bundle),

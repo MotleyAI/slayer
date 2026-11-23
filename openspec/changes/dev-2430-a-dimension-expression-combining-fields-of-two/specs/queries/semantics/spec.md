@@ -4,7 +4,7 @@
 A row-level expression in a value position — a dimension (plain or computed), a time dimension, or a
 row-level order key — SHALL be homed on the deepest dataset that determines every operand over
 provably to-one hops (Axiom 2.2). Each row-level leaf is an operand at the dataset it is declared on,
-or, when its definition reads across a provably fanning hop, at each dataset that definition reaches;
+or, when its definition reads across a provably fanning hop, at each dataset that definition reads a field on;
 a definition reading across an unproven hop is refused, and one that cannot be analysed keeps its
 resolution error; an attached aggregate or transform operand stands
 for its grain members (Axiom 2.3); a literal constrains nothing, so an expression with one operand
@@ -57,6 +57,10 @@ reached by no relationship.
 #### Scenario: A derived operand is judged by its closure
 - **WHEN** `orders` declares `amount_x2` as `amount * 2` and a query with `population: "customers"` groups by `orders.amount_x2 * returns.amount`
 - **THEN** it fails with the input-safety error naming `amount_x2` and `returns.amount`
+
+#### Scenario: A derived operand reading its own dataset and across a non-determining hop is refused
+- **WHEN** `customers` relates many-to-many to `tags` on the non-unique `segment` and declares `mix` as `region || tags.tag`, and a query with `population: "customers"` groups by `customers.mix`
+- **THEN** it fails with the input-safety error naming `mix` and the hop to `tags`; a field defined as `tags.tag` alone is homed on `tags` and associates
 
 #### Scenario: A derived operand reading across an unproven hop is refused
 - **WHEN** `customers` declares a derived field reading `orders.amount` across an `orders → customers` relationship of unknown cardinality, and a query with `population: "customers"` groups by that field alone, or by `customers.region || <that field>`
