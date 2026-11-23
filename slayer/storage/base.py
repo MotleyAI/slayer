@@ -122,7 +122,7 @@ from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields, without_extension_fields
 from slayer.storage.qualified_references import qualified_stages, stage_readings
-from slayer.storage.stored_datasource import memory_fallback_population, raw_memory_datasource
+from slayer.storage.stored_datasource import memory_fallback_population, raw_entities, raw_memory_datasource
 from slayer.storage.stored_literals import LiteralGates, typed_stage
 from slayer.storage.document_mapping import as_expression, with_dataset, without_dataset
 from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle, warn_broken_model_metrics
@@ -264,7 +264,7 @@ def _memory_in_datasource(data: dict, *, data_source: str, identities: Sequence[
     if (data_source, source) not in identities:
         return False
     return all(d == data_source for d, n in identities if n == source) or (
-        f"{data_source}.{source}" in (data.get("entities") or []))
+        f"{data_source}.{source}" in raw_entities(data))
 
 
 def _incoming_keys(*, sibling: dict, target: str, target_fields: list) -> list[tuple[Any, str | None]]:

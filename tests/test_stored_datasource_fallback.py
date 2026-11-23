@@ -63,7 +63,9 @@ class TestRawDatasource:
         pytest.param(["shop2.gone", "shop.orders.status"], TWO, "shop", id="pin-beside-ignored"),
         pytest.param(["shop2.customers"], [("shop", "orders")], "shop", id="stale-pin-only-datasource"),
         pytest.param([], [], None, id="no-datasource"),
+        pytest.param(7, [("shop", "orders")], "shop", id="malformed-entities-only-datasource"),
+        pytest.param("shop2.customers", TWO, None, id="malformed-entities-two-datasources"),
     ])
-    def test_raw_datasource(self, entities: list[str], identities: list[tuple[str, str]], expected: str | None) -> None:
-        data = memory_v2(memory_id="m", query={"version": 4}, entities=entities)
+    def test_raw_datasource(self, entities: Any, identities: list[tuple[str, str]], expected: str | None) -> None:
+        data = {**memory_v2(memory_id="m", query={"version": 4}), "entities": entities}
         assert raw_memory_datasource(data, identities=identities) == expected

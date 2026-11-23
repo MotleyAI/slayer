@@ -295,6 +295,25 @@ async def test_entity_pinned_memory_custom_granularities_follow_its_datasource(t
     assert buckets(resp) == {"2025-02-15": EXPECTED_BUCKETS["2025-02-15"]}
 
 
+@pytest.mark.parametrize("population", [None, "events"], ids=["rootless", "populated"])
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_malformed_memory_entities_do_not_break_the_granularity_rename(
+    tmp_path: Path, backend: str, population: str | None,
+) -> None:
+    base = str(tmp_path / f"gstore-{backend}")
+    db_path = live_db(base)
+    bad_query = rootless_bucket("left") if population is None else {**rootless_bucket("left"), "source_model": population}
+    storage = await write_raw_store(
+        backend=backend, base=base,
+        datasources=[datasource_doc(db_path=db_path, name="g1"),
+                     datasource_doc(db_path=db_path, name="g2", granularities=["left"])],
+        datasets=[events_doc(data_source="g1"), events_doc(data_source="g2")],
+        memories=[memory_doc(memory_id="m", query=rootless_bucket("left"), entities=["g2.events"]),
+                  {**memory_doc(memory_id="bad", query=bad_query), "entities": 7}],
+    )
+    assert granularity_of(await loaded(storage)) == "left_granularity"
+
+
 def spine_bucket(granularity: str, *filters: str) -> dict:
     return {"version": 6, "source_model": "time_spine", "measures": [{"formula": "sum(events.amount)", "name": "s"}],
             "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": granularity,

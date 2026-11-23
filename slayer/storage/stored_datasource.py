@@ -10,7 +10,13 @@ from collections.abc import Collection, Sequence
 from slayer.core import vocabulary
 from slayer.core.time_spine import is_spine_spelling
 
-__all__ = ["memory_fallback_population", "raw_memory_datasource", "uses_fallback_datasource"]
+__all__ = ["memory_fallback_population", "raw_entities", "raw_memory_datasource", "uses_fallback_datasource"]
+
+
+def raw_entities(data: dict) -> list:
+    """A raw stored memory's ``entities``; a malformed value reads as none (the memory's own load reports it)."""
+    entities = data.get("entities")
+    return entities if isinstance(entities, list) else []
 
 
 def uses_fallback_datasource(population: str | None, *, stored_names: Collection[str]) -> bool:
@@ -41,7 +47,7 @@ def raw_memory_datasource(data: dict, *, identities: Sequence[tuple[str, str]]) 
     dataset; ``None`` when neither decides."""
     stored = set(identities)
     pinned = {
-        parts[0] for entity in data.get("entities") or [] if isinstance(entity, str)
+        parts[0] for entity in raw_entities(data) if isinstance(entity, str)
         for parts in [entity.split(".")] if len(parts) in (2, 3) and (parts[0], parts[1]) in stored
     }
     if len(pinned) == 1:
