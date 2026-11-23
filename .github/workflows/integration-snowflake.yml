@@ -1,7 +1,8 @@
 name: Integration - Snowflake
 
 # Live Snowflake suite. Snowflake bills per query, so PRs run it only when a
-# Snowflake file changes; every push to main runs it.
+# Snowflake file changes, and then only on the pushes expensive-job-gate.yml
+# allows; every push to main runs it.
 
 permissions:
   contents: read
@@ -19,10 +20,22 @@ on:
     branches: [main]
 
 jobs:
+  snowflake-gate:
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/expensive-job-gate.yml
+    with:
+      workflow: integration-snowflake.yml
+      job: snowflake-integration
+
   snowflake-integration:
+    needs: snowflake-gate
     # Skip on forked-PR runs where the Snowflake secret isn't available — the
     # job would fail otherwise and we'd rather not nag external contributors.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: >-
+      ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      && needs.snowflake-gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

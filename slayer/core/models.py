@@ -23,6 +23,7 @@ from sqlglot.tokenizer_core import TokenType
 from sqlglot.tokens import Tokenizer
 from typing_extensions import deprecated
 
+from slayer.core.assignment import AtomicAssignment
 from slayer.core.enums import (
     ALL_TRANSFORMS,
     BUILTIN_AGGREGATIONS,
@@ -42,7 +43,7 @@ from slayer.core.enums import (
     builtin_empty_value,
     type_display,
 )
-from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, UnknownKeyError
+from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, SpellingConflictError, UnknownKeyError
 from slayer.core.names import NAME_PATTERN, folded_collisions, match_name
 from slayer.core import vocabulary
 from slayer.core.vocabulary import SOURCE_ORIGIN_KEYS, Spellings, attribute_used, converted_document, converted_input, method_twin, name_twins, renamed_input, same_ignoring_deprecations
@@ -198,8 +199,10 @@ def check_element_type(*, name: str, data_type: DataType | None, element_type: D
         )
 
 
-class DatasetPart(BaseModel):
+class DatasetPart(AtomicAssignment):
     """A dataset-side model: a key it does not read is refused when fresh, dropped and recorded when stored."""
+
+    model_config = ConfigDict(validate_assignment=True)
 
     #: Nested dataset-side lists, by key.
     _PARTS: ClassVar[dict[str, type["DatasetPart"]]] = {}
@@ -355,17 +358,29 @@ class DatasetField(DatasetPart):
     @model_validator(mode="wrap")
     @classmethod
     def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["DatasetField"]) -> "DatasetField":
-        return _part_input(cls, data, handler, vocabulary.field)
+        from_sql = False
+
+        def convert(d: Any, spellings: Spellings) -> Any:
+            # A deprecated ``sql`` naming one source column is the ``expression`` shorthand; other ``sql`` waits for
+            # its datasource's dialect.
+            nonlocal from_sql
+            d = vocabulary.field(d, spellings)
+            if isinstance(d, dict) and isinstance(d.get("sql"), str):
+                from_sql = True
+                if unquoted_identifier(d["sql"]) is not None:
+                    d = {**d, "expression": d["sql"].strip(), "sql": None}
+            return d
+
+        out = _part_input(cls, data, handler, convert)
+        if from_sql:
+            out._from_sql = True
+        return out
 
     @model_validator(mode="after")
-    def _sql_shorthand(self) -> "DatasetField":
-        """A deprecated ``sql`` naming one source column is the ``expression`` shorthand; other ``sql`` waits for its
-        datasource's dialect."""
-        if self.sql is None:
-            return self
-        self._from_sql = True
-        if unquoted_identifier(self.sql) is not None:
-            self.expression, self.sql = self.sql.strip(), None
+    def _one_spelling(self) -> "DatasetField":
+        """``expression`` or its deprecated ``sql``, never both (as input refuses)."""
+        if self.sql is not None and self.expression is not None:
+            raise SpellingConflictError(old="sql", new="expression")
         return self
 
     @field_validator("name")
@@ -956,15 +971,17 @@ def _coerce_source_queries(v: Any) -> Any:
     return result
 
 
-class ExtensionNote(BaseModel):
+class ExtensionNote(AtomicAssignment):
     """Why a ``SLAYER`` extension entry on a document entity was not applied, or applied only in part."""
+
+    model_config = ConfigDict(validate_assignment=True)
 
     kind: str
     entity: str
     message: str
 
 
-class SourceDatasetOrigin(BaseModel):
+class SourceDatasetOrigin(AtomicAssignment):
     """In-memory lineage breadcrumb for virtual stage datasets: a linked list of
     upstream names so outer-stage dotted-ref lookup can strip prefixes.
 
@@ -972,6 +989,8 @@ class SourceDatasetOrigin(BaseModel):
     re-aggregate, so a dimension that merely looks like an aggregation canonical
     isn't silently re-summed.
     """
+
+    model_config = ConfigDict(validate_assignment=True)
     name: str
     data_source: str | None = None
     parent: Optional["SourceDatasetOrigin"] = None
@@ -1121,8 +1140,7 @@ class DatasetRelationship(DatasetPart):
     @deprecated("join_pairs is deprecated; use column_pairs (from_columns and to_columns)", category=None)
     def join_pairs(self, value: Sequence[Sequence[str]]) -> None:
         attribute_used(self, old="join_pairs", new="column_pairs")
-        self.from_columns = [p[0] for p in value]
-        self.to_columns = [p[1] for p in value]
+        self.assign(from_columns=[p[0] for p in value], to_columns=[p[1] for p in value])
 
     @property
     @deprecated("target_model is deprecated; use to", category=None)
@@ -1367,12 +1385,12 @@ class SlayerDataset(DatasetPart):
     @model_validator(mode="after")
     def _validate_list_element_types(self) -> "SlayerDataset":
         """A list field needs an ``element_type``; an sql-mode dataset's undeclared one is ``UNKNOWN``."""
-        for c in self.fields:
+        for i, c in enumerate(self.fields):
             if c.datatype is not DataType.ARRAY or c.element_type is not None:
                 continue
             if not self.sql:
                 raise ValueError(f"DatasetField {c.name!r} is a list (type Array) and needs an element_type.")
-            c.element_type = DataType.OPAQUE
+            self.fields[i] = c.model_copy(update={"element_type": DataType.OPAQUE})
         return self
 
     @model_validator(mode="after")
@@ -1653,7 +1671,9 @@ class SlayerDataset(DatasetPart):
         return self.awaits_fields
 
 
-class DatasourceConfig(BaseModel):
+class DatasourceConfig(AtomicAssignment):
+    model_config = ConfigDict(validate_assignment=True)
+
     version: int = CURRENT_VERSIONS["DatasourceConfig"]
     name: str
     type: str | None = None

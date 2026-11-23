@@ -5,3 +5,4 @@ reviews:
     enabled: true
     drafts: true  # Enable reviews on draft PRs
     base_branches: ['.*']  # Enable reviews on all branches except the default
+    auto_incremental_review: false  # Review the first push only; later reviews are requested explicitly

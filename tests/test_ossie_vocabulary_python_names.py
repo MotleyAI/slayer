@@ -319,6 +319,11 @@ def _dataset() -> SlayerDataset:
     return SlayerDataset.model_validate(shop_orders())
 
 
+def _keyed_fields() -> list[DatasetField]:
+    """A replacement field list keeping the relationship's key field."""
+    return [DatasetField.model_validate({"name": n, "datatype": "Integer"}) for n in ("customer_id", "only")]
+
+
 def _query() -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"], "filter": ["orders.amount > 1"]})
 
@@ -335,8 +340,7 @@ def _extension() -> DatasetExtension:
 #: Every curated pre-2.0 attribute name, keyed ``<owner>.<old>``.
 ATTRIBUTES: dict[str, AttributeCase] = {
     "dataset.columns": AttributeCase(
-        make=_dataset, old="columns", new="fields",
-        assign=lambda: [DatasetField.model_validate({"name": "only", "datatype": "Integer"})]),
+        make=_dataset, old="columns", new="fields", assign=_keyed_fields),
     "dataset.measures": AttributeCase(
         make=_dataset, old="measures", new="metrics",
         assign=lambda: [DatasetMetric.model_validate({"name": "n", "expression": "count(*)"})]),
@@ -532,11 +536,11 @@ class TestAttributes:
 
     def test_dataset_columns_write_lands_in_fields(self) -> None:
         dataset = _dataset()
-        only = [DatasetField.model_validate({"name": "only", "datatype": "Integer"})]
+        only = _keyed_fields()
         with recorded() as caught:
             setattr(dataset, "columns", only)
         assert dataset.fields == only
         assert_one_future_naming(caught, "fields")
         dumped = dataset.model_dump(mode="json")
-        assert [f["name"] for f in dumped["fields"]] == ["only"]
+        assert [f["name"] for f in dumped["fields"]] == ["customer_id", "only"]
         assert "columns" not in dumped
