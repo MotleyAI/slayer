@@ -271,7 +271,7 @@ class TestTransformSourceRejections:
 
     async def test_transform_constituent_without_time_axis_fails(self):
         # The same time-axis error a dimension-position transform raises
-        # (check_dimension_temporal_axis → TimeAxisError), position-neutral.
+        # (check_temporal_axis → TimeAxisError), position-neutral.
         query = monthly_q(
             metrics=[QueryMetric(
                 metric="sum(cumsum(sum(monthly.amount, partition_by=monthly.region)))", alias="m")],

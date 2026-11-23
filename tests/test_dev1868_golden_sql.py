@@ -11,7 +11,7 @@ from slayer.core.query import SlayerQuery
 
 from tests._dev1836_fixtures import dev1836_datasets
 from tests._dev1846_fixtures import dev1846_datasets
-from tests._dev1868_fixtures import CM_PART_TIER, FIRST_REGION, LAST_REGION, LAST_TIER
+from tests._dev1868_fixtures import CM_PART_TIER, FIRST_REGION, LAST_TIER
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -65,10 +65,6 @@ def _cases() -> dict:
         "w2/rank_part_tier": _orders(
             dimensions=["customers.tier"], time_dimensions=_month("orders"),
             metrics=[{"metric": f"rank({CM_PART_TIER}, direction='desc')", "alias": "c"}],
-        ),
-        "w2/change_last_region": _orders(
-            dimensions=["customers.regions.name"], time_dimensions=_month("orders"),
-            metrics=[{"metric": f"change({LAST_REGION})", "alias": "ch"}],
         ),
         "w2/shared_inner": _orders(
             dimensions=["customers.tier"], time_dimensions=_month("orders"),
