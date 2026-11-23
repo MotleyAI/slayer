@@ -3582,14 +3582,18 @@ def _operand_supply(
 
     cells = functools.partial(_operand_cells, names=names, context=context, inherited=inherited,
                     producer_registry=producer_registry)
-    branches: Dict[str, PlannedRowBranch] = {}
+    # One branch per home and route: two frames reaching one home can reach different cells.
+    branches: Dict[Tuple[str, Tuple[str, ...]], PlannedRowBranch] = {}
     for c in constituents:
         home = _constituent_home(c, context=context)
-        if home is None or home.name in branches or grain_of(c) != union_grain:
+        if home is None or grain_of(c) != union_grain:
             continue
-        found = cells(home=home, keys=keys, home_path=_constituent_home_path(c, context=context))
+        route = (home.name, _constituent_home_path(c, context=context))
+        if route in branches:
+            continue
+        found = cells(home=home, keys=keys, home_path=route[1])
         if found is not None:
-            branches[home.name] = PlannedRowBranch(cells=found)
+            branches[route] = PlannedRowBranch(cells=found)
     if branches:
         return PlannedRowSupply(branches=list(branches.values()))
     anchor = _grain_anchor(carrier_grain, context=context)

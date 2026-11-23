@@ -595,6 +595,35 @@ DIAMOND_DATASETS = [
     _ds("orders", "order_id", "customer_id", "store_id",
         rels=(_rel("customers", "customer_id"), _rel("stores", "store_id"))),
 ]
+ROUTE_TABLES = [
+    TableSpec(name="regions", columns=[("region_id", "TEXT")], rows=[("R1",), ("R2",), ("R3",)]),
+    TableSpec(name="customers", columns=[("customer_id", "TEXT"), ("region_id", "TEXT")],
+              rows=[("C1", "R1"), ("C2", "R2")]),
+    TableSpec(name="stores", columns=[("store_id", "TEXT"), ("region_id", "TEXT")], rows=[("S1", "R1"), ("S3", "R3")]),
+    TableSpec(name="orders", columns=[("order_id", "TEXT"), ("customer_id", "TEXT"), ("store_id", "TEXT"),
+                                      ("amount", "DOUBLE")],
+              rows=[("O1", "C1", "S1", 10.0), ("O2", "C2", "S3", 20.0), ("O3", "C1", "S3", 5.0)]),
+]
+ROUTE_DATASETS = [
+    _ds("regions", "region_id"),
+    _ds("customers", "customer_id", "region_id", rels=(_rel("regions", "region_id"),)),
+    _ds("stores", "store_id", "region_id", rels=(_rel("regions", "region_id"),)),
+    _ds("orders", "order_id", "customer_id", "store_id", "amount", numeric=("amount",),
+        rels=(_rel("customers", "customer_id"), _rel("stores", "store_id"))),
+]
+VIA_CUSTOMERS = "sum(regions.customers.orders.amount, partition_by=[regions.region_id])"
+VIA_STORES = "sum(regions.stores.orders.amount, partition_by=[regions.region_id])"
+
+
+@pytest.mark.parametrize("operands", [(VIA_CUSTOMERS, VIA_STORES), (VIA_STORES, VIA_CUSTOMERS)],
+                         ids=["customers-first", "stores-first"])
+async def test_one_home_reached_through_two_frames_supplies_both_routes_cells(backend: str, operands) -> None:
+    # R1, R2 via customers; R1, R3 via stores: the operand's rows are the union, in either order.
+    x, y = operands
+    async with _engine(backend, ROUTE_TABLES, ROUTE_DATASETS) as eng:
+        resp = await run(eng, metrics=[_m(f"count(coalesce({x}, 0) + coalesce({y}, 0))", "n"),
+                                       _m(f"sum(coalesce({x}, 0) + coalesce({y}, 0))", "s")])
+    assert table(resp, "n", "s") == rows((3, 70))
 
 
 @pytest.mark.parametrize("population", ["customers", "stores", None])
