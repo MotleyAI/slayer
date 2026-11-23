@@ -1063,14 +1063,16 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
     if config is None:
         raise OsiExportError(f"Datasource {datasource!r} not found.")
     stored = await _stored_datasets(storage=storage, datasource=datasource)
+    documents = await _stored_documents(storage=storage, datasource=datasource,
+                                        loaded={d.semantic_model for d in stored.values() if d.semantic_model})
+    readable = {name for name, _, _ in documents}
+    stored = {n: d for n, d in stored.items() if not d.semantic_model or d.semantic_model in readable}
     unknown = [m for m in datasets or [] if m not in stored]
     if unknown:
         raise OsiExportError(f"Unknown dataset(s) in datasource {datasource!r}: {', '.join(unknown)}.")
     selected = sorted(set(datasets)) if datasets is not None else sorted(stored)
     virtual = await _expanded_query_backed(engine=engine, stored=stored, selected=selected)
     resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
-    documents = await _stored_documents(storage=storage, datasource=datasource,
-                                        loaded={d.semantic_model for d in stored.values() if d.semantic_model})
     parsed = [data for _, _, data in documents]
     members = {d["name"] for doc in parsed for d in doc["datasets"]}
     if datasets is None and len(documents) == 1 and members == set(stored):

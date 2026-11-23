@@ -534,7 +534,7 @@ async def test_export_leaves_out_a_document_edited_unreadable_after_it_loaded(tm
     async with owned_query_engine(storage=storage) as engine:
         monkeypatch.setattr(storage, "get_semantic_model_text", edited)
         exported = (await export_osi(engine=engine, datasource=DS, extensions=True)).document
-    assert "returns" in {d["name"] for d in exported["datasets"]}
+    assert {d["name"] for d in exported["datasets"]} == {"returns"}
 
 
 async def test_a_filtered_export_leaves_out_a_document_edited_unreadable_after_it_loaded(
@@ -552,4 +552,4 @@ async def test_a_filtered_export_leaves_out_a_document_edited_unreadable_after_i
     async with owned_query_engine(storage=filtered) as engine:
         monkeypatch.setattr(storage, "get_semantic_model_text", edited)
         exported = (await export_osi(engine=engine, datasource=DS)).document
-    assert "returns" in {d["name"] for d in exported["datasets"]}
+    assert {d["name"] for d in exported["datasets"]} == {"returns"}
