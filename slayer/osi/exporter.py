@@ -600,8 +600,9 @@ class _Exporter:
         return not bad
 
     def _is_key(self, name: str, fields: list[str]) -> bool:
-        """``fields`` hold a unique key of the dataset, as routing proves one."""
-        return is_key_set_unique(key_fields=fields, unique_key_sets=unique_key_sets(self.osi_datasets[name].graph))
+        """``fields`` hold a unique key of the dataset: one routing proves, or one the document exports."""
+        ds = self.osi_datasets[name]
+        return is_key_set_unique(key_fields=fields, unique_key_sets=[*unique_key_sets(ds.graph), *ds.unique_keys])
 
     # ---- relationships ----
 

@@ -72,6 +72,14 @@ async def test_undetermined_cardinality_proven_by_target_key(env) -> None:
     assert not result.entries
 
 
+async def test_undetermined_cardinality_proven_by_an_exported_composite_unique_key(env) -> None:
+    unclassified = DatasetRelationship(to="customers", from_columns=["region", "price"], to_columns=["segment", "rate"])
+    result = await export_datasets(env, customers(meta={"osi_unique_keys": [["segment", "rate"]]}),
+                                   orders(metrics=BASIC_METRICS, relationships=[unclassified]))
+    assert [_shape(r) for r in relationships(result.document)] == [
+        ("orders", "customers", ["region", "price"], ["segment", "rate"])]
+
+
 async def test_undetermined_cardinality_proven_by_source_key(env) -> None:
     result = await export_datasets(env, customers(relationships=[_to_orders(None)]), orders(metrics=BASIC_METRICS, relationships=[]))
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
