@@ -117,7 +117,7 @@ def _shape(raw: Any, *, variables: Mapping[str, Any]) -> _Query:
         if not isinstance(text, str):
             raise _invalid("the filter is one expression string")
         query.filter = text
-        query.reading = read_filter(_bound(text, variables))
+        query.reading = read_filter(_bound(text, variables), variables=variables)
         if query.reading.problem is not None:
             raise _invalid(query.reading.problem)
     return query
@@ -217,18 +217,31 @@ class _Model(BaseModel):
         if source == target:
             return [[]]
         out: List[List[str]] = []
+        reaching = self._reaching(target)
 
         def walk(node: str, seen: set[str], names: List[str]) -> None:
             for step in self.steps:
-                if len(out) >= cap or step.source != node or step.target in seen:
+                if len(out) >= cap or step.source != node or step.target in seen or step.target not in reaching:
                     continue
                 if step.target == target:
                     out.append([*names, step.name])
                 else:
                     walk(step.target, seen | {step.target}, [*names, step.name])
 
-        walk(source, {source}, [])
+        if source in reaching:
+            walk(source, {source}, [])
         return out
+
+    def _reaching(self, target: str) -> set[str]:
+        """The datasets with a path of Ossie steps to ``target``, ``target`` included."""
+        found, frontier = {target}, [target]
+        while frontier:
+            node = frontier.pop()
+            for step in self.steps:
+                if step.target == node and step.source not in found:
+                    found.add(step.source)
+                    frontier.append(step.source)
+        return found
 
 
 def _steps(datasets: Mapping[str, SlayerDataset]) -> List[_Step]:
@@ -527,14 +540,15 @@ def _anchor_paths(query: _Query, judged: _Judged, model: _Model) -> None:
     if not anchors:
         raise OssieQueryError(Code.E_NO_ANCHOR, f"no dataset among {', '.join(datasets)} reaches every other "
                               "dimension's dataset", suggestion="add a metric whose dataset reaches every dimension")
+    reaching = [a for a in anchors if judged.filter_dataset is None or model.paths(a, judged.filter_dataset, cap=1)]
+    if not reaching:
+        raise OssieQueryError(Code.E_UNSUPPORTED_FILTER_PATH, f"the anchor {anchors[0]!r} has no path to "
+                              f"{judged.filter_dataset!r}, the dataset of the filter {query.filter!r}",
+                              filter=query.filter, anchor=anchors[0], suggestion=_LAYER_2)
     if len(anchors) > 1:
         raise OssieQueryError(Code.E_AMBIGUOUS_PATH, f"the datasets {', '.join(anchors)} each qualify as the anchor "
                               "of the query", suggestion="add a metric to choose the rows")
     anchor = anchors[0]
-    if judged.filter_dataset is not None and not model.paths(anchor, judged.filter_dataset, cap=1):
-        raise OssieQueryError(Code.E_UNSUPPORTED_FILTER_PATH, f"the anchor {anchor!r} has no path to "
-                              f"{judged.filter_dataset!r}, the dataset of the filter {query.filter!r}",
-                              filter=query.filter, anchor=anchor, suggestion=_LAYER_2)
     for entry, target in zip(query.dimensions, judged.dimensions):
         _unambiguous(model, [anchor], target.dataset or "", dimension=entry.written, anchor=anchor)
     if judged.filter_dataset is not None:
@@ -570,19 +584,30 @@ def _labels(names: List[Tuple[str, bool]]) -> List[str]:
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
-async def _raw_input(engine: "SlayerQueryEngine", query: Any, *, refine: Any,
-                     data_source: Optional[str]) -> Tuple[Any, Optional[str]]:
-    """The query to judge, in the JSON binding's shape, and the datasource a saved query pins."""
+class _Input(BaseModel):
+    """The query to judge, in the JSON binding's shape, with what a saved query run by name brings."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    raw: Any
+    data_source: Optional[str] = None
+    #: A saved query's judged stage, which the native run executes.
+    stage: Optional[SlayerQuery] = None
+    #: The saved dataset's variable defaults, under the run's variables.
+    defaults: Dict[str, Any] = {}
+
+
+async def _raw_input(engine: "SlayerQueryEngine", query: Any, *, refine: Any, data_source: Optional[str]) -> _Input:
     if isinstance(query, str):
-        stages, pinned = await engine.saved_query_stages(query, refine=refine, data_source=data_source)
+        stages, pinned, defaults = await engine.saved_query_stages(query, refine=refine, data_source=data_source)
         if len(stages) != 1:
             raise _invalid(f"the saved query {query!r} has {len(stages)} stages; an Ossie query has one")
-        return _query_parts(stages[0], stored=True), pinned
+        return _Input(raw=_query_parts(stages[0], stored=True), data_source=pinned, stage=stages[0], defaults=defaults)
     if refine is not None:
         raise ValueError("refine applies only to a saved query run by name; put these clauses in the query object instead")
     if isinstance(query, SlayerQuery):
-        return _query_parts(query, stored=False), data_source
-    return query, data_source
+        return _Input(raw=_query_parts(query, stored=False), data_source=data_source)
+    return _Input(raw=query, data_source=data_source)
 
 
 def _native_query(query: _Query, model: _Model) -> Dict[str, Any]:
@@ -610,7 +635,7 @@ def _native_query(query: _Query, model: _Model) -> Dict[str, Any]:
 
 
 def _relabelled(response: "SlayerResponse", labels: List[str]) -> "SlayerResponse":
-    native = list(response.data[0]) if response.data else list(response.columns)
+    native = list(response.columns)
     if len(native) != len(labels):
         raise RuntimeError(f"the strict binding expected the columns {labels}, the query returned {native}")
     mapping = dict(zip(native, labels))
@@ -630,18 +655,19 @@ async def execute_strict(
     run: Callable[..., Any],
 ) -> "SlayerResponse":
     """Judge ``query`` by Ossie Layer 3 (§8, in order), then answer it natively under its output names."""
-    raw, pinned = await _raw_input(engine, query, refine=refine, data_source=data_source)
-    shaped = _shape(raw, variables=variables or {})
+    submitted = await _raw_input(engine, query, refine=refine, data_source=data_source)
+    bindings = {**submitted.defaults, **(variables or {})}
+    shaped = _shape(submitted.raw, variables=bindings)
     if not shaped.dimensions and not shaped.metrics:
         raise OssieQueryError(Code.E_EMPTY_AGGREGATION_QUERY, "the query has neither dimensions nor metrics")
-    model = await _model(engine, await _identify(engine, shaped, pinned))
+    model = await _model(engine, await _identify(engine, shaped, submitted.data_source))
     _temporal_literals(shaped, model)
     judged = _names_and_kinds(shaped, model)
     names = _output_names(shaped, judged)
     _collisions(shaped, names)
     _model_metric_problems(judged, shaped, model)
     _paths(shaped, judged, model)
-    native = query if isinstance(query, str) else _native_query(shaped, model)
-    response = await run(native, variables, dry_run=dry_run, explain=explain, data_source=model.data_source,
-                         cache=cache, refine=refine if isinstance(query, str) else None)
+    native = submitted.stage if submitted.stage is not None else _native_query(shaped, model)
+    response = await run(native, bindings or None, dry_run=dry_run, explain=explain, data_source=model.data_source,
+                         cache=cache, refine=None)
     return response if explain else _relabelled(response, _labels(names))

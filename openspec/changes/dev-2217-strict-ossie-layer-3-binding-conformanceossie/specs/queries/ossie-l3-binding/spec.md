@@ -55,7 +55,7 @@ Under `ossie-l3` a query meeting the condition of one or more rows below SHALL r
 
 #### Scenario: Unknown names before a window in the filter
 - **WHEN** `{"dimensions": ["orders.no_such_field"], "filter": "ROW_NUMBER() OVER (ORDER BY orders.amount) = 1"}` runs under `ossie-l3`
-- **THEN** it fails with `E_NAME_NOT_FOUND`; without the unknown dimension it fails with `E_WINDOW_IN_WHERE`
+- **THEN** it fails with `E_NAME_NOT_FOUND`; with `orders.order_id` in place of the unknown dimension it fails with `E_WINDOW_IN_WHERE`
 
 #### Scenario: Each code on its own
 - **WHEN** each of upstream's error cases `e03` to `e19` and `e22` to `e25` runs under `ossie-l3` on its fixture

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict
@@ -19,7 +19,7 @@ from slayer.core.keys import SCALAR_SPECS, SCALAR_SPELLINGS
 from slayer.core.syntax import (
     AggCall, ArrayLit, Arith, BoolOp, BoundVariable, Cast, Cmp, DateTrunc, DottedRef, Literal, NamedArg, Placeholder,
     Ref, ScalarCall, StarSource, TemporalLiteral, TransformCall, TupleLit, UnaryOp, call_spans, legacy_spans,
-    nonossie_spellings, parse_template, variable_names,
+    nonossie_spellings, parse_bound_expr, parse_template, variable_names,
 )
 
 __all__ = ["FilterReading", "is_iso_temporal", "parse_conformance", "read_filter"]
@@ -33,6 +33,17 @@ OSSIE_UNARY = frozenset({"-", "not"})
 #: Rewritten callee spellings Ossie defines with the meaning the rewrite gives them.
 OSSIE_CALL_SPELLINGS = frozenset({"iff", "datediff", "dateadd", "current_timestamp", "date_trunc", "year", "quarter",
                                   "month", "day", "dayofyear", "hour", "minute", "second"})
+#: ``DATE_TRUNC`` units Ossie defines.
+OSSIE_DATE_TRUNC_UNITS = frozenset({"year", "quarter", "month", "week", "day", "hour", "minute", "second"})
+#: Aggregate functions Ossie defines, as written.
+OSSIE_AGGREGATE_SPELLINGS = frozenset({"sum", "count", "avg", "min", "max", "stddev", "stddev_pop", "stddev_samp",
+                                       "variance", "var_pop", "var_samp", "median", "approx_count_distinct",
+                                       "approx_percentile", "percentile_cont", "percentile_disc"})
+#: The names the parser gives Ossie's ``COUNT(DISTINCT …)`` and ``PERCENTILE_CONT(…) WITHIN GROUP (…)``; SLayer's own
+#: calls of these names are refused by their written callee.
+REWRITTEN_AGGREGATES = frozenset({"count_distinct", "percentile"})
+#: Ossie's argument counts for functions SLayer also defines with other arities.
+OSSIE_ARITIES = {"regexp_extract": 2}
 #: ``CAST`` target types Ossie defines (the first word of the written type).
 OSSIE_CAST_TYPES = frozenset({"VARCHAR", "STRING", "INTEGER", "INT", "BIGINT", "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE",
                               "BOOLEAN", "DATE", "TIMESTAMP"})
@@ -99,14 +110,16 @@ def _iso_shaped(text: str) -> bool:
     return not rest or _ISO_ZONE.fullmatch(rest) is not None
 
 
-def read_filter(text: str) -> FilterReading:
-    """Judge filter ``text`` (its variables already bound) against Ossie Layer 1."""
+def read_filter(text: str, *, variables: Mapping[str, Any] | None = None) -> FilterReading:
+    """Judge filter ``text`` against Ossie Layer 1, its variables bound but a whole ``IN`` list's, which binds from
+    ``variables`` as native binding does."""
     out = FilterReading()
-    if variable_names(text):
-        out.problem = f"the variables {variable_names(text)} are not bound; pass them as the run's variables"
+    unbound = [n for n in variable_names(text) if n not in (variables or {})]
+    if unbound:
+        out.problem = f"the variables {unbound} are not bound; pass them as the run's variables"
         return out
     try:
-        tree = parse_template(text)
+        tree = parse_bound_expr(text, variables) if variables else parse_template(text)
     except IllegalWindowInFilterError:
         out.window = True
         return out
@@ -128,6 +141,8 @@ def _text_problem(text: str) -> Optional[str]:
         return f"{spellings[0]} is SLayer syntax, not an Ossie expression"
     for call in call_spans(text):
         name = call.callee.lower()
+        if name in REWRITTEN_AGGREGATES:
+            return f"{call.callee}() is a SLayer function Ossie does not define"
         spec = SCALAR_SPECS.get(name)
         if spec is not None and not spec.ossie:
             return f"{call.callee}() is a SLayer function Ossie does not define"
@@ -169,6 +184,19 @@ def _reference_node(node: Any, out: FilterReading) -> None:
     out.references.append(node)
 
 
+def _date_trunc(node: DateTrunc, out: FilterReading) -> None:
+    if node.unit.lower() not in OSSIE_DATE_TRUNC_UNITS:
+        _refuse(out, f"DATE_TRUNC to {node.unit!r} is not an Ossie unit")
+    _visit(node.value, out)
+
+
+def _scalar(node: ScalarCall, out: FilterReading) -> None:
+    arity = OSSIE_ARITIES.get(node.name.lower())
+    if arity is not None and len(node.args) != arity:
+        _refuse(out, f"{node.name}() takes {arity} arguments in Ossie")
+    _visit_all(node.args, out)
+
+
 def _cast(node: Cast, out: FilterReading) -> None:
     if node.type_text.split("(")[0].split(" ")[0] not in OSSIE_CAST_TYPES:
         _refuse(out, f"CAST to {node.type_text} is not an Ossie type")
@@ -176,10 +204,15 @@ def _cast(node: Cast, out: FilterReading) -> None:
 
 
 def _aggregate(node: AggCall, out: FilterReading) -> None:
+    if node.agg.lower() not in OSSIE_AGGREGATE_SPELLINGS | REWRITTEN_AGGREGATES:
+        _refuse(out, f"{node.agg}() is not an Ossie function")
     out.aggregate = True
     if node.kwargs:
         _refuse(out, f"{node.agg}() takes no keyword arguments in Ossie")
-    _visit_all((p for p in (node.source, *node.args, node.filter) if p is not None), out)
+    # A rewritten Ossie aggregate's named arguments are the parser's (``p=`` of ``PERCENTILE_CONT(p)``), not written.
+    rewritten = node.agg.lower() in REWRITTEN_AGGREGATES
+    args = [a.value if rewritten and isinstance(a, NamedArg) else a for a in node.args]
+    _visit_all((p for p in (node.source, *args, node.filter) if p is not None), out)
 
 
 def _refusal(why: Callable[[Any], str]) -> Callable[[Any, FilterReading], None]:
@@ -204,6 +237,8 @@ def _string_literals(node: Any) -> List[str]:
         return [node.value]
     if isinstance(node, TupleLit):
         return [e.value for e in node.elements if isinstance(e.value, str)]
+    if isinstance(node, BoundVariable):
+        return [v for v in node.values if isinstance(v, str)]
     return []
 
 
@@ -215,8 +250,8 @@ _VISITORS: Dict[type, Callable[[Any, FilterReading], None]] = {
     TemporalLiteral: lambda _node, _out: None,
     StarSource: lambda _node, _out: None,
     TupleLit: lambda node, out: _visit_all(node.elements, out),
-    ScalarCall: lambda node, out: _visit_all(node.args, out),
-    DateTrunc: lambda node, out: _visit(node.value, out),
+    ScalarCall: _scalar,
+    DateTrunc: _date_trunc,
     Cast: _cast,
     Arith: lambda node, out: _operator(node, out, OSSIE_ARITHMETIC, (node.left, node.right)),
     UnaryOp: lambda node, out: _operator(node, out, OSSIE_UNARY, (node.operand,)),
@@ -225,7 +260,7 @@ _VISITORS: Dict[type, Callable[[Any, FilterReading], None]] = {
     AggCall: _aggregate,
     TransformCall: _refusal(lambda node: f"the transform {node.op}() is SLayer syntax, not an Ossie expression"),
     Placeholder: _refusal(lambda _node: "an unbound variable is not an Ossie expression"),
-    BoundVariable: _refusal(lambda _node: "an unbound variable is not an Ossie expression"),
+    BoundVariable: lambda _node, _out: None,
     ArrayLit: _refusal(lambda _node: "a list literal is SLayer syntax, not an Ossie expression"),
     NamedArg: _refusal(lambda node: f"the keyword argument {node.name}= is SLayer syntax, not an Ossie expression"),
 }

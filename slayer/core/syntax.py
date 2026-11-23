@@ -1198,7 +1198,7 @@ def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
 _IN_LIST = ((LPAR + _PLACEHOLDER_ATOM + RPAR)
             | _PLACEHOLDER_ATOM
             | _on((LPAR + _SEQ_ITEMS + RPAR), lambda toks: _in_rhs_elements(list(toks[0])))
-            | _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: _in_rhs_elements(list(toks[0])))
+            | _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: _spelled_call("IN […]", _in_rhs_elements(list(toks[0]))))
             | _STRING.copy().add_parse_action(lambda: _spelled("IN '…'"))
             | _fail("the right-hand side of in / not in must be a literal list, e.g. status in ('a', 'b')."))
 

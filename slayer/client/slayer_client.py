@@ -248,16 +248,25 @@ class SlayerClient:
         """The ``POST /query?conformance=ossie-l3`` body: the query as given (the server judges it), wrapper keys
         beside it."""
         if not isinstance(query, (str, SlayerQuery, ABCMapping)):
-            return [dict(q) if isinstance(q, ABCMapping) else q for q in query]
+            return [SlayerClient._strict_parts(q) for q in query]
         if isinstance(query, str):
             body: dict[str, Any] = {"name": query, **SlayerClient._strict_refine(refine)}
         elif refine is not None:
             raise ValueError(REFINE_REQUIRES_NAME)
         else:
-            body = query.model_dump(mode="json", exclude_unset=True) if isinstance(query, SlayerQuery) else dict(query)
+            body = SlayerClient._strict_parts(query)
         body.update({k: v for k, v in (("variables", dict(variables) if variables else None),
                                        ("dry_run", dry_run or None), ("explain", explain or None)) if v})
         return body
+
+    @staticmethod
+    def _strict_parts(query: Any) -> Any:
+        """A query object as the server judges it: the parts it sets (``version`` is bookkeeping), an explicit ``None``
+        kept for refusal."""
+        if isinstance(query, SlayerQuery):
+            parts = query.model_dump(mode="json", exclude_unset=True, exclude={"version"})
+            return {**parts, **{n: None for n in query.model_fields_set if getattr(query, n) is None}}
+        return dict(query) if isinstance(query, ABCMapping) else query
 
     @staticmethod
     def _strict_refine(refine: Refinement) -> dict[str, Any]:

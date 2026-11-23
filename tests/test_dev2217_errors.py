@@ -8,13 +8,16 @@ typed error on every surface.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from slayer.core import errors
 from slayer.core.errors import QueryTypeError, SlayerError, UnevaluableEntityError
 from slayer.core.models import DatasourceConfig
+from slayer.engine.population.inference import query_datasource
+from slayer.storage.base import StorageBackend
+from slayer.storage.semantic_models import analyse_model_scoped
 from tests._dev2217_fixtures import CODES, DS, fixture_engine, fixture_texts, ossie_query_error, rows, strict, strict_error
 from tests._dev2243_fixtures import store_document
 
@@ -123,6 +126,19 @@ async def test_an_unquoted_dataset_name_matches_case_insensitively(tmp_path: Pat
         response = await strict(engine, {"dimensions": ["CUSTOMERS.region"], "metrics": ["Orders.total_revenue"]})
         assert rows(response) == [("EAST", 350.0), ("WEST", 300.0)]
         await strict_error(engine, {"dimensions": ['"CUSTOMERS".region']}, "E_NAME_NOT_FOUND")
+
+
+class _Identities:
+    """Storage listing ``x.Orders``, ``y.ORDERS`` and ``y.customers``."""
+
+    async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
+        return [("x", "Orders"), ("y", "ORDERS"), ("y", "customers")]
+
+
+async def test_names_differing_only_in_case_across_datasources_do_not_clash() -> None:
+    found = await query_datasource(storage=cast(StorageBackend, _Identities()),
+                                   anchors=[("orders", False), ("customers", False)])
+    assert found == "y"
 
 
 async def test_unknown_names_before_filter_errors(tmp_path: Path) -> None:
@@ -302,3 +318,21 @@ async def test_a_strict_refusal_is_one_typed_error(tmp_path: Path) -> None:
     assert str(exc).splitlines()[0].startswith("OssieQueryError: E_NAME_NOT_FOUND: ")
     assert exc.code == getattr(errors, "OssieErrorCode")("E_NAME_NOT_FOUND")
     assert (exc.dimension, exc.filter, exc.anchor) == (None, None, None)
+
+
+def test_a_filtered_aggregate_is_a_component_of_its_dataset() -> None:
+    """A call's own FILTER does not hide it: it keeps its home, and a FILTER reading another dataset is flagged."""
+    across = analyse_model_scoped("SUM(orders.amount) FILTER (WHERE customers.region = 'EU')", metric_names=set())
+    assert across.homes == ["orders"]
+    assert [(p.code, p.evaluable) for p in across.problems] == [(errors.OssieErrorCode.E_AMBIGUOUS_MEASURE_GRAIN, True)]
+    own = analyse_model_scoped("SUM(orders.amount) FILTER (WHERE orders.amount > 1)", metric_names=set())
+    assert (own.homes, own.problems) == (["orders"], [])
+
+
+@pytest.mark.xfail(strict=True, reason="DEV-2439: the strict reader does not read a window clause yet")
+@pytest.mark.parametrize(("filter_text", "code"), [
+    pytest.param("ROW_NUMBER() OVER (", "E_INVALID_QUERY", id="incomplete-window"),
+    pytest.param("ROW_NUMBER() OVER (ORDER BY orders.no_such_field) = 1", "E_NAME_NOT_FOUND", id="unknown-inside"),
+])
+async def test_a_window_yields_to_earlier_rows(tmp_path: Path, filter_text: str, code: str) -> None:
+    await _code(tmp_path, "retail", {"dimensions": ["orders.order_id"], "filter": filter_text}, code)

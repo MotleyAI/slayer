@@ -463,13 +463,14 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    async def _strict_query(body: Any) -> tuple[Any, dict[str, bool]]:
-        """A strict request: the run's wrapper keys, the rest of the body the query as submitted."""
+    async def _strict_query(body: Any, *, request: Any) -> tuple[Any, dict[str, bool]]:
+        """A strict request: the run's wrapper keys, the rest of the body the query as submitted; the execution flags
+        as ``request`` validated them."""
         wrapper: dict[str, Any] = {}
         if isinstance(body, dict):
             wrapper = {k: v for k, v in body.items() if k in _RUN_BY_NAME_FIELDS}
             body = {k: v for k, v in body.items() if k not in _RUN_BY_NAME_FIELDS}
-        flags = {"dry_run": bool(wrapper.get("dry_run")), "explain": bool(wrapper.get("explain"))}
+        flags = {"dry_run": bool(request.dry_run), "explain": bool(request.explain)}
         name = wrapper.get("name")
         if name is not None and body:
             raise OssieQueryError(OssieErrorCode.E_INVALID_QUERY, f"a saved query run by name takes no query parts "
@@ -543,7 +544,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     ) -> Response:
         try:
             if parse_conformance(conformance) is Conformance.OSSIE_L3:
-                result, flags = await _strict_query(await http_request.json())
+                result, flags = await _strict_query(await http_request.json(), request=request)
                 return _query_response(result, **flags)
             # Multi-stage DAG: body is ``{"queries": [...], "variables": ...,
             # "dry_run": ..., "explain": ...}``. Mirrors the MCP ``query``

@@ -1341,13 +1341,15 @@ class SlayerQueryEngine:
 
     async def saved_query_stages(
         self, name: str, *, refine: "QueryRefinement | dict | None" = None, data_source: Optional[str] = None,
-    ) -> "tuple[List[SlayerQuery], Optional[str]]":
-        """A saved query's stages after ``refine``, its final stage last, and the datasource it runs on."""
+    ) -> "tuple[List[SlayerQuery], Optional[str], Dict[str, Any]]":
+        """A saved query's stages after ``refine`` as stored (variables unlayered), its final stage last, the datasource
+        it runs on, and the dataset's variable defaults."""
         run = resolve_run_input(name, refine)
         assert isinstance(run, SavedQueryRun)
+        defaults: Dict[str, Any] = {}
         main, named, pinned, _chain = await self._normalize_by_name(
-            run=run, runtime_kwarg={}, prefer_data_source=data_source, deprecations_out=[])
-        return [*named.values(), main], pinned
+            run=run, runtime_kwarg={}, prefer_data_source=data_source, deprecations_out=[], defaults_out=defaults)
+        return [*named.values(), main], pinned, defaults
 
     async def _normalize_by_name(
         self,
@@ -1356,9 +1358,11 @@ class SlayerQueryEngine:
         runtime_kwarg: Dict[str, Any],
         prefer_data_source: Optional[str],
         deprecations_out: List[DeprecatedInputWarning],
+        defaults_out: Optional[Dict[str, Any]] = None,
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], Tuple[str, ...]]":
         """Normalize a run-by-name input into the shared prepare tuple (``prefer_data_source`` pins the lookup).
-        The deprecations of the stored stages and the refinement go to ``deprecations_out``."""
+        The deprecations of the stored stages and the refinement go to ``deprecations_out``; given ``defaults_out``,
+        the dataset's variable defaults go there instead of into the final stage."""
         name = run.name
         dataset = await self.storage.get_dataset(name, data_source=prefer_data_source)
         if dataset is None:
@@ -1384,6 +1388,9 @@ class SlayerQueryEngine:
             dataset = dataset.model_copy(update={
                 "source_queries": [*earlier, refine_query(saved=final, refinement=refinement)],
             })
+        if defaults_out is not None:
+            defaults_out.update(dataset.query_variables)
+            dataset = dataset.model_copy(update={"query_variables": {}})
         main_query, named_queries = self._stages_of_dataset(dataset=dataset, runtime_kwarg=runtime_kwarg)
         return main_query, named_queries, prefer_data_source, (dataset.name,)
 

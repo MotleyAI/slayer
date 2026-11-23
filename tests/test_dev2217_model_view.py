@@ -5,6 +5,7 @@ Spec: queries/ossie-l3-binding › The strict binding reads the model as an Ossi
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ import yaml
 from slayer.core import slayer_extension as ext
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.engine.ossie_l3 import _Model, _Step
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
 from tests._dev2217_fixtures import DS, rows, sql_engine, strict, strict_error
 from tests._dev2243_fixtures import dataset, document_text, field, metric, relationship
@@ -224,6 +226,26 @@ async def test_unnamed_parallel_relationships_stay_two_ossie_relationships(tmp_p
             (None, keys[0], "left", "edited"), (None, keys[1], "inner", "edited")])
 
 
+async def test_rekeying_an_unnamed_relationship_keeps_its_document_entity(tmp_path: Path) -> None:
+    """Changing an unnamed relationship's keys rewrites its entity in place, ``ai_context`` kept."""
+    rel = DatasetRelationship(to="x", from_columns=["x_id"], to_columns=["id"],
+                              cardinality=RelationshipCardinality.MANY_TO_ONE)
+    async with sql_engine(tmp_path, sql=PARALLEL_SQL, documents=[PARALLEL]) as engine:
+        e = await engine.storage.get_dataset("e", data_source=DS)
+        assert e is not None
+        await engine.storage.save_dataset(e.model_copy(update={"relationships": [rel]}))
+        doc = yaml.safe_load(await engine.storage.get_semantic_model_text("parallel", data_source=DS) or "")
+        doc["relationships"][0]["ai_context"] = "keep me"
+        await engine.storage.save_semantic_model_text(data_source=DS, name="parallel", text=yaml.safe_dump(doc))
+        e = await engine.storage.get_dataset("e", data_source=DS)
+        assert e is not None
+        await engine.storage.save_dataset(e.model_copy(update={"relationships": [
+            e.relationships[0].model_copy(update={"from_columns": ["y_id"]})]}))
+        doc = yaml.safe_load(await engine.storage.get_semantic_model_text("parallel", data_source=DS) or "")
+    [entity] = doc["relationships"]
+    assert (entity["from_columns"], entity.get("ai_context")) == (["y_id"], "keep me")
+
+
 async def test_two_named_relationships_on_the_same_keys_are_two_paths(tmp_path: Path) -> None:
     """They export as two relationships, so Ossie refuses as native does."""
     named = [_rel("orders", RelationshipCardinality.ONE_TO_MANY).model_copy(update={"name": "placed"}),
@@ -272,3 +294,19 @@ async def test_slayer_only_content_is_honoured(tmp_path: Path) -> None:
         response = await strict(engine, query)
     assert response.columns == ["customer_region", "revenue_share"]
     assert rows(response) == rows(native, "orders.customer_region", "orders.revenue_share")
+
+
+def test_an_unreachable_target_is_settled_without_walking_every_path() -> None:
+    """A chain of many-to-one diamonds doubles the paths per diamond; a target none reaches is settled at once."""
+    n = 20
+    steps = []
+    for i in range(n):
+        steps += [_Step(source=f"n{i}", target=f"l{i}", name=f"a{i}"), _Step(source=f"n{i}", target=f"r{i}", name=f"b{i}"),
+                  _Step(source=f"l{i}", target=f"n{i + 1}", name=f"c{i}"),
+                  _Step(source=f"r{i}", target=f"n{i + 1}", name=f"d{i}")]
+    model = _Model(data_source=DS, datasets={}, metrics=[], steps=steps)
+    start = time.monotonic()
+    assert model.paths("n0", "elsewhere") == []
+    left = [f"{x}{i}" for i in range(n - 1) for x in ("a", "c")]
+    assert model.paths("n0", f"n{n}", cap=2) == [[*left, f"a{n - 1}", f"c{n - 1}"], [*left, f"b{n - 1}", f"d{n - 1}"]]
+    assert time.monotonic() - start < 1

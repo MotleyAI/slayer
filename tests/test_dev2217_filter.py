@@ -132,7 +132,7 @@ SCALARS: dict[str, tuple[str, int]] = {
     "atan2": ("atan2(orders.amount, 100) > 1.2", 300),
     "cbrt": ("cbrt(orders.amount) > 6", 300),
     "regexp_like": ("regexp_like(orders.status, '^can')", 200),
-    "regexp_extract": ("regexp_extract(orders.status, '^(c[a-z])', 1) = 'co'", 150),
+    "regexp_extract": ("regexp_extract(orders.status, '^c[a-z]') = 'co'", 150),
     "regexp_replace": ("regexp_replace(orders.status, 'e$', '') = 'complet'", 150),
     "json_value": ("json_value(orders.payload, '$.k') = 'a'", 150),
     "like": ("like(orders.status, 'comp%')", 150),
@@ -159,12 +159,16 @@ SLAYER_ONLY = {
     "orders.status == 'complete'": 150,
     "orders.status is None": 300,
     "orders.status IN ['complete']": 150,
+    "orders.status IN /* note */ ['complete']": 150,
+    "regexp_extract(orders.status, '^(c[a-z])', 1) = 'co'": 150,
 }
 
 #: Refused under strict, with no native answer to compare.
 REFUSED_ONLY = [
     "cumsum(sum(orders.amount)) > 100",
     "orders.status = '{s}'",
+    "DATE_TRUNC('week_sunday', orders.order_date) = DATE '2025-01-05'",
+    "not_a_function(orders.amount) > 0",
 ]
 
 
@@ -226,3 +230,26 @@ async def test_a_filter_without_fields_reaches_unconnected_metrics(tmp_path: Pat
         response = await strict(engine, {"metrics": ["orders.total_revenue", "tickets.ticket_count"],
                                          "filter": "FALSE"})
     assert response.data == [{"total_revenue": None, "ticket_count": 0}]
+
+
+async def test_a_whole_in_list_variable_binds_as_native_binding_does(engine: SlayerQueryEngine) -> None:
+    query = _query("orders.status IN ({states})")
+    response = await strict(engine, query, variables={"states": ["complete"]})
+    assert rows(response) == [(150.0,)]
+    await strict_error(engine, query, "E_INVALID_QUERY")
+
+
+@pytest.mark.parametrize(("filter_text", "code"), [
+    ("COUNT(DISTINCT orders.status) > 1", "E_AGGREGATE_IN_WHERE"),
+    ("APPROX_COUNT_DISTINCT(orders.status) > 1", "E_AGGREGATE_IN_WHERE"),
+    ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY orders.amount) > 1", "E_AGGREGATE_IN_WHERE"),
+    ("STDDEV(orders.amount) > 1", "E_AGGREGATE_IN_WHERE"),
+    ("countd(orders.status) > 1", "E_INVALID_QUERY"),
+    ("count_distinct(orders.status) > 1", "E_INVALID_QUERY"),
+    ("percentile(orders.amount, 0.5) > 1", "E_INVALID_QUERY"),
+    ("first(orders.amount) > 1", "E_INVALID_QUERY"),
+])
+async def test_an_aggregate_is_judged_by_its_written_spelling(engine: SlayerQueryEngine, filter_text: str,
+                                                               code: str) -> None:
+    """An Ossie aggregate in a filter is row 6; a SLayer spelling of one is no Ossie expression (row 1)."""
+    await strict_error(engine, _query(filter_text), code)

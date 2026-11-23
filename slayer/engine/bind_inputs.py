@@ -395,8 +395,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     # Alias lookup for ORDER BY, checked before bind_expr so aggregate aliases resolve via the registry.
     declared_alias_to_bound: Dict[str, BoundExpr] = {}
+    # Public names (aliases) first: a bare name an alias holds is that column, though another entry's leaf matches it.
     for dm in declared_metrics:
-        for alias in (dm.public_name, dm.declared_name, dm.canonical_alias):
+        if dm.public_name is not None:
+            declared_alias_to_bound.setdefault(dm.public_name, dm.bound)
+    for dm in declared_metrics:
+        for alias in (dm.declared_name, dm.canonical_alias):
             if alias is not None:
                 declared_alias_to_bound.setdefault(alias, dm.bound)
 
@@ -551,14 +555,17 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             _order_host_local = (
                 _order_qualifier is None or _order_qualifier == _order_host_name
             )
-            # Prefer alias resolution over dataset-scope binding; try dotted then flattened forms, falling back to raw.
-            if _order_host_local and col_name in declared_alias_to_bound:
+            # Prefer alias resolution over dataset-scope binding: a bare name is an alias first, a qualified one its full
+            # identity first; try dotted then flattened forms, falling back to raw.
+            if _order_qualifier is None and col_name in declared_alias_to_bound:
                 bo = declared_alias_to_bound[col_name]
             elif full_name in declared_alias_to_bound:
                 bo = declared_alias_to_bound[full_name]
             elif _flatten_dotted(full_name) in declared_alias_to_bound:
                 # A joined dim/td is declared flattened; a dotted ORDER BY entry interns onto that slot.
                 bo = declared_alias_to_bound[_flatten_dotted(full_name)]
+            elif _order_host_local and col_name in declared_alias_to_bound:
+                bo = declared_alias_to_bound[col_name]
             elif _order_host_local and f"_{col_name}" in declared_alias_to_bound:
                 # ``count(*)`` surfaces as ``_count``; users order by the bare ``count``.
                 bo = declared_alias_to_bound[f"_{col_name}"]

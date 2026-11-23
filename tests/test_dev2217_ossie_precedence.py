@@ -134,6 +134,13 @@ async def test_ossies_anchor_takes_precedence_over_fewer_hops(tmp_path: Path, co
         assert response.population == "a"
 
 
+async def test_ossies_anchor_takes_precedence_for_quoted_names(tmp_path: Path) -> None:
+    async with sql_engine(tmp_path, sql=DETOUR_SQL, documents=[DETOUR]) as engine:
+        response = await engine.execute({"dimensions": ['"a".id', '"b".name']})
+    assert rows(response) == [("A1", "p"), ("A2", "p")]
+    assert response.population == "a"
+
+
 async def test_two_paths_of_ossie_steps_stay_ambiguous(tmp_path: Path) -> None:
     """Two paths of Ossie steps stay ambiguous."""
     async with sql_engine(tmp_path, sql=TWO_PATHS_SQL, documents=[TWO_PATHS]) as engine:
@@ -146,6 +153,33 @@ async def test_two_paths_of_ossie_steps_stay_ambiguous(tmp_path: Path) -> None:
 async def test_two_paths_of_ossie_steps_under_strict(tmp_path: Path) -> None:
     async with sql_engine(tmp_path, sql=TWO_PATHS_SQL, documents=[TWO_PATHS]) as engine:
         await strict_error(engine, {"dimensions": ["b.name", "a.id"]}, "E_AMBIGUOUS_PATH")
+
+
+MUTUAL_W_SQL = MUTUAL_SQL + """
+CREATE TABLE w (id INTEGER PRIMARY KEY, x_id INTEGER, tag VARCHAR);
+INSERT INTO w VALUES (1, 1, 'a');
+"""
+MUTUAL_W = document_text(name="mutual", datasets=[
+    dataset("x", primary_key=["id"], fields=[field("id", datatype="Integer"), field("y_id", datatype="Integer"),
+                                             field("v")]),
+    dataset("y", primary_key=["id"], fields=[field("id", datatype="Integer"), field("z_id", datatype="Integer"),
+                                             field("v")]),
+    dataset("z", primary_key=["id"], fields=[field("id", datatype="Integer"), field("x_id", datatype="Integer")]),
+    dataset("w", primary_key=["id"], fields=[field("id", datatype="Integer"), field("x_id", datatype="Integer"),
+                                             field("tag")]),
+], relationships=[
+    relationship("x_to_y", src="x", to="y", from_columns=["y_id"], to_columns=["id"]),
+    relationship("y_to_z", src="y", to="z", from_columns=["z_id"], to_columns=["id"]),
+    relationship("z_to_x", src="z", to="x", from_columns=["x_id"], to_columns=["id"]),
+    relationship("w_to_x", src="w", to="x", from_columns=["x_id"], to_columns=["id"]),
+])
+
+
+async def test_a_filter_no_anchor_reaches_precedes_anchor_ambiguity(tmp_path: Path) -> None:
+    """Row 16 before row 17: neither qualifying anchor reaches the filter's dataset."""
+    async with sql_engine(tmp_path, sql=MUTUAL_W_SQL, documents=[MUTUAL_W]) as engine:
+        query = {"dimensions": ["x.v", {"field": "y.v", "alias": "y_v"}], "filter": "w.tag = 'a'"}
+        await strict_error(engine, query, "E_UNSUPPORTED_FILTER_PATH")
 
 
 async def test_several_anchors_ossie_qualifies_leave_native_rules_in_charge(tmp_path: Path) -> None:

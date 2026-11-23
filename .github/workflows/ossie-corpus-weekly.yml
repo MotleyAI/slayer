@@ -36,5 +36,8 @@ jobs:
           SLAYER_OSSIE_CORPUS: ${{ runner.temp }}/ossie
         run: >-
           poetry run pytest tests/test_dev2243_corpus.py tests/test_dev2243_wide_table_oracle.py
-          tests/test_dev2217_appendix_b.py tests/test_dev2243_portability_grader.py -m "not integration" -n logical
+          tests/test_dev2217_appendix_b.py tests/test_dev2217_shape.py tests/test_dev2217_errors.py
+          tests/test_dev2217_filter.py tests/test_dev2217_output_names.py tests/test_dev2217_model_view.py
+          tests/test_dev2217_run_by_name.py tests/test_dev2217_surfaces.py
+          tests/test_dev2243_portability_grader.py -m "not integration" -n logical
           --timeout=600

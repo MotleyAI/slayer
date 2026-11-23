@@ -24,7 +24,7 @@ from slayer import otel
 from slayer.async_utils import run_sync
 from slayer.core.enums import Conformance
 from slayer.core.deprecation import deprecations_on_one_line
-from slayer.core.errors import SlayerError
+from slayer.core.errors import OssieQueryError, SlayerError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
@@ -199,7 +199,10 @@ def _one_line(text: str) -> str:
 
 
 def _error_line(exc: Exception) -> str:
-    """One stderr line: a SLayer error's message, else class + message + the ``--debug`` hint."""
+    """One stderr line: a strict refusal as its own message, a SLayer error's message after ``Error:``, else class +
+    message + the ``--debug`` hint."""
+    if isinstance(exc, OssieQueryError):
+        return _one_line(str(exc))
     if isinstance(exc, SlayerError):
         return "Error: " + _one_line(str(exc))
     first = next((line.strip() for line in str(exc).splitlines() if line.strip()), "")
@@ -1881,7 +1884,8 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
     query: Any = query_input
     if is_json:
         query = json.loads(query_input)
-        if isinstance(query, list) and not query:
+        # The strict binding refuses any list itself, with its code.
+        if isinstance(query, list) and not query and args.conformance != Conformance.OSSIE_L3.value:
             raise SystemExit("Query list cannot be empty.")
     if args.dry_run:
         usage_reporting.mark_dry_run()

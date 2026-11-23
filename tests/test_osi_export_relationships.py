@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.enums import RelationshipCardinality, JoinType
 from slayer.core.models import DatasetRelationship
-from tests._osi_export_fixtures import BASIC_METRICS, customers, orders, to_customers, visits
+from tests._osi_export_fixtures import BASIC_METRICS, customers, orders, orders_fields, to_customers, visits
 from tests._osi_export_helpers import export_datasets, make_env, mentions, relationships, validate
 
 
@@ -51,6 +51,18 @@ async def test_a_named_mirror_exports_as_a_second_relationship(env) -> None:
     exported = relationships(result.document)
     assert [_shape(r) for r in exported] == [_FK, _FK]
     assert "placed_orders" in [r["name"] for r in exported]
+
+
+async def test_undetermined_cardinality_keys_containing_a_key_point_as_routing_reads_them(env) -> None:
+    """``customers.[id, segment]`` contains its primary key, so the relationship runs from ``orders`` as routing has it,
+    though ``orders.[customer_id, status]`` matches an ``orders`` key exactly."""
+    fields = [f.model_copy(update={"primary_key": f.name in ("customer_id", "status")}) for f in orders_fields()]
+    unclassified = DatasetRelationship(to="customers", from_columns=["customer_id", "status"],
+                                       to_columns=["id", "segment"])
+    result = await export_datasets(env, customers(), orders(fields=fields, metrics=BASIC_METRICS,
+                                                            relationships=[unclassified]))
+    assert [_shape(r) for r in relationships(result.document)] == [
+        ("orders", "customers", ["customer_id", "status"], ["id", "segment"])]
 
 
 async def test_undetermined_cardinality_proven_by_target_key(env) -> None:

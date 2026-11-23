@@ -14,7 +14,9 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, DatasourceConfig, SlayerDataset
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.ossie_l3 import _relabelled
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.engine.response_meta import ResponseAttributes
 from tests._dev2217_fixtures import DS, NATIVE, STRICT, fixture_engine, rows, run_as, sql_engine, strict, strict_error
 from tests._dev2243_fixtures import dataset, document_text, field, relationship
 
@@ -164,3 +166,36 @@ async def test_a_metric_alias_equal_to_a_host_field_under_a_population(tmp_path:
                                          "metrics": [{"metric": "sum(orders.amount)", "alias": "amount"}]})
     assert response.columns == ["orders.order_id", "amount"]
     assert rows(response) == [("O1", 100.0), ("O2", 200.0), ("O3", 50.0), ("O4", 300.0)]
+
+
+def test_labels_follow_the_projection_not_a_rows_key_order() -> None:
+    """Each value goes to its column's label, whatever order a row's keys come in."""
+    response = SlayerResponse(data=[{"orders.amount": 2, "customers.region": "EAST"}],
+                              columns=["customers.region", "orders.amount"], attributes=ResponseAttributes())
+    relabelled = _relabelled(response, ["region", "amount"])
+    assert relabelled.columns == ["region", "amount"]
+    assert relabelled.data == [{"amount": 2, "region": "EAST"}]
+
+
+ORDER_SQL = """
+CREATE TABLE orders (id INTEGER PRIMARY KEY, amount INTEGER);
+INSERT INTO orders SELECT i, 10 FROM range(100) t(i);
+INSERT INTO orders VALUES (1000, 20);
+"""
+ORDERS_ONLY = SlayerDataset(name="orders", sql_table="orders", data_source=DS, fields=[
+    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+    DatasetField(name="amount", datatype=DataType.INTEGER)])
+
+
+@pytest.mark.parametrize(("key", "expected"), [
+    pytest.param("amount", [{"orders.amount": 10, "amount": 100}], id="bare-is-the-alias"),
+    pytest.param("orders.amount", [{"orders.amount": 20, "amount": 1}], id="qualified-is-the-field"),
+])
+async def test_an_order_key_beside_an_alias_equal_to_a_field_name(tmp_path: Path, key: str,
+                                                                  expected: list[dict[str, Any]]) -> None:
+    """With an alias equal to a field name, a bare order key is the alias and a qualified one the field."""
+    async with sql_engine(tmp_path, sql=ORDER_SQL, datasets=[ORDERS_ONLY]) as engine:
+        response = await engine.execute({
+            "dimensions": ["orders.amount"], "metrics": [{"metric": "count(orders.*)", "alias": "amount"}],
+            "order": [{"field": key, "direction": "desc"}], "limit": 1})
+    assert response.data == expected

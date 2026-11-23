@@ -21,7 +21,9 @@ from slayer.core.errors import AmbiguousReferenceError, OssieDocumentInvalidErro
 from slayer.core.names import match_name
 from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
 from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
-from slayer.core.relationship_walker import aggregation_owner, dataset_field_type, terminal_dataset, walk
+from slayer.core.relationship_walker import (
+    aggregation_owner, dataset_field_type, terminal_dataset, unique_key_sets, walk,
+)
 from slayer.core.time_points import parse_temporal_value
 from slayer.core.keys import (
     MIRRORED_TIME_POINT_OP,
@@ -46,6 +48,7 @@ from slayer.core.models import (
     DatasetRelationship,
     DatasetMetric,
     SlayerDataset,
+    is_key_set_unique,
     aggregation_definition,
     relationship_key_error,
     rendered_expression,
@@ -591,8 +594,8 @@ class _Exporter:
         return not bad
 
     def _is_key(self, name: str, fields: list[str]) -> bool:
-        ds = self.osi_datasets[name]
-        return any(set(fields) == set(k) for k in [ds.primary_key, *ds.unique_keys] if k)
+        """``fields`` hold a unique key of the dataset, as routing proves one."""
+        return is_key_set_unique(key_fields=fields, unique_key_sets=unique_key_sets(self.osi_datasets[name].graph))
 
     # ---- relationships ----
 

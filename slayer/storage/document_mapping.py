@@ -67,6 +67,26 @@ def _edge_identity(relationship: DatasetRelationship) -> tuple[str | None, str |
     return None, _fold(relationship.to), tuple(relationship.column_pairs)
 
 
+def _held_entities(relationships: list[DatasetRelationship],
+                   held: list[tuple[DatasetRelationship, dict[str, Any]]]) -> list[dict[str, Any] | None]:
+    """Each relationship's document entity: the one restoring it by identity, else (an unnamed relationship whose keys
+    changed) a leftover unnamed one to the same target, in order; ``None`` for a new relationship."""
+    left = list(held)
+    out: list[dict[str, Any] | None] = []
+    for relationship in relationships:
+        found = next((h for h in left if _edge_identity(h[0]) == _edge_identity(relationship)), None)
+        if found is not None:
+            left.remove(found)
+        out.append(found[1] if found is not None else None)
+    for i, relationship in enumerate(relationships):
+        found = next((h for h in left if out[i] is None and relationship.name is None and h[0].name is None
+                      and _fold(h[0].to) == _fold(relationship.to)), None)
+        if found is not None:
+            left.remove(found)
+            out[i] = found[1]
+    return out
+
+
 def _free_name(base: str, *, taken: set[str]) -> str:
     """``base``, else the first ``base_<n>`` no relationship of the document holds."""
     candidates = (base if n == 1 else f"{base}_{n}" for n in itertools.count(1))
@@ -358,18 +378,16 @@ class _Writer:
             return
         name = self.new.name
         rels: list[dict[str, Any]] = []
-        mine: dict[tuple[str | None, str | None, tuple[tuple[str, str], ...]], list[dict[str, Any]]] = {}
+        mine: list[tuple[DatasetRelationship, dict[str, Any]]] = []
         for rel in self.doc.get("relationships") or []:
             owner, restored = self._restored(rel)
             if _fold(owner) == _fold(name):
-                mine.setdefault(_edge_identity(restored), []).append(rel)
+                mine.append((restored, rel))
             else:
                 rels.append(rel)
         self.doc["relationships"] = rels
-        taken = {_fold(r.get("name")) for r in [*rels, *(h for held in mine.values() for h in held)]}
-        for relationship in self.new.relationships:
-            queue = mine.get(_edge_identity(relationship))
-            held = queue.pop(0) if queue else None
+        taken = {_fold(r.get("name")) for r in [*rels, *(h for _, h in mine)]}
+        for relationship, held in zip(self.new.relationships, _held_entities(self.new.relationships, mine)):
             rel_name = held["name"] if held is not None else _free_name(
                 relationship_name(src=name, relationship=relationship), taken=taken)
             taken.add(_fold(rel_name))

@@ -328,8 +328,18 @@ def _reference_problem(column: exp.Column) -> MetricProblem | None:
 
 
 def _components(tree: exp.Expr) -> list[exp.Expr]:
-    """The aggregate calls no other aggregate contains, ``AGG(d.m)`` included."""
-    return [n for n in tree.walk() if (isinstance(n, exp.AggFunc) or is_agg_call(n)) and not _aggregated(n)]
+    """The aggregate calls no other aggregate call contains, ``AGG(d.m)`` included; a call's own ``FILTER`` does not
+    contain it."""
+    return [n for n in tree.walk() if (isinstance(n, exp.AggFunc) or is_agg_call(n)) and not _enclosed(n)]
+
+
+def _enclosed(node: exp.Expr) -> bool:
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, exp.AggFunc) or is_agg_call(parent):
+            return True
+        parent = parent.parent
+    return False
 
 
 def _component(aggregate: exp.Expr) -> tuple[str | None, MetricProblem | None]:

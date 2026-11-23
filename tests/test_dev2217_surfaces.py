@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -130,8 +130,9 @@ def test_unknown_conformance_on_the_embedded_sync_client(tmp_path: Path, method:
 # REST and the remote client
 # --------------------------------------------------------------------------- #
 @pytest.fixture
-def rest(tmp_path: Path) -> TestClient:
-    return TestClient(create_app(storage=asyncio.run(prepare_store(tmp_path))))
+def rest(tmp_path: Path) -> Iterator[TestClient]:
+    with TestClient(create_app(storage=asyncio.run(prepare_store(tmp_path)))) as client:
+        yield client
 
 
 def test_rest_refusal_carries_the_code(rest: TestClient) -> None:
@@ -167,12 +168,21 @@ def test_rest_run_by_name_refuses_query_parts_beside_the_name(tmp_path: Path) ->
     storage = asyncio.run(prepare_store(tmp_path))
     asyncio.run(storage.save_dataset(SlayerDataset(name="by_region", data_source=DS,
                                                    source_queries=[SlayerQuery.model_validate(ADMITTED)])))
-    rest = TestClient(create_app(storage=storage))
-    assert rest.post("/query", params={"conformance": STRICT}, json={"name": "by_region"}).status_code == 200
-    response = rest.post("/query", params={"conformance": STRICT},
-                         json={"name": "by_region", "metrics": ["orders.total_revenue"]})
+    with TestClient(create_app(storage=storage)) as rest:
+        assert rest.post("/query", params={"conformance": STRICT}, json={"name": "by_region"}).status_code == 200
+        response = rest.post("/query", params={"conformance": STRICT},
+                             json={"name": "by_region", "metrics": ["orders.total_revenue"]})
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "E_INVALID_QUERY"
+
+
+def test_rest_strict_reads_execution_flags_as_validated(rest: TestClient) -> None:
+    """``"false"`` validates as false, so the query runs rather than dry-running."""
+    response = rest.post("/query", params={"conformance": STRICT},
+                         json={"metrics": ["orders.total_revenue"], "dry_run": "false", "explain": "false"})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"] == [{"total_revenue": 650}]
+    assert response.json().get("sql") is None
 
 
 def test_rest_unknown_conformance(rest: TestClient) -> None:
@@ -203,6 +213,22 @@ def test_remote_client_sync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         client.sql_sync(LIMITED, conformance=STRICT)
     with pytest.raises(ossie_query_error()):
         client.explain_sync(LIMITED, conformance=STRICT)
+
+
+@pytest.mark.parametrize("query", [
+    pytest.param(SlayerQuery.model_validate({"dimensions": None, "metrics": ["orders.total_revenue"]}), id="explicit-null"),
+    pytest.param([SlayerQuery.model_validate({"metrics": ["orders.total_revenue"]})], id="list-of-models"),
+])
+async def test_remote_client_sends_the_query_as_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                    query: Any) -> None:
+    """The server judges what the caller set: an explicit null and a stage list are refused with the code."""
+    _routed(monkeypatch, create_app(storage=await prepare_store(tmp_path)))
+    client = SlayerClient(url="http://testserver")
+    with pytest.raises(ossie_query_error()) as raised:
+        await client.query(query, conformance=STRICT)
+    assert raised.value.code == "E_INVALID_QUERY"
+    typed = await client.query(SlayerQuery.model_validate({"metrics": ["orders.total_revenue"]}), conformance=STRICT)
+    assert typed.data == [{"total_revenue": 650}]
 
 
 async def test_remote_client_async(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -289,8 +315,8 @@ async def test_strict_usage_reporting_sees_the_query_as_submitted(tmp_path: Path
     observed: list[Any] = []
     monkeypatch.setattr(usage_reporting, "observe_query", observed.append)
     storage = await prepare_store(tmp_path)
-    assert TestClient(create_app(storage=storage)).post(
-        "/query", params={"conformance": STRICT}, json=ADMITTED).status_code == 200
+    with TestClient(create_app(storage=storage)) as rest:
+        assert rest.post("/query", params={"conformance": STRICT}, json=ADMITTED).status_code == 200
     await _mcp_text(create_mcp_server(storage=storage, _seed_help=False), query=ADMITTED, conformance=STRICT)
     assert observed == [ADMITTED, ADMITTED]
 
@@ -309,7 +335,7 @@ async def test_mcp_reaches_the_same_binding(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-def _cli(tmp_path: Path, query: dict[str, Any], *extra: str) -> Any:
+def _cli(tmp_path: Path, query: Any, *extra: str) -> Any:
     asyncio.run(prepare_store(tmp_path))
     return run_cli_in_process(["query", json.dumps(query), "--storage", str(tmp_path / "store"), *extra])
 
@@ -320,9 +346,15 @@ def test_a_strict_refusal_through_the_cli(tmp_path: Path) -> None:
     assert result.returncode != 0
     lines = result.stderr.splitlines()
     assert len(lines) == 1, result.stderr
-    assert lines[0].removeprefix("Error: ").startswith(f"OssieQueryError: {CODE}")
+    assert lines[0].startswith(f"OssieQueryError: {CODE}")
     assert "customers.region" in lines[0]
     assert "tickets.ticket_count" in lines[0]
+
+
+def test_an_empty_query_list_is_a_strict_refusal_through_the_cli(tmp_path: Path) -> None:
+    result = _cli(tmp_path, [], "--conformance", STRICT)
+    assert result.returncode != 0
+    assert "E_INVALID_QUERY" in result.stderr
 
 
 def test_output_names_through_the_cli(tmp_path: Path) -> None:

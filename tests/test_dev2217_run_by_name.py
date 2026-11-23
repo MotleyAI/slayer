@@ -111,3 +111,29 @@ async def test_the_cache_answers_with_output_names(engine: SlayerQueryEngine) ->
     native = await engine.execute(BY_REGION, cache=True)
     assert first.columns == second.columns == ["region", "total_revenue"]
     assert native.columns == ["customers.region", "orders.total_revenue"]
+
+
+async def test_dataset_variable_defaults_bind_the_saved_filter(engine: SlayerQueryEngine) -> None:
+    """A dataset's variable defaults bind its saved filter, under the run's variables; they are no query part."""
+    await engine.storage.save_dataset(SlayerDataset(
+        name="big", data_source=DS, query_variables={"minimum": 100}, source_queries=[SlayerQuery.model_validate(
+            {"metrics": ["orders.total_revenue"], "filter": "orders.amount >= {minimum}"})]))
+    assert (await strict(engine, "big")).data == [{"total_revenue": 600}]
+    assert (await strict(engine, "big", variables={"minimum": 300})).data == [{"total_revenue": 300}]
+
+
+async def test_the_run_answers_the_stage_strict_judged(engine: SlayerQueryEngine,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    """The native run executes the judged stage, never a second read of the saved query."""
+    await _save(engine, "by_region", BY_REGION)
+    judged = engine.saved_query_stages
+
+    async def judged_then_replaced(*args: Any, **kwargs: Any) -> Any:
+        out = await judged(*args, **kwargs)
+        await _save(engine, "by_region", {"metrics": ["orders.total_revenue"]})
+        return out
+
+    monkeypatch.setattr(engine, "saved_query_stages", judged_then_replaced)
+    response = await strict(engine, "by_region")
+    assert response.columns == ["region", "total_revenue"]
+    assert rows(response) == [("EAST", 350.0), ("WEST", 300.0)]

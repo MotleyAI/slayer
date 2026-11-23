@@ -524,14 +524,18 @@ async def _classification_scopes(
 async def query_datasource(*, storage: StorageBackend, anchors: Iterable[tuple[str, bool]]) -> str | None:
     """The single datasource holding every one of ``anchors`` (each a name and whether it is quoted) that exists
     anywhere (``None`` when none does); raises as inference does when several hold them together, or none does."""
-    ds_by_dataset: dict[str, set[str]] = {}
+    names_by_ds: dict[str, list[str]] = {}
     for ds, name in await storage._list_all_dataset_identities():
-        ds_by_dataset.setdefault(name, set()).add(ds)
-    found = (match_name(name=name, declared=ds_by_dataset, quoted=quoted) for name, quoted in anchors)
-    spelled = {s for s in found if s is not None}
-    if not spelled:
+        names_by_ds.setdefault(ds, []).append(name)
+    # Each anchor resolves within each datasource, so names differing only in case across datasources never clash.
+    ds_by_anchor: dict[str, set[str]] = {}
+    for name, quoted in anchors:
+        for ds, names in names_by_ds.items():
+            if match_name(name=name, declared=names, quoted=quoted) is not None:
+                ds_by_anchor.setdefault(name, set()).add(ds)
+    if not ds_by_anchor:
         return None
-    return _resolve_datasource(ds_by_dataset=ds_by_dataset, data_source=None, anchors=spelled)
+    return _resolve_datasource(ds_by_dataset=ds_by_anchor, data_source=None, anchors=set(ds_by_anchor))
 
 
 def _resolve_datasource(
@@ -808,9 +812,14 @@ def _ossie_anchor(items: list[str], *, datasets_by_name: dict[str, SlayerDataset
     """The one dataset of a ``dataset.field`` item reaching every other item's dataset along Ossie steps, if unique."""
     heads: list[str] = []
     for item in items:
-        parts = item.split(".")
-        anchor = find_anchor(parts[0], quoted=False, reader=None, datasets_by_name=datasets_by_name)
-        if len(parts) != 2 or anchor is None:
+        try:
+            ref = parse_template(item)
+        except ValueError:
+            return None
+        if not isinstance(ref, DottedRef) or len(ref.parts) != 2:
+            return None
+        anchor = find_anchor(ref.parts[0], quoted=ref.quoted_at(0), reader=None, datasets_by_name=datasets_by_name)
+        if anchor is None:
             return None
         heads.append(anchor.name)
     heads = list(dict.fromkeys(heads))
