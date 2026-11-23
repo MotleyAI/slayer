@@ -269,6 +269,97 @@ async def test_a_comparison_argument_of_an_aggregation_converts(engine: SlayerQu
     )
 
 
+# --------------------------------------------------------------------------- #
+# A bare name an alias shares reads what it read before 2.0
+# --------------------------------------------------------------------------- #
+def _column(resp: SlayerResponse, suffix: str) -> list[float]:
+    key = next(k for k in resp.columns if k.endswith(suffix))
+    return [float(r[key]) for r in resp.data]
+
+
+async def test_a_metric_reads_the_population_metric_a_sibling_alias_shares(engine: SlayerQueryEngine) -> None:
+    resp = await assert_converts(
+        engine,
+        _orders(metrics=[m("count(*)", "revenue"), m("revenue * 10", "r10")]),
+        _orders(metrics=[m("count(orders.*)", "revenue"), m("orders.revenue * 10", "r10")]),
+        {COUNT, ("revenue", "orders.revenue")},
+    )
+    assert _column(resp, "r10") == [1000.0]
+
+
+async def test_a_filter_reads_a_population_field_before_an_alias_of_the_same_name(engine: SlayerQueryEngine) -> None:
+    resp = await assert_converts(
+        engine,
+        _orders(metrics=[m("sum(amount)", "amount")], filter=["amount > 15"]),
+        _orders(metrics=[m("sum(orders.amount)", "amount")], filter=["orders.amount > 15"]),
+        {AMOUNT},
+    )
+    assert _column(resp, "amount") == [90.0]
+
+
+async def test_a_filter_reads_an_alias_the_population_does_not_declare(engine: SlayerQueryEngine) -> None:
+    resp = await assert_converts(
+        engine,
+        _orders(dimensions=["status"], metrics=[m("count(*)", "n")], filter=["n > 1"]),
+        _orders(dimensions=["orders.status"], metrics=[m("count(orders.*)", "n")], filter=["n > 1"]),
+        {STATUS, COUNT},
+    )
+    assert [r["orders.status"] for r in resp.data] == ["paid"]
+
+
+async def test_an_order_reads_an_alias_before_a_population_metric(engine: SlayerQueryEngine) -> None:
+    resp = await assert_converts(
+        engine,
+        _orders(dimensions=["status"], metrics=[m("count(*)", "revenue")],
+                order=[{"field": "revenue", "direction": "desc"}]),
+        _orders(dimensions=["orders.status"], metrics=[m("count(orders.*)", "revenue")],
+                order=[{"field": "revenue", "direction": "desc"}]),
+        {STATUS, COUNT},
+    )
+    assert _column(resp, "revenue") == [3.0, 1.0]
+
+
+async def test_the_main_time_dimension_reads_a_population_field_before_an_alias(engine: SlayerQueryEngine) -> None:
+    def body(field: str, main: str) -> dict[str, Any]:
+        return _orders(time_dimensions=[{"field": field, "granularity": "month", "alias": "created_at"}],
+                       metrics=[m("change(sum(orders.amount))", "c")], main_time_dimension=main)
+
+    await assert_converts(engine, body("created_at", "created_at"),
+                          body("orders.created_at", "orders.created_at"), {CREATED})
+
+
+async def test_a_quoted_alias_matches_only_its_exact_spelling(engine: SlayerQueryEngine) -> None:
+    resp = await assert_converts(
+        engine,
+        _orders(dimensions=["status"], metrics=[m("count(*)", "Amount")], filter=['"Amount" > 1']),
+        _orders(dimensions=["orders.status"], metrics=[m("count(orders.*)", "Amount")], filter=['"Amount" > 1']),
+        {STATUS, COUNT},
+    )
+    assert [r["orders.status"] for r in resp.data] == ["paid"]
+
+
+async def test_a_stage_population_offers_its_output_columns_as_fields(engine: SlayerQueryEngine) -> None:
+    s1 = {"name": "s1", "population": "orders", "dimensions": ["orders.id"],
+          "metrics": [m("sum(orders.amount)", "rev")]}
+    resp = await assert_converts(
+        engine,
+        [s1, {"population": "s1", "metrics": [m("sum(rev)", "rev")], "filter": ["rev > 25"]}],
+        [s1, {"population": "s1", "metrics": [m("sum(s1.rev)", "rev")], "filter": ["s1.rev > 25"]}],
+        {("rev", "s1.rev")},
+    )
+    assert _column(resp, "rev") == [70.0]
+
+
+async def test_a_query_backed_population_offers_its_output_columns_as_fields(engine: SlayerQueryEngine) -> None:
+    resp = await assert_converts(
+        engine,
+        {"population": "qb", "metrics": [m("sum(tot)", "tot")], "filter": ["tot > 50"]},
+        {"population": "qb", "metrics": [m("sum(qb.tot)", "tot")], "filter": ["qb.tot > 50"]},
+        {("tot", "qb.tot")},
+    )
+    assert _column(resp, "tot") == [80.0]
+
+
 async def test_a_root_relative_spelling_used_twice_in_one_query(seed: SlayerQueryEngine) -> None:
     _resp, caught = await execute_recording(seed, _orders(metrics=["count(*)"], filter=["count(*) > 1"]))
     texts = future_warnings(caught)
