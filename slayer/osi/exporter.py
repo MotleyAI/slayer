@@ -1076,7 +1076,7 @@ def _left_out(skipped: list[StoredDocumentLoadError]) -> list[ConversionWarning]
     """A report entry, and an ``unloadable_document`` warning, for each document the export leaves out."""
     out: list[ConversionWarning] = []
     for error in skipped:
-        payload = UnloadableDocumentWarning(document_kind="dataset", data_source=error.data_source, name=error.name,
+        payload = UnloadableDocumentWarning(document_kind="semantic_model", data_source=error.data_source, name=error.name,
                                             cause=error.cause_text)
         warnings.warn(SlayerUnloadableDocumentWarning(payload), stacklevel=outside_stacklevel())
         out.append(ConversionWarning(message=payload.human_message(), category="unloadable_document", severity="dropped"))

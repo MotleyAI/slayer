@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 import yaml
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerUnloadableDocumentWarning
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -19,6 +20,7 @@ from slayer.osi.parser import parse_osi_path
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.sqlite_conn import transaction
 from tests._cli_inprocess import run_cli_in_process
 from tests._engine_helpers import owned_query_engine
@@ -416,7 +418,7 @@ async def test_export_leaves_out_an_unreadable_document(tmp_path: Path, kind: st
             exported = await export_osi(engine=engine, datasource=DS)
     assert exported.text == SUPPORT
     [note] = [w for w in exported.warnings if w.category == "unloadable_document"]
-    assert "sales" in note.message
+    assert f"semantic model '{DS}.sales'" in note.message
     assert names_problem(note.message, text=text, verdict=verdict, needle=needle, at=at)
 
 
@@ -565,3 +567,11 @@ async def test_a_filtered_export_leaves_out_a_document_edited_unreadable_after_i
 def test_the_osi_parser_skips_an_unreadable_file(tmp_path: Path, text: str, verdict: str, needle: str,
                                                  at: str) -> None:
     assert parse_osi_path(write(tmp_path / "bad.yaml", text)) == []
+
+
+def test_an_unloadable_semantic_model_is_warned_as_one() -> None:
+    failures = DocumentLoadFailures()
+    error = StoredDocumentLoadError(kind="semantic_model", name="sales", data_source=DS, cause=ValueError("broken"))
+    with pytest.warns(SlayerUnloadableDocumentWarning, match=f"semantic model '{DS}.sales'"):
+        failures.record(error)
+    assert [w.document_kind for w in failures.warnings] == ["semantic_model"]
