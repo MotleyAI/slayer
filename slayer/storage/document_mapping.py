@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 from typing import Any
 
 from slayer.core import slayer_extension as ext
@@ -11,9 +12,10 @@ from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.field_expression import Expression, ExpressionObject
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
 from slayer.core.ossie_expression import OSIExpression
-from slayer.core.semantic_model import ossie_validity_errors
+from slayer.core.semantic_model import OssieRelationship, ossie_validity_errors
 from slayer.sql.ossie_dialects import expression_digest, source_digest
 from slayer.sql.ossie_source import parse_source
+from slayer.storage.document_extensions import restored_relationship
 
 __all__ = ["OSSIE_CORE_TYPES", "as_expression", "core_source", "dataset_payload", "document_payload", "field_payload", "ossie_expression", "relationship_name",
            "with_dataset", "with_document_payload", "without_dataset"]
@@ -56,6 +58,19 @@ def relationship_name(*, src: str, relationship: DatasetRelationship) -> str:
 
 def _fold(name: Any) -> str:
     return str(name).casefold()
+
+
+def _edge_identity(relationship: DatasetRelationship) -> tuple[str | None, str | None, tuple[tuple[str, str], ...]]:
+    """A dataset's relationship as native traversal tells it apart: its name, else its target and key pairs."""
+    if relationship.name is not None:
+        return _fold(relationship.name), None, ()
+    return None, _fold(relationship.to), tuple(relationship.column_pairs)
+
+
+def _free_name(base: str, *, taken: set[str]) -> str:
+    """``base``, else the first ``base_<n>`` no relationship of the document holds."""
+    candidates = (base if n == 1 else f"{base}_{n}" for n in itertools.count(1))
+    return next(c for c in candidates if _fold(c) not in taken)
 
 
 def _find(items: list[dict[str, Any]] | None, name: str) -> dict[str, Any] | None:
@@ -333,23 +348,31 @@ class _Writer:
 
     # ---- relationships ----
 
-    def _declared(self, rel: dict[str, Any]) -> bool:
-        """``rel`` is one of this dataset's: declared on it by default or by its ``SLAYER`` entry."""
-        payload = _slayer_payload(rel)
-        if isinstance(payload, ext.RelationshipPayload):
-            return any(_fold(d.dataset) == _fold(self.new.name) for d in payload.declarations)
-        return _fold(rel.get("from")) == _fold(self.new.name)
+    def _restored(self, rel: dict[str, Any]) -> tuple[str, DatasetRelationship]:
+        """The ``(dataset, relationship)`` a load restores document relationship ``rel`` as."""
+        return restored_relationship(OssieRelationship.model_validate(rel), notes=[],
+                                     datasets=[d["name"] for d in self.doc.get("datasets") or []])
 
     def _relationships(self) -> None:
         if self.old is not None and self.new.relationships == self.old.relationships:
             return
         name = self.new.name
-        rels = [r for r in self.doc.get("relationships") or [] if not self._declared(r)]
-        mine = {_fold(r.get("name")): r for r in self.doc.get("relationships") or [] if self._declared(r)}
+        rels: list[dict[str, Any]] = []
+        mine: dict[tuple[str | None, str | None, tuple[tuple[str, str], ...]], list[dict[str, Any]]] = {}
+        for rel in self.doc.get("relationships") or []:
+            owner, restored = self._restored(rel)
+            if _fold(owner) == _fold(name):
+                mine.setdefault(_edge_identity(restored), []).append(rel)
+            else:
+                rels.append(rel)
         self.doc["relationships"] = rels
+        taken = {_fold(r.get("name")) for r in [*rels, *(h for held in mine.values() for h in held)]}
         for relationship in self.new.relationships:
-            rel_name = relationship_name(src=name, relationship=relationship)
-            held = mine.get(_fold(rel_name))
+            queue = mine.get(_edge_identity(relationship))
+            held = queue.pop(0) if queue else None
+            rel_name = held["name"] if held is not None else _free_name(
+                relationship_name(src=name, relationship=relationship), taken=taken)
+            taken.add(_fold(rel_name))
             if not self._core_relationship(relationship, rel_name=rel_name, held=held):
                 self.slayer_relationships.append(relationship)
         if not self.doc["relationships"]:
@@ -362,7 +385,7 @@ class _Writer:
         targets = [b for _, b in relationship.column_pairs]
         default = (relationship.cardinality in (None, RelationshipCardinality.MANY_TO_ONE)
                    and relationship.join_type is JoinType.LEFT and relationship.description is None
-                   and relationship.meta is None and relationship.name is not None)
+                   and relationship.meta is None and relationship.name == rel_name)
         shapes = [(name, relationship.to, sources, targets), (relationship.to, name, targets, sources)]
         if relationship.cardinality is RelationshipCardinality.ONE_TO_MANY:
             shapes.reverse()

@@ -14,11 +14,11 @@ from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from slayer.core.enums import DataType, JoinType, RelationshipCardinality
+from slayer.core.enums import DataType
 from slayer.core.errors import OssieDocumentInvalidError, OssieErrorCode, StoredDocumentLoadError
 from slayer.core.field_expression import DialectEntry, Expression, ExpressionObject, token
 from slayer.core import slayer_extension as ext
-from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
+from slayer.core.models import DatasetField, DatasetMetric, ExtensionNote, SlayerDataset
 from slayer.core.ossie_validity import columns, is_agg_call, parse_ossie_sql
 from slayer.core.semantic_model import (
     MetricProblem, ModelScopedAnalysis, ModelScopedMetric, OssieDataset, OssieExpression, SemanticModelDocument,
@@ -31,7 +31,7 @@ from slayer.sql.ossie_dialects import (
 from slayer.storage.document_mapping import core_source
 from slayer.storage.document_extensions import (
     Restored, apply_dataset_entry, apply_field_entry, digest as entry_digest, metric_entry, read_entry,
-    relationship_declarations, relocate_metrics, restore_metrics,
+    relocate_metrics, restore_metrics, restored_relationship,
 )
 
 __all__ = ["Decomposition", "DocumentIndex", "analyse_model_scoped", "build_index", "checked_document", "decompose",
@@ -235,20 +235,9 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None) -> 
                                  members=members, restored=restored) for d in doc.datasets}
     relocate_metrics(datasets, restored=restored)
     for rel in doc.relationships or []:
-        notes = datasets[rel.from_dataset].extension_notes
-        default = DatasetRelationship(
-            name=rel.name, to=rel.to, from_columns=list(rel.from_columns), to_columns=list(rel.to_columns),
-            cardinality=RelationshipCardinality.MANY_TO_ONE, join_type=JoinType.LEFT,
-        )
-        entry = read_entry(rel.nonportable_extensions, kind="relationship", entity=rel.name,
-                           ossie=ext.relationship_digest(from_dataset=rel.from_dataset, to=rel.to,
-                                                         from_columns=list(rel.from_columns),
-                                                         to_columns=list(rel.to_columns)),
-                           label=f"relationship {rel.name!r}", notes=notes)
-        for owner, declared in relationship_declarations(rel, entry, datasets=datasets, default=default, notes=notes):
-            datasets[owner].relationships.append(
-                declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)}).from_document(
-                    rel.from_dataset))
+        owner, declared = restored_relationship(rel, datasets=datasets, notes=datasets[rel.from_dataset].extension_notes)
+        datasets[owner].relationships.append(
+            declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)}).from_document(rel.from_dataset))
     restore_metrics(datasets, restored=restored, dialect=reader)
     metrics = []
     for m in doc.metrics or []:

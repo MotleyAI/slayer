@@ -147,13 +147,13 @@ _Shape = tuple[str, str, list[str], list[str]]
 
 
 class _Relationship(BaseModel):
-    """One FK-direction relationship and the SLayer relationships it stands for."""
+    """One FK-direction relationship and the SLayer relationship it stands for."""
 
     from_dataset: str
     to: str
     from_columns: list[str]
     to_columns: list[str]
-    declarations: list[ext.RelationshipDeclaration] = []
+    declaration: ext.RelationshipDeclaration
     name: str = ""
 
 
@@ -621,13 +621,9 @@ class _Exporter:
                          f"side; not exported.", severity="dropped", category="relationship", dataset=name,
                          suggestion="Set the relationship's cardinality.")
             return
-        declaration = ext.RelationshipDeclaration(dataset=name, relationship=relationship)
-        rel = next((r for r in self.relationships
-                    if (r.from_dataset, r.to, r.from_columns, r.to_columns) == shape), None)
-        if rel is None:
-            rel = _Relationship(from_dataset=shape[0], to=shape[1], from_columns=shape[2], to_columns=shape[3])
-            self.relationships.append(rel)
-        rel.declarations.append(declaration)
+        self.relationships.append(_Relationship(
+            from_dataset=shape[0], to=shape[1], from_columns=shape[2], to_columns=shape[3],
+            declaration=ext.RelationshipDeclaration(dataset=name, relationship=relationship)))
         plain = (shape == forward and relationship.cardinality is RelationshipCardinality.MANY_TO_ONE
                  and relationship.join_type.value == "left" and relationship.name is None)
         if not plain:
@@ -828,7 +824,7 @@ class _Exporter:
             for taken in [*(doc.get("relationships") or []), *(doc.get("metrics") or [])]:
                 document.allocate(taken["name"])
         for rel in self.relationships:
-            explicit = next((d.relationship.name for d in rel.declarations if d.relationship.name), None)
+            explicit = rel.declaration.relationship.name
             if explicit:
                 rel.name = document.allocate(explicit)
         for metric in dataset_metrics:
@@ -1003,12 +999,13 @@ class _Exporter:
     def _relationship_entity(self, rel: _Relationship) -> dict[str, Any]:
         entity: dict[str, Any] = {"name": rel.name, "from": rel.from_dataset, "to": rel.to,
                                   "from_columns": rel.from_columns, "to_columns": rel.to_columns}
-        meta = rel.declarations[0].relationship.meta or {}
+        meta = rel.declaration.relationship.meta or {}
         if meta.get("osi_ai_context"):
             entity["ai_context"] = meta["osi_ai_context"]
-        declarations = [d.model_copy(update={"relationship": d.relationship.model_copy(update={"meta": _slayer_meta(d.relationship.meta)})})
-                        for d in rel.declarations]
-        self._extensions(entity, meta, payload=ext.RelationshipPayload(entity=rel.name, declarations=declarations),
+        declared = rel.declaration.relationship
+        declaration = rel.declaration.model_copy(
+            update={"relationship": declared.model_copy(update={"meta": _slayer_meta(declared.meta)})})
+        self._extensions(entity, meta, payload=ext.RelationshipPayload(entity=rel.name, declarations=[declaration]),
                          dataset=rel.from_dataset, ossie=ext.relationship_digest(
                              from_dataset=rel.from_dataset, to=rel.to, from_columns=rel.from_columns,
                              to_columns=rel.to_columns))

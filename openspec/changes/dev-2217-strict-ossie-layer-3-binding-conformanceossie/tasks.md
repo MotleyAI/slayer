@@ -56,3 +56,7 @@
 - [x] 9.1 `docs/interfaces/ossie-layer-3.md` (selection per surface, shape, codes with precedence, filter grammar and the DEV-2282 limitation, output names, run-by-name, errors on the wire) linked in `zensical.toml`'s Interfaces nav; update `docs/reference/python-client.md`, `rest-api.md`, `mcp.md`, `cli.md`; a pointer from `docs/concepts/queries.md`; an upgrade note for Ossie precedence and Ruling 1 under `docs/upgrading/`.
 - [x] 9.2 `architecture/index.yaml`: `queries.touches` gains `python.surfaces`.
 - [x] 9.3 Gates: local test scope (`la-affected-tests`), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `la-arch-check`, `npx -y likec4@1.47.0 validate architecture`, `openspec validate dev-2217-strict-ossie-layer-3-binding-conformanceossie --strict`. If the bundle asks for a `.c4` change, stop and ask.
+
+## 10. Review fixes
+
+- [x] 10.1 Export one relationship per join; a relationship's `SLAYER` entry declaring several declarations loads as the plain relationship with a load warning. Verify: the two new scenarios.

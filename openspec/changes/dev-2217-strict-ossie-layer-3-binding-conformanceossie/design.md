@@ -61,6 +61,7 @@ The decisions log; each entry gives the choice, the options weighed where there 
     - Axiom 12.2: `    - **12.2 Dimension anchor.** `A` is the smallest dataset determining every` / `      dimension, read from dimensions only, an unproven hop counting by` → `    - **12.2 Dimension anchor.** `A` is the anchor Ossie qualifies uniquely` / `      (Ossie precedence, Principle 4), else the smallest dataset determining every` / `      dimension, read from dimensions only, an unproven hop counting by`
 37. **Codex finding #1 (do DEV-2388 here) rejected**: the user ruled `a16` a strict xfail against DEV-2388. rejected (codex)
 38. **Codex finding #10 folded**: tests for raw inputs native conversion would rewrite, mixed-quote collisions, and the reversed-hop routing cases (now passing via decision 35). (codex)
+39. **One Ossie relationship per native edge.** Codex: the strict checks counted one exported relationship's restored declarations as separate steps. Root cause: the export merged same-shape joins into one relationship while native keeps them as parallel edges (`models/join-traversal`), so the two disagreed on paths. Export never merges, and a `SLAYER` entry restores one relationship, so path counts agree by construction, native stays a superset, and DEV-2219's parallel-edges ruling holds. Collapsing same-shape edges in native routing was rejected: it overturns that ruling. (user)
 
 ## Risks / Trade-offs
 

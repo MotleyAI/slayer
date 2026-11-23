@@ -6,9 +6,14 @@ Spec: queries/ossie-l3-binding › The strict binding reads the model as an Ossi
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
 
 from slayer.core import slayer_extension as ext
-from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.enums import DataType, JoinType, RelationshipCardinality
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
 from tests._dev2217_fixtures import DS, rows, sql_engine, strict, strict_error
 from tests._dev2243_fixtures import dataset, document_text, field, metric, relationship
@@ -96,6 +101,137 @@ async def test_a_document_relationship_keeps_its_direction(tmp_path: Path) -> No
     """A document relationship keeps its direction."""
     async with sql_engine(tmp_path, sql=SQL, documents=[_document_declaring_one_to_many()]) as engine:
         assert rows(await strict(engine, QUERY)) == BY_REGION
+
+
+BUYER = _rel("customers", RelationshipCardinality.MANY_TO_ONE).model_copy(update={"name": "buyer"})
+PLACED = _rel("orders", RelationshipCardinality.ONE_TO_MANY).model_copy(update={"name": "placed"})
+BOTH_SIDES = [ext.RelationshipDeclaration(dataset="orders", relationship=BUYER),
+              ext.RelationshipDeclaration(dataset="customers", relationship=PLACED)]
+
+
+def _document_declaring(declarations: list[ext.RelationshipDeclaration]) -> str:
+    """``orders_to_customers``, its ``SLAYER`` entry carrying ``declarations``."""
+    keys = {"from_columns": ["customer_id"], "to_columns": ["customer_id"]}
+    payload = ext.RelationshipPayload(entity="orders_to_customers", declarations=declarations)
+    entry = ext.encode(payload, ossie=ext.relationship_digest(from_dataset="orders", to="customers", **keys))
+    rel = {**relationship("orders_to_customers", src="orders", to="customers", **keys),
+           "nonportable_extensions": [entry]}
+    return document_text(name="sales", datasets=[
+        dataset("customers", primary_key=["customer_id"], fields=[field("customer_id"), field("region")]),
+        dataset("orders", primary_key=["order_id"],
+                fields=[field("order_id"), field("customer_id"), field("amount", datatype="Integer")],
+                metrics=[metric("total_revenue", "SUM(amount)")]),
+    ], relationships=[rel])
+
+
+async def _assert_plain_relationship(engine: Any) -> None:
+    orders = await engine.storage.get_dataset("orders", data_source=DS)
+    assert orders is not None
+    [edge] = orders.relationships
+    assert (edge.name, edge.to, edge.cardinality, edge.join_type.value) == (
+        "orders_to_customers", "customers", RelationshipCardinality.MANY_TO_ONE, "left")
+
+
+@pytest.mark.parametrize("declarations", [BOTH_SIDES, []], ids=["several", "none"])
+async def test_an_entry_not_declaring_exactly_one_relationship_is_ignored(
+        tmp_path: Path, declarations: list[ext.RelationshipDeclaration]) -> None:
+    """One document relationship restores one edge, so native and strict both answer what Ossie answers."""
+    async with sql_engine(tmp_path, sql=SQL, documents=[_document_declaring(declarations)]) as engine:
+        await _assert_plain_relationship(engine)
+        orders = await engine.storage.get_dataset("orders", data_source=DS)
+        customers = await engine.storage.get_dataset("customers", data_source=DS)
+        assert orders is not None
+        assert customers is not None
+        assert not customers.relationships
+        assert [n.entity for n in orders.extension_notes if n.kind == "relationship"] == ["orders_to_customers"]
+        assert rows(await engine.execute(QUERY)) == BY_REGION
+        assert rows(await strict(engine, QUERY)) == BY_REGION
+
+
+async def test_editing_the_other_side_keeps_the_ignored_entrys_relationship(tmp_path: Path) -> None:
+    """The relationship belongs to the dataset a load puts it on, so editing ``customers`` leaves it alone."""
+    async with sql_engine(tmp_path, sql=SQL, documents=[_document_declaring(BOTH_SIDES)]) as engine:
+        customers = await engine.storage.get_dataset("customers", data_source=DS)
+        assert customers is not None
+        customers.relationships.append(PLACED)
+        await engine.storage.save_dataset(customers)
+        await _assert_plain_relationship(engine)
+
+
+LINKS_SQL = """
+CREATE TABLE c (id VARCHAR PRIMARY KEY);
+CREATE TABLE d (id VARCHAR PRIMARY KEY);
+CREATE TABLE a (id VARCHAR PRIMARY KEY, c_id VARCHAR);
+CREATE TABLE b (id VARCHAR PRIMARY KEY, d_id VARCHAR);
+"""
+
+
+def _links_document() -> str:
+    """``a.link → c`` and ``b.link → d``: one native name, so the document names the second ``link_2``."""
+    keys = {"from_columns": ["d_id"], "to_columns": ["id"]}
+    payload = ext.RelationshipPayload(entity="link_2", declarations=[ext.RelationshipDeclaration(
+        dataset="b", relationship=DatasetRelationship(to="d", name="link", cardinality=RelationshipCardinality.MANY_TO_ONE,
+                                                      from_columns=["d_id"], to_columns=["id"]))])
+    entry = ext.encode(payload, ossie=ext.relationship_digest(from_dataset="b", to="d", **keys))
+    return document_text(name="links", datasets=[
+        dataset("a", primary_key=["id"], fields=[field("id"), field("c_id")]),
+        dataset("b", primary_key=["id"], fields=[field("id"), field("d_id")]),
+        dataset("c", primary_key=["id"], fields=[field("id")]),
+        dataset("d", primary_key=["id"], fields=[field("id")]),
+    ], relationships=[relationship("link", src="a", to="c", from_columns=["c_id"], to_columns=["id"]),
+                      {**relationship("link_2", src="b", to="d", **keys), "nonportable_extensions": [entry]}])
+
+
+async def test_editing_a_relationship_keeps_its_document_name(tmp_path: Path) -> None:
+    """An edit rewrites the relationship under its allocated name, so it stays one Ossie relationship."""
+    async with sql_engine(tmp_path, sql=LINKS_SQL, documents=[_links_document()]) as engine:
+        b = await engine.storage.get_dataset("b", data_source=DS)
+        assert b is not None
+        b.relationships = [b.relationships[0].model_copy(update={"description": "b's d"})]
+        await engine.storage.save_dataset(b)
+        text = await engine.storage.get_semantic_model_text("links", data_source=DS)
+        assert sorted(r["name"] for r in yaml.safe_load(text or "")["relationships"]) == ["link", "link_2"]
+        b = await engine.storage.get_dataset("b", data_source=DS)
+        assert b is not None
+        assert [(r.name, r.to, r.description) for r in b.relationships] == [("link", "d", "b's d")]
+
+
+PARALLEL_SQL = """
+CREATE TABLE x (id VARCHAR PRIMARY KEY);
+CREATE TABLE e (id VARCHAR PRIMARY KEY, x_id VARCHAR, y_id VARCHAR);
+"""
+PARALLEL = document_text(name="parallel", datasets=[
+    dataset("e", primary_key=["id"], fields=[field("id"), field("x_id"), field("y_id")]),
+    dataset("x", primary_key=["id"], fields=[field("id")]),
+])
+
+
+@pytest.mark.parametrize("keys", [("x_id", "y_id"), ("x_id", "x_id")], ids=["other-keys", "same-keys"])
+async def test_unnamed_parallel_relationships_stay_two_ossie_relationships(tmp_path: Path, keys: tuple[str, str]) -> None:
+    unnamed = [DatasetRelationship(to="x", from_columns=[key], to_columns=["id"], join_type=join,
+                                   cardinality=RelationshipCardinality.MANY_TO_ONE)
+               for key, join in zip(keys, (JoinType.LEFT, JoinType.INNER))]
+    async with sql_engine(tmp_path, sql=PARALLEL_SQL, documents=[PARALLEL]) as engine:
+        for edit in (lambda _held: unnamed, lambda held: [r.model_copy(update={"description": "edited"}) for r in held]):
+            e = await engine.storage.get_dataset("e", data_source=DS)
+            assert e is not None
+            await engine.storage.save_dataset(e.model_copy(update={"relationships": edit(e.relationships)}))
+            text = await engine.storage.get_semantic_model_text("parallel", data_source=DS)
+            assert sorted(r["name"] for r in yaml.safe_load(text or "")["relationships"]) == ["e_x", "e_x_2"]
+        e = await engine.storage.get_dataset("e", data_source=DS)
+        assert e is not None
+        assert sorted((r.name, r.from_columns[0], r.join_type.value, r.description) for r in e.relationships) == sorted([
+            (None, keys[0], "left", "edited"), (None, keys[1], "inner", "edited")])
+
+
+async def test_two_named_relationships_on_the_same_keys_are_two_paths(tmp_path: Path) -> None:
+    """They export as two relationships, so Ossie refuses as native does."""
+    named = [_rel("orders", RelationshipCardinality.ONE_TO_MANY).model_copy(update={"name": "placed"}),
+             _rel("customers", RelationshipCardinality.MANY_TO_ONE).model_copy(update={"name": "buyer"})]
+    async with sql_engine(tmp_path, sql=SQL, datasets=[_customers(named[0]), _orders(named[1])]) as engine:
+        await strict_error(engine, QUERY, "E_AMBIGUOUS_PATH")
+        with pytest.raises(UnresolvableDimensionRelationshipError, match="more than one path"):
+            await engine.execute(QUERY)
 
 
 SELF_SQL = """

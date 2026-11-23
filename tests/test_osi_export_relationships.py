@@ -43,12 +43,14 @@ async def test_one_to_many_join_is_reversed(env) -> None:
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
 
 
-async def test_mirrored_joins_merge_into_one_relationship(env) -> None:
+async def test_a_named_mirror_exports_as_a_second_relationship(env) -> None:
     result = await export_datasets(
         env,
         customers(relationships=[_to_orders(RelationshipCardinality.ONE_TO_MANY).model_copy(update={"name": "placed_orders"})]),
         orders(metrics=BASIC_METRICS))
-    assert [_shape(r) for r in relationships(result.document)] == [_FK]
+    exported = relationships(result.document)
+    assert [_shape(r) for r in exported] == [_FK, _FK]
+    assert "placed_orders" in [r["name"] for r in exported]
 
 
 async def test_undetermined_cardinality_proven_by_target_key(env) -> None:

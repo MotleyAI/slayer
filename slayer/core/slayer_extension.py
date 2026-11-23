@@ -248,6 +248,11 @@ def matches(payload: _Payload, *, ossie: Any) -> bool:
     return payload.fingerprint == fingerprint(payload, ossie=ossie)
 
 
+def sole_declaration(payload: RelationshipPayload, *, matched: bool) -> RelationshipDeclaration | None:
+    """The one declaration a relationship's entry restores; ``None`` when the core relationship applies alone."""
+    return payload.declarations[0] if matched and len(payload.declarations) == 1 else None
+
+
 def is_slayer(extension: OSINonportableExtension | dict[str, Any]) -> bool:
     vendor = extension.get("vendor_name") if isinstance(extension, dict) else extension.vendor_name
     return isinstance(vendor, str) and vendor.strip().upper() == VENDOR

@@ -42,7 +42,7 @@ print(result.render_report())
 | a field reading only its own dataset | a field whose expression reads the source's physical columns (other fields of the dataset expanded) |
 | a field with a `filter` | a field `CASE WHEN <filter> THEN <value> END`, masked in every position |
 | `primary_key`, `unique`, imported unique keys | `primary_key`, `unique_keys` |
-| a relationship | a relationship from the many side to the one side (a one-to-many relationship is reversed) |
+| a relationship | its own relationship from the many side to the one side (a one-to-many relationship is reversed), also beside another relationship on the same keys |
 | a metric whose aggregates all read one dataset | a metric on that dataset |
 | a metric whose aggregates read different datasets | a model-scoped metric with `dataset.field` references, and `AGG(dataset.metric)` for each metric it uses |
 | `label`, `description`, imported `ai_context` | `label`, `description`, `ai_context` |
