@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.engine.plan import plan_query
 
 from slayer.core.query import QueryMetric
@@ -69,18 +68,14 @@ class TestGraphExecutes:
         assert resp.warnings in (None, [])
 
     async def test_ambiguity_graph_executes(self, exec_backend_amb):
-        """The healthy leg (tickets→reviews) executes; the ambiguous pair
-        fails closed (divergences.md class (d))."""
+        """Both legs execute: ``sum(agents.score)`` binds from ``agents``, never routed over the ambiguous pair."""
         _, engine = exec_backend_amb
         resp = await engine.execute(
             tq(metrics=[QueryMetric(metric="sum(reviews.stars)", alias="rv")]),
         )
         assert float(resp.data[0]["rv"]) == pytest.approx(11.0)
-        ambiguous = tq(
-            metrics=[QueryMetric(metric="sum(agents.score)", alias="sm")],
-        )
-        with pytest.raises(UnresolvableDimensionRelationshipError):
-            await engine.execute(ambiguous)
+        own_anchor = await engine.execute(tq(metrics=[QueryMetric(metric="sum(agents.score)", alias="sm")]))
+        assert float(own_anchor.data[0]["sm"]) == pytest.approx(60.0)
 
 
 def test_planner_entry_point_builds_the_producer() -> None:

@@ -111,9 +111,8 @@ query or per call.
   that is no literal in its slot (`"0 OR 1=1"` for a bare `{floor}`) is
   rejected before any SQL runs.
 
-Substitution currently applies to a query's **population dataset itself**; nested
-`source_queries` stages, relationship targets, and cross-dataset targets are a tracked
-follow-up.
+Substitution applies to every dataset a query reads, each with its own defaults
+under the query's variables.
 
 See [Variables in dataset SQL](../../concepts/datasets.md#variables-in-dataset-sql) and
 [Variables](../../concepts/queries.md#variables) for the reference

@@ -12,7 +12,7 @@ from typing import Any, Dict, Hashable, List, Mapping, NoReturn, Optional, Set, 
 
 from pydantic import BaseModel, Field
 
-from slayer.core.errors import QueryBackedCycleError
+from slayer.core.errors import QueryBackedCycleError, VariableError
 from slayer.core.relationship_walker import observe_traversals
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, extension_dataset_names, extension_variable_refs, extract_placeholder_names
@@ -27,6 +27,7 @@ from slayer.core.scope import (
     stale_spelling_stage,
 )
 from slayer.engine.compile import compile_query
+from slayer.engine.definitions import resolved_dataset
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.extensions import apply_query_extensions, with_own_extension
 from slayer.engine.normalization import normalize_query
@@ -54,7 +55,7 @@ from slayer.ir.variables import (
     bind_extension_metrics,
     substitute_dataset_sql_surfaces,
 )
-from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects import dialect_for_ds_type, get_dialect
 from slayer.sql.mode_a_variables import bind_mode_a
 
 __all__ = [
@@ -217,8 +218,24 @@ class _StagePlanner:
         variables: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Plan ``query`` after every query-backed dataset it names or reads is spliced; an inferred stage's
-        ``row_supply`` rides its bundle, and each branch's cells are planned beside it (each source's Mode-A
-        surfaces substituted with its own defaults under ``variables``, a spliced stage's layers)."""
+        ``row_supply`` rides its bundle, and each branch's cells are planned beside it. With ``variables`` (a stage's
+        own layers), every dataset the stage reads is bound under them."""
+        if variables is None:
+            self._plan_stage(query, chain=chain, stage_dataset=stage_dataset, single=single, owner=owner,
+                             row_supply=row_supply)
+            return
+        statement = self.bundle
+        self.bundle = bind_read_datasets(statement, layers=variables)
+        try:
+            self._plan_stage(query, chain=chain, stage_dataset=stage_dataset, single=single, owner=owner,
+                             row_supply=row_supply)
+        finally:
+            self.bundle = statement
+
+    def _plan_stage(
+        self, query: SlayerQuery, *, chain: Tuple[str, ...], stage_dataset: Optional[SlayerDataset],
+        single: bool, owner: Optional[str], row_supply: Optional[RowSupply],
+    ) -> None:
         for name in self._explicit_demands(query, chain=chain):
             self.ensure(name, chain=chain, explicit=True)
         for name in self._spine_demands(query):
@@ -236,8 +253,9 @@ class _StagePlanner:
                 self._raise_failure(failure, on_chain=on_chain, unspliceable=unspliceable, chain=chain)
             assert planned is not None
             if row_supply is not None and row_supply.branches:
-                planned = planned.model_copy(update={"row_supply": self._plan_row_supply(row_supply,
-                                                                                         variables=variables)})
+                planned = planned.model_copy(update={"row_supply": self._plan_row_supply(row_supply)})
+            if owner in self.state.spliced:
+                self.state.spliced[owner].footprint |= self._read_placeholders(seen, row_supply=row_supply)
             self._record(query, planned=planned, stamped=stamped, seen=seen, chain=chain,
                          raw=[*on_chain, *unspliceable], owner=owner)
             return
@@ -261,31 +279,39 @@ class _StagePlanner:
                 failure = exc
         return planned, failure, seen, stamped
 
-    def _plan_row_supply(self, supply: RowSupply, *, variables: Optional[Dict[str, Any]]) -> PlannedRowSupply:
+    def _read_placeholders(self, seen: Dict[str, bool], *, row_supply: Optional[RowSupply]) -> Set[str]:
+        """The ``{var}`` every stored dataset a stage reads (its joined datasets and cells' sources) depends on:
+        a splice reused under other values of them conflicts."""
+        cells = {q.population_name for b in (row_supply.branches if row_supply else ()) for q in (b.cells, *b.restrict)}
+        names = {n for n, strict in seen.items() if strict} | {n for n in cells if n}
+        out: Set[str] = set()
+        for name in names:
+            stored = None if name in self.bundle.query_backed else self.bundle.unbound_dataset(name)
+            if stored is not None:
+                out |= dataset_placeholder_names(stored)
+        return out
+
+    def _plan_row_supply(self, supply: RowSupply) -> PlannedRowSupply:
         """Each branch's cells (and restricting cells) planned as dimension-only queries over their sources."""
         plans: Dict[int, PlannedQuery] = {}
 
         def cells(query: SlayerQuery) -> PlannedQuery:
             if id(query) not in plans:
-                plans[id(query)] = self._plan_cells(query, variables=variables)
+                plans[id(query)] = self._plan_cells(query)
             return plans[id(query)]
 
         return PlannedRowSupply(branches=[
             PlannedRowBranch(cells=cells(b.cells), restrict=[cells(r) for r in b.restrict]) for b in supply.branches
         ])
 
-    def _plan_cells(self, query: SlayerQuery, *, variables: Optional[Dict[str, Any]]) -> PlannedQuery:
-        """The cells ``query``'s population supplies; a product anchor's dimensions read across ``×``."""
+    def _plan_cells(self, query: SlayerQuery) -> PlannedQuery:
+        """The cells ``query``'s population supplies, its datasets bound as the stage's; a product anchor's
+        dimensions read across ``×``."""
         base = self.bundle.model_copy(update={"stage_displays": dict(self.state.displays)})
         source = self.bundle.datasets_by_name.get(query.population_name or "")
         if source is not None:
             # A cells query is a spine query of its own, or none: its host's spine factor follows it.
             source = query_host(source.as_population_factor(False) if source.population_spine else source, query=query)
-        if source is not None and variables is not None:
-            source = substitute_dataset_sql_surfaces(
-                dataset=source, variables={**(source.query_variables or {}), **variables},
-                bind_mode_a=partial(bind_mode_a, dialect=get_dialect(self.bundle.dialect)),
-            )
         scope, stamped = _stage_scope_and_bundle(
             query=query, bundle=base, stage_schemas=self.state.schemas, data_source=self.data_source,
             stage_dataset=source,
@@ -476,9 +502,8 @@ class _StagePlanner:
                 stage = stage.model_copy(update={"population": pinned.population})
             prepared, source, placeholders, variables = self._prepare(stage, chain=chain, private=own)
             record.footprint |= placeholders
-            layers = {**self._chain_variables(chain), **self.outer_variables, **(prepared.variables or {}),
-                      **self.bundle.runtime_variables}
-            self.plan_stage(prepared, chain=chain, stage_dataset=source, owner=name, variables=layers,
+            self.plan_stage(prepared, chain=chain, stage_dataset=source, owner=name,
+                            variables=self._stage_layers(prepared, chain=chain),
                             row_supply=bound_supply(pinned.supply, variables=variables) if pinned else None)
         for child in record.children:
             if child in self.state.spliced:
@@ -511,16 +536,23 @@ class _StagePlanner:
         )
         if source is None:
             return stage, None, set(), variables
-        return stage, substitute_dataset_sql_surfaces(
-            dataset=source, variables=variables,
-            bind_mode_a=partial(bind_mode_a, dialect=get_dialect(self.bundle.dialect)),
-        ), dataset_placeholder_names(source), variables
+        layers = self._stage_layers(stage, chain=chain)
+        bound = bind_dataset(source, layers=layers, bundle=self.bundle)
+        if source.name in self.bundle.unbound_datasets:
+            # Rebuilt from its stored definition: resolved as the statement's datasets were, among this stage's peers.
+            bound = resolve_rebound(bound, bundle=bind_read_datasets(self.bundle, layers=layers))
+        return stage, bound, dataset_placeholder_names(source), variables
+
+    def _stage_layers(self, stage: SlayerQuery, *, chain: Tuple[str, ...]) -> Dict[str, Any]:
+        """A spliced stage's own variable layers, without any dataset's defaults."""
+        return {**self._chain_variables(chain), **self.outer_variables, **(stage.variables or {}),
+                **self.bundle.runtime_variables}
 
     def _resolve_stage_dataset(self, spec) -> Optional[SlayerDataset]:
         """A spliced stage's own source dataset; ``None`` when it reads a sibling."""
         if source_name_if_sibling(spec=spec, sibling_names=set(self.state.schemas)) is not None:
             return None
-        base = self.bundle.datasets_by_name.get(spec) if isinstance(spec, str) else None
+        base = self.bundle.unbound_dataset(spec) if isinstance(spec, str) else None
         if base is None or base.source_queries:
             raise ValueError(f"Dataset {spec!r} not found")
         return base
@@ -565,6 +597,75 @@ class _StagePlanner:
         ]
 
 
+def bind_dataset(dataset: SlayerDataset, *, layers: Mapping[str, Any], bundle: ResolvedSourceBundle) -> SlayerDataset:
+    """``dataset``'s Mode-A ``{var}`` bound under its own defaults and the query's ``layers`` (never another
+    dataset's defaults); rendered and query-backed datasets unchanged. A block-bearing dataset always runs, so its
+    ``{? ?}`` collapse."""
+    if dataset.source_dataset_origin is not None or dataset.source_queries:
+        return dataset
+    dialect = dialect_for_ds_type(bundle.datasource_type) if bundle.datasource_type else get_dialect(bundle.dialect)
+    return substitute_dataset_sql_surfaces(
+        dataset=dataset, variables={**(dataset.query_variables or {}), **layers},
+        bind_mode_a=partial(bind_mode_a, dialect=dialect),
+    )
+
+
+def resolve_rebound(dataset: SlayerDataset, *, bundle: ResolvedSourceBundle) -> SlayerDataset:
+    """``dataset``, freshly bound from its stored definition, resolved for the datasource like the statement's
+    datasets, among its peers' bound forms before resolution; unchanged before the bundle is resolved."""
+    if bundle.live_source_types is None or dataset.source_queries:
+        return dataset
+    peers = [bundle.unresolved_datasets.get(d.name, d) for d in bundle.referenced_datasets]
+    return resolved_dataset(dataset, ds_type=bundle.datasource_type, datasets=peers,
+                            live=bundle.live_source_types.get(dataset.name, {}))
+
+
+def bind_read_datasets(
+    bundle: ResolvedSourceBundle, *, layers: Mapping[str, Any], strict_population: bool = False,
+) -> ResolvedSourceBundle:
+    """``bundle`` with its population and every dataset it reads bound under ``layers`` from their unbound
+    definitions, which it keeps for a stage that rebinds under its own. A joined dataset whose variables the layers
+    do not all supply keeps its definition (the universe holds datasets no statement reads); with
+    ``strict_population`` the population raises instead."""
+    unbound = dict(bundle.unbound_datasets)
+    rebuilt: Dict[str, SlayerDataset] = {}
+
+    def bound(dataset: SlayerDataset, *, strict: bool = False) -> SlayerDataset:
+        stored = unbound.get(dataset.name)
+        base = dataset if stored is None else stored
+        try:
+            out = bind_dataset(base, layers=layers, bundle=bundle)
+        except VariableError:
+            if strict:
+                raise
+            return dataset
+        if out is not base:
+            unbound.setdefault(dataset.name, base)
+        if stored is not None:
+            rebuilt[dataset.name] = out
+        return out
+
+    population = None if bundle.population is None else bound(bundle.population, strict=strict_population)
+    referenced = [population if population is not None and m.name == population.name else bound(m)
+                  for m in bundle.referenced_datasets]
+    out = bundle.model_copy(update={
+        "population": population, "referenced_datasets": referenced, "unbound_datasets": unbound,
+        "unresolved_datasets": {**bundle.unresolved_datasets, **rebuilt},
+    })
+    return _resolve_rebuilt(out, rebuilt=rebuilt) if rebuilt else out
+
+
+def _resolve_rebuilt(bundle: ResolvedSourceBundle, *, rebuilt: Mapping[str, SlayerDataset]) -> ResolvedSourceBundle:
+    """``bundle`` with the ``rebuilt`` datasets (bound from their stored definitions) resolved as the statement's
+    datasets were, among its bound peers."""
+    resolved = {name: resolve_rebound(d, bundle=bundle) for name, d in rebuilt.items()}
+    population = bundle.population
+    return bundle.model_copy(update={
+        "population": None if population is None else resolved.get(population.name, population),
+        "referenced_datasets": [resolved.get(d.name, d) for d in bundle.referenced_datasets],
+    })
+
+
 def bound_supply(supply: RowSupply, *, variables: Dict[str, Any]) -> RowSupply:
     """``supply`` with ``variables`` substituted into every cells and restricting query."""
     def bind(q: SlayerQuery) -> SlayerQuery:
@@ -583,15 +684,15 @@ def plan_stages(
     """Plan a multi-stage DAG: topo sort, then plan each stage against its own resolved
     source + already-planned siblings' synthetic datasets, splicing every stored
     query-backed dataset a stage reads before it; each plan records its sibling reads
-    and is stamped with its per-stage bundle."""
+    and is stamped with its per-stage bundle. A named stage reads its datasets bound under its own layers."""
     ordered = topologically_order_stages(queries, displays=bundle.stage_displays)
     planner = _StagePlanner(bundle=bundle, outer_variables=dict(ordered[-1].variables or {}))
     for q in ordered:
+        named = q.name is not None and q is not ordered[-1]
         planner.plan_stage(
             q, chain=bundle.splice_chain, single=len(ordered) == 1,
-            stage_dataset=(
-                bundle.stage_source_datasets.get(q.name) if q.name and q is not ordered[-1] else None
-            ),
+            stage_dataset=bundle.stage_source_datasets.get(q.name) if named and q.name else None,
             row_supply=bundle.row_supplies.get(q.name or ROOT_STAGE),
+            variables=bundle.stage_variable_layers.get(q.name) if named and q.name else None,
         )
     return planner.state.planned

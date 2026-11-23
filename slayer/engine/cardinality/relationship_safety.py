@@ -6,7 +6,7 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar, cast
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -27,6 +27,8 @@ from slayer.core.relationship_walker import (
 )
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, axis_field, is_spine
 from slayer.core.keys import (
+    TransformKey,
+    is_framed_path,
     is_ranked,
     SLOT_COMPOSITE_KINDS,
     AggregateKey,
@@ -55,7 +57,6 @@ from slayer.engine.reference_closure import (
 )
 from slayer.engine.elaborate_env import check_partition_key_attributable
 from slayer.engine.cardinality.unrelated import crosses_product_hop
-from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import AggregateHomes
 from slayer.engine.cardinality.inference import (
@@ -630,38 +631,51 @@ def broadcast_reason(
 
 
 def assert_partition_key_attributable(
-    *, key: ValueKey, pk: ValueKey, label: str,
+    *, pk: ValueKey, label: str,
     scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> None:
-    """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
+    """A partition key whose own dependency closure crosses a fanning hop from its anchor (Principle 1) is
+    unattributable in every mode; the checker raises. Whether its aggregation's home reaches it is the planner's."""
     host_m = scope.population
     if host_m is None:
         return
     datasets_by_name = bundle.datasets_by_name
-    hp = key_host_path(pk)
-    if crosses_product_hop(host=host_m, path=hp, datasets_by_name=datasets_by_name):
+    if crosses_product_hop(host=host_m, path=key_host_path(pk), datasets_by_name=datasets_by_name):
         return  # a row-level read across a product hop: the checker refuses it (Axiom 3.1)
-    if not hp:
-        # Path-less derived key: a fan from its own host is a mode-invariant safety
-        # error; a host-safe key's cross-dataset-root concern stays the planner's.
-        root, target, host_name = host_m, (), None
+    universe = {**datasets_by_name, host_m.name: host_m}
+    for r in _grain_references(pk):
+        spelling = r.anchor if r.anchor is not None else (host_m.name, *r.path)
+        anchor = universe.get(spelling[0])
+        if anchor is None:
+            continue
+        at_anchor = r.model_copy(update={"path": spelling[1:], "anchor": None})
+        anchored_bundle = bundle.rerooted(anchor)
+        if key_attributable_from_root(
+            key=at_anchor, target_path=(), root_dataset=anchor, datasets_by_name=universe,
+            bundle=anchored_bundle, host_dataset=anchor,
+        ):
+            continue
+        check_partition_key_attributable(
+            label=label, pk=pk, attributable=False, reason=key_broadcast_reason(
+                key=at_anchor, target_path=(), root_dataset=anchor, datasets_by_name=universe,
+                bundle=anchored_bundle, host_dataset=anchor,
+            ),
+        )
+
+
+def _grain_references(key: ValueKey) -> Iterator[FieldKey | FieldSqlKey]:
+    """A grain key's own references: a nested aggregate contributes its grain keys, never its interior."""
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        yield key
+    elif isinstance(key, AggregateKey):
+        for p in key.partition_keys or ():
+            yield from _grain_references(p)
+    elif isinstance(key, TransformKey):
+        for p in (*key.partition_keys, *((key.time_key,) if key.time_key is not None else ())):
+            yield from _grain_references(p)
     else:
-        target = source_anchor_path(key.source) if isinstance(key, AggregateKey) else ()
-        root = walk_key_path(dataset=host_m, path=target, bundle=bundle) or host_m
-        host_name = host_m.name if target else None
-    attributable = key_attributable_from_root(
-        key=pk, target_path=target, root_dataset=root,
-        datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_m,
-        host_name=host_name,
-    )
-    reason = None if attributable else key_broadcast_reason(
-        key=pk, target_path=target, root_dataset=root,
-        datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_m,
-        host_name=host_name,
-    )
-    check_partition_key_attributable(
-        label=label, pk=pk, attributable=attributable, reason=reason,
-    )
+        for c in key.children():
+            yield from _grain_references(c)
 
 
 def shared_relationship_key_reroot(
@@ -697,23 +711,50 @@ def grain_member_attributable(
     references must be — judged on its dependency closure so a derived
     fanning reference is unattributable; every nested aggregate must be too."""
     saw = False
-    for r in walk_value_keys(key):
-        if isinstance(r, AggregateKey):
-            saw = True
-            if not attributable_from_root(
-                host_path=source_anchor_path(r.source), target_path=target_path,
-                root_dataset=root_dataset, datasets_by_name=datasets_by_name,
-            ):
-                return False
-        elif isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey, StarKey)):
-            saw = True
-            if not key_attributable_from_root(
-                key=r, target_path=target_path, root_dataset=root_dataset,
-                datasets_by_name=datasets_by_name, bundle=bundle,
-                host_dataset=host_dataset, host_name=host_name,
-            ):
-                return False
+    for r in _grain_nodes(key):
+        verdict = _grain_node_attributable(
+            r, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+            bundle=bundle, host_dataset=host_dataset, host_name=host_name,
+        )
+        if verdict is False:
+            return False
+        saw = saw or verdict is True
     return saw
+
+
+def _grain_node_attributable(
+    r: ValueKey, *, target_path: Tuple[str, ...], root_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
+    host_dataset: SlayerDataset, host_name: Optional[str],
+) -> Optional[bool]:
+    """One grain node's verdict; ``None`` for a node that references nothing."""
+    if isinstance(r, AggregateKey) and is_framed_path(source_anchor_path(r.source)):
+        # Read from its own frame, an attached aggregate stands for its grain members (Axiom 2.3).
+        return all(grain_member_attributable(
+            key=p, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+            bundle=bundle, host_dataset=host_dataset, host_name=host_name,
+        ) for p in r.partition_keys or ())
+    if isinstance(r, AggregateKey):
+        return attributable_from_root(
+            host_path=source_anchor_path(r.source), target_path=target_path,
+            root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+        )
+    if isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey, StarKey)):
+        return key_attributable_from_root(
+            key=r, target_path=target_path, root_dataset=root_dataset,
+            datasets_by_name=datasets_by_name, bundle=bundle,
+            host_dataset=host_dataset, host_name=host_name,
+        )
+    return None
+
+
+def _grain_nodes(key: ValueKey) -> Iterator[ValueKey]:
+    """``key``'s nodes, a framed aggregate's interior skipped (it is read from its own frame)."""
+    yield key
+    if isinstance(key, AggregateKey) and is_framed_path(source_anchor_path(key.source)):
+        return
+    for c in key.children():
+        yield from _grain_nodes(c)
 
 
 def _grain_leaf_name(key: ValueKey) -> Optional[str]:

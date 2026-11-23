@@ -179,7 +179,13 @@ class TestFilters:
 
 
 class TestRestrictedStages:
+    """A restricted stage restricts a home only along the home's own paths, like a model-filtered stored root."""
+
     _FILTERED: dict[str, Any] = {"filter": ["orders.amount > 25"]}
+
+    @staticmethod
+    def _filtered_root() -> list:
+        return with_datasets(orders(filters=["amount > 25"]))
 
     @pytest.mark.parametrize("filtered", [True, False])
     async def test_an_ungrouped_aggregate_reached_through_a_stage_counts_like_a_stored_root(
@@ -187,18 +193,24 @@ class TestRestrictedStages:
         kw: dict[str, Any] = self._FILTERED if filtered else {}
         through_stage = await engine.execute([per_customer(**kw), over("per_customer", dimensions=[],
                                                                        metric="count(customers.id)")])
-        direct = await engine.execute(over("orders", dimensions=[], metric="count(customers.id)", **kw))
-        expected = [float(v) for v in direct.data[0].values()]
-        assert expected == ([2.0] if filtered else [5.0])
-        assert [float(v) for v in through_stage.data[0].values()] == expected
+        assert [float(v) for v in through_stage.data[0].values()] == [5.0]
 
-    async def test_a_grouped_aggregate_reached_through_a_filtered_stage_counts_like_a_stored_root(self, engine) -> None:
-        through_stage = await engine.execute([per_customer(**self._FILTERED), over(
-            "per_customer", dimensions=["customers.tier"], metric="count(customers.id)")])
-        direct = await engine.execute(over("orders", dimensions=["customers.tier"], metric="count(customers.id)",
-                                           **self._FILTERED))
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_an_ungrouped_aggregate_counts_like_a_model_filtered_stored_root(self, dialect: str) -> None:
+        async with shop(dialect, self._filtered_root()) as engine:
+            direct = await engine.execute(over("orders", dimensions=[], metric="count(customers.id)"))
+        assert [float(v) for v in direct.data[0].values()] == [5.0]
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_a_grouped_aggregate_reached_through_a_filtered_stage_counts_like_a_stored_root(
+            self, dialect: str) -> None:
+        async with shop(dialect) as engine:
+            through_stage = await engine.execute([per_customer(**self._FILTERED), over(
+                "per_customer", dimensions=["customers.tier"], metric="count(customers.id)")])
+        async with shop(dialect, self._filtered_root()) as engine:
+            direct = await engine.execute(over("orders", dimensions=["customers.tier"], metric="count(customers.id)"))
         expected = by(direct, key="customers.tier", value="total")
-        assert expected == {"silver": 1.0, "bronze": 1.0}
+        assert expected == {"silver": 2.0, "bronze": 1.0}
         assert by(through_stage, key="customers.tier", value="total") == expected
 
     async def test_an_upstream_restriction_carries_through_a_stage_chain(self, engine) -> None:
@@ -206,7 +218,7 @@ class TestRestrictedStages:
                   metrics=[m("sum(per_customer.revenue)", "relayed")])
         resp = await engine.execute([per_customer(**self._FILTERED), relay,
                                      over("relay", dimensions=[], metric="count(customers.id)")])
-        assert [float(v) for v in resp.data[0].values()] == [2.0]
+        assert [float(v) for v in resp.data[0].values()] == [5.0]
 
 
 # --------------------------------------------------------------------------- #

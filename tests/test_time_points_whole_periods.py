@@ -6,8 +6,12 @@ from datetime import datetime
 
 import pytest
 
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 
+from tests._dev1737_fixtures import TableSpec, seed_backend
+from tests._engine_helpers import seeded_exec_engine
 from tests._time_points_fixtures import (
     BACKENDS, EV_TS, PinnedClock, bucket_text, ev_dt, ids_in, month_key, monthly, tp_engine,
 )
@@ -127,6 +131,41 @@ class TestTwoGranularities:
     async def test_day_and_month_do_not_warn(self, engine) -> None:
         resp = await engine.execute(_two_grain_query(["day", "month"]))
         assert not any("whole_periods_only" in w.model_dump_json() for w in resp.warnings)
+
+
+_SPELLING_TABLES = [
+    TableSpec(name="customers", columns=[("customer_id", "TEXT"), ("created_at", "DATE")],
+              rows=[("C1", "2025-01-10"), ("C2", "2025-02-20"), ("C3", "2025-03-05")]),
+    TableSpec(name="orders", columns=[("order_id", "TEXT"), ("customer_id", "TEXT"), ("amount", "DOUBLE")],
+              rows=[("O1", "C1", 1.0), ("O2", "C2", 10.0), ("O3", "C3", 100.0)]),
+]
+_SPELLING_DATASETS = [
+    SlayerDataset(name="customers", sql_table="customers", data_source="test", fields=[
+        DatasetField(name="customer_id", datatype=DataType.STRING, primary_key=True),
+        DatasetField(name="created_at", datatype=DataType.DATE)]),
+    SlayerDataset(name="orders", sql_table="orders", data_source="test", fields=[
+        DatasetField(name="order_id", datatype=DataType.STRING, primary_key=True),
+        DatasetField(name="customer_id", datatype=DataType.STRING),
+        DatasetField(name="amount", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["customer_id"],
+                                           cardinality=RelationshipCardinality.MANY_TO_ONE)]),
+]
+
+
+class TestTwoSpellingsOfOneColumn:
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_snap_uses_every_granularity_of_the_column(self, backend) -> None:
+        # Month on one spelling, quarter on another: the boundary is the quarter floor, so Q1 keeps January.
+        async with seeded_exec_engine(
+                dialect=backend, seed=lambda p: seed_backend(backend, p, _SPELLING_TABLES),
+                datasets=_SPELLING_DATASETS, clock=lambda: D(2026, 9, 29, 12)) as (eng, _):
+            resp = await eng.execute(SlayerQuery.model_validate({
+                "population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "s"}],
+                "time_dimensions": [{"field": "customers.created_at", "granularity": "month"},
+                                    {"field": "orders.customers.created_at", "granularity": "quarter"}],
+                "filters": ["customers.created_at >= '2025-02-15'"], "whole_periods_only": True,
+            }))
+        assert sum(r["s"] for r in resp.data) == pytest.approx(111.0)
 
 
 class TestStageTimeDimension:

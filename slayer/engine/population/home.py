@@ -8,9 +8,11 @@ the checker; ``elaborate.py`` calls this and hands the checker a plain map.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from slayer.core.keys import (
+    anchor_token,
+    is_framed_path,
     is_ranked,
     is_reaggregation_key,
     AggregateKey,
@@ -19,6 +21,7 @@ from slayer.core.keys import (
     constituent_grain,
     operand_constituents,
     parameter_row_leaves,
+    prepend_value_key,
     reroot_value_key,
     source_anchor_path,
     source_leaf_paths,
@@ -28,6 +31,9 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerDataset
 from slayer.core.refs import key_display
 from slayer.engine.cardinality.relationship_safety import attributable_from_root, key_host_path, safe_reachable
+from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.engine.population.anchors import anchor_route, source_frame
+from slayer.engine.population.home_reading import home_frame, home_read
 from slayer.engine.reference_closure import key_closure
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -51,20 +57,20 @@ def _longest_common_prefix(paths: List[Path]) -> Path:
 
 def _grain_member_paths(
     member: ValueKey, *, dim_keys: List[ValueKey], td_keys: List[ValueKey],
-    active_bucket: Optional[ValueKey],
+    active_bucket: Optional[ValueKey], in_frame: Callable[[ValueKey], ValueKey] = lambda k: k,
 ) -> List[Path]:
-    """Home-input paths a grain member contributes: a leaf's own relationship path; an
+    """Home-input paths a grain member contributes: a leaf's own relationship path (in the aggregation's frame); an
     aggregate/transform member stands for its own grain members, recursively."""
     if isinstance(member, (AggregateKey, TransformKey)):
         return _constituent_grain_paths(
-            c=member, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+            c=member, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket, in_frame=in_frame,
         )
-    return list(source_leaf_paths(member))
+    return list(source_leaf_paths(in_frame(member)))
 
 
 def _constituent_grain_paths(
     c: ValueKey, *, dim_keys: List[ValueKey], td_keys: List[ValueKey],
-    active_bucket: Optional[ValueKey],
+    active_bucket: Optional[ValueKey], in_frame: Callable[[ValueKey], ValueKey] = lambda k: k,
 ) -> List[Path]:
     """Paths of an attached constituent's grain members (Axiom 2.3): its grain is
     the explicit ``partition_by=`` else the query dimensions, and a windowed inner
@@ -76,9 +82,27 @@ def _constituent_grain_paths(
     out: List[Path] = []
     for m in members:
         out.extend(_grain_member_paths(
-            member=m, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+            member=m, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket, in_frame=in_frame,
         ))
     return out
+
+
+def _frame_reader(
+    anchor: Path, *, host_dataset: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> Callable[[ValueKey], ValueKey]:
+    """A population reference as an aggregation read from its own frame (``anchor``'s anchor hop) reads it."""
+    universe = {**datasets_by_name, host_dataset.name: host_dataset}
+    frame = home_frame(anchor, host=host_dataset, datasets_by_name=universe) if is_framed_path(anchor) else None
+    if frame is None:
+        return lambda k: k
+    frame_dataset = frame[0]
+    token = anchor_token(frame_dataset.name)
+
+    def read(key: ValueKey) -> ValueKey:
+        found = home_read(key, home=frame_dataset, host=host_dataset, datasets_by_name=universe)
+        return key if found is None else prepend_value_key(found, host_path=(token,))
+
+    return read
 
 
 def home_path_for(
@@ -119,13 +143,16 @@ def aggregate_home(
     # the home must determine every one of its grain members (Axiom 2.3). An
     # aggregate-valued parameter is not a source operand — a query dimension it does
     # not share is associated / broadcast, never moved into the home (Axioms 2.4, 2.9).
+    in_frame = _frame_reader(anchor, host_dataset=host_dataset, datasets_by_name=datasets_by_name)
     for c in operand_constituents(agg.source):
         input_paths.extend(cg := _constituent_grain_paths(
-            c=c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+            c=c, dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket, in_frame=in_frame,
         ))
         seed_paths.extend(cg)
+    meet = _inputs_meet(input_paths, anchor=anchor, host_dataset=host_dataset, datasets_by_name=datasets_by_name,
+                        bundle=bundle)
     candidates = sorted(
-        {anchor, _longest_common_prefix(input_paths), *seed_paths},
+        {anchor, _longest_common_prefix(input_paths), *seed_paths, *((meet,) if meet is not None else ())},
         key=lambda p: (p != anchor, -len(p), p),
     )
     second_order = is_reaggregation_key(agg)
@@ -140,6 +167,28 @@ def aggregate_home(
     return AggregateHome(
         kind="operand_dataset" if second_order else "unresolved", path=_longest_common_prefix(input_paths),
     )
+
+
+def _inputs_meet(
+    input_paths: List[Path], *, anchor: Path, host_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
+) -> Optional[Path]:
+    """The smallest dataset determining every input's dataset (Axiom 2.6), as a path through the aggregation's frame;
+    ``None`` when the inputs share one dataset or none determines them all."""
+    universe = {**datasets_by_name, host_dataset.name: host_dataset}
+    reached = [walk_key_path(dataset=host_dataset, path=p, bundle=bundle) for p in input_paths]
+    terminals = [d for d in reached if d is not None]
+    if len(terminals) != len(reached) or len({d.name for d in terminals}) < 2:
+        return None
+    frame = home_frame(anchor, host=host_dataset, datasets_by_name=universe)
+    try:
+        meet = source_frame(terminals, datasets_by_name=universe, spell=lambda d: d.spelling)
+        if meet is None or frame is None:
+            return None
+        route = anchor_route(reader=frame[0], anchor=meet, datasets_by_name=universe)
+    except UnresolvableDimensionRelationshipError:
+        return None
+    return None if route.unrelated else (*anchor[:len(anchor) - len(frame[1])], *route.route)
 
 
 def _resolved_kind(*, second_order: bool, path: Path) -> HomeKind:

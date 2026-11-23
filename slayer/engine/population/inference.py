@@ -688,23 +688,6 @@ async def _anchor_spellings(
     return _respelled_heads(query, respell) if respell else query
 
 
-async def declared_head_spellings(
-    query: SlayerQuery, *, storage: StorageBackend, data_source: str | None, siblings: set[str],
-) -> SlayerQuery:
-    """``query`` with each first segment naming a dataset spelled as declared; nothing refused (a named population
-    converts legacy forms where it binds)."""
-    anchors = await _anchor_table(storage=storage, data_source=data_source, siblings=siblings)
-    respell: dict[str, str] = {}
-    for tree in _entry_trees(query, metrics=True):
-        for node, _agg in walk_references(tree):
-            if not isinstance(node, DottedRef):
-                continue
-            hit = find_anchor(node.parts[0], quoted=node.quoted_at(0), reader=None, datasets_by_name=anchors)
-            if hit is not None and hit.name != node.parts[0]:
-                respell[node.parts[0]] = hit.name
-    return _respelled_heads(query, respell) if respell else query
-
-
 async def _anchor_table(
     *, storage: StorageBackend, data_source: str | None, siblings: set[str],
 ) -> dict[str, SlayerDataset]:

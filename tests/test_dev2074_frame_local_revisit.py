@@ -330,30 +330,28 @@ class TestSavedMeasuresCompose:
         assert _broadcasts(resp) == []
 
     async def test_unattributable_host_dimension_broadcasts(self, ctx: _Ctx) -> None:
-        (total,), = ctx.oracle(
-            "SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id IN (SELECT customer_id FROM orders)")
-        assert _num(total) == 35.0
+        # The measure's home is the dataset ``orders``: it reads the population's ``orders.id`` as its own row.
         resp = await ctx.engine.execute(_q(
-            dimensions=["orders.id"], metrics=["orders.customer.order_total"], to_many_handling="broadcast"))
-        assert [_num(v) for (v,) in _rows(resp, "orders.customer.order_total")] == [35.0] * 3
-        assert _broadcasts(resp) != []
+            dimensions=["orders.id"], metrics=["orders.customer.order_total"], to_many_handling="broadcast",
+            order=[{"field": "orders.id", "direction": "asc"}]))
+        assert [_num(v) for (v,) in _rows(resp, "orders.customer.order_total")] == [10.0, 20.0, 5.0]
+        assert _broadcasts(resp) == []
 
     @pytest.mark.parametrize("mode", [None, "associate"])
     async def test_unattributable_host_dimension_associates(self, ctx: _Ctx, mode: str | None) -> None:
-        oracle = [(i, _num(v)) for i, v in ctx.oracle(
-            "SELECT o.id, (SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id = o.customer_id) "
-            "FROM orders o ORDER BY o.id")]
-        assert oracle == [(11, 30.0), (12, 30.0), (21, 5.0)]
+        oracle = [(i, _num(v)) for i, v in ctx.oracle("SELECT o.id, o.amount FROM orders o ORDER BY o.id")]
+        assert oracle == [(11, 10.0), (12, 20.0), (21, 5.0)]
         resp = await ctx.engine.execute(_q(
             dimensions=["orders.id"], metrics=["orders.customer.order_total"], to_many_handling=mode,
             order=[{"field": "orders.id", "direction": "asc"}]))
         assert [(i, _num(v)) for i, v in _rows(resp, "orders.id", "orders.customer.order_total")] == oracle
 
     async def test_measure_through_a_pointer_back_to_the_host(self, ctx: _Ctx) -> None:
+        # Every ``orders`` row counts under its own customer, read from the home by ``orders.customer``.
         oracle = [(n, _num(v)) for n, v in ctx.oracle(
-            "SELECT c.name, SUM(lo.amount) FROM customers c JOIN orders lo ON c.last_order_id = lo.id "
+            "SELECT c.name, SUM(o.amount) FROM orders o JOIN customers c ON o.customer_id = c.id "
             "GROUP BY c.name ORDER BY c.name")]
-        assert oracle == [("ann", 20.0), ("bob", 5.0)]
+        assert oracle == [("ann", 30.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
             dimensions=["orders.customer.name"], metrics=["orders.customer.latest_total"], to_many_handling="associate",
             order=[{"field": "orders.customer.name", "direction": "asc"}]))
@@ -401,7 +399,7 @@ class TestComposedOccurrenceMetadata:
             type=NumberFormatType.PERCENT)
         assert resp.attributes.metrics["orders.customer.latest_total"].format == CURRENCY
         got = {n: _num(v) for n, v in _rows(resp, "orders.customer.name", "orders.customer.latest_big_share")}
-        assert got == {k: _num(v) for k, v in oracle.items()}
+        assert got == {"ann": 0.5, "bob": 0.0}
 
     async def test_last_ranks_over_a_composed_path(self, ctx: _Ctx) -> None:
         oracle = [(n, _num(v)) for n, v in ctx.oracle(

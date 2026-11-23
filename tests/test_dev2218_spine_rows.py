@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import UnrelatedDatasetError, WindowDurationError
+from slayer.core.errors import UnrelatedDatasetError
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.population.row_supply import stored_rows
@@ -241,8 +241,6 @@ async def test_a_variable_bound_saved_metric_supplies_its_windowed_groups() -> N
         (1, "2025-02"): 170.0, (1, "2025-03"): 70.0, (2, "2025-02"): 50.0, (2, "2025-03"): None}
 
 
-@pytest.mark.xfail(strict=True, raises=WindowDurationError,
-                   reason="DEV-2396: a cross-dataset producer binds no {var} into a saved metric")
 async def test_a_saved_metric_variable_binds_in_a_cross_dataset_producer() -> None:
     query = {"dimensions": ["customers.region"], "time_dimensions": [{"field": "orders.order_date", "granularity": "month"}],
              "metrics": [m("orders.rolling", "v")], "variables": {"w": "2m"}}

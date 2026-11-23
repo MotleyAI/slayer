@@ -24,6 +24,7 @@ from slayer.core.relationship_walker import (
     cancelling_revisit,
     resolved_terminal,
     walk_cancelling,
+    walk_terminal,
 )
 from slayer.core.keys import (
     FieldKey,
@@ -43,6 +44,7 @@ from slayer.core.models import (
     reserved_window_param_message,
 )
 from slayer.core.scope import resolve_generated_field
+from slayer.engine.population.anchors import anchor_route, find_anchor
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.field_expansion import (
@@ -312,11 +314,30 @@ def resolve_default_path(
             qualifiers=qualifiers, leaf=leaf, root_dataset=root_dataset,
             owner_path=root_path, datasets_by_name=mbn,
         )
+        abs_path = _anchored_default_path(qualifiers=qualifiers, leaf=leaf, reader=root_dataset, datasets_by_name=mbn)
+    if abs_path is None:
         raise UnresolvableDimensionRelationshipError(
             reference=".".join((*qualifiers, leaf)), root_dataset=root_dataset.spelling,
             reason="not reachable forward from the owning dataset or the query root.",
         )
     return abs_path
+
+
+def _anchored_default_path(
+    *, qualifiers: Path, leaf: str, reader: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[Path]:
+    """A default's qualifier read as a query reference (Principle 1): anchored at its first segment, reached from
+    ``reader`` by its only to-one path, else its only route; ``None`` when it names no dataset (an ambiguous route
+    raises)."""
+    if not qualifiers:
+        return None
+    anchor = find_anchor(qualifiers[0], quoted=False, reader=reader, datasets_by_name=datasets_by_name)
+    if anchor is None:
+        return None
+    reached = anchor_route(reader=reader, anchor=anchor, datasets_by_name=datasets_by_name,
+                           rest=(*qualifiers[1:], leaf))
+    walked = walk_terminal(root=anchor, path=qualifiers[1:], datasets_by_name={**datasets_by_name, reader.name: reader})
+    return None if reached.unrelated or walked is None else (*reached.route, *walked[1])
 
 
 def resolve_default_qualifier_path(

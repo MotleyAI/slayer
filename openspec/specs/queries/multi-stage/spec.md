@@ -131,10 +131,13 @@ An inherited edge SHALL keep the source edge's name and target dataset (never re
 to a same-named stage), keep a stored edge's join type, and be a LEFT edge when inherited
 from a query-declared relationship. Filters SHALL NOT affect inheritance: neither the
 stage's filters nor its population's model filters remove an edge, and the target's model
-filters apply on the inherited hop as on any hop. An aggregate over a dataset reached through a stage SHALL count only the rows associated
-with a stage row when the stage restricts its population — by a filter (a metric filter
-included), or by reading a restricted population or upstream stage — exactly as for a
-filtered stored dataset; an unrestricted stage restricts nothing. Inherited edges SHALL apply to ordinary
+filters apply on the inherited hop as on any hop. A stage that restricts its population — by a
+filter (a metric filter included), or by reading a restricted population or upstream stage —
+SHALL be read as its own rows, exactly as a filtered stored dataset: an aggregation whose home
+reads the stage on its own path to a grain dimension or filter sees only the stage's rows, a home
+row no stage row matches landing in the NULL tuple; a home that reads the stage on none of its own
+paths is never narrowed by it, even when the stage is the query's population (`queries/population`
+› Population may be omitted); an unrestricted stage restricts nothing. Inherited edges SHALL apply to ordinary
 stages wherever a later stage reads them (as its population, as an extension target, as a
 relationship target, or through routing) and to the final stage of a saved query-backed
 model wherever it is consumed. They are derived on every read and never stored.
@@ -184,8 +187,8 @@ model wherever it is consumed. They are derived on every read and never stored.
 - **THEN** the edge to `customers` is inherited; a model filter on `customers` applies on the inherited hop
 
 #### Scenario: A filtered stage restricts what is reached through it
-- **WHEN** stage `pc` (population `orders`, filter `amount > 25`) groups by `customer_id`, and the next stage measures `count(customers.id)` with no dimension
-- **THEN** it counts the 2 customers `pc` keeps, as the same filter on a stored `orders` root does; without the filter it counts as from an unfiltered `orders` root
+- **WHEN** stage `pc` (population `orders`, filter `amount > 25`) groups by `customer_id`, and the next stage (population `pc`) measures `sum(orders.amount)` grouped by `pc.customer_id`, and separately `count(customers.id)` with no dimension
+- **THEN** the grouped query's rows are the customers `pc` keeps, each summing all of its own orders (the home `orders` reaches `pc` through the inherited edge, an order of a customer `pc` drops landing in the NULL tuple, which is no row); the dimensionless count counts every customer, its home `customers` reading no `pc` row — exactly as from a stored `orders` root carrying the model filter `amount > 25`
 
 #### Scenario: A stored target is never re-resolved to a same-named stage
 - **WHEN** a list has a stage named `customers` and another stage grouped by `orders.customer_id` passes the key on

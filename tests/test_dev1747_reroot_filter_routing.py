@@ -161,11 +161,11 @@ class TestClassifiedExactlyOnce:
         )
 
     def test_the_classifier_sees_the_cte_actual_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The inheritance pass must classify against ``target_path == ("customers",)``; the FORWARD path would misjudge reachability."""
+        """The inheritance pass classifies from the producer's own home (``target_path == ()``, rooted at ``customers``)."""
         calls = _classifier_spy(monkeypatch)
         _sole_attach(FILTER_REACHABLE)
         assert calls, "the inheritance pass was never called — spy is vacuous"
-        assert {call["target_path"] for call in calls} == {("customers",)}
+        assert {call["target_path"] for call in calls} == {()}
         assert {call["root_dataset"].name for call in calls} == {"customers"}
 
     def test_the_classifier_receives_the_structural_summary(

@@ -254,6 +254,19 @@ class TestDownstreamStageStaleReference:
         assert (w.original, w.normalized) == (
             f"region_amounts__{STALE}", f"region_amounts__{CANON}")
 
+    @pytest.mark.parametrize("population", ["regions", None], ids=["populated", "root-less"])
+    async def test_framed_aggregate_output_downstream(self, engine, population) -> None:
+        # The aggregate is read from its own frame (region_amounts); the frame's field respellings apply.
+        stage1 = slayer_query(name="s1", population=population, dimensions=["regions.rname"],
+                              metrics=[f"max(region_amounts.{CANON})"])
+        resp = await engine.execute([stage1, slayer_query(
+            population="s1", dimensions=["s1.rname"],
+            metrics=[{"metric": f"max(s1.region_amounts__{STALE}_max)", "alias": "m"}])])
+        assert {r["m"] for r in resp.data} - {None} == {"North", "South"}
+        (w,) = stale_warnings(resp)
+        assert (w.original, w.normalized) == (
+            f"region_amounts__{STALE}_max", f"region_amounts__{CANON}_max")
+
     async def test_exact_name_wins(self, engine) -> None:
         stage1 = _stage1(metrics=[{"metric": "sum(orders.amount)", "alias": STALE}])
         resp = await engine.execute([stage1, slayer_query(
