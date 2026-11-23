@@ -1,15 +1,15 @@
 ## 1. Tests first (pr-tests)
 
-- [ ] 1.1 `tests/test_dev2437_trusted_cardinality.py`: every `queries/semantics` scenario of this change on SQLite and DuckDB over the duplicated Appendix B seed and the oracle retail fixture (C1 duplicated, PK dropped from the DDL); fails on main, verified by running it
-- [ ] 1.2 Same file: the `models/join-cardinality` Trusted hops scenarios (flag, key-proven, reverse of one-to-many, vacuous, enforced key, stage grain, list position alone)
-- [ ] 1.3 B/A boundary cases asserting values and join shape: same-branch filter + dimension, home/target predicates under `OR`/`NOT`, two target branches, model `filters` on the target, RLS on the target
-- [ ] 1.4 Every aggregation family on dirty data (`count(*)`, `avg`, `count_distinct`, `first`/`last`, `collect`, windowed, ranked, aggregate filter, weighted with kwargs) equals the de-duplicated seed; aggregate inputs across the hop under default and `"error"`
-- [ ] 1.5 `tests/test_law_lowering_soundness.py` instances: B equals the association result on dirty data; trusted equals untrusted on clean data
-- [ ] 1.6 Ingestion tests: DuckDB PK enforced, Snowflake not (emission/dialect level), partial unique index not, re-ingest fills; dialect capability table test with one row per dialect
-- [ ] 1.7 Drift tests: vanished enforced key reported and cleared; author `trusted` untouched; non-enforcing dialect clears all enforced keys
-- [ ] 1.8 Save-validation tests: undeclared enforced key refused, query-backed refused, repointing drops
-- [ ] 1.9 Document round-trip tests: imported retail never trusted (350), `trusted` round-trips (650), unset cardinality round-trips, enforced keys round-trip
-- [ ] 1.10 Migration tests from serialized previous-version payloads: `SlayerModel` v28, `SlayerQuery` v18 (query-extension relationship), `Memory` v13 with an embedded query, a query-backed model's backing query; all relationships trusted and EAST 650 preserved
+- [x] 1.1 `tests/test_dev2437_trusted_cardinality.py`: every `queries/semantics` scenario of this change on SQLite and DuckDB over the duplicated Appendix B seed and the oracle retail fixture (C1 duplicated, PK dropped from the DDL); fails on main, verified by running it
+- [x] 1.2 Same file: the `models/join-cardinality` Trusted hops scenarios (flag, key-proven, reverse of one-to-many, vacuous, enforced key, stage grain, list position alone)
+- [x] 1.3 B/A boundary cases asserting values and join shape: same-branch filter + dimension, home/target predicates under `OR`/`NOT`, two target branches, model `filters` on the target, RLS on the target
+- [x] 1.4 Every aggregation family on dirty data (`count(*)`, `avg`, `count_distinct`, `first`/`last`, `collect`, windowed, ranked, aggregate filter, weighted with kwargs) equals the de-duplicated seed; aggregate inputs across the hop under default and `"error"`
+- [x] 1.5 `tests/test_law_lowering_soundness.py` instances: B equals the association result on dirty data; trusted equals untrusted on clean data
+- [x] 1.6 Ingestion tests: DuckDB PK enforced, Snowflake not (emission/dialect level), partial unique index not, re-ingest fills; dialect capability table test with one row per dialect
+- [x] 1.7 Drift tests: vanished enforced key reported and cleared; author `trusted` untouched; non-enforcing dialect clears all enforced keys
+- [x] 1.8 Save-validation tests: undeclared enforced key refused, query-backed refused, repointing drops
+- [x] 1.9 Document round-trip tests: imported retail never trusted (350), `trusted` round-trips (650), unset cardinality round-trips, enforced keys round-trip
+- [x] 1.10 Migration tests from serialized previous-version payloads: `SlayerModel` v28, `SlayerQuery` v18 (query-extension relationship), `Memory` v13 with an embedded query, a query-backed model's backing query; all relationships trusted and EAST 650 preserved
 - [ ] 1.11 Existing tests pinning inline SQL or values for an unflagged declared hop: list them and get the owner's approval to align each before changing it
 
 ## 2. Model surface
