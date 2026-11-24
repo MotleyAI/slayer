@@ -25,9 +25,6 @@ HELPERS = frozenset({
 })
 HELPER_MODULE = "slayer/core/deprecation.py"
 
-#: The deprecated Mode-B spellings, each warned with a message spelling its token literally.
-MODE_B_SPELLING_TOKENS = ("==", "is None", "is not None", "bare None", "list after IN", "method-call")
-
 #: Every covered workaround: (file, a token its message spells literally) -> removal version.
 PINNED: dict[tuple[str, str], str] = {
     **{
@@ -49,7 +46,8 @@ PINNED: dict[tuple[str, str], str] = {
     ("slayer/core/query.py", "strict"): "3.0",
     ("slayer/core/query.py", "An extension object in `population`"): "3.0",
     ("slayer/core/query.py", "broadcast"): "3.0",
-    **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
+    # Every deprecated Mode-B spelling: one door.
+    ("slayer/core/legacy_spellings.py", ""): "3.0",
     ("slayer/engine/elaborate_env.py", "midnight"): "3.0",
     ("slayer/core/vocabulary.py", ""): "3.0",
     # Root-relative reference spellings: one door for a bare name, `count(*)` and a non-dataset first segment.

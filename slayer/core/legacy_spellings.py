@@ -50,22 +50,7 @@ def note_legacy_spellings(spans: Iterable[LegacySpan]) -> None:
 
 def emit_deprecations(found: Dict[str, LegacySpan]) -> List[DeprecatedSpellingWarning]:
     """One ``FutureWarning`` and one payload per spelling recorded."""
-    return [_emit(span) for span in found.values()]
-
-
-def _emit(span: LegacySpan) -> DeprecatedSpellingWarning:
-    # One literal-kind call per spelling: the removal tripwire reads each statically.
-    if span.kind == "==":
-        return deprecated_spelling("==", span.written, span.twin, removal="3.0")
-    if span.kind == "is None":
-        return deprecated_spelling("is None", span.written, span.twin, removal="3.0")
-    if span.kind == "is not None":
-        return deprecated_spelling("is not None", span.written, span.twin, removal="3.0")
-    if span.kind == "bare None":
-        return deprecated_spelling("bare None", span.written, span.twin, removal="3.0")
-    if span.kind == "list after IN":
-        return deprecated_spelling("list after IN", span.written, span.twin, removal="3.0")
-    return deprecated_spelling("method-call", span.written, span.twin, removal="3.0")
+    return [deprecated_spelling(span.kind, span.written, span.twin, removal="3.0") for span in found.values()]
 
 
 class TextSpan(Protocol):
