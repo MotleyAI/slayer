@@ -36,7 +36,7 @@
 
 - [x] 5.1 Run `poetry run pytest tests/test_architecture_wiring.py`, `poetry run ruff check slayer/ tests/`,
       `poetry run la-arch-check` and `la-typecheck`; all green.
-- [ ] 5.2 After push, every `examples.yml` leg on the PR is green and no `verify-example` job runs in the four
+- [x] 5.2 After push, every `examples.yml` leg on the PR is green and no `verify-example` job runs in the four
       per-dialect workflows. If the Postgres leg fails, fix only `examples/postgres/{docker-compose.yml,start.sh,
       slayer_data/}` (design decision 12); a failure needing a change to `examples/postgres/verify.py`,
       `examples/verify_common.py` or `slayer/` stops the flow for the user's call.
