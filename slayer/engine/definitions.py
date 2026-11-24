@@ -11,7 +11,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression as SqlExpression
 
 from slayer.core.enums import DataType
-from slayer.core.errors import FieldExpressionError
+from slayer.core.errors import AggInFieldError, FieldExpressionError
 from slayer.core.field_expression import dialect_entries, portable_text, running_form, unquoted_identifier
 from slayer.core.keys import FieldKey, FieldSqlKey, Phase
 from slayer.core.models import (
@@ -164,7 +164,10 @@ def portable_native(
     """A portable definition as the datasource's own SQL: Mode B's meaning, source columns bare, fields by path."""
     sql_dialect = dialect_for_ds_type(ds_type)
     translation = _Translation(dataset=dataset, live=live)
-    rewritten = _mapped(parse_expr(text), translation.rewrite, {})
+    parsed = parse_expr(text)
+    if any(isinstance(n, (Ref, DottedRef)) and n.evaluated for n in walk_parsed(parsed)):
+        raise AggInFieldError(field=field)
+    rewritten = _mapped(parsed, translation.rewrite, {})
     host = dataset.model_copy(update={"fields": [*dataset.fields, *translation.readers.values()]})
     peers = [host, *(d for d in datasets if d.name != dataset.name)]
     bundle = ResolvedSourceBundle(dialect=sql_dialect.sqlglot_name, datasource_type=ds_type, population=host,

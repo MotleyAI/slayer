@@ -24,6 +24,7 @@ import sqlglot
 
 from slayer.core.errors import (
     AggArgumentError,
+    AggInFieldError,
     AmbiguousRelationshipPathError,
     CircularRelationshipPathError,
     DatasetFieldCycleError,
@@ -622,6 +623,23 @@ def _filter_cycle(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]
         return None
 
     return visit(dataset.name)
+
+
+def calls_agg(text: str) -> bool:
+    """Whether Mode-B ``text`` calls ``AGG``; unparseable text is left to binding."""
+    try:
+        parsed = parse_template(text)
+    except Exception:  # noqa: BLE001 — binding reports an unparseable definition
+        return False
+    return any(isinstance(n, (Ref, DottedRef)) and n.evaluated for n in walk_parsed(parsed))
+
+
+def check_field_agg(dataset: SlayerDataset) -> None:
+    """Refuse a field whose Mode-B ``expression`` calls ``AGG`` (``AggInFieldError``)."""
+    for field in dataset.fields:
+        text = portable_text(field.expression)
+        if text is not None and calls_agg(text):
+            raise AggInFieldError(field=field.name)
 
 
 def check_evaluated_metrics(

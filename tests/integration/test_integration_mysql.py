@@ -70,7 +70,7 @@ from tests._dev2018_fixtures import (
     server_statements as logical_type_statements,
     with_granularities as logical_type_granularities,
 )
-from tests._cast_fixtures import check_try_cast_targets
+from tests._cast_fixtures import check_author_casts, check_boolean_casts, check_try_cast_targets
 from tests._dev2101_fixtures import (
     check_filtered_aggregations,
     check_null_ordering,
@@ -1669,6 +1669,10 @@ class TestMySQLModeBGrammar:
 
     async def test_try_cast_integer_targets(self, _mysql_dev2101_storage) -> None:
         await check_try_cast_targets(SlayerQueryEngine(storage=_mysql_dev2101_storage), dataset="orders")
+
+    async def test_author_casts(self, _mysql_dev2101_storage) -> None:
+        await check_author_casts(SlayerQueryEngine(storage=_mysql_dev2101_storage), dataset="orders")
+        await check_boolean_casts(SlayerQueryEngine(storage=_mysql_dev2101_storage), dataset="orders")
 
     async def test_filtered_aggregations(self, _mysql_dev2101_storage) -> None:
         await check_filtered_aggregations(SlayerQueryEngine(storage=_mysql_dev2101_storage))

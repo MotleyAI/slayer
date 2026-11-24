@@ -13,12 +13,11 @@ from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any, ClassVar, Optional
 
-from sqlalchemy.types import NullType
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
-from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity, TypeKind, kind_of
 from slayer.core.granularity import Granularity, bucket_type
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
@@ -36,25 +35,23 @@ from slayer.sql.dialects.base import (
     anon,
     as_text,
     case,
+    decimal_parts,
     element_lambda,
     is_not_null,
     is_null,
     iso_text,
     lit,
+    number_literal_text,
     pad_fill,
 )
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
-    CatalogConnection,
-    ReflectedColumn,
     TableLocation,
     all_of,
     call,
     col,
-    column_from_type_string,
     eq_literal,
-    fetch,
     relation,
 )
 
@@ -64,6 +61,29 @@ _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.U
 _JSON_SCALAR_TYPES = ("Int64", "UInt64", "Double", "Bool")
 #: Types ClickHouse refuses inside ``Nullable``.
 _NEVER_NULLABLE = (*exp.DataType.NESTED_TYPES, exp.DataType.Type.LOWCARDINALITY, exp.DataType.Type.JSON)
+
+
+_DECIMAL128_DIGITS, _DECIMAL256_DIGITS = 38, 76
+
+
+def _to_decimal(width: int) -> str:
+    """The ``to…OrNull`` reader of a Decimal ``width`` digits wide."""
+    return "toDecimal128OrNull" if width <= _DECIMAL128_DIGITS else "toDecimal256OrNull"
+
+
+def _spelled_type(to: exp.DataType) -> str:
+    """``to`` as ClickHouse spells it, never ``Nullable``."""
+    spelled = to.sql(dialect="clickhouse")
+    return spelled[len("Nullable("):-1] if spelled.startswith("Nullable(") and spelled.endswith(")") else spelled
+
+
+def _json_parts(value: Expression, path: JsonPath, *, native: bool) -> tuple[Expression, list[Expression]]:
+    """The JSON text (a native input serialised from the cast's operand) and ``path`` as key arguments."""
+    if native:
+        document = anon("toString", value.this if isinstance(value, exp.Cast) else value)
+    else:
+        document = value.copy()
+    return document, [lit(step + 1) if isinstance(step, int) else lit(step) for step in path.steps]
 
 
 def _compact(values: Expression) -> Expression:
@@ -374,6 +394,51 @@ class ClickhouseDialect(SqlDialect):
         """``isNotDistinctFrom`` is only allowed in ``JOIN ON``."""
         return self._expanded_null_safe_eq(left, right)
 
+    def round_half_away(self, value: Expression, digits: int) -> Expression:
+        """``round`` breaks a Float64 tie to even: the value is read as a Decimal truncated one digit past ``digits`` (a
+        literal from its exact text: it would read as a Float64), then rounded as one."""
+        return self._half_away(value, digits, width=_DECIMAL128_DIGITS)
+
+    def _half_away(self, value: Expression, digits: int, *, width: int) -> Expression:
+        text = number_literal_text(value)
+        if text is None:
+            exact = anon("accurateCastOrNull", value, lit(f"Decimal({width}, {digits + 1})"))
+        else:
+            exact = anon(_to_decimal(width), lit(text), lit(digits + 1))
+        return exp.Round(this=exact, decimals=lit(digits))
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """A ``DECIMAL`` rounds through a guard digit past its precision, which Decimal256's 76 digits leave no room
+        for at precision 76."""
+        parts = decimal_parts(data_type)
+        if parts is not None and (parts[0] or 0) >= _DECIMAL256_DIGITS:
+            return False
+        return super().cast_type_supported(data_type)
+
+    def build_decimal_cast(
+        self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],
+        try_: bool,
+    ) -> Expression:
+        """Numeric text too is rounded here (the own cast truncates and refuses spaces); a precision is not
+        enforced by the type, so ``TRY_CAST`` checks it. The rounding guard digit needs ``precision + 1`` digits."""
+        width = _DECIMAL128_DIGITS if precision < _DECIMAL128_DIGITS else _DECIMAL256_DIGITS
+        if source is None:
+            exact = anon(_to_decimal(width), anon("trimBoth", value), lit(scale + 1))
+            rounded: Expression = exp.Round(this=exact, decimals=lit(scale))
+        else:
+            rounded = self._half_away(value, scale, width=width)
+        if not try_:
+            return self.build_cast(rounded, to)
+        # The guard sits inside the cast: ``multiIf`` evaluates every branch, so an overflowing cast would raise.
+        fits = exp.LT(this=exp.Abs(this=rounded.copy()), expression=lit(10 ** (precision - scale)))
+        return self.build_cast(case((fits, rounded)), to)
+
+    def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
+        """A number is rounded, then read as integer text: ``accurateCastOrNull`` of a Decimal raises on overflow."""
+        if kind_of(source) is not TypeKind.DOUBLE:
+            return super().build_integer_try_cast(value, to, source=source)
+        return self.build_integer_text_try_cast(as_text(self.round_half_away(value, 0)), to)
+
     def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """A ``Nullable`` target (where ClickHouse allows one), so NULL stays NULL."""
         target = to.copy()
@@ -407,17 +472,19 @@ class ClickhouseDialect(SqlDialect):
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """A native input is serialised from the cast's operand: a ``CAST(… AS JSON)`` needs an experimental
         setting before 25.3."""
-        if native:
-            document = anon("toString", value.this if isinstance(value, exp.Cast) else value)
-        else:
-            document = value.copy()
-        keys = [lit(step + 1) if isinstance(step, int) else lit(step) for step in path.steps]
+        document, keys = _json_parts(value, path, native=native)
         kind = anon("JSONType", document, *keys)
         return case(
             (exp.EQ(this=kind, expression=lit("String")), anon("JSONExtractString", document, *keys)),
             (exp.In(this=kind.copy(), expressions=[lit(t) for t in _JSON_SCALAR_TYPES]),
              anon("JSONExtractRaw", document, *keys)),
         )
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        document, keys = _json_parts(value, path, native=native)
+        fraction = exp.EQ(this=anon("JSONType", document, *keys), expression=lit("Double"))
+        return case((fraction, anon("JSONExtractFloat", document, *keys)))
+
     ds_type_aliases: frozenset[str] = frozenset({"clickhouse"})
     sa_backend_names: frozenset[str] = frozenset({"clickhouse"})
     explain_prefix: str | None = "EXPLAIN"
@@ -445,23 +512,9 @@ class ClickhouseDialect(SqlDialect):
             .where(all_of([eq_literal(col("table"), location.name), exp.EQ(this=col("database"), expression=database)]))
         )
 
-    def columns_from_inspector(
-        self, raw: list[dict[str, Any]], *, connection: CatalogConnection | None, inspector: Any,
-        location: TableLocation,
-    ) -> list[ReflectedColumn]:
-        """A column the driver cannot type (``JSON``) is read from its ``system.columns`` type."""
-        columns = super().columns_from_inspector(raw, connection=connection, inspector=inspector, location=location)
-        untyped = {c["name"] for c in raw if isinstance(c["type"], NullType)}
-        if not untyped:
-            return columns
-        declared = dict(fetch(connection, self._system_columns(location, field=col("type")), dialect=self.sqlglot_name))
-        return [
-            column_from_type_string(
-                name=c.name, data_type=declared.get(c.name), comment=c.comment,
-                zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
-            ) if c.name in untyped else c
-            for c in columns
-        ]
+    def catalog_types_query(self, location: TableLocation) -> Optional[exp.Select]:
+        """``system.columns`` types (the driver cannot type ``JSON``)."""
+        return self._system_columns(location, field=col("type"))
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
         """Per-request HTTP setting: the driver keeps no session, so a ``SET`` never reaches the query."""
@@ -483,10 +536,7 @@ class ClickhouseDialect(SqlDialect):
             settings[_TIMEOUT_SETTING] = prior
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
-        spelled = to.sql(dialect=self.sqlglot_name)
-        if spelled.startswith("Nullable(") and spelled.endswith(")"):
-            spelled = spelled[len("Nullable("):-1]
-        cast = exp.Anonymous(this="accurateCastOrNull", expressions=[as_text(value), exp.Literal.string(spelled)])
+        cast = exp.Anonymous(this="accurateCastOrNull", expressions=[as_text(value), lit(_spelled_type(to))])
         return _bool_as_int(cast, to)
 
     def server_profile_sql(self) -> str | None:
