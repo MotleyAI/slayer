@@ -246,8 +246,8 @@ class WindowFrame(_BaseNode):
     """A ``ROWS`` / ``RANGE`` frame; each bound is ``(kind, offset)``, ``end`` ``None`` for a single start bound."""
 
     unit: str
-    start: Tuple[str, Optional[int]]
-    end: Optional[Tuple[str, Optional[int]]] = None
+    start: Tuple[str, Optional[Decimal]]
+    end: Optional[Tuple[str, Optional[Decimal]]] = None
 
 
 class WindowCall(_BaseNode):
@@ -1049,14 +1049,15 @@ _ORDER = _on(
 )
 
 
-def _frame_bound(toks: List[Any]) -> Tuple[str, Optional[int]]:
+def _frame_bound(toks: List[Any]) -> Tuple[str, Optional[Decimal]]:
     head, side = toks[0], toks[-1].lower()
     if not isinstance(head, Literal):
         return (f"{head.lower()} {side}", None)
     value = head.value
     if not isinstance(value, Decimal) or value != value.to_integral_value():
         raise _Problem("a frame offset is a whole number, e.g. ROWS BETWEEN 6 PRECEDING AND CURRENT ROW.")
-    return (side, int(value))
+    # Kept a Decimal: ``int()`` of ``1e1000000000`` would allocate its billion digits.
+    return (side, value)
 
 
 _SIDE = _need(_kw("preceding", "following"), "a frame bound ends in PRECEDING or FOLLOWING.")
@@ -1082,7 +1083,7 @@ class _Window:
     __slots__ = ("partition", "order", "frame")
 
     def __init__(self, items: List[Any]) -> None:
-        parts = dict(i for i in items if isinstance(i, tuple))
+        parts = {i[0]: i[1] for i in items if isinstance(i, tuple)}
         self.partition: Tuple[Any, ...] = parts.get("partition", ())
         self.order: Tuple[OrderItem, ...] = parts.get("order", ())
         self.frame = next((i for i in items if isinstance(i, WindowFrame)), None)
@@ -1133,6 +1134,7 @@ def _window_function(call: _PendingCall) -> ScalarCall:
     args, _, distinct = _split_args(call.items, call=word.name)
     if distinct:
         raise _Problem(f"{_DISTINCT_ONLY}.")
+    _reject_bare_star_args(args, (), func_name=word.name, original=_STATE.text)
     _STATE.calls[(call.start, call.end)] = CallSpan(
         callee=word.raw, start=call.start, end=call.end, arguments=len(call.items),
     )

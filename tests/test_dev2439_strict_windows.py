@@ -39,6 +39,8 @@ MALFORMED = [
     "ROW_NUMBER() OVER (PARTITION BY ROW_NUMBER() OVER ()) = 1",
     f"ROW_NUMBER() OVER (ORDER BY RANK() {ORDERED}) = 1",
     "ROW_NUMBER() OVER (PARTITION BY orders.status ~ '^c') = 1",
+    "FIRST_VALUE(*) OVER () > 1",
+    "LAG(*) OVER () > 1",
 ]
 
 #: Complete windows over known fields.
@@ -53,6 +55,7 @@ COMPLETE = [
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) = 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount RANGE UNBOUNDED PRECEDING) = 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS 2 PRECEDING) = 1",
+    "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN 1e30 PRECEDING AND 2 PRECEDING) = 1",
 ]
 
 
@@ -80,6 +83,8 @@ AGGREGATE_SHAPES = [
     ("APPROX_PERCENTILE(orders.amount)", "E_INVALID_QUERY"),
     ("APPROX_PERCENTILE(orders.amount, 0.5, 1)", "E_INVALID_QUERY"),
     ("PERCENTILE_CONT(0.5, 0.1) WITHIN GROUP (ORDER BY orders.amount)", "E_INVALID_QUERY"),
+    ("COUNT(DISTINCT orders.amount, unexpected=1)", "E_INVALID_QUERY"),
+    ("COUNT(DISTINCT orders.amount)", "E_AGGREGATE_IN_WHERE"),
     ("COUNT(*)", "E_AGGREGATE_IN_WHERE"),
     ("COUNT(orders.amount)", "E_AGGREGATE_IN_WHERE"),
     ("APPROX_PERCENTILE(orders.amount, 0.5)", "E_AGGREGATE_IN_WHERE"),

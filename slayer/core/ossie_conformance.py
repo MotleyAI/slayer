@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import re
 from collections.abc import Callable, Iterable, Mapping
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict
@@ -43,6 +44,8 @@ OSSIE_AGGREGATE_SPELLINGS = frozenset({"sum", "count", "avg", "min", "max", "std
 #: The names the parser gives Ossie's ``COUNT(DISTINCT …)`` and ``PERCENTILE_CONT(…) WITHIN GROUP (…)``; SLayer's own
 #: calls of these names are refused by their written callee.
 REWRITTEN_AGGREGATES = frozenset({"count_distinct", "percentile"})
+#: The named arguments the parser gives each rewritten aggregate; any other argument was written.
+REWRITTEN_ARGUMENTS = {"count_distinct": (), "percentile": ("p",)}
 #: Ossie's argument counts for functions SLayer also defines with other arities.
 OSSIE_ARITIES = {"regexp_extract": 2}
 #: Arguments an Ossie aggregate takes after its value (one value otherwise).
@@ -220,7 +223,10 @@ def _aggregate_call(node: AggCall, out: FilterReading) -> None:
         _refuse(out, f"{node.agg}() takes no keyword arguments in Ossie")
     # A rewritten Ossie aggregate's arguments are the parser's (``p=`` of ``PERCENTILE_CONT(p)``), not written.
     rewritten = name in REWRITTEN_AGGREGATES
-    if not rewritten:
+    if rewritten:
+        if tuple(a.name if isinstance(a, NamedArg) else None for a in node.args) != REWRITTEN_ARGUMENTS[name]:
+            _refuse(out, f"{node.agg}() takes no further arguments in Ossie")
+    else:
         if isinstance(node.source, StarSource) and name != "count":
             _refuse(out, f"{node.agg}(*) is not an Ossie aggregate; only COUNT(*) is")
         extra = OSSIE_AGGREGATE_EXTRA_ARGS.get(name, 0)
@@ -257,15 +263,17 @@ def _frame(frame: WindowFrame, out: FilterReading) -> None:
         if FRAME_BOUND_ORDER[start[0]] > FRAME_BOUND_ORDER["current row"]:
             _refuse(out, "a single frame bound cannot be a FOLLOWING one")
         return
-    if start[0] == "unbounded following" or end[0] == "unbounded preceding":
-        _refuse(out, "the frame bounds are out of order")
-    elif (FRAME_BOUND_ORDER[start[0]], _offset_rank(start)) > (FRAME_BOUND_ORDER[end[0]], _offset_rank(end)):
+    if (
+        start[0] == "unbounded following"
+        or end[0] == "unbounded preceding"
+        or (FRAME_BOUND_ORDER[start[0]], _offset_rank(start)) > (FRAME_BOUND_ORDER[end[0]], _offset_rank(end))
+    ):
         _refuse(out, "the frame bounds are out of order")
 
 
-def _offset_rank(bound: Tuple[str, Optional[int]]) -> int:
+def _offset_rank(bound: Tuple[str, Optional[Decimal]]) -> Decimal:
     """Order within a bound kind: a farther PRECEDING comes first."""
-    offset = bound[1] or 0
+    offset = bound[1] or Decimal(0)
     return -offset if bound[0] == "preceding" else offset
 
 

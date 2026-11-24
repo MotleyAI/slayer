@@ -63,18 +63,26 @@ def test_ascending_and_nulls_first() -> None:
 
 
 @pytest.mark.parametrize(("frame_text", "unit", "start", "end"), [
-    ("ROWS BETWEEN 6 PRECEDING AND CURRENT ROW", "rows", ("preceding", 6), ("current row", None)),
+    ("ROWS BETWEEN 6 PRECEDING AND CURRENT ROW", "rows", ("preceding", Decimal(6)), ("current row", None)),
     ("RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING", "range", ("unbounded preceding", None),
      ("unbounded following", None)),
-    ("ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING", "rows", ("current row", None), ("following", 2)),
+    ("ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING", "rows", ("current row", None), ("following", Decimal(2))),
     ("RANGE UNBOUNDED PRECEDING", "range", ("unbounded preceding", None), None),
-    ("ROWS 3 PRECEDING", "rows", ("preceding", 3), None),
+    ("ROWS 3 PRECEDING", "rows", ("preceding", Decimal(3)), None),
 ])
-def test_frame_bounds(frame_text: str, unit: str, start: tuple[str, int | None],
-                      end: tuple[str, int | None] | None) -> None:
+def test_frame_bounds(frame_text: str, unit: str, start: tuple[str, Decimal | None],
+                      end: tuple[str, Decimal | None] | None) -> None:
     window = _window(f"SUM(x) OVER (ORDER BY y {frame_text})")
     assert isinstance(window, syntax.WindowCall)
     assert window.frame == syntax.WindowFrame(unit=unit, start=start, end=end)
+
+
+def test_a_frame_offset_is_never_expanded_to_its_digits() -> None:
+    # An ``int`` offset would make ``1e1000000000`` allocate its billion digits.
+    window = _window("ROW_NUMBER() OVER (ORDER BY y ROWS 1e30 PRECEDING)")
+    assert isinstance(window, syntax.WindowCall)
+    assert window.frame is not None
+    assert type(window.frame.start[1]) is Decimal
 
 
 def test_walk_reaches_every_reference_in_a_window() -> None:
@@ -121,6 +129,8 @@ def test_without_over_a_call_reads_as_natively() -> None:
     "ROW_NUMBER() OVER (ORDER BY x ROWS BETWEEN 1 PRECEDING)",
     "ROW_NUMBER() OVER (ORDER BY x GROUPS UNBOUNDED PRECEDING)",
     "ROW_NUMBER() OVER (PARTITION x)",
+    "FIRST_VALUE(*) OVER ()",
+    "LAG(*) OVER (ORDER BY y)",
 ])
 def test_a_malformed_window_does_not_parse(text: str) -> None:
     with pytest.raises(ValueError) as raised:
