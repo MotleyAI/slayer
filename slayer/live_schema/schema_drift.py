@@ -1210,6 +1210,7 @@ def _stage_cascade_state(*, stage: SlayerQuery, scope: QueryScope, state: _Casca
         dropped_metrics={name: set(metrics) for name, metrics in state.dropped_metrics.items()},
         dropped_relationships={name: list(refs) for name, refs in state.dropped_relationships.items()},
         pk_per_dataset=state.pk_per_dataset,
+        vanished=state.vanished,
     )
     extended = [scope.datasets[e.dataset] for e in stage.extensions if e.dataset in scope.datasets]
     changed = True
@@ -1261,6 +1262,7 @@ class _CascadeState:
         "dropped_metrics",
         "dropped_relationships",
         "pk_per_dataset",
+        "vanished",
     )
 
     def __init__(
@@ -1273,6 +1275,7 @@ class _CascadeState:
         dropped_metrics: dict[str, set[str]],
         dropped_relationships: _DroppedRelationships,
         pk_per_dataset: dict[str, set[str]],
+        vanished: dict[str, set[str]] | None = None,
     ) -> None:
         self.datasets_by_name = datasets_by_name
         self.edit_entries = edit_entries
@@ -1281,6 +1284,8 @@ class _CascadeState:
         self.dropped_metrics = dropped_metrics
         self.dropped_relationships = dropped_relationships
         self.pk_per_dataset = pk_per_dataset
+        #: Per dataset, the fields the base diffs dropped because the column they read is gone.
+        self.vanished = vanished or {}
 
     def cascadable(self, name: str) -> set[str]:
         """Cascadable field drops on ``name`` (excludes PKs — rule 7)."""
@@ -1297,8 +1302,9 @@ def _field_ref_targets_dropped(
     """Whether one ``(table_alias, ref_col)`` ref resolves to a dropped field → ``(is_dropped, resolved_target_dataset)``."""
     if table_alias is None:
         dropped = state.cascadable(dataset.name)
+        vanished = state.vanished.get(dataset.name, set())
         return any(c.name in dropped and c.reads_physical_column and c.physical_name == ref_col
-                   for c in dataset.fields), dataset
+                   and (c.is_physical_reader or c.name in vanished) for c in dataset.fields), dataset
     if table_alias == dataset.name:
         return ref_col in state.cascadable(dataset.name), dataset
     target = _walk_alias_to_target_dataset(
@@ -1537,6 +1543,7 @@ def _cascade_one_pass(
     dropped_metrics: dict[str, set[str]],
     dropped_relationships: _DroppedRelationships,
     pk_per_dataset: dict[str, set[str]],
+    vanished: dict[str, set[str]],
 ) -> bool:
     """Run one cascade pass; True if anything new was added."""
     state = _CascadeState(
@@ -1547,6 +1554,7 @@ def _cascade_one_pass(
         dropped_metrics=dropped_metrics,
         dropped_relationships=dropped_relationships,
         pk_per_dataset=pk_per_dataset,
+        vanished=vanished,
     )
 
     changed = False
@@ -1668,6 +1676,8 @@ def compute_datasource_drops(
     )
 
     pk_per_dataset = {m.name: _pk_fields(m) for m in datasets}
+    vanished = {name: {r.target.removeprefix("field:") for r in entry.reasons if r.target.startswith("field:")}
+                for name, entry in edit_entries.items()}
 
     # Iterate to fixed point — safety bound, DAGs converge in <10 passes.
     for _ in range(100):
@@ -1680,6 +1690,7 @@ def compute_datasource_drops(
             dropped_metrics=dropped_metrics,
             dropped_relationships=dropped_relationships,
             pk_per_dataset=pk_per_dataset,
+            vanished=vanished,
         ):
             break
 

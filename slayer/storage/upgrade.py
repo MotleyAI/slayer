@@ -20,7 +20,7 @@ from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import (
     CLIENT_SOURCE, DATASOURCE_TYPES, ClientSource, LiveRefinementRequiredError, StorageBackend, _memory_in_datasource,
-    without_none,
+    one_upgrade_pass, without_none,
 )
 from slayer.storage.document_loading import Loaded
 from slayer.storage.semantic_models import checked_document
@@ -118,13 +118,32 @@ async def _semantic_model_outcome(storage: StorageBackend, *, data_source: str, 
     return DocumentOutcome(kind=SEMANTIC_MODEL, name=shown, status="current")
 
 
-async def _unreadable(storage: StorageBackend, *, data_source: str, name: str) -> str:
-    """Why a listed dataset has no readable stored dict."""
+async def _unreadable(load: Awaitable[Any]) -> str:
+    """Why a listed document has no readable stored dict: its load error."""
     try:
-        await storage.get_dataset(name, data_source=data_source)
-    except Exception as exc:  # noqa: BLE001 — the load error is the reason reported
+        await load
+    except Exception as exc:  # noqa: BLE001
         return str(exc)
     return "its stored document cannot be read"
+
+
+async def _unreadable_outcomes(storage: StorageBackend, *, data_source: str | None, memories: Mapping[str, Any],
+                               datasources: Mapping[str, Any]) -> list[DocumentOutcome]:
+    """Each listed memory and datasource without a readable stored dict that fails to load; a memory only on a
+    whole-store run, since an unreadable one names no datasource."""
+    out: list[DocumentOutcome] = []
+    for name in await storage.list_datasources():
+        if data_source not in (None, name) or name in datasources:
+            continue
+        try:  # a backend without raw access lists datasources that load
+            await storage.get_datasource(name)
+        except Exception as exc:  # noqa: BLE001
+            out.append(DocumentOutcome(kind="datasource", name=name, status=NOT_UPGRADED, detail=str(exc)))
+    if data_source is None:
+        _, failures = await storage._list_memories_rows(entities=None)
+        out += [DocumentOutcome(kind="memory", name=f.name, status=NOT_UPGRADED, detail=f.cause_text)
+                for f in failures if f.name not in memories]
+    return out
 
 
 def _diff(plan: _Plan) -> str:
@@ -151,11 +170,13 @@ async def _plans(storage: StorageBackend, *, data_source: str | None) -> tuple[l
     for (d, n), raw in raws.items():
         if raw is None:
             unreadable.append(DocumentOutcome(kind="dataset", name=f"{d}.{n}", status=NOT_UPGRADED,
-                                              detail=await _unreadable(storage, data_source=d, name=n)))
+                                              detail=await _unreadable(storage.get_dataset(n, data_source=d))))
         else:
             plans.append(await _dataset_plan(storage, data_source=d, name=n, raw=raw))
     plans += [await _memory_plan(storage, memory_id=m, raw=raw) for m, raw in memories.items()]
     plans += [await _datasource_plan(storage, name=n, raw=raw) for n, raw in datasources.items()]
+    unreadable += await _unreadable_outcomes(storage, data_source=data_source, memories=memories,
+                                             datasources=datasources)
     return plans, unreadable
 
 
@@ -174,6 +195,28 @@ async def _outcome(storage: StorageBackend, plan: _Plan, *, dry_run: bool) -> Do
     return DocumentOutcome(kind=plan.kind, name=plan.shown, status="upgraded")
 
 
+async def _held_by(storage: StorageBackend, *, datasource: str, plans: Sequence[_Plan],
+                   outcomes: Sequence[DocumentOutcome]) -> list[str]:
+    """The dependents not stored in the current format that a renaming ``datasource`` must wait for: its datasets,
+    the memories reading it, and every unreadable memory (which names no datasource), whatever the run's scope."""
+    if datasource not in await storage._granularity_renames():
+        return []
+    identities = await storage._list_all_dataset_identities()
+    memories = {p.shown: p.raw for p in plans if p.kind == "memory"}
+
+    def depends(outcome: DocumentOutcome) -> bool:
+        if outcome.kind == "dataset":
+            return outcome.name.startswith(f"{datasource}.")
+        raw = memories.get(outcome.name)
+        return raw is not None and _memory_in_datasource(raw, data_source=datasource, identities=identities)
+
+    held = [f"{o.kind} {o.name}" for o in outcomes
+            if o.kind in ("dataset", "memory") and o.status in (NOT_UPGRADED, "conflict") and depends(o)]
+    readable = await storage._raw_memory_dicts()
+    _, failures = await storage._list_memories_rows(entities=None)
+    return held + [f"memory {f.name}" for f in failures if f.name not in readable]
+
+
 async def upgrade_store(
     storage: StorageBackend, *, data_source: str | None = None, dry_run: bool = False,
     datasource_types: Mapping[str, str] | None = None, client_source: ClientSource | None = None,
@@ -183,11 +226,17 @@ async def upgrade_store(
     types_token = DATASOURCE_TYPES.set(dict(datasource_types or {}))
     client_token = CLIENT_SOURCE.set(client_source)
     try:
-        with warnings.catch_warnings():
+        with warnings.catch_warnings(), one_upgrade_pass():
             warnings.simplefilter("ignore", SlayerStoredUpgradeNeededWarning)
             plans, outcomes = await _plans(storage, data_source=data_source)
-            for plan in sorted(plans, key=lambda p: p.kind == "datasource"):
+            for plan in [p for p in plans if p.kind != "datasource"]:
                 outcomes.append(await _outcome(storage, plan, dry_run=dry_run))
+            for plan in [p for p in plans if p.kind == "datasource"]:
+                held = await _held_by(storage, datasource=plan.name, plans=plans, outcomes=outcomes)
+                outcomes.append(DocumentOutcome(
+                    kind="datasource", name=plan.shown, status=NOT_UPGRADED,
+                    detail=f"its granularity rename waits for {', '.join(held)}") if held
+                    else await _outcome(storage, plan, dry_run=dry_run))
             outcomes += [await _semantic_model_outcome(storage, data_source=d, name=n)
                          for d, n in await storage.list_semantic_models(data_source=data_source)]
     finally:

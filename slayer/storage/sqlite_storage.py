@@ -450,8 +450,6 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                                           data=data)
         if written and kind == "dataset" and data_source is not None:
             self._forget_raw(data_source=data_source, name=name)
-        if written and kind == "datasource":
-            self._forget_granularity_renames()
         return written
 
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:

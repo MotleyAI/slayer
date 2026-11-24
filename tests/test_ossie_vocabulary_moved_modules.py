@@ -51,7 +51,8 @@ KEPT_UNLISTED: dict[str, str] = {"slayer.sql.column_expansion": "drop_root_hop"}
 def _reach(old: str) -> object:
     """The old path itself, or a name it does not list when it is a kept path."""
     if old in KEPT_UNLISTED:
-        return getattr(importlib.import_module(old), KEPT_UNLISTED[old])
+        exec(f"from {old} import {KEPT_UNLISTED[old]}", {})  # the spec'd ImportError comes from `from … import`
+        return None
     return importlib.import_module(old)
 
 
@@ -78,7 +79,8 @@ def test_the_stub_is_tagged_for_removal_in_3_0(old: str) -> None:
     ]
     [call] = calls
     assert [ast.literal_eval(a) for a in call.args] == [old, STUBS[old]]
-    assert {k.arg: ast.literal_eval(k.value) for k in call.keywords} == {"removal": "3.0"}
+    attribute = {"attribute": True} if old in KEPT_UNLISTED else {}
+    assert {k.arg: ast.literal_eval(k.value) for k in call.keywords} == {"removal": "3.0", **attribute}
 
 
 @pytest.mark.parametrize("old", sorted(STUBS))

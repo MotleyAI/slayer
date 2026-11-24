@@ -97,3 +97,21 @@ def test_a_filtered_field_is_still_not_a_relationship_key() -> None:
                                    fields=dataset.fields)
     assert error is not None
     assert "paid_amount" in str(error)
+
+
+def _paid_only() -> SlayerDataset:
+    return _orders(
+        fields=[{"name": "paid_amount", "expression": "raw_amount", "datatype": "Float", "filter": "status = 'paid'"},
+                {"name": "doubled", "expression": "raw_amount * 2", "datatype": "Float"}],
+        metrics=[],
+    )
+
+
+def test_a_field_dropped_for_its_filter_leaves_its_column_readers() -> None:
+    drop = _drop(_paid_only(), {"id": DataType.INTEGER, "raw_amount": DataType.FLOAT})
+    assert sorted(drop.remove.fields) == ["paid_amount", "status"]
+
+
+def test_a_filtered_fields_vanished_column_drops_its_readers() -> None:
+    drop = _drop(_paid_only(), {"id": DataType.INTEGER, "status": DataType.STRING})
+    assert sorted(drop.remove.fields) == ["doubled", "paid_amount"]

@@ -95,7 +95,8 @@ A load never writes: a document stored by an older release upgrades in memory on
 the older release can still read it. Each such document loads with one `stored_upgrade_needed` warning. Run
 [`slayer storage upgrade`](../reference/cli.md#slayer-storage) to store every document in the current format, or save
 the document. Opening a store still performs its one-time layout moves (the YAML flat-layout move, the memory-file
-split, SQLite table rebuilds), which change no document's content.
+split, SQLite table rebuilds), which change no document's content, except that the flat-layout move fills an empty
+`data_source` (see the layout note above).
 
 ## Storage Resolution
 

@@ -70,7 +70,7 @@ Expected 1.8.4 values for the tests come from running the same calls against `mo
   - Ordinary loads call it and return the upgraded objects without writing.
   - `slayer storage upgrade` calls it and writes changed documents.
   - The pure entry point calls it over a snapshot built from the documents passed in.
-- **Settle.** The rename map is computed once per storage instance from the stored datasources, and is a function of them alone. It is applied in memory to every dependent document a load reads. The upgrade command writes dependents before the datasource, so an interrupted run converges on the next one.
+- **Settle.** The rename map is read once per top-level load from the stored datasources, and is a function of them alone. It is applied in memory to every dependent document a load reads. The upgrade command writes dependents before the datasource and leaves a renaming datasource unwritten while a dependent is refused, conflicted or unreadable, so an interrupted run converges on the next one.
 - **Upgrade writes.** These go through the migration write path: wire-schema-valid and without client-save semantic validation, as the old write-back did. They are conditional on the stored raw form being unchanged since it was read: bytes for YAML, an in-transaction comparison for SQLite. A changed document is a reported conflict.
 - **Load warning.** It is keyed on the service's "changes this document" result, not on the top-level version. It is emitted once per document per storage instance.
 - **Entities covered.** Datasets, semantic-model documents, saved queries, memories and datasources. Datasource priority and embeddings are untouched.
@@ -104,7 +104,7 @@ Expected 1.8.4 values for the tests come from running the same calls against `mo
 24. Rejected (codex): accept colon spellings in `parse_formula`. The integrator's runtime input is migrated, functional text. Its colon text comes only from documents it authors at the current version, which 2.0 refuses at query time, so accepting it would validate models every query fails.
 25. Filter-tree contract (codex): a recursive declared-field walk reaches only the fourteen 1.x classes carrying the 1.8.4 values; 1.x-refused text raises `ValueError`; nothing lossy is invented. Tests replicate the integrator's walk and check per-class fields.
 26. One upgrade service over a snapshot context, shared by loads, the CLI and the pure entry point. (codex)
-27. The settle's rename map is computed once per storage instance and applied in memory; the CLI persists dependents before datasources, so it converges after an interruption. (codex)
+27. The settle's rename map is computed once per top-level load and applied in memory; the CLI persists dependents before datasources and holds a renaming datasource while a dependent is not stored, so it converges after an interruption. (codex, CodeRabbit)
 28. Upgrade writes skip client-save semantic validation, as the old write-back did. Fixtures cover a legacy cycle and a fanning reference. (codex)
 29. Upgrade writes are conditional on an unchanged stored form, and a changed one is a reported conflict. (codex)
 30. The load warning is keyed on "the upgrade changes this document", including nested stages and repairs. (codex)
@@ -113,6 +113,7 @@ Expected 1.8.4 values for the tests come from running the same calls against `mo
 33. The tripwire pins one feature per restored name plus the moved-module fallback. Tests: importing doesn't warn, each access warns once, an unlisted name raises. (codex)
 34. `DataType` legacy names go through a metaclass lookup, with tests for identity, iteration, `__members__`, pydantic validation and schema, pickling, and one warning per lookup. (codex)
 35. The law test compares logical contents and spies write hooks; the pre-v4 move is tested separately. (codex)
+36. Deferred past 2.0: a durable, version-gated rename (the datasource records `renamed_from`; only dependents below the settled versions are renamed), and counting validator-level rewrites in the "changes this document" flag. Until then, a 1.x document arriving in an upgraded store, or a current document saved while its datasource is unrenamed, reads a library-colliding granularity name with the library's meaning; this needs a 1.x custom granularity named like a library function. (user)
 
 ## Risks / Trade-offs
 

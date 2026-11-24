@@ -41,7 +41,7 @@ if not TYPE_CHECKING:  # the moved names stay static errors
         if name.startswith("__"):
             raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         if name not in _KEPT:
-            raise_moved("slayer.engine.schema_drift", "slayer.live_schema.schema_drift", removal="3.0")
+            raise_moved("slayer.engine.schema_drift", "slayer.live_schema.schema_drift", removal="3.0", attribute=True)
         warn, value = _KEPT[name]
         warn()
         return value

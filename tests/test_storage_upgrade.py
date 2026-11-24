@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 import yaml
+from pydantic import TypeAdapter
 
 import slayer.core.warnings as slayer_warnings
 from slayer.core.models import DatasourceConfig
@@ -25,6 +26,7 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
+from slayer.storage.upgrade import upgrade_store
 from slayer.storage.yaml_storage import YAMLStorage
 from tests import _granularity_rename_fixtures as gran
 from tests import _stored_upgrade_fixtures as su
@@ -113,6 +115,11 @@ def test_an_upgraded_store_is_quiet(backend: str, tmp_path: Path) -> None:
         warnings.simplefilter("always")
         asyncio.run(_load_all(gran.reopen(backend=backend, base=base)))
     assert _upgrade_warnings(record) == []
+
+
+def test_the_load_warning_round_trips_as_a_response_warning() -> None:
+    payload = slayer_warnings.StoredUpgradeNeededWarning(document_kind="dataset", data_source=DATA_SOURCE, name="orders")
+    assert TypeAdapter(slayer_warnings.AnySlayerWarning).validate_python(payload.model_dump(mode="json")) == payload
 
 
 # --- slayer storage upgrade persists the current format ------------------------------------------------------------
@@ -298,6 +305,26 @@ def test_a_corrupt_document_does_not_stop_the_others(backend: str, tmp_path: Pat
     assert kept.embedding == [1.0, 0.0]
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_an_unreadable_memory_and_datasource_are_reported(backend: str, tmp_path: Path) -> None:
+    base = str(tmp_path / "store")
+    storage = warehouse_store(backend=backend, base=base)
+    if backend == "yaml":
+        Path(base, "memories", "broken_memory.md").write_text("---\nid: [unclosed\n---\nbody\n")
+        Path(base, "datasources", "broken_ds.yaml").write_text("name: [unclosed\n")
+    else:
+        with transaction(os.path.join(base, "store.db")) as conn:
+            conn.execute("INSERT INTO memories (id, data) VALUES (?, ?)", ("broken_memory", "{not json"))
+            conn.execute("INSERT INTO datasources (name, data) VALUES (?, ?)", ("broken_ds", "{not json"))
+    result = upgrade(store_path(storage))
+    assert result.code == 1, result
+    lines = (result.out + result.err).splitlines()
+    for document in ("memory broken_memory", "datasource broken_ds"):
+        assert any(line.startswith(f"{document}: not upgraded") for line in lines), (document, lines)
+    orders = f"models/{DATA_SOURCE}/orders"
+    assert _versions({orders: raw(backend=backend, base=base)[orders]})[orders] == CURRENT_VERSIONS["SlayerModel"]
+
+
 def test_a_concurrent_edit_is_not_overwritten(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     base = str(tmp_path / "store")
     storage = warehouse_store(backend="yaml", base=base)
@@ -415,6 +442,134 @@ def test_an_interrupted_settle_converges(backend: str, tmp_path: Path) -> None:
     assert _comparable(finished, base=interrupted) == _comparable(raw(backend=backend, base=done), base=done)
     assert "left_granularity" in finished[f"datasources/{gran.DS}"]
     assert not any(_mentions_granularity(text, "left") for text in finished.values())
+
+
+def _write_datasource(*, backend: str, base: str, doc: dict[str, Any]) -> None:
+    """Replace stored datasource ``gran.DS`` behind the backend's back."""
+    if backend == "yaml":
+        Path(base, "datasources", f"{gran.DS}.yaml").write_text(yaml.safe_dump(doc))
+    else:
+        with transaction(os.path.join(base, "store.db")) as conn:
+            conn.execute("UPDATE datasources SET data = ? WHERE name = ?", (json.dumps(doc), gran.DS))
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_datasource_changed_elsewhere_renames_on_the_next_load(backend: str, tmp_path: Path) -> None:
+    base = str(tmp_path / "store")
+    db_path = gran.live_db(base)
+    storage = asyncio.run(gran.write_raw_store(backend=backend, base=base,
+                                               datasources=[gran.datasource_doc(db_path=db_path)]))
+    assert asyncio.run(storage._granularity_renames()) == {}
+    _write_datasource(backend=backend, base=base, doc=gran.datasource_doc(db_path=db_path, granularities=["left"]))
+    assert asyncio.run(storage._granularity_renames()) == {gran.DS: {"left": gran.renamed("left")}}
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_one_upgrade_run_reads_one_rename_table(backend: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base = str(tmp_path / "store")
+    asyncio.run(_granularity_store(backend=backend, base=base, name="left"))
+    unrenamed = gran.datasource_doc(db_path=os.path.join(base, "live.db"))
+    upgraded = StorageBackend._upgraded_dataset
+
+    async def edited_after_each_plan(self: StorageBackend, **kwargs: Any) -> Any:
+        out = await upgraded(self, **kwargs)
+        _write_datasource(backend=backend, base=base, doc=unrenamed)
+        return out
+
+    monkeypatch.setattr(StorageBackend, "_upgraded_dataset", edited_after_each_plan)
+    report = asyncio.run(upgrade_store(gran.reopen(backend=backend, base=base)))
+    stored = raw(backend=backend, base=base)
+    for name in ("bucketed", "bucketed_too"):
+        assert "left_granularity" in stored[f"models/{gran.DS}/{name}"], name
+    assert [o.status for o in report.outcomes if o.kind == "datasource"] == ["conflict"]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_an_unreadable_memory_holds_a_scoped_rename(backend: str, tmp_path: Path) -> None:
+    base = str(tmp_path / "store")
+    asyncio.run(_granularity_store(backend=backend, base=base, name="left"))
+    if backend == "yaml":
+        Path(base, "memories", "broken_memory.md").write_text("---\nid: [unclosed\n---\nbody\n")
+    else:
+        with transaction(os.path.join(base, "store.db")) as conn:
+            conn.execute("INSERT INTO memories (id, data) VALUES (?, ?)", ("broken_memory", "{not json"))
+    held = upgrade(store_path(gran.reopen(backend=backend, base=base)), "--data-source", gran.DS)
+    assert held.code == 1, held
+    assert any(line.startswith(f"datasource {gran.DS}: not upgraded") and "broken_memory" in line
+               for line in held.out.splitlines()), held.out
+    assert "left_granularity" not in raw(backend=backend, base=base)[f"datasources/{gran.DS}"]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_held_dependent_holds_its_datasources_rename(backend: str, tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    base = str(tmp_path / "store")
+    asyncio.run(_granularity_store(backend=backend, base=base, name="left"))
+    backend_class = SQLiteStorage if backend == "sqlite" else YAMLStorage
+    write = backend_class._write_raw_if_unchanged
+
+    async def conflict_on_bucketed(self: Any, **kwargs: Any) -> bool:
+        return False if kwargs["name"] == "bucketed" else await write(self, **kwargs)
+
+    monkeypatch.setattr(backend_class, "_write_raw_if_unchanged", conflict_on_bucketed)
+    held = upgrade(store_path(gran.reopen(backend=backend, base=base)))
+    assert held.code == 1, held
+    assert any(line.startswith(f"datasource {gran.DS}: not upgraded") and "bucketed" in line
+               for line in held.out.splitlines()), held.out
+    stored = raw(backend=backend, base=base)
+    assert "left_granularity" not in stored[f"datasources/{gran.DS}"]
+    bucketed = asyncio.run(gran.reopen(backend=backend, base=base).get_dataset("bucketed", data_source=gran.DS))
+    assert bucketed is not None
+    assert "left_granularity" in bucketed.model_dump_json()
+    monkeypatch.undo()
+    assert upgrade(store_path(gran.reopen(backend=backend, base=base))).code == 0
+    finished = raw(backend=backend, base=base)
+    assert "left_granularity" in finished[f"datasources/{gran.DS}"]
+    assert not any(_mentions_granularity(text, "left") for text in finished.values())
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_datasource_writes_keep_the_runs_rename_table(backend: str, tmp_path: Path) -> None:
+    base = str(tmp_path / "store")
+    db_path = gran.live_db(base)
+    names = (gran.DS, gran.OTHER_DS)
+    storage = asyncio.run(gran.write_raw_store(
+        backend=backend, base=base,
+        datasources=[gran.datasource_doc(db_path=db_path, granularities=["left"], name=n) for n in names],
+        datasets=[d for n in names for d in (gran.events_doc(data_source=n), gran.query_backed_doc(
+            name="bucketed", stage=gran.bucket_stage("left"), data_source=n))],
+    ))
+    reads = storage._raw_datasource_dicts
+    calls: list[None] = []
+
+    async def counted() -> dict[str, dict]:
+        calls.append(None)
+        return await reads()
+
+    setattr(storage, "_raw_datasource_dicts", counted)
+    report = asyncio.run(upgrade_store(storage))
+    assert report.complete, report
+    # The plans' read, one rename table, and (YAML; SQLite checks in its write transaction) each datasource write's
+    # unchanged-check.
+    assert len(calls) == 1 + 1 + (len(names) if backend == "yaml" else 0)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("load", ["get_memory", "load_memories"])
+def test_a_memory_load_reads_one_rename_table(backend: str, tmp_path: Path, load: str) -> None:
+    base = str(tmp_path / "store")
+    storage = asyncio.run(_granularity_store(backend=backend, base=base, name="left"))
+    reads = storage._raw_datasource_dicts
+    calls: list[None] = []
+
+    async def counted() -> dict[str, dict]:
+        calls.append(None)
+        return await reads()
+
+    setattr(storage, "_raw_datasource_dicts", counted)
+    loaded = asyncio.run(storage.get_memory("m1") if load == "get_memory" else storage.load_memories())
+    assert "left_granularity" in str(loaded)
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

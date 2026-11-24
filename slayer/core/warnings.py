@@ -664,6 +664,7 @@ AnySlayerWarning = Annotated[
         UnknownStoredKeyWarning,
         DateOnlyMidnightWarning,
         ChangedReferenceWarning,
+        StoredUpgradeNeededWarning,
     ],
     Field(discriminator="kind"),
 ]

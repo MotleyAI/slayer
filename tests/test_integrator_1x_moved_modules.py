@@ -126,3 +126,12 @@ def test_each_access_warns_once(old: str) -> None:
     found = deprecations(record)
     assert len(found) == 2, [p.human_message() for p in found]
     assert all(p.removal == "3.0" for p in found)
+
+
+@pytest.mark.parametrize("old", sorted(KEPT))
+def test_an_attribute_probe_gets_attribute_error(old: str) -> None:
+    new, _, unlisted = KEPT[old]
+    outcome = _fresh(f"import {old} as m\nassert getattr(m, 'best_effort', None) is None\nm.{unlisted}")
+    assert outcome.error is not None, outcome
+    assert outcome.error.type == "AttributeError", outcome
+    assert new in outcome.error.message

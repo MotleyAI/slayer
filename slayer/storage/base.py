@@ -171,6 +171,8 @@ DATASOURCE_TYPES: ContextVar[Mapping[str, str]] = ContextVar("DATASOURCE_TYPES",
 # and whether the upgrade changes it.
 _UPGRADE_PASS: ContextVar[dict[tuple[object, str, str], tuple[Any, Any, bool]] | None] = ContextVar(
     "_UPGRADE_PASS", default=None)
+# The granularity rename table of the enclosing top-level load, by backend.
+_RENAME_PASS: ContextVar[dict[object, Mapping[str, Renames]] | None] = ContextVar("_RENAME_PASS", default=None)
 # The stored datasets whose extension fields are being inlined (their own loads must not recurse into them).
 _INLINING: ContextVar[frozenset[tuple[str, str]]] = ContextVar("_INLINING", default=frozenset())
 #: The versions whose saves wrote qualified references.
@@ -270,11 +272,15 @@ def _stage_names(data: dict) -> frozenset[str]:
 
 @contextlib.contextmanager
 def one_upgrade_pass() -> Generator[None]:
-    """Within the block (one query), each stored document read unchanged is upgraded in memory once."""
+    """Within the block (one query), each stored document read unchanged is upgraded in memory once, against one
+    reading of the stored datasources' granularity renames."""
     token = _UPGRADE_PASS.set({}) if _UPGRADE_PASS.get() is None else None
+    rename_token = _RENAME_PASS.set({}) if _RENAME_PASS.get() is None else None
     try:
         yield
     finally:
+        if rename_token is not None:
+            _RENAME_PASS.reset(rename_token)
         if token is not None:
             _UPGRADE_PASS.reset(token)
 
@@ -1153,16 +1159,14 @@ class StorageBackend(ABC):
         indexes = {ds: await self._document_index(ds) for ds in await self._document_data_sources()
                    if data_source is None or ds == data_source}
         token = _RAW_PASS.set({}) if _RAW_PASS.get() is None else None
-        upgrade_token = _UPGRADE_PASS.set({}) if _UPGRADE_PASS.get() is None else None
         try:
-            loaded = await asyncio.gather(*(
-                _load(ds, name) for ds, name in await self._standalone_identities()
-                if (data_source is None or ds == data_source) and name != exclude
-                and (ds not in indexes or name.casefold() not in indexes[ds].quarantined)
-            ))
+            with one_upgrade_pass():
+                loaded = await asyncio.gather(*(
+                    _load(ds, name) for ds, name in await self._standalone_identities()
+                    if (data_source is None or ds == data_source) and name != exclude
+                    and (ds not in indexes or name.casefold() not in indexes[ds].quarantined)
+                ))
         finally:
-            if upgrade_token is not None:
-                _UPGRADE_PASS.reset(upgrade_token)
             if token is not None:
                 _RAW_PASS.reset(token)
         for index in indexes.values():
@@ -1562,25 +1566,34 @@ class StorageBackend(ABC):
 
     async def _granularity_renames(self) -> Mapping[str, Renames]:
         """Each stored datasource's library-name granularity renames (storage P3.2), a function of the stored
-        datasources alone, computed once per instance; every load applies them in memory."""
-        table = getattr(self, "_granularity_rename_table", None)
-        if table is not None:
-            return table
-        table = {}
+        datasources alone, read once per top-level load; every load applies them in memory."""
+        memo = _RENAME_PASS.get()
+        if memo is not None and self in memo:
+            return memo[self]
+        table: dict[str, Renames] = {}
+        logged: set[tuple[str, str]] | None = getattr(self, "_logged_granularity_renames", None)
+        if logged is None:
+            logged = set()
+            setattr(self, "_logged_granularity_renames", logged)
         for name, data in (await self._raw_datasource_dicts()).items():
             renames = _library_renames(data)
             if renames:
                 table[name] = renames
             for old, new in renames.items():
-                logging.getLogger(__name__).warning(
-                    "datasource %r: custom granularity %r is now a reserved library name; read as %r with every "
-                    "reference to it (`slayer storage upgrade` stores the rename)", name, old, new,
-                )
-        self._granularity_rename_table = table
+                if (name, old) not in logged:
+                    logged.add((name, old))
+                    logging.getLogger(__name__).warning(
+                        "datasource %r: custom granularity %r is now a reserved library name; read as %r with every "
+                        "reference to it (`slayer storage upgrade` stores the rename)", name, old, new,
+                    )
+        if memo is not None:
+            memo[self] = table
         return table
 
     def _forget_granularity_renames(self) -> None:
-        self._granularity_rename_table = None
+        memo = _RENAME_PASS.get()
+        if memo is not None:
+            memo.pop(self, None)
 
     async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
         """Stored datasource ``name``'s dict with each granularity a library name reserves renamed."""
@@ -1790,13 +1803,8 @@ class StorageBackend(ABC):
     async def _loaded_dataset(self, *, name: str, data: Any, data_source: str) -> tuple[SlayerDataset, bool]:
         """``_migrate_and_refine_on_load``, and whether the upgrade changes the stored document. Within one top-level
         load, a document read again unchanged (a peer of several loads) is upgraded once."""
-        memo = _UPGRADE_PASS.get()
-        token = _UPGRADE_PASS.set({}) if memo is None else None
-        try:
+        with one_upgrade_pass():
             dataset, changes = await self._passed_dataset(name=name, data=data, data_source=data_source)
-        finally:
-            if token is not None:
-                _UPGRADE_PASS.reset(token)
         if not caller_announces():
             warn_library_shadows(dataset)
             for payload in [*name_collision_warnings(dataset), *spine_variant_warnings(dataset)]:
@@ -2252,9 +2260,8 @@ class StorageBackend(ABC):
             await self._write_raw_dataset_dict(name=name, data_source=data_source, data=data)
         elif kind == "memory":
             await self._write_raw_memory_dict(memory_id=name, data=data)
-        else:
+        else:  # the run's rename table stays: its datasource writes must not change what later decisions read
             await self._write_raw_datasource_dict(name=name, data=data)
-            self._forget_granularity_renames()
         return True
 
     @abstractmethod
@@ -2391,7 +2398,7 @@ class StorageBackend(ABC):
 
     async def _memory_from_stored(self, *, memory_id: str, decode: Callable[[], Any]) -> Memory:
         """Decode, upgrade in memory and validate one stored memory inside its load boundary; never written back."""
-        with stored_document_boundary(kind="memory", name=memory_id):
+        with stored_document_boundary(kind="memory", name=memory_id), one_upgrade_pass():
             memory, changes = await self._upgraded_memory(memory_id=memory_id, data=decode())
         if changes:
             self._warn_upgrade_needed(StoredUpgradeNeededWarning(document_kind="memory", name=memory_id))
@@ -2495,12 +2502,13 @@ class StorageBackend(ABC):
 
     async def load_memories(self, *, entities: list[str] | None = None) -> Loaded[Memory]:
         """The memories ``list_memories`` returns, and the ones that failed to load."""
-        return await self._list_memories_rows(entities=entities)
+        with one_upgrade_pass():
+            return await self._list_memories_rows(entities=entities)
 
     async def list_memories(
         self, *, entities: list[str] | None = None, failures: DocumentLoadFailures | None = None,
     ) -> list[Memory]:
-        return (failures or DocumentLoadFailures()).skip(await self._list_memories_rows(entities=entities))
+        return (failures or DocumentLoadFailures()).skip(await self.load_memories(entities=entities))
 
     async def delete_memory(self, memory_id: str) -> None:
         if not await self._delete_memory_row(memory_id):

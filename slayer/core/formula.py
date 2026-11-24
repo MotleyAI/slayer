@@ -104,6 +104,9 @@ class _Projection:
             source_path = _path(source)
         else:
             raise ValueError(f"'{node.agg}' aggregates a column or '*', not an expression, in formula {self.original!r}")
+        if node.filter is not None:
+            raise ValueError(f"FILTER (WHERE …) has no 1.x result shape, in formula {self.original!r}; use the "
+                             f"filter= argument")
         positional, named = _split(node.args, node.kwargs)
         return _AggregatedMeasureRef(
             measure_name=source_path,
@@ -227,7 +230,7 @@ if not TYPE_CHECKING:  # the moved names stay static errors
         if name.startswith("__"):
             raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         if name not in _KEPT:
-            raise_moved("slayer.core.formula", "slayer.core.syntax", removal="3.0")
+            raise_moved("slayer.core.formula", "slayer.core.syntax", removal="3.0", attribute=True)
         warn, value = _KEPT[name]
         warn()
         return value

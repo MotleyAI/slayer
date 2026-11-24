@@ -2,7 +2,7 @@
 
 ### Requirement: A load never writes
 
-Loading a stored dataset, semantic-model document, saved query, memory or datasource SHALL NOT write to the store, on the YAML and the SQLite store alike. Every migration, repair and conversion a stored document needs SHALL apply in memory on each load. This includes schema migrations, join-key and join-target repairs, legacy alias rewrites, field `sql` conversion, query upgrades and the library-granularity settle. The upgraded form SHALL be persisted only by a save of that document or by `slayer storage upgrade`. Datasource priority and embeddings SHALL be neither read as documents to upgrade nor rewritten. Opening a store SHALL keep its one-time layout and schema moves (the YAML pre-v4 flat-layout move, the legacy memory-file split, the SQLite table rebuilds, the embedding sidecar's kind rename), which change no document's content; they are the only writes opening a store performs.
+Loading a stored dataset, semantic-model document, saved query, memory or datasource SHALL NOT write to the store, on the YAML and the SQLite store alike. Every migration, repair and conversion a stored document needs SHALL apply in memory on each load. This includes schema migrations, join-key and join-target repairs, legacy alias rewrites, field `sql` conversion, query upgrades and the library-granularity settle. The upgraded form SHALL be persisted only by a save of that document or by `slayer storage upgrade`. Datasource priority and embeddings SHALL be neither read as documents to upgrade nor rewritten. Opening a store SHALL keep its one-time layout and schema moves (the YAML pre-v4 flat-layout move, the legacy memory-file split, the SQLite table rebuilds, the embedding sidecar's kind rename), which change no document's content, except that the flat-layout move fills an empty `data_source` when exactly one datasource is registered; they are the only writes opening a store performs.
 
 #### Scenario: Loading an old store leaves it unchanged
 - **WHEN** the committed 0.10.2 and 1.8.2 stores, as YAML and as SQLite, are opened and every dataset, saved query, memory and datasource is loaded twice
@@ -34,7 +34,7 @@ Loading a stored document that the upgrade would change SHALL emit one structure
 
 ### Requirement: slayer storage upgrade persists the current format
 
-`slayer storage upgrade` SHALL bring every stored document that needs it to the current format, through the same upgrade a load applies. The documents are datasets, semantic-model documents, saved queries, memories and datasources, optionally limited by `--data-source`. Each changed document SHALL be written with its upgraded content and without the semantic checks of a client save, so a legacy document that loads (for instance one holding a cycle or a fanning reference) is upgraded rather than refused. A document SHALL be written only if its stored form is unchanged since the upgrade read it. Otherwise it SHALL be reported as a conflict and left as it is. The library-granularity settle SHALL persist dependent documents before their datasource. `--dry-run` SHALL print, per document, the difference the upgrade would make and SHALL write nothing.
+`slayer storage upgrade` SHALL bring every stored document that needs it to the current format, through the same upgrade a load applies. The documents are datasets, semantic-model documents, saved queries, memories and datasources, optionally limited by `--data-source`. Each changed document SHALL be written with its upgraded content and without the semantic checks of a client save, so a legacy document that loads (for instance one holding a cycle or a fanning reference) is upgraded rather than refused. A document SHALL be written only if its stored form is unchanged since the upgrade read it. Otherwise it SHALL be reported as a conflict and left as it is. The library-granularity settle SHALL persist dependent documents before their datasource, and SHALL leave a renaming datasource unwritten while one of its dependents is refused, conflicted or unreadable. `--dry-run` SHALL print, per document, the difference the upgrade would make and SHALL write nothing.
 
 A document the upgrade cannot complete SHALL be reported with its identity and the reason, and SHALL be left untouched, while every other document is upgraded. The command SHALL then exit 1. Such documents include:
 - one that fails to load;
@@ -70,6 +70,10 @@ A document the upgrade cannot complete SHALL be reported with its identity and t
 #### Scenario: An interrupted settle converges
 - **WHEN** an upgrade that renames a datasource's library-colliding granularity is interrupted after writing some dependent documents
 - **THEN** a second run completes the rename and leaves one consistent store
+
+#### Scenario: A refused dependent holds its datasource's rename
+- **WHEN** a datasource defines the granularity `left`, one dependent dataset upgrades and another conflicts
+- **THEN** the datasource is reported not upgraded and stays unrenamed, the command exits 1, the conflicted dataset still loads with `left_granularity`, and a later run that can complete it leaves one consistent store
 
 ### Requirement: Documents SLayer does not own upgrade without a store
 

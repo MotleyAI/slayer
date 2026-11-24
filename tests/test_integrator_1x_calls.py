@@ -127,6 +127,11 @@ def test_a_cyclic_sibling_chain_raises_value_error() -> None:
         _parse_formula("a / 2", named_measures={"a": "b + sum(amount)", "b": "a * 2"})
 
 
+def test_a_filter_clause_is_refused_not_dropped() -> None:
+    with pytest.raises(ValueError, match="FILTER"):
+        _parse_formula("sum(amount) FILTER (WHERE status = 'paid')")
+
+
 def test_a_rank_without_direction_is_refused_as_a_value_error() -> None:
     with pytest.raises(ValueError):
         _parse_formula("rank(sum(amount))")
