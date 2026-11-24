@@ -30,7 +30,8 @@ declared.
 ## Rows
 
 A query with dimensions only returns distinct combinations; set
-`distinct_dimension_values: false` for raw rows (no metrics allowed). Without a
+`distinct_dimension_values: false` for raw rows (no metrics allowed; the population
+must reach every dimension over to-one hops, else `DistinctDimensionValuesError`). Without a
 `limit`, the MCP response stops at 20 rows with a notice; for a longer list set a
 `limit` that covers it. Use `limit` for top N, never to cut a list asked for in full.
 

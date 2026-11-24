@@ -171,6 +171,7 @@ Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amou
 - `metrics` must be empty — `DistinctDimensionValuesError` otherwise.
 - At least one of `dimensions` / `time_dimensions` must be non-empty (nothing to project otherwise).
 - Filters / order items must not reference any metric — neither an aggregation (`sum(orders.amount) > 100`, `count(orders.*) > 0`), transform calls (`rank(sum(orders.amount), direction='desc') <= 5`), nor a saved `DatasetMetric`.
+- The population must determine every dimension and time dimension, derived fields' definitions included, over provably to-one hops only: a fanning hop (a list child included) or a hop of unknown cardinality raises `DistinctDimensionValuesError` naming the entry and the hop.
 
 **Time dimensions** are allowed: each one emits its `DATE_TRUNC` truncation as a projected column without aggregating. For raw field values (no truncation), put the time field in `dimensions` instead.
 

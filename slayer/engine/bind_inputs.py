@@ -98,6 +98,7 @@ from slayer.engine.elaborate_env import (
     check_partition_key_resolves,
     check_raw_rows_filter_metric_ref,
     check_raw_rows_order_metric_ref,
+    check_raw_row_determined,
     check_time_dimension_field,
     check_time_dimension_home,
     check_time_dimension_row_level,
@@ -1149,6 +1150,17 @@ def _will_group_by(query: SlayerQuery) -> bool:
     return bool(query.metrics) or query.distinct_dimension_values
 
 
+def _check_raw_row_determined(
+    *, kind: str, name: str, key: ValueKey, query: SlayerQuery, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> None:
+    if query.distinct_dimension_values or scope.population is None:
+        return
+    check_raw_row_determined(
+        kind=kind, name=name, population=root_spelling(scope) or scope.population.name,
+        crossing=row_expression_crossing(source=key, host_dataset=scope.population, bundle=bundle, from_host=True),
+    )
+
+
 def _reject_computed_dim_name_collision(*, name: str, query: SlayerQuery) -> None:
     check_computed_dim_name_collision(name=name, query_metric_collision=any(m.alias == name for m in query.metrics or []))
 
@@ -1175,6 +1187,8 @@ def _declared_computed_dimension(
     )
     check_list_dimension(name=name, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle),
                          will_group_by=_will_group_by(query))
+    _check_raw_row_determined(kind="dimension", name=d.field, key=bound.value_key, query=query, scope=scope,
+                              bundle=bundle)
     dim_type = _type_for_metric_expression(scope=scope, bound=bound, bundle=bundle)
     key = d.alias or _template_key(
         d.template, scope=scope, bundle=bundle,
@@ -1240,6 +1254,8 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             canonical = bound.routed_dotted or full
             check_list_dimension(name=canonical, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle),
                                  will_group_by=_will_group_by(query))
+            _check_raw_row_determined(kind="dimension", name=d.field, key=bound.value_key, query=query,
+                                      scope=scope, bundle=bundle)
             # Opaque-grouping rule lives in the checker; invoked here to preserve the per-dimension firing point.
             check_opaque_grouping_dim(
                 full_name=canonical,
@@ -1277,6 +1293,8 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             granularity = _td_granularity(td, bundle=bundle)
             btd = bind_time_dimension(td=td, scope=scope, bundle=bundle, granularity=granularity)
             td_types.append(_check_time_dimension(td=td, btd=btd, scope=scope, bundle=bundle, granularity=granularity))
+            _check_raw_row_determined(kind="time dimension", name=td.field, key=btd.bound.value_key, query=query,
+                                      scope=scope, bundle=bundle)
             field = td.field_ref
             canonical = td.effective_name or btd.bound.routed_dotted or (field.full_name if field else td.field)
             bound_tds.append((td, btd.bound, canonical))

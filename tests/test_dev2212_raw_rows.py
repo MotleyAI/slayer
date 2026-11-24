@@ -14,6 +14,7 @@ from slayer.core.errors import (
     DistinctDimensionValuesError,
     PopulationInferenceError,
     UnanalyzableDependencyError,
+    UnrelatedDatasetError,
     UnsafeRelationshipInputError,
 )
 from slayer.core.field_expression import DialectEntry, ExpressionObject
@@ -32,6 +33,7 @@ from tests._dev2212_fixtures import (
     seed_datasets,
     seed_engine,
     table,
+    tickets_dataset,
     to_customers,
 )
 
@@ -189,13 +191,25 @@ async def test_an_unanalysable_dependency_fails_closed(backend: str) -> None:
             await _raw(eng, "orders", dimensions=["orders.bad"])
 
 
+@pytest.mark.parametrize("dim", ["tickets.priority", "tickets.bad"])
+async def test_an_unrelated_dataset_keeps_its_own_error(backend: str, dim: str) -> None:
+    bad = DatasetField(name="bad", datatype=DataType.STRING, expression=ExpressionObject(
+        dialects=[DialectEntry(dialect=d, expression=")((( bad") for d in ("DUCKDB", "SQLITE")]))
+    tickets = tickets_dataset()
+    datasets = [tickets.model_copy(update={"fields": [*tickets.fields, bad]}) if d.name == "tickets" else d
+                for d in seed_datasets()]
+    async with seed_engine(backend, datasets=datasets) as eng:
+        with pytest.raises(UnrelatedDatasetError):
+            await _raw(eng, "customers", dimensions=[R, dim])
+
+
 async def test_a_stage_population_dimension_across_a_fanning_inherited_edge_is_refused(backend: str) -> None:
     stage = q(name="c", population="customers", dimensions=[{"field": "customers.customer_id", "alias": "customer_id"},
                                                             {"field": R, "alias": "region"}])
+    fanning = q(population="c", distinct_dimension_values=False, dimensions=["c.region", "orders.amount"])
     async with seed_engine(backend) as eng:
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await eng.execute([stage, q(population="c", distinct_dimension_values=False,
-                                        dimensions=["c.region", "orders.amount"])])
+            await eng.execute([stage, fanning])
         own = await eng.execute([stage, q(population="c", distinct_dimension_values=False, dimensions=["c.region"])])
     _names(exc, entry="orders.amount", hop="orders")
     assert table(own, "c.region") == rows(("EAST",), ("EAST",), ("WEST",), ("NORTH",))

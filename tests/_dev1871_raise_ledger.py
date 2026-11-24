@@ -136,6 +136,12 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="The time dimension reads …, which crosses an unproven or fanning relationship hop to … from …: no "
          "dataset determines every field the expression reads." + AT + "time dimension …" + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_raw_row_determined", exc="DistinctDimensionValuesError",
+         message="distinct_dimension_values=False lists one row per row of …, but the … reads … across the fanning or "
+         "unproven relationship hop to …, which would repeat rows of …." + AT + "… …"
+         + SUGGEST + "Name the finer dataset as `population`, declare the hop's cardinality or a covering unique key, "
+         "or set distinct_dimension_values=True (the default).",
+         category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
          + SUGGEST + "Pass a field declared DATE / TIMESTAMP (set DatasetField.datatype), min/max/first/last of one, "

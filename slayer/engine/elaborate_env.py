@@ -1079,6 +1079,25 @@ def check_time_dimension_home(*, name: str, crossing: Optional[Tuple[str, Option
     )
 
 
+def check_raw_row_determined(
+    *, kind: str, name: str, crossing: Optional[Tuple[str, Optional[str]]], population: str,
+) -> None:
+    """Raw rows: the population determines every leaf a dimension reads over provably to-one hops (Axiom 12.5)."""
+    if crossing is None:
+        return
+    leaf, hop = crossing
+    if hop is None:
+        check_input_dependencies_analyzable(alias=name, field=leaf)
+        return
+    raise DistinctDimensionValuesError(
+        summary=f"distinct_dimension_values=False lists one row per row of {population}, but the {kind} reads "
+        f"{leaf} across the fanning or unproven relationship hop to {hop}, which would repeat rows of {population}.",
+        location=f"{kind} {name!r}",
+        suggestion="Name the finer dataset as `population`, declare the hop's cardinality or a covering unique key, "
+        "or set distinct_dimension_values=True (the default).",
+    )
+
+
 _NON_NUMERIC_TYPES = frozenset(t for t in DataType if t.kind in (
     TypeKind.TEXT, TypeKind.BOOLEAN, TypeKind.DATE, TypeKind.TIMESTAMP, TypeKind.UNKNOWN))
 
