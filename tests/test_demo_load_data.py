@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 
 import duckdb
 
@@ -36,5 +38,39 @@ def test_load_data_from_a_quoted_directory(tmp_path: Path) -> None:
         assert conn.execute("SELECT opened_at FROM stores").fetchone() == (dt.date(2018, 1, 1) + (
             today - dt.date(2018, 9, 1)),)
         assert [r[0] for r in conn.execute("SHOW TABLES").fetchall() if r[0].endswith("_raw")] == []
+    finally:
+        conn.close()
+
+
+class _RecordingConnection:
+    """Delegates to a DuckDB connection, recording each statement it executes."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self._conn = conn
+        self.statements: list[str] = []
+
+    def execute(self, query: str, parameters: object = None) -> duckdb.DuckDBPyConnection:
+        self.statements.append(query)
+        return self._conn.execute(query) if parameters is None else self._conn.execute(query, parameters)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
+_VIEW_DDL = re.compile(r"\b(CREATE|DROP)\b[\w\s]*?\bVIEW\b", re.IGNORECASE)
+
+
+def test_loading_the_demo_creates_no_view(tmp_path: Path, jafgen_dir: str) -> None:
+    """Spec: demo/jaffle-shop › Loading the demo creates no view."""
+    conn = duckdb.connect(str(tmp_path / "demo.duckdb"))
+    try:
+        jaffle_shop.create_schema(conn)
+        recorder = _RecordingConnection(conn)
+        jaffle_shop.load_data(conn=cast(duckdb.DuckDBPyConnection, recorder), data_dir=jafgen_dir)
+        assert [s for s in recorder.statements if _VIEW_DDL.search(s)] == []
+        for table in ("orders", "stores", "customers"):
+            row = conn.execute(f"SELECT count(*) FROM {table}").fetchone()
+            assert row is not None, table
+            assert row[0] > 0, table
     finally:
         conn.close()

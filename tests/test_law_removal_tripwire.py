@@ -1,7 +1,7 @@
 """Removal tripwire: compatibility code tagged for removal fails the suite once its major version ships.
 
-The tag is a call to ``slayer.core.deprecation.warn_deprecated``, ``raise_moved``, ``deprecated_input`` or
-``scheduled_notice`` (any import spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
+The tag is a call to ``slayer.core.deprecation.warn_deprecated``, ``raise_moved``, ``deprecated_input``,
+``deprecated_spelling`` or ``scheduled_notice`` (any import spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ SLAYER = REPO / "slayer"
 HELPERS = frozenset({
     "slayer.core.deprecation.warn_deprecated", "slayer.core.deprecation.raise_moved",
     "slayer.core.deprecation.deprecated_input", "slayer.core.deprecation.scheduled_notice",
+    "slayer.core.deprecation.deprecated_spelling",
 })
 HELPER_MODULE = "slayer/core/deprecation.py"
 

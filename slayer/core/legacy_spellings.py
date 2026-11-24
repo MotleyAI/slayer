@@ -9,7 +9,7 @@ from typing import Dict, List, Literal, Optional, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.deprecation import outside_stacklevel, warn_deprecated
+from slayer.core.deprecation import deprecated_spelling
 from slayer.core.warnings import DeprecatedSpellingWarning
 
 LegacyKind = Literal["==", "is None", "is not None", "bare None", "list after IN", "method-call"]
@@ -54,25 +54,18 @@ def emit_deprecations(found: Dict[str, LegacySpan]) -> List[DeprecatedSpellingWa
 
 
 def _emit(span: LegacySpan) -> DeprecatedSpellingWarning:
+    # One literal-kind call per spelling: the removal tripwire reads each statically.
     if span.kind == "==":
-        warn_deprecated("The comparison `==` is deprecated and removed in SLayer 3.0; write `=`.", removal="3.0",
-                        stacklevel=outside_stacklevel())
-    elif span.kind == "is None":
-        warn_deprecated("`is None` is deprecated and removed in SLayer 3.0; write `IS NULL`.", removal="3.0",
-                        stacklevel=outside_stacklevel())
-    elif span.kind == "is not None":
-        warn_deprecated("`is not None` is deprecated and removed in SLayer 3.0; write `IS NOT NULL`.", removal="3.0",
-                        stacklevel=outside_stacklevel())
-    elif span.kind == "bare None":
-        warn_deprecated("A bare None is deprecated and removed in SLayer 3.0; write `NULL`.", removal="3.0",
-                        stacklevel=outside_stacklevel())
-    elif span.kind == "list after IN":
-        warn_deprecated("A [ … ] list after IN is deprecated and removed in SLayer 3.0; write a parenthesised "
-                        "list ( … ).", removal="3.0", stacklevel=outside_stacklevel())
-    else:
-        warn_deprecated(f"The method-call form `{span.written}` is deprecated and removed in SLayer 3.0; write "
-                        f"`{span.twin}`.", removal="3.0", stacklevel=outside_stacklevel())
-    return DeprecatedSpellingWarning(spelling=span.kind, written=span.written, canonical=span.twin)
+        return deprecated_spelling("==", span.written, span.twin, removal="3.0")
+    if span.kind == "is None":
+        return deprecated_spelling("is None", span.written, span.twin, removal="3.0")
+    if span.kind == "is not None":
+        return deprecated_spelling("is not None", span.written, span.twin, removal="3.0")
+    if span.kind == "bare None":
+        return deprecated_spelling("bare None", span.written, span.twin, removal="3.0")
+    if span.kind == "list after IN":
+        return deprecated_spelling("list after IN", span.written, span.twin, removal="3.0")
+    return deprecated_spelling("method-call", span.written, span.twin, removal="3.0")
 
 
 class TextSpan(Protocol):
