@@ -17,7 +17,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name, quoted_name, spelled_name
 from slayer.core.query import (
     BarePosition, QueryDimension, QueryMetric, SlayerQuery, TimeDimension, computed_dimension_name, declared_aliases,
-    extension_dataset_names, pre_qualified_reading,
+    pre_qualified_reading,
 )
 from slayer.core.relationship_walker import canonical_path
 from slayer.core.syntax import (
@@ -32,7 +32,6 @@ from slayer.core.syntax import (
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset
 from slayer.engine.extensions import (
     extend_datasets,
-    query_reference_parts,
     resolve_anchored_path,
     resolve_path,
     respelled,
@@ -40,6 +39,7 @@ from slayer.engine.extensions import (
     stage_output_names,
 )
 from slayer.sql.naming import expression_text_alias
+from slayer.storage.stored_datasource import uses_fallback_datasource
 
 __all__ = ["StageReading", "qualified_stages", "stage_readings"]
 
@@ -387,17 +387,19 @@ def _datasource_of(
     priority: Sequence[str],
 ) -> Tuple[Optional[str], Mapping[str, SlayerDataset]]:
     """The datasource a stage runs in, and its datasets: the pinned one, else the first holding its population, else
-    (on the spine, which every datasource holds) the first holding a dataset it names, else the first."""
+    (no population, or the spine) the only one."""
     if data_source is not None:
         return data_source, datasets_by_ds.get(data_source, {})
-    population = query.population_name or ""
-    holding = _holding([population], datasets_by_ds=datasets_by_ds)
-    if not holding and is_spine_spelling(population):
-        named = [*extension_dataset_names(query), *(p[0] for p in query_reference_parts(query) if len(p) > 1)]
-        holding = _holding([n for n in named if not is_spine_spelling(n)], datasets_by_ds=datasets_by_ds) or list(
-            datasets_by_ds)
-    ordered = [ds for ds in priority if ds in holding] + sorted(ds for ds in holding if ds not in priority)
-    return (ordered[0], datasets_by_ds[ordered[0]]) if ordered else (None, {})
+    population = query.population_name
+    stored = {name for datasets in datasets_by_ds.values() for name in datasets}
+    if population is not None and not uses_fallback_datasource(population, stored_names=stored):
+        holding = _holding([population], datasets_by_ds=datasets_by_ds)
+        ordered = [ds for ds in priority if ds in holding] + sorted(ds for ds in holding if ds not in priority)
+        return (ordered[0], datasets_by_ds[ordered[0]]) if ordered else (None, {})
+    if len(datasets_by_ds) != 1:
+        return None, {}
+    [(only, datasets)] = datasets_by_ds.items()
+    return only, datasets
 
 
 def _holding(names: Sequence[str], *, datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]]) -> List[str]:

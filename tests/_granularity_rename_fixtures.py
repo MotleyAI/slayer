@@ -99,9 +99,9 @@ def query_backed_doc(*, name: str, stage: dict, data_source: str = DS) -> dict:
             "source_queries": [stage]}
 
 
-def memory_doc(*, memory_id: str, query: dict) -> dict:
+def memory_doc(*, memory_id: str, query: dict, entities: Sequence[str] = ()) -> dict:
     return {"version": STORED_VERSIONS["Memory"], "id": memory_id, "learning": f"learning {memory_id}",
-            "entities": [], "query": query}
+            "entities": list(entities), "query": query}
 
 
 async def write_raw_store(

@@ -8,28 +8,21 @@ Stored-only: a fresh payload is never rewritten, nor is text the old grammar cou
 import ast
 import io
 import logging
-import re
 import tokenize
-from collections.abc import Callable
 
+from slayer.storage.legacy_grammar import is_old_grammar
 from slayer.storage.migrations import document_label, register_migration
-from slayer.storage.rank_direction_migration import rewrite_dataset_texts_at, rewrite_query_texts_at, stamp_memory_query
+from slayer.storage.rank_direction_migration import (
+    FieldRewrite,
+    rewrite_dataset_texts_at,
+    rewrite_query_texts_at,
+    stamp_memory_query,
+)
 
 logger = logging.getLogger(__name__)
 
 _SKIP = frozenset({tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT,
                    tokenize.ENDMARKER})
-# The old parser's pre-pass: ``x:agg`` / ``*:count`` refs and ``*`` sources become plain names.
-_COLON_REF = re.compile(r"(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\.\*)?|\*)\s*:\s*[A-Za-z_]\w*")
-
-
-def _star_sources_named(text: str) -> str:
-    """``text`` with each ``*`` standing as an argument or path tail (``count(*)``, ``t.*``) as ``_``."""
-    return "".join(
-        "_" if ch == "*" and text[:i].rstrip()[-1:] in ("(", ".", ",") and text[i + 1:].lstrip()[:1] in (")", ",")
-        else ch
-        for i, ch in enumerate(text)
-    )
 
 
 def sql_quote_strings(text: str) -> str:
@@ -56,15 +49,6 @@ def sql_quote_strings(text: str) -> str:
     for start, end, replacement in sorted(edits, reverse=True):
         text = text[:start] + replacement + text[end:]
     return text
-
-
-def is_old_grammar(text: str) -> bool:
-    """Whether the pre-SQL grammar could have held ``text``."""
-    try:
-        ast.parse(_star_sources_named(_COLON_REF.sub("_", text)).strip(), mode="eval")
-    except SyntaxError:
-        return False
-    return True
 
 
 def _edits(tokens: list[tokenize.TokenInfo], *, line_starts: list[int]) -> list[tuple[int, int, str]] | None:
@@ -117,9 +101,9 @@ def _pipe_pair(tokens: list[tokenize.TokenInfo], i: int) -> bool:
     return (i > 0 and touches(tokens[i - 1], tokens[i])) or (i + 1 < len(tokens) and touches(tokens[i], tokens[i + 1]))
 
 
-def _gated(document: str | None) -> Callable[[str, str], str]:
-    def rewrite(text: str, field: str) -> str:
-        if is_old_grammar(text):
+def _gated(document: str | None) -> FieldRewrite:
+    def rewrite(text: str, field: str, /, *, filter: bool) -> str:
+        if is_old_grammar(text, filter=filter):
             return sql_quote_strings(text)
         # The text itself is not logged: it may hold sensitive literals.
         logger.warning(
