@@ -9,7 +9,8 @@ deleted rename mapping or a silent conversion goes unnoticed. The vendored Ossie
 `tests/fixtures/ossie_corpus/` (revision in `provenance.yaml`: `d4dca4e9`, 2026-11-22). A throwaway probe of all 290
 REQUIRED Layer 1 cases on DuckDB and SQLite passed 218; its wrong values are DEV-2446's scope, its refusals DEV-2282's.
 
-This slice merges last, after DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428 and DEV-2430.
+This slice merges last, after DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430,
+DEV-2443 and DEV-2439.
 Its audits run against `main` as it stands once those have merged.
 
 ## Goals / Non-Goals
@@ -19,8 +20,8 @@ Its audits run against `main` as it stands once those have merged.
 - Executable proof that every 2.0-deprecated form still converts, with the right warning, until 3.0.
 
 **Non-Goals:**
-- Closing any Ossie gap: Layer 1 additive coverage is DEV-2282 (2.x), the strict window error codes DEV-2439 (2.x),
-  the dataset surface DEV-2244 (2.x). Full Layer 1 compliance is not claimed in 2.0.
+- Closing any Ossie gap: Layer 1 additive coverage is DEV-2282 (2.x), the dataset surface DEV-2244 (2.x). Full
+  Layer 1 compliance is not claimed in 2.0.
 - Certifying databases where CI does not execute the evidence.
 - Committing release notes; tagging or publishing (after merge, owner go-ahead); opening the upstream grader PR
   (after 2.0.0 is on PyPI, owner go-ahead); filing the Storyline 2.0 migration issue (ask first).
@@ -46,7 +47,8 @@ Its audits run against `main` as it stands once those have merged.
    layers. (default)
 7. **Issue items 1–4 are audits**; their substance landed in DEV-2231, DEV-2250 and the slices. `x:sum` is removed,
    not deprecated (DEV-1920). (default)
-8. **DEV-2244 and DEV-2439 gaps are listed and pinned the same way as Layer 1's.** (default)
+8. **DEV-2244 gaps are listed and pinned the same way as Layer 1's.** DEV-2439 is a prerequisite: it fixes every
+   strict-window case this slice pinned, so Layer 3 lists no gap. (user)
 9. **The grader registration is drafted as a DEV-2220 comment**; the upstream PR waits for 2.0.0 on PyPI and the
    owner's go-ahead. (default)
 10. **`skip_specs: true`.** No product behaviour changes. (default)
@@ -59,7 +61,7 @@ Its audits run against `main` as it stands once those have merged.
 14. **One parameter per (case, database)** with stable ids, so a database-specific pass or regression cannot hide.
     (codex)
 15. **One case id and one page row per independently fixable behaviour** (each function spelling, window form,
-    DEV-2439 scenario), never one per issue. (codex)
+    format behaviour), never one per issue. (codex)
 16. **Page rows carry the case id and fixing issue; a test compares them with the xfail table, both directions.**
     Alternative, generate the page from a manifest: rejected, the docs build has no generation step and row checks
     suffice. (codex)
@@ -86,8 +88,8 @@ Its audits run against `main` as it stands once those have merged.
     gate stays a smoke test of the packaged install.
 26. **The Layer 1 xfails are built from DEV-2446's REQUIRED-construct manifest** (`tests/_dev2446_required_manifest.py`):
     each gap row gains `value=` (Ossie's result on the manifest's fixture row) and `fails_with=` (the error it raises
-    today), and becomes one strict xfail per database; there is no separate Layer 1 gap table. The DEV-2439 and
-    DEV-2244 cases stay in a DEV-2220 table. Alternative, a DEV-2220 Layer 1 table cross-checked against the manifest:
+    today), and becomes one strict xfail per database; there is no separate Layer 1 gap table. The DEV-2244 cases
+    stay in a DEV-2220 table. Alternative, a DEV-2220 Layer 1 table cross-checked against the manifest:
     two hand-kept lists of the same gaps. (user)
 
 ## Risks / Trade-offs

@@ -14,7 +14,7 @@ from tests.test_dev2446_required_constructs import assert_ossie_value
 GAPS = [r for r in ROWS if r.gap is not None]
 
 
-@pytest.fixture(scope="module", params=BACKENDS)
+@pytest.fixture(scope="module")
 async def engine(request: pytest.FixtureRequest) -> AsyncGenerator[SlayerQueryEngine]:
     async with dev2215_engine(request.param) as e:
         yield e
@@ -25,10 +25,21 @@ def test_every_gap_row_carries_ossies_value_and_its_error() -> None:
     assert not missing
 
 
-@pytest.mark.parametrize("row", [
-    pytest.param(r, id=f"{r.form}|{r.expression}",
-                 marks=pytest.mark.xfail(strict=True, raises=r.fails_with, reason=r.gap)) for r in GAPS
-])
+def test_holds_on_names_tested_databases() -> None:
+    assert all(r.holds_on <= set(BACKENDS) for r in GAPS)
+
+
+def _cases() -> list[object]:
+    """One parameter per (case, database); a strict xfail except where the row already holds."""
+    return [
+        pytest.param(backend, r, id=f"{r.form}|{r.expression}|{backend}",
+                     marks=() if backend in r.holds_on else pytest.mark.xfail(strict=True, raises=r.fails_with,
+                                                                              reason=r.gap))
+        for backend in BACKENDS for r in GAPS
+    ]
+
+
+@pytest.mark.parametrize(("engine", "row"), _cases(), indirect=["engine"])
 async def test_gap_has_ossies_value(engine: SlayerQueryEngine, row: Row) -> None:
     if row.kind == "aggregate":
         query = q(metrics=[{"metric": row.expression, "alias": "v"}])

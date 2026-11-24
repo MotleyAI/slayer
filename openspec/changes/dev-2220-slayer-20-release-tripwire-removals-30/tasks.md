@@ -1,7 +1,7 @@
 ## 0. Preconditions
 
-- [ ] 0.1 Merge `origin/main` once DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430
-      and DEV-2443 have all merged; verify each is Done in Linear and its PR is merged. Until then, tests that depend
+- [ ] 0.1 Merge `origin/main` once DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430,
+      DEV-2443 and DEV-2439 have all merged; verify each is Done in Linear and its PR is merged. Until then, tests that depend
       on them (DEV-2446's cases) start as strict xfails pointing at the open issue; none may remain at merge.
 - [x] 0.2 Before writing tests, merge `origin/main`, then read the plan of every prerequisite not yet merged (DEV-2443
       included): its OpenSpec change (proposal, design, tasks, delta specs) in its worktree under
@@ -12,20 +12,18 @@
 
 ## 1. Compliance pins (tests first)
 
-- [ ] 1.1 Re-measure the Layer 1 gaps against the code (every REQUIRED construct of the vendored
+- [x] 1.1 Re-measure the Layer 1 gaps against the code (every REQUIRED construct of the vendored
       `core-spec/expression_language.md`, revision `d4dca4e9`), on DuckDB and SQLite; the earlier throwaway probe
       (218/290 passing, 23 Nov) is a starting point, not the answer. Verify: the gap list in the test is exactly the
       constructs that fail today.
-- [ ] 1.2 Write the gap-case table: one case id per independently fixable behaviour, each asserting Ossie's result,
+- [x] 1.2 Write the gap-case table: one case id per independently fixable behaviour, each asserting Ossie's result,
       one pytest parameter per (case, database), each `xfail(strict=True, raises=<its current error>,
-      reason=<DEV-2282 | DEV-2439 | DEV-2244>)`. Verify: the file runs green with every case xfailing for the
+      reason=<DEV-2282 | DEV-2244>)`. Verify: the file runs green with every case xfailing for the
       declared error.
       - Layer 1 cases are the gap rows of DEV-2446's `tests/_dev2446_required_manifest.py` (decision 26); the test
         cannot collect until DEV-2446 is on `main`. After task 0.1's merge, add `value=` and `fails_with=` to every
         gap row. Verify: every Layer 1 case xfails for its declared error on DuckDB and SQLite.
-- [x] 1.3 Add the DEV-2439 cases (incomplete window and unknown-field window in a strict filter: Ossie codes
-      `E_INVALID_QUERY`, `E_NAME_NOT_FOUND`) and the DEV-2244 format-gap cases. Verify: they xfail with the declared
-      error.
+- [x] 1.3 Add the DEV-2244 format-gap cases. Verify: they xfail with the declared error.
 - [ ] 1.4 Write the page-sync test: the page's gap-table rows (case id + fixing issue) equal the xfail table, both
       directions. Verify: it fails when a row or a case is removed alone (check once by hand, then restore).
 
@@ -34,7 +32,7 @@
 - [ ] 2.1 Write `docs/interfaces/ossie-compliance.md`, conservatively worded, citing the vendored revision and naming
       the databases CI executes each claim on (others "not certified"): Layer 1 soundness plus the refused-constructs
       table; Layer 3 under `conformance="ossie-l3"`, superset native language, output names only under the switch,
-      bare model-scoped metrics, the DEV-2439 row; semantic-model format (what passes on the corpus and grader,
+      bare model-scoped metrics, no known deviation; semantic-model format (what passes on the corpus and grader,
       `slayer ossie-roundtrip`, DEV-2244 rows, wider support "intended"); Layer 2 not claimed (DEV-1768, DEV-2103,
       DEV-2400). Verify: 1.4 passes; `tests/test_doc_examples.py` passes.
 - [ ] 2.2 Link it from the `nav` in `zensical.toml` and from `docs/interfaces/ossie-layer-3.md`. Verify: the docs nav
@@ -61,7 +59,7 @@
 
 - [ ] 4.1 Check `docs/upgrading/2.0.md` against every merged 2.0 slice and prerequisite (DEV-1695, DEV-2398, DEV-2264,
       DEV-2136, DEV-1914, DEV-2385, DEV-2018, DEV-2388, DEV-2217, DEV-2243, DEV-2394, DEV-2266, DEV-2255, DEV-2249,
-      DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430): each breaking change has a
+      DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430, DEV-2443, DEV-2439): each breaking change has a
       Part 1 before/after, each deprecation a Part 2 entry. Write what is missing. Verify: a checklist of the slices
       against guide sections, all ticked; `tests/test_doc_examples.py` passes.
 - [ ] 4.2 List the moved modules `slayer.engine.syntax`, `slayer.core.formula`, `slayer.osi.expression` with their

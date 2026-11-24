@@ -1,4 +1,4 @@
-"""Strict-binding and format gaps of the Ossie compliance statement: each a strict xfail asserting Ossie's behaviour."""
+"""Semantic-model format gaps of the Ossie compliance statement: each a strict xfail asserting Ossie's behaviour."""
 
 from __future__ import annotations
 

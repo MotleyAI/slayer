@@ -6,9 +6,12 @@ Scalars evaluate at ``orders.id = 3`` of ``tests._dev2215_fixtures`` (pending, a
 
 from __future__ import annotations
 
+import datetime
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
+
+from slayer.core.errors import CastTypeError, IllegalWindowInFilterError, UnknownFunctionError, UnknownMetricError
 
 #: Future issue adding the missing Ossie Layer 1 constructs.
 GAP = "DEV-2282"
@@ -17,7 +20,8 @@ Kind = Literal["scalar", "aggregate", "window", "reserved"]
 
 
 class Row(BaseModel):
-    """One construct probe; ``gap`` set means refused under strict until the gap closes."""
+    """One construct probe; ``gap`` set means refused under strict until the gap closes, ``fails_with`` its error
+    today outside strict except on the ``holds_on`` databases."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -27,14 +31,18 @@ class Row(BaseModel):
     kind: Kind = "scalar"
     value: Any = None
     gap: Optional[str] = None
+    fails_with: Optional[type[BaseException]] = None
+    holds_on: frozenset[str] = frozenset()
 
 
 def ok(section: str, construct: str, expression: str, value: Any, *, kind: Kind = "scalar") -> Row:
     return Row(section=section, form=construct, expression=expression, value=value, kind=kind)
 
 
-def gap(section: str, construct: str, expression: str, *, kind: Kind = "scalar") -> Row:
-    return Row(section=section, form=construct, expression=expression, kind=kind, gap=GAP)
+def gap(section: str, construct: str, expression: str, value: Any, *, fails_with: type[BaseException],
+        kind: Kind = "scalar", holds_on: frozenset[str] = frozenset()) -> Row:
+    return Row(section=section, form=construct, expression=expression, value=value, kind=kind, gap=GAP,
+               fails_with=fails_with, holds_on=holds_on)
 
 
 CORE = "Core Aggregation Functions (REQUIRED)"
@@ -77,6 +85,16 @@ TRUNCATED = {"YEAR": "2024-01-01 00:00:00", "QUARTER": "2024-10-01 00:00:00", "M
              "WEEK": "2024-12-30 00:00:00", "DAY": "2024-12-30 00:00:00", "HOUR": "2024-12-30 10:00:00",
              "MINUTE": "2024-12-30 10:15:00", "SECOND": "2024-12-30 10:15:42"}
 OVER = "OVER (ORDER BY orders.amount)"
+#: The pinned clock's time of day (``tests._dev2215_fixtures.NOW``).
+NOW_TIME = datetime.time(12, 0)
+TEN_THIRTY = datetime.time(10, 30)
+#: Ossie leaves the numbering open; Monday is 1 under both ISO and Sunday-0.
+DAYOFWEEK = 1
+#: Ossie leaves it open; the milliseconds field, as ``SECOND`` is the seconds field.
+MILLISECOND = 0
+#: Each window runs over the one row the filter keeps.
+WINDOW_VALUES = {"ROW_NUMBER": 1, "RANK": 1, "DENSE_RANK": 1, "NTILE": 1, "PERCENT_RANK": 0, "CUME_DIST": 1,
+                 "LAG": 0, "LEAD": 0, "FIRST_VALUE": 30, "LAST_VALUE": 30, "NTH_VALUE": None}
 
 ROWS: tuple[Row, ...] = (
     ok(CORE, "SUM", "SUM(orders.amount)", 160, kind="aggregate"),
@@ -94,10 +112,11 @@ ROWS: tuple[Row, ...] = (
     ok(STATS, "VAR_SAMP", "VAR_SAMP(orders.amount)", 370, kind="aggregate"),
     ok(PCT, "MEDIAN", "MEDIAN(orders.amount)", 30, kind="aggregate"),
     ok(PCT, "PERCENTILE_CONT", "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY orders.amount)", 20, kind="aggregate"),
-    gap(PCT, "PERCENTILE_DISC", "PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY orders.amount)", kind="aggregate"),
+    gap(PCT, "PERCENTILE_DISC", "PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY orders.amount)", 20,
+        kind="aggregate", fails_with=ValueError),
     ok(APPROX, "APPROX_COUNT_DISTINCT", "APPROX_COUNT_DISTINCT(orders.status)", 3, kind="aggregate"),
-    gap(APPROX, "APPROX_PERCENTILE", "APPROX_PERCENTILE(orders.amount, 0.5)", kind="aggregate"),
-    gap(COND_AGG, "DISTINCT MODIFIER", "SUM(DISTINCT orders.qty)", kind="aggregate"),
+    gap(APPROX, "APPROX_PERCENTILE", "APPROX_PERCENTILE(orders.amount, 0.5)", 30, kind="aggregate", fails_with=UnknownFunctionError),
+    gap(COND_AGG, "DISTINCT MODIFIER", "SUM(DISTINCT orders.qty)", 6, kind="aggregate", fails_with=ValueError),
     ok(COND_AGG, "DISTINCT MODIFIER", "COUNT(DISTINCT orders.customer_id)", 4, kind="aggregate"),
     ok(COND_AGG, "FILTERED AGGREGATION VIA CASE", "SUM(CASE WHEN orders.status = 'paid' THEN orders.amount END)", 130,
        kind="aggregate"),
@@ -117,14 +136,15 @@ ROWS: tuple[Row, ...] = (
     ok(NOW, "CURRENT_DATE", "CURRENT_DATE() > orders.order_date", True),
     ok(NOW, "CURRENT_TIMESTAMP", f"CURRENT_TIMESTAMP > {TS}", True),
     ok(NOW, "CURRENT_TIMESTAMP", f"CURRENT_TIMESTAMP() > {TS}", True),
-    gap(NOW, "CURRENT_TIME", "CURRENT_TIME"),
-    gap(NOW, "CURRENT_TIME", "CURRENT_TIME()"),
+    gap(NOW, "CURRENT_TIME", "CURRENT_TIME", NOW_TIME, fails_with=UnknownMetricError),
+    gap(NOW, "CURRENT_TIME", "CURRENT_TIME()", NOW_TIME, fails_with=UnknownFunctionError),
     *(ok(EXTRACTION, p, f"{p}({TS})", PARTS[p])
       for p in ("YEAR", "QUARTER", "MONTH", "DAY", "DAYOFYEAR", "HOUR", "MINUTE", "SECOND")),
     *(ok(ALT, f"EXTRACT({p})", f"EXTRACT({p} FROM {TS})", v) for p, v in PARTS.items()),
     *(ok(ALT, f"DATE_PART({p})", f"DATE_PART('{p.lower()}', {TS})", v) for p, v in PARTS.items()),
-    *(gap(ALT, f"{fn}({p})", f"EXTRACT({p} FROM {TS})" if fn == "EXTRACT" else f"DATE_PART('{p.lower()}', {TS})")
-      for p in ("DAYOFWEEK", "MILLISECOND") for fn in ("EXTRACT", "DATE_PART")),
+    *(gap(ALT, f"{fn}({p})", f"EXTRACT({p} FROM {TS})" if fn == "EXTRACT" else f"DATE_PART('{p.lower()}', {TS})",
+          v, fails_with=ValueError)
+      for p, v in (("DAYOFWEEK", DAYOFWEEK), ("MILLISECOND", MILLISECOND)) for fn in ("EXTRACT", "DATE_PART")),
     ok(TRUNC, "DATE_TRUNC", f"DATE_TRUNC('month', {TS})", TRUNCATED["MONTH"]),
     *(ok(TRUNC, f"DATE_TRUNC({p})", f"DATE_TRUNC('{p.lower()}', {TS})", v) for p, v in TRUNCATED.items()),
     ok(ARITH, "DATEADD", "DATEADD(day, 7, orders.order_date)", "2025-01-06"),
@@ -132,14 +152,16 @@ ROWS: tuple[Row, ...] = (
     ok(ARITH, "DATEDIFF", "DATEDIFF(day, orders.order_date, DATE '2025-01-09')", 10),
     ok(ARITH, "DATEDIFF", "DATEDIFF(month, orders.order_date, DATE '2025-03-01')", 3),
     ok(BUILD, "DATE '2024-01-15'", "DATE '2024-01-15'", "2024-01-15"),
-    gap(BUILD, "TIMESTAMP_NTZ '2024-01-15 10:30:00'", "TIMESTAMP_NTZ '2024-01-15 10:30:00'"),
-    gap(BUILD, "TIME '10:30:00'", "TIME '10:30:00'"),
+    gap(BUILD, "TIMESTAMP_NTZ '2024-01-15 10:30:00'", "TIMESTAMP_NTZ '2024-01-15 10:30:00'", "2024-01-15 10:30:00",
+        fails_with=ValueError),
+    gap(BUILD, "TIME '10:30:00'", "TIME '10:30:00'", TEN_THIRTY, fails_with=ValueError),
     ok(BUILD, "CAST('2024-01-15' AS DATE)", "CAST('2024-01-15' AS DATE)", "2024-01-15"),
     ok(BUILD, "CAST('2024-01-15 10:30:00' AS TIMESTAMP_NTZ)", "CAST('2024-01-15 10:30:00' AS TIMESTAMP_NTZ)",
        "2024-01-15 10:30:00"),
-    gap(BUILD, "CAST('10:30:00' AS TIME)", "CAST('10:30:00' AS TIME)"),
-    gap(BUILD, "TO_DATE", "TO_DATE('2024-01-15')"),
-    gap(BUILD, "TO_TIMESTAMP", "TO_TIMESTAMP('2024-01-15 10:30:00')"),
+    gap(BUILD, "CAST('10:30:00' AS TIME)", "CAST('10:30:00' AS TIME)", TEN_THIRTY, fails_with=CastTypeError,
+        holds_on=frozenset({"duckdb"})),
+    gap(BUILD, "TO_DATE", "TO_DATE('2024-01-15')", "2024-01-15", fails_with=UnknownFunctionError),
+    gap(BUILD, "TO_TIMESTAMP", "TO_TIMESTAMP('2024-01-15 10:30:00')", "2024-01-15 10:30:00", fails_with=UnknownFunctionError),
     ok(STRING, "CONCAT", "CONCAT(orders.status, '-', orders.note)", "pending-c"),
     ok(STRING, "||", "orders.status || orders.note", "pendingc"),
     ok(STRING, "LENGTH", "LENGTH(orders.status)", 7),
@@ -154,10 +176,10 @@ ROWS: tuple[Row, ...] = (
     ok(STRING, "REPLACE", "REPLACE(orders.status, 'en', 'EN')", "pENding"),
     ok(STRING, "SPLIT_PART", "SPLIT_PART('a-b-c', '-', 2)", "b"),
     ok(SEARCH, "POSITION", "POSITION('d' IN orders.status)", 4),
-    gap(SEARCH, "CHARINDEX", "CHARINDEX('d', orders.status)"),
+    gap(SEARCH, "CHARINDEX", "CHARINDEX('d', orders.status)", 4, fails_with=UnknownFunctionError),
     ok(SEARCH, "CONTAINS", "CONTAINS(orders.status, 'end')", True),
-    gap(SEARCH, "STARTSWITH", "STARTSWITH(orders.status, 'pe')"),
-    gap(SEARCH, "ENDSWITH", "ENDSWITH(orders.status, 'ing')"),
+    gap(SEARCH, "STARTSWITH", "STARTSWITH(orders.status, 'pe')", True, fails_with=UnknownFunctionError),
+    gap(SEARCH, "ENDSWITH", "ENDSWITH(orders.status, 'ing')", True, fails_with=UnknownFunctionError),
     ok(PATTERN, "LIKE", "orders.status LIKE 'pe%'", True),
     ok(PATTERN, "ILIKE", "orders.status ILIKE 'PE%'", True),
     ok(PATTERN, "REGEXP_LIKE", "REGEXP_LIKE(orders.status, '^pe')", True),
@@ -166,8 +188,8 @@ ROWS: tuple[Row, ...] = (
     ok(BASIC, "FLOOR", "FLOOR(-2.5)", -3),
     ok(BASIC, "CEIL", "CEIL(2.1)", 3),
     ok(BASIC, "CEILING", "CEILING(2.1)", 3),
-    gap(BASIC, "TRUNC", "TRUNC(2.789, 1)"),
-    gap(BASIC, "TRUNCATE", "TRUNCATE(2.789, 1)"),
+    gap(BASIC, "TRUNC", "TRUNC(2.789, 1)", 2.7, fails_with=ValueError),
+    gap(BASIC, "TRUNCATE", "TRUNCATE(2.789, 1)", 2.7, fails_with=UnknownFunctionError),
     ok(BASIC, "MOD", "MOD(orders.qty + 6, 4)", 3),
     ok(BASIC, "SIGN", "SIGN(-3)", -1),
     ok(NUMERIC, "ROUND TIES", "ROUND(2.5, 0)", 3),
@@ -187,32 +209,37 @@ ROWS: tuple[Row, ...] = (
     ok(COMPARE, "LEAST", "LEAST(4, 2, 8)", 2),
     ok(CASE, "SEARCHED CASE", "CASE WHEN orders.amount > 20 THEN 'big' ELSE 'small' END", "big"),
     ok(CASE, "SIMPLE CASE", "CASE orders.status WHEN 'pending' THEN 1 WHEN 'paid' THEN 2 ELSE 0 END", 1),
-    gap(COND, "IF", "IF(orders.amount > 20, 1, 0)"),
+    gap(COND, "IF", "IF(orders.amount > 20, 1, 0)", 1, fails_with=UnknownFunctionError),
     ok(COND, "IFF", "IFF(orders.amount > 20, 1, 0)", 1),
     ok(COND, "NULLIF", "NULLIF(orders.qty, 1)", None),
     ok(COND, "COALESCE", "COALESCE(NULL, orders.status, 'x')", "pending"),
     ok(COND, "IFNULL", "IFNULL(NULLIF(orders.status, 'pending'), 'x')", "x"),
-    gap(COND, "NVL", "NVL(NULLIF(orders.status, 'pending'), 'x')"),
-    gap(COND, "NVL2", "NVL2(orders.status, 'y', 'n')"),
-    gap(COND, "ZEROIFNULL", "ZEROIFNULL(orders.amount)"),
-    gap(COND, "NULLIFZERO", "NULLIFZERO(orders.amount)"),
+    gap(COND, "NVL", "NVL(NULLIF(orders.status, 'pending'), 'x')", "x", fails_with=UnknownFunctionError),
+    gap(COND, "NVL2", "NVL2(orders.status, 'y', 'n')", "y", fails_with=UnknownFunctionError),
+    gap(COND, "ZEROIFNULL", "ZEROIFNULL(orders.amount)", 30, fails_with=UnknownFunctionError),
+    gap(COND, "NULLIFZERO", "NULLIFZERO(orders.amount)", 30, fails_with=UnknownFunctionError),
     ok(BOOLEAN, "BOOLEAN", "TRUE", True),
     ok(BOOLEAN, "BOOLEAN", "FALSE", False),
     ok(BOOLEAN, "NOT", "NOT (orders.qty > 1)", True),
     ok(BOOLEAN, "AND", "orders.qty = 1 AND orders.amount > 20", True),
     ok(BOOLEAN, "OR", "orders.qty = 2 OR orders.amount > 20", True),
-    *(gap(RANKING, f, f"{f}({arg}) {OVER}", kind="window") for f, arg in (
+    *(gap(RANKING, f, f"{f}({arg}) {OVER}", WINDOW_VALUES[f], kind="window", fails_with=IllegalWindowInFilterError) for f, arg in (
         ("ROW_NUMBER", ""), ("RANK", ""), ("DENSE_RANK", ""), ("NTILE", "2"), ("PERCENT_RANK", ""),
         ("CUME_DIST", ""))),
-    *(gap(OFFSET, f, f"{f}({args}) {OVER}", kind="window") for f, args in (
+    *(gap(OFFSET, f, f"{f}({args}) {OVER}", WINDOW_VALUES[f], kind="window", fails_with=IllegalWindowInFilterError) for f, args in (
         ("LAG", "orders.amount, 1, 0"), ("LEAD", "orders.amount, 1, 0"), ("FIRST_VALUE", "orders.amount"),
         ("LAST_VALUE", "orders.amount"), ("NTH_VALUE", "orders.amount, 2"))),
-    gap(WINDOW_AGG, "RUNNING TOTAL", "SUM(orders.amount) OVER (ORDER BY orders.order_date)", kind="window"),
+    gap(WINDOW_AGG, "RUNNING TOTAL", "SUM(orders.amount) OVER (ORDER BY orders.order_date)", 30, kind="window",
+        fails_with=IllegalWindowInFilterError),
     gap(WINDOW_AGG, "RUNNING AVERAGE",
-        "AVG(orders.amount) OVER (ORDER BY orders.order_date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)", kind="window"),
-    gap(WINDOW_AGG, "PARTITION TOTALS", "SUM(orders.amount) OVER (PARTITION BY orders.region)", kind="window"),
-    gap(WINDOW_AGG, "PERCENT OF TOTAL", "orders.amount / SUM(orders.amount) OVER () * 100", kind="window"),
-    gap(NULL_ORDER, "DEFAULT NULL PLACEMENT", "RANK() OVER (ORDER BY orders.amount DESC)", kind="window"),
+        "AVG(orders.amount) OVER (ORDER BY orders.order_date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)", 30,
+        kind="window", fails_with=IllegalWindowInFilterError),
+    gap(WINDOW_AGG, "PARTITION TOTALS", "SUM(orders.amount) OVER (PARTITION BY orders.region)", 30, kind="window",
+        fails_with=IllegalWindowInFilterError),
+    gap(WINDOW_AGG, "PERCENT OF TOTAL", "orders.amount / SUM(orders.amount) OVER () * 100", 100, kind="window",
+        fails_with=IllegalWindowInFilterError),
+    gap(NULL_ORDER, "DEFAULT NULL PLACEMENT", "RANK() OVER (ORDER BY orders.amount DESC)", 1, kind="window",
+        fails_with=IllegalWindowInFilterError),
     ok(CAST, "CAST AS VARCHAR", "CAST(orders.qty AS VARCHAR)", "1"),
     ok(CAST, "CAST AS STRING", "CAST(orders.qty AS STRING)", "1"),
     ok(CAST, "CAST AS INTEGER", "CAST(2.5 AS INTEGER)", 3),
@@ -227,7 +254,8 @@ ROWS: tuple[Row, ...] = (
     ok(CAST, "CAST AS BOOLEAN", "CAST(0 AS BOOLEAN)", False),
     ok(CAST, "CAST AS DATE", "CAST('2024-01-15' AS DATE)", "2024-01-15"),
     ok(CAST, "CAST AS TIMESTAMP", "CAST('2024-01-15 10:30:00' AS TIMESTAMP)", "2024-01-15 10:30:00"),
-    gap(CAST, "CAST AS TIME", "CAST('10:30:00' AS TIME)"),
+    gap(CAST, "CAST AS TIME", "CAST('10:30:00' AS TIME)", TEN_THIRTY, fails_with=CastTypeError,
+        holds_on=frozenset({"duckdb"})),
     ok(CAST, "CAST AS VARCHAR", "CAST('abcdef' AS VARCHAR(3))", "abc"),
     ok(TRY_CAST, "TRY_CAST", "TRY_CAST('12' AS INTEGER)", 12),
     ok(TRY_CAST, "TRY_CAST", "TRY_CAST('x' AS INTEGER)", None),

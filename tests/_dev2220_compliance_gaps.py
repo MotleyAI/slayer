@@ -1,4 +1,4 @@
-"""The Ossie compliance gaps outside Layer 1: strict-binding (DEV-2439) and semantic-model format (DEV-2244) cases.
+"""The Ossie compliance gaps outside Layer 1: the semantic-model format (DEV-2244) cases.
 
 Each probe asserts Ossie's behaviour; the gap's case id and fixing issue are the compliance page's row. Layer 1 gaps
 are the gap rows of ``tests/_dev2446_required_manifest.py``.
@@ -8,11 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
-from functools import partial
 from pathlib import Path
 from typing import Any
 
-import pytest
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
@@ -21,12 +19,11 @@ from slayer.core.errors import (
 )
 from slayer.facade.catalog import build_local_view
 from slayer.inspect.service import InspectService
-from tests._dev2217_fixtures import DS, fixture_engine, sql_engine, strict
+from tests._dev2217_fixtures import DS, sql_engine, strict
 from tests._dev2243_fixtures import dataset, document_text, field, metric, relationship
 
 #: The vendored Ossie revision the compliance page and these cases are measured against.
 REVISION = "d4dca4e9"
-L3 = "DEV-2439"
 FORMAT = "DEV-2244"
 
 Probe = Callable[[Path], Awaitable[None]]
@@ -47,45 +44,6 @@ class Gap(BaseModel):
     @property
     def id(self) -> str:
         return f"{self.case}|{self.label}|{self.database}"
-
-
-# --------------------------------------------------------------------------- #
-# DEV-2439: a window in a strict filter yields to earlier §8 rows
-# --------------------------------------------------------------------------- #
-class WrongOssieCode(Exception):
-    """The strict binding refused with another §8 code than Ossie's."""
-
-
-async def _strict_filter_code(base: Path, *, filter_text: str, code: str) -> None:
-    async with fixture_engine(base) as engine:
-        with pytest.raises(OssieQueryError) as raised:
-            await strict(engine, {"dimensions": ["orders.order_id"], "filter": filter_text})
-    if raised.value.code != code:
-        raise WrongOssieCode(f"{raised.value.code}, Ossie: {code}")
-
-
-def _l3(case: str, filter_text: str, code: str) -> Gap:
-    return Gap(case=case, issue=L3, label=filter_text, database="duckdb", raises=WrongOssieCode,
-               probe=partial(_strict_filter_code, filter_text=filter_text, code=code))
-
-
-L3_GAPS: tuple[Gap, ...] = (
-    *(_l3("l3-window-malformed", f, "E_INVALID_QUERY") for f in (
-        "ROW_NUMBER() OVER (",
-        "FOO() OVER ()",
-        "ROW_NUMBER(orders.amount) OVER ()",
-        "SUM(ROW_NUMBER() OVER ()) OVER ()",
-        "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN CURRENT ROW AND 1 PRECEDING) = 1",
-        "ROW_NUMBER() OVER (ORDER BY orders.amount GROUPS UNBOUNDED PRECEDING) = 1",
-    )),
-    _l3("l3-window-names", "ROW_NUMBER() OVER (ORDER BY orders.no_such_field) = 1", "E_NAME_NOT_FOUND"),
-    _l3("l3-window-names", "SUM(orders.amount) OVER (PARTITION BY orders.total_revenue) > 10",
-        "E_AGGREGATE_IN_WHERE"),
-    _l3("l3-window-rest", "orders.status ~ '^c' AND ROW_NUMBER() OVER (ORDER BY orders.amount) = 1",
-        "E_INVALID_QUERY"),
-    _l3("l3-aggregate-arguments", "SUM(orders.amount, orders.amount) > 1", "E_INVALID_QUERY"),
-    _l3("l3-aggregate-arguments", "SUM(orders.amount, orders.amount) OVER () > 1", "E_INVALID_QUERY"),
-)
 
 
 # --------------------------------------------------------------------------- #
@@ -253,4 +211,4 @@ FORMAT_GAPS: tuple[Gap, ...] = (
     _format("format-datetimetz-offset-literal", datetimetz_offset_literal, TimeLiteralError),
 )
 
-GAPS: tuple[Gap, ...] = (*L3_GAPS, *FORMAT_GAPS)
+GAPS: tuple[Gap, ...] = FORMAT_GAPS
