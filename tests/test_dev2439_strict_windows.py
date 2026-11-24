@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._dev2217_fixtures import fixture_engine, strict_error
+from tests._dev2217_fixtures import sql_engine, strict_error
+from tests.test_dev2217_filter import DATASETS, SQL
 
 ORDERED = "OVER (ORDER BY orders.amount)"
 
@@ -89,7 +90,7 @@ AGGREGATE_SHAPES = [
 
 @pytest.fixture
 async def engine(tmp_path: Path) -> AsyncGenerator[SlayerQueryEngine]:
-    async with fixture_engine(tmp_path, "retail") as engine:
+    async with sql_engine(tmp_path, sql=SQL, datasets=DATASETS) as engine:
         yield engine
 
 
@@ -132,7 +133,7 @@ async def test_a_complete_window_is_a_window_in_the_filter(engine: SlayerQueryEn
 @pytest.mark.parametrize(("filter_text", "variables"), [
     (f"ROW_NUMBER() {ORDERED} = {{n}}", {"n": 1}),
     (f"LAG(orders.amount, {{k}}) {ORDERED} > 1", {"k": 1}),
-    (f"orders.status = {{s}} AND ROW_NUMBER() {ORDERED} = 1", {"s": "complete"}),
+    (f"orders.status = '{{s}}' AND ROW_NUMBER() {ORDERED} = 1", {"s": "complete"}),
 ])
 async def test_a_bound_variable_in_or_beside_a_window(engine: SlayerQueryEngine, filter_text: str,
                                                       variables: dict[str, Any]) -> None:
