@@ -34,7 +34,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import SlayerDataset
 from slayer.core.refs import key_display
-from slayer.core.relationship_walker import follow
+from slayer.core.relationship_walker import follow, is_unrelated_edge
 from slayer.core.relationship_walker import provably_to_one
 from slayer.engine.cardinality.relationship_safety import (
     attributable_from_root,
@@ -435,3 +435,32 @@ def _homeless(
         ),
         common=dataset.name,
     )
+
+
+def _crosses_unrelated(*, root: SlayerDataset, path: Path, datasets_by_name: Dict[str, SlayerDataset]) -> bool:
+    chain = follow(root=root, path=path, datasets_by_name=datasets_by_name)
+    return chain is not None and any(is_unrelated_edge(e) for e in chain)
+
+
+def population_crossing(
+    *, source: ValueKey, population: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[str, Optional[str]]]:
+    """``(leaf, hop)`` of the first row leaf whose dependency closure crosses an unproven or fanning hop from
+    ``population`` (Axiom 12.5; an unrelated dataset is left to its own check); ``hop`` is ``None`` when the leaf's
+    definition cannot be analysed."""
+    universe = bundle.datasets_by_name
+    for leaf in source_row_leaves(source):
+        if _crosses_unrelated(root=population, path=key_host_path(leaf), datasets_by_name=universe):
+            continue
+        closure = key_closure(
+            key=reroot_value_key(leaf, target_path=()), anchor_dataset=population,
+            anchor_relation=population.name, bundle=bundle,
+        )
+        if closure is None:
+            return key_display(leaf), None
+        hop = next((p[-1] for p in closure
+                    if p and not safe_reachable(root=population, path=p, datasets_by_name=universe)
+                    and not _crosses_unrelated(root=population, path=p, datasets_by_name=universe)), None)
+        if hop is not None:
+            return key_display(leaf), hop
+    return None

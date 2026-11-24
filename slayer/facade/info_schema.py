@@ -30,6 +30,7 @@ from slayer.core.enums import DataType
 from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,
+    advertised_dimensions,
     local_dimensions,
     local_metrics,
 )
@@ -155,7 +156,7 @@ def _serve_dimensions(*, catalog: FacadeCatalog) -> RowBatch:
     rows: list[dict] = []
     for sch in catalog.schemas:
         for tbl in sch.tables:
-            for d in tbl.dimensions:
+            for d in advertised_dimensions(tbl):
                 rows.append({
                     "catalog_name": catalog.catalog_name,
                     "schema_name": sch.name,
@@ -209,9 +210,9 @@ def _serve_columns(*, catalog: FacadeCatalog) -> RowBatch:
     Cross-dataset entries are excluded — they leak as dotted
     "columns" that Metabase / dbt fingerprint scans then project, landing
     a dotted name in ``SlayerQuery.metrics[*].name`` (Pydantic rejects
-    the dot). Catalog-namespaced surfaces (``INFORMATION_SCHEMA.METRICS``
-    / ``.DIMENSIONS``) and the catalog SQL fingerprint hash continue to
-    use the raw ``tbl.metrics`` / ``tbl.dimensions``.
+    the dot). ``INFORMATION_SCHEMA.METRICS`` and the catalog SQL fingerprint
+    use the raw ``tbl.metrics`` / ``tbl.dimensions``; ``.DIMENSIONS`` lists
+    ``advertised_dimensions``.
     """
     columns = [
         FacadeColumn(name="table_catalog", type=DataType.STRING),

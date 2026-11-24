@@ -323,9 +323,9 @@ def test_reverse_hop_dimensions_enumerated() -> None:
 
 
 def test_row_preserving_flags_by_direction_and_cardinality() -> None:
-    # Forward m2o/1:1/unknown hops keep the root grain; a declared 1:N, the
-    # inverted side of a m2o, an inverted unknown, and any path through a
-    # fan-out hop do not (browse-mode star scope).
+    # A hop keeps the root grain iff it is provably to-one: m2o/1:1, or onto a
+    # unique key; a declared 1:N, an unknown hop onto a non-key and any path
+    # through a fan-out hop do not.
     orders = _dataset(
         name="orders",
         fields=[
@@ -358,7 +358,7 @@ def test_row_preserving_flags_by_direction_and_cardinality() -> None:
     assert flags["customers.tag"] is True    # forward m2o
     assert flags["items.tag"] is False       # declared 1:N
     assert flags["receipts.tag"] is True     # forward 1:1
-    assert flags["notes.tag"] is True        # forward unknown, grandfathered
+    assert flags["notes.tag"] is False       # forward unknown onto a non-key
 
     cust_flags = {
         d.name: d.row_preserving
@@ -377,7 +377,7 @@ def test_row_preserving_flags_by_direction_and_cardinality() -> None:
         d.name: d.row_preserving
         for d in _find_table(cat, schema="ds1", table="notes").dimensions
     }
-    assert note_flags["orders.customer_id"] is False        # inverted unknown
+    assert note_flags["orders.customer_id"] is True         # inverted unknown onto orders' key
 
 
 def test_bfs_depth_limit_truncates() -> None:
