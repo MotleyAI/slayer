@@ -73,7 +73,7 @@
 
 ## 6. Release
 
-- [ ] 6.1 Draft `RELEASE_NOTES_2.0.0.md` with the `release-notes` skill from the slice comments and PRs; keep it
+- [x] 6.1 Draft `RELEASE_NOTES_2.0.0.md` with the `release-notes` skill from the slice comments and PRs; keep it
       untracked. Verify: `git status` shows it untracked and unstaged.
 - [ ] 6.2 After task 0.1, run the DEV-2205 release gate on a wheel built from this branch, installed with every
       dependency at its newest version. Verify: the gate passes.
