@@ -1,7 +1,7 @@
 """Removal tripwire: compatibility code tagged for removal fails the suite once its major version ships.
 
-The tag is a call to ``slayer.core.deprecation.warn_deprecated``, ``raise_moved``, ``deprecated_input`` or
-``scheduled_notice`` (any import spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
+The tag is a call to ``slayer.core.deprecation.warn_deprecated``, ``raise_moved``, ``deprecated_input``,
+``deprecated_spelling`` or ``scheduled_notice`` (any import spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
 """
 
 from __future__ import annotations
@@ -21,11 +21,9 @@ SLAYER = REPO / "slayer"
 HELPERS = frozenset({
     "slayer.core.deprecation.warn_deprecated", "slayer.core.deprecation.raise_moved",
     "slayer.core.deprecation.deprecated_input", "slayer.core.deprecation.scheduled_notice",
+    "slayer.core.deprecation.deprecated_spelling",
 })
 HELPER_MODULE = "slayer/core/deprecation.py"
-
-#: The deprecated Mode-B spellings, each warned with a message spelling its token literally.
-MODE_B_SPELLING_TOKENS = ("==", "is None", "is not None", "bare None", "list after IN", "method-call")
 
 #: Moved paths that keep the names a known 1.8.4 integrator imports (compatibility/integrator-1x-calls).
 INTEGRATOR_KEPT_NAMES: dict[str, tuple[str, ...]] = {
@@ -68,7 +66,8 @@ PINNED: dict[tuple[str, str], str] = {
     ("slayer/core/query.py", "strict"): "3.0",
     ("slayer/core/query.py", "An extension object in `population`"): "3.0",
     ("slayer/core/query.py", "broadcast"): "3.0",
-    **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
+    # Every deprecated Mode-B spelling: one door.
+    ("slayer/core/legacy_spellings.py", ""): "3.0",
     ("slayer/engine/elaborate_env.py", "midnight"): "3.0",
     ("slayer/core/vocabulary.py", ""): "3.0",
     # Root-relative reference spellings: one door for a bare name, `count(*)` and a non-dataset first segment.

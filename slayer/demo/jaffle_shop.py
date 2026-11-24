@@ -766,8 +766,16 @@ def shift_dates_to_today(conn: "duckdb.DuckDBPyConnection") -> None:
             conn.execute(update.sql(dialect="duckdb"))
 
 
-def _require_store_regions(conn: "duckdb.DuckDBPyConnection", *, view: str) -> None:
-    query = exp.select("name").distinct().from_(exp.table_(view))
+def _csv_source(path: str, *, alias: str) -> exp.Table:
+    """``read_csv_auto('<path>') AS <alias>``; the path is a SQL string literal, not a bound parameter."""
+    return exp.Table(
+        this=exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(path)]),
+        alias=exp.TableAlias(this=exp.to_identifier(alias)),
+    )
+
+
+def _require_store_regions(conn: "duckdb.DuckDBPyConnection", *, csv_source: exp.Table) -> None:
+    query = exp.select("name").distinct().from_(csv_source)
     names = {name for (name,) in conn.execute(query.sql(dialect="duckdb")).fetchall()}
     unmapped = sorted(names - STORE_REGIONS.keys())
     if unmapped:
@@ -809,45 +817,35 @@ def load_data(
 
         cents_cols = CENTS_FIELDS.get(csv_name, [])
         renames = FIELD_RENAMES.get(csv_name, {})
-        view = f"_{table}_raw"
-        # read_csv_auto takes a SQL string literal, not a bound parameter.
-        csv_source = exp.Table(this=exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(csv_path)]))
-        create = exp.Create(
-            this=exp.table_(view), kind="VIEW", expression=exp.select("*").from_(csv_source),
-            properties=exp.Properties(expressions=[exp.TemporaryProperty()]),
+        csv_source = _csv_source(csv_path, alias=f"_{table}_raw")
+        describe = exp.Describe(this=exp.select("*").from_(csv_source.copy()))
+        csv_columns = [row[0] for row in conn.execute(describe.sql(dialect="duckdb")).fetchall()]
+        select_parts = []
+        target_columns = []
+        for col in csv_columns:
+            target_col = renames.get(col, col)
+            target_columns.append(target_col)
+            value: Expr = exp.column(col)
+            if col in cents_cols:
+                cents = exp.cast(value, to="DECIMAL(18,0)")
+                value = exp.cast(exp.Mul(this=cents, expression=exp.Literal.number("0.01")), to=MONEY_DB_TYPE)
+            select_parts.append(exp.alias_(value, target_col))
+        declared = _declared_fields(conn, table)
+        derived: dict[str, Expr] = {
+            c: sqlglot.parse_one(e, dialect="duckdb")
+            for c, e in DERIVED_FIELDS.get(csv_name, {}).items() if c in declared
+        }
+        derived |= _list_expressions(csv_name, declared=declared, data_dir=data_dir, prefix=prefix)
+        for target_col, derived_expr in derived.items():
+            target_columns.append(target_col)
+            select_parts.append(exp.alias_(derived_expr, target_col))
+        if csv_name == "stores" and "region_id" in derived:
+            _require_store_regions(conn, csv_source=csv_source.copy())
+        insert = exp.insert(
+            expression=exp.select(*select_parts).from_(csv_source), into=exp.table_(table),
+            columns=[exp.to_identifier(c) for c in target_columns],
         )
-        conn.execute(create.sql(dialect="duckdb"))
-        try:
-            describe = exp.Describe(this=exp.table_(view))
-            csv_columns = [row[0] for row in conn.execute(describe.sql(dialect="duckdb")).fetchall()]
-            select_parts = []
-            target_columns = []
-            for col in csv_columns:
-                target_col = renames.get(col, col)
-                target_columns.append(target_col)
-                value: Expr = exp.column(col)
-                if col in cents_cols:
-                    cents = exp.cast(value, to="DECIMAL(18,0)")
-                    value = exp.cast(exp.Mul(this=cents, expression=exp.Literal.number("0.01")), to=MONEY_DB_TYPE)
-                select_parts.append(exp.alias_(value, target_col))
-            declared = _declared_fields(conn, table)
-            derived: dict[str, Expr] = {
-                c: sqlglot.parse_one(e, dialect="duckdb")
-                for c, e in DERIVED_FIELDS.get(csv_name, {}).items() if c in declared
-            }
-            derived |= _list_expressions(csv_name, declared=declared, data_dir=data_dir, prefix=prefix)
-            for target_col, derived_expr in derived.items():
-                target_columns.append(target_col)
-                select_parts.append(exp.alias_(derived_expr, target_col))
-            if csv_name == "stores" and "region_id" in derived:
-                _require_store_regions(conn, view=view)
-            insert = exp.insert(
-                expression=exp.select(*select_parts).from_(exp.table_(view)), into=exp.table_(table),
-                columns=[exp.to_identifier(c) for c in target_columns],
-            )
-            conn.execute(insert.sql(dialect="duckdb"))
-        finally:
-            conn.execute(exp.Drop(this=exp.table_(view), kind="VIEW").sql(dialect="duckdb"))
+        conn.execute(insert.sql(dialect="duckdb"))
 
     shift_dates_to_today(conn)
 
