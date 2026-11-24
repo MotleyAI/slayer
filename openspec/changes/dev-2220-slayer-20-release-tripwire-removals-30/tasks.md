@@ -62,12 +62,12 @@
       DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430, DEV-2443, DEV-2439): each breaking change has a
       Part 1 before/after, each deprecation a Part 2 entry. Write what is missing. Verify: a checklist of the slices
       against guide sections, all ticked; `tests/test_doc_examples.py` passes.
-- [ ] 4.2 List the moved modules `slayer.engine.syntax`, `slayer.core.formula`, `slayer.osi.expression` with their
+- [x] 4.2 List the moved modules `slayer.engine.syntax`, `slayer.core.formula`, `slayer.osi.expression` with their
       replacements. Verify: present in the guide.
 
 ## 5. Version and sweep
 
-- [ ] 5.1 Set `pyproject.toml` to `2.0.0`. Verify: `poetry version -s` prints `2.0.0`; the removal tripwire passes.
+- [x] 5.1 Set `pyproject.toml` to `2.0.0`. Verify: `poetry version -s` prints `2.0.0`; the removal tripwire passes.
 - [ ] 5.2 Sweep README and `docs/` for removed or renamed terms (identifier guard plus a read). Verify: the guard and
       `tests/test_doc_examples.py` pass.
 

@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 
-import slayer
 from slayer.core.deprecation import deprecations_on_one_line, warn_deprecated
 from slayer.core.errors import MemoryNotFoundError
 from slayer.core.models import DatasourceConfig
@@ -49,10 +48,6 @@ def test_a_deprecation_prints_on_one_stderr_line(capsys: pytest.CaptureFixture[s
         warnings.simplefilter("always")
         _old()
     assert capsys.readouterr().err.splitlines() == [f"Deprecated: {_MESSAGE}"]
-
-
-def test_the_package_is_2_0_0_dev0() -> None:
-    assert slayer.__version__ == "2.0.0.dev0"
 
 
 def test_models_dir_is_not_a_cli_option(tmp_path: Path) -> None:
