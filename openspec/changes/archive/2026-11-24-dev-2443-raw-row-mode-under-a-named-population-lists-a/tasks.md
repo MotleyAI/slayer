@@ -12,6 +12,7 @@
 - [x] 2.3 Add the new raise site's row to `tests/_dev1871_raise_ledger.py`; verify `tests/test_dev1871_raise_parity.py` passes.
 - [x] 2.4 Widen the `DistinctDimensionValuesError` docstring in `slayer/core/errors.py` (concise).
 - [x] 2.5 Facade catalog: `row_preserving` from `provably_to_one`; advertise only row-preserving dimensions in `INFORMATION_SCHEMA.DIMENSIONS` (pg + Flight) and `SELECT *`; include it in the pg catalog cache fingerprint.
+- [x] 2.6 Check row-level order keys in the raw-row rule; test the refusal and a determined order-key control.
 
 ## 3. Docs
 

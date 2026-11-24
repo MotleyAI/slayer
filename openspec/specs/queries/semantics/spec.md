@@ -1489,7 +1489,7 @@ Across trusted hops the input is read as today.
 
 ### Requirement: Raw-row dimensions are determined by the population
 In raw-row mode (`distinct_dimension_values: false`) the population — named, inferred, pinned by a saved stage, or a
-query stage — SHALL provably determine every dimension and time dimension: each row-level field the entry reads,
+query stage — SHALL provably determine every dimension, time dimension and row-level order key: each row-level field the entry reads,
 through the dependency closure of every derived field it names, SHALL be reached from the population over provably
 to-one hops only. An entry reached across a fanning hop (a list child included) or an unproven hop (no declared cardinality and no covering unique key) SHALL fail with `DistinctDimensionValuesError` naming the entry and that hop, in every `to_many_handling` mode, never listing
 a population row more than once. An entry whose dependencies cannot be analysed SHALL fail closed with
@@ -1513,6 +1513,11 @@ population without multiplying it (Grain guarantee).
 #### Scenario: A time dimension across a fanning hop is refused
 - **WHEN** a raw-row query from `customers` selects the time dimension `orders.ordered_at` at month granularity
 - **THEN** it fails with `DistinctDimensionValuesError` naming the time dimension and the hop `orders`
+
+#### Scenario: A row-level order key across a fanning hop is refused
+- **WHEN** a raw-row query from `customers` selects `customers.region` and orders by `orders.amount`
+- **THEN** it fails with `DistinctDimensionValuesError` naming the order key and the hop `orders`, never returning
+  five rows for four customers
 
 #### Scenario: A time dimension expression no dataset determines keeps its own error
 - **WHEN** a raw-row query from `customers` selects a time dimension expression reading both `orders.ordered_at` and

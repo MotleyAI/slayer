@@ -240,6 +240,20 @@ async def test_determined_dimensions_keep_one_row_per_population_row(backend: st
     assert table(resp, "orders.amount", R) == rows((100, "EAST"), (200, "EAST"), (50, "EAST"), (300, "WEST"))
 
 
+async def test_a_row_level_order_key_across_a_fanning_hop_is_refused(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        with pytest.raises(DistinctDimensionValuesError) as exc:
+            await _raw(eng, "customers", dimensions=[R], order=[{"field": "orders.amount", "direction": "asc"}])
+    _names(exc, entry="orders.amount", hop="orders")
+    assert "order key" in str(exc.value)
+
+
+async def test_a_determined_order_key_keeps_one_row_per_population_row(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await _raw(eng, "orders", dimensions=["orders.amount"], order=[{"field": R, "direction": "asc"}])
+    assert sorted(r["orders.amount"] for r in resp.data) == [50, 100, 200, 300]
+
+
 async def test_grouped_mode_under_the_same_population_is_unchanged(backend: str) -> None:
     async with seed_engine(backend) as eng:
         resp = await run(eng, population="customers", dimensions=["orders.amount"])

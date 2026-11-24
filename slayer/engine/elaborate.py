@@ -158,18 +158,27 @@ def _check_population_entries(
 def _check_raw_rows_determined(
     prebound: PreboundQuery, *, scope: DatasetScope, population: SlayerDataset, bundle: ResolvedSourceBundle,
 ) -> None:
-    """Raw rows: the population determines every dimension and time dimension (semantics Axiom 12.5)."""
+    """Raw rows: the population determines every dimension, time dimension and row-level order key (Axiom 12.5)."""
     dim_dms, td_dms, _ = partition_declared_metrics(
         declared_metrics=prebound.declared_metrics,
         n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,
     )
     spelling = root_spelling(scope) or population.name
-    for kind, dms in (("dimension", dim_dms), ("time dimension", td_dms)):
-        for dm in dms:
-            check_raw_row_determined(
-                kind=kind, name=dm.public_name or key_display(dm.bound.value_key), population=spelling,
-                crossing=population_crossing(source=dm.bound.value_key, population=population, bundle=bundle),
-            )
+    entries: List[Tuple[str, str, ValueKey]] = [
+        *(("dimension", dm.public_name or key_display(dm.bound.value_key), dm.bound.value_key) for dm in dim_dms),
+        *(("time dimension", dm.public_name or key_display(dm.bound.value_key), dm.bound.value_key) for dm in td_dms),
+    ]
+    grain = {k for _, _, k in entries}
+    entries += [
+        ("order key", key_display(sp.bound.value_key), sp.bound.value_key) for sp in prebound.order_specs
+        if sp.bound.value_key not in grain
+        and not any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(sp.bound.value_key))
+    ]
+    for kind, name, key in entries:
+        check_raw_row_determined(
+            kind=kind, name=name, population=spelling,
+            crossing=population_crossing(source=key, population=population, bundle=bundle),
+        )
 
 
 def elaborate_synthesized(

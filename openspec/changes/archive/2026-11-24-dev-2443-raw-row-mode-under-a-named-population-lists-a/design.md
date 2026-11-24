@@ -67,6 +67,8 @@ enforcing test file `tests/test_dev2212_raw_rows.py` receives the new tests. The
     dimension stays resolvable, so grouped queries over a fanning column still bind. The pg catalog-cache fingerprint
     includes advertisability (codex). Rejected: using the determining dataset as population, which silently changes
     the rows `FROM` names.
+13. **Row-level order keys included** (codex). An unprojected order key across a fanning hop multiplies raw rows
+    exactly as a dimension does; the same rule checks it, skipping keys in the grain and aggregate or transform keys.
 
 ## Risks / Trade-offs
 
