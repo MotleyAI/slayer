@@ -2309,8 +2309,8 @@ class SqlDialect(BaseModel):
         self, raw: list[dict[str, Any]], *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         location: TableLocation,  # NOSONAR(S1172) — hook signature
     ) -> list[ReflectedColumn]:
-        """Hook: the Inspector's column dicts as columns; one the driver cannot type (``NullType``, e.g. ``JSON``)
-        reads its type from ``catalog_types_query``."""
+        """Hook: the Inspector's column dicts as columns; where ``catalog_types_query`` is given, one the driver cannot
+        type (``NullType``, e.g. ``JSON``) reads its catalog type."""
         sa_dialect = getattr(inspector, "dialect", None)
         columns = [
             column_from_sa_type(
@@ -2320,9 +2320,10 @@ class SqlDialect(BaseModel):
             for c in raw
         ]
         untyped = {c["name"] for c in raw if isinstance(c["type"], sa.types.NullType)}
-        if not untyped:
+        catalog = self.catalog_types_query(location) if untyped else None
+        if catalog is None:
             return columns
-        declared = dict(fetch(connection, self.catalog_types_query(location), dialect=self.sqlglot_name))
+        declared = dict(fetch(connection, catalog, dialect=self.sqlglot_name))
         return [
             column_from_type_string(
                 name=c.name, data_type=declared.get(c.name), comment=c.comment,
@@ -2331,9 +2332,10 @@ class SqlDialect(BaseModel):
             for c in columns
         ]
 
-    def catalog_types_query(self, location: TableLocation) -> exp.Select:
-        """``(column name, declared type)`` of one table, for the columns its driver cannot type."""
-        return self.columns_query(location)
+    def catalog_types_query(self, location: TableLocation) -> Optional[exp.Select]:  # NOSONAR(S1172) — hook signature
+        """``(column name, declared type)`` of one table, for the columns its driver cannot type; ``None``: such
+        columns keep the driver's reading."""
+        return None
 
     def columns_query(self, location: TableLocation) -> exp.Select:
         """``(column_name, data_type)`` of one table from INFORMATION_SCHEMA, in column order."""

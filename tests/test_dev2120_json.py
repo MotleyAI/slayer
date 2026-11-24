@@ -312,7 +312,18 @@ class TestIngestionKeepsJsonDbType:
 
     def test_bigquery_catalog_types_read_in_the_tables_project(self) -> None:
         query = get_dialect("bigquery").catalog_types_query(TableLocation(name="docs", schema_name="ds", catalog="proj"))
+        assert query is not None
         assert "FROM `proj.ds`.INFORMATION_SCHEMA.COLUMNS" in query.sql(dialect="bigquery")
+
+    def test_a_dialect_without_a_catalog_reader_keeps_the_drivers_type(self) -> None:
+        # Postgres ``xml`` reflects as NullType and stays as the driver read it.
+        inspector = MagicMock()
+        inspector.get_columns.return_value = [{"name": "doc", "type": sa.types.NullType()}]
+        with patch.object(dialects_base, "fetch") as fetch:
+            cols = get_dialect("postgres").reflect_columns(
+                connection=None, inspector=inspector, table="t", schema="public", catalog=None)
+        fetch.assert_not_called()
+        assert [c.db_type for c in cols] == [column_from_sa_type(name="doc", sa_type=sa.types.NullType()).db_type]
 
     async def test_duckdb_json_column_ingested_and_read(self) -> None:
         duckdb = pytest.importorskip("duckdb")

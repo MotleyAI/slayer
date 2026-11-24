@@ -317,6 +317,10 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         return exp.TryCast(this=anon("TO_JSON_STRING", found) if native else found,
                            to=exp.DataType.build("DOUBLE"), safe=True)
 
+    def catalog_types_query(self, location: TableLocation) -> Optional[exp.Select]:
+        """INFORMATION_SCHEMA types (sqlalchemy-bigquery cannot type ``JSON``)."""
+        return self.columns_query(location)
+
     def columns_query(self, location: TableLocation) -> exp.Select:
         """Dataset-scoped INFORMATION_SCHEMA (a dataset-scoped account cannot read the project-level view), in the
         table's own project."""

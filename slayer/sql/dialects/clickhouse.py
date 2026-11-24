@@ -512,7 +512,7 @@ class ClickhouseDialect(SqlDialect):
             .where(all_of([eq_literal(col("table"), location.name), exp.EQ(this=col("database"), expression=database)]))
         )
 
-    def catalog_types_query(self, location: TableLocation) -> exp.Select:
+    def catalog_types_query(self, location: TableLocation) -> Optional[exp.Select]:
         """``system.columns`` types (the driver cannot type ``JSON``)."""
         return self._system_columns(location, field=col("type"))
 
