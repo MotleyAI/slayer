@@ -93,7 +93,7 @@ from slayer.engine.elaborate_env import (
     check_spine_clash,
     check_spine_plain_use,
     check_stage_flatten_collision,
-    check_dimension_temporal_axis,
+    check_temporal_axis,
     check_opaque_grouping_dim,
     check_partition_key_resolves,
     check_raw_rows_filter_metric_ref,
@@ -849,7 +849,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         query_grain=_query_grain, active_bucket=active_td_key,
     )
 
-    check_dimension_temporal_axis(
+    check_temporal_axis(
         declared_metrics, bound_filters=bound_filters, order_specs=order_specs,
         query_grain=_query_grain, active_bucket=active_td_key,
     )

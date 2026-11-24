@@ -87,9 +87,9 @@ class TestLocalProducers:
     async def test_shifted_partition_ranks_by_time_dimension_source(self, backend: str) -> None:
         resp = await _run(backend, q(
             dimensions=["orders.region"], time_dimensions=[td("orders.created_at", "year")],
-            metrics=[m("time_shift(last(orders.amount, partition_by=orders.region), -1)")],
+            metrics=[m("time_shift(first(orders.amount, partition_by=[orders.region, orders.created_at]), 1)")],
         ), orders_default="shipped_at")
-        assert by_bucket(resp, column(resp, "created_at"), width=4, by=["orders.region"])[("US", "2025")] == 40.0
+        assert by_bucket(resp, column(resp, "created_at"), width=4, by=["orders.region"])[("US", "2024")] == 30.0
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

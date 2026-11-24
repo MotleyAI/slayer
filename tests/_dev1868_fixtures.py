@@ -48,15 +48,11 @@ TIER_MONTHS = frozenset({("gold", "2024-01"), ("gold", "2024-02"), ("gold", "202
                          ("silver", "2024-02"), ("bronze", "2024-03"), (None, "2024-03")})
 #: rank(spend:sum(partition_by=tier), direction='desc'): tier totals 160/150/40; the NULL tier's is NULL.
 RANK_PART_BY_TIER = {"gold": 1, "silver": 2, "bronze": 3, None: None}
-#: change(last-by-region) per (regions.name, order month): constant series →
-#: NULL at each region's first month, 0 after.
-CHANGE_LAST_BY_REGION_MONTH = {
-    ("North", "2024-01"): None,
-    ("North", "2024-02"): 0.0,
-    ("South", "2024-02"): None,
-    ("South", "2024-03"): 0.0,
-    (None, "2024-03"): None,
-}
+#: The (regions.name, order month) cells of the region-last queries.
+REGION_MONTHS = frozenset({("North", "2024-01"), ("North", "2024-02"), ("South", "2024-02"),
+                           ("South", "2024-03"), (None, "2024-03")})
+#: rank(last-by-region, direction='desc') over LAST_SPEND_BY_REGION 150/60/40.
+RANK_LAST_BY_REGION = {"North": 1, "South": 2, None: 3}
 
 # --------------------------------------------------------------------------- #
 # W3 — composites with cross-dataset operands (dims = customers.tier).
