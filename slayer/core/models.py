@@ -1057,6 +1057,10 @@ class DatasetRelationship(DatasetPart):
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
     # Relationship arity, read source->target; None = undetermined.
     cardinality: RelationshipCardinality | None = None
+    trusted: bool = Field(
+        default=False,
+        description="Assume the declared cardinality holds, skipping de-duplication; wrong on data violating it.",
+    )
     # Optional edge name, usable as a path segment in either direction — the
     # disambiguator for parallel edges. Dataset-name identifier rules.
     name: str | None = None
@@ -1318,6 +1322,8 @@ class SlayerDataset(DatasetPart):
             )
         return self
     relationships: list[DatasetRelationship] = Field(default_factory=list)
+    enforced_keys: list[list[str]] = Field(
+        default_factory=list, description="Declared key sets the database enforces as unique (set by ingestion).")
     filters: list[str] = Field(default_factory=list)  # Dataset-level filters (always applied)
     default_time_dimension: str | None = None
     description: str | None = None
@@ -1348,6 +1354,18 @@ class SlayerDataset(DatasetPart):
     _query_local: frozenset[str] = PrivateAttr(default=frozenset())
     # Runtime-only: a stage's dataset whose rows restrict its population.
     _restricts_rows: bool = PrivateAttr(default=False)
+    # Runtime-only: key sets unique by construction (a stage's grain, a per-query row number).
+    _constructed_keys: tuple[tuple[str, ...], ...] = PrivateAttr(default=())
+
+    @property
+    def constructed_keys(self) -> list[list[str]]:
+        return [list(k) for k in self._constructed_keys]
+
+    def with_constructed_keys(self, keys: Sequence[Sequence[str]]) -> "SlayerDataset":
+        """A copy whose ``keys`` are unique by construction (trusted, never refuted by data)."""
+        out = self.model_copy()
+        out._constructed_keys = tuple(tuple(k) for k in keys if k)
+        return out
 
     @field_validator("filters")
     @classmethod

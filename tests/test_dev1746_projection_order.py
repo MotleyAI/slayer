@@ -22,7 +22,6 @@ from slayer.sql.scope import ScopeFrame
 from tests._cross_dataset_chain import (
     _countries,
     _customers_v2,
-    _gen,
     _orders_x,
     _regions,
 )
@@ -38,6 +37,8 @@ from tests._engine_helpers import (
     _engine_generate,
     _join_aliases,
 )
+from tests._trusted import trusted_chain_gen as _gen, trusting, trusting_all
+
 
 
 def _chain_bundle() -> ResolvedSourceBundle:
@@ -769,8 +770,8 @@ class TestB11JoinOrdering:
         sequences = {}
         for dialect in ("postgres", "sqlite", "duckdb"):
             sql = await _engine_generate(
-                query=query, dataset=_orders_x(), dialect=dialect,
-                extra_datasets=[_customers_v2(), _regions(), _countries()],
+                query=query, dataset=trusting(_orders_x()), dialect=dialect,
+                extra_datasets=trusting_all([_customers_v2(), _regions(), _countries()]),
             )
             sequences[dialect] = base_cte_join_sequence(sql, dialect=dialect)
         assert all(seq for seq in sequences.values()), (

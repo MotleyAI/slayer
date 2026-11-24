@@ -12,10 +12,13 @@ from pytest_postgresql import factories
 from sqlglot import exp
 
 from slayer.core.query import SlayerQuery
+from slayer.engine.plan import plan_query
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.sql.generator import SQLGenerator
 from tests._dev2120_fixtures import contractors_engine, contractors_dataset
-from tests._dev2210_fixtures import BACKENDS, by_id, filtered_engine, ids, render, seeded_file
+from tests._dev2210_fixtures import BACKENDS, bundle, by_id, filtered_engine, ids, seeded_file, table_datasets
 from tests._law_harness import raw_rows
+from tests._trusted import trusting_all
 
 postgresql_proc = factories.postgresql_proc(port=None)
 
@@ -218,6 +221,15 @@ class TestAssociation:
         assert await _ids(engine, source="split_entry_orders") == await _ids(engine, source="joint_entry_orders")
 
 
+def _render(query: dict[str, Any], *, dialect: str, force_association: bool = False) -> str:
+    """``render`` over trusted fixture datasets: these pins describe the inline-join lowering of trusted hops."""
+    q = SlayerQuery.model_validate(query)
+    assert isinstance(q.population, str)
+    b = bundle(q.population, dialect=dialect, datasets=trusting_all(table_datasets()))
+    gen = SQLGenerator(dialect=dialect, force_association_filters=force_association)
+    return gen.generate_from_planned(plan_query(query=q, bundle=b), bundle=b)
+
+
 @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
 class TestInlinedAndAssociationFormsAgree:
     """Lowering soundness: inlining a proven to-one filter read equals its association form."""
@@ -227,8 +239,8 @@ class TestInlinedAndAssociationFormsAgree:
     def test_same_rows(self, backend, tmp_path):
         if backend == "duckdb":
             pytest.importorskip("duckdb")
-        inlined = render(self.QUERY, dialect=backend)
-        association = render(self.QUERY, dialect=backend, force_association=True)
+        inlined = _render(self.QUERY, dialect=backend)
+        association = _render(self.QUERY, dialect=backend, force_association=True)
         assert not list(sqlglot.parse_one(inlined, read=backend).find_all(exp.Exists)), inlined
         assert list(sqlglot.parse_one(association, read=backend).find_all(exp.Exists)), association
         db = seeded_file(backend, str(tmp_path))

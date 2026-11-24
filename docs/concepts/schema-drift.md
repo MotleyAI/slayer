@@ -53,6 +53,11 @@ Drift is computed per source mode:
 A dataset whose listed table cannot be read, or whose datasource cannot be
 connected to, gets no verdict rather than a drop.
 
+An [enforced key](datasets.md#trusted-relationships) that the live table no longer carries as a primary or unique
+key is reported as `enforced_key:<fields>` and removed on apply (`remove.enforced_keys`), as is every enforced key
+on a database that enforces none. Only the enforcement record goes; the declared key, the relationships and their
+`trusted` flags stay as they are.
+
 ## Cascade rules
 
 A drop on `M.X` cascades through:

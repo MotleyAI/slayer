@@ -57,6 +57,7 @@ from tests._engine_helpers import (
     _join_aliases,
     _norm,
 )
+from tests._trusted import trusting, trusting_all
 import slayer.engine.bundle_builder
 
 # --------------------------------------------------------------------------- #
@@ -386,9 +387,12 @@ def _windowed_query(**kw) -> SlayerQuery:
     return SlayerQuery.model_validate(base)
 
 
-async def _wm_sql(query: SlayerQuery, dataset: SlayerDataset, **kw) -> str:
+async def _wm_sql(query: SlayerQuery, dataset: SlayerDataset, *, extra_datasets=None, **kw) -> str:
     # Windowed producers now render under uniform ``_cm_`` naming.
-    sql = await _engine_generate(query=query, dataset=dataset, validate=False, **kw)
+    sql = await _engine_generate(
+        query=query, dataset=trusting(dataset), extra_datasets=trusting_all(extra_datasets or []),
+        validate=False, **kw,
+    )
     assert "_cm_" in sql, sql
     return sql
 

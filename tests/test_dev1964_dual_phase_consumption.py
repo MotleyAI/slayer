@@ -223,6 +223,25 @@ class TestCrossModelReaggregationInDimension:
                for r in resp.data]
         assert got == [("North", "lo", pytest.approx(70.0))]
 
+    @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
+    async def test_an_associated_dimension_reads_its_reaggregation(self, backend):
+        # customers → regions unproven: the dimension associates, its re-aggregation attached inside the producer.
+        datasets = dev1847_datasets()
+        for d in datasets:
+            d.relationships = [r.model_copy(update={"cardinality": None}) if (d.name, r.to) == ("customers", "regions")
+                               else r for r in d.relationships]
+
+        class _Request:
+            param = backend
+
+        rows = []
+        async for engine in make_exec_engine(_Request(), datasets=datasets):
+            resp = await engine.execute(chain_q(
+                dimensions=["customers.regions.name", CL], metrics=[QueryMetric(metric="sum(corders.amount)", alias="tot")],
+                filter=[f"{CHAIN_R} < sum(corders.amount)"]))
+            rows = [(r["customers.regions.name"], r["cl"], r["tot"]) for r in resp.data]
+        assert rows == [("North", "lo", pytest.approx(70.0))]
+
 
 # --------------------------------------------------------------------------- #
 # queries/partitioned-aggregates — combined-consumer partition keys.

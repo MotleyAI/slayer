@@ -42,6 +42,14 @@ from tests._engine_helpers import (
 from tests._rank_direction_fixtures import rank_windows
 from slayer.storage.base import StorageBackend
 from tests._field_builders import col, literal_time_orders, log_completed_orders, log_orders, pk, public_orders, to_customers
+from tests._trusted import trusting, trusting_all
+
+
+class _TrustingStorage(YAMLStorage):
+    """Stores every relationship trusted: these tests pin the inline-join lowering."""
+
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        await super()._save_dataset_impl(trusting(dataset))
 
 
 def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:
@@ -198,8 +206,8 @@ async def _generate(
 ) -> str:
     """Run ``query`` against ``dataset`` through the typed engine pipeline and return the emitted SQL."""
     return await _engine_generate(
-        query=query, dataset=dataset, dialect=generator.dialect, validate=False,
-        extra_datasets=extra_datasets,
+        query=query, dataset=trusting(dataset), dialect=generator.dialect, validate=False,
+        extra_datasets=trusting_all(extra_datasets) if extra_datasets else None,
     )
 
 
@@ -2682,7 +2690,7 @@ class TestPathAliasJoinInference:
 
     @pytest.fixture
     async def storage(self, tmp_path):
-        s = YAMLStorage(base_dir=str(tmp_path))
+        s = _TrustingStorage(base_dir=str(tmp_path))
         await s.save_datasource(DatasourceConfig(name="test", type="postgres"))
         await s.save_dataset(SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
@@ -2822,7 +2830,7 @@ class TestMeasureSourceSqlJoinInference:
     @pytest.fixture
     async def storage(self, tmp_path):
         """orders → customers → regions chain reused across most tests."""
-        s = YAMLStorage(base_dir=str(tmp_path))
+        s = _TrustingStorage(base_dir=str(tmp_path))
         await s.save_datasource(DatasourceConfig(name="test", type="postgres"))
         await s.save_dataset(SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
@@ -3552,8 +3560,8 @@ class TestDev1709WidenedIsolationShapes:
 
     async def _sql(self, query: SlayerQuery, orders: SlayerDataset) -> str:
         return await _engine_generate(
-            query=query, dataset=orders,
-            extra_datasets=[self._customers_dataset(), self._regions_dataset()],
+            query=query, dataset=trusting(orders),
+            extra_datasets=trusting_all([self._customers_dataset(), self._regions_dataset()]),
         )
 
     async def test_crossing_sum_coexists_with_local_last(self) -> None:
@@ -3762,8 +3770,8 @@ class TestDev1709WidenedIsolationShapes:
         ])
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            population=orders,
-            referenced_datasets=[self._customers_dataset(), self._regions_dataset()],
+            population=trusting(orders),
+            referenced_datasets=trusting_all([self._customers_dataset(), self._regions_dataset()]),
         )
         query = SlayerQuery(
             population="orders",
@@ -4190,8 +4198,8 @@ class TestFilteredMeasures:
             metrics=[QueryMetric(metric="last(orders.active_balance)")],
         )
         return await _engine_generate(
-            query=query, dataset=orders, dialect=generator.dialect,
-            extra_datasets=[customers], validate=False,
+            query=query, dataset=trusting(orders), dialect=generator.dialect,
+            extra_datasets=[trusting(customers)], validate=False,
         )
 
     async def test_filtered_last_with_cross_model_filter_carries_join(
@@ -5230,7 +5238,7 @@ async def _persist_and_engine(
 ):
     """Yield a ``SlayerQueryEngine`` with the given datasets persisted to a throwaway ``YAMLStorage``. Replaces the per-test ``tempfile + YAMLStorage + save_datasource + save_dataset + SlayerQueryEngine`` boilerplate that was repeated 16+ times — same shape, but one line at the call site. ``ds_name`` / ``ds_type`` follow the repo-wide convention (``data_source="test"`` everywhere)."""
     with tempfile.TemporaryDirectory() as tmp:
-        storage = YAMLStorage(base_dir=tmp)
+        storage = _TrustingStorage(base_dir=tmp)
         await storage.save_datasource(
             DatasourceConfig(name=ds_name, type=ds_type),
         )
@@ -7465,7 +7473,8 @@ class TestIsolatedFilteredMeasureCTEs:
                 TimeDimension(field="claim_amount.created_at", granularity=TimeGranularity.MONTH),
             ],
         )
-        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
+        sql = await self._sql(trusting(claim_amount_dataset_with_time),
+                              {name: trusting(d) for name, d in related_datasets.items()}, query)
 
         base_body = _extract_cte_body(sql, r"_base")
         assert "ROW_NUMBER" not in base_body, (
@@ -9167,7 +9176,7 @@ async def _build_joined_customers_orders_engine_dev1539(
     *, tmp_path, customers_score_sql: str,
 ) -> SlayerQueryEngine:
     """Test helper: spin up a storage-backed engine with an ``orders`` dataset joined to a ``customers`` dataset whose ``score`` / derived field carries ``customers_score_sql``. Used by the dotted joined-column wrap test and the dotted-branch backslash-safety test so the storage + relationship boilerplate isn't duplicated."""
-    storage = YAMLStorage(base_dir=str(tmp_path))
+    storage = _TrustingStorage(base_dir=str(tmp_path))
     await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
     await storage.save_dataset(SlayerDataset(
         name="customers",
@@ -9838,7 +9847,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
 
     @pytest.fixture
     async def storage(self, tmp_path):
-        s = YAMLStorage(base_dir=str(tmp_path))
+        s = _TrustingStorage(base_dir=str(tmp_path))
         await s.save_datasource(DatasourceConfig(name="test", type="postgres"))
         await s.save_dataset(SlayerDataset(
             name="countries", sql_table="countries", data_source="test",

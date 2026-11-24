@@ -246,7 +246,7 @@ class TestReverseHopSpelling:
                   metrics=[m("sum(orders.amount)", "amt")])
         root = query(population="customers",
                      extensions=[{"dataset": "customers", "relationships": [
-                         {"to": "kpis", "from_columns": ["id"], "to_columns": ["customer_id"]}]}],
+                         {"to": "kpis", "from_columns": ["id"], "to_columns": ["customer_id"], "trusted": True}]}],
                      dimensions=["customers.tier"], metrics=[m("sum(kpis.amt)", "t")])
         resp = await engine.execute([k, root])
         assert rows_by(resp.data, key="customers.tier", value="t") == AMOUNT_BY_TIER

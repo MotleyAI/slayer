@@ -56,6 +56,7 @@ from slayer.core.relationship_walker import (
     dataset_field_type,
     provably_to_one,
     resolved_terminal,
+    trusted_to_one,
 )
 from slayer.core.models import (
     DatasetField, EmptyList, EmptyValue, aggregation_definition, empty_value, rendered_expression,
@@ -94,6 +95,7 @@ from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.dialects.base import LIST_POSITION, bare_comparands
+from slayer.sql.untrusted_projection import mark_untrusted, project_untrusted_hops
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
     ROW_IDENTITY_FIELD,
@@ -4955,6 +4957,9 @@ class SQLGenerator:
         join_expr = self._emit_relation(dataset=next_dataset, alias=next_alias, bundle=bundle)
         if not join_on_parts:
             return join_expr, None, "CROSS"  # the population's product with its spine
+        if provably_to_one(edge=edge, target_dataset=next_dataset) and not trusted_to_one(
+                edge=edge, target_dataset=next_dataset):
+            mark_untrusted(join_expr)
         on_expr = exp.and_(*join_on_parts) if len(join_on_parts) > 1 else join_on_parts[0]
         # Root-relative join type: LEFT keeps the querying root whole in the traversal
         # direction, INNER is symmetric; RIGHT is never emitted.
@@ -5869,7 +5874,7 @@ class SQLGenerator:
             paths = _prefix_closed(frame.relationship_paths.as_list())
             chains = {p: self._oriented_hop_chain(source_dataset=dataset, path=p, bundle=bundle) for p in paths}
             proven = all(
-                not is_lateral_edge(edge) and provably_to_one(edge=edge, target_dataset=target)
+                not is_lateral_edge(edge) and trusted_to_one(edge=edge, target_dataset=target)
                 for chain in chains.values() for edge, target in chain
             )
             if paths and (self._force_association_filters or not proven):
@@ -6540,10 +6545,11 @@ class SQLGenerator:
 
         def _table(hop: SemiJoinHop, leading: bool) -> Tuple[Expression, str]:
             if hop.lateral is None:
-                return self._emit_relation(
+                relation = self._emit_relation(
                     dataset=self._hop_dataset(name=hop.to, bundle=bundle), alias=_alias(hop.node_path),
                     bundle=bundle,
-                ), "CROSS"
+                )
+                return (mark_untrusted(relation) if hop.untrusted else relation), "CROSS"
             parent_path = tuple(hop.node_path[:-1])
             relation = self._list_relation(
                 parent=bundle.datasets_by_name[node_datasets[parent_path]], field=hop.lateral,
@@ -7016,7 +7022,8 @@ def _finish_statement(
     """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
     d = _as_dialect(dialect)
     sql = d.rewrite_emitted_sql(
-        d.rewrite_statement(statement).sql(dialect=d.sqlglot_name, pretty=pretty), aliases=aliases, exempt=exempt,
+        d.rewrite_statement(project_untrusted_hops(statement)).sql(dialect=d.sqlglot_name, pretty=pretty), aliases=aliases,
+        exempt=exempt,
     )
     maybe_validate_scopes(sql, dialect=d.sqlglot_name, allow_rls_correlation=policy_scoped)
     d.assert_no_overlimit_identifiers(sql, exempt=exempt)
@@ -7173,9 +7180,9 @@ def build_planned_statement(
     """Compose a multi-stage DAG (``plan_stages`` output) as one statement, its settings attached;
     spliced stages nothing reaches are pruned. ``type_probe`` bounds it by the dialect's type probe."""
     kept: Set[str] = set()
-    statement = _build_planned_stages_ast(
+    statement = project_untrusted_hops(_build_planned_stages_ast(
         planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
-    )
+    ))
     filter_associations = association_datasets(statement)
     if type_probe:
         statement = _as_dialect(dialect).type_probe(statement)

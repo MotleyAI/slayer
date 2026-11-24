@@ -119,6 +119,7 @@ class DatasetPayload(_Payload):
     fields: list[DatasetField] = []
     metrics: list[DatasetMetric] = []
     relationships: list[DatasetRelationship] = []
+    enforced_keys: list[list[str]] = []
 
 
 class ModelMetricContent(BaseModel):

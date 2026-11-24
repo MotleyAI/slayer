@@ -96,6 +96,7 @@ class TestFillsMetadataAndPersists:
         email = next(c for c in customers.fields if c.name == "email")
         idx = customers.fields.index(email)
         customers.fields[idx] = email.model_copy(update={"unique": False})
+        customers.enforced_keys = [k for k in customers.enforced_keys if k != ["email"]]  # a legacy store records none
         await storage.save_dataset(customers)
 
         await _ingest(datasource=ds, storage=storage)

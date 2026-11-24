@@ -425,6 +425,7 @@ class TestDemoSetupHealsModels:
         _setup(storage, store_dir)
         for model in _stored_datasets(storage).values():
             model.relationships = []
+            model.enforced_keys = []  # a legacy store records none
             for column in model.fields:
                 column.primary_key = False
             run_sync(storage.save_dataset(model))

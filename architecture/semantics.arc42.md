@@ -139,6 +139,8 @@ principles every layer obeys.
    inputs, so a cell whose inputs are all NULL takes the same empty value —
    wherever the aggregation is evaluated (locally, across a join, in a stage,
    window, partition or association) and whatever its input type.
+   This holds even on data violating declared cardinality (Ossie L3 §4); only a **trusted** hop — its relationship marked trusted, or its target key unique by construction or enforced by the database — may be lowered assuming it, and on data violating a trusted relationship the result is undefined.
+   [enforced: test:tests/test_dev2437_trusted_cardinality.py]
    [enforced: test:tests/test_dev1836_producer_execution.py]
    [enforced: test:tests/test_dev1994_empty_value.py]
    [enforced: test:tests/test_dev2046_all_null_inputs.py]
@@ -320,8 +322,8 @@ enforced test ids as its instances land.
    [enforced: test:tests/test_law_dice_slice.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]
 6. **Lowering soundness**: every emission trick is a pure optimization —
-   inlining an association-restricting filter on a proven to-one path and
-   fusing pipeline phases into one SELECT
+   inlining an association-restricting filter or an aggregate on a trusted to-one path (Axiom 4), evaluating
+   association over distinct target tuples, and fusing pipeline phases into one SELECT
    [enforced: test:tests/test_law_lowering_soundness.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]; compiling a filter
    as a hidden measure. [review]

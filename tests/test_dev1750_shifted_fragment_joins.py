@@ -29,13 +29,21 @@ from slayer.core.query import QueryMetric
 from tests._dev1750_fixtures import (
     SlayerQuery,
     base_cte_body,
-    gen,
     month_td,
     dev1750_datasets,
     shifted_cte_body,
     shifted_relation,
 )
-from tests._engine_helpers import _extract_cte_body
+from tests._engine_helpers import _engine_generate, _extract_cte_body
+from tests._trusted import trusting_all
+
+
+async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
+    models = trusting_all(dev1750_datasets())
+    return await _engine_generate(
+        query=query, dataset=models[0], extra_datasets=models[1:],
+        dialect=dialect, validate=False,
+    )
 
 
 def _q(*, metrics) -> SlayerQuery:

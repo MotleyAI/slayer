@@ -109,6 +109,7 @@ def _plain_index_columns(sql: str | None) -> list[str] | None:
 
 
 class DuckdbDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "duckdb"
     array_cast_types: ClassVar[bool] = True
     unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
