@@ -46,7 +46,7 @@ from slayer.core.enums import (
 from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, SpellingConflictError, UnknownKeyError
 from slayer.core.names import NAME_PATTERN, folded_collisions, match_name
 from slayer.core import vocabulary
-from slayer.core.vocabulary import SOURCE_ORIGIN_KEYS, Spellings, attribute_used, converted_document, converted_input, method_twin, name_twins, renamed_input, same_ignoring_deprecations
+from slayer.core.vocabulary import SOURCE_ORIGIN_KEYS, Spellings, attribute_used, converted_document, converted_input, method_twin, name_twins, old_keywords, renamed_input, same_ignoring_deprecations
 from slayer.core.warnings import DeprecatedInputWarning, NameCollisionWarning, SlayerUnknownStoredKeyWarning, UnknownStoredKeyWarning
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
@@ -487,8 +487,13 @@ class DatasetField(DatasetPart):
 
     @property
     def is_physical_reader(self) -> bool:
-        """A base field without a ``filter``: relationship keys, drift and live typing read it as its source column."""
+        """A base field without a ``filter``: relationship keys and live typing read it as its source column."""
         return self.is_base and self.filter is None
+
+    @property
+    def reads_physical_column(self) -> bool:
+        """A base field, filtered or not: schema drift checks its source column."""
+        return self.is_base
 
     @property
     def reads_own_source(self) -> bool:
@@ -582,6 +587,7 @@ def field_type_text(field: DatasetField) -> str:
     return f"{type_display(field.datatype, field.element_type)} ({list_operations_hint(field)})"
 
 
+@old_keywords({"column": "field", "columns": "fields"})
 def is_identifier(*, field: DatasetField, fields: list[DatasetField]) -> bool:
     """``field`` is its dataset's sole primary key (composite-key members are not identifiers)."""
     return field.primary_key and sum(1 for c in fields if c.primary_key) == 1
@@ -1934,6 +1940,9 @@ if TYPE_CHECKING:
     @deprecated("SourceModelOrigin is deprecated; use SourceDatasetOrigin", category=None)
     class SourceModelOrigin(SourceDatasetOrigin): ...
 
+    @deprecated("is_base_column_sql is deprecated; use is_base_field_sql", category=None)
+    def is_base_column_sql(sql: str | None) -> bool: ...
+
     @deprecated("join_key_error is deprecated; use relationship_key_error", category=None)
     def join_key_error(
         *, dataset: str, target: str, key: str, side: str, fields: list[DatasetField],
@@ -1945,7 +1954,7 @@ __getattr__ = name_twins(
     renames={
         "SlayerModel": "SlayerDataset", "Column": "DatasetField", "ModelMeasure": "DatasetMetric",
         "ModelJoin": "DatasetRelationship", "SourceModelOrigin": "SourceDatasetOrigin",
-        "join_key_error": "relationship_key_error",
+        "join_key_error": "relationship_key_error", "is_base_column_sql": "is_base_field_sql",
     },
     arguments={"join_key_error": {"model": "dataset", "columns": "fields"}},
 )

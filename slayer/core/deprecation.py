@@ -8,6 +8,7 @@ major version reaches a call's ``removal``.
 from __future__ import annotations
 
 import contextlib
+import dis
 import os
 import sys
 import warnings
@@ -65,10 +66,10 @@ class DeprecatedSpellingFutureWarning(DeprecationFutureWarning):
         super().__init__(payload)
 
 
-_DEPRECATION_PAYLOADS = (
-    payloads.DeprecatedInputWarning, payloads.DeprecatedSpellingWarning, payloads.DateOnlyMidnightWarning,
-    payloads.ChangedReferenceWarning,
-)
+def _deprecation_payloads() -> tuple[type[payloads.SlayerWarning], ...]:
+    """Read at use, not import: this module loads while ``payloads`` is still initialising."""
+    return (payloads.DeprecatedInputWarning, payloads.DeprecatedSpellingWarning, payloads.DateOnlyMidnightWarning,
+            payloads.ChangedReferenceWarning)
 
 # The texts the innermost ``deprecations_on_one_line`` block has shown or let through.
 _shown: ContextVar[set[str] | None] = ContextVar("slayer_shown_deprecations", default=None)
@@ -104,10 +105,21 @@ def deprecated_spelling(
     return payload
 
 
-def raise_moved(old: str, new: str, *, removal: str) -> NoReturn:
-    """Raise an ``ImportError`` saying ``old`` moved to ``new`` in SLayer 2.0; ``removal`` as in ``warn_deprecated``."""
+def raise_moved(old: str, new: str, *, removal: str, attribute: bool = False) -> NoReturn:
+    """Raise an ``ImportError`` saying ``old`` moved to ``new`` in SLayer 2.0; ``removal`` as in ``warn_deprecated``.
+    With ``attribute`` (a module ``__getattr__``), any access but ``from … import`` gets an ``AttributeError``, as
+    PEP 562 asks, so ``getattr(module, name, default)`` probes work."""
     del removal  # read statically by the tripwire
-    raise ImportError(f"{old} moved to {new} in SLayer 2.0")
+    message = f"{old} moved to {new} in SLayer 2.0"
+    if attribute and not _imported_from(sys._getframe(2)):
+        raise AttributeError(message)
+    raise ImportError(message)
+
+
+def _imported_from(frame: object) -> bool:
+    """Whether ``frame`` is executing a ``from … import name``."""
+    code, offset = getattr(frame, "f_code", None), getattr(frame, "f_lasti", -1)
+    return code is not None and 0 <= offset < len(code.co_code) and dis.opname[code.co_code[offset]] == "IMPORT_FROM"
 
 
 def scheduled_notice(message: str, *, removal: str) -> str:
@@ -149,6 +161,6 @@ def unshown(items: Iterable[str | payloads.SlayerWarning]) -> list[str]:
             out.append(text)
         elif text not in seen:
             out.append(text)
-            if isinstance(item, _DEPRECATION_PAYLOADS):
+            if isinstance(item, _deprecation_payloads()):
                 seen.add(text)
     return out

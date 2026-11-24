@@ -537,7 +537,6 @@ async def test_concurrent_loads_leave_raw_reads_unmutated_and_bytes_order_indepe
     first, second = ({n: stored_bytes(backend=backend, base=str(tmp_path / f"store_{i}"), name=n) for n in names}
                      for i in range(2))
     assert first == second
-    assert "'2024-01-01'" in first["rev_f"]
 
 
 def _counting_saves(storage: StorageBackend) -> list[str]:
@@ -558,7 +557,7 @@ async def test_loading_the_converting_document_neither_recurses_nor_writes_twice
                                   stage=rev_query(filters=["regions.opened_on >= '2024/01/01'"]))
     saved = _counting_saves(storage)
     assert await _loaded_filters(storage) == [f"{ROUTE}.opened_on >= '2024-01-01'"]
-    assert saved.count("rev_f") == 1
+    assert saved.count("rev_f") == 0
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -575,6 +574,6 @@ async def test_two_model_cycle_neither_recurses_nor_writes_a_peer_twice(tmp_path
     second = "rev_g" if first == "rev_f" else "rev_f"
     loaded = {n: await _loaded_filters(storage, n) for n in (first, second)}
     assert loaded == {"rev_f": [f"{ROUTE}.opened_on >= '2024-01-01'"], "rev_g": ["rev_f.rev >= 0"]}
-    assert (saved.count("rev_f"), saved.count("rev_g")) == (1, 1), saved
+    assert (saved.count("rev_f"), saved.count("rev_g")) == (0, 0), saved
     total = await run(storage, {"population": "rev_g", "metrics": ["sum(rev_g.total)"]})
     assert metric_total(total, metric="total_sum") == AMOUNT_OPENED_SINCE_2024

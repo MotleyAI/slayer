@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import copy
 import functools
 from functools import partial
 import logging
@@ -14,8 +15,9 @@ import yaml
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
-from collections.abc import Awaitable, Callable, Hashable, Iterable, Mapping, Sequence, Set as AbstractSet
+from collections.abc import Awaitable, Callable, Generator, Hashable, Iterable, Mapping, Sequence, Set as AbstractSet
 
 from pydantic import BaseModel
 from typing_extensions import deprecated
@@ -74,7 +76,9 @@ from slayer.core.warnings import (
     SlayerLibraryNameShadowWarning,
     SlayerNameCollisionWarning,
     SlayerSpineRelationshipDroppedWarning,
+    SlayerStoredUpgradeNeededWarning,
     SpineRelationshipDroppedWarning,
+    StoredUpgradeNeededWarning,
     caller_announces,
 )
 from slayer.embeddings.models import Embedding
@@ -161,8 +165,14 @@ _EXTENSION_FIELDS_INLINED_AT = 10
 _STANDALONE_ONLY: ContextVar[bool] = ContextVar("_STANDALONE_ONLY", default=False)
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
-# Inside the one-time granularity settle, whose own loads must not wait on it.
-_SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
+#: Dialects supplied for datasources the store holds no config for (``slayer storage upgrade --datasource-type``).
+DATASOURCE_TYPES: ContextVar[Mapping[str, str]] = ContextVar("DATASOURCE_TYPES", default=MappingProxyType({}))
+# Upgraded datasets of the enclosing top-level load, by ``(backend, data_source, name)``: the raw read, the dataset
+# and whether the upgrade changes it.
+_UPGRADE_PASS: ContextVar[dict[tuple[object, str, str], tuple[Any, Any, bool]] | None] = ContextVar(
+    "_UPGRADE_PASS", default=None)
+# The granularity rename table of the enclosing top-level load, by backend.
+_RENAME_PASS: ContextVar[dict[object, Mapping[str, Renames]] | None] = ContextVar("_RENAME_PASS", default=None)
 # The stored datasets whose extension fields are being inlined (their own loads must not recurse into them).
 _INLINING: ContextVar[frozenset[tuple[str, str]]] = ContextVar("_INLINING", default=frozenset())
 #: The versions whose saves wrote qualified references.
@@ -188,6 +198,10 @@ def _stage_gates(query: Any, *, document_version: int, entity: str, legacy: bool
     """The literal rewrites a raw stored query calls for; ``legacy`` when its document's own gate repairs them."""
     return LiteralGates(legacy=legacy, whole_day=_stage_below(
         query, document_version=document_version, entity=entity, at=UPGRADED_AT))
+class LiveRefinementRequiredError(ValueError):
+    """A stored dataset below v8 cannot upgrade without refining its types against its live datasource."""
+
+
 # The loading query engine's client source, set by its storage view around each call it delegates.
 CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
@@ -254,6 +268,29 @@ def _stage_names(data: dict) -> frozenset[str]:
     queries = data.get("source_queries")
     return frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str)) if isinstance(
         queries, list) else frozenset()
+
+
+@contextlib.contextmanager
+def one_upgrade_pass() -> Generator[None]:
+    """Within the block (one query), each stored document read unchanged is upgraded in memory once, against one
+    reading of the stored datasources' granularity renames."""
+    token = _UPGRADE_PASS.set({}) if _UPGRADE_PASS.get() is None else None
+    rename_token = _RENAME_PASS.set({}) if _RENAME_PASS.get() is None else None
+    try:
+        yield
+    finally:
+        if rename_token is not None:
+            _RENAME_PASS.reset(rename_token)
+        if token is not None:
+            _UPGRADE_PASS.reset(token)
+
+
+def _library_renames(data: Any) -> Renames:
+    """A stored datasource dict's renames of the granularities a library name reserves."""
+    granularities = data.get("granularities") if isinstance(data, dict) else None
+    names = [g["name"] for g in granularities if isinstance(g, dict) and isinstance(g.get("name"), str)] \
+        if isinstance(granularities, list) else []
+    return granularity_renames(names)
 
 
 def _memory_in_datasource(data: dict, *, data_source: str, identities: Sequence[tuple[str, str]]) -> bool:
@@ -1123,11 +1160,12 @@ class StorageBackend(ABC):
                    if data_source is None or ds == data_source}
         token = _RAW_PASS.set({}) if _RAW_PASS.get() is None else None
         try:
-            loaded = await asyncio.gather(*(
-                _load(ds, name) for ds, name in await self._standalone_identities()
-                if (data_source is None or ds == data_source) and name != exclude
-                and (ds not in indexes or name.casefold() not in indexes[ds].quarantined)
-            ))
+            with one_upgrade_pass():
+                loaded = await asyncio.gather(*(
+                    _load(ds, name) for ds, name in await self._standalone_identities()
+                    if (data_source is None or ds == data_source) and name != exclude
+                    and (ds not in indexes or name.casefold() not in indexes[ds].quarantined)
+                ))
         finally:
             if token is not None:
                 _RAW_PASS.reset(token)
@@ -1186,16 +1224,30 @@ class StorageBackend(ABC):
             if self._supports_semantic_models() else []
         if not names:
             return DocumentIndex(data_source=data_source)
-        documents = []
+        documents, unreadable = [], []
         for name in names:
-            text = await self._get_semantic_model_text_impl(data_source=data_source, name=name)
+            try:
+                text = await self._get_semantic_model_text_impl(data_source=data_source, name=name)
+            except UnreadableDocumentError as exc:
+                unreadable.append(StoredDocumentLoadError(kind="semantic_model", name=name, data_source=data_source,
+                                                          cause=exc))
+                continue
             if text is not None:
                 documents.append((name, text))
         standalone = [n for ds, n in await self._standalone_identities() if ds == data_source]
         datasource = await self.get_datasource(data_source)
-        return build_index(data_source=data_source, documents=documents, standalone=standalone,
-                           ds_type=datasource.type if datasource is not None else None,
-                           granularities=datasource.granularities if datasource is not None else [])
+        index = build_index(data_source=data_source, documents=documents, standalone=standalone,
+                            ds_type=datasource.type if datasource is not None else None,
+                            granularities=datasource.granularities if datasource is not None else [])
+        index.failures.extend(unreadable)
+        return index
+
+    async def _readable_text(self, *, data_source: str, name: str) -> str | None:
+        """A stored document's text; ``None`` when absent or unreadable."""
+        try:
+            return await self._get_semantic_model_text_impl(data_source=data_source, name=name)
+        except UnreadableDocumentError:
+            return None
 
     async def _document_dataset(self, name: str, *, data_source: str | None) -> SlayerDataset | None:
         """The document dataset ``name`` (case-insensitive), ``None`` when no document declares it; raises
@@ -1292,7 +1344,7 @@ class StorageBackend(ABC):
                                  for ds, n in await self._standalone_identities()
                                  if ds == data_source and n.casefold() not in moving}
         others = [(n, t) for n, t in [
-            (n, await self._get_semantic_model_text_impl(data_source=data_source, name=n))
+            (n, await self._readable_text(data_source=data_source, name=n))
             for ds, n in await self._list_semantic_model_identities() if ds == data_source and n != name] if t]
         datasource = await self.get_datasource(data_source)
         other_metrics: dict[str, str] = {}
@@ -1512,62 +1564,64 @@ class StorageBackend(ABC):
             return [pinned] if pinned is not None else []
         return sorted({d for d, n in identities if n == source})
 
-    async def _settle_library_granularities(self) -> None:
-        """Once per instance, before any dataset or memory loads: rename the library-named granularities of every stored
-        datasource dict (an unloadable datasource is reported where it is used)."""
-        if getattr(self, "_granularities_settled", False) or _SETTLING.get():
-            return
-        lock = self._granularities_lock = getattr(self, "_granularities_lock", None) or asyncio.Lock()
-        async with lock:
-            if getattr(self, "_granularities_settled", False):
-                return
-            token = _SETTLING.set(True)
-            try:
-                for name, data in (await self._raw_datasource_dicts()).items():
-                    with contextlib.suppress(ValueError):
-                        _validate_path_component(name, kind=DATASOURCE_NAME)
-                        await self._with_library_granularities_renamed(name=name, data=data)
-            finally:
-                _SETTLING.reset(token)
-            self._granularities_settled = True
+    async def _granularity_renames(self) -> Mapping[str, Renames]:
+        """Each stored datasource's library-name granularity renames (storage P3.2), a function of the stored
+        datasources alone, read once per top-level load; every load applies them in memory."""
+        memo = _RENAME_PASS.get()
+        if memo is not None and self in memo:
+            return memo[self]
+        table: dict[str, Renames] = {}
+        logged: set[tuple[str, str]] | None = getattr(self, "_logged_granularity_renames", None)
+        if logged is None:
+            logged = set()
+            setattr(self, "_logged_granularity_renames", logged)
+        for name, data in (await self._raw_datasource_dicts()).items():
+            renames = _library_renames(data)
+            if renames:
+                table[name] = renames
+            for old, new in renames.items():
+                if (name, old) not in logged:
+                    logged.add((name, old))
+                    logging.getLogger(__name__).warning(
+                        "datasource %r: custom granularity %r is now a reserved library name; read as %r with every "
+                        "reference to it (`slayer storage upgrade` stores the rename)", name, old, new,
+                    )
+        if memo is not None:
+            memo[self] = table
+        return table
+
+    def _forget_granularity_renames(self) -> None:
+        memo = _RENAME_PASS.get()
+        if memo is not None:
+            memo.pop(self, None)
 
     async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
-        """A stored datasource dict with each granularity a library name reserves renamed (storage P3.2), its
-        dependants persisted before it so an interrupted rename converges."""
-        granularities = data.get("granularities") if isinstance(data, dict) else None
-        if not isinstance(granularities, list):
-            return data
-        names = [g["name"] for g in granularities if isinstance(g, dict) and isinstance(g.get("name"), str)]
-        renames = granularity_renames(names)
-        if not renames:
-            return data
-        await self._rename_granularities(data_source=name, raw=data, renames=renames)
-        return renamed_datasource(data, renames=renames)
+        """Stored datasource ``name``'s dict with each granularity a library name reserves renamed."""
+        del name  # the renames are a function of the document alone
+        await asyncio.sleep(0)
+        renames = _library_renames(data)
+        return renamed_datasource(data, renames=renames) if renames else data
 
-    async def _rename_granularities(self, *, data_source: str, raw: dict, renames: Renames) -> None:
+    async def _memory_with_granularities_renamed(self, data: Any) -> Any:
+        """A stored memory dict with the renamed granularities of the datasource its query reads respelled."""
+        table = await self._granularity_renames()
+        if not table or not isinstance(data, dict):
+            return data
         identities = await self._list_all_dataset_identities()
-        renamed = self._granularity_renamed_docs = getattr(self, "_granularity_renamed_docs", {})
-        for name in sorted({n for d, n in identities if d == data_source}):
-            data = await self._load_raw_dataset_dict(name=name, data_source=data_source)
-            if isinstance(data, dict) and (new := rename_in_dataset(data, renames=renames)) != data:
-                await self._write_raw_dataset_dict(name=name, data_source=data_source, data=new)
-                renamed[("dataset", f"{data_source}.{name}")] = (data, new)
-        for memory_id, data in (await self._raw_memory_dicts()).items():
-            in_datasource = _memory_in_datasource(data, data_source=data_source, identities=identities)
-            if in_datasource and (new := rename_in_memory(data, renames=renames)) != data:
-                await self._write_raw_memory_dict(memory_id=memory_id, data=new)
-                renamed[("memory", memory_id)] = (data, new)
-        await self._write_raw_datasource_dict(name=data_source, data=renamed_datasource(raw, renames=renames))
-        for old, new in renames.items():
-            logging.getLogger(__name__).warning(
-                "datasource %r: custom granularity %r is now a reserved library name; renamed to %r with every "
-                "reference to it", data_source, old, new,
-            )
+        for data_source, renames in table.items():
+            if _memory_in_datasource(data, data_source=data_source, identities=identities):
+                data = rename_in_memory(data, renames=renames)
+        return data
 
-    def _renamed_since_read(self, data: Any, *, kind: str, key: str) -> Any:
-        """``data`` as the settle rewrote it, when it is the stored document read before that rewrite."""
-        original, new = getattr(self, "_granularity_renamed_docs", {}).get((kind, key), (None, None))
-        return new if original is not None and data == original else data
+    def _warn_upgrade_needed(self, payload: StoredUpgradeNeededWarning) -> None:
+        """One upgrade-needed warning per document per storage instance."""
+        warned = getattr(self, "_upgrade_warned", None)
+        if warned is None:
+            warned = self._upgrade_warned = set()
+        key = (payload.document_kind, payload.data_source, payload.name)
+        if key not in warned:
+            warned.add(key)
+            warnings.warn(SlayerStoredUpgradeNeededWarning(payload), stacklevel=outside_stacklevel())
 
     async def _cached_raw_dataset_dict(self, *, name: str, data_source: str) -> dict | None:
         """``_load_raw_dataset_dict``, read once per ``load_datasets`` pass (callers must not mutate it)."""
@@ -1698,7 +1752,7 @@ class StorageBackend(ABC):
         ds = await self.get_datasource(data_source)
         client_source = CLIENT_SOURCE.get()
         if ds is not None and client_source is None and needs_double:
-            raise ValueError(
+            raise LiveRefinementRequiredError(
                 f"Cannot migrate dataset {name!r}: its DOUBLE fields are refined against datasource "
                 f"{data_source!r}, so the dataset must be loaded through a query engine "
                 f"(SlayerQueryEngine(storage=...).storage)."
@@ -1714,7 +1768,7 @@ class StorageBackend(ABC):
                 self._warn_skipped_int_probe(name=name, data_source=data_source)
             return
         if ds is None and needs_double:
-            raise ValueError(
+            raise LiveRefinementRequiredError(
                 f"Cannot migrate dataset {name!r}: datasource "
                 f"{data_source!r} is unavailable for type "
                 f"refinement. Restore the datasource entry or "
@@ -1743,7 +1797,39 @@ class StorageBackend(ABC):
         data: Any,
         data_source: str,
     ) -> SlayerDataset:
-        """Migrate a below-version on-disk dataset dict forward, refine it (below v8) against its live table through the loading engine, validate into a ``SlayerDataset``, and (when a migration ran) persist it back so later loads short-circuit."""
+        """A stored dataset dict upgraded in memory (``_loaded_dataset``) and validated; never written back."""
+        return (await self._loaded_dataset(name=name, data=data, data_source=data_source))[0]
+
+    async def _loaded_dataset(self, *, name: str, data: Any, data_source: str) -> tuple[SlayerDataset, bool]:
+        """``_migrate_and_refine_on_load``, and whether the upgrade changes the stored document. Within one top-level
+        load, a document read again unchanged (a peer of several loads) is upgraded once."""
+        with one_upgrade_pass():
+            dataset, changes = await self._passed_dataset(name=name, data=data, data_source=data_source)
+        if not caller_announces():
+            warn_library_shadows(dataset)
+            for payload in [*name_collision_warnings(dataset), *spine_variant_warnings(dataset)]:
+                warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
+        if changes:
+            self._warn_upgrade_needed(StoredUpgradeNeededWarning(
+                document_kind="dataset", data_source=data_source, name=name))
+        return dataset, changes
+
+    async def _passed_dataset(self, *, name: str, data: Any, data_source: str) -> tuple[SlayerDataset, bool]:
+        """``_upgraded_dataset`` through the enclosing load's memo."""
+        memo = _UPGRADE_PASS.get()
+        key = (self, data_source, name)
+        kept = memo.get(key) if memo is not None else None
+        if kept is not None and kept[0] == data:
+            return kept[1].model_copy(deep=True), kept[2]
+        read = copy.deepcopy(data)
+        dataset, changes = await self._upgraded_dataset(name=name, data=data, data_source=data_source)
+        if memo is not None:
+            memo[key] = (read, dataset.model_copy(deep=True), changes)
+        return dataset, changes
+
+    async def _upgraded_dataset(self, *, name: str, data: Any, data_source: str) -> tuple[SlayerDataset, bool]:
+        """A stored dataset dict migrated, renamed, repaired, converted and (below v8) refined against its live table
+        through the loading engine; and whether the upgrade changes the stored document. Writes nothing."""
         if not isinstance(data, dict):
             # e.g. a zero-byte/corrupt YAML file (safe_load -> None): give the
             # remediation, not a bare Pydantic model_type error.
@@ -1754,9 +1840,10 @@ class StorageBackend(ABC):
                 f"models/{data_source}/{name}.yaml) and re-run `slayer ingest` "
                 f"to recreate it."
             )
-        await self._settle_library_granularities()
-        data = self._renamed_since_read(data, kind="dataset", key=f"{data_source}.{name}")
-        data = _mig.stamp_stored(data)
+        renames = (await self._granularity_renames()).get(data_source)
+        renamed = rename_in_dataset(data, renames=renames) if renames else data
+        settled = renamed != data
+        data = _mig.stamp_stored(renamed)
         pre_version = int(data["version"])
         if pre_version < _CUSTOM_BUCKET_CALLS_BELOW["SlayerModel"]:
             data = rewrite_dataset_doc(
@@ -1767,20 +1854,12 @@ class StorageBackend(ABC):
         if needs_typing(data):
             typing = (await self._stored_datasets(data_source)).model_copy(update={"stages": _stage_names(data)})
         with typing_with(typing):
-            dataset, write_back = await self._migrated_dataset(name=name, data=data, data_source=data_source)
-        if not caller_announces():
-            warn_library_shadows(dataset)
-            for payload in [*name_collision_warnings(dataset), *spine_variant_warnings(dataset)]:
-                warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
-        if write_back:
-            # Write-back must not re-validate: legacy datasets may hold cycles or
-            # fanning refs a user needs to load to repair.
-            await self.save_dataset(dataset, _validate=False)
-        return dataset
+            dataset, changes = await self._migrated_dataset(name=name, data=data, data_source=data_source)
+        return dataset, changes or settled
 
     async def _migrated_dataset(self, *, name: str, data: dict, data_source: str) -> tuple[SlayerDataset, bool]:
-        """A stamped stored dataset dict migrated, repaired and validated; and whether a migration ran."""
-        write_back = False
+        """A stamped stored dataset dict migrated, repaired and validated; and whether that changed it."""
+        changes = False
         pre_version = int(data["version"])
         queries = data.get("source_queries")
         pending = [_unqualified(q, document_version=pre_version, entity="SlayerModel")
@@ -1807,7 +1886,7 @@ class StorageBackend(ABC):
             if pre_version < FIELD_EXPRESSION_VERSION:
                 data = respell_source_paths(data, peer_relationships=await self._peer_relationships(
                     data=data, data_source=data_source))
-            write_back = True
+            changes = True
             if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
                 await self._apply_refinement_or_raise(
                     name=name, data=data, data_source=data_source,
@@ -1816,13 +1895,19 @@ class StorageBackend(ABC):
             # A current document can hold an older nested stage: its own version decides.
             data = await self._converted_source_queries(name=name, data=data, data_source=data_source, gates=gates,
                                                         pending=pending)
-            write_back = True
-        dataset = SlayerDataset.model_validate(data)
-        datasource = await self.get_datasource(data_source) if any(c.sql is not None for c in dataset.fields) else None
-        if datasource is not None:
-            dataset, write_back = with_converted_sql(dataset, ds_type=datasource.type), True
-        # A field's sql waiting for its datasource's dialect is never written back.
-        return dataset, write_back and not any(c.sql is not None for c in dataset.fields)
+            changes = True
+        dataset, converted = await self._with_dialect_sql(SlayerDataset.model_validate(data), data_source=data_source)
+        return dataset, changes or converted
+
+    async def _with_dialect_sql(self, dataset: SlayerDataset, *, data_source: str) -> tuple[SlayerDataset, bool]:
+        """``dataset`` with its field ``sql`` converted once its datasource's dialect is known; whether it was."""
+        if all(c.sql is None for c in dataset.fields):
+            return dataset, False
+        datasource = await self.get_datasource(data_source)
+        ds_type = datasource.type if datasource is not None else DATASOURCE_TYPES.get().get(data_source)
+        if ds_type is None:
+            return dataset, False
+        return with_converted_sql(dataset, ds_type=ds_type), True
 
     async def _peer_relationships(self, *, data: dict, data_source: str) -> dict[str, list]:
         """Each relationship target's own stored relationships, by target name."""
@@ -2140,6 +2225,44 @@ class StorageBackend(ABC):
         datasource.check_granularities()
         connection_policy.check_transaction_pooler(datasource)
         await self._save_datasource_impl(datasource)
+        self._forget_granularity_renames()
+
+    async def _datasource_from_stored(self, *, name: str, data: Any) -> DatasourceConfig:
+        """A stored datasource dict upgraded in memory and validated (env vars unresolved); never written back."""
+        datasource, changes = await self._upgraded_datasource(name=name, data=data)
+        if changes:
+            self._warn_upgrade_needed(StoredUpgradeNeededWarning(document_kind="datasource", name=name))
+        return datasource
+
+    async def _upgraded_datasource(self, *, name: str, data: Any) -> tuple[DatasourceConfig, bool]:
+        """A stored datasource dict upgraded and validated; and whether the upgrade changes the stored document."""
+        renamed = await self._with_library_granularities_renamed(name=name, data=data)
+        stamped = _mig.stamp_stored(renamed)
+        changes = renamed != data or (
+            isinstance(stamped, dict) and int(stamped["version"]) < _mig.CURRENT_VERSIONS["DatasourceConfig"])
+        return DatasourceConfig.model_validate(renamed), changes
+
+    async def _stored_raw(self, *, kind: str, data_source: str | None, name: str) -> dict | None:
+        """One stored document's raw dict by ``kind`` (``dataset``, ``memory`` or ``datasource``)."""
+        if kind == "dataset" and data_source is not None:
+            return await self._load_raw_dataset_dict(name=name, data_source=data_source)
+        if kind == "memory":
+            return (await self._raw_memory_dicts()).get(name)
+        return (await self._raw_datasource_dicts()).get(name)
+
+    async def _write_raw_if_unchanged(
+        self, *, kind: str, data_source: str | None, name: str, expected: dict, data: dict,
+    ) -> bool:
+        """Write ``data`` as a stored document's raw dict when it still reads ``expected``; ``False`` on a conflict."""
+        if await self._stored_raw(kind=kind, data_source=data_source, name=name) != expected:
+            return False
+        if kind == "dataset" and data_source is not None:
+            await self._write_raw_dataset_dict(name=name, data_source=data_source, data=data)
+        elif kind == "memory":
+            await self._write_raw_memory_dict(memory_id=name, data=data)
+        else:  # the run's rename table stays: its datasource writes must not change what later decisions read
+            await self._write_raw_datasource_dict(name=name, data=data)
+        return True
 
     @abstractmethod
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
@@ -2166,6 +2289,7 @@ class StorageBackend(ABC):
         # Sanitize the raw name before it composes a path / cascade prefix.
         _validate_path_component(name, kind=DATASOURCE_NAME)
         deleted = await self._delete_datasource_row(name)
+        self._forget_granularity_renames()
         if deleted:
             await self.delete_embeddings_for_canonical(
                 canonical_id_prefix=name,
@@ -2273,28 +2397,37 @@ class StorageBackend(ABC):
         """Every ``Memory`` whose entity set intersects ``entities`` (``None`` = all rows, ``[]`` = none), and the rows that failed to load."""
 
     async def _memory_from_stored(self, *, memory_id: str, decode: Callable[[], Any]) -> Memory:
-        """Decode, repair and validate one stored memory inside its load boundary."""
-        await self._settle_library_granularities()
-        with stored_document_boundary(kind="memory", name=memory_id):
-            data = _mig.stamp_stored(self._renamed_since_read(decode(), kind="memory", key=memory_id))
-            if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
-                data = rewrite_memory_doc(data, await self._custom_bucket_calls(
-                    data_sources=await self._memory_data_sources(data)),
-                    keys=keys_for(entity="Memory", version=int(data["version"])))
-            query = data.get("query") if isinstance(data, dict) else None
-            if isinstance(query, dict):
-                # Memories are never written back, so their query converts on every load.
-                version = int(data["version"])
-                pending = _unqualified(query, document_version=version, entity="Memory")
-                gates = _stage_gates(query, document_version=version, entity="Memory",
-                                     legacy=version < _MEMORY_FILTER_REPAIR_BELOW_VERSION)
-                if pending or gates.any or version < _EXTENSION_FIELDS_INLINED_AT or holds_removed_forms(query):
-                    converted = await self._converted_queries(
-                        queries=[query], gates=[gates], pending=[pending],
-                        data_source=await self._memory_upgrade_data_source(data) if pending else None,
-                        document=memory_id)
-                    data = {**data, "query": converted[0]}
-            return Memory.model_validate(data)
+        """Decode, upgrade in memory and validate one stored memory inside its load boundary; never written back."""
+        with stored_document_boundary(kind="memory", name=memory_id), one_upgrade_pass():
+            memory, changes = await self._upgraded_memory(memory_id=memory_id, data=decode())
+        if changes:
+            self._warn_upgrade_needed(StoredUpgradeNeededWarning(document_kind="memory", name=memory_id))
+        return memory
+
+    async def _upgraded_memory(self, *, memory_id: str, data: Any) -> tuple[Memory, bool]:
+        """A stored memory dict upgraded and validated; and whether the upgrade changes the stored document."""
+        renamed = await self._memory_with_granularities_renamed(data)
+        changes = renamed != data
+        data = _mig.stamp_stored(renamed)
+        changes = changes or (isinstance(data, dict) and int(data["version"]) < _mig.CURRENT_VERSIONS["Memory"])
+        if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
+            data = rewrite_memory_doc(data, await self._custom_bucket_calls(
+                data_sources=await self._memory_data_sources(data)),
+                keys=keys_for(entity="Memory", version=int(data["version"])))
+        query = data.get("query") if isinstance(data, dict) else None
+        if isinstance(query, dict):
+            version = int(data["version"])
+            pending = _unqualified(query, document_version=version, entity="Memory")
+            gates = _stage_gates(query, document_version=version, entity="Memory",
+                                 legacy=version < _MEMORY_FILTER_REPAIR_BELOW_VERSION)
+            if pending or gates.any or version < _EXTENSION_FIELDS_INLINED_AT or holds_removed_forms(query):
+                converted = await self._converted_queries(
+                    queries=[query], gates=[gates], pending=[pending],
+                    data_source=await self._memory_upgrade_data_source(data) if pending else None,
+                    document=memory_id)
+                data = {**data, "query": converted[0]}
+                changes = True
+        return Memory.model_validate(data), changes
 
     async def _memory_upgrade_data_source(self, data: dict) -> str | None:
         """The datasource a stored memory's qualification reads: pinned when its population names no stored dataset
@@ -2369,12 +2502,13 @@ class StorageBackend(ABC):
 
     async def load_memories(self, *, entities: list[str] | None = None) -> Loaded[Memory]:
         """The memories ``list_memories`` returns, and the ones that failed to load."""
-        return await self._list_memories_rows(entities=entities)
+        with one_upgrade_pass():
+            return await self._list_memories_rows(entities=entities)
 
     async def list_memories(
         self, *, entities: list[str] | None = None, failures: DocumentLoadFailures | None = None,
     ) -> list[Memory]:
-        return (failures or DocumentLoadFailures()).skip(await self._list_memories_rows(entities=entities))
+        return (failures or DocumentLoadFailures()).skip(await self.load_memories(entities=entities))
 
     async def delete_memory(self, memory_id: str) -> None:
         if not await self._delete_memory_row(memory_id):

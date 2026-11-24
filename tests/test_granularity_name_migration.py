@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import re
-import stat
 import warnings
 from collections.abc import Callable, Generator, Sequence
 from typing import Any
@@ -41,7 +40,6 @@ from tests._granularity_rename_fixtures import (
     memory_doc,
     query_backed_doc,
     raw_documents,
-    reopen,
     stage_doc,
     write_raw_store,
 )
@@ -218,10 +216,9 @@ async def _contains_store(*, tmp_path: Any, backend: str) -> _Store:
     )
 
 
-def _assert_datasource_renamed(store: _Store) -> None:
-    stored = store.raw()[f"datasources/{DS}"]
-    assert "contains_granularity" in stored
-    assert not _mentions(stored, "contains"), stored
+async def _assert_renamed_in_memory(store: _Store, *, before: dict[str, str]) -> None:
+    assert await _granularity_names(store.storage) == ["contains_granularity"]
+    assert store.raw() == before
 
 
 class TestSettleBeforeFirstLoad:
@@ -229,12 +226,13 @@ class TestSettleBeforeFirstLoad:
     @pytest.mark.parametrize("first", ["model", "memory"])
     async def test_first_load_sees_the_rename(self, tmp_path: Any, backend: str, first: str) -> None:
         store = await _contains_store(tmp_path=tmp_path, backend=backend)
+        before = store.raw()
         if first == "model":
             query = await _stage(store.storage, "bucketed")
         else:
             query = await _memory_query(store.storage, "m")
         assert _td_granularity(query) == "contains_granularity"
-        _assert_datasource_renamed(store)
+        await _assert_renamed_in_memory(store, before=before)
 
     @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize("broken", list(_BROKEN_DATASOURCES))
@@ -243,8 +241,9 @@ class TestSettleBeforeFirstLoad:
     ) -> None:
         store = await _contains_store(tmp_path=tmp_path, backend=backend)
         _write_raw_datasource(store, name="broken", text=_BROKEN_DATASOURCES[broken][backend])
+        before = store.raw()
         assert _td_granularity(await _stage(store.storage, "bucketed")) == "contains_granularity"
-        _assert_datasource_renamed(store)
+        await _assert_renamed_in_memory(store, before=before)
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_failing_rename_does_not_block_another(
@@ -261,8 +260,9 @@ class TestSettleBeforeFirstLoad:
             return await original(self, name=name, data=data)
 
         monkeypatch.setattr(StorageBackend, "_with_library_granularities_renamed", failing_for_broken)
+        before = store.raw()
         assert _td_granularity(await _stage(store.storage, "bucketed")) == "contains_granularity"
-        _assert_datasource_renamed(store)
+        await _assert_renamed_in_memory(store, before=before)
 
     async def test_a_yml_datasource_is_left_alone(self, tmp_path: Any) -> None:
         store = await _store(tmp_path=tmp_path, backend="yaml", granularities=[], models=[events_doc()])
@@ -280,8 +280,9 @@ class TestSettleBeforeFirstLoad:
         doc = datasource_doc(db_path=os.path.join(store.base, "live.db"), granularities=["contains"], name="shop.v1")
         text = _serialized(backend=backend, doc=doc)
         _write_raw_datasource(store, name="shop.v1", text=text)
+        before = store.raw()
         assert _td_granularity(await _stage(store.storage, "bucketed")) == "contains_granularity"
-        _assert_datasource_renamed(store)
+        await _assert_renamed_in_memory(store, before=before)
         assert store.raw()["datasources/shop.v1"] == text
 
 
@@ -478,106 +479,10 @@ async def test_concurrent_first_loads_all_see_the_rename(tmp_path: Any, backend:
         assert _td_granularity(query) == "left_granularity"
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-async def test_a_rename_converges(tmp_path: Any, caplog: pytest.LogCaptureFixture, backend: str) -> None:
-    store = await _contains_store(tmp_path=tmp_path, backend=backend)
-    await store.storage.get_datasource(DS)
-    await store.storage.get_dataset("bucketed", data_source=DS)
-    await store.storage.get_memory("m")
-    before = store.raw()
-    storage = reopen(backend=backend, base=store.base)
-    caplog.clear()
-    with _captured(caplog) as texts:
-        assert await _granularity_names(storage) == ["contains_granularity"]
-        assert _td_granularity(await _stage(storage, "bucketed")) == "contains_granularity"
-        assert _td_granularity(await _memory_query(storage, "m")) == "contains_granularity"
-    assert store.raw() == before
-    assert not any("contains_granularity" in t for t in texts), texts
-
-
 def _current(doc: dict, entity: str) -> dict:
     """``doc`` (spelled as the previous release stored it) as the current release stores it."""
     respelled = {"SlayerModel": lambda d: dataset_in(d, CURRENT_KEYS), "SlayerQuery": stored_query}
     return {**respelled.get(entity, dict)(doc), "version": CURRENT_VERSIONS[entity]}
-
-
-def _assert_consistent(raw: dict[str, str]) -> None:
-    for key, text in raw.items():
-        assert not _mentions(text, "left"), (key, text)
-        assert "left_granularity_granularity" not in text, (key, text)
-    assert "left_granularity" in raw[f"datasources/{DS}"]
-
-
-class TestInterruptedLoad:
-    @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_a_half_migrated_store_completes(self, tmp_path: Any, backend: str) -> None:
-        done_stage = _current(stage_doc(time_dimensions=[
-            {"dimension": "events.created_at", "granularity": "left_granularity"}], measures=[QUALIFIED_SUM]), "SlayerQuery")
-        store = await _store(
-            tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("left")],
-            models=[events_doc(),
-                    _current(query_backed_doc(name="done", stage=done_stage), "SlayerModel"),
-                    query_backed_doc(name="pending", stage=bucket_stage("left"))],
-            memories=[_current(memory_doc(memory_id="m_done", query=done_stage), "Memory"),
-                      memory_doc(memory_id="m_pending", query=bucket_stage("left"))],
-        )
-        assert await _granularity_names(store.storage) == ["left_granularity"]
-        for name in ("done", "pending"):
-            assert _td_granularity(await _stage(store.storage, name)) == "left_granularity"
-            assert await bucket_totals(store.storage, dataset=name) == EXPECTED_BUCKETS
-        for memory_id in ("m_done", "m_pending"):
-            query = await _memory_query(store.storage, memory_id)
-            assert _td_granularity(query) == "left_granularity"
-            assert _totals(await run(store.storage, query)) == EXPECTED_BUCKETS
-        _assert_consistent(store.raw())
-
-    @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_a_failed_datasource_write_converges_on_the_next_load(self, tmp_path: Any, backend: str) -> None:
-        store = await _store(
-            tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("left")],
-            models=[events_doc(), query_backed_doc(name="bucketed", stage=bucket_stage("left"))],
-            memories=[memory_doc(memory_id="m", query=bucket_stage("left"))],
-        )
-        with _datasource_writes_fail(backend=backend, base=store.base), contextlib.suppress(Exception):
-            await store.storage.get_datasource(DS)
-        raw = store.raw()
-        assert _mentions(raw[f"datasources/{DS}"], "left"), "the datasource write must have failed"
-        for key in (f"models/{DS}/bucketed", "memories/m"):
-            assert "left_granularity" in raw[key], (key, raw[key])
-            assert not _mentions(raw[key], "left"), (key, raw[key])
-
-        storage = reopen(backend=backend, base=store.base)
-        assert await _granularity_names(storage) == ["left_granularity"]
-        assert await bucket_totals(storage) == EXPECTED_BUCKETS
-        assert _totals(await run(storage, await _memory_query(storage, "m"))) == EXPECTED_BUCKETS
-        _assert_consistent(store.raw())
-
-
-@contextlib.contextmanager
-def _datasource_writes_fail(*, backend: str, base: str) -> Generator[None]:
-    """Every datasource write inside the block fails; other documents stay writable."""
-    if backend == "yaml":
-        if os.geteuid() == 0:
-            pytest.skip("root ignores directory permissions")
-        ds_dir = os.path.join(base, "datasources")
-        mode = os.stat(ds_dir).st_mode
-        os.chmod(ds_dir, stat.S_IRUSR | stat.S_IXUSR)
-        try:
-            yield
-        finally:
-            os.chmod(ds_dir, mode)
-        return
-    db_path = os.path.join(base, "store.db")
-    with transaction(db_path) as conn:
-        for event in ("INSERT", "UPDATE", "DELETE"):
-            conn.execute(f"CREATE TRIGGER fail_ds_{event.lower()} BEFORE {event} ON datasources "
-                         "BEGIN SELECT RAISE(ABORT, 'injected datasource write failure'); END")
-    try:
-        yield
-    finally:
-        with transaction(db_path) as conn:
-            for event in ("insert", "update", "delete"):
-                conn.execute(f"DROP TRIGGER fail_ds_{event}")
 
 
 async def test_a_new_reserved_granularity_is_refused(tmp_path: Any) -> None:

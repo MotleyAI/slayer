@@ -614,7 +614,21 @@ slayer memory forget kb.brooklyn-pos
 
 ### `slayer storage`
 
-Storage maintenance. `migrate-types` introspects each dataset's datasource and refines `Float` to `Integer` on base fields whose live SQL type is integer (on SQLite, whose stored values probe as integers, and there it also widens an `Integer` field to `Float` or `String` whose values are not); it fails if a datasource is unreachable.
+Storage maintenance. `upgrade` stores every dataset, saved query, memory and datasource that loads in an older format in the current one; loads upgrade them in memory and never write. It prints one line per document (`upgraded`, `current`, `would upgrade`, `not upgraded: <reason>` or `conflict`) and exits 1 when a document is left behind. A document changed in the store while the command runs is a conflict and stays as it is; datasource priority and embeddings are never touched.
+
+```bash
+slayer storage upgrade --dry-run
+slayer storage upgrade --data-source warehouse --datasource-type warehouse=duckdb
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data-source X` | all | Limit to one datasource |
+| `--dry-run` | off | Print each document's difference without writing anything |
+| `--datasource-type NAME=TYPE` | none | The dialect of a datasource the store holds no config for (repeatable) |
+| `--storage` | [platform default](../configuration/storage.md) | Storage path |
+
+`migrate-types` introspects each dataset's datasource and refines `Float` to `Integer` on base fields whose live SQL type is integer (on SQLite, whose stored values probe as integers, and there it also widens an `Integer` field to `Float` or `String` whose values are not); it fails if a datasource is unreachable.
 
 ```bash
 slayer storage migrate-types --dry-run

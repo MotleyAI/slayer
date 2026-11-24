@@ -21,7 +21,6 @@ from tests._stored_upgrade_fixtures import (
     memory_v2,
     orders_v10,
     query_backed_v10,
-    raw_doc,
     raw_store,
     rev_query,
     run,
@@ -131,9 +130,6 @@ class TestStoredDocumentsUpgrade:
         assert model is not None
         [loaded] = model.source_queries or []
         assert _dumped_tds(loaded) == [{"field": SIGNUP_TEXT, "granularity": "month"}]
-        raw = await raw_doc(storage, "rev_q")
-        assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert raw["source_queries"][0]["time_dimensions"][0]["field"] == SIGNUP_TEXT
         resp = await run(storage, {"population": "rev_q", "dimensions": ["rev_q.customers__signed_up_at"],
                                    "metrics": ["sum(rev_q.rev)"]})
         assert _cells(resp, dim_suffix="signed_up_at", width=7) == REV_BY_SIGNUP_MONTH

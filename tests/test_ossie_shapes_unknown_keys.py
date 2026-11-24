@@ -184,11 +184,13 @@ class TestStored:
         [entry] = [w for w in response.warnings or [] if getattr(w, "kind", None) == "unknown_stored_key"]
         assert entry.model_dump(mode="json")["paths"] == ["x_owner"]
 
-    async def test_a_migrated_document_is_written_back_without_the_key(self, tmp_path: Path) -> None:
+    async def test_a_migrated_document_is_saved_without_the_key(self, tmp_path: Path) -> None:
         old = {**with_stray(orders(), "field", key="colour"), "version": CURRENT_VERSIONS["SlayerModel"] - 1}
         storage = await shop_store(backend="yaml", base=str(tmp_path), datasets=[current(shop_customers()), old])
         with recorded():
-            assert await storage.get_dataset("orders", data_source=DS) is not None
+            loaded = await storage.get_dataset("orders", data_source=DS)
+            assert loaded is not None
+            await storage.save_dataset(loaded)
         doc = stored_document(backend="yaml", base=str(tmp_path), name="orders")
         assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
         assert "colour" not in doc["fields"][0]

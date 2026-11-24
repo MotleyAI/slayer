@@ -105,7 +105,7 @@ Join-graph reasoning — provable arity, grain determination, the entity and for
 
 ### Requirement: Stored physical spellings are canonicalised on load
 
-WHEN a stored model below the current schema version carries a `join_pairs` entry that names no declared column of its side but equals exactly one declared base column's unquoted `sql` rename, THEN the entry SHALL be rewritten to that column's `name` on load. The source side is matched against this model's columns, the target side against the target model's stored columns, and the model SHALL be written back at the current version. An entry naming a declared column SHALL be left untouched.
+WHEN a stored model below the current schema version carries a `join_pairs` entry that names no declared column of its side but equals exactly one declared base column's unquoted `sql` rename, THEN the entry SHALL be rewritten to that column's `name` on load. The source side is matched against this model's columns, the target side against the target model's stored columns, and the model SHALL be persisted at the current version only by a save or `slayer storage upgrade`. An entry naming a declared column SHALL be left untouched.
 
 An entry that matches no declared column and no rename, and that is a valid column name, SHALL become a declared hidden base column of its own side's model when that side's document is loaded below the current schema version:
 - a source-side key is added to the loading model;
@@ -118,7 +118,7 @@ The canonicalisation SHALL precede exact-inverse join deduplication, and the cou
 #### Scenario: A source-side physical spelling is rewritten on load
 
 - **WHEN** a v10 stored model declares `DatasetField(name="customer_id", sql="cust_fk")` and its join carries `join_pairs: [["cust_fk", "id"]]`
-- **THEN** after loading, the join carries `[["customer_id", "id"]]` and the stored document is at the current version with the rewritten entry, on both the YAML and the SQLite backends
+- **THEN** after loading, the join carries `[["customer_id", "id"]]`, and `slayer storage upgrade` stores the document at the current version with the rewritten entry, on both the YAML and the SQLite backends
 
 #### Scenario: A target-side physical spelling is rewritten on load
 
@@ -138,7 +138,7 @@ The canonicalisation SHALL precede exact-inverse join deduplication, and the cou
 #### Scenario: An undeclared source-side key becomes a hidden column
 
 - **WHEN** a v10 stored `orders` declares columns `order_id, status, ordered_at, amount` and joins `customers` on `[["customer_id", "id"]]`, as SLayer 0.10.2's Cube importer wrote it for a cube without a `customer_id` dimension
-- **THEN** `orders` loads with a hidden base column `customer_id` and is written back at the current version, on both the YAML and the SQLite backends
+- **THEN** `orders` loads with a hidden base column `customer_id`, and `slayer storage upgrade` persists it at the current version, on both the YAML and the SQLite backends
 - **AND** a query of `customers.region` by `sum(amount)` returns the rows SLayer 0.10.2 returned, with a join condition carrying no casts
 - **AND** loading it again changes nothing, and re-saving it passes save-time validation
 

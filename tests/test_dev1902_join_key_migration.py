@@ -1,9 +1,10 @@
 """SlayerDataset v10 → v11: stored physical spellings of renamed join keys are
 canonicalised to ``DatasetField.name`` on load (both sides, before the exact-inverse
-dedup) and written back; YAML and SQLite backends."""
+dedup), persisted by ``slayer storage upgrade``; YAML and SQLite backends."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -19,6 +20,7 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._storage_upgrade_cli import store_path, upgrade
 
 Seeder = Callable[[list[dict]], Awaitable[StorageBackend]]
 
@@ -91,12 +93,13 @@ async def _stored(storage: StorageBackend, name: str) -> dict:
 
 class TestCanonicalisedOnLoad:
     async def test_source_side_physical_spelling_rewritten(self, seed: Seeder):
-        storage = await seed([
-            _orders(joins=[_relationship("customers", [["cust_fk", "id"]])]),
-            _customers()])
+        doc = _orders(joins=[_relationship("customers", [["cust_fk", "id"]])])
+        storage = await seed([doc, _customers()])
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         assert orders.relationships[0].column_pairs == [("customer_id", "id")]
+        assert await _stored(storage, "orders") == doc
+        assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
         stored = await _stored(storage, "orders")
         assert stored["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         assert (stored["relationships"][0]["from_columns"], stored["relationships"][0]["to_columns"]) == (["customer_id"], ["id"])
@@ -146,16 +149,13 @@ class TestCanonicalisedOnLoad:
 
 class TestLeftAlone:
     @pytest.mark.parametrize("spelled", [True, False])
-    async def test_name_equal_sql_store_untouched_but_version(self, seed: Seeder, spelled: bool):
+    async def test_name_equal_sql_store_untouched(self, seed: Seeder, spelled: bool):
         joins = [_relationship("customers", [["customer_id", "id"]])]
-        storage = await seed([
-            _orders(fk_sql="customer_id" if spelled else None, joins=joins),
-            _customers(pk_sql="id" if spelled else None)])
+        doc = _orders(fk_sql="customer_id" if spelled else None, joins=joins)
+        storage = await seed([doc, _customers(pk_sql="id" if spelled else None)])
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
-        stored = await _stored(storage, "orders")
-        assert stored["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert (stored["relationships"][0]["from_columns"], stored["relationships"][0]["to_columns"]) == (["customer_id"], ["id"])
+        assert await _stored(storage, "orders") == doc
 
     async def test_declared_name_wins_over_a_rename(self, seed: Seeder):
         # ``cust_fk`` is both a declared name and another field's rename.

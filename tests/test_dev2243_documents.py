@@ -221,6 +221,17 @@ async def test_an_unloadable_document_leaves_standalone_datasets_loading(tmp_pat
     assert set(failed(errs, "semantic_model")) == {"sales"}
 
 
+async def test_an_undecodable_document_leaves_standalone_datasets_loading(tmp_path: Path) -> None:
+    place_document(tmp_path, "", name="sales").write_bytes(b"\xff\xfe not utf-8")
+    storage = await yaml_storage_with_datasource(tmp_path)
+    returns = returns_dataset().model_copy(update={"data_source": DS, "relationships": []})
+    await storage.save_dataset(returns, _validate=False)
+    loaded, errs = await storage.load_datasets(data_source=DS)
+    assert {d.name for d in loaded} == {"returns"}
+    assert set(failed(errs, "semantic_model")) == {"sales"}
+    assert await storage.get_dataset("returns", data_source=DS) is not None
+
+
 # --------------------------------------------------------------------------- #
 # Version
 # --------------------------------------------------------------------------- #

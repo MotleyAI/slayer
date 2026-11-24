@@ -70,6 +70,12 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestStoredSourcePaths::test_no_unique_spelling": 1,
     }),
     *_allow("test_column_dependency.py", _STORED, {"test_save_model_migration_writeback_does_not_validate": 3}),
+    *_allow("test_storage_upgrade.py", _STORED, {
+        "test_a_legacy_cycle_is_upgraded_not_refused": 2,
+        "test_a_legacy_fanning_reference_is_upgraded_not_refused": 1,
+        "test_a_pre_v8_model_without_a_reachable_datasource_is_refused": 1,
+    }),
+    *_allow("test_storage_upgrade_documents.py", _STORED, {"test_a_pre_v8_document_is_refused": 1}),
     *_allow("test_dev1743_migration.py", _STORED, {"_orders_v8": 1, "_orders_v8_dual": 1}),
     *_allow("test_dev1902_join_key_migration.py", _STORED, {
         "TestLeftAlone::test_declared_name_wins_over_a_rename": 1,

@@ -14,6 +14,7 @@ from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
+from slayer.storage.upgrade import upgrade_store
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -288,6 +289,11 @@ def _self_building_backend() -> SelfBuildingBackend:
     return backend
 
 
+async def test_a_backend_without_raw_datasources_reports_none_unreadable() -> None:
+    report = await upgrade_store(_self_building_backend())
+    assert [o for o in report.outcomes if o.kind == "datasource"] == []
+
+
 class TestLibraryGranularitySettle:
     @pytest.mark.parametrize("first", ["model", "memory"])
     async def test_self_building_backend_never_lists_or_loads_datasources(self, first: str) -> None:
@@ -306,4 +312,5 @@ class TestLibraryGranularitySettle:
         loads = [load_model, load_memory] if first == "model" else [load_memory, load_model]
         for load in loads:
             await load()
-        assert backend.calls == ["_raw_datasource_dicts"]
+        assert backend.calls
+        assert set(backend.calls) == {"_raw_datasource_dicts"}  # once per top-level load

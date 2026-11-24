@@ -17,7 +17,6 @@ from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.pg_facade.connection import PgConnection
 from slayer.search import graph as search_graph
 from slayer.storage.base import StorageBackend
-from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -31,7 +30,7 @@ from tests._dataset_access_fixtures import (
     access_store,
     must_get,
 )
-from tests._stored_upgrade_fixtures import customers_v10, orders_v10, raw_doc, raw_store
+from tests._stored_upgrade_fixtures import customers_v10, orders_v10, raw_store
 
 DATASETS = "MATCH (m:Dataset) RETURN m.id AS id"
 VISIBLE_TO_HR = ALL_LOADABLE - {"fin", "fin_hop", "fin_ordered", "fin_report"}
@@ -201,5 +200,4 @@ async def test_concurrent_first_reads_of_a_pre_v15_store_agree(backend: str) -> 
         models = await asyncio.gather(*(fin.get_dataset("orders", data_source="shop") for _ in range(8)))
         assert all(sorted(names) == ["customers", "orders"] for names in listings)
         assert all(m is not None and [j.to for j in m.relationships] == ["customers"] for m in models)
-        assert (await raw_doc(inner, "orders"))["version"] == CURRENT_VERSIONS["SlayerModel"]
         assert sorted(await fin.list_datasets("shop")) == ["customers", "orders"]
