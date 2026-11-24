@@ -60,6 +60,7 @@ _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
 _DATETIME = exp.DataType.build("DATETIME")
 _NUMERIC_INTEGER_DIGITS, _NUMERIC_SCALE = 29, 9
+_BIGNUMERIC = exp.DataType.build("BIGNUMERIC", dialect="bigquery")
 
 
 _ELEMENT, _WANTED, _OFFSET = LIST_ELEMENT, "__slayer_w", "__slayer_o"
@@ -78,6 +79,11 @@ def _date_part_unit(unit: TimeGranularity) -> Expression:
     if weekday is not None:
         return exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
     return exp.var(unit.value.upper())
+
+
+def _json_document(value: Expression, *, native: bool) -> Expression:
+    """``json_value``'s input: a native JSON column itself, not its cast to ``JSON``."""
+    return value.this.copy() if native and isinstance(value, exp.Cast) else value.copy()
 
 
 def _interval(count: Expression, unit: TimeGranularity) -> Expression:
@@ -151,6 +157,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     like_escape_clause: ClassVar[bool] = False
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
+    json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON"})
 
     database_name: ClassVar[str] = "BigQuery"
     native_lists: ClassVar[bool] = True
@@ -163,12 +170,20 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
 
-    def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
-        """sqlglot drops a type's parameters inside ``CAST``; BigQuery keeps them (``NUMERIC(10, 2)``)."""
-        if not any(isinstance(p, exp.DataTypeParam) for p in to.expressions):
-            return super().build_cast(value, to)
-        spelled = exp.DataType(this=exp.DataType.Type.USERDEFINED, kind=to.sql(dialect=self.sqlglot_name))
-        return super().build_cast(value, spelled)
+    def build_decimal_cast(
+        self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],  # NOSONAR(S1172) — hook signature
+        try_: bool,
+    ) -> Expression:
+        """``CAST`` takes no type parameters: the value is rounded to ``scale`` (``ROUND`` ties away from zero) and
+        cast to ``NUMERIC`` / ``BIGNUMERIC``; ``TRY_CAST`` checks ``precision``."""
+        convert = self.build_try_cast if try_ else self.build_cast
+        exact = value.copy() if source is DataType.FLOAT else convert(value, _BIGNUMERIC.copy())
+        rounded = exp.Round(this=exact, decimals=lit(scale))
+        cast = convert(rounded, exp.DataType(this=self.decimal_type(precision, scale).this))
+        if not try_:
+            return cast
+        fits = exp.LT(this=exp.Abs(this=rounded.copy()), expression=self.integer_bound(10 ** (precision - scale)))
+        return case((fits, cast))
 
     def decimal_type(self, precision: int, scale: int) -> exp.DataType:
         """``NUMERIC`` holds 29 integer and 9 fractional digits; ``BIGNUMERIC`` the rest."""
@@ -273,11 +288,11 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                     self.replacement_text(replacement))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
-        return anon("JSON_VALUE", value, lit(path.text))
+        return anon("JSON_VALUE", _json_document(value, native=native), lit(path.text))
 
     def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
         """``JSON_QUERY`` keeps a string's quotes, so only a number reads as one."""
-        found = anon("JSON_QUERY", value, lit(path.text))
+        found = anon("JSON_QUERY", _json_document(value, native=native), lit(path.text))
         return exp.TryCast(this=anon("TO_JSON_STRING", found) if native else found,
                            to=exp.DataType.build("DOUBLE"), safe=True)
 

@@ -36,6 +36,7 @@ from slayer.sql.dialects.base import (
     anon,
     as_text,
     case,
+    decimal_parts,
     element_lambda,
     is_not_null,
     is_null,
@@ -75,6 +76,14 @@ def _number_text(node: Expression) -> Optional[str]:
     return f"-{inner.this}" if negative else inner.this
 
 
+_DECIMAL128_DIGITS, _DECIMAL256_DIGITS = 38, 76
+
+
+def _to_decimal(width: int) -> str:
+    """The ``to…OrNull`` reader of a Decimal ``width`` digits wide."""
+    return "toDecimal128OrNull" if width <= _DECIMAL128_DIGITS else "toDecimal256OrNull"
+
+
 def _spelled_type(to: exp.DataType) -> str:
     """``to`` as ClickHouse spells it, never ``Nullable``."""
     spelled = to.sql(dialect="clickhouse")
@@ -83,7 +92,10 @@ def _spelled_type(to: exp.DataType) -> str:
 
 def _json_parts(value: Expression, path: JsonPath, *, native: bool) -> tuple[Expression, list[Expression]]:
     """The JSON text (a native input serialised from the cast's operand) and ``path`` as key arguments."""
-    document = anon("toString", value.this if isinstance(value, exp.Cast) else value) if native else value.copy()
+    if native:
+        document = anon("toString", value.this if isinstance(value, exp.Cast) else value)
+    else:
+        document = value.copy()
     return document, [lit(step + 1) if isinstance(step, int) else lit(step) for step in path.steps]
 
 
@@ -397,24 +409,36 @@ class ClickhouseDialect(SqlDialect):
     def round_half_away(self, value: Expression, digits: int) -> Expression:
         """``round`` breaks a Float64 tie to even: the value is read as a Decimal truncated one digit past ``digits`` (a
         literal from its exact text: it would read as a Float64), then rounded as one."""
+        return self._half_away(value, digits, width=_DECIMAL128_DIGITS)
+
+    def _half_away(self, value: Expression, digits: int, *, width: int) -> Expression:
         text = _number_text(value)
         if text is None:
-            exact = anon("accurateCastOrNull", value, lit(f"Decimal(38, {digits + 1})"))
+            exact = anon("accurateCastOrNull", value, lit(f"Decimal({width}, {digits + 1})"))
         else:
-            exact = anon("toDecimal128OrNull", lit(text), lit(digits + 1))
+            exact = anon(_to_decimal(width), lit(text), lit(digits + 1))
         return exp.Round(this=exact, decimals=lit(digits))
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """A ``DECIMAL`` rounds through a guard digit past its precision, which Decimal256's 76 digits leave no room
+        for at precision 76."""
+        parts = decimal_parts(data_type)
+        if parts is not None and (parts[0] or 0) >= _DECIMAL256_DIGITS:
+            return False
+        return super().cast_type_supported(data_type)
 
     def build_decimal_cast(
         self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],
         try_: bool,
     ) -> Expression:
         """Numeric text too is rounded here (the own cast truncates and refuses spaces); a precision is not
-        enforced by the type, so ``TRY_CAST`` checks it."""
+        enforced by the type, so ``TRY_CAST`` checks it. The rounding guard digit needs ``precision + 1`` digits."""
+        width = _DECIMAL128_DIGITS if precision < _DECIMAL128_DIGITS else _DECIMAL256_DIGITS
         if source is None:
-            exact = anon("toDecimal128OrNull", anon("trimBoth", value), lit(scale + 1))
+            exact = anon(_to_decimal(width), anon("trimBoth", value), lit(scale + 1))
             rounded: Expression = exp.Round(this=exact, decimals=lit(scale))
         else:
-            rounded = self.round_half_away(value, scale)
+            rounded = self._half_away(value, scale, width=width)
         cast = self.build_cast(rounded, to)
         if not try_:
             return cast

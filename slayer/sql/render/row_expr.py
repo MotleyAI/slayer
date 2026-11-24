@@ -64,6 +64,7 @@ from slayer.sql.dialects.base import (
     bare_comparands,
     case,
     cast_target,
+    decimal_parts,
     either,
     func,
     is_list_fn,
@@ -71,6 +72,7 @@ from slayer.sql.dialects.base import (
     operand_copy,
     require_library,
     temporal_type_of,
+    text_length,
 )
 from slayer.sql.render.library import json_operands, render_library_call
 from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
@@ -285,13 +287,15 @@ def render_cast(
     *, key: CastKey, part: Callable[[Any], Expression], dialect: SqlDialect, direct: bool = True,
 ) -> Expression:
     """The author's ``CAST`` / ``TRY_CAST`` through the dialect's author-cast lowering, and a ``TRY_CAST`` of
-    ``json_value`` (``RETURNING``) as the dialect's typed read when ``direct`` (its inputs readable)."""
+    ``json_value`` (``RETURNING``) as the dialect's typed read when ``direct`` (its inputs readable) and the type
+    has no length or scale to apply."""
     to = cast_target(key.type_text, dialect=dialect)
     if key.try_:
         require_library(dialect, "try_cast")
         to = dialect.try_cast_type(to, data_type=key.data_type)
     source = key.source
-    if key.try_ and direct and isinstance(source, ScalarCallKey) and source.name == "json_value":
+    sized = text_length(to) is not None or decimal_parts(to) is not None
+    if key.try_ and direct and not sized and isinstance(source, ScalarCallKey) and source.name == "json_value":
         value, path, native = json_operands(source, part=part, dialect=dialect)
         return dialect.build_json_value_as(value, path, native, to, key.data_type)
     value = part(source)

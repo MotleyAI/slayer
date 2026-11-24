@@ -73,6 +73,19 @@ async def test_try_cast_of_a_constant_never_fails_at_plan_time(pg, expr: str, ex
     assert set(by_key(resp, "id", "x").values()) == {expected}, resp.sql
 
 
+@pytest.mark.parametrize(("number", "target", "expected"), [
+    ("1.5", "INT", 2), ("-2.5", "BIGINT", -3), ("-9223372036854775809", "BIGINT", None),
+    ("-9223372036854775809.4", "BIGINT", None), ("1e400", "BIGINT", None),
+])
+async def test_json_number_read_as_an_integer_exactly(pg, number: str, target: str, expected) -> None:
+    engine, version_num = pg
+    if version_num < 160000:
+        pytest.skip("Postgres before 16 gets a plain CAST")
+    expr = f"TRY_CAST(json_value('{{{{\"v\": {number}}}}}', '$.v') AS {target})"
+    resp = await engine.execute(q(dimensions=["orders.id", {"field": expr, "alias": "x"}]))
+    assert {None if v is None else int(v) for v in by_key(resp, "id", "x").values()} == {expected}, resp.sql
+
+
 async def test_try_cast_of_an_aggregate_reads_the_group(pg) -> None:
     engine, version_num = pg
     if version_num < 160000:

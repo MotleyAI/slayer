@@ -143,7 +143,7 @@ def _text_problem(text: str) -> Optional[str]:
     if spellings:
         return f"{spellings[0]} is SLayer syntax, not an Ossie expression"
     for call in call_spans(text):
-        name = call.callee.lower()
+        name = call.name.lower()
         if name in REWRITTEN_AGGREGATES:
             return f"{call.callee}() is a SLayer function Ossie does not define"
         spec = SCALAR_SPECS.get(name)

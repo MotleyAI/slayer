@@ -116,6 +116,9 @@ TRY_CAST_TARGET_CASES: list[tuple[str, str, Any]] = [
     ("json_value('{{\"v\": -2.5}}', '$.v')", "SMALLINT", -3),
     ("json_value('{{\"v\": \"1.5\"}}', '$.v')", "INT", None),
     ("json_value('{{\"v\": 7}}', '$.v')", "INT", 7),
+    ("json_value('{{\"v\": 2.50}}', '$.v')", "INT", 3),
+    ("json_value('{{\"v\": 1.5E0}}', '$.v')", "INT", 2),
+    ("json_value('{{\"v\": \"\\u0031.5\"}}', '$.v')", "INT", None),
 ]
 TRY_CAST_CASE_IDS = [f"{src}->{to}" for src, to, _ in TRY_CAST_TARGET_CASES]
 
@@ -188,6 +191,8 @@ AUTHOR_CAST_CASES: list[CastCase] = [
     _c("CAST(12.4 AS NUMERIC)", 12),
     _c("CAST(-12.5 AS DECIMAL)", -13),
     _c("CAST(12.5 AS DECIMAL(5))", 13),
+    _c(f"CAST('{10 ** 37}' AS DECIMAL(38,0))", 10 ** 37, exact=True),
+    _c("CAST('0.5' AS DECIMAL(38,30))", 0.5, exact=True),
     _c("CAST('abcdef' AS VARCHAR(3))", "abc"),
     _c("CAST('ñandú' AS VARCHAR(2))", "ña"),
     _c("CAST('ab' AS VARCHAR(3))", "ab"),

@@ -10,6 +10,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
+from slayer.core.errors import CastTypeError
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._cast_fixtures import (
     CAST_MATRIX,
@@ -99,7 +100,7 @@ class TestSqliteCasts:
         ("CAST('12abc' AS BOOLEAN)", None), ("CAST(5 AS BOOLEAN)", 1), ("CAST(-1 AS BOOLEAN)", 1),
         ("CAST(12345.6 AS DECIMAL(3,1))", None), ("CAST('12abc' AS DECIMAL(10,2))", None),
         ("CAST('1e' AS DECIMAL(5,1))", None), ("CAST('12.345' AS DECIMAL(10,2))", 12.35),
-        ("CAST('abcdef' AS VARCHAR(3))", "abc"),
+        ("CAST('abcdef' AS VARCHAR(3))", "abc"), (f"CAST('{'1' * 30}' AS DECIMAL(38,0))", 1.111111111111111e29),
     ])
     async def test_value(self, sqlite_engine: SlayerQueryEngine, expr: str, expected: Any) -> None:
         resp = await sqlite_engine.execute(q(metrics=[m(f"max({expr})")]))
@@ -113,6 +114,17 @@ class TestSqliteCasts:
     async def test_boolean_text_column(self, sqlite_engine: SlayerQueryEngine) -> None:
         resp = await sqlite_engine.execute(q(dimensions=["orders.id", {"field": "CAST(orders.code AS BOOLEAN)", "alias": "x"}]))
         assert by_key(resp, "id", "x") == {1: None, 2: None, 3: None, 4: None, 5: None}, resp.sql
+
+
+@pytest.mark.parametrize(("expr", "expected"), [
+    ("TRY_CAST(json_value('{{\"v\": \"abcdef\"}}', '$.v') AS VARCHAR(3))", "abc"),
+    ("TRY_CAST(json_value('{{\"v\": 12.345}}', '$.v') AS DECIMAL(10,2))", 12.35),
+    ("TRY_CAST(json_value('{{\"v\": \"x\"}}', '$.v') AS DECIMAL(10,2))", None),
+])
+async def test_try_cast_of_json_value_applies_length_and_scale(engine: SlayerQueryEngine, expr: str,
+                                                               expected: Any) -> None:
+    resp = await engine.execute(q(metrics=[m(f"max({expr})")]))
+    assert_cast_value(single(resp), expected, where=f"{expr}\n{resp.sql}")
 
 
 class TestNonFiniteDoubles:
@@ -153,12 +165,52 @@ class TestEmission:
     async def test_bigquery_bare_decimal_has_scale_zero(self) -> None:
         sql = await emit(q(dimensions=["orders.id", {"field": "CAST(orders.amount AS DECIMAL)", "alias": "x"}]),
                          dialect="bigquery")
-        assert "BIGNUMERIC(38, 0)" in sql.upper(), sql
+        assert "CAST(ROUND(orders.amount, 0) AS BIGNUMERIC)" in sql, sql
+        assert not re.search(r"\b(BIG)?NUMERIC\(", sql, re.IGNORECASE), sql
 
-    @pytest.mark.parametrize("dialect", ["snowflake", "bigquery"])
-    async def test_decimal_scale_is_kept(self, dialect: str) -> None:
+    async def test_snowflake_decimal_scale_is_kept(self) -> None:
         sql = await emit(q(dimensions=["orders.id", {"field": "CAST(orders.amount AS DECIMAL(10,2))", "alias": "x"}]),
-                         dialect=dialect)
-        casts = [c for c in _sql(sql, dialect).find_all(exp.Cast) if "amount" in c.this.sql().lower()]
+                         dialect="snowflake")
+        casts = [c for c in _sql(sql, "snowflake").find_all(exp.Cast) if "amount" in c.this.sql().lower()]
         assert casts, sql
         assert all([e.sql() for e in c.to.expressions][-1:] == ["2"] for c in casts), sql
+
+    async def test_bigquery_decimal_scale_is_rounded_outside_the_cast(self) -> None:
+        # BigQuery refuses a parameterized CAST target.
+        sql = await emit(q(dimensions=["orders.id", {"field": "CAST(orders.amount AS DECIMAL(10,2))", "alias": "x"}]),
+                         dialect="bigquery")
+        assert "CAST(ROUND(orders.amount, 2) AS NUMERIC)" in sql, sql
+        assert not re.search(r"\b(NUMERIC|STRING)\(", sql, re.IGNORECASE), sql
+
+    @pytest.mark.parametrize("expr", [
+        "TRY_CAST(orders.amount AS DECIMAL(10,2))", "CAST(orders.status AS VARCHAR(3))", "CAST('1.5' AS NUMERIC(38,0))",
+    ])
+    async def test_bigquery_cast_targets_take_no_parameters(self, expr: str) -> None:
+        sql = await emit(q(dimensions=["orders.id", {"field": expr, "alias": "x"}]), dialect="bigquery")
+        assert not re.search(r"\b(NUMERIC|STRING)\(", sql, re.IGNORECASE), sql
+
+    @pytest.mark.parametrize(("expr", "reader"), [
+        ("CAST(orders.amount AS DECIMAL(10,2))", "'Decimal(38, 3)'"),
+        ("CAST(orders.amount AS DECIMAL(38,2))", "'Decimal(76, 3)'"),
+        ("CAST(orders.status AS DECIMAL(10,2))", "toDecimal128OrNull("),
+        ("CAST(orders.status AS DECIMAL(38,38))", "toDecimal256OrNull("),
+        ("CAST(orders.amount AS DECIMAL(75,74))", "'Decimal(76, 75)'"),
+    ])
+    async def test_clickhouse_rounding_intermediate_holds_the_target(self, expr: str, reader: str) -> None:
+        # The guard digit needs precision + 1 digits; Decimal128 holds 38.
+        sql = await emit(q(dimensions=["orders.id", {"field": expr, "alias": "x"}]), dialect="clickhouse")
+        assert reader in sql, sql
+
+    @pytest.mark.parametrize("type_text", ["DECIMAL(76,76)", "DECIMAL(76,2)"])
+    async def test_clickhouse_refuses_a_decimal_with_no_room_for_rounding(self, type_text: str) -> None:
+        query = q(dimensions=["orders.id", {"field": f"CAST(orders.status AS {type_text})", "alias": "x"}])
+        with pytest.raises(CastTypeError):
+            await emit(query, dialect="clickhouse")
+
+    @pytest.mark.parametrize("spelling", ["VARCHAR(3)", "NVARCHAR(3)"])
+    async def test_sql_server_varchar_length_counts_code_points_in_nvarchar(self, spelling: str) -> None:
+        # VARCHAR holds only the collation's code page and is sized in bytes under a UTF-8 one.
+        sql = await emit(q(dimensions=["orders.id", {"field": f"CAST(orders.status AS {spelling})", "alias": "x"}]),
+                         dialect="tsql")
+        assert "COLLATE Latin1_General_100_CS_AS_SC, 1, 3) AS NVARCHAR(MAX))" in sql, sql
+        assert not re.search(r"\bVARCHAR\(", sql), sql

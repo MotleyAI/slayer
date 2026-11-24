@@ -46,7 +46,8 @@ async def test_aggregate_boolean_restoration(backend: tuple[str, SlayerQueryEngi
     name, engine = backend
     hi = single(await engine.execute(q(metrics=[m("max(orders.amount > 15)")])))
     lo = single(await engine.execute(q(metrics=[m("min(orders.amount > 15)")])))
-    assert (hi, lo) == RESTORED[name]
+    got = (hi, lo)
+    assert got == RESTORED[name]
     assert type(hi) is type(RESTORED[name][0])
 
 

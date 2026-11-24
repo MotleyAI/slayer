@@ -96,10 +96,20 @@ async def test_a_stored_agg_field_keeps_its_value(tmp_path: Path, shop_ds: Datas
     (PREVIOUS, "Agg(amount)", "amount"),
     (PREVIOUS, "AGG(amount) + LENGTH('AGG(x)')", "amount + LENGTH('AGG(x)')"),
     (PREVIOUS, {"sql": "AGG(amount) + 1"}, "amount + 1"),
-], ids=["v25", "v27-lower", "v28-mixed-case", "v28-quoted", "v28-object"])
+    (PREVIOUS, "AGG /* ( */ (amount) + 1", "amount + 1"),
+    (PREVIOUS, '"AGG"(amount) + 1', "amount + 1"),
+], ids=["v25", "v27-lower", "v28-mixed-case", "v28-quoted", "v28-object", "v28-comment", "v28-quoted-callee"])
 def test_a_field_agg_from_v20_to_v28_is_unwrapped(version: int, stored: Any, upgraded: str) -> None:
     model = SlayerDataset.model_validate(orders_doc(version, field_a(version, stored)))
     assert expression_text(field_of(model, "a").expression) == upgraded
+
+
+def test_a_portable_dialect_entry_is_unwrapped() -> None:
+    stored = {"dialects": [{"dialect": "OSSIE_SQL_2026", "expression": "AGG(amount) + 1"},
+                           {"dialect": "SQLITE", "expression": "AGG(amount)"}]}
+    entry = field_of(SlayerDataset.model_validate(orders_doc(PREVIOUS, field_a(PREVIOUS, stored))), "a").expression
+    assert isinstance(entry, ExpressionObject)
+    assert [d.expression for d in entry.dialects or []] == ["amount + 1", "AGG(amount)"]
 
 
 def test_a_metric_agg_from_before_the_agg_upgrade_stays_renamed() -> None:

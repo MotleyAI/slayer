@@ -6,7 +6,7 @@ import math
 import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Context, Decimal
 from functools import lru_cache
 from urllib.parse import unquote
 
@@ -481,13 +481,26 @@ def _slayer_try_integer(value, low, high):
     return number if number is not None and low <= number <= high else None
 
 
+def _half_away(exact: Decimal, digits: int) -> Decimal:
+    """``exact`` rounded to ``digits`` fractional digits, ties away from zero, at any magnitude."""
+    exponent = -digits
+    if exponent <= int(exact.as_tuple().exponent):
+        return exact
+    context = Context(prec=max(exact.adjusted() - exponent + 2, 1))
+    return exact.quantize(Decimal(1).scaleb(exponent), rounding=ROUND_HALF_UP, context=context)
+
+
 def _round(x, digits):
     """``round(x, digits)``, ties away from zero; a negative ``digits`` rounds left of the decimal point."""
     exact = _exact(x) if isinstance(x, (int, float)) else None
     if exact is None or digits is None:
         return None
-    rounded = exact.quantize(Decimal(1).scaleb(-int(digits)), rounding=ROUND_HALF_UP)
-    return int(rounded) if isinstance(x, int) else float(rounded)
+    return _sqlite_number(_half_away(exact, int(digits)), integer=isinstance(x, int))
+
+
+def _sqlite_number(value: Decimal, *, integer: bool):
+    """``value`` as SQLite stores it: an INTEGER when wanted and in range, else a REAL."""
+    return int(value) if integer and _INT64_MIN <= value <= _INT64_MAX else float(value)
 
 
 def _slayer_cast_decimal(value, precision, scale):
@@ -495,10 +508,10 @@ def _slayer_cast_decimal(value, precision, scale):
     exact = _exact(value)
     if exact is None:
         return None
-    rounded = exact.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP)
-    if rounded.adjusted() >= precision - scale:
+    rounded = _half_away(exact, scale)
+    if rounded and rounded.adjusted() >= precision - scale:
         return None
-    return int(rounded) if scale == 0 else float(rounded)
+    return _sqlite_number(rounded, integer=scale == 0)
 
 
 def _try_boolean(text: str):

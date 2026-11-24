@@ -1003,10 +1003,7 @@ class SqlDialect(BaseModel):
             return self.number_to_boolean(value)
         length = text_length(to)
         if length is not None:
-            to = exp.DataType.build(f"VARCHAR({length})")
-            if not self.varchar_cast_truncates:
-                value = self.char_substring(as_text(value), lit(1), lit(length))
-            return self.build_cast(value, to)
+            return self.build_varchar_cast(value, length)
         parts = decimal_parts(to)
         if parts is not None:
             precision, scale = parts[0] or DEFAULT_DECIMAL_PRECISION, parts[1] or 0
@@ -1019,6 +1016,12 @@ class SqlDialect(BaseModel):
         if source is DataType.FLOAT and integer and not self.number_cast_rounds:
             value = self.round_half_away(value, 0)
         return self.build_try_cast(value, to) if try_ else self.build_cast(value, to)
+
+    def build_varchar_cast(self, value: Expression, length: int) -> Expression:
+        """A cast to ``VARCHAR(length)``: the first ``length`` characters."""
+        if not self.varchar_cast_truncates:
+            value = self.char_substring(as_text(value), lit(1), lit(length))
+        return self.build_cast(value, exp.DataType.build(f"VARCHAR({length})"))
 
     def build_decimal_cast(
         self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],  # NOSONAR(S1172) — hook parameter read by dialect overrides

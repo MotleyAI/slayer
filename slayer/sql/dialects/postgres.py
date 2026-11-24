@@ -326,9 +326,11 @@ class PostgresDialect(SqlDialect):
         return self._valid_json(value, read, native=native)
 
     def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        """The JSON number as an exact ``NUMERIC``: a double would overflow (``1e400``) or round an out-of-range
+        integer into range."""
         doc, keys = _jsonb_parts(value, path)
         number = exp.EQ(this=anon("JSONB_TYPEOF", anon("JSONB_EXTRACT_PATH", doc, *keys)), expression=lit("number"))
-        read = exp.Cast(this=anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys), to=exp.DataType.build("DOUBLE PRECISION"))
+        read = exp.Cast(this=anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys), to=exp.DataType.build("DECIMAL"))
         return self._valid_json(value, case((number, read)), native=native)
 
     def round_half_away(self, value: Expression, digits: int) -> Expression:

@@ -18,6 +18,8 @@ from slayer.sql.dialects.sqlite import (
     _PercentileContAgg,
     _PercentileDiscAgg,
     _pow,
+    _round,
+    _slayer_cast_decimal,
     _StddevPopAgg,
     _StddevSampAgg,
     _VarPopAgg,
@@ -371,6 +373,23 @@ def test_pow_huge_exponent_overflows_cleanly():
     # math.pow returns a bounded float; ** would still build a 302-digit
     # int. Pin the float type to lock in the bounded-output guarantee.
     assert isinstance(_pow(2, 1000), float)
+
+
+@pytest.mark.parametrize(("x", "digits", "expected"), [
+    (1.5e27, 2, 1.5e27), (1.2345678901234567e30, 5, 1.2345678901234567e30), (2 ** 62 + 50, -2, 4611686018427388000),
+    (1.25, 1, 1.3), (-1250, -2, -1300), (2 ** 63 - 1, -1, 9.223372036854776e18),
+])
+def test_round_beyond_default_decimal_precision(x, digits, expected):
+    assert _round(x, digits) == expected
+
+
+@pytest.mark.parametrize(("value", "precision", "scale", "expected"), [
+    ("1" * 30, 38, 0, 1.111111111111111e29), ("123456789012345678901234567.891", 38, 2, 1.2345678901234568e26),
+    ("1" * 19, 19, 0, 1111111111111111111), ("1" * 30, 29, 0, None), ("1" + "0" * 19, 20, 0, 1e19),
+    ("0", 2, 2, 0), (0, 3, 3, 0), ("0.004", 2, 2, 0), ("0.5", 2, 2, 0.5), ("1", 2, 2, None),
+])
+def test_cast_decimal_beyond_default_decimal_precision(value, precision, scale, expected):
+    assert _slayer_cast_decimal(value, precision, scale) == expected
 
 
 # ---------------------------------------------------------------------------

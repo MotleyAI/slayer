@@ -250,6 +250,13 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def _require_regex(self, fn: str) -> None:
         self.require_version(minimum=_SQL_SERVER_2025, what=f"{fn}()", release="SQL Server 2025")
 
+    def build_varchar_cast(self, value: Expression, length: int) -> Expression:
+        """``NVARCHAR`` throughout: ``VARCHAR`` holds only the collation's code page and is sized in bytes under a
+        UTF-8 one; the first ``length`` code points are counted under ``_CODE_POINTS``."""
+        text = _collated(exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()), _CODE_POINTS)
+        first = anon("SUBSTRING", text, lit(1), lit(length))
+        return self.build_cast(first, _NVARCHAR_MAX.copy())
+
     def text_repeat(self, value: Expression, count: Expression) -> Expression:
         return anon("REPLICATE", value, count)
 
@@ -392,12 +399,15 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return case((exp.EQ(this=anon("ISJSON", value, exp.var("VALUE")), expression=lit(1)), read))
 
     def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
-        """``JSON_MODIFY`` writes the scalar back as a string and keeps the rest of the text: only a non-string
-        changes the document (a subquery, ``OPENJSON``, is refused inside an aggregate). Read as ``[document]``."""
+        """``JSON_MODIFY`` writes the scalar back as a string and keeps the rest of the text: a number gains exactly
+        its two quotes, a number-like string (escaped or not) never grows (a subquery, ``OPENJSON``, is refused
+        inside an aggregate). Read as ``[document]``."""
         document = anon("CONCAT", lit("["), exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()), lit("]"))
         text = lit(json_path_text((0, *path.steps)))
         read = anon("JSON_VALUE", document, text)
-        not_string = exp.NEQ(this=anon("JSON_MODIFY", document, text, read), expression=document.copy())
+        grown = exp.Sub(this=anon("DATALENGTH", anon("JSON_MODIFY", document, text, read)),
+                        expression=anon("DATALENGTH", document.copy()))
+        not_string = exp.EQ(this=grown, expression=lit(4))  # two NVARCHAR quotes
         valid = exp.EQ(this=anon("ISJSON", document), expression=lit(1))
         return case((exp.And(this=valid, expression=not_string),
                      exp.TryCast(this=read.copy(), to=exp.DataType.build("FLOAT"))))

@@ -212,6 +212,15 @@ class TestInputForms:
         assert "toString(lib.payload)" in sql, sql
         assert "AS JSON" not in sql.upper(), sql
 
+    async def test_bigquery_json_column_number_read_as_json(self) -> None:
+        # A JSON column's JSON_QUERY is JSON, which SAFE_CAST cannot read as FLOAT64.
+        query = lib_query("json_value(lib.payload, '$.a' RETURNING INT)")
+        native = await emit_lib(query, dialect="bigquery", datasets=[_json_dataset(db_type="JSON")])
+        text = await emit_lib(query, dialect="bigquery", datasets=[_json_dataset(db_type=None)])
+        assert "TO_JSON_STRING(JSON_QUERY(lib.payload, " in native, native
+        assert "AS JSON" not in native.upper(), native
+        assert "TO_JSON_STRING" not in text, text
+
     @pytest.mark.parametrize(("dialect", "db_type"), [
         ("postgres", "jsonb"), ("postgres", "json"), ("mysql", "JSON"), ("duckdb", "JSON"), ("bigquery", "JSON"),
         ("snowflake", "VARIANT"), ("snowflake", "OBJECT"), ("snowflake", "ARRAY"), ("clickhouse", "JSON"),

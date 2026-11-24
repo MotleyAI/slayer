@@ -30,6 +30,8 @@ OFF_COUNT = {
     "REGEXP_REPLACE(orders.status, 'E$', '', 'i') = 'complet'": 150,
     "COALESCE(orders.status) = 'complete'": 150,
     "CONCAT(orders.status) = 'complete'": 150,
+    '"LOG"(orders.amount) > 2': 500,
+    "\"regexp_extract\"(orders.status, '^(c[a-z])', 1) = 'co'": 150,
 }
 
 #: Aggregate filter → strict code.

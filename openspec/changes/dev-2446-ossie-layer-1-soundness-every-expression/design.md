@@ -66,6 +66,8 @@ Principles that bind the work: semantics §4.2.1, §4.2.2, §4.4; system §3.8 (
 23. **Aggregate admission from the canonical parse** (codex): admitted only when the written spelling is one Ossie defines, it normalises to a SLayer built-in aggregation, and its shape (arguments, `WITHIN GROUP`, `FILTER`) is supported. Tests for aliases (`STDDEV`, `VARIANCE`, `APPROX_COUNT_DISTINCT`), percentile spellings and shapes, `FILTER`, wrong argument counts.
 24. **The REQUIRED-construct guard is a manifest** (codex): every construct of the spec's REQUIRED tables plus the prose-defined requirements (`FILTER`, the `AGG` reservation, numeric semantics, `CAST` / `TRY_CAST`, window NULL order as a DEV-2282 gap), each mapped to its test row; the registry test also fails on a "(REQUIRED)" heading the manifest does not cover.
 25. **A JSON number converts as a number** (user): `json_value(… RETURNING INT)` ≡ `TRY_CAST(json_value(…) AS INT)` reads a JSON number with a fraction as a number and rounds it half away from zero (`{"v": 1.5}` → 2) on every Tier-1 dialect; a JSON string stays text (`"1.5"` → NULL). `tests/test_dev2446_internal_casts.py::test_json_returning`'s `1.5` row aligns to 2.
+26. **BigQuery decimal casts** (user): BigQuery refuses parameterized types in `CAST`, so `DECIMAL(p, s)` rounds to `s` half away from zero and casts to `NUMERIC` / `BIGNUMERIC`; `TRY_CAST` yields NULL past `p`, as on ClickHouse.
+27. **Exponent text on Trino / SQL Server goes through a double** (user): their own decimal cast reads no exponent; an exact reader is dialect-specific SQL for a rare input, so the digits past a double's precision are documented as lost.
 
 ## Risks / Trade-offs
 
