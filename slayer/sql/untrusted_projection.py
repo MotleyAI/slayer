@@ -21,6 +21,7 @@ _PREDICATE = "__slayer_p"
 _MATCHED = "__slayer_m"
 _ONE = "__slayer_q"
 _ROW = "__slayer_r"
+_CARRIED = "slayer_carried"
 
 
 _E = TypeVar("_E", bound=Expr)
@@ -109,14 +110,13 @@ def _strict_part(part: Expr, subtree: Set[str]) -> bool:
     return False
 
 
-def _nulled(predicate: Expr, subtree: Set[str]) -> Expr:
-    """``predicate`` on a null-extended row: each subtree column read as NULL."""
-    if isinstance(predicate, exp.Column):
-        return exp.Null()
-    out = predicate.copy()
-    for column in list(_scope_columns(out)):  # NOSONAR(S7504) — the loop replaces nodes of the tree being walked
+def _carried(expr: Expr, subtree: Set[str]) -> Expr:
+    """A copy of ``expr`` whose subtree columns are carried from the representative row, never grouped: on a home row
+    the join null-extends they read its null-extended values, as after the subtree's joins."""
+    out = expr.copy()
+    for column in _scope_columns(out) if not isinstance(out, exp.Column) else [out]:
         if column.table in subtree:
-            column.replace(exp.Null())
+            column.meta[_CARRIED] = True
     return out
 
 
@@ -182,12 +182,16 @@ class _Projection:
         inner_only = bool(inside) or not all(_is_left(j) for j in self.inner_joins)
         null_extended = _is_left(self.root) and not inner_only
         dims = self._dimensions(null_extended=null_extended)
-        self.select.set("where", exp.Where(this=exp.and_(*outside)) if outside else None)
+        holds, kept = self._valued_filter(valued, null_extended=null_extended)
+        where = [*outside, kept] if kept is not None else outside
+        self.select.set("where", exp.Where(this=exp.and_(*where)) if where else None)
         group, other = self._project_reads(dim_names={name for _, name in dims} | {_PREDICATE, _MATCHED})
         for expr, name in dims:
             group.append(expr)
             self.projected.append(expr.as_(name))
-        kept = self._valued_filter(valued, group=group, null_extended=null_extended)
+        if holds is not None:
+            group.append(holds)
+            self.projected.append(holds.copy().as_(_PREDICATE))
         inner = self._inner(inside=inside, group=group, other=other)
         self.relation.meta.pop(UNTRUSTED_HOP, None)
         self.root.set("this", exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier(self.alias))))
@@ -195,8 +199,6 @@ class _Projection:
             self.root.set("side", None)
             self.root.set("kind", None)
         self.select.set("joins", self.outer_joins)
-        if kept is not None:
-            self.select.set("where", exp.Where(this=exp.and_(*outside, kept)))
 
     def _inner(self, *, inside: List[Expr], group: List[Expr], other: List[Expr]) -> exp.Select:
         """One row per distinct grouped value; the other reads taken from one representative subtree row of each."""
@@ -249,7 +251,7 @@ class _Projection:
             return [c for c in _scope_columns(part)
                     if c.table in self.subtree and not (c.table == self.alias and c.name in dim_names)]
 
-        grouped = {(c.table, c.name) for part in self._grouping_parts() for c in own(part)}
+        grouped = {(c.table, c.name) for part in self._grouping_parts() for c in own(part) if not c.meta.get(_CARRIED)}
         on = self.root.args.get("on")
         reads = [c for part in [*([on] if on is not None else []), *self._outer_parts(), *self._where_parts()]
                  for c in own(part)]
@@ -269,18 +271,16 @@ class _Projection:
             self._rename(column)
         return group, other
 
-    def _valued_filter(self, valued: List[Expr], *, group: List[Expr], null_extended: bool) -> Optional[Expr]:
-        """Project ``valued`` as a value of each subtree row; the outer condition keeping a matched row it holds on,
-        and, when the join can null-extend, an unmatched home row it holds on with NULL subtree columns."""
+    def _valued_filter(self, valued: List[Expr], *, null_extended: bool) -> Tuple[Optional[Expr], Optional[Expr]]:
+        """``valued`` as a value of each subtree row, and the outer condition keeping a matched row it holds on and,
+        when the join can null-extend, an unmatched home row it holds on as after the subtree's joins."""
         if not valued:
-            return None
+            return None, None
         holds = exp.Case(ifs=[exp.If(this=exp.and_(*(c.copy() for c in valued)), true=exp.Literal.number(1))])
-        group.append(holds)
-        self.projected.append(holds.copy().as_(_PREDICATE))
         kept: Expr = exp.EQ(this=self._read(_PREDICATE), expression=exp.Literal.number(1))
         if not null_extended:
-            return kept
-        return exp.or_(kept, exp.and_(self._unmatched(), *(_nulled(c, self.subtree) for c in valued)))
+            return holds, kept
+        return holds, exp.or_(kept, exp.and_(self._unmatched(), *(_carried(c, self.subtree) for c in valued)))
 
     def _unmatched(self) -> Expr:
         """True on a home row the subtree null-extends; projects the match marker once."""
@@ -324,7 +324,7 @@ class _Projection:
             out.append((g.copy(), name))
             replacement: Expr = self._read(name)
             if null_extended and not _subtree_column(g, self.subtree):
-                replacement = exp.Case(ifs=[exp.If(this=self._unmatched(), true=_nulled(g, self.subtree))],
+                replacement = exp.Case(ifs=[exp.If(this=self._unmatched(), true=_carried(g, self.subtree))],
                                        default=replacement)
             for part in self._outer_parts():
                 self._replace(part, g, replacement)
