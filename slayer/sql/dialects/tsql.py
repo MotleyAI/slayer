@@ -195,6 +195,7 @@ def _bit_value(predicate: Expr) -> Expression:
 
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "tsql"
     native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "SQL Server"

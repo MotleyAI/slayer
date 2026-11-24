@@ -113,7 +113,7 @@ Each dataset's, field's, dataset metric's and relationship's `ai_context`, and i
 
 ## SLAYER entries
 
-Settings Ossie has no place for travel in a `nonportable_extensions` entry with `vendor_name: SLAYER` on the entity they belong to: row filters, `hidden`, access tags, custom aggregations, query-backed and `sql`-mode sources, field formats and granularities, a relationship's cardinality or join type, and any definition that is not valid Ossie in its position. A document without a `SLAYER` entry loads as plain Ossie.
+Settings Ossie has no place for travel in a `nonportable_extensions` entry with `vendor_name: SLAYER` on the entity they belong to: row filters, `hidden`, access tags, custom aggregations, query-backed and `sql`-mode sources, field formats and granularities, a relationship's cardinality (an unset one included), join type or `trusted` flag, a dataset's `enforced_keys`, and any definition that is not valid Ossie in its position. A document without a `SLAYER` entry loads as plain Ossie: each relationship as an untrusted `many_to_one`, each dataset with no enforced keys.
 
 `SLAYER` entries are read on every load. An entry that repeats core content applies only while that content is unchanged: after a hand edit of the core, the core wins and `inspect` shows a load warning naming the entity. A malformed entry is ignored with a load warning and affects no other entity, as is a relationship's entry declaring more than one relationship.
 

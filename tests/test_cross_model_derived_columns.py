@@ -25,6 +25,14 @@ from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDime
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._field_builders import col, pk
+from tests._trusted import trusting
+
+
+class _TrustingStorage(YAMLStorage):
+    """Stores every relationship trusted: these tests pin the inline-join lowering."""
+
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        await super()._save_dataset_impl(trusting(dataset))
 
 
 def _model_a(*fields: DatasetField) -> SlayerDataset:
@@ -48,7 +56,7 @@ def _no_bare_derived_ref(sql: str, table: str, col: str) -> bool:
 
 
 def _engine_with_storage(tmp_path) -> tuple[SlayerQueryEngine, YAMLStorage]:
-    storage = YAMLStorage(base_dir=str(tmp_path))
+    storage = _TrustingStorage(base_dir=str(tmp_path))
     return SlayerQueryEngine(storage=storage), storage
 
 
@@ -1007,7 +1015,7 @@ async def _orders_customers_storage(tmp_path) -> YAMLStorage:
     Caller adds the orders dataset with whatever derived fields / relationships
     each test needs. Returns the populated storage.
     """
-    storage = YAMLStorage(base_dir=str(tmp_path))
+    storage = _TrustingStorage(base_dir=str(tmp_path))
     await storage.save_dataset(SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
@@ -1124,7 +1132,7 @@ async def test_dev1334_query_filter_on_multi_hop_derived_col_adds_all_prefixes(
     full alias (``customers__regions``) must appear as joined aliases in
     the emitted SQL.
     """
-    storage = YAMLStorage(base_dir=str(tmp_path))
+    storage = _TrustingStorage(base_dir=str(tmp_path))
     await storage.save_dataset(SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -1273,7 +1281,7 @@ async def _claim_amount_filter_sql(
     """Save ``claim_amount`` (PK ``id`` auto-prepended) plus any extra relationship-target
     datasets, run a query through the typed pipeline, and return the emitted SQL.
     """
-    storage = YAMLStorage(base_dir=str(tmp_path))
+    storage = _TrustingStorage(base_dir=str(tmp_path))
     for model in extra_datasets:
         await storage.save_dataset(model)
     claim_amount = SlayerDataset(
@@ -1547,7 +1555,7 @@ async def test_dev1494_cross_model_cte_target_filter_adds_join(tmp_path) -> None
     ``_cm_*`` CTE is already a per-metric isolated computation, so adding the
     join there resolves the filter without affecting sibling metrics.
     """
-    storage = YAMLStorage(base_dir=str(tmp_path))
+    storage = _TrustingStorage(base_dir=str(tmp_path))
     await storage.save_dataset(SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -1667,7 +1675,7 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
     Compile-time detection, through the typed pipeline's expander
     (``expand_derived_refs_sync``).
     """
-    storage = YAMLStorage(base_dir=str(tmp_path))
+    storage = _TrustingStorage(base_dir=str(tmp_path))
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[

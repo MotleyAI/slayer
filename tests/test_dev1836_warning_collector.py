@@ -16,6 +16,9 @@ from slayer.engine.query_engine import (
 
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1836_fixtures import (
+    _seed_duckdb,
+    _seed_sqlite,
+    dev1836_datasets,
     AMOUNT_BY_BAND,
     SPEND_BAND,
     SPEND_BY_BAND,
@@ -24,11 +27,21 @@ from tests._dev1836_fixtures import (
     q,
     rows_by,
 )
+from tests._engine_helpers import seeded_exec_engine
+from tests._trusted import trusting_all
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend(request):
     async for engine in make_exec_engine(request):
+        yield request.param, engine
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def trusted_backend(request):
+    """``exec_backend`` over trusted relationships: pins the lowering these tests were written for."""
+    seed = _seed_duckdb if request.param == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=request.param, seed=seed, datasets=trusting_all(dev1836_datasets())) as (engine, _db):
         yield request.param, engine
 
 
@@ -60,11 +73,11 @@ class TestPushedFilterEntryIdentity:
             ("cm", _EXCLUDED_APP), ("pop", _EXCLUDED_APP),
         ]
 
-    async def test_nested_producers_each_push_the_filter(self, exec_backend):
+    async def test_nested_producers_each_push_the_filter(self, trusted_backend):
         """The computed dimension's nested producer and the cross-dataset
         metric's producer both push the host conjunct — one entry each; the
         metric counts the customers with an app order (c1, c3), unfanned."""
-        _, engine = exec_backend
+        _, engine = trusted_backend
         resp = await engine.execute(q(
             dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M, CM],
@@ -80,12 +93,12 @@ class TestPushedFilterEntryIdentity:
         assert float(by[("hi",)]["cm"]) == pytest.approx(160.0)
 
     async def test_entry_arising_only_in_a_nested_producer_surfaces(
-        self, exec_backend,
+        self, trusted_backend,
     ):
         """F7 traversal proof: the ONLY producer here is the computed
         dimension's (rooted at regions); the sole metric is local. A collector
         that never walks nested plans reports nothing."""
-        _, engine = exec_backend
+        _, engine = trusted_backend
         resp = await engine.execute(q(
             dimensions=[{
                 "field": ("CASE WHEN sum(customers.regions.pop, "

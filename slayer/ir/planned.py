@@ -291,6 +291,8 @@ class SemiJoinHop(BaseModel):
     null_extended: bool = False
     #: A list child hop: the parent node's list field, unnested from the parent's row.
     lateral: Optional[str] = None
+    #: A provably but untrusted to-one hop: its target is read through its distinct projection.
+    untrusted: bool = False
 
     @property
     def node_id(self) -> str:

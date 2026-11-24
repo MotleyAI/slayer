@@ -27,6 +27,7 @@ from tests._dev1892_fixtures import (
     fanning_derived_source_datasets,
     toone_filter_datasets,
 )
+from tests._trusted import trusting_all
 
 #: wsum5 default = regions.derived_pop (= pop*2): SUM(spend * pop*2) over distinct
 #: customers = 2× the physical-pop total.
@@ -141,7 +142,8 @@ class TestHomeRootingPlanShape:
         """The broadcast producer CTE reads FROM customers with a LEFT JOIN regions, never FROM regions."""
         sql = await gen(bcast_q(
             dimensions=["orders.status"],
-            metrics=[QueryMetric(metric=_C_BROADCAST, alias="w")]), dialect="sqlite")
+            metrics=[QueryMetric(metric=_C_BROADCAST, alias="w")]), dialect="sqlite",
+            datasets=trusting_all(dev1840_datasets()))
         assert "FROM customers AS customers" in sql
         assert "LEFT JOIN regions" in sql
         assert "FROM regions" not in sql

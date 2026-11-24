@@ -574,7 +574,7 @@ def _orders_derived_grant_datasets() -> tuple[SlayerDataset, SlayerDataset]:
                 DialectEntry(dialect=d, expression="grant.amount + 1")
                 for d in ("POSTGRES", "MYSQL", "BIGQUERY", "TSQL", "SQLITE", "DUCKDB")]), datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="grant", from_columns=["grant_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="grant", from_columns=["grant_id"], to_columns=["id"], trusted=True)],
     )
     return orders, grant
 
