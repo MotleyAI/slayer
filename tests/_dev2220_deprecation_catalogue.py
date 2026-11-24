@@ -946,7 +946,7 @@ STORAGE_HOOKS: tuple[Case, ...] = tuple(
 # Mode-B spellings, strict, root extension, field sql, root-relative references, broadcast, notices
 # --------------------------------------------------------------------------- #
 def _spelling_case(token: str, *, old: dict[str, Any], new: dict[str, Any]) -> Case:
-    return _query_case(token, surface="Mode-B spelling", pinned=(SPELLINGS, token), kind="deprecated_spelling",
+    return _query_case(token, surface="Mode-B spelling", pinned=(SPELLINGS, ""), kind="deprecated_spelling",
                        old=old, new=new)
 
 
