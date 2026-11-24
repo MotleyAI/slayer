@@ -579,8 +579,18 @@ class DeprecatedSpellingWarning(SlayerWarning):
     removal: str = "3.0"
 
     def human_message(self) -> str:
-        return (f"the {self.spelling} spelling `{self.written}` is deprecated and removed in SLayer {self.removal}; "
-                f"write `{self.canonical}`")
+        removed = f"is deprecated and removed in SLayer {self.removal}"
+        if self.spelling == "==":
+            return f"The comparison `{self.written}` {removed}; write `{self.canonical}`."
+        if self.spelling in ("is None", "is not None"):
+            return f"`{self.written}` {removed}; write `{self.canonical}`."
+        if self.spelling == "bare None":
+            return f"A bare {self.written} {removed}; write `{self.canonical}`."
+        if self.spelling == "list after IN":
+            return f"A [ … ] list after IN {removed}; write a parenthesised list ( … )."
+        if self.spelling == "method-call":
+            return f"The method-call form `{self.written}` {removed}; write `{self.canonical}`."
+        return f"The {self.spelling} spelling `{self.written}` {removed}; write `{self.canonical}`."
 
 
 class DateOnlyMidnightWarning(SlayerWarning):
