@@ -3,7 +3,7 @@ its phase (from the consumer position) and routing (from its resolved home)."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
@@ -92,7 +92,7 @@ class _Walker:
     """Classifies each walked node by consumer position; ``out`` in first-seen order."""
 
     def __init__(
-        self, *, prebound: PreboundQuery, scope: Union[ModelScope, StageSchema],
+        self, *, prebound: PreboundQuery, scope: ModelScope | StageSchema,
         bundle: ResolvedSourceBundle, homes: AggregateHomes,
     ) -> None:
         self.out: List[RootDisposition] = []
@@ -208,7 +208,7 @@ class _Walker:
 
 def discover_roots(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle, homes: AggregateHomes,
+    scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle, homes: AggregateHomes,
 ) -> List[RootDisposition]:
     """Every producer root of ``prebound``, one disposition per consumer occurrence, routed by its home."""
     w = _Walker(prebound=prebound, scope=scope, bundle=bundle, homes=homes)

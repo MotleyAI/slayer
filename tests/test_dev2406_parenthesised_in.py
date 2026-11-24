@@ -3,11 +3,9 @@ period membership)."""
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
-import duckdb
 import pytest
 
 from slayer.core.errors import DateOperandTypeError
@@ -15,23 +13,11 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.syntax import parse_filter_expr
-from tests._engine_helpers import seeded_exec_engine
-
-
-def _seed_tables(db_path: str, tables: dict[str, tuple[str, list[tuple[Any, ...]]]]) -> None:
-    """Create and fill ``{name: (column DDL, rows)}`` in the SQLite or DuckDB file at ``db_path``."""
-    con = duckdb.connect(db_path) if db_path.endswith(".duckdb") else sqlite3.connect(db_path)
-    try:
-        for name, (columns, rows) in tables.items():
-            con.execute(f"CREATE TABLE {name} ({columns})")
-            con.executemany(f"INSERT INTO {name} VALUES ({', '.join('?' * len(rows[0]))})", rows)
-        con.commit()
-    finally:
-        con.close()
+from tests._engine_helpers import seed_tables, seeded_exec_engine
 
 
 def _seed(db_path: str) -> None:
-    _seed_tables(db_path, {"invoices": ("id INTEGER, state VARCHAR, amount DOUBLE, issued_at TIMESTAMP", [
+    seed_tables(db_path, {"invoices": ("id INTEGER, state VARCHAR, amount DOUBLE, issued_at TIMESTAMP", [
         (1, "paid", 10.0, "2025-03-01 00:00:00"), (2, "sent", 20.0, "2025-06-01 00:00:00"),
         (3, "paid", 30.0, "2024-12-01 00:00:00"), (5, "draft", 50.0, "2025-01-15 00:00:00"),
     ])})
@@ -115,6 +101,10 @@ class TestMeasureConditions:
 class TestParser:
     def test_parenthesised_number_is_the_one_element_tuple(self) -> None:
         assert parse_filter_expr("id in (5)") == parse_filter_expr("id in (5,)")
+
+    @pytest.mark.parametrize("text", ["active in (true)", "active not in (FALSE)", "active in (True)"])
+    def test_parenthesised_boolean_in_any_case_is_the_one_element_tuple(self, text: str) -> None:
+        assert parse_filter_expr(text) == parse_filter_expr(text.replace(")", ",)"))
 
     def test_parenthesised_string_is_not_the_bare_string(self) -> None:
         assert parse_filter_expr("state in ('paid')") != parse_filter_expr("state in 'paid'")

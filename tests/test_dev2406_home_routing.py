@@ -3,36 +3,24 @@ the query root, decides where an aggregation is computed)."""
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import AsyncGenerator
 from typing import Any, Optional, Union
 
-import duckdb
 import pytest
 
 from slayer.core.errors import UnsafeJoinInputError
+from slayer.core.keys import AggregateKey, ColumnKey, Grain
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.engine.compile.stages import _rebuilt_aggregates
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from tests._engine_helpers import seeded_exec_engine
+from tests._engine_helpers import seed_tables, seeded_exec_engine
 
 Outcome = Union[dict[tuple[Any, ...], Optional[float]], type]
 
 
-def _seed_tables(db_path: str, tables: dict[str, tuple[str, list[tuple[Any, ...]]]]) -> None:
-    """Create and fill ``{name: (column DDL, rows)}`` in the SQLite or DuckDB file at ``db_path``."""
-    con = duckdb.connect(db_path) if db_path.endswith(".duckdb") else sqlite3.connect(db_path)
-    try:
-        for name, (columns, rows) in tables.items():
-            con.execute(f"CREATE TABLE {name} ({columns})")
-            con.executemany(f"INSERT INTO {name} VALUES ({', '.join('?' * len(rows[0]))})", rows)
-        con.commit()
-    finally:
-        con.close()
-
-
 def _seed(db_path: str) -> None:
-    _seed_tables(db_path, {
+    seed_tables(db_path, {
         "accounts": ("id INTEGER", [(1,), (2,)]),
         "invoices": ("id INTEGER, account_id INTEGER, state VARCHAR, fee DOUBLE, issued_at TIMESTAMP", [
             (1, 1, "paid", 2.0, "2024-01-10 00:00:00"), (2, 1, "sent", 3.0, "2024-01-20 00:00:00"),
@@ -218,8 +206,26 @@ async def test_redundant_partition_with_a_home_changing_default(engine: SlayerQu
     assert {k: plain[k] for k in (("1",), ("2",))} == {("1",): 75.0, ("2",): 91.0}
 
 
+async def test_nested_redundant_partitions_keep_every_rebuilt_home(engine: SlayerQueryEngine) -> None:
+    # Stripping the middle aggregate's partition rebuilds the outer one too.
+    outcome = await _outcome(engine, _body(
+        "invoices", "sum(fee * sum(fee * avg(fee, partition_by=state), partition_by=state))", dimensions=["state"]))
+    assert outcome == {("draft",): 125.0, ("paid",): pytest.approx(8000 / 3), ("sent",): 27.0}
+
+
+def test_rebuilt_aggregates_pair_partition_keys_by_identity_not_position() -> None:
+    # Partition keys are a set: only the replaced member maps to its replacement; an unchanged sibling never moves.
+    for i in range(12):
+        a, b, p = (AggregateKey(source=ColumnKey(leaf=f"{name}{i}"), agg="max") for name in ("a", "b", "p"))
+        before = AggregateKey(source=ColumnKey(leaf="rate"), agg="sum", partition_keys=Grain.of([a, b]))
+        after = before.model_copy(update={"partition_keys": Grain.of([b, p])})
+        out: dict[Any, Any] = {}
+        _rebuilt_aggregates(before, after, out)
+        assert out == {before: after, a: p}
+
+
 def _seed_one_to_one(db_path: str) -> None:
-    _seed_tables(db_path, {
+    seed_tables(db_path, {
         "orders": ("id INTEGER, price DOUBLE", [(1, 10.0), (2, 20.0), (3, 30.0)]),
         "customers": ("id INTEGER, weight DOUBLE", [(1, 2.0), (2, 4.0)]),
     })

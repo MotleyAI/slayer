@@ -448,6 +448,21 @@ def check_combined_partition_keys(
                 )
 
 
+def _has_partitioned_ref(
+    vk: ValueKey, *, row_agg_set: frozenset, homes: Optional[AggregateHomes],
+    crossing_root: Optional[Callable[[ValueKey], bool]],
+) -> bool:
+    """ANY partitioned / cross-model / crossing aggregate ref forces the split so each conjunct lowers to its own
+    placement."""
+    return any(
+        is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
+        or is_local_partitioned_agg(k)
+        or (homes is not None and homes.target_rooted(k))
+        or (crossing_root is not None and crossing_root(k))
+        for k in walk_value_keys(vk)
+    )
+
+
 def type_and_split_filters(
     prebound: PreboundQuery,
     *,
@@ -461,17 +476,6 @@ def type_and_split_filters(
     old = list(prebound.bound_filters)
     dim_keys, row_agg_set = position_typing_context(prebound)
     has_measure_position = prebound.distinct_dimension_values is not False
-
-    def _has_partitioned_ref(vk: ValueKey) -> bool:
-        # ANY partitioned / cross-model / crossing aggregate ref forces the split so
-        # each conjunct lowers to its own placement.
-        return any(
-            is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
-            or is_local_partitioned_agg(k)
-            or (homes is not None and homes.target_rooted(k))
-            or (crossing_root is not None and crossing_root(k))
-            for k in walk_value_keys(vk)
-        )
 
     def _typed(cj: ValueKey) -> ConjunctTyping:
         return type_position_conjunct(
@@ -492,7 +496,7 @@ def type_and_split_filters(
         )
         conjunct_typings = [_typed(cj) for cj in conjuncts]
         if len(conjuncts) > 1 and (
-            _has_partitioned_ref(bf.value_key)
+            _has_partitioned_ref(bf.value_key, row_agg_set=row_agg_set, homes=homes, crossing_root=crossing_root)
             or len(set(conjunct_typings)) > 1
         ):
             changed = True
@@ -1113,6 +1117,7 @@ def check_date_operands(*, roots: Sequence[ValueKey], column_type: ColumnTypeFn)
 
 _PLAIN_COMPARISON_OPS = frozenset({"==", "!=", "<", "<=", ">", ">="})
 _MIRRORED = {"==": "==", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
+_NOT_IN = "not in"
 
 
 def resolve_time_points(
@@ -1178,7 +1183,7 @@ def _lower_time_point(
     point = resolve_time_point(key.point, now=now, units=units)
     if point is None:
         _raise_not_a_time_point(operand=key.operand, text=key.point)
-    op = {"in": "=", "not in": "!="}.get(key.op, key.op)
+    op = {"in": "=", _NOT_IN: "!="}.get(key.op, key.op)
     if isinstance(point, Instant):
         if gran is None:
             return ArithmeticKey(op=_arith_op(op), operands=(target, _bound(point.value, t=t, key=key)))
@@ -1228,8 +1233,8 @@ def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, Custom
     ``in`` / ``not in`` is the one-element value list."""
     if key.parenthesised:
         return InKey(column=key.operand, values=(LiteralKey(value=normalize_scalar(key.point)),),
-                     negated=key.op == "not in")
-    if key.op in ("in", "not in") or is_relative_token(key.point, units=units):
+                     negated=key.op == _NOT_IN)
+    if key.op in ("in", _NOT_IN) or is_relative_token(key.point, units=units):
         raise DateOperandTypeError(
             summary=f"'{key.point}' is a time point, but `{_operand_display(key.operand)}` "
             f"is not a DATE or TIMESTAMP operand.",

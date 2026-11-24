@@ -27,7 +27,7 @@ from slayer.core.models import SlayerModel
 from slayer.engine.join_safety import attributable_from_root, key_host_path
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.ir.terms import AggregateHome, AggregateHomes
+from slayer.ir.terms import AggregateHome, AggregateHomes, HomeKind
 
 Path = Tuple[str, ...]
 
@@ -126,23 +126,36 @@ def aggregate_home(
     )
     second_order = is_reaggregation_key(agg)
     for p in candidates:
-        model_at_p = walk_key_path(model=host_model, path=p, bundle=bundle)
-        if model_at_p is None:
-            continue
-        if all(
-            attributable_from_root(
-                host_path=q, target_path=p, root_model=model_at_p,
-                models_by_name=models_by_name, host_name=host_model.name,
-            )
-            for q in input_paths
-        ):
-            return AggregateHome(kind="operand_dataset" if second_order else "physical_target" if p else "host", path=p)
+        if _determines_all(p, input_paths=input_paths, host_model=host_model,
+                           models_by_name=models_by_name, bundle=bundle):
+            return AggregateHome(kind=_resolved_kind(p, second_order=second_order), path=p)
     # No valid home: fall to the inputs' common prefix (never deeper than the
     # source anchor) so input safety walks each input forward from there and names
     # the fanning forward hop, not a cancelled reverse hop back onto the path.
     return AggregateHome(
         kind="operand_dataset" if second_order else "unresolved", path=_longest_common_prefix(input_paths),
     )
+
+
+def _determines_all(
+    p: Path, *, input_paths: List[Path], host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> bool:
+    """Every input path is attributable from the dataset at ``p``."""
+    model_at_p = walk_key_path(model=host_model, path=p, bundle=bundle)
+    return model_at_p is not None and all(
+        attributable_from_root(
+            host_path=q, target_path=p, root_model=model_at_p,
+            models_by_name=models_by_name, host_name=host_model.name,
+        )
+        for q in input_paths
+    )
+
+
+def _resolved_kind(p: Path, *, second_order: bool) -> HomeKind:
+    if second_order:
+        return "operand_dataset"
+    return "physical_target" if p else "host"
 
 
 def resolve_aggregate_homes(

@@ -3940,15 +3940,30 @@ def _producer_source_model(env: ElaboratedStage | ElaboratedProducer) -> Optiona
     return None
 
 
+def _ordered_parts(key: ValueKey) -> Tuple[Tuple[ValueKey, ...], AbstractSet[ValueKey]]:
+    """``key``'s positional children and its partition keys, a set never paired by position."""
+    if isinstance(key, AggregateKey):
+        # ``children()`` is the source / args / kwargs keys, then the partition keys.
+        keys, kids = frozenset(key.partition_keys or ()), key.children()
+        return kids[:len(kids) - len(keys)], keys
+    if isinstance(key, TransformKey):
+        return tuple(c for c in (key.input, key.time_key) if c is not None), frozenset(key.partition_keys)
+    return key.children(), frozenset()
+
+
 def _rebuilt_aggregates(before: ValueKey, after: ValueKey, out: Dict[ValueKey, ValueKey]) -> None:
     """Map each aggregate of ``before`` a substitution rebuilt to its form in ``after`` (a replaced subtree ends the
-    walk)."""
+    walk); a partition key pairs only as the one member replaced by the one new member."""
     if before == after or type(before) is not type(after):
         return
     if isinstance(before, AggregateKey):
         out[before] = after
-    for b, a in zip(before.children(), after.children()):
+    (b_ordered, b_keys), (a_ordered, a_keys) = _ordered_parts(before), _ordered_parts(after)
+    for b, a in zip(b_ordered, a_ordered):
         _rebuilt_aggregates(b, a, out)
+    gone, came = b_keys - a_keys, a_keys - b_keys
+    if len(gone) == 1 and len(came) == 1:
+        _rebuilt_aggregates(next(iter(gone)), next(iter(came)), out)
 
 
 def _carried_homes(homes: AggregateHomes, *, before: PreboundQuery, after: PreboundQuery) -> AggregateHomes:
@@ -3982,7 +3997,8 @@ def _strip_redundant_partitions(env: ElaboratedStage) -> Tuple[PreboundQuery, Ag
     }
     if not strip:
         return prebound, homes
-    return _substitute_prebound(prebound, strip), homes.carried(strip)
+    stripped = _substitute_prebound(prebound, strip)
+    return stripped, _carried_homes(homes, before=prebound, after=stripped)
 
 
 def _producer_nesting_rule(

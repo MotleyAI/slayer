@@ -8,7 +8,7 @@ builder and THE checker live in ``elaborate_env``.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from slayer.core.join_walker import unobserved
 from slayer.core.keys import ValueKey, split_top_level_and
@@ -44,7 +44,7 @@ def elaborate_query(
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
-    scope: Optional[Union[ModelScope, StageSchema]] = None,
+    scope: Optional[ModelScope | StageSchema] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
     prebound: Optional[PreboundQuery] = None,
 ) -> ElaboratedStage:
@@ -116,7 +116,7 @@ def elaborate_synthesized(
     prebound: PreboundQuery,
     *,
     bundle: ResolvedSourceBundle,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     stage_schemas: Dict[str, StageSchema],
     source_model: Optional[str] = None,
 ) -> ElaboratedProducer:
@@ -132,7 +132,7 @@ def elaborate_synthesized(
 
 
 def resolve_homes(
-    prebound: PreboundQuery, *, bundle: ResolvedSourceBundle, scope: Union[ModelScope, StageSchema],
+    prebound: PreboundQuery, *, bundle: ResolvedSourceBundle, scope: ModelScope | StageSchema,
 ) -> AggregateHomes:
     """The home of every aggregate ``prebound`` reads."""
     dim_dms, td_dms, _ = partition_declared_measures(
@@ -158,7 +158,7 @@ def _environment_fields(
     *,
     filter_typings,
     bundle: ResolvedSourceBundle,
-    scope: Union[ModelScope, StageSchema],
+    scope: ModelScope | StageSchema,
     stage_schemas: Dict[str, StageSchema],
     homes: Optional[AggregateHomes] = None,
 ) -> Dict[str, Any]:

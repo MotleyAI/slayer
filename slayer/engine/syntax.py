@@ -650,7 +650,7 @@ def _is_single_literal(toks: List[tokenize.TokenInfo], j: int) -> Optional[int]:
         return j + 1 if j < len(toks) and toks[j].type == tokenize.NUMBER else None
     if j < len(toks) and (
         toks[j].type in (tokenize.STRING, tokenize.NUMBER)
-        or (toks[j].type == tokenize.NAME and toks[j].string in ("True", "False"))
+        or (toks[j].type == tokenize.NAME and toks[j].string.lower() in ("true", "false"))
     ):
         return j + 1
     return None
