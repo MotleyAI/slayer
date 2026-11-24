@@ -42,7 +42,7 @@ principles every layer obeys.
    - **2.1 Leaf.** A column or star reference is homed on the dataset it lives on —
      the terminal of its join path. A derived column is homed there provided that
      dataset determines every column its definition reads; a dependency reached across a
-     fanning hop makes it an operand at each dataset such a dependency lives on (Axiom 2.2),
+     fanning hop makes it an operand at each dataset its definition reads a column on (Axiom 2.2),
      and one reached only across an unproven hop, or a definition that cannot be analysed,
      leaves it without a home. A literal is determined by every dataset and constrains nothing.
    - **2.2 Combination.** A combination of row-level expressions — arithmetic,
