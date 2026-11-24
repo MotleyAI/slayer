@@ -416,9 +416,11 @@ def dataset(data: Any, spellings: Spellings) -> Any:
 
 
 def _reference_text(data: dict[str, Any]) -> Any:
-    """The dotted text of a pre-2.0 field-reference object (``name``, ``model``, ``quoted``); only a ``name``-only
-    object may carry an expression, any other names a field by valid names."""
-    name, model = data.get("name"), data.get("model")
+    """The dotted text of a pre-2.0 field-reference object (``name``, ``model`` or ``dataset``, ``quoted``); only a
+    ``name``-only object may carry an expression, any other names a field by valid names."""
+    if "model" in data and "dataset" in data:
+        raise SpellingConflictError(old="model", new="dataset")
+    name, model = data.get("name"), data.get("model", data.get("dataset"))
     if not isinstance(name, str) or not (model is None or isinstance(model, str)):
         return name
     parts = [*model.split("."), *name.split(".")] if model else name.split(".")

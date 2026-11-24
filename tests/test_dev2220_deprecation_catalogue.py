@@ -9,10 +9,12 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from slayer.api.server import create_app
 from slayer.core.deprecation import DeprecatedInputFutureWarning
 from slayer.core.models import DatasetMetric
+from slayer.core.query import SlayerQuery
 from slayer.memories.help_seed import seed_help_memories
 from slayer.storage.base import resolve_storage
 from tests._deprecated_input_helpers import orders_engine, recorded
@@ -100,3 +102,11 @@ def test_every_pinned_key_has_a_case() -> None:
 def test_case_ids_are_unique() -> None:
     ids = [c.id for c in CASES]
     assert len(ids) == len(set(ids))
+
+
+@pytest.mark.parametrize("key", ["time_dimensions", "order"])
+def test_a_reference_object_with_model_and_dataset_is_refused(key: str) -> None:
+    ref = {"name": "created_at", "model": "orders", "dataset": "orders"}
+    item = {"dimension": ref, "granularity": "month"} if key == "time_dimensions" else {"column": ref}
+    with pytest.raises(ValidationError, match="keep only `dataset`"):
+        SlayerQuery.model_validate({"population": "orders", key: [item]})

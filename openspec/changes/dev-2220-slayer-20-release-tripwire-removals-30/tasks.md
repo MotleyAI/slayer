@@ -45,12 +45,12 @@
       and flags, MCP arguments, search vocabulary, Python names/attributes/methods/errors, storage hooks, Mode-B
       spellings, `strict`, extension object in `source_model`, field `sql`). Verify: the inventory is the catalogue's
       case table.
-- [ ] 3.2 Write the catalogue test: each case converts one form on its surface and asserts the canonical output, one
+- [x] 3.2 Write the catalogue test: each case converts one form on its surface and asserts the canonical output, one
       `FutureWarning`, and the structured warning by kind (`deprecated_input` / `deprecated_spelling`, `removal`
       "3.0"); stored documents convert silently (the deliberate exception, its own cases). Verify: green.
 - [x] 3.3 Each case names the `PINNED` key it exercises; add a test that every `PINNED` key except the moved-module
       stubs has a case. Verify: green, and fails if a case is dropped.
-- [ ] 3.4 Any form found converting without its warning, unpinned, or to the wrong canonical form: add the warning and
+- [x] 3.4 Any form found converting without its warning, unpinned, or to the wrong canonical form: add the warning and
       pin through the existing deprecation helpers, or fix the conversion (today a reference object
       `{"name", "dataset"}` under the deprecated time-dimension `dimension` / order-item `column` keys drops its
       dataset). Verify: 3.2 and `tests/test_law_removal_tripwire.py` pass.
