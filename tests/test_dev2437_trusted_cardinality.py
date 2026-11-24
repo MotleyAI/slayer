@@ -363,6 +363,14 @@ async def test_a_null_keeping_filter_keeps_an_unmatched_order(backend: str, pred
     assert [float(r[REVENUE]) for r in resp.data] == [300.0]
 
 
+async def test_a_null_keeping_dimension_reads_an_unmatched_order_as_null_input(backend: str) -> None:
+    # C3 is missing: O4 (300) meets no customer and groups where COALESCE puts a NULL region.
+    dim = {"field": "COALESCE(customers.region, 'none')", "alias": "r"}
+    async with engine(backend, [c for c in CLEAN if c[0] != "C3"]) as eng:
+        resp = await run(eng, dimensions=[dim], metrics=[REVENUE])
+    assert {r["r"]: float(r[REVENUE]) for r in resp.data} == {"EAST": 350.0, "none": 300.0}
+
+
 @pytest.mark.parametrize("predicate", [
     pytest.param("customers.tier IN ('gold', 'silver') OR customers.tier IS NULL", id="or-is-null"),
     pytest.param("COALESCE(customers.tier, 'x') <> 'y'", id="coalesce"),

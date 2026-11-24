@@ -178,15 +178,16 @@ class _Projection:
 
     def apply(self) -> None:
         inside, valued, outside = self._split_where()
-        dims = self._dimensions()
+        # A home row with no subtree row a filter or an inner member keeps is dropped, as after the subtree's joins.
+        inner_only = bool(inside) or not all(_is_left(j) for j in self.inner_joins)
+        null_extended = _is_left(self.root) and not inner_only
+        dims = self._dimensions(null_extended=null_extended)
         self.select.set("where", exp.Where(this=exp.and_(*outside)) if outside else None)
-        group, other = self._project_reads(dim_names={name for _, name in dims})
+        group, other = self._project_reads(dim_names={name for _, name in dims} | {_PREDICATE, _MATCHED})
         for expr, name in dims:
             group.append(expr)
             self.projected.append(expr.as_(name))
-        # A home row with no subtree row a filter or an inner member keeps is dropped, as after the subtree's joins.
-        inner_only = bool(inside) or not all(_is_left(j) for j in self.inner_joins)
-        kept = self._valued_filter(valued, group=group, null_extended=_is_left(self.root) and not inner_only)
+        kept = self._valued_filter(valued, group=group, null_extended=null_extended)
         inner = self._inner(inside=inside, group=group, other=other)
         self.relation.meta.pop(UNTRUSTED_HOP, None)
         self.root.set("this", exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier(self.alias))))
@@ -279,9 +280,13 @@ class _Projection:
         kept: Expr = exp.EQ(this=self._read(_PREDICATE), expression=exp.Literal.number(1))
         if not null_extended:
             return kept
-        self.projected.append(exp.Literal.number(1).as_(_MATCHED))
-        unmatched = exp.Is(this=self._read(_MATCHED), expression=exp.Null())
-        return exp.or_(kept, exp.and_(unmatched, *(_nulled(c, self.subtree) for c in valued)))
+        return exp.or_(kept, exp.and_(self._unmatched(), *(_nulled(c, self.subtree) for c in valued)))
+
+    def _unmatched(self) -> Expr:
+        """True on a home row the subtree null-extends; projects the match marker once."""
+        if not any(p.alias == _MATCHED for p in self.projected):
+            self.projected.append(exp.Literal.number(1).as_(_MATCHED))
+        return exp.Is(this=self._read(_MATCHED), expression=exp.Null())
 
     def _read(self, name: str) -> exp.Column:
         return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(self.alias))
@@ -302,8 +307,9 @@ class _Projection:
         column.set("this", _ident(column, self.names[(column.table, column.name)]))
         column.set("table", exp.to_identifier(self.alias))
 
-    def _dimensions(self) -> List[Tuple[Expr, str]]:
-        """Each grouped value read only from the subtree, computed inside and read back by name."""
+    def _dimensions(self, *, null_extended: bool) -> List[Tuple[Expr, str]]:
+        """Each grouped value read only from the subtree, computed inside and read back by name; on a null-extended
+        home row one not proven NULL there reads as computed on NULLs, as after the subtree's joins."""
         group = self.select.args.get("group")
         if group is None:
             return []
@@ -316,7 +322,10 @@ class _Projection:
                 continue
             name = f"{_DIMENSION_PREFIX}{i}"
             out.append((g.copy(), name))
-            replacement = exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(self.alias))
+            replacement: Expr = self._read(name)
+            if null_extended and not _subtree_column(g, self.subtree):
+                replacement = exp.Case(ifs=[exp.If(this=self._unmatched(), true=_nulled(g, self.subtree))],
+                                       default=replacement)
             for part in self._outer_parts():
                 self._replace(part, g, replacement)
         return out
