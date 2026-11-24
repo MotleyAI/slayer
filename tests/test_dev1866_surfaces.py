@@ -45,7 +45,7 @@ def test_rest_rootless_query_executes_and_reports_population(rest_client) -> Non
 # MCP.
 # --------------------------------------------------------------------------- #
 async def _call(server, *, name: str, arguments: dict[str, Any]) -> str:
-    content_blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 

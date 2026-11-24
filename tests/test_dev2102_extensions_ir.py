@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
 
 from slayer.api.server import QueryRequest, create_app
@@ -139,7 +139,7 @@ class TestSchema:
 
     async def test_mcp_query_tool_carries_the_definitions(self, mcp_server) -> None:
         tools = {t.name: t for t in await mcp_server.list_tools()}
-        schema = tools["query"].inputSchema
+        schema = tools["query"].input_schema
         assert "DatasetExtension" in schema.get("$defs", {})
         assert "SlayerDataset" not in schema.get("$defs", {})
         assert '"extensions"' in json.dumps(schema)

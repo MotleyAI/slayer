@@ -409,8 +409,7 @@ def run_session(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionResu
                 run_sql(db_path=db_path, sql=step.sql)
                 continue
             args = json.loads(json.dumps(step.args).replace("{db_path}", str(db_path)))
-            blocks, _ = run_sync(server.call_tool(step.tool, args))
-            text = blocks[0].text
+            text = run_sync(server.call_tool(step.tool, args)).content[0].text
     except Exception as e:  # noqa: BLE001 - a probe's error is data
         return SessionResult(err=e)
     finally:

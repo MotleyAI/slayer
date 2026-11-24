@@ -495,5 +495,5 @@ class TestEntryPointsCloseTheirClients:
 
 
 async def _call(server: Any, *, name: str, arguments: dict[str, Any]) -> str:
-    content_blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text

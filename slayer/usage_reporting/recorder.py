@@ -71,7 +71,7 @@ _ERROR_TOKENS = {
     "slayer.core.errors.MissingDriverError": "missing_driver",
     "slayer.database.errors.SqlClientError": "db_error",
     "slayer.facade.translator.TranslationError": "translation",
-    "mcp.server.fastmcp.exceptions.ToolError": "tool_error",
+    "mcp.server.mcpserver.exceptions.ToolError": "tool_error",
 }
 _STORAGE_TOKENS = {
     "slayer.storage.yaml_storage.YAMLStorage": "yaml",

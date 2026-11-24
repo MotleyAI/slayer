@@ -123,9 +123,9 @@ class TestDeclaredDatatype:
             storage = YAMLStorage(base_dir=tmp)
             server = create_mcp_server(storage=storage)
             try:
-                blocks, _ = cast(Any, await server.call_tool(name="create_dataset", arguments={
+                blocks = cast(Any, await server.call_tool(name="create_dataset", arguments={
                     "name": "orders", "sql_table": "orders", "data_source": DS,
-                    "fields": [{"name": "flag", "datatype": "Boolean"}], "aggregations": [aggregation]}))
+                    "fields": [{"name": "flag", "datatype": "Boolean"}], "aggregations": [aggregation]})).content
             finally:
                 await getattr(server, "_slayer_engine").aclose()
             assert await storage.get_dataset("orders", data_source=DS) is None

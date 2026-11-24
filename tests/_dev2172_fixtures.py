@@ -241,7 +241,7 @@ def flight_query(port: int, sql: str) -> pa.Table:
 
 async def mcp_text(server: Any, query: Any, *, fmt: str) -> str:
     """One MCP ``query`` tool call's text output."""
-    blocks, _ = await server.call_tool(name="query", arguments={"query": query, "format": fmt})
+    blocks = (await server.call_tool(name="query", arguments={"query": query, "format": fmt})).content
     return blocks[0].text
 
 

@@ -305,9 +305,9 @@ class TestSurfaces:
     ) -> None:
         fail_key_read(monkeypatch, table="customers")
         server = create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path / "mcp_store")))
-        blocks, _ = cast(Any, await server.call_tool(
+        blocks = cast(Any, await server.call_tool(
             name="create_datasource", arguments={"name": DS_NAME, "type": "sqlite", "database": shop.database},
-        ))
+        )).content
         assert len(_naming_the_loss(blocks[0].text)) == 1, blocks[0].text
 
     async def test_mcp_ingest_datasource_models(
@@ -315,9 +315,9 @@ class TestSurfaces:
     ) -> None:
         fail_key_read(monkeypatch, table="customers")
         server = create_mcp_server(storage=storage)
-        blocks, _ = cast(Any, await server.call_tool(
+        blocks = cast(Any, await server.call_tool(
             name="ingest_datasource", arguments={"datasource_name": DS_NAME},
-        ))
+        )).content
         assert len(_naming_the_loss(blocks[0].text)) == 1, blocks[0].text
 
     def test_cli(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

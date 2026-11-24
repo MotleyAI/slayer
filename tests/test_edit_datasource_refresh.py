@@ -28,7 +28,7 @@ def yaml_storage() -> Generator[YAMLStorage, None, None]:
 
 
 async def _call(mcp_server, *, name: str, arguments: dict) -> str:
-    content_blocks, _ = await mcp_server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await mcp_server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 

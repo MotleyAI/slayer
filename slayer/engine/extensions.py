@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Dict, FrozenSet, List, Literal, Optional, Tuple
 
@@ -21,9 +22,14 @@ from slayer.core.relationship_edges import EdgeMerge
 from slayer.core.relationship_walker import OrientedRelationship, resolve_hop, walk
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.names import match_name
-from slayer.core.query import DatasetExtension, SlayerQuery, extension_dataset_names
+from slayer.core.query import (
+    DatasetExtension, SlayerQuery, TimeDimension, computed_dimension_name, declared_aliases, extension_dataset_names,
+    field_ref_of,
+)
 from slayer.core.scope import DatasetScope
-from slayer.core.syntax import drop_root_hop, text_paths
+from slayer.core.syntax import (
+    DottedRef, ParsedExpr, Ref, StarSource, drop_root_hop, map_refs, parse_expr, text_paths, walk_references,
+)
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population import dimension_routing
 from slayer.engine.population.anchors import anchor_route, find_anchor
@@ -35,6 +41,7 @@ from slayer.ir.source_bundle import (
     overlay_metrics,
     without_inherited,
 )
+from slayer.sql.naming import expression_text_alias
 
 __all__ = [
     "FieldKind",
@@ -48,6 +55,7 @@ __all__ = [
     "respelled",
     "respelled_stages",
     "sibling_host",
+    "stage_output_names",
     "with_own_extension",
 ]
 
@@ -393,6 +401,77 @@ def sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerDa
     ]
     return SlayerDataset.model_construct(
         name=name, data_source=data_source, fields=[DatasetField(name=k) for k in dict.fromkeys(keys)])
+
+
+def stage_output_names(query: SlayerQuery) -> List[str]:
+    """The output column names of stage ``query`` as its compiled schema names them, read statically."""
+    root = query.population_name
+    aliases = declared_aliases(query)
+    names: List[str] = []
+    for d in query.dimensions or []:
+        names.append(d.alias or _reference_field_name(d.field, root=root) or computed_dimension_name(d.template))
+    names.extend(_time_dimension_field_names(query.time_dimensions or [], root=root))
+    for m in query.metrics or []:
+        names.append(m.alias or _reference_field_name(m.metric, root=root) or _expression_field_name(
+            m.metric, root=root, aliases=aliases))
+    return list(dict.fromkeys(names))
+
+
+def _time_dimension_field_names(tds: Sequence[TimeDimension], *, root: Optional[str]) -> List[str]:
+    """Time-dimension field names; an unaliased one whose source another one shares takes its granularity suffix."""
+    sources = [("ref", f) if (f := _reference_field_name(td.field, root=root)) else ("expr", td.template)
+               for td in tds]
+    shared = Counter(sources)
+    out: List[str] = []
+    for td, source in zip(tds, sources):
+        base = td.alias or (source[1] if source[0] == "ref" else computed_dimension_name(td.template))
+        out.append(f"{base}__{td.granularity}" if td.alias is None and shared[source] > 1 else base)
+    return out
+
+
+def _flat_name(key: Sequence[str], *, root: Optional[str], head_quoted: bool = False) -> str:
+    """A result key's field name: its root qualifier dropped, flattened."""
+    return "__".join(drop_root_hop(key, root, head_quoted=head_quoted))
+
+
+def _reference_field_name(text: str, *, root: Optional[str]) -> Optional[str]:
+    ref = field_ref_of(text)
+    return None if ref is None else _flat_name(ref.parts, root=root, head_quoted=bool(ref.quoted and ref.quoted[0]))
+
+
+def _expression_field_name(text: str, *, root: Optional[str], aliases: Sequence[str]) -> str:
+    """An unaliased expression's field name: named from its references' common head, which leads its key."""
+    parsed = parse_expr(text)
+    paths: List[Tuple[str, ...]] = []
+    for node, _agg in walk_references(parsed):
+        if isinstance(node, DottedRef):
+            paths.append(node.parts[:-1])
+        elif not (isinstance(node, Ref) and match_name(name=node.name, declared=aliases, quoted=node.quoted)):
+            paths.append(())
+    head = _common_prefix(paths)
+
+    def rebased(ref: Ref | DottedRef) -> ParsedExpr:
+        if not isinstance(ref, DottedRef):
+            return ref
+        rest = ref.parts[len(head):]
+        if rest == ("*",):
+            return StarSource()
+        return Ref(name=rest[0], evaluated=ref.evaluated) if len(rest) == 1 else DottedRef(
+            parts=rest, evaluated=ref.evaluated)
+
+    name = expression_text_alias(map_refs(parsed, rebased) if head else parsed)
+    return _flat_name((*head, *name.split(".")), root=root)
+
+
+def _common_prefix(paths: Sequence[Tuple[str, ...]]) -> Tuple[str, ...]:
+    """The longest prefix all ``paths`` share (``()`` for none)."""
+    head = paths[0] if paths else ()
+    for path in paths[1:]:
+        n = 0
+        while n < min(len(head), len(path)) and head[n] == path[n]:
+            n += 1
+        head = head[:n]
+    return head
 
 
 def _extended(
