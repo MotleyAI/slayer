@@ -57,7 +57,7 @@
 
 ## 4. Migration-guide audit
 
-- [ ] 4.1 Check `docs/upgrading/2.0.md` against every merged 2.0 slice and prerequisite (DEV-1695, DEV-2398, DEV-2264,
+- [x] 4.1 Check `docs/upgrading/2.0.md` against every merged 2.0 slice and prerequisite (DEV-1695, DEV-2398, DEV-2264,
       DEV-2136, DEV-1914, DEV-2385, DEV-2018, DEV-2388, DEV-2217, DEV-2243, DEV-2394, DEV-2266, DEV-2255, DEV-2249,
       DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430, DEV-2443, DEV-2439, DEV-2246): each breaking change has a
       Part 1 before/after, each deprecation a Part 2 entry. Write what is missing. Verify: a checklist of the slices
