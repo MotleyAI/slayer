@@ -1450,6 +1450,18 @@ class UnqualifiableReferenceError(SlayerError):
         )
 
 
+class UndeterminedDatasourceError(SlayerError):
+    """A stored memory being upgraded that neither its entities nor a single datasource pin to a datasource."""
+
+    def __init__(self, *, population: str | None) -> None:
+        self.population = population
+        names = "no population" if population is None else f"the population {population!r}"
+        super().__init__(
+            f"Stored memory's datasource cannot be determined: it names {names}, and neither its entities nor a "
+            f"single datasource name one. Add a population or entities naming its datasource and save it again."
+        )
+
+
 class StoredDocumentLoadError(SlayerError, ValueError):
     """One stored dataset or memory could not be loaded; the original failure is ``__cause__``."""
 

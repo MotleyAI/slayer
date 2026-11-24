@@ -10,7 +10,7 @@ import json
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
@@ -93,7 +93,7 @@ async def orders_server(tmp_path):
 
 
 async def _call(server, *, name: str = "query", **arguments: Any) -> str:
-    content_blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 
@@ -114,7 +114,7 @@ def _rows(out: str) -> list:
 class TestQueryToolSchema:
     async def test_exposes_only_the_unified_arguments(self, orders_server) -> None:
         tools = {t.name: t for t in await orders_server.list_tools()}
-        schema = tools["query"].inputSchema
+        schema = tools["query"].input_schema
         assert set(schema.get("properties", {})) == UNIFIED_ARGS
         # Only `query` is required — the wrappers must all carry defaults.
         assert set(schema.get("required", [])) == {"query"}
@@ -129,7 +129,7 @@ class TestQueryToolSchema:
         array-of-objects branch — so it fails if any input form regresses (e.g.
         the list narrowing to ``list[str]``)."""
         tools = {t.name: t for t in await orders_server.list_tools()}
-        q_schema = tools["query"].inputSchema["properties"]["query"]
+        q_schema = tools["query"].input_schema["properties"]["query"]
         branches = q_schema.get("anyOf") or q_schema.get("oneOf") or [q_schema]
         assert any(b.get("type") == "string" for b in branches), q_schema
         assert any(_is_object_shaped(b) for b in branches), q_schema
@@ -405,7 +405,7 @@ class TestRunByNameRefine:
 
     async def test_refine_schema_is_object_shaped(self, refine_server) -> None:
         tools = {t.name: t for t in await refine_server.list_tools()}
-        assert _is_object_shaped(tools["query"].inputSchema["properties"]["refine"])
+        assert _is_object_shaped(tools["query"].input_schema["properties"]["refine"])
         assert "refine" in (tools["query"].description or "")
 
     async def test_refined_run(self, refine_server) -> None:

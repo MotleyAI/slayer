@@ -146,7 +146,7 @@ def test_client_decodes_row_sources() -> None:
 async def _mcp(storage, query: dict[str, Any], fmt: str) -> str:
     server = create_mcp_server(storage=storage)
     try:
-        blocks, _ = cast(Any, await server.call_tool(name="query", arguments={"query": query, "format": fmt}))
+        blocks = cast(Any, await server.call_tool(name="query", arguments={"query": query, "format": fmt})).content
         return blocks[0].text
     finally:
         await getattr(server, "_slayer_engine").aclose()

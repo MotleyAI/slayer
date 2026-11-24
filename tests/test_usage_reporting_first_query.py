@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.client import Client
 
 from slayer import usage_reporting
 from slayer.api.server import create_app
@@ -58,9 +58,9 @@ def started(at_t0) -> None:
 async def _mcp_query(store: str, **arguments) -> bool:
     """One MCP ``query`` call; whether it succeeded."""
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         result = await session.call_tool("query", {"query": _QUERY, **arguments})
-    return not result.isError
+    return not result.is_error
 
 
 # --- which queries set it -------------------------------------------------------------------------
@@ -119,9 +119,9 @@ def test_cli_dry_run_does_not_set_it(store: str) -> None:
 
 async def test_mcp_failure_and_dry_run_do_not_set_it(store: str, started) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
-        assert (await session.call_tool("query", {"query": _FAILING_QUERY})).isError
-        assert not (await session.call_tool("query", {"query": _QUERY, "dry_run": True})).isError
+    async with Client(server, mode="legacy") as session:
+        assert (await session.call_tool("query", {"query": _FAILING_QUERY})).is_error
+        assert not (await session.call_tool("query", {"query": _QUERY, "dry_run": True})).is_error
     end_process()
     _assert_no_date()
 

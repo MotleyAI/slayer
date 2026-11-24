@@ -80,7 +80,7 @@ class TestAdvertisedSchema:
     async def order_item_schema(self, tmp_path) -> dict[str, Any]:
         server = create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path)), _seed_help=False)
         tools = {t.name: t for t in await server.list_tools()}
-        return tools["query"].inputSchema["$defs"]["OrderItem"]
+        return tools["query"].input_schema["$defs"]["OrderItem"]
 
     def test_field_is_advertised_as_text(self, order_item_schema: dict[str, Any]) -> None:
         field = order_item_schema["properties"]["field"]

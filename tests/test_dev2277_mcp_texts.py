@@ -62,7 +62,7 @@ def _texts() -> dict[str, str]:
     server, tools = _server_and_tools()
     query = tools["query"]
     out = {"query tool description": query.description or "", "server instructions": server.instructions or ""}
-    out.update({f"query schema {path}": text for path, text in _schema_descriptions(query.inputSchema)})
+    out.update({f"query schema {path}": text for path, text in _schema_descriptions(query.input_schema)})
     out.update({f"help topic {t.id}": t.learning for t in load_help_topics()})
     return out
 

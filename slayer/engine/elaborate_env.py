@@ -18,6 +18,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import (
+    AXIS_COLLAPSING_TRANSFORMS,
     DataType,
     NUMERIC_DATATYPES,
     RANK_FAMILY_TRANSFORMS,
@@ -70,7 +71,6 @@ from slayer.core.keys import (
     FieldTypeFn,
     ConsumerNode,
     walk_consumer_positions,
-    attached_inputs,
     is_boolean_shaped,
     is_list_call,
     is_local_combined_regroup_ref,
@@ -99,7 +99,6 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    regroup_root_grain,
     temporal_type,
     type_date_values,
     field_leaf,
@@ -806,68 +805,50 @@ def check_opaque_grouping_dim(
         )
 
 
-def _temporal_axis_transforms(vk: ValueKey, *, is_dimension: bool):
-    """Time-ordered transforms whose grain must contain their axis: any transform
-    in a dimension expression, and every transform reachable inside an
-    aggregation-source constituent of a metric/filter/order expression — nested
-    ones included, mirroring the dimension arm, so a nested time transform cannot
-    evade Axiom 11.5 (a top-level transform metric carries its bucket through the
-    windowed producer instead)."""
-    if is_dimension:
-        yield from (k for k in walk_value_keys(vk) if isinstance(k, TransformKey))
-        return
-    for k in walk_value_keys(vk):
-        if isinstance(k, AggregateKey):
-            for c in attached_inputs(k):
-                if isinstance(c, TransformKey):
-                    yield from (
-                        t for t in walk_value_keys(c)
-                        if isinstance(t, TransformKey)
-                    )
+def _axis_suggestion(
+    tk: TransformKey, *, time_key: ValueKey, query_grain: Grain, active_bucket: Optional[ValueKey],
+) -> str:
+    """The remedy for ``tk``'s missing axis: the dropping first/last's operand, else ``partition_by=``."""
+    axis = dotted_key_display(time_key)
+    kept = transform_operand_grain(
+        tk.input, query_grain=query_grain, active_bucket=active_bucket, collapse_axis=False,
+    )
+    collapser = next(
+        (k for k in walk_value_keys(tk.input)
+         if isinstance(k, TransformKey) and k.op in AXIS_COLLAPSING_TRANSFORMS and k.time_key == time_key),
+        None,
+    )
+    if collapser is not None and time_key in kept:
+        return (f"The nested {collapser.op}() removes the time axis '{axis}': apply {tk.op}() to "
+                f"the {collapser.op}()'s operand instead, or to another operand that keeps '{axis}'.")
+    return f"Include the time key '{axis}' in the inner aggregate's partition_by= so the operand varies along it."
 
 
-_CALENDAR_STEP_TRANSFORMS = frozenset({"time_shift", "change", "change_pct"})
-
-
-def _consumer_transforms(vk: ValueKey) -> Iterator[TransformKey]:
-    """Transforms outside every aggregation, calendar-step ones excluded."""
-    if isinstance(vk, AggregateKey):
-        return
-    if isinstance(vk, TransformKey) and vk.op not in _CALENDAR_STEP_TRANSFORMS:
-        yield vk
-    for c in vk.children():
-        yield from _consumer_transforms(c)
-
-
-def check_dimension_temporal_axis(
+def check_temporal_axis(
     declared_metrics, *, bound_filters=(), order_specs=(), query_grain: Grain = Grain.EMPTY,
     active_bucket: Optional[ValueKey] = None,
 ) -> None:
-    """Fail closed if a time-ordered transform evaluates at a grain not containing its time axis, in every
-    position (Axiom 11.3)."""
-    roots = [
-        (dm.bound.value_key, dm.is_dimension) for dm in declared_metrics
-    ]
-    roots += [(bf.value_key, False) for bf in bound_filters]
-    roots += [(sp.bound.value_key, False) for sp in order_specs]
-    for vk, is_dimension in roots:
-        timed = [(tk, regroup_root_grain(tk)) for tk in _temporal_axis_transforms(vk, is_dimension=is_dimension)]
-        if not is_dimension:
-            timed += [(tk, transform_operand_grain(tk.input, query_grain=query_grain, active_bucket=active_bucket))
-                      for tk in _consumer_transforms(vk)]
-        for tk, grain in timed:
-            if tk.op not in TIME_TRANSFORMS or tk.time_key is None or tk.time_key in grain:
-                continue
-            axis = dotted_key_display(tk.time_key)
-            raise TimeAxisError(
-                summary=f"A time-ordered transform evaluates at a grain "
-                f"that does not contain its time axis '{axis}'; a producer "
-                f"bucketed by time joined back on the coarser grain would "
-                f"duplicate result rows.",
-                location=f"transform {tk.op!r}",
-                suggestion="Include the time key in the aggregate's partition_by= "
-                "so the transform accumulates within its own grain.",
-            )
+    """Every time-ordered transform's operand grain contains its time axis, in every position (Axiom 11.3)."""
+    roots = [dm.bound.value_key for dm in declared_metrics]
+    roots += [bf.value_key for bf in bound_filters]
+    roots += [sp.bound.value_key for sp in order_specs]
+    for tk in (k for root in roots for k in walk_value_keys(root)):
+        if not isinstance(tk, TransformKey) or tk.op not in TIME_TRANSFORMS:
+            continue
+        time_key = tk.time_key
+        if time_key is None:
+            continue
+        grain = transform_operand_grain(tk.input, query_grain=query_grain, active_bucket=active_bucket)
+        if time_key in grain:
+            continue
+        raise TimeAxisError(
+            summary=f"The operand of {tk.op}() is at a grain that does not contain the time axis "
+            f"'{dotted_key_display(time_key)}', so it does not vary along it.",
+            location=f"transform {tk.op!r}",
+            suggestion=_axis_suggestion(
+                tk, time_key=time_key, query_grain=query_grain, active_bucket=active_bucket,
+            ),
+        )
 
 
 _AXIS_REMEDY = "Add a single time_dimensions entry, or set main_time_dimension to select among multiple time dimensions."

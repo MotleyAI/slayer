@@ -1959,7 +1959,7 @@ def _run_serve(args):
     storage = _resolve_storage(args)
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
-    app = create_app(storage=storage, **_server_flags(args))
+    app = create_app(storage=storage, host=args.host, **_server_flags(args))
 
     import uvicorn  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps uvicorn off non-serve commands
 
@@ -1972,7 +1972,7 @@ def _run_serve(args):
 
 
 def _run_mcp(args):
-    from slayer.mcp.server import create_mcp_server  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps FastMCP off non-mcp commands
+    from slayer.mcp.server import create_mcp_server  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps the mcp SDK off non-mcp commands
 
     storage = _resolve_storage(args)
     if getattr(args, "demo", False):
