@@ -35,7 +35,7 @@ try:  # POSIX-only; Windows users get the no-op fallback.
 except ImportError:  # pragma: no cover — Windows
     _fcntl = None  # type: ignore[assignment]
 
-from slayer.core.errors import StoredDocumentLoadError
+from slayer.core.errors import StoredDocumentLoadError, UnreadableDocumentError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.atomic_write import _atomic_write_text, _atomic_write_yaml
@@ -549,6 +549,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 return f.read()
         except FileNotFoundError:
             return None
+        except UnicodeDecodeError as exc:
+            raise UnreadableDocumentError(reasons=[f"it is not UTF-8 text: {exc}"], name=name) from exc
 
     async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
         if not os.path.isdir(self.semantic_models_dir):

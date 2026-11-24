@@ -6,13 +6,14 @@ from __future__ import annotations
 import copy
 import difflib
 import warnings
-from collections.abc import Mapping, Sequence
-from typing import Any, Literal, NoReturn
+from collections.abc import Awaitable, Mapping, Sequence
+from typing import Any, Final, Literal, NoReturn
 
 import yaml
 from pydantic import BaseModel
 
 from slayer.async_utils import run_sync
+from slayer.core.errors import OssieDocumentInvalidError, UnreadableDocumentError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.warnings import SlayerStoredUpgradeNeededWarning
 from slayer.embeddings.models import Embedding
@@ -22,9 +23,13 @@ from slayer.storage.base import (
     without_none,
 )
 from slayer.storage.document_loading import Loaded
+from slayer.storage.semantic_models import checked_document
 
 DocumentKind = Literal["dataset", "semantic model", "memory", "datasource"]
 Status = Literal["upgraded", "current", "would upgrade", "not upgraded", "conflict"]
+WOULD_UPGRADE: Final = "would upgrade"
+NOT_UPGRADED: Final = "not upgraded"
+SEMANTIC_MODEL: Final = "semantic model"
 
 
 class Refusal(BaseModel):
@@ -56,7 +61,7 @@ class StoreUpgradeReport(BaseModel):
 
     @property
     def complete(self) -> bool:
-        return all(o.status in ("upgraded", "current", "would upgrade") for o in self.outcomes)
+        return all(o.status in ("upgraded", "current", WOULD_UPGRADE) for o in self.outcomes)
 
 
 class _Plan(BaseModel):
@@ -76,33 +81,41 @@ def _dialect_refusal(data_source: str) -> str:
             f"(--datasource-type {data_source}=TYPE)")
 
 
+async def _planned(plan: _Plan, upgraded: Awaitable[tuple[BaseModel, bool]]) -> _Plan:
+    """``plan`` with its upgrade's outcome: refused on any failure, so the other documents go on."""
+    try:
+        document, changes = await upgraded
+    except Exception as exc:  # noqa: BLE001
+        return plan.model_copy(update={"refused": str(exc)})
+    if isinstance(document, SlayerDataset) and any(f.sql is not None for f in document.fields):
+        return plan.model_copy(update={"refused": _dialect_refusal(str(plan.data_source))})
+    return plan.model_copy(update={"upgraded": without_none(document.model_dump(mode="json"))}) if changes else plan
+
+
 async def _dataset_plan(storage: StorageBackend, *, data_source: str, name: str, raw: dict[str, Any]) -> _Plan:
     plan = _Plan(kind="dataset", data_source=data_source, name=name, shown=f"{data_source}.{name}", raw=raw)
-    try:
-        dataset, changes = await storage._upgraded_dataset(name=name, data=copy.deepcopy(raw), data_source=data_source)
-    except Exception as exc:  # noqa: BLE001 — a document that fails to upgrade is reported, the others go on
-        return plan.model_copy(update={"refused": str(exc)})
-    if any(f.sql is not None for f in dataset.fields):
-        return plan.model_copy(update={"refused": _dialect_refusal(data_source)})
-    return plan.model_copy(update={"upgraded": without_none(dataset.model_dump(mode="json"))}) if changes else plan
+    return await _planned(plan, storage._upgraded_dataset(name=name, data=copy.deepcopy(raw), data_source=data_source))
 
 
 async def _memory_plan(storage: StorageBackend, *, memory_id: str, raw: dict[str, Any]) -> _Plan:
     plan = _Plan(kind="memory", data_source=None, name=memory_id, shown=memory_id, raw=raw)
-    try:
-        memory, changes = await storage._upgraded_memory(memory_id=memory_id, data=copy.deepcopy(raw))
-    except Exception as exc:  # noqa: BLE001 — a document that fails to upgrade is reported, the others go on
-        return plan.model_copy(update={"refused": str(exc)})
-    return plan.model_copy(update={"upgraded": without_none(memory.model_dump(mode="json"))}) if changes else plan
+    return await _planned(plan, storage._upgraded_memory(memory_id=memory_id, data=copy.deepcopy(raw)))
 
 
 async def _datasource_plan(storage: StorageBackend, *, name: str, raw: dict[str, Any]) -> _Plan:
     plan = _Plan(kind="datasource", data_source=None, name=name, shown=name, raw=raw)
+    return await _planned(plan, storage._upgraded_datasource(name=name, data=copy.deepcopy(raw)))
+
+
+async def _semantic_model_outcome(storage: StorageBackend, *, data_source: str, name: str) -> DocumentOutcome:
+    """A semantic-model document has no upgrade: it is current when valid, else reported with its reasons."""
+    shown = f"{data_source}.{name}"
     try:
-        datasource, changes = await storage._upgraded_datasource(name=name, data=copy.deepcopy(raw))
-    except Exception as exc:  # noqa: BLE001 — a document that fails to upgrade is reported, the others go on
-        return plan.model_copy(update={"refused": str(exc)})
-    return plan.model_copy(update={"upgraded": without_none(datasource.model_dump(mode="json"))}) if changes else plan
+        text = await storage.get_semantic_model_text(name, data_source=data_source)
+        checked_document(text=text or "", name=name)
+    except (UnreadableDocumentError, OssieDocumentInvalidError) as exc:
+        return DocumentOutcome(kind=SEMANTIC_MODEL, name=shown, status=NOT_UPGRADED, detail=str(exc))
+    return DocumentOutcome(kind=SEMANTIC_MODEL, name=shown, status="current")
 
 
 async def _unreadable(storage: StorageBackend, *, data_source: str, name: str) -> str:
@@ -137,7 +150,7 @@ async def _plans(storage: StorageBackend, *, data_source: str | None) -> tuple[l
     unreadable: list[DocumentOutcome] = []
     for (d, n), raw in raws.items():
         if raw is None:
-            unreadable.append(DocumentOutcome(kind="dataset", name=f"{d}.{n}", status="not upgraded",
+            unreadable.append(DocumentOutcome(kind="dataset", name=f"{d}.{n}", status=NOT_UPGRADED,
                                               detail=await _unreadable(storage, data_source=d, name=n)))
         else:
             plans.append(await _dataset_plan(storage, data_source=d, name=n, raw=raw))
@@ -148,11 +161,11 @@ async def _plans(storage: StorageBackend, *, data_source: str | None) -> tuple[l
 
 async def _outcome(storage: StorageBackend, plan: _Plan, *, dry_run: bool) -> DocumentOutcome:
     if plan.refused is not None:
-        return DocumentOutcome(kind=plan.kind, name=plan.shown, status="not upgraded", detail=plan.refused)
+        return DocumentOutcome(kind=plan.kind, name=plan.shown, status=NOT_UPGRADED, detail=plan.refused)
     if plan.upgraded is None:
         return DocumentOutcome(kind=plan.kind, name=plan.shown, status="current")
     if dry_run:
-        return DocumentOutcome(kind=plan.kind, name=plan.shown, status="would upgrade", detail="\n" + _diff(plan))
+        return DocumentOutcome(kind=plan.kind, name=plan.shown, status=WOULD_UPGRADE, detail="\n" + _diff(plan))
     written = await storage._write_raw_if_unchanged(kind=plan.kind, data_source=plan.data_source, name=plan.name,
                                                     expected=plan.raw, data=plan.upgraded)
     if not written:
@@ -175,7 +188,7 @@ async def upgrade_store(
             plans, outcomes = await _plans(storage, data_source=data_source)
             for plan in sorted(plans, key=lambda p: p.kind == "datasource"):
                 outcomes.append(await _outcome(storage, plan, dry_run=dry_run))
-            outcomes += [DocumentOutcome(kind="semantic model", name=f"{d}.{n}", status="current")
+            outcomes += [await _semantic_model_outcome(storage, data_source=d, name=n)
                          for d, n in await storage.list_semantic_models(data_source=data_source)]
     finally:
         CLIENT_SOURCE.reset(client_token)

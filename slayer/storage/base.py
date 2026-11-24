@@ -15,6 +15,7 @@ import yaml
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from collections.abc import Awaitable, Callable, Generator, Hashable, Iterable, Mapping, Sequence, Set as AbstractSet
 
@@ -165,7 +166,7 @@ _STANDALONE_ONLY: ContextVar[bool] = ContextVar("_STANDALONE_ONLY", default=Fals
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
 #: Dialects supplied for datasources the store holds no config for (``slayer storage upgrade --datasource-type``).
-DATASOURCE_TYPES: ContextVar[Mapping[str, str]] = ContextVar("DATASOURCE_TYPES", default={})
+DATASOURCE_TYPES: ContextVar[Mapping[str, str]] = ContextVar("DATASOURCE_TYPES", default=MappingProxyType({}))
 # Upgraded datasets of the enclosing top-level load, by ``(backend, data_source, name)``: the raw read, the dataset
 # and whether the upgrade changes it.
 _UPGRADE_PASS: ContextVar[dict[tuple[object, str, str], tuple[Any, Any, bool]] | None] = ContextVar(
@@ -1218,16 +1219,30 @@ class StorageBackend(ABC):
             if self._supports_semantic_models() else []
         if not names:
             return DocumentIndex(data_source=data_source)
-        documents = []
+        documents, unreadable = [], []
         for name in names:
-            text = await self._get_semantic_model_text_impl(data_source=data_source, name=name)
+            try:
+                text = await self._get_semantic_model_text_impl(data_source=data_source, name=name)
+            except UnreadableDocumentError as exc:
+                unreadable.append(StoredDocumentLoadError(kind="semantic_model", name=name, data_source=data_source,
+                                                          cause=exc))
+                continue
             if text is not None:
                 documents.append((name, text))
         standalone = [n for ds, n in await self._standalone_identities() if ds == data_source]
         datasource = await self.get_datasource(data_source)
-        return build_index(data_source=data_source, documents=documents, standalone=standalone,
-                           ds_type=datasource.type if datasource is not None else None,
-                           granularities=datasource.granularities if datasource is not None else [])
+        index = build_index(data_source=data_source, documents=documents, standalone=standalone,
+                            ds_type=datasource.type if datasource is not None else None,
+                            granularities=datasource.granularities if datasource is not None else [])
+        index.failures.extend(unreadable)
+        return index
+
+    async def _readable_text(self, *, data_source: str, name: str) -> str | None:
+        """A stored document's text; ``None`` when absent or unreadable."""
+        try:
+            return await self._get_semantic_model_text_impl(data_source=data_source, name=name)
+        except UnreadableDocumentError:
+            return None
 
     async def _document_dataset(self, name: str, *, data_source: str | None) -> SlayerDataset | None:
         """The document dataset ``name`` (case-insensitive), ``None`` when no document declares it; raises
@@ -1324,7 +1339,7 @@ class StorageBackend(ABC):
                                  for ds, n in await self._standalone_identities()
                                  if ds == data_source and n.casefold() not in moving}
         others = [(n, t) for n, t in [
-            (n, await self._get_semantic_model_text_impl(data_source=data_source, name=n))
+            (n, await self._readable_text(data_source=data_source, name=n))
             for ds, n in await self._list_semantic_model_identities() if ds == data_source and n != name] if t]
         datasource = await self.get_datasource(data_source)
         other_metrics: dict[str, str] = {}
@@ -1872,13 +1887,18 @@ class StorageBackend(ABC):
             data = await self._converted_source_queries(name=name, data=data, data_source=data_source, gates=gates,
                                                         pending=pending)
             changes = True
-        dataset = SlayerDataset.model_validate(data)
-        if any(c.sql is not None for c in dataset.fields):
-            datasource = await self.get_datasource(data_source)
-            ds_type = datasource.type if datasource is not None else DATASOURCE_TYPES.get().get(data_source)
-            if ds_type is not None:
-                dataset, changes = with_converted_sql(dataset, ds_type=ds_type), True
-        return dataset, changes
+        dataset, converted = await self._with_dialect_sql(SlayerDataset.model_validate(data), data_source=data_source)
+        return dataset, changes or converted
+
+    async def _with_dialect_sql(self, dataset: SlayerDataset, *, data_source: str) -> tuple[SlayerDataset, bool]:
+        """``dataset`` with its field ``sql`` converted once its datasource's dialect is known; whether it was."""
+        if all(c.sql is None for c in dataset.fields):
+            return dataset, False
+        datasource = await self.get_datasource(data_source)
+        ds_type = datasource.type if datasource is not None else DATASOURCE_TYPES.get().get(data_source)
+        if ds_type is None:
+            return dataset, False
+        return with_converted_sql(dataset, ds_type=ds_type), True
 
     async def _peer_relationships(self, *, data: dict, data_source: str) -> dict[str, list]:
         """Each relationship target's own stored relationships, by target name."""

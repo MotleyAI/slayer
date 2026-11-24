@@ -41,6 +41,19 @@ from slayer.storage.document_keys import keys_for
 
 _PRIORITY_KEY = "datasource_priority"
 _PRAGMA_FOREIGN_KEYS_ON = "PRAGMA foreign_keys = ON"
+_BEGIN_IMMEDIATE = "BEGIN IMMEDIATE"
+_SELECT_DATASET = "SELECT data FROM models WHERE data_source = ? AND name = ?"
+_UPDATE_DATASET = "UPDATE models SET data = ? WHERE data_source = ? AND name = ?"
+_SELECT_MEMORY = "SELECT data FROM memories WHERE id = ?"
+_UPDATE_MEMORY = "UPDATE memories SET data = ? WHERE id = ?"
+_SELECT_DATASOURCE = "SELECT data FROM datasources WHERE name = ?"
+_UPDATE_DATASOURCE = "UPDATE datasources SET data = ? WHERE name = ?"
+#: Each stored document kind's row ``data`` read and update, keyed by its identity columns.
+_ROW_DATA_STATEMENTS = {
+    "dataset": (_SELECT_DATASET, _UPDATE_DATASET),
+    "memory": (_SELECT_MEMORY, _UPDATE_MEMORY),
+    "datasource": (_SELECT_DATASOURCE, _UPDATE_DATASOURCE),
+}
 
 
 class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
@@ -222,7 +235,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _get_dataset_sync(self, data_source: str, name: str) -> str | None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
-                "SELECT data FROM models WHERE data_source = ? AND name = ?",
+                _SELECT_DATASET,
                 (data_source, name),
             ).fetchone()
         return row[0] if row else None
@@ -258,7 +271,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     def _patch_semantic_model_sync(self, data_source: str, name: str, patch: Callable[[str], str]) -> str:
         with open_connection(self.db_path, isolation_level=None) as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_BEGIN_IMMEDIATE)
             try:
                 row = conn.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?",
                                    (data_source, name)).fetchone()
@@ -299,7 +312,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _get_datasource_sync(self, name: str) -> str | None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
-                "SELECT data FROM datasources WHERE name = ?", (name,)
+                _SELECT_DATASOURCE, (name,)
             ).fetchone()
         return row[0] if row else None
 
@@ -398,7 +411,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _write_raw_dataset_dict(self, *, name: str, data_source: str, data: dict) -> None:
         await asyncio.to_thread(
-            self._update_sync, "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
+            self._update_sync, _UPDATE_DATASET,
             (json.dumps(data), data_source, name),
         )
         self._forget_raw(data_source=data_source, name=name)
@@ -406,21 +419,20 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _raw_datasource_dicts(self) -> dict[str, dict]:
         return dict(await asyncio.to_thread(self._raw_rows_sync, "SELECT name, data FROM datasources ORDER BY name"))
 
-    def _write_if_unchanged_sync(self, *, table: str, where: dict[str, str], expected: dict, data: dict) -> bool:
+    def _write_if_unchanged_sync(self, *, kind: str, params: tuple[str, ...], expected: dict, data: dict) -> bool:
         """``UPDATE`` one row's ``data`` in the transaction that checks it still reads ``expected``."""
-        condition = " AND ".join(f"{key} = ?" for key in where)
-        params = tuple(where.values())
+        select, update = _ROW_DATA_STATEMENTS[kind]
         with open_connection(self.db_path, isolation_level=None) as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_BEGIN_IMMEDIATE)
             try:
-                row = conn.execute(f"SELECT data FROM {table} WHERE {condition}", params).fetchone()  # NOSONAR(S2077,S3649) — fixed table and column names
+                row = conn.execute(select, params).fetchone()
                 try:
                     current = json.loads(row[0]) if row else None
                 except ValueError:
                     current = None
                 unchanged = current == expected
                 if unchanged:
-                    conn.execute(f"UPDATE {table} SET data = ? WHERE {condition}", (json.dumps(data), *params))  # NOSONAR(S2077,S3649) — fixed table and column names
+                    conn.execute(update, (json.dumps(data), *params))
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
@@ -431,12 +443,10 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         self, *, kind: str, data_source: str | None, name: str, expected: dict, data: dict,
     ) -> bool:
         if kind == "dataset" and data_source is not None:
-            table, where = "models", {"data_source": data_source, "name": name}
-        elif kind == "memory":
-            table, where = "memories", {"id": name}
+            row, params = "dataset", (data_source, name)
         else:
-            table, where = "datasources", {"name": name}
-        written = await asyncio.to_thread(self._write_if_unchanged_sync, table=table, where=where, expected=expected,
+            row, params = ("memory" if kind == "memory" else "datasource"), (name,)
+        written = await asyncio.to_thread(self._write_if_unchanged_sync, kind=row, params=params, expected=expected,
                                           data=data)
         if written and kind == "dataset" and data_source is not None:
             self._forget_raw(data_source=data_source, name=name)
@@ -445,13 +455,13 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         return written
 
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
-        await asyncio.to_thread(self._update_sync, "UPDATE datasources SET data = ? WHERE name = ?", (json.dumps(data), name))
+        await asyncio.to_thread(self._update_sync, _UPDATE_DATASOURCE, (json.dumps(data), name))
 
     async def _raw_memory_dicts(self) -> dict[str, dict]:
         return dict(await asyncio.to_thread(self._raw_rows_sync, "SELECT id, data FROM memories ORDER BY id"))
 
     async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
-        await asyncio.to_thread(self._update_sync, "UPDATE memories SET data = ? WHERE id = ?", (json.dumps(data), memory_id))
+        await asyncio.to_thread(self._update_sync, _UPDATE_MEMORY, (json.dumps(data), memory_id))
 
     async def _delete_dataset_row(
         self, *, data_source: str, name: str,
@@ -466,7 +476,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     ) -> None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
-                "SELECT data FROM models WHERE data_source = ? AND name = ?",
+                _SELECT_DATASET,
                 (data_source, dataset_name),
             ).fetchone()
             if not row:
@@ -493,7 +503,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                     f"on dataset {dataset_name!r} in datasource {data_source!r}."
                 )
             conn.execute(
-                "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
+                _UPDATE_DATASET,
                 (json.dumps(data), data_source, dataset_name),
             )
 
@@ -597,14 +607,14 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         # BEGIN IMMEDIATE / COMMIT / ROLLBACK under autocommit.
         with open_connection(self.db_path, isolation_level=None, timeout=30.0) as conn:
             conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_BEGIN_IMMEDIATE)
             try:
                 preserved_created_at = None
                 if memory_id is None:
                     memory_id = self._next_memory_seq_sync_from_conn(conn)
                 else:
                     existing_row = conn.execute(
-                        "SELECT data FROM memories WHERE id = ?",
+                        _SELECT_MEMORY,
                         (memory_id,),
                     ).fetchone()
                     if existing_row is not None:
@@ -713,7 +723,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _get_memory_sync(self, memory_id: str) -> str | None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
-                "SELECT data FROM memories WHERE id = ?", (memory_id,)
+                _SELECT_MEMORY, (memory_id,)
             ).fetchone()
         return row[0] if row else None
 

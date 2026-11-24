@@ -74,7 +74,9 @@ def _value(node: Any) -> Any:
     """A literal argument's Python value."""
     if isinstance(node, syntax.Literal):
         value = node.value
-        return (int(value) if value == value.to_integral_value() else float(value)) if isinstance(value, Decimal) else value
+        if not isinstance(value, Decimal):
+            return value
+        return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(node, syntax.UnaryOp) and node.op == "-" and isinstance(node.operand, syntax.Literal):
         return -_value(node.operand)
     raise ValueError(f"expected a literal value, got {syntax.canonical_metric_text(node)!r}")
@@ -145,47 +147,53 @@ class _Projection:
         raise ValueError(f"Unsupported formula syntax: {self.original!r}")
 
     def arithmetic(self, node: Any) -> _ArithmeticField | _MixedArithmeticField:
-        agg_refs: dict[str, _AggregatedMeasureRef] = {}
-        transforms: list[tuple[str, _TransformField]] = []
-        names: list[str] = []
-        calls = [False]
-
-        def placeholder(name: str) -> syntax.Ref:
-            names.append(name)
-            return syntax.Ref(name=name)
-
-        def lift(item: Any) -> Any:
-            if isinstance(item, syntax.AggCall):
-                ref = self.aggregation(item)
-                key = f"__agg{len(agg_refs)}__"
-                agg_refs[key] = ref
-                return placeholder(key)
-            if isinstance(item, syntax.TransformCall):
-                key = f"_t{len(transforms)}"
-                transforms.append((key, self.transform(item)))
-                calls[0] = True
-                return syntax.Ref(name=key)
-            if isinstance(item, (syntax.Ref, syntax.DottedRef)):
-                self.spec(item)
-            if isinstance(item, syntax.ScalarCall):
-                calls[0] = True
-            if isinstance(item, (tuple, list)):
-                return type(item)(lift(i) for i in item)
-            if isinstance(item, (syntax.Arith, syntax.UnaryOp, syntax.Cmp, syntax.BoolOp, syntax.ScalarCall,
-                                 syntax.TupleLit, syntax.ArrayLit)):
-                # ``written_args`` repeats a spelling's arguments as written.
-                return item.model_copy(update={
-                    f: lift(getattr(item, f)) for f in type(item).model_fields if f != "written_args"})
-            if isinstance(item, BaseModel) and not isinstance(item, (syntax.Literal, syntax.Placeholder)):
-                raise ValueError(f"Unsupported formula syntax: {self.original!r}")
-            return item
-
-        sql = syntax.canonical_metric_text(lift(node))
+        lifter = _Lifter(self)
+        sql = syntax.canonical_metric_text(lifter.lift(node))
         predicate = isinstance(node, _PREDICATES)
-        if calls[0]:
-            return _MixedArithmeticField(sql=sql, measure_names=names, sub_transforms=transforms, agg_refs=agg_refs,
-                                         is_predicate=predicate)
-        return _ArithmeticField(sql=sql, measure_names=names, agg_refs=agg_refs, is_predicate=predicate)
+        if lifter.calls:
+            return _MixedArithmeticField(sql=sql, measure_names=lifter.names, sub_transforms=lifter.transforms,
+                                         agg_refs=lifter.agg_refs, is_predicate=predicate)
+        return _ArithmeticField(sql=sql, measure_names=lifter.names, agg_refs=lifter.agg_refs, is_predicate=predicate)
+
+
+_REBUILT = (syntax.Arith, syntax.UnaryOp, syntax.Cmp, syntax.BoolOp, syntax.ScalarCall, syntax.TupleLit,
+            syntax.ArrayLit)
+
+
+class _Lifter:
+    """An arithmetic tree with each aggregation and transform lifted out into a named placeholder."""
+
+    def __init__(self, projection: _Projection) -> None:
+        self.projection = projection
+        self.agg_refs: dict[str, _AggregatedMeasureRef] = {}
+        self.transforms: list[tuple[str, _TransformField]] = []
+        self.names: list[str] = []
+        self.calls = False
+
+    def lift(self, item: Any) -> Any:
+        if isinstance(item, syntax.AggCall):
+            key = f"__agg{len(self.agg_refs)}__"
+            self.agg_refs[key] = self.projection.aggregation(item)
+            self.names.append(key)
+            return syntax.Ref(name=key)
+        if isinstance(item, syntax.TransformCall):
+            key = f"_t{len(self.transforms)}"
+            self.transforms.append((key, self.projection.transform(item)))
+            self.calls = True
+            return syntax.Ref(name=key)
+        if isinstance(item, (syntax.Ref, syntax.DottedRef)):
+            self.projection.spec(item)
+        if isinstance(item, syntax.ScalarCall):
+            self.calls = True
+        if isinstance(item, (tuple, list)):
+            return type(item)(self.lift(i) for i in item)
+        if isinstance(item, _REBUILT):
+            # ``written_args`` repeats a spelling's arguments as written.
+            return item.model_copy(update={
+                f: self.lift(getattr(item, f)) for f in type(item).model_fields if f != "written_args"})
+        if isinstance(item, BaseModel) and not isinstance(item, (syntax.Literal, syntax.Placeholder)):
+            raise ValueError(f"Unsupported formula syntax: {self.projection.original!r}")
+        return item
 
 
 def _parse_formula(

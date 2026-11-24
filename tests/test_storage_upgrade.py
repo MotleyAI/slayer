@@ -228,6 +228,25 @@ def test_a_current_semantic_model_document_is_checked_and_left(tmp_path: Path) -
     assert any("sales" in line for line in result.out.splitlines()), result.out
 
 
+@pytest.mark.parametrize("invalid", [
+    SALES.replace("version:", "version: '0.0.1'\nold_version:", 1).encode(), b"\xff\xfe not utf-8",
+], ids=["unsupported-version", "undecodable"])
+def test_an_invalid_semantic_model_document_is_reported_not_current(tmp_path: Path, invalid: bytes) -> None:
+    base = str(tmp_path / "store")
+    shop_db = warehouse_db(str(tmp_path / "shop_data"))
+    storage = warehouse_store(backend="yaml", base=base, extra_datasources=[warehouse_datasource(shop_db, name="shop")])
+    path = Path(base, "semantic_models", "shop", "sales.yaml")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(invalid)
+    result = upgrade(store_path(storage))
+    assert result.code == 1, result
+    assert path.read_bytes() == invalid
+    assert _versions(raw(backend="yaml", base=base))[f"models/{DATA_SOURCE}/orders"] == CURRENT_VERSIONS["SlayerModel"]
+    sales = [line for line in (result.out + result.err).splitlines() if "shop.sales" in line]
+    assert sales, result
+    assert all("current" not in line for line in sales), sales
+
+
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_a_dataset_waiting_for_its_dialect(backend: str, tmp_path: Path) -> None:
     base = str(tmp_path / "store")
