@@ -1,6 +1,6 @@
 ## 0. Preconditions
 
-- [ ] 0.1 Merge `origin/main` once DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430,
+- [x] 0.1 Merge `origin/main` once DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430,
       DEV-2443, DEV-2439, DEV-2455 and DEV-2246 have all merged; verify each is Done in Linear and its PR is merged. Until then, tests that depend
       on them (DEV-2446's cases) start as strict xfails pointing at the open issue; none may remain at merge.
 - [x] 0.2 Before writing tests, merge `origin/main`, then read the plan of every prerequisite not yet merged (DEV-2443
@@ -75,7 +75,7 @@
 
 - [x] 6.1 Draft `RELEASE_NOTES_2.0.0.md` with the `release-notes` skill from the slice comments and PRs; keep it
       untracked. Verify: `git status` shows it untracked and unstaged.
-- [ ] 6.2 After task 0.1, run the DEV-2205 release gate on a wheel built from this branch, installed with every
+- [x] 6.2 After task 0.1, run the DEV-2205 release gate on a wheel built from this branch, installed with every
       dependency at its newest version. Verify: the gate passes.
 - [x] 6.3 Check upstream apache/ossie `compliance/portability`'s current runner interface and post SLayer's drafted
       registration (`slayer ossie-roundtrip <in> <out>`, every element PORTABLE) as a DEV-2220 comment. Verify: the
