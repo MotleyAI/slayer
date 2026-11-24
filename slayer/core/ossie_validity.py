@@ -15,6 +15,8 @@ from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import ParseError, TokenError
 
+from slayer.core.errors import agg_in_field_text
+
 __all__ = ["PORTABLE_DIALECT", "SOURCE_MEASURE_REASON", "SQLGLOT_DIALECTS", "agg_arguments", "agg_calls", "columns",
            "is_agg_call", "parse_ossie_sql", "portable_construct_problem", "portable_problem", "reads_source_measure",
            "semantic_errors", "source_measure", "unwindowed_aggregates"]
@@ -322,8 +324,7 @@ def _expression_agg_errors(e: _Expr, *, model: str, fields: dict[str, set[str]],
         return []
     calls = list(agg_calls(tree))
     if calls and e.kind == "field":
-        return [f"[Scope] {e.label(model)} calls AGG in a field expression. This version allows AGG only in metrics, "
-                "as AGG(dataset.metric) in a model-scoped metric and AGG(source.measure) in a dataset-scoped metric."]
+        return [f"[Scope] {agg_in_field_text(e.label(model))}"]
     out: list[str] = []
     for call, args in calls:
         if e.kind == "dataset_metric":

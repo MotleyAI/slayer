@@ -123,6 +123,11 @@ class PrestoFamilyDialect(SqlDialect):
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_EXTRACT_SCALAR", value, lit(_presto_path(path)))
 
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        """The JSON text keeps a string's quotes, so only a number reads as one."""
+        found = anon("JSON_FORMAT", anon("JSON_EXTRACT", value, lit(_presto_path(path))))
+        return exp.TryCast(this=found, to=exp.DataType.build("DOUBLE"))
+
     def list_length(self, values: Expression) -> Expression:
         return anon("CARDINALITY", values)
 
@@ -226,6 +231,8 @@ class PrestoFamilyDialect(SqlDialect):
 class TrinoDialect(PrestoFamilyDialect):
     enforces_unique_keys: ClassVar[bool] = False
     sqlglot_name: str = "trino"
+    decimal_text_exponent: ClassVar[bool] = False
+    number_cast_rounds: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"trino"})
     sa_backend_names: frozenset[str] = frozenset({"trino"})
     url_scheme: str | None = "trino"

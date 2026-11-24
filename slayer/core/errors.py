@@ -536,7 +536,8 @@ class TimeLiteralError(QueryTypeError):
 
 
 class DistinctDimensionValuesError(QueryTypeError):
-    """``distinct_dimension_values=False`` (raw rows) conflicts with an aggregation or an empty projection."""
+    """``distinct_dimension_values=False`` (raw rows) conflicts with an aggregation, an empty projection, or a
+    dimension the population does not determine."""
 
 
 class UnknownGranularityError(QueryTypeError):
@@ -1245,6 +1246,20 @@ class AggFilterError(SlayerError, ValueError):
             summary=f"{expression}: AGG takes no FILTER clause.",
             suggestion="Define a dataset metric with the filter and evaluate that.",
         ))
+
+
+def agg_in_field_text(subject: str) -> str:
+    """Why ``subject``, a field, may not call ``AGG`` (the Ossie-document rule's wording)."""
+    return (f"{subject} calls AGG in a field expression. This version allows AGG only in metrics, as "
+            "AGG(dataset.metric) in a model-scoped metric and AGG(source.measure) in a dataset-scoped metric.")
+
+
+class AggInFieldError(SlayerError, ValueError):
+    """A field's Mode-B ``expression`` calls ``AGG``."""
+
+    def __init__(self, *, field: str) -> None:
+        self.field = field
+        super().__init__(agg_in_field_text(f"Field {field!r}"))
 
 
 class CaseCollisionError(SlayerError, ValueError):

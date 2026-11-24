@@ -329,7 +329,6 @@ def test_a_filtered_aggregate_is_a_component_of_its_dataset() -> None:
     assert (own.homes, own.problems) == (["orders"], [])
 
 
-@pytest.mark.xfail(strict=True, reason="DEV-2439: the strict reader does not read a window clause yet")
 @pytest.mark.parametrize(("filter_text", "code"), [
     pytest.param("ROW_NUMBER() OVER (", "E_INVALID_QUERY", id="incomplete-window"),
     pytest.param("ROW_NUMBER() OVER (ORDER BY orders.no_such_field) = 1", "E_NAME_NOT_FOUND", id="unknown-inside"),

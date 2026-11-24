@@ -291,11 +291,12 @@ COMPARISON_NODES: dict[str, Any] = {
 #: fraction and exponent, surrounding spaces ignored (POSIX classes, so no backslash meets a string literal).
 NUMBER_TEXT_PATTERN = r"^[[:space:]]*[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$"
 INTEGER_TEXT_PATTERN = r"^ *[+-]?[0-9]+ *$"
-#: The ranges of the integer types narrower than INT, checked where a database only has them as aliases.
+#: The ranges of the integer types narrower than BIGINT, checked where a database only has them as aliases.
 NARROW_INTEGER_BOUNDS: dict[DType, tuple[int, int]] = {
     exp.DataType.Type.TINYINT: (-(2 ** 7), 2 ** 7 - 1), exp.DataType.Type.SMALLINT: (-(2 ** 15), 2 ** 15 - 1),
     exp.DataType.Type.MEDIUMINT: (-(2 ** 23), 2 ** 23 - 1), exp.DataType.Type.UTINYINT: (0, 2 ** 8 - 1),
     exp.DataType.Type.USMALLINT: (0, 2 ** 16 - 1), exp.DataType.Type.UMEDIUMINT: (0, 2 ** 24 - 1),
+    exp.DataType.Type.INT: (-(2 ** 31), 2 ** 31 - 1), exp.DataType.Type.UINT: (0, 2 ** 32 - 1),
 }
 INT64_BOUNDS = (-(2 ** 63), 2 ** 63 - 1)
 #: The half-open ranges of the integer types wider than BIGINT.
@@ -329,10 +330,13 @@ def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Ex
     return new_left, new_right
 
 
-def _exact_bound(bound: int) -> Expression:
-    """A power-of-two bound as an exact float literal (``9223372036854775808e0``)."""
-    literal = exp.Literal.number(f"{abs(bound)}e0")
-    return exp.Neg(this=literal) if bound < 0 else literal
+def number_literal_text(node: Expression) -> Optional[str]:
+    """A number literal's exact text (``-2.5`` included), else ``None``."""
+    negative = isinstance(node, exp.Neg)
+    inner = node.this if negative else node
+    if not (isinstance(inner, exp.Literal) and inner.is_number):
+        return None
+    return f"-{inner.this}" if negative else inner.this
 
 
 def as_text(value: Expression) -> Expression:
@@ -347,10 +351,13 @@ def cast_target(type_text: str, *, dialect: "SqlDialect") -> exp.DataType:
     parts = cast_type_parts(type_text)
     if parts.array_rank > 1:
         raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}: there is no array of arrays.")
-    built = _read_type(type_text, readers=(sqlglot_name, "postgres"))
+    readings = [r for r in (_read_type(type_text, readers=(reader,)) for reader in (sqlglot_name, "postgres")) if r]
+    built = next((r for r in readings if _keeps_author_parts(parts, r)), readings[0] if readings else None)
     if (built is None or built.this == exp.DataType.Type.USERDEFINED or not dialect.cast_type_supported(built)
             or not _keeps_author_parts(parts, built) or not _renders_losslessly(built, dialect=dialect)):
         raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}.")
+    if not parts.sizes and built.this in DECIMAL_CAST_TYPES:
+        built.set("expressions", [])  # a reader's default precision is not the author's
     return built
 
 
@@ -454,9 +461,39 @@ def _cast_signature(data_type: exp.DataType) -> _CastSignature:
 
 
 def _renders_losslessly(built: exp.DataType, *, dialect: "SqlDialect") -> bool:
-    """Whether ``built`` as ``dialect`` spells it reads back with its signature kept."""
+    """Whether ``built`` as ``dialect`` spells it reads back with its signature kept; a VARCHAR length the author
+    cast applies itself may go."""
     rendered = _read_type(built.sql(dialect=dialect.sqlglot_name), readers=(dialect.sqlglot_name,))
-    return rendered is not None and _cast_signature(built).kept_by(_cast_signature(rendered))
+    signature = _cast_signature(built)
+    if text_length(built) is not None:
+        signature = signature.model_copy(update={"sizes": ()})
+    return rendered is not None and signature.kept_by(_cast_signature(rendered))
+
+
+_LENGTH_TEXT_TYPES: frozenset[DType] = frozenset({
+    exp.DataType.Type.VARCHAR, exp.DataType.Type.NVARCHAR, exp.DataType.Type.TEXT,
+})
+DECIMAL_CAST_TYPES: frozenset[DType] = frozenset({
+    exp.DataType.Type.DECIMAL, exp.DataType.Type.BIGDECIMAL, exp.DataType.Type.UDECIMAL,
+})
+#: An omitted DECIMAL precision; ANSI's omitted scale is 0.
+DEFAULT_DECIMAL_PRECISION = 38
+
+
+def text_length(data_type: exp.DataType) -> Optional[int]:
+    """The ``n`` of a ``VARCHAR(n)`` / ``STRING(n)`` cast type, else ``None``."""
+    params = _type_params(data_type)
+    if data_type.this not in _LENGTH_TEXT_TYPES or len(params) != 1 or not params[0].isdigit():
+        return None
+    return int(params[0])
+
+
+def decimal_parts(data_type: exp.DataType) -> Optional[tuple[Optional[int], Optional[int]]]:
+    """A DECIMAL cast type's written ``(precision, scale)``, either ``None`` when omitted; ``None`` for other types."""
+    if data_type.this not in DECIMAL_CAST_TYPES:
+        return None
+    params = [int(p) for p in _type_params(data_type) if p.isdigit()]
+    return (params[0] if params else None), (params[1] if len(params) > 1 else None)
 
 
 def _keeps_author_parts(parts: CastTypeParts, built: exp.DataType) -> bool:
@@ -922,26 +959,107 @@ class SqlDialect(BaseModel):
     aliased_integer_types: ClassVar[frozenset[DType]] = frozenset()
 
     def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
-        """``TRY_CAST`` to an integer type: integer text, or an integral number, in the target's range; else NULL.
-        ``source``: ``CastKey.numeric_source``."""
+        """``TRY_CAST`` to an integer type: integer text, or a number rounded half away from zero, in the target's
+        range; else NULL. ``source``: ``CastKey.numeric_source``."""
         if kind_of(source) is not TypeKind.DOUBLE:
             return self.build_integer_text_try_cast(as_text(value), to)
         wide = to.this in WIDE_INTEGER_BOUNDS
         low, high = WIDE_INTEGER_BOUNDS.get(to.this, (INT64_BOUNDS[0], INT64_BOUNDS[1] + 1))
+        rounded = self.round_half_away(value, 0)
+        # Power-of-two bounds compare exactly with a double and an exact number alike.
         in_range = exp.And(
-            this=exp.GTE(this=operand_copy(value), expression=_exact_bound(low)),
-            expression=exp.LT(this=operand_copy(value), expression=_exact_bound(high)),
-        )
-        integral = exp.And(
-            this=exp.EQ(this=operand_copy(value), expression=exp.Floor(this=operand_copy(value))), expression=in_range,
+            this=exp.GTE(this=operand_copy(rounded), expression=self.integer_bound(low)),
+            expression=exp.LT(this=operand_copy(rounded), expression=self.integer_bound(high)),
         )
         # The guard sits inside the cast: a database folding a constant cast never sees an out-of-range one.
-        whole = exp.Cast(this=case((integral, operand_copy(value))), to=to.copy() if wide else exp.DataType.build("BIGINT"))
+        whole = exp.Cast(this=case((in_range, rounded)), to=to.copy() if wide else exp.DataType.build("BIGINT"))
         return self.build_integer_text_try_cast(as_text(whole), to)
+
+    def integer_bound(self, bound: int) -> Expression:
+        """An integer range bound, exact: outside BIGINT a DECIMAL (not every parser takes it bare), past any DECIMAL
+        a double (a power of two is exact there)."""
+        if INT64_BOUNDS[0] <= bound <= INT64_BOUNDS[1]:
+            return lit(bound)
+        if abs(bound) < 10 ** DEFAULT_DECIMAL_PRECISION:
+            return exp.Cast(this=lit(str(bound)), to=self.decimal_type(DEFAULT_DECIMAL_PRECISION, 0))
+        magnitude = exp.Literal.number(f"{abs(bound)}e0")
+        return exp.Neg(this=magnitude) if bound < 0 else magnitude
+
+    #: Whether the database's own cast of a number to an integer or DECIMAL type rounds half away from zero.
+    number_cast_rounds: ClassVar[bool] = False
+    #: Whether the database's own cast to ``VARCHAR(n)`` keeps the first ``n`` characters.
+    varchar_cast_truncates: ClassVar[bool] = False
+
+    def decimal_type(self, precision: int, scale: int) -> exp.DataType:
+        """``DECIMAL(precision, scale)`` in this database's spelling."""
+        return exp.DataType.build(f"DECIMAL({precision}, {scale})")
+
+    def build_round(self, value: Expression, digits: Expression) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
+        """Two-argument ``round``; ``None``: the database's own ``ROUND`` has the reference meaning."""
+        return None
+
+    def round_half_away(self, value: Expression, digits: int) -> Expression:
+        """``value`` rounded to ``digits`` fractional digits, an exact tie away from zero."""
+        return exp.Round(this=value.copy(), decimals=lit(digits))
+
+    def number_to_boolean(self, value: Expression) -> Expression:
+        """A number as a boolean: true exactly when it is not zero."""
+        return exp.NEQ(this=operand_copy(value), expression=lit(0))
+
+    def build_author_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """An author's ``CAST`` / ``TRY_CAST``, one meaning on every dialect; ``source``: ``CastKey.numeric_source``."""
+        if to.is_type(exp.DataType.Type.BOOLEAN) and source is not None:
+            return self.number_to_boolean(value)
+        length = text_length(to)
+        if length is not None:
+            return self.build_varchar_cast(value, length)
+        parts = decimal_parts(to)
+        if parts is not None:
+            precision, scale = parts[0] or DEFAULT_DECIMAL_PRECISION, parts[1] or 0
+            if to.is_type(exp.DataType.Type.DECIMAL) and None in parts:
+                to = self.decimal_type(precision, scale)
+            return self.build_decimal_cast(value, to, precision=precision, scale=scale, source=source, try_=try_)
+        integer = to.this in exp.DataType.INTEGER_TYPES
+        if try_ and integer:
+            return self.build_integer_try_cast(value, to, source=source)
+        if source is DataType.FLOAT and integer and not self.number_cast_rounds:
+            value = self.round_half_away(value, 0)
+        return self.build_try_cast(value, to) if try_ else self.build_cast(value, to)
+
+    def build_varchar_cast(self, value: Expression, length: int) -> Expression:
+        """A cast to ``VARCHAR(length)``: the first ``length`` characters."""
+        if not self.varchar_cast_truncates:
+            value = self.char_substring(as_text(value), lit(1), lit(length))
+        return self.build_cast(value, exp.DataType.build(f"VARCHAR({length})"))
+
+    def build_decimal_cast(
+        self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],  # NOSONAR(S1172) — hook parameter read by dialect overrides
+        try_: bool,
+    ) -> Expression:
+        """A cast to ``DECIMAL(precision, scale)``: a number or numeric text rounded to ``scale`` half away from zero;
+        ``TRY_CAST``: NULL past ``precision``."""
+        convert = self.build_try_cast if try_ else self.build_cast
+        if source is None and not self.decimal_text_exponent:
+            text = exp.Trim(this=value.copy())
+            exponent = self.build_ilike(text, lit("%e%"))
+            through_double = convert(convert(text.copy(), exp.DataType.build("DOUBLE")), to)
+            return case((exponent, through_double), default=convert(text.copy(), to))
+        if source is DataType.FLOAT and not self.number_cast_rounds:
+            value = self.round_half_away(value, scale)
+        return convert(value, to)
+
+    #: Whether the database's own cast of text to a DECIMAL type reads an exponent (``1.2345e1``).
+    decimal_text_exponent: ClassVar[bool] = True
+
+    def integer_text(self, text: Expression) -> Expression:
+        """Whether ``text`` is integer text: an optional sign and digits, surrounding spaces ignored."""
+        return self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False)
 
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
         """Integer text (surrounding spaces ignored) through the database's ``TRY_CAST``, else NULL."""
-        integer = self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False)
+        integer = self.integer_text(text)
         return case((integer, self.within_integer_range(self.build_try_cast(exp.Trim(this=text.copy()), to), to)))
 
     def within_integer_range(self, value: Expression, to: exp.DataType) -> Expression:
@@ -1257,9 +1375,20 @@ class SqlDialect(BaseModel):
     ) -> Expression:
         """``json_value(… RETURNING target)``: the scalar converted, NULL where it cannot convert."""
         text = self.build_json_value(value, path, native)
-        if target is DataType.INTEGER:
-            return self.build_integer_try_cast(text, to, source=None)
-        return self.build_try_cast(text, to)
+        if target is not DataType.INTEGER:
+            return self.build_try_cast(text, to)
+        from_text = self.build_integer_try_cast(text, to, source=None)
+        number = self.json_fraction(value, path, native)
+        if number is None:
+            return from_text
+        # An integral number is read exactly by the text path (out of range → NULL), never through a double.
+        fraction = case((exp.Not(this=exp.Paren(this=self.integer_text(text))),
+                         self.build_integer_try_cast(number, to, source=DataType.FLOAT)))
+        return exp.Coalesce(this=from_text, expressions=[fraction])
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
+        """The JSON number at ``path`` as a DOUBLE where it has a fraction, else NULL; ``None``: not told apart."""
+        return None
 
     # Lists (spec: queries/list-functions, aggregations/collect): a list's elements are its non-NULL elements.
 
@@ -2180,15 +2309,33 @@ class SqlDialect(BaseModel):
         self, raw: list[dict[str, Any]], *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         location: TableLocation,  # NOSONAR(S1172) — hook signature
     ) -> list[ReflectedColumn]:
-        """Hook: the Inspector's column dicts as columns."""
+        """Hook: the Inspector's column dicts as columns; where ``catalog_types_query`` is given, one the driver cannot
+        type (``NullType``, e.g. ``JSON``) reads its catalog type."""
         sa_dialect = getattr(inspector, "dialect", None)
-        return [
+        columns = [
             column_from_sa_type(
                 name=c["name"], sa_type=c["type"], comment=c.get("comment"),
                 zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types, sa_dialect=sa_dialect,
             )
             for c in raw
         ]
+        untyped = {c["name"] for c in raw if isinstance(c["type"], sa.types.NullType)}
+        catalog = self.catalog_types_query(location) if untyped else None
+        if catalog is None:
+            return columns
+        declared = dict(fetch(connection, catalog, dialect=self.sqlglot_name))
+        return [
+            column_from_type_string(
+                name=c.name, data_type=declared.get(c.name), comment=c.comment,
+                zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
+            ) if c.name in untyped else c
+            for c in columns
+        ]
+
+    def catalog_types_query(self, location: TableLocation) -> Optional[exp.Select]:  # NOSONAR(S1172) — hook signature
+        """``(column name, declared type)`` of one table, for the columns its driver cannot type; ``None``: such
+        columns keep the driver's reading."""
+        return None
 
     def columns_query(self, location: TableLocation) -> exp.Select:
         """``(column_name, data_type)`` of one table from INFORMATION_SCHEMA, in column order."""

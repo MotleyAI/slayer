@@ -87,29 +87,38 @@ class ScalarSpec(BaseModel, frozen=True):
     """One allowlisted Mode-B scalar: accepted argument counts (``max_args=None``
     is variadic), whether its call is literally the same SQL function, its fixed
     result type (``None``: one of its value arguments' types), whether it reads
-    every argument as a number, and whether Ossie Layer 1 defines a function of this
-    name with SLayer's meaning (``ossie``)."""
+    every argument as a number, and the argument counts at which Ossie Layer 1 defines
+    it with SLayer's meaning (``ossie_arg_counts``; a variadic one's least, larger
+    counts included)."""
 
     min_args: int
     max_args: Optional[int] = None
     sql_passthrough: bool = True
     result: Optional[DataType] = None
     numeric: bool = False
-    ossie: bool = False
+    ossie_arg_counts: frozenset[int] = frozenset()
+
+    def ossie_admits(self, argc: int) -> bool:
+        """Whether Ossie defines this function at ``argc`` arguments."""
+        if self.max_args is None and self.ossie_arg_counts:
+            return argc >= min(self.ossie_arg_counts)
+        return argc in self.ossie_arg_counts
 
 
 def _spec(
     low: int, high: Optional[int], *, sql: bool = True, result: Optional[DataType] = None, numeric: bool = False,
-    ossie: bool = False,
+    ossie: tuple[int, ...] = (),
 ) -> ScalarSpec:
-    return ScalarSpec(min_args=low, max_args=high, sql_passthrough=sql, result=result, numeric=numeric, ossie=ossie)
+    return ScalarSpec(min_args=low, max_args=high, sql_passthrough=sql, result=result, numeric=numeric,
+                      ossie_arg_counts=frozenset(ossie))
 
 
 _TEXT, _BOOL, _INT, _DOUBLE = DataType.STRING, DataType.BOOLEAN, DataType.INTEGER, DataType.FLOAT
 
 
 def _library(
-    low: int, high: Optional[int], *, result: Optional[DataType] = None, numeric: bool = False, ossie: bool = False,
+    low: int, high: Optional[int], *, result: Optional[DataType] = None, numeric: bool = False,
+    ossie: tuple[int, ...] = (),
 ) -> ScalarSpec:
     """A library function: the same-named SQL function, lowered per dialect to its one meaning."""
     return _spec(low, high, result=result, numeric=numeric, ossie=ossie)
@@ -118,52 +127,52 @@ def _library(
 # The one canonical Mode-B scalar allowlist (C12); every other scalar set derives
 # from it. Arity is enforced because sqlglot silently mis-handles wrong-arity calls.
 SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
-    "nullif": _spec(2, 2, ossie=True), "coalesce": _spec(1, None, ossie=True), "ifnull": _spec(2, 2, ossie=True),
-    "ln": _spec(1, 1, numeric=True, ossie=True), "log10": _spec(1, 1, numeric=True, ossie=True),
+    "nullif": _spec(2, 2, ossie=(2,)), "coalesce": _spec(1, None, ossie=(2,)), "ifnull": _spec(2, 2, ossie=(2,)),
+    "ln": _spec(1, 1, numeric=True, ossie=(1,)), "log10": _spec(1, 1, numeric=True, ossie=(1,)),
     "log2": _spec(1, 1, numeric=True),
-    "log": _spec(1, 2, numeric=True), "exp": _spec(1, 1, numeric=True, ossie=True),
-    "sqrt": _spec(1, 1, numeric=True, ossie=True),
-    "pow": _spec(2, 2, numeric=True), "power": _spec(2, 2, numeric=True, ossie=True),
-    "abs": _spec(1, 1, numeric=True, ossie=True), "floor": _spec(1, 1, numeric=True, ossie=True),
-    "ceil": _spec(1, 1, numeric=True, ossie=True),
-    "round": _spec(1, 2, numeric=True, ossie=True), "ceiling": _spec(1, 1, numeric=True, ossie=True),
-    "sign": _spec(1, 1, numeric=True, ossie=True),
-    "trunc": _spec(1, 1, numeric=True, ossie=True),  # 2-arg form silently drops digits on SQLite
-    "mod": _spec(2, 2, numeric=True, ossie=True),
+    "log": _spec(1, 2, numeric=True, ossie=(2,)), "exp": _spec(1, 1, numeric=True, ossie=(1,)),
+    "sqrt": _spec(1, 1, numeric=True, ossie=(1,)),
+    "pow": _spec(2, 2, numeric=True), "power": _spec(2, 2, numeric=True, ossie=(2,)),
+    "abs": _spec(1, 1, numeric=True, ossie=(1,)), "floor": _spec(1, 1, numeric=True, ossie=(1,)),
+    "ceil": _spec(1, 1, numeric=True, ossie=(1,)),
+    "round": _spec(1, 2, numeric=True, ossie=(2,)), "ceiling": _spec(1, 1, numeric=True, ossie=(1,)),
+    "sign": _spec(1, 1, numeric=True, ossie=(1,)),
+    "trunc": _spec(1, 1, numeric=True),  # 2-arg form silently drops digits on SQLite
+    "mod": _spec(2, 2, numeric=True, ossie=(2,)),
     # Scalar min/max, NULLs ignored; min two args because 1-arg MAX/MIN parse as the aggregate on SQLite.
-    "greatest": _library(2, None, ossie=True), "least": _library(2, None, ossie=True),
-    "lower": _spec(1, 1, result=_TEXT, ossie=True), "upper": _spec(1, 1, result=_TEXT, ossie=True),
-    "trim": _spec(1, 1, result=_TEXT, ossie=True),
-    "length": _spec(1, 1, result=_INT, ossie=True),
+    "greatest": _library(2, None, ossie=(2,)), "least": _library(2, None, ossie=(2,)),
+    "lower": _spec(1, 1, result=_TEXT, ossie=(1,)), "upper": _spec(1, 1, result=_TEXT, ossie=(1,)),
+    "trim": _spec(1, 1, result=_TEXT, ossie=(1,)),
+    "length": _spec(1, 1, result=_INT, ossie=(1,)),
     # Trims take the string only; 2-arg strip-set form deferred (DEV-1793).
-    "ltrim": _spec(1, 1, result=_TEXT, ossie=True), "rtrim": _spec(1, 1, result=_TEXT, ossie=True),
-    "replace": _spec(3, 3, result=_TEXT, ossie=True), "substr": _spec(2, 3, result=_TEXT),
-    "substring": _spec(2, 3, result=_TEXT, ossie=True), "instr": _spec(2, 2, result=_INT),
-    "concat": _spec(1, None, result=_TEXT, ossie=True),
-    "left": _library(2, 2, result=_TEXT, ossie=True), "right": _library(2, 2, result=_TEXT, ossie=True),
+    "ltrim": _spec(1, 1, result=_TEXT, ossie=(1,)), "rtrim": _spec(1, 1, result=_TEXT, ossie=(1,)),
+    "replace": _spec(3, 3, result=_TEXT, ossie=(3,)), "substr": _spec(2, 3, result=_TEXT),
+    "substring": _spec(2, 3, result=_TEXT, ossie=(3,)), "instr": _spec(2, 2, result=_INT),
+    "concat": _spec(1, None, result=_TEXT, ossie=(2,)),
+    "left": _library(2, 2, result=_TEXT, ossie=(2,)), "right": _library(2, 2, result=_TEXT, ossie=(2,)),
     "starts_with": _library(2, 2, result=_BOOL), "ends_with": _library(2, 2, result=_BOOL),
-    "contains": _library(2, 2, result=_BOOL, ossie=True),
+    "contains": _library(2, 2, result=_BOOL, ossie=(2,)),
     "contains_any": _library(2, 2, result=_BOOL), "contains_all": _library(2, 2, result=_BOOL),
     "lpad": _library(2, 3, result=_TEXT), "rpad": _library(2, 3, result=_TEXT),
     "reverse": _library(1, 1, result=_TEXT), "repeat": _library(2, 2, result=_TEXT),
-    "split_part": _library(3, 3, result=_TEXT, ossie=True), "concat_ws": _library(2, None, result=_TEXT),
+    "split_part": _library(3, 3, result=_TEXT, ossie=(3,)), "concat_ws": _library(2, None, result=_TEXT),
     "chr": _library(1, 1, result=_TEXT), "ascii": _library(1, 1, result=_INT),
-    "div": _library(2, 2, numeric=True), "pi": _library(0, 0, result=_DOUBLE, ossie=True),
-    **{name: _library(1, 1, result=_DOUBLE, numeric=True, ossie=True)
+    "div": _library(2, 2, numeric=True), "pi": _library(0, 0, result=_DOUBLE, ossie=(0,)),
+    **{name: _library(1, 1, result=_DOUBLE, numeric=True, ossie=(1,))
        for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
-    "atan2": _library(2, 2, result=_DOUBLE, numeric=True, ossie=True),
+    "atan2": _library(2, 2, result=_DOUBLE, numeric=True, ossie=(2,)),
     "cbrt": _library(1, 1, result=_DOUBLE, numeric=True),
-    "regexp_like": _library(2, 3, result=_BOOL, ossie=True),
-    "regexp_extract": _library(2, 3, result=_TEXT, ossie=True),
-    "regexp_replace": _library(3, 4, result=_TEXT, ossie=True), "json_value": _library(2, 2, result=_TEXT),
+    "regexp_like": _library(2, 3, result=_BOOL, ossie=(2,)),
+    "regexp_extract": _library(2, 3, result=_TEXT, ossie=(2,)),
+    "regexp_replace": _library(3, 4, result=_TEXT, ossie=(3,)), "json_value": _library(2, 2, result=_TEXT),
     "like": _spec(2, 2, sql=False, result=_BOOL),  # emits the LIKE operator
     "ilike": _spec(2, 2, sql=False, result=_BOOL),  # case-insensitive LIKE on every dialect
     "iif": _spec(3, 3, sql=False),  # emits CASE WHEN
-    "date_part": _spec(2, 2, sql=False, result=_INT, ossie=True),
+    "date_part": _spec(2, 2, sql=False, result=_INT, ossie=(2,)),
     "date_diff": _spec(3, 3, sql=False, result=_INT),
     "date_add": _spec(3, 3, sql=False),
     "interval": _spec(2, 2, sql=False),  # parse-time spelling of date_add
-    "current_date": _spec(0, 0, sql=False, ossie=True),
+    "current_date": _spec(0, 0, sql=False, ossie=(0,)),
     "now": _spec(0, 0, sql=False),
 })
 
@@ -813,10 +822,10 @@ def cast_type_parts(type_text: str) -> CastTypeParts:
 
 
 class CastKey(_FrozenKey, frozen=True):
-    """Identity for ``CAST(source AS type_text)`` (``try_``: ``TRY_CAST``) — the database's
-    own cast of the author's type; ``data_type`` is SLayer's type for the target, ``element_type``
-    its elements' for an array target; ``numeric_source``: what a ``TRY_CAST`` reads its source as — ``INT``
-    (integer text), ``DOUBLE`` (another number), else ``None`` (text)."""
+    """Identity for ``CAST(source AS type_text)`` (``try_``: ``TRY_CAST``) — the author's cast;
+    ``data_type`` is SLayer's type for the target, ``element_type`` its elements' for an array target;
+    ``numeric_source``: what the cast reads its source as — ``INT`` (integer text), ``DOUBLE`` (another number),
+    else ``None`` (text)."""
 
     source: "ValueKey"
     type_text: str
@@ -1671,7 +1680,10 @@ def _is_number_literal(arg: object) -> bool:
 
 
 def _is_int_literal(arg: object) -> bool:
-    return _is_number_literal(arg) and Decimal(str(_literal_value(arg))) % 1 == 0
+    if not _is_number_literal(arg):
+        return False
+    value = Decimal(str(_literal_value(arg)))  # ``% 1`` traps past 28 digits
+    return value.is_finite() and value == value.to_integral_value()
 
 
 # Scalars whose result is always a number.

@@ -54,11 +54,14 @@ population are ignored, and any other stored part (an explicit population includ
 
 The filter is an `OSSIE_SQL_2026` expression over the fields of one dataset. Admitted: comparisons, `BETWEEN`,
 `IN (…)`, `LIKE` / `ILIKE`, `IS [NOT] NULL`, `IS [NOT] DISTINCT FROM`, `CASE WHEN`, arithmetic, `CAST`, ISO-8601
-date and timestamp literals, and the Ossie scalar functions SLayer implements with Ossie's meaning. SLayer-only syntax
+date and timestamp literals, and the Ossie scalar functions SLayer implements with Ossie's meaning, each at an
+argument count Ossie defines (`LOG(base, x)` is admitted; `LOG(x)`, `ROUND(x)`, `TRUNC(x)`, `SUBSTRING(s, start)` and
+a regex function's flags argument are malformed). SLayer-only syntax
 is malformed: `~`, `->>`, `::`, `**`, list functions and list fields, `IN '…'`, `INTERVAL` literals, transforms,
 deprecated spellings, unbound `{variables}` and period or relative time strings such as `'2025-Q1'` or
 `'last month'`. An Ossie function SLayer does not implement yet is malformed too, as a property the engine does not
-support (§3.5). A filter with no field references (`FALSE`) applies in every branch.
+support (§3.5): `PERCENTILE_DISC`, `APPROX_PERCENTILE` and `CURRENT_TIME`, an aggregate with an argument besides its
+value (`SUM(x, 1)`), and a call with an argument count SLayer does not take (`ABS(x, 1)`). A filter with no field references (`FALSE`) applies in every branch.
 
 ## Errors
 

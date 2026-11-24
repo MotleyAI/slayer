@@ -39,10 +39,11 @@ per distinct value when grouped.
 ### Requirement: Every advertised facade column is selectable
 
 Every column a facade catalog advertises — in `information_schema.columns`, `pg_attribute`, Flight `GetTables`
-table schemas and `INFORMATION_SCHEMA.DIMENSIONS`, including dotted joined dimensions — SHALL be selectable alone
-with a plain `SELECT <column> FROM <table>` and SHALL return its values, with the advertised wire type. A dimension
-reached through a fanning join SHALL return one row per joined record. A list column SHALL also be groupable, one
-group per element set.
+table schemas and `INFORMATION_SCHEMA.DIMENSIONS`, including dotted joined dimensions reached over provably to-one
+hops — SHALL be selectable alone with a plain `SELECT <column> FROM <table>` and SHALL return its values, with the
+advertised wire type. A joined dimension reached across a fanning or unproven hop (no declared cardinality and no covering unique key) SHALL NOT be advertised
+or expanded by `SELECT *`, since a plain `SELECT` of it would list rows its table does not determine (semantics
+Axiom 12.5); it SHALL stay usable in a grouped query. A list column SHALL also be groupable, one group per element set.
 
 #### Scenario: Every column of a mixed-type model
 - **WHEN** a model has a list column, a JSON column, a UUID column, a decimal column, a bytes column, an interval
@@ -63,6 +64,13 @@ group per element set.
 - **WHEN** a client runs `SELECT skills, COUNT(*) FROM contractors GROUP BY skills ORDER BY skills`, or orders by the
   ordinal `1`
 - **THEN** it fails with an error naming the list type
+
+#### Scenario: A fanning joined dimension is not advertised
+- **WHEN** `things` reaches `parts` across a fanning hop (thing 1 with two parts, thing 2 with one, thing 3 none), and
+  a client reads `INFORMATION_SCHEMA.DIMENSIONS` or runs `SELECT parts.qty FROM things`, over the Postgres wire and
+  over Arrow Flight
+- **THEN** no `parts.*` dimension is listed for `things` and the selection fails with `DistinctDimensionValuesError`;
+  `SELECT parts.qty, COUNT(*) FROM things GROUP BY parts.qty` returns each quantity once and NULL once
 
 ### Requirement: Date-part projections are extraction
 In a facade `SELECT`, `YEAR(col)`, `QUARTER(col)`, `MONTH(col)`, `WEEK(col)`, `DAY(col)`, `HOUR(col)`, `MINUTE(col)` and

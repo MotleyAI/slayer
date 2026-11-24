@@ -197,6 +197,7 @@ def _bit_value(predicate: Expr) -> Expression:
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "tsql"
+    decimal_text_exponent: ClassVar[bool] = False
     native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
@@ -250,6 +251,13 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def _require_regex(self, fn: str) -> None:
         self.require_version(minimum=_SQL_SERVER_2025, what=f"{fn}()", release="SQL Server 2025")
 
+    def build_varchar_cast(self, value: Expression, length: int) -> Expression:
+        """``NVARCHAR`` throughout: ``VARCHAR`` holds only the collation's code page and is sized in bytes under a
+        UTF-8 one; the first ``length`` code points are counted under ``_CODE_POINTS``."""
+        text = _collated(exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()), _CODE_POINTS)
+        first = anon("SUBSTRING", text, lit(1), lit(length))
+        return self.build_cast(first, _NVARCHAR_MAX.copy())
+
     def text_repeat(self, value: Expression, count: Expression) -> Expression:
         return anon("REPLICATE", value, count)
 
@@ -286,16 +294,19 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
 
-    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
-        """``TRY_CAST`` reads integer text in range, except a blank or a lone sign (as 0)."""
+    def integer_text(self, text: Expression) -> Expression:
+        """``LIKE`` (regex needs SQL Server 2025): neither blank nor a lone sign."""
         trimmed = exp.Trim(this=text.copy())
         signed = exp.In(this=anon("LEFT", trimmed, lit(1)), expressions=[lit("+"), lit("-")])
         digits = case((signed, anon("SUBSTRING", trimmed.copy(), lit(2), lit(8000))), default=trimmed.copy())
-        valid = exp.And(
+        return exp.And(
             this=exp.NEQ(this=digits, expression=lit("")),
             expression=exp.Not(this=exp.Like(this=digits.copy(), expression=lit("%[^0-9]%"))),
         )
-        return case((valid, self.build_try_cast(trimmed.copy(), to)))
+
+    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
+        """``TRY_CAST`` reads integer text in range, except a blank or a lone sign (as 0)."""
+        return case((self.integer_text(text), self.build_try_cast(exp.Trim(this=text.copy()), to)))
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
         """T-SQL's own ``TIMESTAMP`` is ``ROWVERSION``; the portable one is ``DATETIME2``."""
@@ -390,6 +401,20 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                          expression=is_null(anon("JSON_QUERY", document, lit(text))))
         read = case((is_not_null(lax), lax.copy()), (scalar, anon("JSON_VALUE", document, lit(f"strict {text}"))))
         return case((exp.EQ(this=anon("ISJSON", value, exp.var("VALUE")), expression=lit(1)), read))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        """``JSON_MODIFY`` writes the scalar back as a string and keeps the rest of the text: a number gains exactly
+        its two quotes, a number-like string (escaped or not) never grows (a subquery, ``OPENJSON``, is refused
+        inside an aggregate). Read as ``[document]``."""
+        document = anon("CONCAT", lit("["), exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()), lit("]"))
+        text = lit(json_path_text((0, *path.steps)))
+        read = anon("JSON_VALUE", document, text)
+        grown = exp.Sub(this=anon("DATALENGTH", anon("JSON_MODIFY", document, text, read)),
+                        expression=anon("DATALENGTH", document.copy()))
+        not_string = exp.EQ(this=grown, expression=lit(4))  # two NVARCHAR quotes
+        valid = exp.EQ(this=anon("ISJSON", document), expression=lit(1))
+        return case((exp.And(this=valid, expression=not_string),
+                     exp.TryCast(this=read.copy(), to=exp.DataType.build("FLOAT"))))
 
     def describe_result_statement(self, probe: exp.National) -> Expression:
         """``EXEC sp_describe_first_result_set @tsql = N'…'`` (sqlglot's ``exp.Execute`` spells it ``EXECUTE``)."""
