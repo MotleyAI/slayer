@@ -227,6 +227,12 @@ class TestEmission:
         await emit(q(dimensions=["orders.id", {"field": f"CAST(orders.status AS {type_text})", "alias": "x"}]),
                    dialect="bigquery")
 
+    async def test_snowflake_bigint_text_is_range_checked(self) -> None:
+        # Snowflake's BIGINT is NUMBER(38, 0).
+        sql = await emit(q(dimensions=["orders.id", {"field": "TRY_CAST(orders.status AS BIGINT)", "alias": "x"}]),
+                         dialect="snowflake")
+        assert "BETWEEN -9223372036854775808 AND 9223372036854775807" in sql, sql
+
     @pytest.mark.parametrize("spelling", ["VARCHAR(3)", "NVARCHAR(3)"])
     async def test_sql_server_varchar_length_counts_code_points_in_nvarchar(self, spelling: str) -> None:
         # VARCHAR holds only the collation's code page and is sized in bytes under a UTF-8 one.
