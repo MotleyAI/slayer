@@ -2222,10 +2222,10 @@ class StorageBackend(ABC):
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         """Persist a datasource config (upsert by exact name) once it re-validates and its custom granularities pass the save-time rules. Backends must NOT override this."""
+        await self._check_no_pending_rename(datasource.name)
         check_whole(datasource)
         datasource.check_granularities()
         connection_policy.check_transaction_pooler(datasource)
-        await self._check_no_pending_rename(datasource.name)
         await self._save_datasource_impl(datasource)
         self._forget_granularity_renames()
 

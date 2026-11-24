@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from slayer.core.errors import GranularityDefinitionError
+from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.base import StorageBackend
@@ -16,7 +17,9 @@ from tests._granularity_rename_fixtures import (
     DS,
     EXPECTED_BUCKETS,
     bucket_totals,
+    datasource_doc,
     granularity_store,
+    live_db,
     raw_documents,
     renamed,
     reopen,
@@ -35,6 +38,15 @@ async def test_saving_a_loaded_datasource_whose_rename_is_pending_is_refused(tmp
         await storage.save_datasource(loaded)
     assert raw_documents(backend=backend, base=base) == before
     assert await bucket_totals(reopen(backend=backend, base=base)) == EXPECTED_BUCKETS
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_saving_the_stored_spelling_gets_the_same_guidance(tmp_path: Path, backend: str) -> None:
+    base = str(tmp_path / backend)
+    storage = await granularity_store(backend=backend, base=base, name="left")
+    stored = DatasourceConfig.model_validate(datasource_doc(db_path=live_db(str(tmp_path / "db")), granularities=["left"]))
+    with pytest.raises(GranularityDefinitionError, match=r"'left'.*slayer storage upgrade"):
+        await storage.save_datasource(stored)
 
 
 def _wrapped(storage: StorageBackend, view: str) -> StorageBackend:
