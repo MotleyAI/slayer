@@ -85,7 +85,7 @@ class TestCubeDependencyCheck:
 class TestOneParser:
     def test_legacy_parser_deleted(self) -> None:
         module = importlib.import_module("slayer.core.formula")
-        with pytest.raises(ImportError, match="slayer.core.syntax"):
+        with pytest.raises(AttributeError, match="slayer.core.syntax"):
             getattr(module, "parse_expr")
 
     @pytest.mark.parametrize("module", ["slayer.dbt.converter", "slayer.cube.converter"])
