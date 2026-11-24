@@ -155,7 +155,7 @@ class SnowflakeDialect(SqlDialect):
 
     sqlglot_name: str = "snowflake"
     aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({
-        exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.INT,
+        exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.INT, exp.DataType.Type.BIGINT,
     })
     array_cast_types: ClassVar[bool] = True
     ilike_native: ClassVar[bool] = True

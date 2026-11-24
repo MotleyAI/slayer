@@ -1,13 +1,13 @@
 # queries/casts Specification
 
 ## Purpose
-Defines casts in Mode-B expressions: `CAST` / `::` as the database's own cast of the author's type, and `TRY_CAST` as the one portable cast that turns an invalid input into NULL on every dialect.
+Defines casts in Mode-B expressions: `CAST` / `::` with one meaning on every dialect for the types Ossie defines (the database's own conversion otherwise), and `TRY_CAST`, which yields what `CAST` yields and NULL for an input `CAST` cannot convert, on every dialect.
 
 ## Requirements
 
 ### Requirement: CAST has one meaning on every dialect
 
-`CAST(x AS <type>)` and `x::<type>` SHALL be accepted in every Mode-B position, chains included (`x::int::text`). A type SHALL be written as type words with an optional parenthesised integer parameter list that may sit between words (`TIMESTAMP(6) WITH TIME ZONE`, `CHARACTER VARYING(10)`, `DECIMAL(10,2) UNSIGNED`), followed by an optional `[]` array suffix; a malformed type SHALL fail at parse time with an error about the type. The cast SHALL render the author's type, parameters included (`DECIMAL(10,2)`, `VARCHAR(3)`), changing only its spelling to the target dialect's. For every valid input its value SHALL be the same on every Tier-1 dialect:
+`CAST(x AS <type>)` and `x::<type>` SHALL be accepted in every Mode-B position, chains included (`x::int::text`). A type SHALL be written as type words with an optional parenthesised integer parameter list that may sit between words (`TIMESTAMP(6) WITH TIME ZONE`, `CHARACTER VARYING(10)`, `DECIMAL(10,2) UNSIGNED`), followed by an optional `[]` array suffix; a malformed type SHALL fail at parse time with an error about the type. The cast SHALL render the author's type, parameters included (`DECIMAL(10,2)`, `VARCHAR(3)`), changing only its spelling to the target dialect's. For every valid input its value SHALL be the same on every Tier-1 dialect, save the documented exceptions below:
 
 - To `BOOLEAN`: a number SHALL be true exactly when it is not zero, a boolean SHALL be itself, and NULL SHALL stay NULL. The result SHALL be a nullable boolean in the dialect's own representation (1 and 0 where booleans are integers).
 - To an integer type, a non-integral number SHALL round half away from zero. An exact-numeric tie SHALL round exactly so; a floating-point tie SHALL be the database's own, since a binary value is rarely an exact tie; this is documented.

@@ -291,14 +291,15 @@ COMPARISON_NODES: dict[str, Any] = {
 #: fraction and exponent, surrounding spaces ignored (POSIX classes, so no backslash meets a string literal).
 NUMBER_TEXT_PATTERN = r"^[[:space:]]*[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$"
 INTEGER_TEXT_PATTERN = r"^ *[+-]?[0-9]+ *$"
-#: The ranges of the integer types narrower than BIGINT, checked where a database only has them as aliases.
+INT64_BOUNDS = (-(2 ** 63), 2 ** 63 - 1)
+#: The ranges of the integer types up to BIGINT, checked where a database only has them as aliases of a wider one.
 NARROW_INTEGER_BOUNDS: dict[DType, tuple[int, int]] = {
+    exp.DataType.Type.BIGINT: INT64_BOUNDS,
     exp.DataType.Type.TINYINT: (-(2 ** 7), 2 ** 7 - 1), exp.DataType.Type.SMALLINT: (-(2 ** 15), 2 ** 15 - 1),
     exp.DataType.Type.MEDIUMINT: (-(2 ** 23), 2 ** 23 - 1), exp.DataType.Type.UTINYINT: (0, 2 ** 8 - 1),
     exp.DataType.Type.USMALLINT: (0, 2 ** 16 - 1), exp.DataType.Type.UMEDIUMINT: (0, 2 ** 24 - 1),
     exp.DataType.Type.INT: (-(2 ** 31), 2 ** 31 - 1), exp.DataType.Type.UINT: (0, 2 ** 32 - 1),
 }
-INT64_BOUNDS = (-(2 ** 63), 2 ** 63 - 1)
 #: The half-open ranges of the integer types wider than BIGINT.
 WIDE_INTEGER_BOUNDS: dict[DType, tuple[int, int]] = {
     exp.DataType.Type.UBIGINT: (0, 2 ** 64), exp.DataType.Type.INT128: (-(2 ** 127), 2 ** 127),
