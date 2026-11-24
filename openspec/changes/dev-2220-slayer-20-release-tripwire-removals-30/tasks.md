@@ -68,7 +68,7 @@
 ## 5. Version and sweep
 
 - [x] 5.1 Set `pyproject.toml` to `2.0.0`. Verify: `poetry version -s` prints `2.0.0`; the removal tripwire passes.
-- [ ] 5.2 Sweep README and `docs/` for removed or renamed terms (identifier guard plus a read). Verify: the guard and
+- [x] 5.2 Sweep README and `docs/` for removed or renamed terms (identifier guard plus a read). Verify: the guard and
       `tests/test_doc_examples.py` pass.
 
 ## 6. Release
