@@ -1,15 +1,15 @@
 ## 1. Tests (pr-tests stage)
 
-- [ ] 1.1 Remove the strict xfail on `test_a_window_yields_to_earlier_rows` in `tests/test_dev2217_errors.py`, and add one strict-binding test per scenario in the delta spec (the malformed windows, names inside a window including the row-6 metric case, the rest of a windowed filter, complete windows including the bound variable, aggregate argument shapes, native still refusing). Verify that each fails for the right reason before implementation.
-- [ ] 1.2 Add `_bound` fallback tests through the strict entry point: a malformed window with a `{variable}`, and an invalid variable slot beside a window. Each must raise `E_INVALID_QUERY`. Verify by running them.
-- [ ] 1.3 Add `core.syntax` unit tests:
+- [x] 1.1 Remove the strict xfail on `test_a_window_yields_to_earlier_rows` in `tests/test_dev2217_errors.py`, and add one strict-binding test per scenario in the delta spec (the malformed windows, names inside a window including the row-6 metric case, the rest of a windowed filter, complete windows including the bound variable, aggregate argument shapes, native still refusing). Verify that each fails for the right reason before implementation.
+- [x] 1.2 Add `_bound` fallback tests through the strict entry point: a malformed window with a `{variable}`, and an invalid variable slot beside a window. Each must raise `E_INVALID_QUERY`. Verify by running them.
+- [x] 1.3 Add `core.syntax` unit tests:
   - the window tree shape (callee, partition, order with direction and NULLS, frame bounds);
   - `walk_parsed` reaching references in the function arguments, partition and order;
   - a windowed aggregate wrapping the same `AggCall` the plain call reads to (`COUNT(*)`, `FILTER`, `PERCENTILE_CONT … WITHIN GROUP`);
   - Ossie ranking and offset names not dispatched as transforms.
 
   Verify by running them.
-- [ ] 1.4 Add native guard tests: native `parse_expr` and `bind_variables` on `x OVER (`, `sum(x) FILTER (WHERE c) OVER (…)` and `ROW_NUMBER() OVER (…)` raise `IllegalWindowInFilterError` with today's message. Run strict and native readings of the same text alternating in both orders. Verify that they pass before and after implementation.
+- [x] 1.4 Add native guard tests: native `parse_expr` and `bind_variables` on `x OVER (`, `sum(x) FILTER (WHERE c) OVER (…)` and `ROW_NUMBER() OVER (…)` raise `IllegalWindowInFilterError` with today's message. Run strict and native readings of the same text alternating in both orders. Verify that they pass before and after implementation.
 
 ## 2. `core.syntax` window-reading mode
 
