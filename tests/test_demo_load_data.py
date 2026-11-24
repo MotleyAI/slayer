@@ -70,6 +70,7 @@ def test_loading_the_demo_creates_no_view(tmp_path: Path, jafgen_dir: str) -> No
         assert [s for s in recorder.statements if _VIEW_DDL.search(s)] == []
         for table in ("orders", "stores", "customers"):
             row = conn.execute(f"SELECT count(*) FROM {table}").fetchone()
-            assert row is not None and row[0] > 0, table
+            assert row is not None, table
+            assert row[0] > 0, table
     finally:
         conn.close()
