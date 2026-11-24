@@ -1,8 +1,14 @@
 ## 0. Preconditions
 
-- [ ] 0.1 Merge `origin/main` once DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428 and DEV-2430
-      have all merged; verify each is Done in Linear and its PR is merged. Until then, tests that depend on them
-      (DEV-2446's cases) start as strict xfails pointing at the open issue; none may remain at merge.
+- [ ] 0.1 Merge `origin/main` once DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430
+      and DEV-2443 have all merged; verify each is Done in Linear and its PR is merged. Until then, tests that depend
+      on them (DEV-2446's cases) start as strict xfails pointing at the open issue; none may remain at merge.
+- [ ] 0.2 Before writing tests, merge `origin/main`, then read the plan of every prerequisite not yet merged (DEV-2443
+      included): its OpenSpec change (proposal, design, tasks, delta specs) in its worktree under
+      `slayer.worktrees/egor__dev-<n>-…` or on its PR branch. Fold what each plans into this slice's tests: new
+      deprecated forms (catalogue cases and pins), new refusals or Layer 1 changes (gap pins), and the
+      migration-guide sections it promises (for the 4.1 audit). Verify: a DEV-2220 comment lists each open
+      prerequisite with what it contributes, or "nothing".
 
 ## 1. Compliance pins (tests first)
 
