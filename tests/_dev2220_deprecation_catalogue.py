@@ -929,7 +929,8 @@ async def _old_hook_reached(ctx: Ctx, *, old: str) -> Observed:
     assert dataset is not None
     backend = type("Backend1x", (YAMLStorage,), {old: hook})(base_dir=str(base))
     got = await call(backend, dataset)
-    assert reached and set(reached) == {old}
+    assert reached
+    assert set(reached) == {old}
     assert got == await call(plain, dataset)
     return Observed()
 

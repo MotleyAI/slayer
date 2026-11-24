@@ -34,7 +34,7 @@ def _cases() -> list[object]:
     return [
         pytest.param(backend, r, id=f"{r.form}|{r.expression}|{backend}",
                      marks=() if backend in r.holds_on else pytest.mark.xfail(strict=True, raises=r.fails_with,
-                                                                              reason=r.gap))
+                                                                              reason=str(r.gap)))
         for backend in BACKENDS for r in GAPS
     ]
 

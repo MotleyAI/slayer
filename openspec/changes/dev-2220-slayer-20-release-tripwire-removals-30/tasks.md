@@ -86,5 +86,5 @@
 
 ## 7. Gates
 
-- [ ] 7.1 Run the local test scope (`la-affected-tests` plus the new tests and `tests/test_doc_examples.py`), ruff,
+- [x] 7.1 Run the local test scope (`la-affected-tests` plus the new tests and `tests/test_doc_examples.py`), ruff,
       basedpyright against the baseline, and `la-arch-check`. Verify: all green.

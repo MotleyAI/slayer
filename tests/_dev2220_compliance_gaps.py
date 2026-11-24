@@ -179,7 +179,8 @@ async def datetimetz_truncation(base: Path) -> None:
     async with sql_engine(base, sql=TYPES_SQL, documents=[TYPES_DOC]) as engine:
         response = await engine.execute({"population": "t", "time_dimensions": [{"field": "t.ts", "granularity": "day"}],
                                          "metrics": [{"metric": "count(t.*)", "alias": "n"}]})
-    assert response.data and all(r["t.ts"].tzinfo is not None for r in response.data)
+    assert response.data
+    assert all(r["t.ts"].tzinfo is not None for r in response.data)
 
 
 async def datetimetz_offset_literal(base: Path) -> None:
