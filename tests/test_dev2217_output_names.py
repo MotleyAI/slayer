@@ -42,11 +42,6 @@ LABELLED = [
         metrics=[DatasetMetric(name="order_count", expression="count(*)")],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])]),
 ]
-DOTTED = document_text(name="dotted", datasets=[
-    dataset("orders", primary_key=["id"], fields=[field("id"), field("unit.price", "unit_price", datatype="Integer")]),
-])
-
-
 def _no_database(_self: SlayerQueryEngine, _datasource: DatasourceConfig) -> Any:
     raise AssertionError("SQL executed")
 
@@ -97,15 +92,6 @@ async def test_a_quoted_alias_loses_its_quotes(tmp_path: Path) -> None:
     async with fixture_engine(tmp_path) as engine:
         response = await strict(engine, {"metrics": [{"metric": "orders.total_revenue", "alias": '"Revenue"'}]})
     assert response.columns == ["Revenue"]
-
-
-@pytest.mark.xfail(strict=True, reason="DEV-2244: a field name may not contain a dot yet")
-async def test_a_quoted_dotted_field_keeps_its_whole_name(tmp_path: Path) -> None:
-    sql = "CREATE TABLE orders (id VARCHAR PRIMARY KEY, unit_price INTEGER); INSERT INTO orders VALUES ('O1', 10);"
-    async with sql_engine(tmp_path, sql=sql, documents=[DOTTED]) as engine:
-        response = await strict(engine, {"dimensions": ['orders."unit.price"']})
-    assert response.columns == ["unit.price"]
-    assert response.data == [{"unit.price": 10}]
 
 
 async def test_dimensions_first_then_metrics_in_query_order(tmp_path: Path) -> None:

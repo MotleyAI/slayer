@@ -3,7 +3,7 @@
 - [ ] 0.1 Merge `origin/main` once DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430
       and DEV-2443 have all merged; verify each is Done in Linear and its PR is merged. Until then, tests that depend
       on them (DEV-2446's cases) start as strict xfails pointing at the open issue; none may remain at merge.
-- [ ] 0.2 Before writing tests, merge `origin/main`, then read the plan of every prerequisite not yet merged (DEV-2443
+- [x] 0.2 Before writing tests, merge `origin/main`, then read the plan of every prerequisite not yet merged (DEV-2443
       included): its OpenSpec change (proposal, design, tasks, delta specs) in its worktree under
       `slayer.worktrees/egor__dev-<n>-…` or on its PR branch. Fold what each plans into this slice's tests: new
       deprecated forms (catalogue cases and pins), new refusals or Layer 1 changes (gap pins), and the
@@ -20,7 +20,10 @@
       one pytest parameter per (case, database), each `xfail(strict=True, raises=<its current error>,
       reason=<DEV-2282 | DEV-2439 | DEV-2244>)`. Verify: the file runs green with every case xfailing for the
       declared error.
-- [ ] 1.3 Add the DEV-2439 cases (incomplete window and unknown-field window in a strict filter: Ossie codes
+      - Layer 1 cases are the gap rows of DEV-2446's `tests/_dev2446_required_manifest.py` (decision 26); the test
+        cannot collect until DEV-2446 is on `main`. After task 0.1's merge, add `value=` and `fails_with=` to every
+        gap row. Verify: every Layer 1 case xfails for its declared error on DuckDB and SQLite.
+- [x] 1.3 Add the DEV-2439 cases (incomplete window and unknown-field window in a strict filter: Ossie codes
       `E_INVALID_QUERY`, `E_NAME_NOT_FOUND`) and the DEV-2244 format-gap cases. Verify: they xfail with the declared
       error.
 - [ ] 1.4 Write the page-sync test: the page's gap-table rows (case id + fixing issue) equal the xfail table, both
@@ -39,7 +42,7 @@
 
 ## 3. 3.0 deprecation catalogue
 
-- [ ] 3.1 Inventory every Part 2 form of `docs/upgrading/2.0.md` and every `PINNED` key; list each form's surface
+- [x] 3.1 Inventory every Part 2 form of `docs/upgrading/2.0.md` and every `PINNED` key; list each form's surface
       (dataset/query/refinement/extension keys, datatype values, root-relative references, REST routes, CLI commands
       and flags, MCP arguments, search vocabulary, Python names/attributes/methods/errors, storage hooks, Mode-B
       spellings, `strict`, extension object in `source_model`, field `sql`). Verify: the inventory is the catalogue's
@@ -47,10 +50,12 @@
 - [ ] 3.2 Write the catalogue test: each case converts one form on its surface and asserts the canonical output, one
       `FutureWarning`, and the structured warning by kind (`deprecated_input` / `deprecated_spelling`, `removal`
       "3.0"); stored documents convert silently (the deliberate exception, its own cases). Verify: green.
-- [ ] 3.3 Each case names the `PINNED` key it exercises; add a test that every `PINNED` key except the moved-module
+- [x] 3.3 Each case names the `PINNED` key it exercises; add a test that every `PINNED` key except the moved-module
       stubs has a case. Verify: green, and fails if a case is dropped.
-- [ ] 3.4 Any form found converting without its warning, or unpinned: add the warning and pin through the existing
-      deprecation helpers. Verify: 3.2 and `tests/test_law_removal_tripwire.py` pass.
+- [ ] 3.4 Any form found converting without its warning, unpinned, or to the wrong canonical form: add the warning and
+      pin through the existing deprecation helpers, or fix the conversion (today a reference object
+      `{"name", "dataset"}` under the deprecated time-dimension `dimension` / order-item `column` keys drops its
+      dataset). Verify: 3.2 and `tests/test_law_removal_tripwire.py` pass.
 
 ## 4. Migration-guide audit
 

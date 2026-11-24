@@ -84,6 +84,11 @@ Its audits run against `main` as it stands once those have merged.
 24. rejected (codex): committing release notes — owner rule: `RELEASE_NOTES_*.md` stay untracked.
 25. rejected (codex): running every suite against the installed wheel — CI runs the full suite on the same commit; the
     gate stays a smoke test of the packaged install.
+26. **The Layer 1 xfails are built from DEV-2446's REQUIRED-construct manifest** (`tests/_dev2446_required_manifest.py`):
+    each gap row gains `value=` (Ossie's result on the manifest's fixture row) and `fails_with=` (the error it raises
+    today), and becomes one strict xfail per database; there is no separate Layer 1 gap table. The DEV-2439 and
+    DEV-2244 cases stay in a DEV-2220 table. Alternative, a DEV-2220 Layer 1 table cross-checked against the manifest:
+    two hand-kept lists of the same gaps. (user)
 
 ## Risks / Trade-offs
 
