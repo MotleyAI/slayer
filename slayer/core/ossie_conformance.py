@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import re
 from collections.abc import Callable, Iterable, Mapping
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict
@@ -17,12 +18,13 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import (
     AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, Conformance, normalize_aggregation_name,
 )
-from slayer.core.errors import IllegalWindowInFilterError, UnknownConformanceError
+from slayer.core.errors import UnknownConformanceError
 from slayer.core.keys import SCALAR_SPECS, SCALAR_SPELLINGS
 from slayer.core.syntax import (
-    AggCall, ArrayLit, Arith, BoolOp, BoundVariable, Cast, Cmp, DateTrunc, DottedRef, Literal, NamedArg, Placeholder,
-    Ref, ScalarCall, StarSource, TemporalLiteral, TransformCall, TupleLit, UnaryOp, call_spans, legacy_spans,
-    nonossie_spellings, parse_bound_expr, parse_template, variable_names,
+    WINDOW_FUNCTION_ARITIES, AggCall, ArrayLit, Arith, BoolOp, BoundVariable, Cast, Cmp, DateTrunc, DottedRef, Literal,
+    NamedArg, Placeholder, Ref, ScalarCall, StarSource, TemporalLiteral, TransformCall, TupleLit, UnaryOp, WindowCall,
+    WindowFrame, call_spans, legacy_spans, nonossie_spellings, parse_bound_expr, parse_template, variable_names,
+    walk_parsed,
 )
 
 __all__ = ["FilterReading", "is_iso_temporal", "parse_conformance", "read_filter"]
@@ -45,6 +47,18 @@ OSSIE_AGGREGATE_SPELLINGS = frozenset({"sum", "count", "avg", "min", "max", "std
 #: The names the parser gives Ossie's ``COUNT(DISTINCT …)`` and ``PERCENTILE_CONT(…) WITHIN GROUP (…)``; SLayer's own
 #: calls of these names are refused by their written callee.
 REWRITTEN_AGGREGATES = frozenset({"count_distinct", "percentile"})
+#: Ossie aggregates SLayer reads in no plain-call form, and why.
+OSSIE_UNREAD_CALLS = {
+    "percentile_cont": "PERCENTILE_CONT is read only as PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)",
+    "percentile_disc": "PERCENTILE_DISC is an Ossie aggregate SLayer does not support yet",
+}
+#: The named arguments the parser gives each rewritten aggregate; any other argument was written.
+REWRITTEN_ARGUMENTS = {"count_distinct": (), "percentile": ("p",)}
+#: Arguments an Ossie aggregate takes after its value (one value otherwise).
+OSSIE_AGGREGATE_EXTRA_ARGS = {"approx_percentile": 1}
+#: ANSI order of a frame's bound kinds.
+FRAME_BOUND_ORDER = {"unbounded preceding": 0, "preceding": 1, "current row": 2, "following": 3,
+                     "unbounded following": 4}
 #: ``CAST`` target types Ossie defines (the first word of the written type).
 OSSIE_CAST_TYPES = frozenset({"VARCHAR", "STRING", "INTEGER", "INT", "BIGINT", "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE",
                               "BOOLEAN", "DATE", "TIMESTAMP", "TIMESTAMP_NTZ"})
@@ -122,10 +136,7 @@ def read_filter(text: str, *, variables: Mapping[str, Any] | None = None) -> Fil
         out.problem = f"the variables {unbound} are not bound; pass them as the run's variables"
         return out
     try:
-        tree = parse_bound_expr(text, variables) if variables else parse_template(text)
-    except IllegalWindowInFilterError:
-        out.window = True
-        return out
+        tree = parse_bound_expr(text, variables, windows=True) if variables else parse_template(text, windows=True)
     except ValueError as exc:
         out.problem = f"the filter does not parse: {exc}"
         return out
@@ -136,13 +147,13 @@ def read_filter(text: str, *, variables: Mapping[str, Any] | None = None) -> Fil
 
 
 def _text_problem(text: str) -> Optional[str]:
-    legacy = legacy_spans(text)
+    legacy = legacy_spans(text, windows=True)
     if legacy:
         return f"{legacy[0].written!r} is a deprecated SLayer spelling; write {legacy[0].twin!r}"
-    spellings = nonossie_spellings(text)
+    spellings = nonossie_spellings(text, windows=True)
     if spellings:
         return f"{spellings[0]} is SLayer syntax, not an Ossie expression"
-    for call in call_spans(text):
+    for call in call_spans(text, windows=True):
         name = call.name.lower()
         if name in REWRITTEN_AGGREGATES:
             return f"{call.callee}() is a SLayer function Ossie does not define"
@@ -204,20 +215,80 @@ def _cast(node: Cast, out: FilterReading) -> None:
 
 
 def _aggregate(node: AggCall, out: FilterReading) -> None:
-    written = node.agg.lower()
-    rewritten = written in REWRITTEN_AGGREGATES
-    if written not in OSSIE_AGGREGATE_SPELLINGS and not rewritten:
-        _refuse(out, f"{node.agg}() is not an Ossie function")
-    elif normalize_aggregation_name(written) not in BUILTIN_AGGREGATIONS:
-        _refuse(out, f"{node.agg}() is not supported yet")
     out.aggregate = True
+    _aggregate_call(node, out)
+
+
+def _aggregate_call(node: AggCall, out: FilterReading) -> None:
+    """An aggregate judged as Ossie writes it, windowed or not: an Ossie spelling of a SLayer built-in."""
+    name = node.agg.lower()
+    if name in OSSIE_UNREAD_CALLS:
+        _refuse(out, OSSIE_UNREAD_CALLS[name])
+    if name not in OSSIE_AGGREGATE_SPELLINGS | REWRITTEN_AGGREGATES:
+        _refuse(out, f"{node.agg}() is not an Ossie function")
+    elif normalize_aggregation_name(name) not in BUILTIN_AGGREGATIONS:
+        _refuse(out, f"{node.agg}() is not supported yet")
     if node.kwargs:
         _refuse(out, f"{node.agg}() takes no keyword arguments in Ossie")
-    # A rewritten Ossie aggregate's named arguments are the parser's (``p=`` of ``PERCENTILE_CONT(p)``), not written.
-    if not rewritten and node.args:
-        _refuse(out, f"{node.agg}() takes one argument in Ossie")
+    # A rewritten Ossie aggregate's arguments are the parser's (``p=`` of ``PERCENTILE_CONT(p)``), not written.
+    rewritten = name in REWRITTEN_AGGREGATES
+    _aggregate_arguments(node, name=name, rewritten=rewritten, out=out)
     args = [a.value if rewritten and isinstance(a, NamedArg) else a for a in node.args]
     _visit_all((p for p in (node.source, *args, node.filter) if p is not None), out)
+
+
+def _aggregate_arguments(node: AggCall, *, name: str, rewritten: bool, out: FilterReading) -> None:
+    if rewritten:
+        if tuple(a.name if isinstance(a, NamedArg) else None for a in node.args) != REWRITTEN_ARGUMENTS[name]:
+            _refuse(out, f"{node.agg}() takes no further arguments in Ossie")
+        return
+    if isinstance(node.source, StarSource) and name != "count":
+        _refuse(out, f"{node.agg}(*) is not an Ossie aggregate; only COUNT(*) is")
+    extra = OSSIE_AGGREGATE_EXTRA_ARGS.get(name, 0)
+    if len(node.args) != extra:
+        _refuse(out, f"{node.agg}() takes {extra + 1} argument(s) in Ossie")
+
+
+def _window(node: WindowCall, out: FilterReading) -> None:
+    out.window = True
+    function = node.function
+    inside = (function, node.partition, tuple(o.value for o in node.order))
+    if any(isinstance(n, WindowCall) for n in walk_parsed(inside)):
+        _refuse(out, "a window function cannot sit inside a window")
+    if isinstance(function, AggCall):
+        _aggregate_call(function, out)
+    elif isinstance(function, ScalarCall) and function.name in WINDOW_FUNCTION_ARITIES:
+        low, high = WINDOW_FUNCTION_ARITIES[function.name]
+        if not low <= len(function.args) <= high:
+            counts = str(low) if low == high else f"{low} to {high}"
+            _refuse(out, f"{function.written or function.name}() takes {counts} argument(s) in Ossie")
+        _visit_all(function.args, out)
+    else:
+        _refuse(out, f"{type(function).__name__} is not an Ossie window function")
+    if node.frame is not None:
+        _frame(node.frame, out)
+    _visit_all((*node.partition, *(o.value for o in node.order)), out)
+
+
+def _frame(frame: WindowFrame, out: FilterReading) -> None:
+    start, end = frame.start, frame.end
+    if end is None:
+        if FRAME_BOUND_ORDER[start[0]] > FRAME_BOUND_ORDER["current row"]:
+            _refuse(out, "a single frame bound cannot be a FOLLOWING one")
+        return
+    if (
+        start[0] == "unbounded following"
+        or end[0] == "unbounded preceding"
+        or (FRAME_BOUND_ORDER[start[0]], _offset_rank(start)) > (FRAME_BOUND_ORDER[end[0]], _offset_rank(end))
+    ):
+        _refuse(out, "the frame bounds are out of order")
+
+
+def _offset_rank(bound: Tuple[str, Optional[Decimal]]) -> Decimal:
+    """Order within a bound kind: a farther PRECEDING comes first."""
+    offset = bound[1] or Decimal(0)
+    # ``copy_negate`` is exact: ``-offset`` would round, or overflow on ``1e1000000000``.
+    return offset.copy_negate() if bound[0] == "preceding" else offset
 
 
 def _refusal(why: Callable[[Any], str]) -> Callable[[Any, FilterReading], None]:
@@ -263,6 +334,7 @@ _VISITORS: Dict[type, Callable[[Any, FilterReading], None]] = {
     Cmp: _comparison,
     BoolOp: lambda node, out: _operator(node, out, OSSIE_BOOLEAN, node.operands),
     AggCall: _aggregate,
+    WindowCall: _window,
     TransformCall: _refusal(lambda node: f"the transform {node.op}() is SLayer syntax, not an Ossie expression"),
     Placeholder: _refusal(lambda _node: "an unbound variable is not an Ossie expression"),
     BoundVariable: lambda _node, _out: None,

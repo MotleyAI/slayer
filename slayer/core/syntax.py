@@ -234,11 +234,43 @@ class BoolOp(_BaseNode):
     operands: Tuple[Any, ...]
 
 
+class OrderItem(_BaseNode):
+    """One ``ORDER BY`` item of a window: ``value [ASC|DESC] [NULLS FIRST|LAST]``."""
+
+    value: Any
+    descending: bool = False
+    nulls: Optional[str] = None
+
+
+class WindowFrame(_BaseNode):
+    """A ``ROWS`` / ``RANGE`` frame; each bound is ``(kind, offset)``, ``end`` ``None`` for a single start bound."""
+
+    unit: str
+    start: Tuple[str, Optional[Decimal]]
+    end: Optional[Tuple[str, Optional[Decimal]]] = None
+
+
+class WindowCall(_BaseNode):
+    """``function OVER (PARTITION BY … ORDER BY … frame)``, read only in window-reading mode."""
+
+    function: Any
+    partition: Tuple[Any, ...] = ()
+    order: Tuple[OrderItem, ...] = ()
+    frame: Optional[WindowFrame] = None
+
+
 ParsedExpr = Union[
     Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit, ArrayLit, BoundVariable,
     AggCall, TransformCall, ScalarCall, DateTrunc, NamedArg, Cast,
-    Arith, UnaryOp, Cmp, BoolOp,
+    Arith, UnaryOp, Cmp, BoolOp, WindowCall,
 ]
+
+#: Ossie's ranking and offset window functions with their argument counts; under ``OVER`` they stay undispatched.
+WINDOW_FUNCTION_ARITIES: Mapping[str, Tuple[int, int]] = MappingProxyType({
+    "row_number": (0, 0), "rank": (0, 0), "dense_rank": (0, 0), "percent_rank": (0, 0), "cume_dist": (0, 0),
+    "ntile": (1, 1), "lag": (1, 3), "lead": (1, 3), "first_value": (1, 1), "last_value": (1, 1),
+    "nth_value": (2, 2),
+})
 
 
 # ---------------------------------------------------------------------------
@@ -429,9 +461,12 @@ class _State:
         #: While ``literal_comparisons`` reads: each string literal by id with its offsets, and each written comparison.
         self.literals: Optional[Dict[int, Tuple[Any, int, int]]] = None
         self.compared: Optional[Dict[int, Any]] = None
+        #: Window-reading mode: ``OVER (…)`` reads as a ``WindowCall`` instead of refusing.
+        self.windows = False
 
     def reset(self, text: str) -> None:
         self.text, self.farthest, self.calls, self.methods, self.spellings = text, 0, {}, {}, {}
+        self.windows = False
 
 
 _STATE = _State()
@@ -718,7 +753,7 @@ def _split_args(items: List[Any], *, call: str) -> Tuple[Tuple[Any, ...], Tuple[
 
 class _PendingCall:
     """A parsed call at ``text[start:end]``, dispatched once its postfix is known (a trailing ``OVER (`` rejects
-    first)."""
+    first, or picks a window function's reading)."""
 
     __slots__ = ("words", "items", "start", "end")
 
@@ -731,6 +766,15 @@ class _PendingCall:
 
 def _resolve(node: Any) -> Any:
     return _dispatch_pending(node) if isinstance(node, _PendingCall) else node
+
+
+def _record_call(call: _PendingCall) -> None:
+    """Record the single-name ``call`` as written for ``call_spans``."""
+    word = call.words[0]
+    _STATE.calls[(call.start, call.end)] = CallSpan(
+        callee=word.raw, name=word.name, quoted=word.quoted, start=call.start, end=call.end,
+        paren=_argument_paren(_STATE.text, call.start + len(word.raw)), arguments=len(call.items),
+    )
 
 
 def _dispatch_pending(call: _PendingCall) -> Any:
@@ -747,11 +791,7 @@ def _dispatch_pending(call: _PendingCall) -> Any:
         return _method_call(
             path=tuple(w.name for w in words[:-1]), name=name, args=args, kwargs=kwargs, span=(call.start, call.end),
         )
-    word = words[0]
-    _STATE.calls[(call.start, call.end)] = CallSpan(
-        callee=word.raw, name=word.name, quoted=word.quoted, start=call.start, end=call.end,
-        paren=_argument_paren(_STATE.text, call.start + len(word.raw)), arguments=len(call.items),
-    )
+    _record_call(call)
     return _dispatch_call(name, args=args, kwargs=kwargs, original=_STATE.text)
 
 
@@ -991,6 +1031,8 @@ _FILTER_CLAUSE = (pp.Suppress(_kw("filter")) + LPAR
 
 
 def _reject_over(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
+    if _STATE.windows:
+        return
     raise IllegalWindowInFilterError(
         filter_expr=_STATE.text,
         source="raw OVER(...) is not allowed in Mode-B DSL",
@@ -998,7 +1040,77 @@ def _reject_over(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
     )
 
 
-_OVER = (_kw("over") + pp.FollowedBy(LPAR)).set_parse_action(_reject_over)
+_OVER = pp.Suppress((_kw("over") + pp.FollowedBy(LPAR)).set_parse_action(_reject_over))
+_WINDOW_FORM = "a window is OVER ([PARTITION BY …] [ORDER BY …] [ROWS|RANGE frame])."
+_PARTITION = _on(
+    pp.Suppress(_kw("partition")) + _need(pp.Suppress(_kw("by")), "PARTITION needs BY.")
+    + _need(pp.Group(pp.DelimitedList(expr)), "PARTITION BY needs a value."),
+    lambda toks: ("partition", tuple(toks[0])),
+)
+
+
+def _order_item(toks: List[Any]) -> OrderItem:
+    words = [t.lower() for t in toks[1:]]
+    return OrderItem(value=toks[0], descending="desc" in words,
+                     nulls=next((w for w in words if w in ("first", "last")), None))
+
+
+_ORDER_ITEM = _on(
+    expr + pp.Optional(_kw("asc", "desc"))
+    + pp.Optional(pp.Suppress(_kw("nulls")) + _need(_kw("first", "last"), "NULLS needs FIRST or LAST.")),
+    _order_item,
+)
+_ORDER = _on(
+    pp.Suppress(_kw("order")) + _need(pp.Suppress(_kw("by")), "ORDER needs BY.")
+    + _need(pp.Group(pp.DelimitedList(_ORDER_ITEM)), "ORDER BY needs a value."),
+    lambda toks: ("order", tuple(toks[0])),
+)
+
+
+def _frame_bound(toks: List[Any]) -> Tuple[str, Optional[Decimal]]:
+    head, side = toks[0], toks[-1].lower()
+    if not isinstance(head, Literal):
+        return (f"{head.lower()} {side}", None)
+    value = head.value
+    if not isinstance(value, Decimal) or value != value.to_integral_value():
+        raise _Problem("a frame offset is a whole number, e.g. ROWS BETWEEN 6 PRECEDING AND CURRENT ROW.")
+    # Kept a Decimal: ``int()`` of ``1e1000000000`` would allocate its billion digits.
+    return (side, value)
+
+
+_SIDE = _need(_kw("preceding", "following"), "a frame bound ends in PRECEDING or FOLLOWING.")
+_BOUND = _on(
+    (_kw("unbounded") + _SIDE) | (_kw("current") + _need(_kw("row"), "CURRENT needs ROW.")) | (_NUMBER + _SIDE),
+    _frame_bound,
+)
+_NEED_BOUND = _need(_BOUND, "a frame bound is UNBOUNDED PRECEDING, n PRECEDING, CURRENT ROW, n FOLLOWING or UNBOUNDED "
+                            "FOLLOWING.")
+_FRAME = _on(
+    _kw("rows", "range") + (
+        (pp.Suppress(_kw("between")) + _NEED_BOUND + _need(pp.Suppress(_kw("and")), "BETWEEN needs AND.")
+         + _NEED_BOUND)
+        | _NEED_BOUND
+    ),
+    lambda toks: WindowFrame(unit=toks[0].lower(), start=toks[1], end=toks[2] if len(toks) > 2 else None),
+)
+
+
+class _Window:
+    """A parsed ``OVER (…)`` clause, applied to its call in ``_primary_node``."""
+
+    __slots__ = ("partition", "order", "frame")
+
+    def __init__(self, items: List[Any]) -> None:
+        parts = {i[0]: i[1] for i in items if isinstance(i, tuple)}
+        self.partition: Tuple[Any, ...] = parts.get("partition", ())
+        self.order: Tuple[OrderItem, ...] = parts.get("order", ())
+        self.frame = next((i for i in items if isinstance(i, WindowFrame)), None)
+
+
+_WINDOW = _on(
+    _OVER + LPAR + pp.Optional(_PARTITION) + pp.Optional(_ORDER) + pp.Optional(_FRAME) + _need(RPAR, _WINDOW_FORM),
+    _Window,
+)
 
 
 class _WithinGroup:
@@ -1016,7 +1128,7 @@ _WITHIN_GROUP = _on(
     + _need(RPAR, "WITHIN GROUP (ORDER BY <value>) is missing its ')'."),
     lambda toks: _WithinGroup(value=toks[0]),
 )
-_PRIMARY = _ATOM + pp.Optional(_WITHIN_GROUP) + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE) | _OVER))
+_PRIMARY = _ATOM + pp.Optional(_WITHIN_GROUP) + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE))) + pp.Optional(_WINDOW)
 
 
 def _ordered_set(call: Any, within: _WithinGroup) -> AggCall:
@@ -1029,9 +1141,38 @@ def _ordered_set(call: Any, within: _WithinGroup) -> AggCall:
     return AggCall(source=within.value, agg="percentile", args=(NamedArg(name="p", value=args[0]),))
 
 
+def _is_window_function(node: Any) -> bool:
+    return (isinstance(node, _PendingCall) and len(node.words) == 1 and not node.words[0].quoted
+            and node.words[0].name.lower() in WINDOW_FUNCTION_ARITIES)
+
+
+def _window_function(call: _PendingCall) -> ScalarCall:
+    """An Ossie ranking or offset call under ``OVER``, undispatched."""
+    word = call.words[0]
+    args, _, distinct = _split_args(call.items, call=word.name)
+    if distinct:
+        raise _Problem(f"{_DISTINCT_ONLY}.")
+    _reject_bare_star_args(args, (), func_name=word.name, original=_STATE.text)
+    _record_call(call)
+    return ScalarCall(name=word.name.lower(), args=args, written=word.name)
+
+
 def _primary_node(toks: List[Any]) -> Any:
-    clauses = toks[-1]
-    node = _ordered_set(toks[0], toks[1]) if len(toks) == 3 else _resolve(toks[0])
+    window = toks[-1] if isinstance(toks[-1], _Window) else None
+    items = toks[:-1] if window is not None else toks
+    if window is not None and not isinstance(items[0], _PendingCall):
+        raise _Problem("OVER (…) applies only to a function call, e.g. ROW_NUMBER() OVER (ORDER BY x).")
+    if window is not None and len(items) == 2 and _is_window_function(items[0]):
+        node = _window_function(items[0])
+    else:
+        node = _ordered_set(items[0], items[1]) if len(items) == 3 else _resolve(items[0])
+    node = _with_filters(node, items[-1])
+    if window is None:
+        return node
+    return WindowCall(function=node, partition=window.partition, order=window.order, frame=window.frame)
+
+
+def _with_filters(node: Any, clauses: List[Any]) -> Any:
     for clause in clauses:
         if isinstance(node, (Ref, DottedRef)) and node.evaluated:
             raise AggFilterError(expression=_STATE.text)
@@ -1314,13 +1455,14 @@ class _Reading(BaseModel):
     spellings: Tuple[str, ...] = ()
 
 
-def parse_expr(text: str) -> ParsedExpr:
+def parse_expr(text: str, *, windows: bool = False) -> ParsedExpr:
     """Parse a Mode-B expression string into a ``ParsedExpr``; a deprecated spelling read is noted for its warning.
+    ``windows`` reads ``OVER (…)`` as a ``WindowCall`` (the strict reader's mode).
 
     Raises ``ValueError`` (empty / syntax / unsupported form / reserved prefix),
-    ``UnknownFunctionError``, or ``IllegalWindowInFilterError`` (raw ``OVER(...)``).
+    ``UnknownFunctionError``, or ``IllegalWindowInFilterError`` (raw ``OVER(...)`` outside ``windows``).
     """
-    reading = _read(text)
+    reading = _read(text, windows)
     if reading.legacy:
         note_legacy_spellings(reading.legacy)
     return reading.parsed
@@ -1401,27 +1543,27 @@ def literal_comparisons(text: str) -> Tuple[LiteralComparison, ...]:
     return tuple(sorted(out, key=lambda c: c.start))
 
 
-def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
+def legacy_spans(text: str, *, windows: bool = False) -> Tuple[LegacySpan, ...]:
     """The deprecated spellings in template ``text``, each with its canonical twin; none when it does not parse."""
     try:
-        return _read(_bound_strings(text)).legacy
+        return _read(_bound_strings(text), windows).legacy
     except Exception:  # noqa: BLE001 — unparseable text has no spans
         return ()
 
 
-def nonossie_spellings(text: str) -> Tuple[str, ...]:
+def nonossie_spellings(text: str, *, windows: bool = False) -> Tuple[str, ...]:
     """The spellings Ossie Layer 1 does not define that template ``text`` uses and the parser rewrites (``~``, ``->>``,
     ``::``, …); none when it does not parse."""
     try:
-        return _read(_bound_strings(text)).spellings
+        return _read(_bound_strings(text), windows).spellings
     except Exception:  # noqa: BLE001 — unparseable text has no spellings
         return ()
 
 
-def call_spans(text: str) -> Tuple[CallSpan, ...]:
+def call_spans(text: str, *, windows: bool = False) -> Tuple[CallSpan, ...]:
     """The single-name calls in template ``text``; none when it does not parse."""
     try:
-        return _read(_bound_strings(text)).calls
+        return _read(_bound_strings(text), windows).calls
     except Exception:  # noqa: BLE001 — unparseable text has no spans
         return ()
 
@@ -1470,18 +1612,19 @@ def _parse_tree(text: str) -> Any:
 
 
 @lru_cache(maxsize=8192)
-def _read(text: str) -> _Reading:
+def _read(text: str, windows: bool) -> _Reading:
     try:
-        return _reading(text)
+        return _reading(text, windows=windows)
     except RecursionError:
         raise ValueError(f"Invalid Mode-B expression {text!r}: it nests too deeply to read.") from None
 
 
-def _reading(text: str) -> _Reading:
+def _reading(text: str, *, windows: bool) -> _Reading:
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
     with _PARSE_LOCK:
         _STATE.reset(text)
+        _STATE.windows = windows
         parsed = cast(ParsedExpr, _parse_tree(text))
         methods, calls = list(_STATE.methods.values()), sorted(_STATE.calls.values(), key=lambda c: c.start)
         spellings = tuple(_STATE.spellings)
@@ -1610,9 +1753,9 @@ def _bound_strings(text: str) -> str:
     return "".join(chars)
 
 
-def parse_template(text: str) -> ParsedExpr:
+def parse_template(text: str, *, windows: bool = False) -> ParsedExpr:
     """``parse_expr`` of ``text`` before its string-literal variables are bound: the shape binding parses."""
-    return parse_expr(_bound_strings(text))
+    return parse_expr(_bound_strings(text), windows=windows)
 
 
 def variable_names(text: str) -> List[str]:
@@ -1624,7 +1767,7 @@ def variable_names(text: str) -> List[str]:
     return list(names)
 
 
-def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
+def bind_variables(text: str, variables: Mapping[str, Any], *, windows: bool = False) -> str:
     """``text`` with every ``{name}`` bound as a literal value: inside a string literal its text,
     in a bare literal slot a number or boolean, as a whole ``IN`` list a list. The template is
     parsed first, so no value can change the expression's structure."""
@@ -1641,7 +1784,8 @@ def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
     for m, in_string in _lookups(text, regions):
         _check_variable(m, text=text, variables=variables, in_string=in_string)
     # Strings bound and ``{{`` / ``}}`` outside strings read as braces: the grammar judges the variable slots.
-    template = parse_expr(_spliced(text, variables=variables, regions=regions, kinds=("string",), code_braces=True))
+    template = parse_expr(_spliced(text, variables=variables, regions=regions, kinds=("string",), code_braces=True),
+                          windows=windows)
     text_slots = _text_slot_ordinals(template, variables=variables)
     return _spliced(
         text, variables=variables, regions=regions, kinds=("string", "code"), code_braces=False, text_slots=text_slots,
@@ -1659,10 +1803,10 @@ def _in_slot_ordinals(template: Any) -> frozenset[int]:
     )
 
 
-def parse_bound_expr(text: str, variables: Mapping[str, Any]) -> ParsedExpr:
+def parse_bound_expr(text: str, variables: Mapping[str, Any], *, windows: bool = False) -> ParsedExpr:
     """``parse_expr`` of ``text``, each placeholder ``bind_variables`` left as a whole ``IN`` right-hand side bound to
     its value in ``variables``."""
-    return _with_in_variables(parse_expr(text), variables=variables)
+    return _with_in_variables(parse_expr(text, windows=windows), variables=variables)
 
 
 def _with_in_variables(node: Any, *, variables: Mapping[str, Any]) -> Any:
