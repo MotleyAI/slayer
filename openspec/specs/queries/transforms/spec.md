@@ -1089,15 +1089,15 @@ from storage or one that declares an explicit schema version older than the
 current one; a payload without a version, or at the current version, SHALL be
 left as written, so a bare call in it fails with the missing-direction error. The
 rewrite SHALL be idempotent, SHALL leave a formula it cannot tokenise
-byte-identical, and a migrated model SHALL be persisted back at the current
-version on first load.
+byte-identical, and a migrated model SHALL be persisted at the current
+version only by a save or `slayer storage upgrade`.
 
 #### Scenario: A stored model measure keeps its descending meaning
 
 - **WHEN** a model stored at the previous version holds the measure
   `rank(sum(amount))` and is loaded
 - **THEN** the measure reads `rank(sum(amount), direction='desc')`, the stored document
-  is rewritten at the current version, and querying it returns the descending ranks
+  is unchanged by the load, and querying it returns the descending ranks
 
 #### Scenario: A stored query's every Mode-B field is rewritten
 
