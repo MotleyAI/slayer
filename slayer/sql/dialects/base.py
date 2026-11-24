@@ -330,6 +330,15 @@ def bare_comparands(left: Expression, right: Expression) -> tuple[Expression, Ex
     return new_left, new_right
 
 
+def number_literal_text(node: Expression) -> Optional[str]:
+    """A number literal's exact text (``-2.5`` included), else ``None``."""
+    negative = isinstance(node, exp.Neg)
+    inner = node.this if negative else node
+    if not (isinstance(inner, exp.Literal) and inner.is_number):
+        return None
+    return f"-{inner.this}" if negative else inner.this
+
+
 def as_text(value: Expression) -> Expression:
     """``CAST(value AS TEXT)`` — the input a validity check reads."""
     return exp.Cast(this=value.copy(), to=exp.DataType.build("TEXT"))
@@ -1042,9 +1051,13 @@ class SqlDialect(BaseModel):
     #: Whether the database's own cast of text to a DECIMAL type reads an exponent (``1.2345e1``).
     decimal_text_exponent: ClassVar[bool] = True
 
+    def integer_text(self, text: Expression) -> Expression:
+        """Whether ``text`` is integer text: an optional sign and digits, surrounding spaces ignored."""
+        return self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False)
+
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
         """Integer text (surrounding spaces ignored) through the database's ``TRY_CAST``, else NULL."""
-        integer = self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False)
+        integer = self.integer_text(text)
         return case((integer, self.within_integer_range(self.build_try_cast(exp.Trim(this=text.copy()), to), to)))
 
     def within_integer_range(self, value: Expression, to: exp.DataType) -> Expression:
@@ -1366,7 +1379,10 @@ class SqlDialect(BaseModel):
         number = self.json_fraction(value, path, native)
         if number is None:
             return from_text
-        return exp.Coalesce(this=from_text, expressions=[self.build_integer_try_cast(number, to, source=DataType.FLOAT)])
+        # An integral number is read exactly by the text path (out of range → NULL), never through a double.
+        fraction = case((exp.Not(this=exp.Paren(this=self.integer_text(text))),
+                         self.build_integer_try_cast(number, to, source=DataType.FLOAT)))
+        return exp.Coalesce(this=from_text, expressions=[fraction])
 
     def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
         """The JSON number at ``path`` as a DOUBLE where it has a fraction, else NULL; ``None``: not told apart."""
@@ -2291,15 +2307,31 @@ class SqlDialect(BaseModel):
         self, raw: list[dict[str, Any]], *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         location: TableLocation,  # NOSONAR(S1172) — hook signature
     ) -> list[ReflectedColumn]:
-        """Hook: the Inspector's column dicts as columns."""
+        """Hook: the Inspector's column dicts as columns; one the driver cannot type (``NullType``, e.g. ``JSON``)
+        reads its type from ``catalog_types_query``."""
         sa_dialect = getattr(inspector, "dialect", None)
-        return [
+        columns = [
             column_from_sa_type(
                 name=c["name"], sa_type=c["type"], comment=c.get("comment"),
                 zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types, sa_dialect=sa_dialect,
             )
             for c in raw
         ]
+        untyped = {c["name"] for c in raw if isinstance(c["type"], sa.types.NullType)}
+        if not untyped:
+            return columns
+        declared = dict(fetch(connection, self.catalog_types_query(location), dialect=self.sqlglot_name))
+        return [
+            column_from_type_string(
+                name=c.name, data_type=declared.get(c.name), comment=c.comment,
+                zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
+            ) if c.name in untyped else c
+            for c in columns
+        ]
+
+    def catalog_types_query(self, location: TableLocation) -> exp.Select:
+        """``(column name, declared type)`` of one table, for the columns its driver cannot type."""
+        return self.columns_query(location)
 
     def columns_query(self, location: TableLocation) -> exp.Select:
         """``(column_name, data_type)`` of one table from INFORMATION_SCHEMA, in column order."""

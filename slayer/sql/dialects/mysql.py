@@ -26,14 +26,13 @@ from slayer.core.granularity import bucket_type
 from slayer.core.errors import ReadOnlyConnectionError, UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
-from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     NativeFn,
     TransactionMode,
     set_statement,
     FALSE_WORDS,
     INT64_BOUNDS,
-    INTEGER_TEXT_PATTERN,
     NARROW_INTEGER_BOUNDS,
     NUMBER_TEXT_PATTERN,
     PORTABLE_LIBRARY,
@@ -274,7 +273,7 @@ class MysqlDialect(SqlDialect):
         low, high = NARROW_INTEGER_BOUNDS.get(to.this, unsigned)
         exact = exp.Cast(this=trimmed.copy(), to=exp.DataType.build("DECIMAL(65, 0)"))
         valid = exp.And(
-            this=self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False),
+            this=self.integer_text(text),
             expression=exp.Between(this=exact, low=lit(low), high=lit(high)),
         )
         return case((valid, self.build_try_cast(trimmed, to)))

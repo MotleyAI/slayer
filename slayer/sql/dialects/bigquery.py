@@ -23,6 +23,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
+    DEFAULT_DECIMAL_PRECISION,
     NativeFn,
     COMPARISON_NODES,
     LIST_ELEMENT,
@@ -41,9 +42,11 @@ from slayer.sql.dialects.base import (
     anon,
     any_null,
     case,
+    decimal_parts,
     is_not_null,
     iso_text,
     lit,
+    number_literal_text,
     operand_copy,
     text_try_cast,
 )
@@ -61,6 +64,7 @@ _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "S
 _DATETIME = exp.DataType.build("DATETIME")
 _NUMERIC_INTEGER_DIGITS, _NUMERIC_SCALE = 29, 9
 _BIGNUMERIC = exp.DataType.build("BIGNUMERIC", dialect="bigquery")
+_BIGNUMERIC_DIGITS = 38
 
 
 _ELEMENT, _WANTED, _OFFSET = LIST_ELEMENT, "__slayer_w", "__slayer_o"
@@ -170,14 +174,30 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
 
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """``BIGNUMERIC`` holds 38 integer and 38 fractional digits; a wider ``DECIMAL`` cannot be expressed."""
+        parts = decimal_parts(data_type)
+        if parts is not None:
+            precision, scale = parts[0] or DEFAULT_DECIMAL_PRECISION, parts[1] or 0
+            if scale > _BIGNUMERIC_DIGITS or precision - scale > _BIGNUMERIC_DIGITS:
+                return False
+        return super().cast_type_supported(data_type)
+
     def build_decimal_cast(
         self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],  # NOSONAR(S1172) — hook signature
         try_: bool,
     ) -> Expression:
         """``CAST`` takes no type parameters: the value is rounded to ``scale`` (``ROUND`` ties away from zero) and
-        cast to ``NUMERIC`` / ``BIGNUMERIC``; ``TRY_CAST`` checks ``precision``."""
+        cast to ``NUMERIC`` / ``BIGNUMERIC``; ``TRY_CAST`` checks ``precision``. A number literal is read from its
+        exact text (it would read as a FLOAT64)."""
         convert = self.build_try_cast if try_ else self.build_cast
-        exact = value.copy() if source is DataType.FLOAT else convert(value, _BIGNUMERIC.copy())
+        text = number_literal_text(value)
+        if text is not None:
+            exact: Expression = convert(lit(text), _BIGNUMERIC.copy())
+        elif source is DataType.FLOAT:
+            exact = value.copy()
+        else:
+            exact = convert(value, _BIGNUMERIC.copy())
         rounded = exp.Round(this=exact, decimals=lit(scale))
         cast = convert(rounded, exp.DataType(this=self.decimal_type(precision, scale).this))
         if not try_:
@@ -297,12 +317,15 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
                            to=exp.DataType.build("DOUBLE"), safe=True)
 
     def columns_query(self, location: TableLocation) -> exp.Select:
-        """Dataset-scoped INFORMATION_SCHEMA: a dataset-scoped account cannot read the project-level view."""
+        """Dataset-scoped INFORMATION_SCHEMA (a dataset-scoped account cannot read the project-level view), in the
+        table's own project."""
         dataset, table = location.schema_name, location.name
         if "." in table:
             dataset, table = table.rsplit(".", 1)
         if not dataset:
             return super().columns_query(location)
+        if location.catalog and "." not in dataset:
+            dataset = f"{location.catalog}.{dataset}"
         return (
             exp.select(col("column_name"), col("data_type"))
             .from_(relation("COLUMNS", db="INFORMATION_SCHEMA", catalog=exp.to_identifier(dataset, quoted=True)))

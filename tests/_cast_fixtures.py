@@ -119,6 +119,7 @@ TRY_CAST_TARGET_CASES: list[tuple[str, str, Any]] = [
     ("json_value('{{\"v\": 2.50}}', '$.v')", "INT", 3),
     ("json_value('{{\"v\": 1.5E0}}', '$.v')", "INT", 2),
     ("json_value('{{\"v\": \"\\u0031.5\"}}', '$.v')", "INT", None),
+    ("json_value('{{\"v\": -9223372036854775809}}', '$.v')", "BIGINT", None),
 ]
 TRY_CAST_CASE_IDS = [f"{src}->{to}" for src, to, _ in TRY_CAST_TARGET_CASES]
 
@@ -226,6 +227,7 @@ TRY_CAST_ROUNDING_CASES: list[CastCase] = [
     _c("TRY_CAST(12.345 AS DECIMAL(10,2))", 12.35),
     _c("TRY_CAST('12.345' AS DECIMAL(10,2))", 12.35),
     _c("TRY_CAST(12345.6 AS DECIMAL(3,1))", None),
+    _c("TRY_CAST(1e40 AS DECIMAL(38,0))", None),
 ]
 CAST_MATRIX = [*AUTHOR_CAST_CASES, *TRY_CAST_ROUNDING_CASES]
 CAST_MATRIX_IDS = [c.expr for c in CAST_MATRIX]

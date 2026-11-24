@@ -962,13 +962,15 @@ class SqliteDialect(SqlDialect):
     def build_json_value_as(
         self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,
     ) -> Expression:
-        """A JSON number or boolean converts directly (never through its text); a JSON string by ``TRY_CAST``."""
+        """A JSON number or boolean converts directly (never through its text); a JSON string by ``TRY_CAST``. An
+        integer past int64 extracts as a REAL: it is out of range."""
         kind, read = self._json_parts(value, path)
         from_text = (exp.EQ(this=kind.copy(), expression=lit("text")), self.build_try_cast(read.copy(), to))
         direct: list = []
         if target is DataType.INTEGER:
             from_text = (from_text[0], self.build_integer_try_cast(read.copy(), to, source=None))
-            direct = [(exp.EQ(this=kind.copy(), expression=lit("integer")),
+            exact = exp.EQ(this=anon("TYPEOF", read.copy()), expression=lit("integer"))
+            direct = [(exp.And(this=exp.EQ(this=kind.copy(), expression=lit("integer")), expression=exact),
                        self.build_integer_try_cast(read.copy(), to, source=DataType.INTEGER)),
                       (exp.EQ(this=kind.copy(), expression=lit("real")),
                        self.build_integer_try_cast(read.copy(), to, source=DataType.FLOAT))]

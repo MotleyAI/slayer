@@ -175,6 +175,18 @@ class TestEmission:
         assert casts, sql
         assert all([e.sql() for e in c.to.expressions][-1:] == ["2"] for c in casts), sql
 
+    async def test_bigquery_decimal_literal_is_read_exactly(self) -> None:
+        # A BigQuery number literal with a fraction is a FLOAT64.
+        sql = await emit(q(dimensions=["orders.id", {"field": "CAST(9223372036854775806.5 AS DECIMAL(20,1))",
+                                                     "alias": "x"}]), dialect="bigquery")
+        assert "ROUND(CAST('9223372036854775806.5' AS BIGNUMERIC), 1)" in sql, sql
+
+    async def test_bigquery_try_cast_literal_past_bignumeric_is_safe(self) -> None:
+        sql = await emit(q(dimensions=["orders.id", {"field": "TRY_CAST(1e40 AS DECIMAL(38,0))", "alias": "x"}]),
+                         dialect="bigquery")
+        assert re.search(r"SAFE_CAST\(CAST\('1e\+?40' AS STRING\) AS BIGNUMERIC\)", sql, re.IGNORECASE), sql
+        assert not re.search(r"(?<!SAFE_)CAST\('1e\+?40' AS BIGNUMERIC\)", sql, re.IGNORECASE), sql
+
     async def test_bigquery_decimal_scale_is_rounded_outside_the_cast(self) -> None:
         # BigQuery refuses a parameterized CAST target.
         sql = await emit(q(dimensions=["orders.id", {"field": "CAST(orders.amount AS DECIMAL(10,2))", "alias": "x"}]),
@@ -201,11 +213,19 @@ class TestEmission:
         sql = await emit(q(dimensions=["orders.id", {"field": expr, "alias": "x"}]), dialect="clickhouse")
         assert reader in sql, sql
 
-    @pytest.mark.parametrize("type_text", ["DECIMAL(76,76)", "DECIMAL(76,2)"])
-    async def test_clickhouse_refuses_a_decimal_with_no_room_for_rounding(self, type_text: str) -> None:
+    @pytest.mark.parametrize(("dialect", "type_text"), [
+        ("clickhouse", "DECIMAL(76,76)"), ("clickhouse", "DECIMAL(76,2)"),
+        ("bigquery", "DECIMAL(40,39)"), ("bigquery", "DECIMAL(50,2)"),
+    ])
+    async def test_a_decimal_the_dialect_cannot_hold_is_refused(self, dialect: str, type_text: str) -> None:
         query = q(dimensions=["orders.id", {"field": f"CAST(orders.status AS {type_text})", "alias": "x"}])
         with pytest.raises(CastTypeError):
-            await emit(query, dialect="clickhouse")
+            await emit(query, dialect=dialect)
+
+    @pytest.mark.parametrize("type_text", ["DECIMAL(76,38)", "DECIMAL(38,38)", "DECIMAL"])
+    async def test_bigquery_accepts_what_bignumeric_holds(self, type_text: str) -> None:
+        await emit(q(dimensions=["orders.id", {"field": f"CAST(orders.status AS {type_text})", "alias": "x"}]),
+                   dialect="bigquery")
 
     @pytest.mark.parametrize("spelling", ["VARCHAR(3)", "NVARCHAR(3)"])
     async def test_sql_server_varchar_length_counts_code_points_in_nvarchar(self, spelling: str) -> None:

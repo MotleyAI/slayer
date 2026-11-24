@@ -1680,7 +1680,10 @@ def _is_number_literal(arg: object) -> bool:
 
 
 def _is_int_literal(arg: object) -> bool:
-    return _is_number_literal(arg) and Decimal(str(_literal_value(arg))) % 1 == 0
+    if not _is_number_literal(arg):
+        return False
+    value = Decimal(str(_literal_value(arg)))  # ``% 1`` traps past 28 digits
+    return value.is_finite() and value == value.to_integral_value()
 
 
 # Scalars whose result is always a number.

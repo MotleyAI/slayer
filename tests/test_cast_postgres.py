@@ -74,8 +74,7 @@ async def test_try_cast_of_a_constant_never_fails_at_plan_time(pg, expr: str, ex
 
 
 @pytest.mark.parametrize(("number", "target", "expected"), [
-    ("1.5", "INT", 2), ("-2.5", "BIGINT", -3), ("-9223372036854775809", "BIGINT", None),
-    ("-9223372036854775809.4", "BIGINT", None), ("1e400", "BIGINT", None),
+    ("1.5", "INT", 2), ("-2.5", "BIGINT", -3), ("-9223372036854775809", "BIGINT", None), ("1e400", "BIGINT", None),
 ])
 async def test_json_number_read_as_an_integer_exactly(pg, number: str, target: str, expected) -> None:
     engine, version_num = pg

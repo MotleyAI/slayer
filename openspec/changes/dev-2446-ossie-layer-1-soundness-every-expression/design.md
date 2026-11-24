@@ -68,6 +68,7 @@ Principles that bind the work: semantics §4.2.1, §4.2.2, §4.4; system §3.8 (
 25. **A JSON number converts as a number** (user): `json_value(… RETURNING INT)` ≡ `TRY_CAST(json_value(…) AS INT)` reads a JSON number with a fraction as a number and rounds it half away from zero (`{"v": 1.5}` → 2) on every Tier-1 dialect; a JSON string stays text (`"1.5"` → NULL). `tests/test_dev2446_internal_casts.py::test_json_returning`'s `1.5` row aligns to 2.
 26. **BigQuery decimal casts** (user): BigQuery refuses parameterized types in `CAST`, so `DECIMAL(p, s)` rounds to `s` half away from zero and casts to `NUMERIC` / `BIGNUMERIC`; `TRY_CAST` yields NULL past `p`, as on ClickHouse.
 27. **Exponent text on Trino / SQL Server goes through a double** (user): their own decimal cast reads no exponent; an exact reader is dialect-specific SQL for a rare input, so the digits past a double's precision are documented as lost.
+28. **A fractional JSON number reads as a double** (user): RFC 8259 §6 limits JSON number interoperability to IEEE doubles, so a JSON number with a fraction converts through the database's double; an integral JSON number reads exactly (out of range → NULL).
 
 ## Risks / Trade-offs
 

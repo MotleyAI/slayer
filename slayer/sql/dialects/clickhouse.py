@@ -13,7 +13,6 @@ from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any, ClassVar, Optional
 
-from sqlalchemy.types import NullType
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
@@ -42,20 +41,17 @@ from slayer.sql.dialects.base import (
     is_null,
     iso_text,
     lit,
+    number_literal_text,
     pad_fill,
 )
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
-    CatalogConnection,
-    ReflectedColumn,
     TableLocation,
     all_of,
     call,
     col,
-    column_from_type_string,
     eq_literal,
-    fetch,
     relation,
 )
 
@@ -65,15 +61,6 @@ _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.U
 _JSON_SCALAR_TYPES = ("Int64", "UInt64", "Double", "Bool")
 #: Types ClickHouse refuses inside ``Nullable``.
 _NEVER_NULLABLE = (*exp.DataType.NESTED_TYPES, exp.DataType.Type.LOWCARDINALITY, exp.DataType.Type.JSON)
-
-
-def _number_text(node: Expression) -> Optional[str]:
-    """A number literal's exact text (``-2.5`` included), else ``None``."""
-    negative = isinstance(node, exp.Neg)
-    inner = node.this if negative else node
-    if not (isinstance(inner, exp.Literal) and inner.is_number):
-        return None
-    return f"-{inner.this}" if negative else inner.this
 
 
 _DECIMAL128_DIGITS, _DECIMAL256_DIGITS = 38, 76
@@ -412,7 +399,7 @@ class ClickhouseDialect(SqlDialect):
         return self._half_away(value, digits, width=_DECIMAL128_DIGITS)
 
     def _half_away(self, value: Expression, digits: int, *, width: int) -> Expression:
-        text = _number_text(value)
+        text = number_literal_text(value)
         if text is None:
             exact = anon("accurateCastOrNull", value, lit(f"Decimal({width}, {digits + 1})"))
         else:
@@ -439,11 +426,11 @@ class ClickhouseDialect(SqlDialect):
             rounded: Expression = exp.Round(this=exact, decimals=lit(scale))
         else:
             rounded = self._half_away(value, scale, width=width)
-        cast = self.build_cast(rounded, to)
         if not try_:
-            return cast
+            return self.build_cast(rounded, to)
+        # The guard sits inside the cast: ``multiIf`` evaluates every branch, so an overflowing cast would raise.
         fits = exp.LT(this=exp.Abs(this=rounded.copy()), expression=lit(10 ** (precision - scale)))
-        return case((fits, cast))
+        return self.build_cast(case((fits, rounded)), to)
 
     def build_integer_try_cast(self, value: Expression, to: exp.DataType, *, source: Optional[DataType]) -> Expression:
         """A number is rounded, then read as integer text: ``accurateCastOrNull`` of a Decimal raises on overflow."""
@@ -524,23 +511,9 @@ class ClickhouseDialect(SqlDialect):
             .where(all_of([eq_literal(col("table"), location.name), exp.EQ(this=col("database"), expression=database)]))
         )
 
-    def columns_from_inspector(
-        self, raw: list[dict[str, Any]], *, connection: CatalogConnection | None, inspector: Any,
-        location: TableLocation,
-    ) -> list[ReflectedColumn]:
-        """A column the driver cannot type (``JSON``) is read from its ``system.columns`` type."""
-        columns = super().columns_from_inspector(raw, connection=connection, inspector=inspector, location=location)
-        untyped = {c["name"] for c in raw if isinstance(c["type"], NullType)}
-        if not untyped:
-            return columns
-        declared = dict(fetch(connection, self._system_columns(location, field=col("type")), dialect=self.sqlglot_name))
-        return [
-            column_from_type_string(
-                name=c.name, data_type=declared.get(c.name), comment=c.comment,
-                zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
-            ) if c.name in untyped else c
-            for c in columns
-        ]
+    def catalog_types_query(self, location: TableLocation) -> exp.Select:
+        """``system.columns`` types (the driver cannot type ``JSON``)."""
+        return self._system_columns(location, field=col("type"))
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
         """Per-request HTTP setting: the driver keeps no session, so a ``SET`` never reaches the query."""
