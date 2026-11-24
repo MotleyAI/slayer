@@ -14,6 +14,7 @@ import pytest
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.keys import SCALAR_SPECS
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
+from slayer.core.syntax import call_spans
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2217_fixtures import DS, fixture_engine, rows, sql_engine, strict, strict_error
 
@@ -201,9 +202,10 @@ async def test_native_answers_every_scalar_case(engine: SlayerQueryEngine, name:
 
 @pytest.mark.parametrize("name", sorted(SCALARS))
 async def test_a_scalar_is_admitted_exactly_when_flagged_ossie(engine: SlayerQueryEngine, name: str) -> None:
-    """Each scalar Ossie defines with SLayer's meaning is admitted; every other one is ``E_INVALID_QUERY``."""
+    """A scalar at an argument count Ossie defines with SLayer's meaning is admitted; any other is ``E_INVALID_QUERY``."""
     filter_text, expected = SCALARS[name]
-    if SCALAR_SPECS[name].ossie:
+    count = next(c.arguments for c in call_spans(filter_text) if c.callee.lower() == name)
+    if count in SCALAR_SPECS[name].ossie_arg_counts:
         assert rows(await strict(engine, _query(filter_text))) == [(float(expected),)]
     else:
         await strict_error(engine, _query(filter_text), "E_INVALID_QUERY")

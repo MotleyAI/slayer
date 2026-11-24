@@ -24,9 +24,9 @@ from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.database import engine_factory
-from slayer.sql.dialects import clickhouse as clickhouse_dialect
+from slayer.sql.dialects import base as dialects_base
 from slayer.sql.dialects import get_dialect
-from slayer.sql.dialects.reflection import column_from_sa_type
+from slayer.sql.dialects.reflection import TableLocation, column_from_sa_type
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
@@ -212,6 +212,15 @@ class TestInputForms:
         assert "toString(lib.payload)" in sql, sql
         assert "AS JSON" not in sql.upper(), sql
 
+    async def test_bigquery_json_column_number_read_as_json(self) -> None:
+        # A JSON column's JSON_QUERY is JSON, which SAFE_CAST cannot read as FLOAT64.
+        query = lib_query("json_value(lib.payload, '$.a' RETURNING INT)")
+        native = await emit_lib(query, dialect="bigquery", datasets=[_json_dataset(db_type="JSON")])
+        text = await emit_lib(query, dialect="bigquery", datasets=[_json_dataset(db_type=None)])
+        assert "TO_JSON_STRING(JSON_QUERY(lib.payload, " in native, native
+        assert "AS JSON" not in native.upper(), native
+        assert "TO_JSON_STRING" not in text, text
+
     @pytest.mark.parametrize(("dialect", "db_type"), [
         ("postgres", "jsonb"), ("postgres", "json"), ("mysql", "JSON"), ("duckdb", "JSON"), ("bigquery", "JSON"),
         ("snowflake", "VARIANT"), ("snowflake", "OBJECT"), ("snowflake", "ARRAY"), ("clickhouse", "JSON"),
@@ -291,14 +300,30 @@ class TestIngestionKeepsJsonDbType:
     def test_postgres_array_is_not_json(self) -> None:
         assert _db_type(postgresql.ARRAY(sa.Integer()), dialect="postgres") == "INTEGER[]"
 
-    def test_clickhouse_column_the_driver_cannot_type_reads_its_catalog_type(self) -> None:
+    @pytest.mark.parametrize(("dialect", "catalog"), [("clickhouse", "Int32"), ("bigquery", "INT64")])
+    def test_column_the_driver_cannot_type_reads_its_catalog_type(self, dialect: str, catalog: str) -> None:
         inspector = MagicMock()
         inspector.get_columns.return_value = [{"name": "id", "type": sa.Integer()},
                                               {"name": "payload", "type": sa.types.NullType()}]
-        with patch.object(clickhouse_dialect, "fetch", return_value=[("id", "Int32"), ("payload", "JSON")]):
-            cols = get_dialect("clickhouse").reflect_columns(
+        with patch.object(dialects_base, "fetch", return_value=[("id", catalog), ("payload", "JSON")]):
+            cols = get_dialect(dialect).reflect_columns(
                 connection=None, inspector=inspector, table="docs", schema="db", catalog=None)
         assert [(c.name, c.db_type) for c in cols] == [("id", None), ("payload", "JSON")]
+
+    def test_bigquery_catalog_types_read_in_the_tables_project(self) -> None:
+        query = get_dialect("bigquery").catalog_types_query(TableLocation(name="docs", schema_name="ds", catalog="proj"))
+        assert query is not None
+        assert "FROM `proj.ds`.INFORMATION_SCHEMA.COLUMNS" in query.sql(dialect="bigquery")
+
+    def test_a_dialect_without_a_catalog_reader_keeps_the_drivers_type(self) -> None:
+        # Postgres ``xml`` reflects as NullType and stays as the driver read it.
+        inspector = MagicMock()
+        inspector.get_columns.return_value = [{"name": "doc", "type": sa.types.NullType()}]
+        with patch.object(dialects_base, "fetch") as fetch:
+            cols = get_dialect("postgres").reflect_columns(
+                connection=None, inspector=inspector, table="t", schema="public", catalog=None)
+        fetch.assert_not_called()
+        assert [c.db_type for c in cols] == [column_from_sa_type(name="doc", sa_type=sa.types.NullType()).db_type]
 
     async def test_duckdb_json_column_ingested_and_read(self) -> None:
         duckdb = pytest.importorskip("duckdb")

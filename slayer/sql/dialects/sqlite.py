@@ -6,6 +6,7 @@ import math
 import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Context, Decimal
 from functools import lru_cache
 from urllib.parse import unquote
 
@@ -43,6 +44,7 @@ from slayer.sql.dialects.base import (
     anon,
     as_text,
     case,
+    literal_int,
     iso_text,
     lit,
     slayer_type_of,
@@ -456,15 +458,60 @@ def _try_double(text: str):
     return number if math.isfinite(number) else None
 
 
+def _exact(value) -> Optional[Decimal]:
+    """A number, or numeric text, as the exact decimal it is written as; else ``None``."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        return Decimal(stripped) if _NUMBER_TEXT_RE.fullmatch(stripped) else None
+    if isinstance(value, float):
+        return Decimal(repr(value)) if math.isfinite(value) else None
+    return Decimal(value) if isinstance(value, int) else None
+
+
 def _slayer_try_integer(value, low, high):
-    """``TRY_CAST`` to an integer type in ``[low, high]``: integer text or an integral number, else NULL."""
+    """``TRY_CAST`` to an integer type in ``[low, high]``: integer text or a number rounded half away from zero,
+    else NULL."""
     if isinstance(value, str):
         number = int(value) if _INTEGER_TEXT_RE.fullmatch(value) else None
     elif isinstance(value, float):
-        number = int(value) if value.is_integer() else None
+        finite = math.isfinite(value)
+        number = int(Decimal(value).to_integral_value(rounding=ROUND_HALF_UP)) if finite else None
     else:
         number = value if isinstance(value, int) else None
     return number if number is not None and low <= number <= high else None
+
+
+def _half_away(exact: Decimal, digits: int) -> Decimal:
+    """``exact`` rounded to ``digits`` fractional digits, ties away from zero, at any magnitude."""
+    exponent = -digits
+    if exponent <= int(exact.as_tuple().exponent):
+        return exact
+    context = Context(prec=max(exact.adjusted() - exponent + 2, 1))
+    return exact.quantize(Decimal(1).scaleb(exponent), rounding=ROUND_HALF_UP, context=context)
+
+
+def _round(x, digits):
+    """``round(x, digits)``, ties away from zero; a negative ``digits`` rounds left of the decimal point."""
+    exact = _exact(x) if isinstance(x, (int, float)) else None
+    if exact is None or digits is None:
+        return None
+    return _sqlite_number(_half_away(exact, int(digits)), integer=isinstance(x, int))
+
+
+def _sqlite_number(value: Decimal, *, integer: bool):
+    """``value`` as SQLite stores it: an INTEGER when wanted and in range, else a REAL."""
+    return int(value) if integer and _INT64_MIN <= value <= _INT64_MAX else float(value)
+
+
+def _slayer_cast_decimal(value, precision, scale):
+    """A cast to ``DECIMAL(precision, scale)``: rounded half away from zero; NULL for other text or overflow."""
+    exact = _exact(value)
+    if exact is None:
+        return None
+    rounded = _half_away(exact, scale)
+    if rounded and rounded.adjusted() >= precision - scale:
+        return None
+    return _sqlite_number(rounded, integer=scale == 0)
 
 
 def _try_boolean(text: str):
@@ -622,6 +669,8 @@ _SCALAR_UDFS: tuple[tuple[str, int, Callable[..., Any], bool], ...] = (
     ("slayer_timestamp_text", 1, _slayer_timestamp_text, True),
     ("slayer_try_cast", 2, _slayer_try_cast, False),
     ("slayer_try_cast", 3, _slayer_try_integer, False),
+    ("slayer_cast_decimal", 3, _slayer_cast_decimal, True),
+    ("slayer_round", 2, _round, True),
 )
 
 #: Every aggregate SLayer registers, the statistical ones also under the names sqlglot rewrites them to on SQLite.
@@ -859,6 +908,12 @@ class SqliteDialect(SqlDialect):
     def truncate(self, value: Expression) -> Expression:
         return anon("slayer_trunc", value)
 
+    def build_round(self, value: Expression, digits: Expression) -> Optional[Expression]:
+        """``ROUND`` ignores a negative digits argument: a registered one stands in unless the digits are known
+        non-negative."""
+        known = literal_int(digits)
+        return None if known is not None and known >= 0 else anon("slayer_round", value, digits)
+
     def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
         """Scalar ``MAX`` / ``MIN`` propagate NULL: each term coalesces to a present argument."""
         return self.coalesced_extremum(fn, args, spelling="min_max")
@@ -908,14 +963,18 @@ class SqliteDialect(SqlDialect):
     def build_json_value_as(
         self, value: Expression, path: JsonPath, native: bool, to: exp.DataType, target: DataType,
     ) -> Expression:
-        """A JSON number or boolean converts directly (never through its text); a JSON string by ``TRY_CAST``."""
+        """A JSON number or boolean converts directly (never through its text); a JSON string by ``TRY_CAST``. An
+        integer past int64 extracts as a REAL: it is out of range."""
         kind, read = self._json_parts(value, path)
         from_text = (exp.EQ(this=kind.copy(), expression=lit("text")), self.build_try_cast(read.copy(), to))
         direct: list = []
         if target is DataType.INTEGER:
             from_text = (from_text[0], self.build_integer_try_cast(read.copy(), to, source=None))
-            direct = [(exp.EQ(this=kind.copy(), expression=lit("integer")),
-                       self.build_integer_try_cast(read.copy(), to, source=DataType.INTEGER))]
+            exact = exp.EQ(this=anon("TYPEOF", read.copy()), expression=lit("integer"))
+            direct = [(exp.And(this=exp.EQ(this=kind.copy(), expression=lit("integer")), expression=exact),
+                       self.build_integer_try_cast(read.copy(), to, source=DataType.INTEGER)),
+                      (exp.EQ(this=kind.copy(), expression=lit("real")),
+                       self.build_integer_try_cast(read.copy(), to, source=DataType.FLOAT))]
         elif target.kind is TypeKind.DOUBLE:
             direct = [(exp.In(this=kind.copy(), expressions=[lit("integer"), lit("real")]),
                        exp.Cast(this=read.copy(), to=exp.DataType.build("REAL")))]
@@ -938,10 +997,18 @@ class SqliteDialect(SqlDialect):
         return super().cast_type_supported(data_type)
 
     def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
-        """A timestamp cast converts as ``TRY_CAST`` does: a plain cast collapses a date text to its year."""
-        if to.this in _PLAIN_TIMESTAMP_CASTS:
+        """A timestamp or boolean cast converts as ``TRY_CAST`` does: a plain cast collapses a date text to its year
+        and reads a numeric prefix."""
+        if to.this in _PLAIN_TIMESTAMP_CASTS or to.is_type(exp.DataType.Type.BOOLEAN):
             return self.build_try_cast(value, to)
         return super().build_cast(value, to)
+
+    def build_decimal_cast(
+        self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],
+        try_: bool,
+    ) -> Expression:
+        """Converts as ``TRY_CAST`` does: there is no fixed-point type here."""
+        return anon("slayer_cast_decimal", value, lit(precision), lit(scale))
 
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
         """No DATE / TIMESTAMP cast: under numeric affinity it collapses a text date to its year."""

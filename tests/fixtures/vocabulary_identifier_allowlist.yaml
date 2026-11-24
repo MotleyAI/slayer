@@ -436,8 +436,6 @@ carve_outs:
   - {name: _exists_beside_array_join, file: slayer/sql/dialects/clickhouse.py, reason: "SQL JOIN as an operation"}
   - {name: _system_columns, file: slayer/sql/dialects/clickhouse.py, reason: "physical database or result-set column"}
   - {name: column_comments_query, file: slayer/sql/dialects/clickhouse.py, reason: "physical database or result-set column"}
-  - {name: columns, file: slayer/sql/dialects/clickhouse.py, reason: "physical database or result-set column"}
-  - {name: columns_from_inspector, file: slayer/sql/dialects/clickhouse.py, reason: "physical database or result-set column"}
   - {name: _plain_index_columns, file: slayer/sql/dialects/duckdb.py, reason: "physical database or result-set column"}
   - {name: columns, file: slayer/sql/dialects/duckdb.py, reason: "physical database or result-set column"}
   - {name: describe_cursor_column, file: slayer/sql/dialects/duckdb.py, reason: "physical database or result-set column"}

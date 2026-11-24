@@ -509,7 +509,7 @@ In Mode-A SQL (a field's dialect entry, `Aggregation.expression`) any database f
 | `exp(x)` | 1 | `e^x` |
 | `sqrt(x)` | 1 | Square root |
 | `pow(x, n)` / `power(x, n)` | 2 | `x^n`. Both spellings are accepted (sqlglot may emit either depending on origin dialect). |
-| `round(x[, ndigits])` | 1–2 | Round to `ndigits` decimal places (default 0). `ndigits` must be an integer literal. |
+| `round(x[, ndigits])` | 1–2 | Round to `ndigits` decimal places (default 0); a negative `ndigits` rounds left of the point (`round(1250, -2)` is `1300`). `ndigits` must be an integer literal. |
 | `abs(x)` | 1 | Absolute value. |
 | `floor(x)` / `ceil(x)` | 1 | Round down / up to an integer value (`ceiling` is `ceil`). |
 | `trunc(x)` | 1 | Round toward zero. |

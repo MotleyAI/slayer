@@ -26,14 +26,13 @@ from slayer.core.granularity import bucket_type
 from slayer.core.errors import ReadOnlyConnectionError, UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
-from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
     NativeFn,
     TransactionMode,
     set_statement,
     FALSE_WORDS,
     INT64_BOUNDS,
-    INTEGER_TEXT_PATTERN,
     NARROW_INTEGER_BOUNDS,
     NUMBER_TEXT_PATTERN,
     PORTABLE_LIBRARY,
@@ -69,6 +68,7 @@ if TYPE_CHECKING:
 #: MySQL 8.0 brought the ICU regex functions; 8.0.21 ``JSON_VALUE``.
 _MYSQL_8_0 = (8, 0, 0)
 _MYSQL_8_0_21 = (8, 0, 21)
+_MYSQL_MAX_SCALE = 30
 _VERSION = re.compile(r"\s*(\d+)\.(\d+)(?:\.(\d+))?")
 _NUMBERS = NUMERIC_DATATYPES
 _GATED_FUNCTIONS = REGEX_LIBRARY | {"json_value"}
@@ -127,6 +127,7 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
 class MysqlDialect(SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "mysql"
+    varchar_cast_truncates: ClassVar[bool] = True
     unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
         exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UMEDIUMINT, exp.DataType.Type.UINT,
         exp.DataType.Type.UBIGINT, exp.DataType.Type.UDECIMAL,
@@ -232,6 +233,24 @@ class MysqlDialect(SqlDialect):
         read = case((readable, anon("JSON_VALUE", value.copy(), lit(path.text))))
         return case((anon("JSON_VALID", value), read))  # a nested CASE: JSON_EXTRACT raises on invalid text
 
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        found = anon("JSON_TYPE", anon("JSON_EXTRACT", value.copy(), lit(path.text)))
+        fraction = exp.In(this=found, expressions=[lit("DOUBLE"), lit("DECIMAL")])
+        exact = exp.DataType.build(f"DECIMAL(65, {_MYSQL_MAX_SCALE})")  # a DOUBLE's ROUND breaks a tie to even
+        number = exp.Cast(this=self.build_json_value(value, path, native), to=exact)
+        return case((anon("JSON_VALID", value), case((fraction, number))))
+
+    def build_decimal_cast(
+        self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],
+        try_: bool,
+    ) -> Expression:
+        """A value past ``precision`` saturates here: ``TRY_CAST`` checks it."""
+        cast = super().build_decimal_cast(value, to, precision=precision, scale=scale, source=source, try_=try_)
+        if not try_:
+            return cast
+        exact = exp.Cast(this=value.copy(), to=exp.DataType.build(f"DECIMAL(65, {min(scale, _MYSQL_MAX_SCALE)})"))
+        return case((exp.LT(this=exp.Abs(this=exact), expression=lit(10 ** (precision - scale))), cast))
+
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         """Numeric and boolean targets are guarded by the validity grammar; MySQL's date casts already yield NULL."""
         text = as_text(value)
@@ -255,7 +274,7 @@ class MysqlDialect(SqlDialect):
         low, high = NARROW_INTEGER_BOUNDS.get(to.this, unsigned)
         exact = exp.Cast(this=trimmed.copy(), to=exp.DataType.build("DECIMAL(65, 0)"))
         valid = exp.And(
-            this=self.build_regexp_like(text, parse_regex(INTEGER_TEXT_PATTERN), False),
+            this=self.integer_text(text),
             expression=exp.Between(this=exact, low=lit(low), high=lit(high)),
         )
         return case((valid, self.build_try_cast(trimmed, to)))

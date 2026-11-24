@@ -154,7 +154,9 @@ class SnowflakeDialect(SqlDialect):
     enforces_unique_keys: ClassVar[bool] = False
 
     sqlglot_name: str = "snowflake"
-    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.INT, exp.DataType.Type.BIGINT,
+    })
     array_cast_types: ClassVar[bool] = True
     ilike_native: ClassVar[bool] = True
     identifier_folding: ClassVar[IdentifierFolding] = "upper"
@@ -318,6 +320,11 @@ class SnowflakeDialect(SqlDialect):
         found = anon("GET_PATH", document, lit(_snowflake_path(path)))
         not_scalar = either(anon("IS_OBJECT", found), anon("IS_ARRAY", found.copy()), anon("IS_NULL_VALUE", found.copy()))
         return case((not_scalar, exp.Null()), default=anon("TO_VARCHAR", found.copy()))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        document = value.copy() if native else anon("TRY_PARSE_JSON", anon("TO_VARCHAR", value))
+        found = anon("GET_PATH", document, lit(_snowflake_path(path)))
+        return case((either(anon("IS_DOUBLE", found), anon("IS_DECIMAL", found.copy())), anon("TO_DOUBLE", found.copy())))
 
     def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
         """No interval type: ``DATEDIFF`` of second-aligned timestamps is exact."""

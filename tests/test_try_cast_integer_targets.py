@@ -1,4 +1,4 @@
-"""TRY_CAST to an integer type accepts only integer text (spec: queries/casts › TRY_CAST turns invalid input into NULL)."""
+"""TRY_CAST to an integer type accepts integer text and rounds numbers (spec: queries/casts › TRY_CAST turns invalid input into NULL)."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class TestIntegerRule:
     async def test_fractional_double_column(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["orders.id", {"field": "TRY_CAST(orders.price / 2 AS INT)", "alias": "x"}]))
         got = {int(k): (None if v is None else int(v)) for k, v in by_key(resp, "id", "x").items()}
-        assert got == {1: 1, 2: None, 3: 2, 4: None, 5: None}, resp.sql
+        assert got == {1: 1, 2: 2, 3: 2, 4: 3, 5: 1}, resp.sql
 
     async def test_rounding_is_the_author_s_choice(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=[m("max(TRY_CAST(round(CAST(1.6 AS DOUBLE)) AS INT))")]))
@@ -52,7 +52,7 @@ class TestIntegerRule:
 
 class TestJsonSource:
     @pytest.mark.parametrize(("json", "expected"), [
-        ('{{"v": 32768}}', None), ('{{"v": "32768"}}', None), ('{{"v": 7}}', 7), ('{{"v": "7"}}', 7), ('{{"v": 1.5}}', None),
+        ('{{"v": 32768}}', None), ('{{"v": "32768"}}', None), ('{{"v": 7}}', 7), ('{{"v": "7"}}', 7), ('{{"v": 1.5}}', 2),
     ])
     async def test_narrow_target_range(self, engine: SlayerQueryEngine, json: str, expected) -> None:
         resp = await engine.execute(q(metrics=[m(f"max(TRY_CAST(json_value('{json}', '$.v') AS SMALLINT))")]))

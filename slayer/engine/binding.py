@@ -651,8 +651,8 @@ def _temporal_literal_value(parsed: TemporalLiteral):
     return value
 
 
-def _try_cast_source(source: ValueKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
-    """What a ``TRY_CAST`` reads ``source`` as: integer text (``INT``), another number (``DOUBLE``), else text."""
+def _cast_source(source: ValueKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
+    """What a cast reads ``source`` as: integer text (``INT``), another number (``DOUBLE``), else text."""
     if integer_text_valued(source, field_type=field_type):
         return DataType.INTEGER
     return DataType.FLOAT if numeric_valued(source, field_type=field_type) else None
@@ -677,7 +677,7 @@ def _bind_cast(
     return CastKey(
         source=source, type_text=parsed.type_text, data_type=data_type, try_=parsed.try_,
         element_type=element_type,
-        numeric_source=_try_cast_source(source, field_type=field_type) if parsed.try_ else None,
+        numeric_source=_cast_source(source, field_type=field_type),
     )
 
 

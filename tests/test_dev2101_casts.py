@@ -130,7 +130,7 @@ class TestSqliteTryCastBooleans:
 class TestSqliteTryCastRange:
     @pytest.mark.parametrize(("text", "target", "expected"), [
         ("1e309", "DOUBLE", None), ("1e309", "INT", None), ("99999999999999999999", "INT", None),
-        ("9223372036854775807", "INT", 9223372036854775807), ("-9223372036854775808", "INT", -9223372036854775808),
+        ("9223372036854775807", "BIGINT", 9223372036854775807), ("-9223372036854775808", "BIGINT", -9223372036854775808),
         ("9007199254740993e0", "INT", None), ("1e999999999", "INT", None),
     ])
     async def test_range_and_precision(

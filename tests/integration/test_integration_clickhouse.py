@@ -96,7 +96,7 @@ from tests._dev2120_fixtures import (
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
-from tests._cast_fixtures import check_try_cast_targets
+from tests._cast_fixtures import check_author_casts, check_boolean_casts, check_try_cast_targets
 from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
@@ -298,6 +298,10 @@ def clickhouse_env(_clickhouse_env_storage) -> SlayerQueryEngine:
 class TestClickHouseQueries:
     async def test_try_cast_integer_targets(self, clickhouse_env: SlayerQueryEngine) -> None:
         await check_try_cast_targets(clickhouse_env, dataset="orders")
+
+    async def test_author_casts(self, clickhouse_env: SlayerQueryEngine) -> None:
+        await check_author_casts(clickhouse_env, dataset="orders")
+        await check_boolean_casts(clickhouse_env, dataset="orders")
 
     async def test_count_all(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)"}]})
@@ -749,6 +753,19 @@ class TestRootlessKeyUnionClickHouse:
         assert [r["y"] for r in result.data if all(r[k] is None for k in keys)] == [5.0]
         for k in keys:
             assert len({type(r[k]) for r in result.data if r[k] is not None}) == 1, k
+
+
+@pytest.mark.integration
+class TestNullableCastsClickHouse:
+    async def test_casts_of_a_nullable_decimal(self, clickhouse_key_union_env: SlayerQueryEngine) -> None:
+        forms = {"c": "CAST(kdim.k_dec AS INT)", "t": "TRY_CAST(kdim.k_dec AS SMALLINT)",
+                 "b": "CAST(kdim.k_dec AS BOOLEAN)", "tb": "TRY_CAST(kdim.k_dec AS BOOLEAN)"}
+        result = await clickhouse_key_union_env.execute(query=SlayerQuery.model_validate({
+            "population": "kdim",
+            "dimensions": ["kdim.key_id", *({"field": f, "alias": a} for a, f in forms.items())],
+        }))
+        got = {r["kdim.key_id"]: {a: (None if r[a] is None else int(r[a])) for a in forms} for r in result.data}
+        assert got == {"K1": {"c": 2, "t": 2, "b": 1, "tb": 1}, "K2": dict.fromkeys(forms)}, result.sql
 
 
 # ---------------------------------------------------------------------------
