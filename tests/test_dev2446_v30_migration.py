@@ -17,7 +17,7 @@ from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._stored_upgrade_fixtures import BACKENDS, DS, field_of, raw_store, run, seed_shop
 
 #: The SlayerModel version before this change, and the one before the ``agg`` upgrade.
-PREVIOUS = 28
+PREVIOUS = 29
 BEFORE_AGG_UPGRADE = 19
 #: ``amount`` per ``order_id`` of the shop seed.
 AMOUNTS = {1: 10.0, 2: 20.0, 3: 30.0, 4: 40.0, 5: 50.0, 6: 60.0}
@@ -69,7 +69,7 @@ def rows(resp: Any, *, column: str) -> dict[int, float]:
 
 
 def test_the_dataset_version_is_bumped() -> None:
-    assert CURRENT_VERSIONS["SlayerModel"] == 29
+    assert CURRENT_VERSIONS["SlayerModel"] == 30
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -93,13 +93,14 @@ async def test_a_stored_agg_field_keeps_its_value(tmp_path: Path, shop_ds: Datas
 @pytest.mark.parametrize(("version", "stored", "upgraded"), [
     (25, "AGG(amount) + 1", "amount + 1"),
     (27, "agg(amount) * 2", "amount * 2"),
+    (28, "AGG(amount) - 1", "amount - 1"),
     (PREVIOUS, "Agg(amount)", "amount"),
     (PREVIOUS, "AGG(amount) + LENGTH('AGG(x)')", "amount + LENGTH('AGG(x)')"),
     (PREVIOUS, {"sql": "AGG(amount) + 1"}, "amount + 1"),
     (PREVIOUS, "AGG /* ( */ (amount) + 1", "amount + 1"),
     (PREVIOUS, '"AGG"(amount) + 1', "amount + 1"),
-], ids=["v25", "v27-lower", "v28-mixed-case", "v28-quoted", "v28-object", "v28-comment", "v28-quoted-callee"])
-def test_a_field_agg_from_v20_to_v28_is_unwrapped(version: int, stored: Any, upgraded: str) -> None:
+], ids=["v25", "v27-lower", "v28-chain", "v29-mixed-case", "v29-quoted", "v29-object", "v29-comment", "v29-quoted-callee"])
+def test_a_field_agg_from_v20_to_v29_is_unwrapped(version: int, stored: Any, upgraded: str) -> None:
     model = SlayerDataset.model_validate(orders_doc(version, field_a(version, stored)))
     assert expression_text(field_of(model, "a").expression) == upgraded
 

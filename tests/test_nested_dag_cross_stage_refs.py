@@ -25,6 +25,7 @@ from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._trusted import trusting
 
 
 # ---------------------------------------------------------------------------
@@ -93,15 +94,15 @@ def _orders_dataset() -> SlayerDataset:
     )
 
 
-async def _engine_with_relationship_chain() -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
-    """Build a YAMLStorage with orders → customers → regions → countries."""
+async def _engine_with_relationship_chain(
+    *, trusted: bool = False,
+) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
+    """Build a YAMLStorage with orders → customers → regions → countries; ``trusted`` marks every relationship trusted."""
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(_ds())
-    await storage.save_dataset(_countries_dataset())
-    await storage.save_dataset(_regions_dataset())
-    await storage.save_dataset(_customers_dataset())
-    await storage.save_dataset(_orders_dataset())
+    for dataset in (_countries_dataset(), _regions_dataset(), _customers_dataset(), _orders_dataset()):
+        await storage.save_dataset(trusting(dataset) if trusted else dataset)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
 
@@ -627,7 +628,7 @@ class TestNonVirtualModel:
         """A single-stage table-backed query with the multi-hop dim
         (which already works today) must continue to work — no
         regression. Pin the join-walk SQL shape."""
-        engine, tmp = await _engine_with_relationship_chain()
+        engine, tmp = await _engine_with_relationship_chain(trusted=True)
         try:
             single = SlayerQuery.model_validate({
                 "population": "orders",

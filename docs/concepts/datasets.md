@@ -423,6 +423,27 @@ Detection full-scans each side of the relationship and reports the observed arit
 
 A side with no non-null key rows reports `no_evidence` and detects nothing: an empty scan would trivially look unique, and that is not weak evidence — it is none. Re-run once the table has data. A relationship whose scan fails outright reports `scan_failed` and does not stop the rest of the report. Full verdict table: [CLI reference](../reference/cli.md#slayer-validate-datasets).
 
+### Trusted relationships
+
+Declared cardinality and keys decide which paths exist and what a dataset determines; they never change a value. If the data violates a declaration (say a `customers` row appears twice), each `orders` row still counts once in each group it matches, as Ossie defines. SLayer de-duplicates across the hop by reading the target through a `SELECT DISTINCT` of the keys and the values the query groups by. An aggregate input read across the hop (`wsum(orders.amount, weight=customers.weight)`) gets one of the matching values; `to_many_handling: "error"` refuses it.
+
+A hop is **trusted**, and joined directly without de-duplication, when any of these holds:
+
+- its relationship sets `trusted: true`;
+- its target key is listed in the target's `enforced_keys`, the declared keys the database enforces;
+- its target key is unique by construction: a stage's grain, the time spine, or a list element's own parent row.
+
+```yaml
+relationships:
+  - to: customers
+    from_columns: ["customer_id"]
+    to_columns: ["id"]
+    cardinality: many_to_one
+    trusted: true             # the data never repeats a customer; skip de-duplication
+```
+
+On data that satisfies the declarations, trusted and untrusted hops return the same values. On data that violates a trusted relationship, the result is undefined. `trusted` covers every orientation of the relationship that is provably to-one, and has no effect on a relationship with none. Ingestion records `enforced_keys` from primary and unique constraints on databases that enforce them (Postgres, MySQL/MariaDB, SQLite, SQL Server, Oracle, DuckDB), never on Snowflake, BigQuery, Redshift, Databricks, ClickHouse or Trino. An enforced key must name the dataset's primary key or a unique field of a table-backed dataset. Saving a dataset with a different source drops its enforced keys. Models stored before 2.0 upgrade with `trusted: true` on every relationship, so their results do not change.
+
 `validate-datasets` also prints a **Join safety** section with one finding per declared edge, reporting the provability of **both orientations**; an edge neither declared `many_to_one`/`one_to_one` nor structurally proven (via a primary/unique key on the target side) is flagged as a warning — dimensions across such a relationship are [associated](queries.md#cross-dataset-metrics) rather than partitioning the rows, and aggregation inputs across it are refused, so each finding names the remedy.
 
 ### Path-based table aliases

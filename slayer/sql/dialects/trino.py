@@ -68,6 +68,7 @@ def _presto_path(path: JsonPath) -> str:
 
 class PrestoFamilyDialect(SqlDialect):
     """Grammar and portable library shared by Trino, Presto and Athena."""
+    enforces_unique_keys: ClassVar[bool] = False
 
     sqlglot_name: str = "presto"
     array_cast_types: ClassVar[bool] = True
@@ -228,6 +229,7 @@ class PrestoFamilyDialect(SqlDialect):
 
 
 class TrinoDialect(PrestoFamilyDialect):
+    enforces_unique_keys: ClassVar[bool] = False
     sqlglot_name: str = "trino"
     decimal_text_exponent: ClassVar[bool] = False
     number_cast_rounds: ClassVar[bool] = True

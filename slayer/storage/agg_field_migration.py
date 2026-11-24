@@ -1,4 +1,4 @@
-"""SlayerModel v29: ``AGG`` is refused in a field's Mode-B expression, so a stored one reads its argument
+"""SlayerModel v30: ``AGG`` is refused in a field's Mode-B expression, so a stored one reads its argument
 (``AGG(x)`` → ``x``), as it ran before, with a warning. Mode-A text is left as written."""
 
 import logging
@@ -54,4 +54,4 @@ def upgrade_dataset(data: dict) -> dict:
     return data
 
 
-register_migration(entity="SlayerModel", source_version=28, stored_only=True)(upgrade_dataset)
+register_migration(entity="SlayerModel", source_version=29, stored_only=True)(upgrade_dataset)

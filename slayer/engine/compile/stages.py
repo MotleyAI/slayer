@@ -75,6 +75,10 @@ from slayer.engine.cardinality.relationship_safety import (
     reroot_from_root,
     shared_relationship_key_reroot,
     undetermined_witness,
+    is_untrusted_hop,
+    mixes_untrusted_branch,
+    untrusted_branch,
+    refuse_untrusted_inputs,
     safe_reachable,
 )
 from slayer.core.query import (
@@ -88,6 +92,7 @@ from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import DatasetScope, PassThrough, StageField, StageSchema, host_dataset_name
 from slayer.engine.elaborate_env import (
+    consumer_roots,
     check_reserved_regroup_prefix,
     ConsumerPosition,
     row_refs_off_grain,
@@ -162,7 +167,7 @@ from slayer.engine.compile.spine import (
     check_axis_rebucket, check_off_spine_order_keys, host_mask, is_spine_bound, plan_spine, shifted_spine_bounds,
     spine_field,
 )
-from slayer.engine.compile.shift import carried_placeholders
+from slayer.engine.compile.shift import carried_placeholders, is_placeholder
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.stage_edges import inherited_edges, pass_through
 from slayer.engine.key_metadata import (
@@ -1348,6 +1353,13 @@ def _attaches_carrying(
     return out
 
 
+def _placeholders_read(prebound: PreboundQuery) -> List[ValueKey]:
+    """The regroup placeholders ``prebound``'s metrics, filters and ordering read."""
+    roots = [*(dm.bound.value_key for dm in prebound.declared_metrics), *(bf.value_key for bf in prebound.bound_filters),
+             *(sp.bound.value_key for sp in prebound.order_specs)]
+    return list(dict.fromkeys(k for r in roots for k in walk_value_keys(r) if is_placeholder(k)))
+
+
 def _shifted_producer_grain(
     *, answer: ValueKey, resolved: ValueKey, axis: TimeTruncKey, grain: List[ValueKey],
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
@@ -1476,6 +1488,7 @@ def _path_edges_exist(
 def _register_hop(
     nodes: Dict[Tuple[str, ...], SemiJoinHop], *, node_path: Tuple[str, ...],
     target_dataset: str, keys: List[Tuple[DatasetField, DatasetField]], declared_left: bool, lateral: Optional[str] = None,
+    untrusted: bool = False,
 ) -> None:
     nodes.setdefault(node_path, SemiJoinHop(
         to=target_dataset,
@@ -1483,6 +1496,7 @@ def _register_hop(
         node_path=node_path,
         declared_left=declared_left,
         lateral=lateral,
+        untrusted=untrusted,
     ))
 
 
@@ -1518,6 +1532,7 @@ def _forward_hops(
             keys=relationship_key_fields(edge=edge, source=datasets[edge.source_dataset], target=datasets[edge.to]),
             declared_left=edge.join_type == JoinType.LEFT,
             lateral=_forward_lateral(edge),
+            untrusted=is_untrusted_hop(edge=edge, target=datasets[edge.to]),
         )
     return node_path
 
@@ -1842,7 +1857,10 @@ def _conjunct_disposition(
             host_dataset=host_dataset, host_name=host_name,
         )
 
-    if all(_attributable(r) for r in refs):
+    mixed = not target_path and mixes_untrusted_branch(
+        cj, root_dataset=root_dataset, host_dataset=host_dataset, bundle=bundle)
+    attributable = all(_attributable(r) for r in refs)
+    if not mixed and attributable:
         rerooted = reroot_from_root(
             cj, target_path=target_path, root_dataset=root_dataset,
             datasets_by_name=datasets_by_name, host_name=host_name,
@@ -1867,7 +1885,8 @@ def _conjunct_disposition(
         host_dataset=host_dataset, datasets_by_name=datasets_by_name,
         bundle=bundle, host_name=host_name,
     )
-    return None, (key_rewritten, display, nodes, rejects)
+    # Pushed only for an untrusted to-one branch: unwarned, as a dimension mixing one associates unwarned.
+    return None, (key_rewritten, None if attributable else display, nodes, rejects)
 
 
 class _DisposedConjunct(BaseModel):
@@ -1883,6 +1902,8 @@ class _DisposedConjunct(BaseModel):
     disposition: Literal["inline", "semi_join"]
     fanning_paths: Tuple[Tuple[str, ...], ...] = ()
     push: Optional[_Push] = None
+    #: Pushed only for mixing an untrusted to-one branch with other reads; no path fans out.
+    untrusted_only: bool = False
 
 
 class PopulationFilters(BaseModel):
@@ -2001,13 +2022,10 @@ def _dispose_one_conjunct(
         key=cj, anchor_dataset=host_dataset,
         anchor_relation=host_dataset.name, bundle=bundle,
     ) or ()
-    fanning = tuple(
-        _canonical_path(p, root=host_dataset, datasets_by_name=datasets_by_name)
-        for p in closure
-        if p and not safe_reachable(
-            root=host_dataset, path=p, datasets_by_name=datasets_by_name,
-        )
-    )
+    unsafe = [p for p in closure if p and not safe_reachable(root=host_dataset, path=p, datasets_by_name=datasets_by_name)]
+    untrusted = [p for p in closure if p and p not in unsafe
+                 and untrusted_branch(root=host_dataset, path=p, datasets_by_name=datasets_by_name) is not None]
+    fanning = tuple(_canonical_path(p, root=host_dataset, datasets_by_name=datasets_by_name) for p in [*unsafe, *untrusted])
     if inline_bf is not None:
         disposition: Literal["inline", "semi_join"] = "inline"
         push = None
@@ -2017,7 +2035,7 @@ def _dispose_one_conjunct(
         inline_bf = bound_filter_from_key(cj)
     return _DisposedConjunct(
         conjunct=cj, inline_bf=inline_bf, text=text, is_date_range=is_date,
-        disposition=disposition, fanning_paths=fanning, push=push,
+        disposition=disposition, fanning_paths=fanning, push=push, untrusted_only=not unsafe,
     )
 
 
@@ -2272,8 +2290,9 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     context: _ProducerSynthesisContext,
     declared_type: Optional[DataType] = None,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
+    available_attaches: Sequence[RegroupAttachPlan] = (),
 ) -> RegroupAttachPlan:
-    """Build one target-rooted regroup producer for a cross-dataset aggregate: root at its source, compute at the fan-out-safe grain subset, broadcast the rest."""
+    """Build one target-rooted regroup producer for a cross-dataset aggregate: root at its source, compute at the fan-out-safe grain subset, broadcast the rest; ``available_attaches`` produce placeholders its grain may read."""
     prebound, bundle = context.prebound, context.bundle
     host_dataset, datasets_by_name = context.host_dataset, context.datasets_by_name
     projected_dim_keys = context.projected_dim_keys
@@ -2355,6 +2374,8 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     # Safe grain S (attributable from R) vs unattributable.
     safe_pairs: List[Tuple[ValueKey, ValueKey]] = []  # (host_key, rerooted_key)
     unattributable: List[_UnattributableDim] = []
+    # Attributable members mixing an untrusted to-one branch with other reads: associated, never warned.
+    untrusted_mixed: List[_UnattributableDim] = []
     unreadable = False
     for g in requested:
         shared = shared_relationship_key_reroot(
@@ -2367,7 +2388,11 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             safe_pairs.append((g, shared))
         elif g_home is not None and attributable_at_home(g_home):
             check_axis_rebucket(host_key=g, rerooted=g_home, host=host_dataset, root=root_dataset, bundle=bundle)
-            safe_pairs.append((g, g_home))
+            if mixes_untrusted_branch(g_home, root_dataset=home, host_dataset=home, bundle=home_bundle):
+                untrusted_mixed.append(_UnattributableDim(
+                    key=g, name=context.dim_display(g), reason="", routed=g_home))
+            else:
+                safe_pairs.append((g, g_home))
         else:
             unreadable = unreadable or g_home is None
             unattributable.append(_UnattributableDim(
@@ -2422,12 +2447,15 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
                 key=active_td, name=context.dim_display(active_td), reason=broadcast_reason_at_home(td_home),
                 routed=td_home,
             ))
-    # Association only when a DIMENSION is unattributable; attached inputs never need it.
-    associate = policy.associates and bool(unattributable) and not product_associate
+    # Association only when a DIMENSION is unattributable or mixes an untrusted branch; attached inputs never need it.
+    associate = not product_associate and (
+        (policy.associates and bool(unattributable)) or (bool(untrusted_mixed) and not unattributable))
+    if not associate:
+        safe_pairs = [*safe_pairs, *((u.key, u.routed) for u in untrusted_mixed)]
     entity: Optional[_AssociationEntity] = None
     if associate:
         entity = _association_entity(
-            root_dataset=root_dataset, target_path=(), unattributable=unattributable,
+            root_dataset=root_dataset, target_path=(), unattributable=[*unattributable, *untrusted_mixed],
             host_dataset=home, datasets_by_name=home_datasets, bundle=bundle,
         )
     window_td_key: Optional[TimeTruncKey] = None
@@ -2463,7 +2491,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
             root_dataset=root_dataset, datasets_by_name=home_datasets,
             host_dataset=home, bundle=home_bundle,
         )
-        associated_metric = None if explicit else alias
+        associated_metric = None if explicit or not unattributable else alias
         associated_dimensions = (
             [] if explicit else [u.name for u in unattributable]
         )
@@ -2556,6 +2584,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     decision = _kernel_decision(
         answer=agg_rooted, windowed=window_td_key is not None, associate=associate,
     )
+    read_placeholders = _placeholders_read(producer_prebound)
     producer_plan = compile_synthesized(
         prebound=producer_prebound,
         source_dataset=root_name,
@@ -2565,6 +2594,8 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         population=NoInheritedPopulation(
             reason="target-rooted: re-roots and disposes the inherited filters itself",
         ),
+        carried_attaches=_attaches_carrying(attaches=available_attaches, carried=read_placeholders),
+        reserved_placeholders=frozenset(read_placeholders),
         kernel_answer=_kernel_answer(decision),
     )
     if semi_joins:
@@ -4428,19 +4459,11 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
     cm_phases: List[Tuple[Literal["row", "combined"], List[ValueKey]]] = [
         ("combined", cm_combined), ("row", cm_row),
     ]
-    for phase, cm_aggs in cm_phases:
-        for agg in cm_aggs:
-            assert isinstance(agg, AggregateKey)  # target-rooted roots are aggregates
-            attaches.append(_synthesize_cross_dataset_producer(
-                agg=agg, placeholder=mapping[agg], attach_phase=phase,
-                public_alias=public_alias_by_agg.get(agg),
-                context=synthesis_context, declared_type=cm_type.get(agg),
-                producer_registry=producer_registry,
-            ))
-
+    # Re-aggregations first: a cross-dataset producer's grain may read their placeholders.
+    reagg_attaches: List[RegroupAttachPlan] = []
     # One producer-over-producer per re-aggregation, attached once per phase.
     for root in combined_reaggs:
-        attaches.append(_synthesize_reaggregation_producer(
+        reagg_attaches.append(_synthesize_reaggregation_producer(
             root=root, placeholder=reagg_mapping[root], attach_phase="combined",
             public_alias=public_alias_by_agg.get(root),
             context=synthesis_context,
@@ -4456,7 +4479,7 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
             c=c, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
         )
-        attaches.append(_synthesize_reaggregation_producer(
+        reagg_attaches.append(_synthesize_reaggregation_producer(
             root=c, placeholder=mapping[c], attach_phase="row",
             public_alias=public_alias_by_agg.get(c),
             context=synthesis_context.model_copy(update={
@@ -4473,6 +4496,18 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
             population=population,
             population_semi_join_metrics=routed.constituent_consumers.get(c),
         ))
+
+    for phase, cm_aggs in cm_phases:
+        for agg in cm_aggs:
+            assert isinstance(agg, AggregateKey)  # target-rooted roots are aggregates
+            attaches.append(_synthesize_cross_dataset_producer(
+                agg=agg, placeholder=mapping[agg], attach_phase=phase,
+                public_alias=public_alias_by_agg.get(agg),
+                context=synthesis_context, declared_type=cm_type.get(agg),
+                producer_registry=producer_registry, available_attaches=reagg_attaches,
+            ))
+
+    attaches.extend(reagg_attaches)
 
     # The ROW substitution applies ONLY to computed DIMENSIONS; a non-dim metric
     # keeps query-grain (its inners desugar to COMBINED placeholders) — EXCEPT a
@@ -4597,6 +4632,11 @@ def _route_top_level(
         prebound=prebound, filter_typings=filter_typings, scope=scope, bundle=bundle,
     ))
     stripped, homes = _strip_redundant_partitions(env)
+    if prebound.mode_policy.refuses:
+        refuse_untrusted_inputs(roots=[r.key for r in consumer_roots(
+            declared_metrics=prebound.declared_metrics, order_specs=prebound.order_specs,
+            bound_filters=prebound.bound_filters, metric_typed=frozenset(),
+        )], host=scope.population, bundle=bundle, homes=homes)
     supply = bundle.row_supply
     dispositions = discover_roots(
         stripped, filter_typings=filter_typings, scope=scope, bundle=bundle, homes=homes,
@@ -4946,13 +4986,11 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         # Backstop (D6): with a plain aggregate inline over the population, a
         # fanning conjunct always takes the EXISTS — its fanning dimension is
         # routed to a producer, never materialised on the base grain.
-        n_semi = sum(
-            1 for dc in population_filters.conjuncts
-            if dc.disposition == "semi_join"
-        )
+        fanning_semi = [dc.conjunct for dc in population_filters.conjuncts
+                        if dc.disposition == "semi_join" and not dc.untrusted_only]
         assert not (
             _has_inline_population_aggregate(prebound, homes=routed.homes)
-            and len(pushed_conjunct_keys) < n_semi
+            and any(k not in pushed_conjunct_keys for k in fanning_semi)
         ), "a spine-covered fanning mask coexists with an inline plain aggregate"
         host_population_gated = bool(pop_semi_join_groups)
     # An inferred spine stage with no other dimensions lists every bucket: its filters restrict the homes only.

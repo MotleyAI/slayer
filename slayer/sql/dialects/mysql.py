@@ -125,6 +125,7 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
 
 
 class MysqlDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "mysql"
     varchar_cast_truncates: ClassVar[bool] = True
     unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
@@ -455,6 +456,7 @@ class MariadbDialect(MysqlDialect):
     ``TRY_CAST`` (so text-to-number coercion) and ``json_value`` are refused: MariaDB has no
     ``REGEXP_LIKE``, shorter ``REGEXP_SUBSTR`` / ``REGEXP_REPLACE``, and reads JSON booleans as 1 / 0
     (lowerings: DEV-1975)."""
+    enforces_unique_keys: ClassVar[bool] = True
 
     ds_type_aliases: frozenset[str] = frozenset({"mariadb"})
     database_name: ClassVar[str] = "MariaDB"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
@@ -11,6 +13,7 @@ from slayer.sql.dialects.base import SqlDialect
 
 class OssieDialect(SqlDialect):
     """Writes ``OSSIE_SQL_2026`` metric expressions."""
+    enforces_unique_keys: ClassVar[bool] = False
 
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,

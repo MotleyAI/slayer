@@ -195,6 +195,7 @@ def _bit_value(predicate: Expr) -> Expression:
 
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "tsql"
     decimal_text_exponent: ClassVar[bool] = False
     native_lists: ClassVar[bool] = False

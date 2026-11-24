@@ -711,6 +711,16 @@ class DefaultTimeDimensionTypeError(SlayerError):
         )
 
 
+class EnforcedKeyError(SlayerError):
+    """A dataset records an enforced key that is not one of its declared keys, or carries enforced keys over a
+    source other than a table."""
+
+    def __init__(self, *, dataset: str, key: List[str], reason: str) -> None:
+        self.dataset = dataset
+        self.key = list(key)
+        super().__init__(f"Dataset {dataset!r}: enforced key {list(key)} {reason}.")
+
+
 class DuplicateMetricNameError(NameCollisionError):
     """Two metrics in one query declare the same explicit ``name``."""
 

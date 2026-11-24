@@ -240,6 +240,7 @@ _CH_ADD_FUNCTIONS = {
 
 
 class ClickhouseDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = False
     sqlglot_name: str = "clickhouse"
     array_cast_types: ClassVar[bool] = True
     unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({

@@ -9,7 +9,11 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
-from tests._dev2210_fixtures import render
+from slayer.core.query import SlayerQuery
+from slayer.engine.plan import plan_query
+from slayer.sql.generator import SQLGenerator
+from tests._dev2210_fixtures import bundle, table_datasets
+from tests._trusted import trusting_all
 
 DIALECTS = ["postgres", "duckdb", "sqlite", "clickhouse", "bigquery", "tsql", "trino", "mysql", "snowflake"]
 
@@ -24,8 +28,17 @@ SHAPES: dict[str, dict[str, Any]] = {
 }
 
 
+def _render(query: dict[str, Any], *, dialect: str, force_association: bool = False) -> str:
+    """``render`` over trusted fixture datasets: these pins describe the inline-join lowering of trusted hops."""
+    q = SlayerQuery.model_validate(query)
+    assert isinstance(q.population, str)
+    b = bundle(q.population, dialect=dialect, datasets=trusting_all(table_datasets()))
+    gen = SQLGenerator(dialect=dialect, force_association_filters=force_association)
+    return gen.generate_from_planned(plan_query(query=q, bundle=b), bundle=b)
+
+
 def _tree(shape: str, dialect: str) -> Expr:
-    sql = render(SHAPES[shape], dialect=dialect, force_association=shape == "forced-association")
+    sql = _render(SHAPES[shape], dialect=dialect, force_association=shape == "forced-association")
     statements = sqlglot.parse(sql, read=dialect)
     assert len(statements) == 1, sql
     assert statements[0] is not None, sql

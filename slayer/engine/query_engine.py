@@ -2884,8 +2884,10 @@ class SlayerQueryEngine:
         remove_relationships: Optional[List[str]] = None,
         remove_filters: Optional[List[str]] = None,
         remove_relationship_edges: Optional[List[RelationshipEdgeRef]] = None,
+        remove_enforced_keys: Optional[List[List[str]]] = None,
     ) -> SlayerDataset:
-        """Apply surgical removals (by name; relationships by edge reference or exact ref; filters verbatim) to a persisted dataset."""
+        """Apply surgical removals (by name; relationships by edge reference or exact ref; filters verbatim; enforced
+        key sets) to a persisted dataset."""
         existing = await self.storage.get_dataset(dataset_name, data_source=data_source)
         if existing is None:
             raise ValueError(
@@ -2914,6 +2916,9 @@ class SlayerQueryEngine:
         new_aggs = [a for a in existing.aggregations if a.name not in aggs_to_remove]
         new_relationships = without_relationships(dataset=existing, relationships=relationships_to_remove)
         new_filters = [f for f in existing.filters if f not in filters_to_remove]
+        keys_to_remove = [sorted(k) for k in remove_enforced_keys or []]
+        kept_names = {c.name for c in new_fields}
+        new_enforced = [k for k in existing.enforced_keys if sorted(k) not in keys_to_remove and set(k) <= kept_names]
 
         updated = existing.model_copy(
             update={
@@ -2922,6 +2927,7 @@ class SlayerQueryEngine:
                 "aggregations": new_aggs,
                 "relationships": new_relationships,
                 "filters": new_filters,
+                "enforced_keys": new_enforced,
             }
         )
         SlayerDataset.model_validate(updated.model_dump())
@@ -2991,6 +2997,7 @@ class SlayerQueryEngine:
                         remove_relationships=list(entry.remove.relationships),
                         remove_filters=list(entry.remove_filters),
                         remove_relationship_edges=list(entry.remove.relationship_edges),
+                        remove_enforced_keys=list(entry.remove.enforced_keys),
                     )
                 else:
                     raise ValueError(f"Unknown delete tool: {entry.tool!r}")

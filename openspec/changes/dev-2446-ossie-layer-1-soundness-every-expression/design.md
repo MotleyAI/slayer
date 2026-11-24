@@ -42,7 +42,7 @@ Principles that bind the work: semantics §4.2.1, §4.2.2, §4.4; system §3.8 (
 ## Decisions
 
 1. **Non-integral number → integer or decimal casts round half away from zero; floating-point ties are the database's own** (user). Ossie's CAST section names target types only; ANSI SQL:2003 leaves round-vs-truncate implementation-defined. Half away from zero is the one rounding rule Ossie fixes (`ROUND`'s ties) and DuckDB/Snowflake/BigQuery/Trino/Postgres-NUMERIC's native rule. Rejected: truncation (SQLite/SQL Server/ClickHouse native) — against the majority, and makes `DECIMAL(p, 0)` and `INT` casts of one value disagree.
-2. **Stored `AGG(x)` field expressions convert on load (`AGG(x)` → `x`) with a logged warning; fresh input is refused** (default). Refusing on load breaks stored data that runs today; 2.0's policy is upgrade paths, never removals. Converting keeps today's value and the result is valid Ossie. The SlayerModel v29 migration unwraps only `AGG(`; a pre-v20 `agg(` was already rewritten to `agg_aggregation(` by v20 and is left alone.
+2. **Stored `AGG(x)` field expressions convert on load (`AGG(x)` → `x`) with a logged warning; fresh input is refused** (default). Refusing on load breaks stored data that runs today; 2.0's policy is upgrade paths, never removals. Converting keeps today's value and the result is valid Ossie. The SlayerModel v30 migration unwraps only `AGG(`; a pre-v20 `agg(` was already rewritten to `agg_aggregation(` by v20 and is left alone.
 3. **Every Tier-1 dialect, not only DuckDB and SQLite** (default): semantics §4.2.1 and the issue title. Verified live on SQLite, DuckDB, Postgres; MySQL/ClickHouse/SQL Server/Trino in their integration suites; emission only for Snowflake/BigQuery.
 4. **`TRY_CAST` follows `CAST`** (user): `TRY_CAST(x AS T)` is `CAST(x AS T)` where that cast converts, else NULL; text-input rules unchanged.
 5. **Three `TRY_CAST` test alignments approved** (user): `tests/_cast_fixtures.py` `TRY_CAST_TARGET_CASES` (`CAST(1.5 AS DOUBLE)`→INT and `1.5`→INT become 2); `tests/test_try_cast_integer_targets.py` `test_fractional_double_column` → `{1: 1, 2: 2, 3: 2, 4: 3, 5: 1}` and the JSON `{"v": 1.5}` → SMALLINT case → 2.
@@ -57,7 +57,7 @@ Principles that bind the work: semantics §4.2.1, §4.2.2, §4.4; system §3.8 (
 14. **DEV-2220's "strict xfails" do not exist on main** (verified by search); the REQUIRED-construct table replaces them (default).
 15. **The REQUIRED-construct table is the class guard** (default).
 16. **AGG in query positions stays a native extension** — rejected (codex): Ossie leaves query-position expressions undefined (§4.4 permits an extension there); strict already refuses `AGG` in its filter.
-17. **Migration-chain tests for v29** (codex): from before v20 (stays `agg_aggregation(…)`), from v20–28 (unwrapped), and with a custom `agg` aggregation.
+17. **Migration-chain tests for v30** (codex): from before v20 (stays `agg_aggregation(…)`), from v20–29 (unwrapped), and with a custom `agg` aggregation.
 18. **Author casts get their own lowering path** (codex): a dedicated author-cast hook, called only from the render of an author's `CAST` / `TRY_CAST` (`render_cast` in `slayer/sql/render/row_expr.py`); `build_cast` / `build_try_cast` as used by JSON reads, list coercion and other internal sites keep their meaning. Regression tests for declared boolean result casts, aggregate boolean restoration, `read_column`, JSON `RETURNING` of text, list element coercion and temporal comparisons.
 19. **Integer `TRY_CAST` sequence** (codex): NULL passes → round half away from zero → range check on the rounded value → native cast guarded inside the `CASE` so constant folding never sees an overflowing cast. Tests at ± half a unit around each signed bound, narrow integers, BIGINT, NaN/infinity where the dialect has them, ClickHouse `Nullable`.
 20. **BOOLEAN result contract** (codex): a nullable logical boolean in the dialect's own representation (integer 1/0 on SQLite, MySQL, ClickHouse; `BIT` on SQL Server); existing boolean-as-int restoration at output and aggregation boundaries is kept. Tests for NULL, zero, negative, decimal, filter truth, `= TRUE`, dimension output and aggregate input on ClickHouse, MySQL and SQL Server.
@@ -80,4 +80,4 @@ Principles that bind the work: semantics §4.2.1, §4.2.2, §4.4; system §3.8 (
 
 ## Migration Plan
 
-SlayerModel v28 → v29 (`AGG(x)` in a field's Mode-B expression unwrapped, logged warning). No rollback beyond the usual: a v29 store is read by this release onward.
+SlayerModel v29 → v30 (`AGG(x)` in a field's Mode-B expression unwrapped, logged warning). No rollback beyond the usual: a v30 store is read by this release onward.

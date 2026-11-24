@@ -27,5 +27,5 @@ _None._
 
 ## Impact
 
-- `slayer/sql/dialects/` (author-cast and two-argument `round` lowering per Tier-1 dialect; SQLite UDFs), `slayer/sql/render/row_expr.py` (author-cast render path), `slayer/core/keys.py` (Ossie argument counts), `slayer/core/ossie_conformance.py` (strict judgement), the dataset save path and binding (`AGG` in fields), `slayer/storage/` (SlayerModel v29 migration).
+- `slayer/sql/dialects/` (author-cast and two-argument `round` lowering per Tier-1 dialect; SQLite UDFs), `slayer/sql/render/row_expr.py` (author-cast render path), `slayer/core/keys.py` (Ossie argument counts), `slayer/core/ossie_conformance.py` (strict judgement), the dataset save path and binding (`AGG` in fields), `slayer/storage/` (SlayerModel v30 migration).
 - Query results change for casts and `round` as listed above; the 2.0 migration guide (`docs/upgrading/2.0.md`) gets a section per break.

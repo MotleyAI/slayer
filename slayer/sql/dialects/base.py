@@ -805,6 +805,8 @@ class SqlDialect(BaseModel):
 
     # Whether NUMERIC/DECIMAL is stored exactly (False: SQLite's numeric affinity).
     exact_decimal_native: bool = True
+    #: The database enforces primary-key and unique constraints (every dialect states it).
+    enforces_unique_keys: ClassVar[bool]
 
     # ``AVG`` over integers returns a truncated integer, so a non-DOUBLE input is read as a float.
     integer_avg: bool = False

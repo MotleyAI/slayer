@@ -359,7 +359,7 @@ def dataset_from_stage_schema(
         "relationships": [*declared, *(e.as_relationship() for e in schema.inherited_edges)],
         "filters": list(saved.filters) if saved is not None else [],
     }).with_spelling(schema.display_name if schema.display_name != name else None).with_restricted_rows(
-        schema.restricted)
+        schema.restricted).with_constructed_keys([grain])
     return absorb_inherited({name: out})[name] if schema.inherited_edges else out
 
 
