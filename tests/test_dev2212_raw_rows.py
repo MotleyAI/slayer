@@ -145,7 +145,7 @@ async def test_a_time_dimension_across_a_fanning_hop_is_refused(backend: str) ->
 
 
 async def test_a_homeless_time_dimension_keeps_its_own_error(backend: str) -> None:
-    td = {"field": "orders.ordered_at + returns.amount", "alias": "t", "granularity": "month"}
+    td = {"field": "case when returns.amount > 0 then orders.ordered_at end", "alias": "t", "granularity": "month"}
     async with seed_engine(backend) as eng:
         with pytest.raises(UnsafeRelationshipInputError):
             await _raw(eng, "customers", time_dimensions=[td])
@@ -168,12 +168,14 @@ async def test_an_unknown_cardinality_hop_under_a_named_population_is_refused(ba
     _names(exc, entry=R, hop="customers")
 
 
-async def test_a_derived_field_crossing_an_unproven_hop_is_refused_through_its_closure(backend: str) -> None:
-    cust_region = DatasetField(name="cust_region", datatype=DataType.STRING, expression="customers.region")
-    async with seed_engine(backend, datasets=_unproven_datasets(cust_region)) as eng:
+async def test_a_derived_field_crossing_a_fanning_hop_is_refused_through_its_closure(backend: str) -> None:
+    order_amount = DatasetField(name="order_amount", datatype=DataType.FLOAT, expression="orders.amount")
+    customers = customers_dataset()
+    customers = customers.model_copy(update={"fields": [*customers.fields, order_amount]})
+    async with seed_engine(backend, datasets=seed_datasets(customers=customers)) as eng:
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await _raw(eng, "orders", dimensions=["orders.cust_region"])
-    _names(exc, entry="orders.cust_region", hop="customers")
+            await _raw(eng, "customers", dimensions=["customers.order_amount"])
+    _names(exc, entry="customers.order_amount", hop="orders")
 
 
 async def test_a_derived_field_local_to_the_population_is_accepted(backend: str) -> None:

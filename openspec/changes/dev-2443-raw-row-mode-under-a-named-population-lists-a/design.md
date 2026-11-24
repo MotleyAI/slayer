@@ -37,25 +37,25 @@ enforcing test file `tests/test_dev2212_raw_rows.py` receives the new tests. The
 2. **Determination walked from the population, through dependency closures** (default). Each row leaf of every
    dimension and time dimension is closed under derived-field definitions (P10) and every closure path must be
    `safe_reachable` from the population itself — not from the expression's anchor. The first unsafe hop is named.
-   Generalise the crossing helper in `population/home.py` to take the root it walks from rather than duplicating it.
+   The crossing helper in `population/home.py` walks from the population.
 3. **Unknown-cardinality hops are refused** (default). Axiom 12.5 says "provably determined"; inferred raw rows
    already refuse them, so named and inferred agree.
 4. **Error type `DistinctDimensionValuesError`** (default). The condition exists only in raw-row mode — the same
    dimension is legal grouped — and raw-row refusals already use this type. Its docstring widens to cover it. The
-   check function lives in `elaborate_env.py` (P9), called from `bind_inputs.py` for dimensions and time dimensions.
+   check function lives in `elaborate_env.py` (P9), called from `elaborate.py` for dimensions and time dimensions, after the Axiom 2.2 home check.
 5. **List children, time dimensions, derived-field closures and stage populations included** (default) — the same bug
    class, cut off by the same rule.
 6. **Filters out of scope** (default) — see Non-Goals.
 7. **Precedence: the Axiom 2.2 homeless-expression error first** (codex, user). Codex proposed running the raw-row
    check first so the error is always `DistinctDimensionValuesError`; taken with the opposite precedence: an
-   expression no dataset determines is illegal in every mode, so `check_time_dimension_home`'s
-   `UnsafeRelationshipInputError` (and DEV-2430's Axiom 2.2 check) stays first and the raw-row rule applies only to
+   expression no dataset determines is illegal in every mode, so the Axiom 2.2 home check's
+   `UnsafeRelationshipInputError` (`check_row_expression_home`) stays first and the raw-row rule applies only to
    homed entries. A test pins the precedence.
 8. **Raise-site ledger row** (codex). The new `raise` in `elaborate_env.py` gets its row in
    `tests/_dev1871_raise_ledger.py` so `test_dev1871_raise_parity.py` stays green.
 9. **Unanalysable closure fails closed with `UnanalyzableDependencyError`** (codex). When `key_closure` returns
-   `None` there is no hop to name; per P10 the entry is unsafe, raised through the existing
-   `check_input_dependencies_analyzable` path as the time-dimension home check does.
+   `None` there is no hop to name; per P10 the entry is unsafe, raised by
+   `check_entry_dependencies_analyzable`, located at the entry.
 10. **Inferred-precedence regression** (codex). Tests pin that inferred counterparts (computed, time dimension, list
     child) still raise `PopulationInferenceError` before binding.
 11. **Ownership-boundary control** (codex). A derived field local to the population stays accepted in raw rows,

@@ -7,8 +7,8 @@
 
 ## 2. Implementation (pr-implement)
 
-- [x] 2.1 Generalise the closure-crossing helper in `slayer/engine/population/home.py` to walk from a given root (the population) as well as from the expression's anchor; verify the existing time-dimension home tests still pass.
-- [x] 2.2 Add the raw-row determination rule to `slayer/engine/elaborate_env.py` (raises `DistinctDimensionValuesError` naming entry + hop; unanalysable → `check_input_dependencies_analyzable`), and call it from `slayer/engine/bind_inputs.py` for every dimension and time dimension when `distinct_dimension_values` is false, after `check_time_dimension_home`; verify tasks 1.1–1.3 pass.
+- [x] 2.1 Add a closure-crossing helper to `slayer/engine/population/home.py` that walks from the population.
+- [x] 2.2 Add the raw-row determination rule to `slayer/engine/elaborate_env.py` (raises `DistinctDimensionValuesError` naming entry + hop; unanalysable → `check_input_dependencies_analyzable`), and call it from `slayer/engine/elaborate.py` for every dimension and time dimension when `distinct_dimension_values` is false, after the Axiom 2.2 home check; verify tasks 1.1–1.3 pass.
 - [x] 2.3 Add the new raise site's row to `tests/_dev1871_raise_ledger.py`; verify `tests/test_dev1871_raise_parity.py` passes.
 - [x] 2.4 Widen the `DistinctDimensionValuesError` docstring in `slayer/core/errors.py` (concise).
 

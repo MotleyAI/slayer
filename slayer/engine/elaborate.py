@@ -79,9 +79,7 @@ def elaborate_query(
         _check_product_hops(prebound, filter_typings=filter_typings, sides=sides,
                             product_anchor=bundle.row_supply is not None and bundle.row_supply.product)
     if scope.population is not None:
-        _check_row_expression_homes(prebound, host=scope.population, bundle=bundle)
-        if not query.distinct_dimension_values:
-            _check_raw_rows_determined(prebound, scope=scope, population=scope.population, bundle=bundle)
+        _check_population_entries(prebound, query=query, scope=scope, population=scope.population, bundle=bundle)
     check_combined_partition_keys(
         prebound, filter_typings=filter_typings,
         order_texts=[o.raw_expression or o.field for o in query.order or []],
@@ -145,6 +143,16 @@ def _check_row_expression_homes(prebound: PreboundQuery, *, host: SlayerDataset,
             key=key, host_dataset=host, bundle=bundle,
             dim_keys=dim_keys, td_keys=td_keys, active_bucket=prebound.main_time_key,
         ))
+
+
+def _check_population_entries(
+    prebound: PreboundQuery, *, query: SlayerQuery, scope: DatasetScope, population: SlayerDataset,
+    bundle: ResolvedSourceBundle,
+) -> None:
+    """Every entry has a home (Axiom 2.2) and, in raw rows, the population determines it (Axiom 12.5)."""
+    _check_row_expression_homes(prebound, host=population, bundle=bundle)
+    if not query.distinct_dimension_values:
+        _check_raw_rows_determined(prebound, scope=scope, population=population, bundle=bundle)
 
 
 def _check_raw_rows_determined(

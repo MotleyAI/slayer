@@ -45,10 +45,10 @@ population without multiplying it (Grain guarantee).
   from `orders` selects `customers.region`
 - **THEN** it fails with `DistinctDimensionValuesError` naming `customers.region` and the hop `customers`
 
-#### Scenario: A derived field crossing an unproven hop is refused through its closure
-- **WHEN** `orders` joins `customers` with no declared cardinality, `orders` declares the derived field
-  `cust_region` defined as `customers.region`, and a raw-row query from `orders` selects `orders.cust_region`
-- **THEN** it fails with `DistinctDimensionValuesError` naming `orders.cust_region` and the hop `customers`
+#### Scenario: A derived field crossing a fanning hop is refused through its closure
+- **WHEN** `customers` declares the derived field `order_amount` defined as `orders.amount`, and a raw-row query
+  from `customers` selects `customers.order_amount`
+- **THEN** it fails with `DistinctDimensionValuesError` naming `customers.order_amount` and the hop `orders`
 
 #### Scenario: A derived field local to the population is accepted
 - **WHEN** `orders` declares the derived field `double_amount` defined as `amount * 2`, and a raw-row query from
