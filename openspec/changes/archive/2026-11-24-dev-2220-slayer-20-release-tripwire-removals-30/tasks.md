@@ -82,7 +82,8 @@
       comment exists. Opening the upstream PR waits for 2.0.0 on PyPI and the owner's go-ahead.
 - [x] 6.4 Once the 2.0 surface is final, propose the Storyline 2.0 migration issue to the owner (search Linear first);
       file it only on an explicit yes.
-- [ ] 6.5 Tag and publish 2.0.0 only after merge and with the owner's explicit go-ahead.
+- [x] ~~6.5 Tag and publish 2.0.0 only after merge and with the owner's explicit go-ahead.~~ Post-merge step,
+      tracked on DEV-2220, which stays open until 2.0.0 is on PyPI.
 
 ## 8. Review fixes
 
