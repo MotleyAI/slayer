@@ -13,13 +13,13 @@
 
 ## 2. Deprecated forms (pr-implement)
 
-- [ ] 2.1 Partial shims for `slayer.core.formula`, `slayer.engine.syntax`, `slayer.engine.schema_drift` and `slayer.sql.column_expansion`. Each is a module `__getattr__` serving only the listed names through the shared deprecation helper, with the moved `ImportError` for everything else. Extend the tripwire's pinned features (one per name plus the fallback). Verify: 1.8 and the tripwire law pass.
-- [ ] 2.2 1.x formula adapter over `core.syntax.parse_expr`: result classes, `named_measures` expansion, `extra_agg_names`, `ValueError` (cycles included), colon refusal. Verify: the formula tests in 1.3 pass, as do `tests/test_dev2172_one_mode_b_reader.py` and `tests/test_dev2187_one_reader_law.py`.
-- [ ] 2.3 `parse_filter_expr` projection of the 2.0-only node classes onto their 1.8.4 shape, refusing 1.x-refused text. Verify: the filter-walk tests pass.
-- [ ] 2.4 `has_variable_syntax`, `is_base_column_sql`, and the old keywords of `is_identifier` and `resolve_ref_target`. Verify: their tests pass.
-- [ ] 2.5 Drift: old keywords on `diff_sql_table_dataset` (as `diff_sql_table_model`), `compute_datasource_drops` and `retype_findings`; deprecated result attributes (`model_name`, `columns`, `measures`, `join_edges` with 1.x dumps, `column`). Verify: the drift-call tests pass.
-- [ ] 2.6 `DataType` legacy names through a metaclass lookup. Verify: the identity, iteration, `__members__`, pydantic validation/schema, pickle and one-warning tests pass.
-- [ ] 2.7 `TimeDimension` / `OrderItem` accept a column-reference object under `dimension=` / `column=`. Verify: 1.4 passes on all dialects.
+- [x] 2.1 Partial shims for `slayer.core.formula`, `slayer.engine.syntax`, `slayer.engine.schema_drift` and `slayer.sql.column_expansion`. Each is a module `__getattr__` serving only the listed names through the shared deprecation helper, with the moved `ImportError` for everything else. Extend the tripwire's pinned features (one per name plus the fallback). Verify: 1.8 and the tripwire law pass.
+- [x] 2.2 1.x formula adapter over `core.syntax.parse_expr`: result classes, `named_measures` expansion, `extra_agg_names`, `ValueError` (cycles included), colon refusal. Verify: the formula tests in 1.3 pass, as do `tests/test_dev2172_one_mode_b_reader.py` and `tests/test_dev2187_one_reader_law.py`.
+- [x] 2.3 `parse_filter_expr` projection of the 2.0-only node classes onto their 1.8.4 shape, refusing 1.x-refused text. Verify: the filter-walk tests pass.
+- [x] 2.4 `has_variable_syntax`, `is_base_column_sql`, and the old keywords of `is_identifier` and `resolve_ref_target`. Verify: their tests pass.
+- [x] 2.5 Drift: old keywords on `diff_sql_table_dataset` (as `diff_sql_table_model`), `compute_datasource_drops` and `retype_findings`; deprecated result attributes (`model_name`, `columns`, `measures`, `join_edges` with 1.x dumps, `column`). Verify: the drift-call tests pass.
+- [x] 2.6 `DataType` legacy names through a metaclass lookup. Verify: the identity, iteration, `__members__`, pydantic validation/schema, pickle and one-warning tests pass.
+- [x] 2.7 `TimeDimension` / `OrderItem` accept a column-reference object under `dimension=` / `column=`. Verify: 1.4 passes on all dialects.
 
 ## 3. Loads never write, and the upgrade (pr-implement)
 
@@ -31,7 +31,7 @@
 
 ## 4. Drift fix (pr-implement)
 
-- [ ] 4.1 Add the "reads a physical column" predicate. Move every drift and cascade use of `is_physical_reader` onto it, and drop "drift" from `is_physical_reader`'s docstring. Verify: 1.7 passes, and the drift drop set equals 1.8.4's in 1.3.
+- [x] 4.1 Add the "reads a physical column" predicate. Move every drift and cascade use of `is_physical_reader` onto it, and drop "drift" from `is_physical_reader`'s docstring. Verify: 1.7 passes, and the drift drop set equals 1.8.4's in 1.3.
 
 ## 5. Architecture, docs, wrap-up (pr-implement)
 

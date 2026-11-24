@@ -35,6 +35,7 @@ from slayer.core.relationship_walker import (
 from slayer.core.models import DatasetField, SlayerDataset, is_source_qualifier
 from slayer.core.scope import resolve_generated_field
 from slayer.core.syntax import drop_root_hop
+from slayer.core.vocabulary import old_keywords
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.root_scope import root_scope_field_ids
@@ -172,6 +173,7 @@ def reference_sites(
     return sites
 
 
+@old_keywords({"source_model": "source_dataset", "models_by_name": "datasets_by_name"})
 def resolve_ref_target(
     *,
     qualifiers: Tuple[str, ...],

@@ -77,6 +77,7 @@ from slayer.core.syntax import (
     canonical_metric_text,
     dotted_quoting,
     drop_root_qualifier,
+    has_bindings,
     legacy_result_name_seed,
     metric_text_at_path,
     parse_expr,
@@ -2318,8 +2319,17 @@ if TYPE_CHECKING:
     class ModelMeasure(DatasetMetric): ...
 
 
-__getattr__ = name_twins(namespace=globals(), renames={
+_renamed = name_twins(namespace=globals(), renames={
     "ColumnRef": "QueryDimension", "ComputedDimension": "QueryDimension", "ModelExtension": "DatasetExtension",
     "ModelVariables": "DatasetVariables",
     "ModelMeasure": "DatasetMetric",
 })
+
+
+if not TYPE_CHECKING:  # the removed helper stays a static error
+
+    def __getattr__(name: str) -> Any:
+        if name == "has_variable_syntax":
+            vocabulary.deprecated_spelling("slayer.core.query.has_variable_syntax", "slayer.core.syntax.has_bindings")
+            return has_bindings
+        return _renamed(name)

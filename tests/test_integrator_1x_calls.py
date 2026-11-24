@@ -200,7 +200,7 @@ def _dotted(*parts: str) -> list[Any]:
 
 
 def _lit(value: Any) -> list[Any]:
-    return ["Literal", {"value": ["Decimal", value] if isinstance(value, int) else value}]
+    return ["Literal", {"value": ["Decimal", str(value)] if isinstance(value, int) else value}]
 
 
 def _agg(source: list[Any], agg: str, args: list[Any] | None = None, kwargs: list[Any] | None = None) -> list[Any]:
@@ -480,7 +480,8 @@ def test_a_dropped_join_key_reads_its_1x_edge() -> None:
 def test_a_dropped_filter_column_removes_the_filter() -> None:
     [drop] = _drops(_live_orders(drop=("status",)))
     with quiet():
-        assert sorted(drop.remove.columns) == ["status", "status_upper"]
+        # 2.0 value (a field whose filter reads a dropped field is dropped); 1.8.4 kept paid_amount.
+        assert sorted(drop.remove.columns) == ["paid_amount", "status", "status_upper"]
         assert list(drop.remove_filters) == ["status <> 'cancelled'"]
 
 

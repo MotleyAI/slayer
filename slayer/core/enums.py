@@ -2,7 +2,7 @@
 
 import datetime
 import re
-from enum import Enum
+from enum import Enum, EnumType
 from typing import Any, Literal, Optional
 
 
@@ -27,7 +27,21 @@ class TypeKind(StrEnum):
     ARRAY = "ARRAY"
 
 
-class DataType(StrEnum):
+#: The pre-2.0 member names of the four renamed ``DataType`` values; resolved on lookup, never members.
+_PRE_2_0_DATATYPE_NAMES = {"INT": "INTEGER", "DOUBLE": "FLOAT", "TEXT": "STRING", "TIMESTAMP": "DATETIME"}
+
+
+class _DataTypeType(EnumType):
+    def __getattr__(cls, name: str) -> Any:
+        new = _PRE_2_0_DATATYPE_NAMES.get(name)
+        if new is None:
+            raise AttributeError(f"type object {cls.__name__!r} has no attribute {name!r}")
+        from slayer.core import vocabulary  # noqa: PLC0415  # ALLOW(import-not-top): circular — vocabulary imports enums
+        vocabulary.deprecated_spelling(f"DataType.{name}", f"DataType.{new}")
+        return cls[new]
+
+
+class DataType(StrEnum, metaclass=_DataTypeType):
     # No docstring on purpose — it would ship to agents in the MCP query schema.
     # Ossie's datatype names plus Array (a list); the engine reads each through ``kind``.
 
