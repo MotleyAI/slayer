@@ -1,6 +1,6 @@
 ## 1. Tests (pr-tests stage)
 
-- [ ] 1.1 Add no test files: by design decision 2 the verification is this PR's own CI run of `examples.yml` (all
+- [x] 1.1 Add no test files: by design decision 2 the verification is this PR's own CI run of `examples.yml` (all
       five legs). Mark this done in pr-tests with no test diff; pr-implement then follows from tasks 2-5.
 
 ## 2. New examples workflow
@@ -10,7 +10,9 @@
       300) carrying the existing `integration-mysql.yml` `verify-example` steps unchanged except the parameterised
       directory and `--wait-timeout`, with a terse header comment and the general "drivers live inside the image"
       comment; verify it parses (`poetry run python -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" <file>`)
-      and its `on.pull_request.paths` are exactly `Dockerfile`, `examples/**`, `.github/workflows/examples.yml`.
+      and its `on.pull_request.paths` are exactly `Dockerfile`, `examples/**`, `.github/workflows/examples.yml`,
+      and that no step carries `continue-on-error` or an `|| true`, so a failed build / seed / `start.sh` ingest /
+      `slayer serve` startup / `verify.py` still fails the leg.
 - [ ] 2.2 Add `examples/postgres/slayer_data/.gitignore` as a byte copy of `examples/mysql/slayer_data/.gitignore`;
       verify with `cmp` and that `git check-ignore` leaves the `.gitignore` itself tracked.
 
