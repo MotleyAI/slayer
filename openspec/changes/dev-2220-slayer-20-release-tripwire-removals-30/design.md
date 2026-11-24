@@ -10,7 +10,7 @@ deleted rename mapping or a silent conversion goes unnoticed. The vendored Ossie
 REQUIRED Layer 1 cases on DuckDB and SQLite passed 218; its wrong values are DEV-2446's scope, its refusals DEV-2282's.
 
 This slice merges last, after DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430,
-DEV-2443 and DEV-2439.
+DEV-2443, DEV-2439 and DEV-2455 (a fresh install resolves sqlglot ≥ 30.18, under which the demo build fails).
 Its audits run against `main` as it stands once those have merged.
 
 ## Goals / Non-Goals

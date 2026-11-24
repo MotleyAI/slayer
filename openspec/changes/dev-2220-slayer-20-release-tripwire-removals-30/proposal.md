@@ -36,4 +36,5 @@ form found converting without its warning is fixed under the existing compatibil
 - `docs/interfaces/ossie-compliance.md` (new), `docs/upgrading/2.0.md`, `zensical.toml`, README and other docs.
 - New tests: the compliance pins with their page-sync check, and the 3.0 deprecation catalogue.
 - `pyproject.toml` version 2.0.0.
-- Merges after DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430, DEV-2443 and DEV-2439.
+- Merges after DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430, DEV-2443, DEV-2439
+  and DEV-2455.
