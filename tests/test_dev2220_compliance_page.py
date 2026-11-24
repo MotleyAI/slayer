@@ -12,17 +12,16 @@ from tests._dev2243_fixtures import CORPUS
 from tests._dev2446_required_manifest import ROWS
 
 PAGE = Path(__file__).resolve().parent.parent / "docs" / "interfaces" / "ossie-compliance.md"
-#: A gap row: a backticked case id first, the fixing issue last.
-_GAP_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|.*\|\s*(DEV-\d+)\s*\|\s*$")
+#: A gap row: a backticked case id first, the status ``planned`` last.
+_GAP_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|.*\|\s*planned\s*\|\s*$")
 
 
-def page_gaps(text: str) -> set[tuple[str, str]]:
-    return {(m.group(1), m.group(2)) for line in text.splitlines() if (m := _GAP_ROW.match(line))}
+def page_gaps(text: str) -> set[str]:
+    return {m.group(1) for line in text.splitlines() if (m := _GAP_ROW.match(line))}
 
 
-def pinned_gaps() -> set[tuple[str, str]]:
-    layer1 = {(r.form, r.gap) for r in ROWS if r.gap is not None}
-    return layer1 | {(g.case, g.issue) for g in GAPS}
+def pinned_gaps() -> set[str]:
+    return {r.form for r in ROWS if r.gap is not None} | {g.case for g in GAPS}
 
 
 def test_the_page_lists_exactly_the_pinned_gaps() -> None:
@@ -33,8 +32,8 @@ def test_the_page_lists_exactly_the_pinned_gaps() -> None:
 
 
 def test_page_rows_are_read() -> None:
-    text = "| `NVL` | `NVL(a, b)` | DEV-2282 |\n| `x` | no issue |\n| case | prose | DEV-1 |"
-    assert page_gaps(text) == {("NVL", "DEV-2282")}
+    text = "| `NVL` | `NVL(a, b)` | planned |\n| `x` | supported |\n| case | prose | planned |"
+    assert page_gaps(text) == {"NVL"}
 
 
 def test_the_page_and_the_cases_cite_the_vendored_revision() -> None:

@@ -24,18 +24,18 @@
         cannot collect until DEV-2446 is on `main`. After task 0.1's merge, add `value=` and `fails_with=` to every
         gap row. Verify: every Layer 1 case xfails for its declared error on DuckDB and SQLite.
 - [x] 1.3 Add the DEV-2244 format-gap cases. Verify: they xfail with the declared error.
-- [ ] 1.4 Write the page-sync test: the page's gap-table rows (case id + fixing issue) equal the xfail table, both
+- [x] 1.4 Write the page-sync test: the page's gap-table rows (case ids) equal the xfail table, both
       directions. Verify: it fails when a row or a case is removed alone (check once by hand, then restore).
 
 ## 2. Ossie compliance page
 
-- [ ] 2.1 Write `docs/interfaces/ossie-compliance.md`, conservatively worded, citing the vendored revision and naming
+- [x] 2.1 Write `docs/interfaces/ossie-compliance.md`, conservatively worded, citing the vendored revision and naming
       the databases CI executes each claim on (others "not certified"): Layer 1 soundness plus the refused-constructs
       table; Layer 3 under `conformance="ossie-l3"`, superset native language, output names only under the switch,
       bare model-scoped metrics, no known deviation; semantic-model format (what passes on the corpus and grader,
-      `slayer ossie-roundtrip`, DEV-2244 rows, wider support "intended"); Layer 2 not claimed (DEV-1768, DEV-2103,
-      DEV-2400). Verify: 1.4 passes; `tests/test_doc_examples.py` passes.
-- [ ] 2.2 Link it from the `nav` in `zensical.toml` and from `docs/interfaces/ossie-layer-3.md`. Verify: the docs nav
+      `slayer ossie-roundtrip`, DEV-2244 rows, wider support "intended"); "Layer 2 not claimed", naming no issue.
+      Verify: 1.4 passes; `tests/test_doc_examples.py` passes.
+- [x] 2.2 Link it from the `nav` in `zensical.toml` and from `docs/interfaces/ossie-layer-3.md`. Verify: the docs nav
       check passes.
 
 ## 3. 3.0 deprecation catalogue

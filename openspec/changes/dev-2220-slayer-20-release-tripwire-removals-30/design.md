@@ -62,7 +62,8 @@ Its audits run against `main` as it stands once those have merged.
     (codex)
 15. **One case id and one page row per independently fixable behaviour** (each function spelling, window form,
     format behaviour), never one per issue. (codex)
-16. **Page rows carry the case id and fixing issue; a test compares them with the xfail table, both directions.**
+16. **Page rows carry the case id and a `planned` status; a test compares them with the xfail table, both
+    directions. The fixing issue stays in each xfail's `reason`: docs name no tracker issues.** (user)
     Alternative, generate the page from a manifest: rejected, the docs build has no generation step and row checks
     suffice. (codex)
 17. **A runtime 3.0 catalogue covers every Part 2 form and surface**: dataset, query, refinement and extension keys,
