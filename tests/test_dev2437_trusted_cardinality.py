@@ -237,6 +237,14 @@ async def test_an_aggregate_filter_operand_across_the_hop_counts_once(backend: s
     assert (got["EAST"], got["WEST"]) == (300.0, 300.0)
 
 
+async def test_error_mode_refuses_a_population_input_read_back_across_the_hop(backend: str) -> None:
+    # Home orders, population customers: each order reads its customer's weight back across orders → customers.
+    async with engine(backend, DUP_C1, weighted_datasets()) as eng:
+        with pytest.raises(UnsafeRelationshipInputError, match="orders → customers"):
+            await run(eng, population="customers", metrics=[
+                {"metric": "wsum(orders.amount, weight=customers.weight)", "alias": "v"}], to_many_handling="error")
+
+
 @pytest.mark.parametrize("metric", INPUT_ACROSS_HOP)
 async def test_error_mode_refuses_an_input_across_an_untrusted_hop(backend: str, metric: str) -> None:
     async with engine(backend, DUP_C1, weighted_datasets()) as eng:
@@ -376,6 +384,30 @@ async def test_a_target_column_named_like_an_internal_alias_reads_its_own_value(
         resp = await run(eng, dimensions=["customers._slayer_p"], metrics=[REVENUE],
                          filter=["customers.region IS NULL OR customers._slayer_p = 'x'"])
     assert {r["customers._slayer_p"]: float(r[REVENUE]) for r in resp.data} == {"x": 600.0}
+
+
+@pytest.mark.parametrize(("threshold", "expected"), [
+    pytest.param(320, {"big": 650.0}, id="same-band"),
+    pytest.param(400, {"big": 600.0, "small": 350.0}, id="split-bands"),
+])
+async def test_a_dimension_attached_through_a_duplicated_row_counts_once_per_value(
+        backend: str, threshold: int, expected: dict[str, float]) -> None:
+    # C1 is gold and silver: gold totals 600, silver 350. C1's orders count once in each band its rows reach.
+    seed = [*CLEAN, ("C1", "EAST", "M1", "silver", 1.0)]
+    band = {"field": f"CASE WHEN sum(orders.amount, partition_by=customers.tier) > {threshold} THEN 'big' "
+                     "ELSE 'small' END", "alias": "band"}
+    async with engine(backend, seed) as eng:
+        resp = await run(eng, dimensions=[band], metrics=[REVENUE])
+    assert {r["band"]: float(r[REVENUE]) for r in resp.data} == expected
+
+
+async def test_an_input_reading_two_target_columns_reads_one_row(backend: str) -> None:
+    # C1 is (EAST, weight 3) and (WEST, weight 1): C1's orders (300) contribute 0 or 300, never region and weight mixed.
+    seed = [("C1", "EAST", "M1", "gold", 3.0), ("C1", "WEST", "M1", "gold", 1.0), *CLEAN[1:]]
+    metric = "sum(orders.amount * CASE WHEN customers.region = 'WEST' THEN customers.weight ELSE 0 END)"
+    async with engine(backend, seed) as eng:
+        resp = await run(eng, metrics=[{"metric": metric, "alias": "m"}], filter=["orders.customer_id = 'C1'"])
+    assert [float(r["m"]) for r in resp.data] in ([0.0], [300.0])
 
 
 async def test_a_null_keeping_filter_drops_a_matched_order_whose_rows_all_fail(backend: str) -> None:

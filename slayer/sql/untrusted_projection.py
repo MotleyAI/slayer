@@ -3,7 +3,7 @@
 A join across a provably but untrusted to-one hop is marked when emitted; :func:`project_untrusted_hops` then rewrites
 each SELECT reading one so its subtree is read through ``SELECT DISTINCT <keys>, <dimension values> FROM <subtree>
 WHERE <subtree conjuncts>``: a home row meets each distinct grouped value once, however many target rows repeat it.
-Aggregate inputs read across the hop are projected as one matching value per grouped row (``ANY_VALUE``).
+Any other column the statement reads across the hop comes from one representative row of each grouped value.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ _DIMENSION_PREFIX = "__slayer_d"
 _COLUMN_PREFIX = "__slayer_c"
 _PREDICATE = "__slayer_p"
 _MATCHED = "__slayer_m"
+_ONE = "__slayer_q"
+_ROW = "__slayer_r"
 
 
 _E = TypeVar("_E", bound=Expr)
@@ -137,28 +139,6 @@ def _subtree_joins(joins: List[exp.Join], start: int) -> Tuple[Set[str], List[in
     return subtree, members
 
 
-def _aggregating(select: exp.Select) -> bool:
-    if select.args.get("group") is not None:
-        return True
-    return any(_outside_window(a) for e in select.expressions for a in e.find_all(exp.AggFunc))
-
-
-def _outside_window(node: Expr) -> bool:
-    return not isinstance(node.parent, exp.Window)
-
-
-def _is_input(column: exp.Column, select: exp.Select) -> bool:
-    """Read inside an aggregate (not one computed over a window) of this SELECT."""
-    node: Optional[Expr] = column.parent
-    while node is not None and node is not select:
-        if isinstance(node, exp.Select):
-            return False
-        if isinstance(node, exp.AggFunc) and _outside_window(node):
-            return True
-        node = node.parent
-    return False
-
-
 def _project_select(select: exp.Select) -> None:
     while True:
         joins: List[exp.Join] = list(select.args.get("joins") or [])
@@ -200,19 +180,14 @@ class _Projection:
         inside, valued, outside = self._split_where()
         dims = self._dimensions()
         self.select.set("where", exp.Where(this=exp.and_(*outside)) if outside else None)
-        group, inputs = self._project_reads(dim_names={name for _, name in dims})
+        group, other = self._project_reads(dim_names={name for _, name in dims})
         for expr, name in dims:
             group.append(expr)
             self.projected.append(expr.as_(name))
         # A home row with no subtree row a filter or an inner member keeps is dropped, as after the subtree's joins.
         inner_only = bool(inside) or not all(_is_left(j) for j in self.inner_joins)
         kept = self._valued_filter(valued, group=group, null_extended=_is_left(self.root) and not inner_only)
-        inner = exp.select(*self.projected, *inputs).from_(self.relation.copy())
-        for j in self.inner_joins:
-            inner.append("joins", j.copy())
-        if inside:
-            inner = inner.where(exp.and_(*(c.copy() for c in inside)))
-        inner = inner.group_by(*(g.copy() for g in group)) if inputs else inner.distinct()
+        inner = self._inner(inside=inside, group=group, other=other)
         self.relation.meta.pop(UNTRUSTED_HOP, None)
         self.root.set("this", exp.Subquery(this=inner, alias=exp.TableAlias(this=exp.to_identifier(self.alias))))
         if inner_only:
@@ -222,6 +197,23 @@ class _Projection:
         if kept is not None:
             self.select.set("where", exp.Where(this=exp.and_(*outside, kept)))
 
+    def _inner(self, *, inside: List[Expr], group: List[Expr], other: List[Expr]) -> exp.Select:
+        """One row per distinct grouped value; the other reads taken from one representative subtree row of each."""
+        body = exp.select(*self.projected, *other).from_(self.relation.copy())
+        for j in self.inner_joins:
+            body.append("joins", j.copy())
+        if inside:
+            body = body.where(exp.and_(*(c.copy() for c in inside)))
+        if not other:
+            return body.distinct()
+        rank = exp.Window(this=exp.RowNumber(), partition_by=[g.copy() for g in group],
+                          order=exp.Order(expressions=[exp.Ordered(this=other[0].this.copy())]))
+        numbered = exp.Subquery(this=body.select(rank.as_(_ROW)), alias=exp.TableAlias(this=exp.to_identifier(_ONE)))
+        names = [exp.Column(this=p.args["alias"].copy(), table=exp.to_identifier(_ONE)) for p in [*self.projected, *other]]
+        first = exp.EQ(this=exp.Column(this=exp.to_identifier(_ROW), table=exp.to_identifier(_ONE)),
+                       expression=exp.Literal.number(1))
+        return exp.select(*names).from_(numbered).where(first)
+
     def _split_where(self) -> Tuple[List[Expr], List[Expr], List[Expr]]:
         """The WHERE conjuncts as (filtering inside, evaluated inside as a value, left outside)."""
         conjuncts = _conjuncts(self.select.args.get("where"))
@@ -230,32 +222,48 @@ class _Projection:
         valued = [c for c in own if not any(c is i for i in inside)]
         return inside, valued, [c for c in conjuncts if not any(c is o for o in own)]
 
+    def _grouping_parts(self) -> List[Expr]:
+        """The parts whose subtree reads tell rows apart: the join keys, the outer filter and grouping, and the
+        condition of every other join a grouped value reads through."""
+        grouping = [self.select.args.get("where"), self.select.args.get("group")]
+        if self.select.args.get("distinct") is not None:
+            grouping.extend(self.select.expressions)
+        parts = [p for p in [self.root.args.get("on"), *grouping] if p is not None]
+        grouped = set().union(*(_tables(p) for p in parts[1:])) if len(parts) > 1 else set()
+        pending = [j for j in self.outer_joins if j is not self.root and j.args.get("on") is not None]
+        while reached := [j for j in pending if _alias_of(j.this) in grouped]:
+            for j in reached:
+                parts.append(j.args["on"])
+                grouped |= _tables(j.args["on"])
+            pending = [j for j in pending if not any(j is r for r in reached)]
+        return parts
+
     def _project_reads(self, *, dim_names: Set[str]) -> Tuple[List[Expr], List[Expr]]:
-        """Project every subtree column the statement reads, renaming each read; (grouped values, ``ANY_VALUE``
-        inputs)."""
-        group: List[Expr] = []
-        inputs: List[Expr] = []
+        """Project every subtree column the statement reads, renaming each read; (grouped values, the other reads'
+        projections)."""
+        def own(part: Expr) -> List[exp.Column]:
+            return [c for c in _scope_columns(part)
+                    if c.table in self.subtree and not (c.table == self.alias and c.name in dim_names)]
+
+        grouped = {(c.table, c.name) for part in self._grouping_parts() for c in own(part)}
         on = self.root.args.get("on")
-        reads = [c for part in [*self._outer_parts(), *self._where_parts()] for c in _scope_columns(part)
-                 if c.table in self.subtree and not (c.table == self.alias and c.name in dim_names)]
-        key_reads = [c for c in (_scope_columns(on) if on is not None else []) if c.table in self.subtree]
-        input_cols = {(c.table, c.name) for c in reads if _is_input(c, self.select)}
-        raw_cols = {(c.table, c.name) for c in [*reads, *key_reads] if not _is_input(c, self.select)}
-        aggregating = _aggregating(self.select)
-        for column in [*key_reads, *reads]:
+        reads = [c for part in [*([on] if on is not None else []), *self._outer_parts(), *self._where_parts()]
+                 for c in own(part)]
+        group: List[Expr] = []
+        other: List[Expr] = []
+        for column in reads:
             ident = (column.table, column.name)
             if ident not in self.names:
-                name = self._name(column)
-                self.names[ident] = name
+                self.names[ident] = self._name(column)
                 source = exp.Column(this=column.this.copy(), table=exp.to_identifier(column.table))
-                alias = _ident(column, name)
-                if aggregating and ident in input_cols and ident not in raw_cols:
-                    inputs.append(exp.AnyValue(this=source).as_(alias))
-                else:
+                aliased = source.as_(_ident(column, self.names[ident]))
+                if ident in grouped:
                     group.append(source)
-                    self.projected.append(source.as_(alias))
+                    self.projected.append(aliased)
+                else:
+                    other.append(aliased)
             self._rename(column)
-        return group, inputs
+        return group, other
 
     def _valued_filter(self, valued: List[Expr], *, group: List[Expr], null_extended: bool) -> Optional[Expr]:
         """Project ``valued`` as a value of each subtree row; the outer condition keeping a matched row it holds on,

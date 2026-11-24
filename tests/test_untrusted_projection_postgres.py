@@ -4,13 +4,18 @@ cardinality never changes a value)."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString, cast
 
+import psycopg
 import pytest
+from sqlglot import parse_one
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
+from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects.base import ServerProfile
 from tests._pg_helpers import pg_database, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
@@ -41,6 +46,27 @@ def datasets(ds: str) -> list[SlayerDataset]:
                                            cardinality=RelationshipCardinality.MANY_TO_ONE)],
         metrics=[DatasetMetric(name="revenue", expression="sum(amount)")])
     return [clusters, accounts]
+
+
+def _rewritten(version: tuple[int, int, int] | None) -> str:
+    dialect = get_dialect("postgres").model_copy(update={"server_profile": ServerProfile(version=version)})
+    statement = parse_one("SELECT k, ANY_VALUE(b) AS b, ANY_VALUE(a) AS a FROM t GROUP BY k", read="postgres")
+    assert isinstance(statement, Expression)
+    return dialect.rewrite_statement(statement).sql(dialect="postgres")
+
+
+@pytest.mark.parametrize(("version", "native"), [((15, 4, 0), False), (None, False), ((16, 0, 0), True)])
+def test_any_value_is_native_only_from_postgres_16(version: tuple[int, int, int] | None, native: bool) -> None:
+    assert ("ANY_VALUE" in _rewritten(version)) is native
+
+
+def test_the_pre_16_any_value_reads_a_non_null_boolean_or_array(postgresql_proc: Any) -> None:
+    ddl = ["CREATE TABLE t (k INTEGER, b BOOLEAN, a TEXT[])",
+           "INSERT INTO t VALUES (1, NULL, NULL), (1, TRUE, ARRAY['x', 'y']), (2, NULL, NULL)"]
+    with pg_database(postgresql_proc, statements=ddl) as ds, psycopg.connect(
+            host=ds.host, port=ds.port, user=ds.username, dbname=ds.database) as conn:
+        rows = conn.execute(cast(LiteralString, _rewritten((15, 4, 0)) + " ORDER BY k")).fetchall()
+    assert rows == [(1, True, ["x", "y"]), (2, None, None)]
 
 
 async def test_a_mixed_case_join_key_reads_the_projection(postgresql_proc: Any, tmp_path: Path) -> None:

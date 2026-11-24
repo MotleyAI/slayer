@@ -14,6 +14,7 @@ import duckdb
 import pytest
 from pytest_postgresql import factories
 
+from slayer.core.errors import EnforcedKeyError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -105,6 +106,12 @@ def _reports_enforced_key(entries: list[DriftReportEntry]) -> bool:
     return any("enforced" in text and "customer_id" in text for text in _entries_for(entries, "customers"))
 
 
+def _with_key_field(dataset: SlayerDataset, *, expression: str) -> SlayerDataset:
+    """``dataset`` with field ``customer_id`` defined as ``expression``."""
+    return dataset.model_copy(update={"fields": [
+        f.model_copy(update={"expression": expression}) if f.name == "customer_id" else f for f in dataset.fields]})
+
+
 # --------------------------------------------------------------------------- #
 # Dialect capability
 # --------------------------------------------------------------------------- #
@@ -191,6 +198,21 @@ class TestIngestion:
                 customers = await _stored(eng, "customers", data_source=ds.name)
         assert keyed.enforced_keys == [["id"]]
         assert customers.enforced_keys == []
+
+    async def test_a_primary_key_with_an_unrepresented_member_is_not_enforced(self, tmp_path: Path) -> None:
+        """A key member that cannot be a field (a dotted name) leaves the rest of the key unenforced."""
+        _duck(tmp_path / "shop.duckdb", (
+            'CREATE TABLE partial_pk(id VARCHAR, "a.b" VARCHAR, region VARCHAR, PRIMARY KEY (id, "a.b"))',
+            "CREATE TABLE whole_pk(id VARCHAR, part VARCHAR, PRIMARY KEY (id, part))",
+        ))
+        ds = DatasourceConfig(name=SHOP, type="duckdb", database=str(tmp_path / "shop.duckdb"))
+        async with _shop(tmp_path, ds) as eng:
+            await _ingest(eng, ds)
+            partial = await _stored(eng, "partial_pk", data_source=SHOP)
+            whole = await _stored(eng, "whole_pk", data_source=SHOP)
+        assert [f.name for f in partial.fields] == ["id", "region"]
+        assert partial.enforced_keys == []
+        assert [sorted(k) for k in whole.enforced_keys] == [["id", "part"]]
 
     async def test_reingestion_fills_an_enforced_key(self, tmp_path: Path) -> None:
         """Spec: models/fk-ingestion › Re-ingestion fills an enforced key."""
@@ -335,3 +357,24 @@ class TestSaveValidation:
         assert (repointed.sql_table, repointed.sql) == (update.get("sql_table"), update.get("sql"))
         assert bool(repointed.source_queries) == ("source_queries" in update)
         assert repointed.enforced_keys == []
+
+    async def test_an_enforced_key_on_a_computed_field_is_refused(self) -> None:
+        """Spec: models/save-validation › An enforced key on a computed field is refused."""
+        async with engine("duckdb", CLEAN, datasets=[]) as eng:
+            computed = _with_key_field(customers_dataset(enforced_keys=[["customer_id"]]), expression="lower(region)")
+            with pytest.raises(EnforcedKeyError, match="customer_id"):
+                await eng.storage.save_dataset(computed)
+            assert await eng.storage.get_dataset("customers", data_source=DS) is None
+
+    @pytest.mark.parametrize("expression", ["region", "lower(region)"], ids=["another_column", "computed"])
+    async def test_repointing_a_key_field_drops_its_enforced_key(self, expression: str) -> None:
+        """Spec: models/save-validation › Re-pointing a key field drops its enforced key."""
+        async with engine("duckdb", CLEAN, datasets=[]) as eng:
+            await eng.storage.save_dataset(customers_dataset(enforced_keys=[["customer_id"]]))
+            stored = await _stored(eng, "customers", data_source=DS)
+            assert stored.enforced_keys == [["customer_id"]]
+            await eng.storage.save_dataset(_with_key_field(stored, expression=expression))
+            repointed = await _stored(eng, "customers", data_source=DS)
+        key_field = repointed.get_field("customer_id")
+        assert repointed.enforced_keys == []
+        assert key_field is not None and key_field.expression == expression

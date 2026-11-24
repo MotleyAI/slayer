@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from slayer.core.enums import RelationshipCardinality
+from slayer.core.errors import EnforcedKeyError
 from slayer.core.models import DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.cube.models import CubeCube, CubeDimension, CubeJoin, CubeProject
@@ -26,7 +27,7 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._cube_helpers import convert
 from tests._dev1737_fixtures import seed_backend
-from tests._dev2243_fixtures import DS as DOC_DS, SALES, STORAGES, document_engine
+from tests._dev2243_fixtures import DS as DOC_DS, SALES, STORAGES, document_engine, store_document
 from tests._dev2277_fixtures import returns_dataset
 from tests._dev2437_fixtures import (
     BACKENDS, DUP_C1, REGION, REVENUE, customers_dataset, orders_dataset, region_revenue, retail_engine, tables,
@@ -265,6 +266,32 @@ async def test_enforced_keys_round_trip(kind: str) -> None:
         exported = (await export_osi(engine=eng, datasource=DOC_DS, extensions=True)).text
     async with dirty_sales(kind, documents=(exported,)) as eng:
         assert getattr(await doc_get(eng.storage, "customers"), "enforced_keys", None) == [["customer_id"]]
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_an_undeclared_enforced_key_is_refused_by_an_extensions_save(kind: str) -> None:
+    async with dirty_sales(kind) as eng:
+        customers = await doc_get(eng.storage, "customers")
+        with pytest.raises(EnforcedKeyError, match="region"):
+            await eng.storage.save_dataset_extensions(customers.model_copy(update={"enforced_keys": [["region"]]}))
+        [written] = [d for d in (await stored_doc(eng.storage))["datasets"] if d["name"] == "customers"]
+    assert "enforced_keys" not in slayer_entries(written)
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_a_stale_dataset_entry_restores_no_enforced_keys(kind: str) -> None:
+    """A hand-edited document source leaves its entry's enforced keys describing the old table."""
+    async with dirty_sales(kind) as eng:
+        customers = await doc_get(eng.storage, "customers")
+        await eng.storage.save_dataset(customers.model_copy(update={"enforced_keys": [["customer_id"]]}))
+        doc = await stored_doc(eng.storage)
+        [entry] = [d for d in doc["datasets"] if d["name"] == "customers"]
+        assert "enforced_keys" in slayer_entries(entry)
+        entry["source"] = "customers_v2"
+        await store_document(eng.storage, yaml.safe_dump(doc, sort_keys=False), data_source=DOC_DS)
+        repointed = await doc_get(eng.storage, "customers")
+    assert repointed.sql_table == "customers_v2"
+    assert repointed.enforced_keys == []
 
 
 def test_a_cube_import_is_never_trusted() -> None:

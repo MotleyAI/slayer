@@ -167,7 +167,7 @@ from slayer.engine.compile.spine import (
     check_axis_rebucket, check_off_spine_order_keys, host_mask, is_spine_bound, plan_spine, shifted_spine_bounds,
     spine_field,
 )
-from slayer.engine.compile.shift import carried_placeholders
+from slayer.engine.compile.shift import carried_placeholders, is_placeholder
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.stage_edges import inherited_edges, pass_through
 from slayer.engine.key_metadata import (
@@ -1353,6 +1353,13 @@ def _attaches_carrying(
     return out
 
 
+def _placeholders_read(prebound: PreboundQuery) -> List[ValueKey]:
+    """The regroup placeholders ``prebound``'s metrics, filters and ordering read."""
+    roots = [*(dm.bound.value_key for dm in prebound.declared_metrics), *(bf.value_key for bf in prebound.bound_filters),
+             *(sp.bound.value_key for sp in prebound.order_specs)]
+    return list(dict.fromkeys(k for r in roots for k in walk_value_keys(r) if is_placeholder(k)))
+
+
 def _shifted_producer_grain(
     *, answer: ValueKey, resolved: ValueKey, axis: TimeTruncKey, grain: List[ValueKey],
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
@@ -2283,8 +2290,9 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     context: _ProducerSynthesisContext,
     declared_type: Optional[DataType] = None,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
+    available_attaches: Sequence[RegroupAttachPlan] = (),
 ) -> RegroupAttachPlan:
-    """Build one target-rooted regroup producer for a cross-dataset aggregate: root at its source, compute at the fan-out-safe grain subset, broadcast the rest."""
+    """Build one target-rooted regroup producer for a cross-dataset aggregate: root at its source, compute at the fan-out-safe grain subset, broadcast the rest; ``available_attaches`` produce placeholders its grain may read."""
     prebound, bundle = context.prebound, context.bundle
     host_dataset, datasets_by_name = context.host_dataset, context.datasets_by_name
     projected_dim_keys = context.projected_dim_keys
@@ -2576,6 +2584,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     decision = _kernel_decision(
         answer=agg_rooted, windowed=window_td_key is not None, associate=associate,
     )
+    read_placeholders = _placeholders_read(producer_prebound)
     producer_plan = compile_synthesized(
         prebound=producer_prebound,
         source_dataset=root_name,
@@ -2585,6 +2594,8 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         population=NoInheritedPopulation(
             reason="target-rooted: re-roots and disposes the inherited filters itself",
         ),
+        carried_attaches=_attaches_carrying(attaches=available_attaches, carried=read_placeholders),
+        reserved_placeholders=frozenset(read_placeholders),
         kernel_answer=_kernel_answer(decision),
     )
     if semi_joins:
@@ -4448,19 +4459,11 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
     cm_phases: List[Tuple[Literal["row", "combined"], List[ValueKey]]] = [
         ("combined", cm_combined), ("row", cm_row),
     ]
-    for phase, cm_aggs in cm_phases:
-        for agg in cm_aggs:
-            assert isinstance(agg, AggregateKey)  # target-rooted roots are aggregates
-            attaches.append(_synthesize_cross_dataset_producer(
-                agg=agg, placeholder=mapping[agg], attach_phase=phase,
-                public_alias=public_alias_by_agg.get(agg),
-                context=synthesis_context, declared_type=cm_type.get(agg),
-                producer_registry=producer_registry,
-            ))
-
+    # Re-aggregations first: a cross-dataset producer's grain may read their placeholders.
+    reagg_attaches: List[RegroupAttachPlan] = []
     # One producer-over-producer per re-aggregation, attached once per phase.
     for root in combined_reaggs:
-        attaches.append(_synthesize_reaggregation_producer(
+        reagg_attaches.append(_synthesize_reaggregation_producer(
             root=root, placeholder=reagg_mapping[root], attach_phase="combined",
             public_alias=public_alias_by_agg.get(root),
             context=synthesis_context,
@@ -4476,7 +4479,7 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
             c=c, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
         )
-        attaches.append(_synthesize_reaggregation_producer(
+        reagg_attaches.append(_synthesize_reaggregation_producer(
             root=c, placeholder=mapping[c], attach_phase="row",
             public_alias=public_alias_by_agg.get(c),
             context=synthesis_context.model_copy(update={
@@ -4493,6 +4496,18 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
             population=population,
             population_semi_join_metrics=routed.constituent_consumers.get(c),
         ))
+
+    for phase, cm_aggs in cm_phases:
+        for agg in cm_aggs:
+            assert isinstance(agg, AggregateKey)  # target-rooted roots are aggregates
+            attaches.append(_synthesize_cross_dataset_producer(
+                agg=agg, placeholder=mapping[agg], attach_phase=phase,
+                public_alias=public_alias_by_agg.get(agg),
+                context=synthesis_context, declared_type=cm_type.get(agg),
+                producer_registry=producer_registry, available_attaches=reagg_attaches,
+            ))
+
+    attaches.extend(reagg_attaches)
 
     # The ROW substitution applies ONLY to computed DIMENSIONS; a non-dim metric
     # keeps query-grain (its inners desugar to COMBINED placeholders) — EXCEPT a

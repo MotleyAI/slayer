@@ -161,7 +161,9 @@ _UNTRUSTED_QUERIES = [
 
 
 def _values(resp) -> dict:
-    return {row.get(REGION): float(row[REVENUE]) for row in resp.data}
+    out = {row.get(REGION): float(row[REVENUE]) for row in resp.data}
+    assert len(out) == len(resp.data), "duplicate group keys"
+    return out
 
 
 class TestUntrustedHop:

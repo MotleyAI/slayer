@@ -53,16 +53,15 @@ dataset relation door, so model `filters` and RLS sit inside it); system 4 (sqlg
    the emission points listed above. Alternative — making determination itself require trust — would warn and refuse
    on every cross-dataset dimension. (default, structural)
 2. **Untrusted lowering is the distinct projection (B), the association producer (A) its fallback.** B: a subtree beyond
-   its first untrusted hop joins the home as `SELECT DISTINCT <hop source-side keys>, <each dimension value computed
-   inside>`; the subtree's own conjuncts go inside: one proven to reject a null-extended row filters there and makes the
-   join INNER, any other is projected as a value and the join stays LEFT, keeping an unmatched home row exactly when the
-   conjunct holds on NULLs; a filter-only subtree joins as an inner join on its DISTINCT keys. Computed and
-   time-truncated dimensions de-duplicate on
-   their grouped value. A is used when a dimension reads an untrusted subtree together with anything outside it; a
-   conjunct doing so is pushed as a correlated EXISTS semi-join. An aggregate input read across
-   the hop is projected inside the distinct projection as one matching value per projected row
-   (`ANY_VALUE`, grouped by the keys and dimension values) (decision 18). Alternative A-only costs ~3× on
-   DuckDB. (user)
+   its first untrusted hop joins the home as one row per hop source-side key and dimension value computed inside, every
+   other column the statement reads from the subtree taken from that same row; the subtree's own conjuncts go inside:
+   one proven to reject a null-extended row filters there and makes the join INNER, any other is projected as a value
+   and the join stays LEFT, keeping an unmatched home row exactly when the conjunct holds on NULLs; a filter-only
+   subtree joins as an inner join on its DISTINCT keys. Computed and time-truncated dimensions de-duplicate on
+   their grouped value. A is used when a dimension reads an untrusted subtree together with anything outside it,
+   including a value attached through a subtree column; a conjunct doing so is pushed as a correlated EXISTS
+   semi-join. An aggregate input read across the hop reads that row, so all its columns come from one matching row
+   (decision 18). Alternative A-only costs ~3× on DuckDB. (user)
 3. **Declared keys do not confer trust**: Ossie's retail model declares `customers.primary_key` and must return 350
    (L2 §11.3). (default, forced by acceptance)
 4. **Keys unique by construction are trusted**: a stage's complete grain, the spine instant, a keyless home's per-query

@@ -100,6 +100,8 @@ def describe_pg_cursor_column(description_row: Sequence[Any]) -> ResultColumnTyp
 
 #: The first Postgres major version with ``pg_input_is_valid``.
 _PG_INPUT_IS_VALID_SINCE = (16, 0, 0)
+#: The first Postgres major version with ``ANY_VALUE``.
+_PG_ANY_VALUE_SINCE = (16, 0, 0)
 #: The array type both lists of ``contains_any`` / ``contains_all`` are read as, by element type.
 #: The element-set subquery's one relation: a fixed name, so every copy of the expression reads alike.
 _SET_RELATION = "__slayer_s"
@@ -108,6 +110,14 @@ _CANONICAL_ARRAYS_BY_KIND = {
     TypeKind.BOOLEAN: "BOOLEAN[]", TypeKind.DATE: "DATE[]", TypeKind.TIMESTAMP: "TIMESTAMP[]",
 }
 _CANONICAL_ARRAYS = {t: _CANONICAL_ARRAYS_BY_KIND[t.kind] for t in DataType if t.kind in _CANONICAL_ARRAYS_BY_KIND}
+
+
+def _mode_value(node: Expression) -> Expression:
+    """``ANY_VALUE(x)`` as ``mode() WITHIN GROUP (ORDER BY x)``: a non-NULL value of any sortable type, arrays included."""
+    if not isinstance(node, exp.AnyValue):
+        return node
+    return exp.WithinGroup(this=exp.Mode(), expression=exp.Order(expressions=[
+        exp.Ordered(this=node.this.copy(), nulls_first=False)]))
 
 
 def _server_version(number: int) -> tuple[int, int, int]:
@@ -272,6 +282,13 @@ class PostgresDialect(SqlDialect):
         except (TypeError, ValueError):
             version_num = None
         return ServerProfile(version=None if version_num is None else _server_version(version_num))
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """Before Postgres 16, or on an unknown server, ``ANY_VALUE`` reads its most frequent value instead."""
+        version = self.server_profile.version
+        if version is not None and version >= _PG_ANY_VALUE_SINCE:
+            return statement
+        return statement.transform(_mode_value)
 
     def validates_input(self) -> bool:
         """Whether ``pg_input_is_valid`` can check a conversion's input (Postgres 16+)."""

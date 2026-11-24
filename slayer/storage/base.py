@@ -53,6 +53,7 @@ from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
 from slayer.core.field_expression import stored_definition_text
 from slayer.core.models import (
     DatasourceConfig,
+    DatasetField,
     DatasetRelationship,
     SlayerDataset,
     _validate_field_name,
@@ -686,6 +687,17 @@ def check_enforced_keys(dataset: SlayerDataset) -> None:
         if sorted(key) not in declared:
             raise EnforcedKeyError(dataset=dataset.name, key=key,
                                    reason="is not a declared key (its primary key or a unique field)")
+        computed = [name for name in key if not (field := dataset.get_field(name)) or not field.is_base]
+        if computed:
+            raise EnforcedKeyError(dataset=dataset.name, key=key,
+                                   reason=f"names fields that are not base columns: {computed}")
+
+
+def _repointed_key_field(*, old: DatasetField | None, new: DatasetField | None) -> bool:
+    """A stored base key field that is no longer a base column, or reads a different one."""
+    if old is None or new is None or not old.is_base:
+        return False
+    return not new.is_base or new.physical_name != old.physical_name
 
 
 def _validate_default_time_dimension(dataset: SlayerDataset) -> None:
@@ -884,16 +896,20 @@ class StorageBackend(ABC):
         self._forget_raw(data_source=dataset.data_source, name=dataset.name)
 
     async def _without_repointed_enforced_keys(self, dataset: SlayerDataset) -> SlayerDataset:
-        """``dataset`` without enforced keys when its source differs from the stored dataset's (they describe the old)."""
+        """``dataset`` without the enforced keys a changed source, or a re-pointed key field, leaves describing the old."""
         if not dataset.enforced_keys:
             return dataset
         stored = None
         with contextlib.suppress(Exception):
             stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
-        if stored is None or (stored.sql_table, stored.sql, stored.source_queries) == (
-                dataset.sql_table, dataset.sql, dataset.source_queries):
+        if stored is None:
             return dataset
-        return dataset.model_copy(update={"enforced_keys": []})
+        if (stored.sql_table, stored.sql, stored.source_queries) != (
+                dataset.sql_table, dataset.sql, dataset.source_queries):
+            return dataset.model_copy(update={"enforced_keys": []})
+        kept = [key for key in dataset.enforced_keys if not any(
+            _repointed_key_field(old=stored.get_field(name), new=dataset.get_field(name)) for name in key)]
+        return dataset if kept == dataset.enforced_keys else dataset.model_copy(update={"enforced_keys": kept})
 
     async def _owner_of(self, name: str, *, data_source: str) -> str | None:
         """The one owner lookup: the document declaring dataset ``name``, ``None`` for a standalone or new one."""
@@ -904,6 +920,7 @@ class StorageBackend(ABC):
     async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
         """Write a document dataset's SLayer content as ``SLAYER`` entries, leaving its document's Ossie core as it is."""
         check_whole(dataset)
+        check_enforced_keys(dataset)
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
         if owner is None:
             raise ValueError(f"Dataset {dataset.name!r} is not declared by a semantic model")

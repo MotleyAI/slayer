@@ -108,27 +108,17 @@ def mixes_untrusted_branch(
     key: ValueKey, *, root_dataset: SlayerDataset, host_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
 ) -> bool:
     """Whether ``key`` reads an untrusted to-one branch together with anything outside it (the root's own fields,
-    another branch): no distinct projection of one branch evaluates it once per row."""
+    another branch, a value attached through a branch column): no distinct projection of one branch evaluates it once
+    per row."""
     datasets = bundle.datasets_by_name
     groups: set = set()
-    for r in _row_reads(key):
+    for r in walk_value_keys(key):
         if not isinstance(r, (FieldKey, FieldSqlKey, StarKey)):
             continue
         closure = key_closure(key=r, anchor_dataset=host_dataset, anchor_relation=host_dataset.name, bundle=bundle)
         for path in _effective_dependency_paths(closure or (), key_host_path(r)):
             groups.add(untrusted_branch(root=root_dataset, path=path, datasets_by_name=datasets) if path else None)
     return len(groups) > 1 and any(g is not None for g in groups)
-
-
-def _row_reads(key: ValueKey) -> Iterator[ValueKey]:
-    """``key`` and what it reads per row: an aggregate is attached through its partition keys alone."""
-    if isinstance(key, AggregateKey):
-        for p in key.partition_keys or ():
-            yield from _row_reads(p)
-        return
-    yield key
-    for child in key.children():
-        yield from _row_reads(child)
 
 
 def untrusted_input_hop(

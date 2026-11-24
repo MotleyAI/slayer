@@ -3,7 +3,7 @@
 import logging
 import sys
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, TextIO, TypeVar
 
 from pydantic import BaseModel, Field, model_validator
@@ -515,9 +515,11 @@ def _fields_to_dataset(
     meta: dict[str, Any] | None = None,
     description: str | None = None,
     enforces_keys: bool = False,
+    primary_key: Sequence[str] = (),
 ) -> SlayerDataset:
     """Generate a SlayerDataset with one field per introspected column; ``enforces_keys``: the database enforces its
-    declared keys, recorded as ``enforced_keys``."""
+    declared keys, recorded as ``enforced_keys`` (the primary key only when every member of the reflected
+    ``primary_key`` is a field)."""
     cols: list[DatasetField] = []
     unique_set = unique_fields or set()
 
@@ -552,7 +554,8 @@ def _fields_to_dataset(
         sql_table=sql_table,
         data_source=data_source,
         fields=cols,
-        enforced_keys=_declared_keys(cols) if enforces_keys else [],
+        enforced_keys=_declared_keys(cols, primary=set(primary_key) <= {c.name for c in fields}) if enforces_keys
+        else [],
         relationships=relationships or [],
         source_kind=source_kind,
         hidden=hidden,
@@ -648,6 +651,7 @@ async def introspect_table_to_dataset(
         source_kind=source_kind,
         description=await _safe_get_table_comment(client, table_name, ref),
         enforces_keys=dialect_of(client).enforces_unique_keys,
+        primary_key=keys.primary_key,
     )
 
 
@@ -893,6 +897,7 @@ async def _build_one_dataset(
         meta=meta,
         description=await _safe_get_table_comment(client, table, ref),
         enforces_keys=dialect_of(client).enforces_unique_keys,
+        primary_key=keys.primary_key,
     )
 
 
@@ -1506,10 +1511,10 @@ def _additive_merge_existing(
     )
 
 
-def _declared_keys(fields: list[DatasetField]) -> list[list[str]]:
-    """The primary key (when declared) and each single-field unique key of ``fields``."""
-    primary = [c.name for c in fields if c.primary_key]
-    return ([primary] if primary else []) + [[c.name] for c in fields if c.unique]
+def _declared_keys(fields: list[DatasetField], *, primary: bool = True) -> list[list[str]]:
+    """The primary key (when declared and ``primary``) and each single-field unique key of ``fields``."""
+    primary_fields = [c.name for c in fields if c.primary_key] if primary else []
+    return ([primary_fields] if primary_fields else []) + [[c.name] for c in fields if c.unique]
 
 
 def _merged_enforced_keys(
