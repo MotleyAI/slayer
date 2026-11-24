@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -54,8 +54,8 @@ def model_doc(name: str, columns: list[dict], *, joins: list[dict] | None = None
             "columns": columns, "joins": joins or [], **extra}
 
 
-def memory(memory_id: str, body: dict, *, version: int = PRE["Memory"]) -> dict:
-    return memory_v2(memory_id=memory_id, version=version, query=body)
+def memory(memory_id: str, body: dict, *, version: int = PRE["Memory"], entities: Sequence[str] = ()) -> dict:
+    return memory_v2(memory_id=memory_id, version=version, query=body, entities=entities)
 
 
 def to_customers() -> dict:
@@ -196,17 +196,16 @@ class TestSpineOperands:
         assert mem.query is not None
         assert mem.query.filter == [ORDERS_LT]
 
-    @pytest.mark.parametrize(("priority", "loaded"), [([DS, OTHER], ORDERS_LT), ([OTHER, DS], ORDERS_LE)])
+    @pytest.mark.parametrize(("pinned", "loaded"), [(DS, ORDERS_LT), (OTHER, ORDERS_LE)])
     async def test_memory_on_the_spine_in_a_store_with_two_datasources(
-        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, priority: list[str], loaded: str,
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, pinned: str, loaded: str,
     ) -> None:
         storage = await store(tmp_path, shop_ds, backend=backend,
-                              memories=(memory("m_two_ds", spine_stage(ORDERS_LE)),))
+                              memories=(memory("m_two_ds", spine_stage(ORDERS_LE), entities=[f"{pinned}.orders"]),))
         text_orders = orders_v10(version=PRE["SlayerModel"])
         text_orders["columns"] = [{**c, "type": "TEXT"} if c["name"] == "ordered_at" else c
                                   for c in text_orders["columns"]]
         await add_other_datasource(storage, tmp_path, backend=backend, models=({**text_orders, "data_source": OTHER},))
-        await storage.set_datasource_priority(priority)
         mem = await storage.get_memory("m_two_ds")
         assert mem.query is not None
         assert mem.query.filter == [loaded]
@@ -216,7 +215,7 @@ class TestSpineOperands:
     ) -> None:
         variant = model_doc("Time_Spine", [{"name": "timestamp", "type": "TEXT", "primary_key": True}])
         storage = await store(tmp_path, shop_ds, backend=backend, models=(variant,),
-                              memories=(memory("m_variants", spine_stage(TS_LE)),))
+                              memories=(memory("m_variants", spine_stage(TS_LE), entities=[f"{DS}.Time_Spine"]),))
         await add_other_datasource(storage, tmp_path, backend=backend, models=({**variant, "data_source": OTHER},))
         mem = await storage.get_memory("m_variants")
         assert mem.query is not None
