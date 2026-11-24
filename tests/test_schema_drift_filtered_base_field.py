@@ -87,7 +87,8 @@ def test_a_present_quoted_column_drops_nothing() -> None:
         live_table=LiveTable(columns={"id": DataType.INTEGER, "status": DataType.STRING, "Amount": DataType.FLOAT}),
         available_datasets_in_ds={"orders"},
     )
-    assert entry is None and dropped == set()
+    assert entry is None
+    assert dropped == set()
 
 
 def test_a_filtered_field_is_still_not_a_relationship_key() -> None:

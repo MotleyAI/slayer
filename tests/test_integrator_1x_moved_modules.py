@@ -79,14 +79,16 @@ def test_a_listed_name_works_with_one_deprecation(old: str) -> None:
     assert outcome.error is None, outcome.error
     future = [w for w in outcome.warnings if "FutureWarning" in w]
     assert len(future) == 1, future
-    assert new in future[0] and "3.0" in future[0]
+    assert new in future[0]
+    assert "3.0" in future[0]
 
 
 @pytest.mark.parametrize("old", sorted(KEPT))
 def test_an_unlisted_name_raises_the_moved_error(old: str) -> None:
     new, _, unlisted = KEPT[old]
     outcome = _fresh(f"from {old} import {unlisted}")
-    assert outcome.error is not None and outcome.error.is_import_error, outcome
+    assert outcome.error is not None, outcome
+    assert outcome.error.is_import_error, outcome
     assert new in outcome.error.message
     assert "SLayer 2.0" in outcome.error.message
 
@@ -108,7 +110,8 @@ def test_a_kept_path_serves_only_its_listed_names() -> None:
         except ImportError as exc:
             raise LookupError(f"unlisted: {exc}") from exc
     """))
-    assert outcome.error is not None and outcome.error.type == "LookupError", outcome
+    assert outcome.error is not None, outcome
+    assert outcome.error.type == "LookupError", outcome
     assert "unlisted: " in outcome.error.message
     assert "slayer.live_schema.schema_drift" in outcome.error.message
 

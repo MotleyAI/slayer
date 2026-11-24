@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
-from collections.abc import Awaitable, Callable, Hashable, Iterable, Iterator, Mapping, Sequence, Set as AbstractSet
+from collections.abc import Awaitable, Callable, Generator, Hashable, Iterable, Mapping, Sequence, Set as AbstractSet
 
 from pydantic import BaseModel
 from typing_extensions import deprecated
@@ -268,7 +268,7 @@ def _stage_names(data: dict) -> frozenset[str]:
 
 
 @contextlib.contextmanager
-def one_upgrade_pass() -> Iterator[None]:
+def one_upgrade_pass() -> Generator[None]:
     """Within the block (one query), each stored document read unchanged is upgraded in memory once."""
     token = _UPGRADE_PASS.set({}) if _UPGRADE_PASS.get() is None else None
     try:

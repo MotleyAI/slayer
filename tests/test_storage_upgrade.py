@@ -85,7 +85,9 @@ def test_an_old_dataset_warns_once(backend: str, tmp_path: Path) -> None:
     assert len(found) == 1
     assert (found[0].document_kind, found[0].data_source) == ("dataset", DATA_SOURCE)
     message = found[0].human_message()
-    assert "orders" in message and DATA_SOURCE in message and "slayer storage upgrade" in message
+    assert "orders" in message
+    assert DATA_SOURCE in message
+    assert "slayer storage upgrade" in message
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -273,7 +275,8 @@ def test_a_corrupt_document_does_not_stop_the_others(backend: str, tmp_path: Pat
     assert any("broken" in line for line in (result.out + result.err).splitlines())
     kept = asyncio.run(gran.reopen(backend=backend, base=base).get_embedding(
         canonical_id=f"{DATA_SOURCE}.orders", embedding_model_name="m"))
-    assert kept is not None and kept.embedding == [1.0, 0.0]
+    assert kept is not None
+    assert kept.embedding == [1.0, 0.0]
 
 
 def test_a_concurrent_edit_is_not_overwritten(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -384,7 +387,8 @@ def test_an_interrupted_settle_converges(backend: str, tmp_path: Path) -> None:
     between = gran.reopen(backend=backend, base=interrupted)
     for name in ("bucketed", "bucketed_too"):
         loaded = asyncio.run(between.get_dataset(name, data_source=gran.DS))
-        assert loaded is not None and "left_granularity" in loaded.model_dump_json(), name
+        assert loaded is not None, name
+        assert "left_granularity" in loaded.model_dump_json(), name
     assert asyncio.run(gran.bucket_totals(between)) == gran.EXPECTED_BUCKETS
 
     assert upgrade(store_path(gran.reopen(backend=backend, base=interrupted))).code == 0
@@ -414,7 +418,8 @@ def test_a_settle_load_renames_in_memory_only(backend: str, tmp_path: Path) -> N
     storage = asyncio.run(_granularity_store(backend=backend, base=base, name="left"))
     before = raw(backend=backend, base=base)
     ds = asyncio.run(storage.get_datasource(gran.DS))
-    assert ds is not None and [g.name for g in ds.granularities] == ["left_granularity"]
+    assert ds is not None
+    assert [g.name for g in ds.granularities] == ["left_granularity"]
     assert asyncio.run(gran.bucket_totals(storage)) == gran.EXPECTED_BUCKETS
     assert raw(backend=backend, base=base) == before
 
@@ -429,7 +434,9 @@ def test_a_v10_model_without_its_datasource_entry_upgrades_later(backend: str, t
              "columns": [{"name": "qty", "type": "DOUBLE"}]}
     storage = asyncio.run(su.raw_store(backend=backend, base=base, datasource=None, models=[items]))
     loaded = asyncio.run(storage.get_dataset("items", data_source=su.DS))
-    assert loaded is not None and loaded.fields[0].datatype is not None and loaded.fields[0].datatype.value == "Float"
+    assert loaded is not None
+    assert loaded.fields[0].datatype is not None
+    assert loaded.fields[0].datatype.value == "Float"
     assert asyncio.run(su.raw_doc(storage, "items"))["version"] == 10
     assert upgrade(store_path(storage)).code == 0
     assert asyncio.run(su.raw_doc(gran.reopen(backend=backend, base=base), "items"))["version"] == (
@@ -489,8 +496,10 @@ def test_the_datasource_config_is_used_for_the_dialect(tmp_path: Path) -> None:
     assert upgrade(store_path(storage)).code == 0
     reopened = gran.reopen(backend="yaml", base=base)
     ds = asyncio.run(reopened.get_datasource(DATA_SOURCE))
-    assert isinstance(ds, DatasourceConfig) and ds.type == "duckdb"
+    assert isinstance(ds, DatasourceConfig)
+    assert ds.type == "duckdb"
     orders = asyncio.run(reopened.get_dataset("orders", data_source=DATA_SOURCE))
     assert orders is not None
     status_upper = orders.get_field("status_upper")
-    assert status_upper is not None and "DUCKDB" in status_upper.model_dump_json()
+    assert status_upper is not None
+    assert "DUCKDB" in status_upper.model_dump_json()

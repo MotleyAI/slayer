@@ -206,8 +206,9 @@ def test_the_read_only_backend_refuses_writes() -> None:
         orders = v15_models()["orders"]
     engine = SlayerQueryEngine(storage, policy=None, clock=lambda: CLOCK)
     try:
+        save = storage.save_dataset(orders)
         with pytest.raises(RuntimeError, match="read-only"):
-            engine.run_sync(storage.save_dataset(orders))
+            engine.run_sync(save)
     finally:
         engine.close()
 

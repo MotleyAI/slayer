@@ -78,7 +78,7 @@ def _parse_filter_expr(text: str) -> Any:
     return _projected(tree, text=text)
 
 
-_PARSE = "slayer.core.syntax.parse_expr"
+_PARSE = "slayer.core.syntax.parse_expr (a different tree shape: see the upgrade guide, Integrators reading SLayer objects)"
 _KEPT: dict[str, tuple[Callable[[], object], object]] = {
     "AggCall": (lambda: deprecated_input("slayer.engine.syntax.AggCall", "slayer.core.syntax.AggCall", removal="3.0"),
                 syntax.AggCall),

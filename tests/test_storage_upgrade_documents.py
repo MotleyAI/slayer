@@ -102,5 +102,6 @@ def test_a_pre_v8_document_is_refused() -> None:
     assert result.documents == []
     [refusal] = result.refused
     assert refusal.name == "items"
-    assert "refinement" in refusal.reason and "slayer storage upgrade" in refusal.reason
+    assert "refinement" in refusal.reason
+    assert "slayer storage upgrade" in refusal.reason
 

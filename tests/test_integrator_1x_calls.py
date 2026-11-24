@@ -396,7 +396,8 @@ def test_a_list_element_resolves_through_its_old_keywords() -> None:
 )
 def test_a_reference_target_resolves_as_in_1_8_4(qualifiers: tuple[str, ...], name: str, measures: list[str]) -> None:
     target = _resolve(qualifiers)
-    assert target.name == name and target.list_of is None
+    assert target.name == name
+    assert target.list_of is None
     with quiet():
         assert [m.name for m in target.measures] == measures
 
@@ -505,7 +506,8 @@ def test_a_retype_finding_reads_its_column() -> None:
         assert [(f.column, f.remedy_kind) for f in findings] == [("amount", "set_type"), ("paid_amount", "set_type")]
     with one_deprecation(naming="field"):
         assert findings[0].column == "amount"
-    assert findings[0].stored_type is DataType.FLOAT and findings[0].live_type is DataType.STRING
+    assert findings[0].stored_type is DataType.FLOAT
+    assert findings[0].live_type is DataType.STRING
     with quiet():
         assert findings[0].model_name == "orders"
 
@@ -541,8 +543,9 @@ def test_legacy_names_are_not_members() -> None:
     members = list(DataType)
     assert set(LEGACY_DATATYPES).isdisjoint(m.name for m in members)
     assert set(LEGACY_DATATYPES).isdisjoint(DataType.__members__)
+    adapter = TypeAdapter(DataType)
     with pytest.raises(ValidationError):
-        TypeAdapter(DataType).validate_python("INT")
+        adapter.validate_python("INT")
     assert set(LEGACY_DATATYPES).isdisjoint(TypeAdapter(DataType).json_schema()["enum"])
     assert pickle.loads(pickle.dumps(DataType.INTEGER)) is DataType.INTEGER
     with quiet():

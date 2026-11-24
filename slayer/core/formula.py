@@ -197,7 +197,7 @@ def _parse_formula(
     return _Projection(original=formula, agg_names=BUILTIN_AGGREGATIONS | custom, custom=custom).spec(tree)
 
 
-_NEW = "slayer.core.syntax.parse_expr"
+_NEW = "slayer.core.syntax.parse_expr (a different result shape: see the upgrade guide, Integrators reading SLayer objects)"
 _KEPT: dict[str, tuple[Callable[[], object], object]] = {
     "parse_formula": (
         lambda: deprecated_input("slayer.core.formula.parse_formula", _NEW, removal="3.0"), _parse_formula),

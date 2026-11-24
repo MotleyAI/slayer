@@ -58,8 +58,9 @@ def rejected(text: str, *needles: str, exc: type[Exception] = ValueError) -> str
 
 class TestOneParser:
     def test_parser_lives_in_core(self) -> None:
+        module = importlib.import_module("slayer.engine.syntax")
         with pytest.raises(ImportError, match="slayer.core.syntax"):
-            getattr(importlib.import_module("slayer.engine.syntax"), "parse_expr")
+            getattr(module, "parse_expr")
 
     def test_no_filter_only_entry_point(self) -> None:
         assert not hasattr(syntax, "parse_filter_expr")

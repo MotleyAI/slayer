@@ -48,13 +48,17 @@ def _file(module: str) -> Path:
 KEPT_UNLISTED: dict[str, str] = {"slayer.sql.column_expansion": "drop_root_hop"}
 
 
+def _reach(old: str) -> object:
+    """The old path itself, or a name it does not list when it is a kept path."""
+    if old in KEPT_UNLISTED:
+        return getattr(importlib.import_module(old), KEPT_UNLISTED[old])
+    return importlib.import_module(old)
+
+
 @pytest.mark.parametrize("old", sorted(STUBS))
 def test_the_old_path_names_its_new_location(old: str) -> None:
     with pytest.raises(ImportError) as raised:
-        if old in KEPT_UNLISTED:
-            getattr(importlib.import_module(old), KEPT_UNLISTED[old])
-        else:
-            importlib.import_module(old)
+        _reach(old)
     message = str(raised.value)
     assert old in message
     assert STUBS[old] in message

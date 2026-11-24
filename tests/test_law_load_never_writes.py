@@ -125,7 +125,8 @@ async def test_the_granularity_settle_writes_nothing(
     )
     await _assert_loads_never_write(storage, monkeypatch)
     loaded = await storage.get_dataset("bucketed", data_source=gran.DS)
-    assert loaded is not None and "left_granularity" in loaded.model_dump_json()
+    assert loaded is not None
+    assert "left_granularity" in loaded.model_dump_json()
 
 
 @pytest.mark.parametrize("backend", su.BACKENDS)

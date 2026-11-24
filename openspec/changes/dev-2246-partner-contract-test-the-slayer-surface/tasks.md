@@ -35,7 +35,7 @@
 
 ## 5. Architecture, docs, wrap-up (pr-implement)
 
-- [ ] 5.1 Apply the approved arc42 edit to `architecture/python.storage.arc42.md` 3.1 verbatim (decisions log 18). Verify: `poetry run la-arch-check` passes, as do `npx likec4 validate` and `la-typecheck` (no new errors versus the baseline).
-- [ ] 5.2 `docs/upgrading/2.0.md`: a section "Integrators reading SLayer objects" (the deprecated call forms with their replacements; the representation changes from design.md › Non-Goals; `slayer storage upgrade`), plus a Part 2 entry for each new deprecated form. `docs/reference/cli.md`: `storage upgrade`. `docs/configuration/storage.md`: loads never write, and how to upgrade. Verify: the pages are in the `zensical.toml` nav, and the doc-example checks pass.
-- [ ] 5.3 Run the local test scope (`la-affected-tests --base main` plus the stored-upgrade, tripwire and drift suites), then `poetry run ruff check slayer/ tests/`. Verify: both are green.
+- [x] 5.1 Apply the approved arc42 edit to `architecture/python.storage.arc42.md` 3.1 verbatim (decisions log 18). Verify: `poetry run la-arch-check` passes, as do `npx likec4 validate` and `la-typecheck` (no new errors versus the baseline).
+- [x] 5.2 `docs/upgrading/2.0.md`: a section "Integrators reading SLayer objects" (the deprecated call forms with their replacements; the representation changes from design.md › Non-Goals; `slayer storage upgrade`), plus a Part 2 entry for each new deprecated form. `docs/reference/cli.md`: `storage upgrade`. `docs/configuration/storage.md`: loads never write, and how to upgrade. Verify: the pages are in the `zensical.toml` nav, and the doc-example checks pass.
+- [x] 5.3 Run the local test scope (`la-affected-tests --base main` plus the stored-upgrade, tripwire and drift suites), then `poetry run ruff check slayer/ tests/`. Verify: both are green.
 - [ ] 5.4 Tracker: the PR description says it closes the load-write-back issue (storage 3.1's target issue). After merge, unblock the 1.x back-port issue.

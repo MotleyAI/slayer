@@ -125,7 +125,8 @@ class RemoveSpec(BaseModel):
     @property
     @deprecated("join_edges is deprecated; use relationship_edges", category=None)
     def join_edges(self) -> list[_JoinEdge]:
-        attribute_used(self, old="join_edges", new="relationship_edges")
+        attribute_used(self, old="join_edges", new="relationship_edges (a different edge shape: see the upgrade guide, "
+                                                  "Integrators reading SLayer objects)")
         return [_JoinEdge(target_model=e.to, name=e.name, join_pairs=e.column_pairs) for e in self.relationship_edges]
 
 
