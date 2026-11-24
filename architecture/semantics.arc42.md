@@ -56,9 +56,10 @@ is the coercion from coarser to finer.
      well-defined only when the home determines every grain member; so in 2.2 the
      constituent stands for its grain members. It contributes no leaf, and its
      interior is never inspected.
-   - **2.4 Aggregation.** An aggregation over a row-level source is homed on the
-     deepest dataset that determines the source's home (2.2) and every column-valued
-     parameter and non-overridden definition default — each a row-level expression
+   - **2.4 Aggregation.** An aggregation over a row-level source is homed on its
+     source anchor (2.6) when the anchor determines the source's home (2.2) and every
+     column-valued parameter and non-overridden definition default, else on the deepest
+     dataset that determines them all — each a row-level expression
      under 2.1, defaults resolved as references from the owning model with
      **cancellation**: a qualifier naming a dataset already on its path reads that
      row (`a.b.a ≡ a`) rather than re-joining, any other unreachable qualifier
@@ -80,7 +81,7 @@ is the coercion from coarser to finer.
      naming a dataset on the anchor's path cancelling back to it, any other qualifier
      the anchor cannot reach forward anchored at the query root instead. The home,
      when it exists, is among the inputs' paths and their longest common prefix;
-     candidates are tried deepest-first, ties preferring the anchor.
+     the anchor is tried first, then the other candidates deepest-first.
    - **2.7 Spelling-invariance.** The home depends only on the inputs' paths and
      types: `sum(customers.spend)` and `sum(customers.spend + 0)` share one home.
      A single-column source is the one-leaf case of 2.2 — the model
