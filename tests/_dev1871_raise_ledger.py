@@ -142,6 +142,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Name the finer dataset as `population`, declare the hop's cardinality or a covering unique key, "
          "or set distinct_dimension_values=True (the default).",
          category="checker", family="positions", user=True, owner="checker"),
+    _row(module=_EE, function="check_entry_dependencies_analyzable", exc="UnanalyzableDependencyError",
+         message="The … reads derived field …, whose definition no supported dialect can analyse for relationship "
+         "dependencies; an unanalyzable dependency is unsafe." + AT + "… …"
+         + SUGGEST + "Fix the field's SQL, or remove it from the ….",
+         category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
          + SUGGEST + "Pass a field declared DATE / TIMESTAMP (set DatasetField.datatype), min/max/first/last of one, "

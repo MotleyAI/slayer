@@ -1069,8 +1069,7 @@ def check_time_dimension_home(*, name: str, crossing: Optional[Tuple[str, Option
         return
     leaf, hop = crossing
     if hop is None:
-        check_input_dependencies_analyzable(alias=name, field=leaf)
-        return
+        check_entry_dependencies_analyzable(kind="time dimension", name=name, field=leaf)
     raise UnsafeRelationshipInputError(
         summary=f"The time dimension reads {leaf}, which crosses an unproven or fanning relationship hop "
         f"to {hop} from {anchor}: no dataset determines every field the expression reads.",
@@ -1087,8 +1086,7 @@ def check_raw_row_determined(
         return
     leaf, hop = crossing
     if hop is None:
-        check_input_dependencies_analyzable(alias=name, field=leaf)
-        return
+        check_entry_dependencies_analyzable(kind=kind, name=name, field=leaf)
     raise DistinctDimensionValuesError(
         summary=f"distinct_dimension_values=False lists one row per row of {population}, but the {kind} reads "
         f"{leaf} across the fanning or unproven relationship hop to {hop}, which would repeat rows of {population}.",
@@ -2371,6 +2369,16 @@ def check_input_dependencies_analyzable(
         f"dependency is unsafe.",
         location=f"metric {alias!r}",
         suggestion="Fix the field's SQL, or remove it from the aggregate.",
+    )
+
+
+def check_entry_dependencies_analyzable(*, kind: str, name: str, field: str) -> NoReturn:
+    """A dimension or time dimension reading a field no dialect can analyse for relationship hops is unsafe."""
+    raise UnanalyzableDependencyError(
+        summary=f"The {kind} reads derived field {field!r}, whose definition no supported dialect can analyse "
+        "for relationship dependencies; an unanalyzable dependency is unsafe.",
+        location=f"{kind} {name!r}",
+        suggestion=f"Fix the field's SQL, or remove it from the {kind}.",
     )
 
 

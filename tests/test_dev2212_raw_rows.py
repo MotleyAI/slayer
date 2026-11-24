@@ -191,6 +191,23 @@ async def test_an_unanalysable_dependency_fails_closed(backend: str) -> None:
             await _raw(eng, "orders", dimensions=["orders.bad"])
 
 
+@pytest.mark.parametrize(("datatype", "kw", "where"), [
+    (DataType.STRING, {"dimensions": ["orders.bad"]}, "dimension 'orders.bad'"),
+    (DataType.DATETIME, {"time_dimensions": [{"field": "orders.bad", "granularity": "month"}]},
+     "time dimension 'orders.bad'"),
+], ids=["dimension", "time_dimension"])
+async def test_an_unanalysable_dependency_is_located_at_its_entry(
+    backend: str, datatype: DataType, kw: dict[str, Any], where: str,
+) -> None:
+    bad = DatasetField(name="bad", datatype=datatype, expression=ExpressionObject(
+        dialects=[DialectEntry(dialect=d, expression=")((( bad") for d in ("DUCKDB", "SQLITE")]))
+    async with seed_engine(backend, datasets=seed_datasets(orders=_orders_with(bad))) as eng:
+        with pytest.raises(UnanalyzableDependencyError) as exc:
+            await _raw(eng, "customers", **kw)
+    assert where in str(exc.value)
+    assert "aggregate" not in str(exc.value)
+
+
 @pytest.mark.parametrize("dim", ["tickets.priority", "tickets.bad"])
 async def test_an_unrelated_dataset_keeps_its_own_error(backend: str, dim: str) -> None:
     bad = DatasetField(name="bad", datatype=DataType.STRING, expression=ExpressionObject(
