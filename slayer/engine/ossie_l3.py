@@ -126,7 +126,7 @@ def _bound(text: str, variables: Mapping[str, Any]) -> str:
     if not variables:
         return text
     try:
-        return bind_variables(text, variables)
+        return bind_variables(text, variables, windows=True)
     except ValueError:
         return text
 

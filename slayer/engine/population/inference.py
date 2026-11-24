@@ -29,7 +29,9 @@ from slayer.core.names import match_name
 from slayer.core.relationship_search import (
     HopFilter, UnaddressablePair, blocking_pairs, reachable, routes, shortest_route, unaddressable_pairs,
 )
-from slayer.core.relationship_walker import canonical_path, provably_to_one, terminal_dataset, walk
+from slayer.core.relationship_walker import (
+    canonical_path, provably_to_one, terminal_dataset, walk, with_list_children,
+)
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, declared_aliases
 from slayer.core.time_spine import TIME_SPINE_DATASET, reads_spine, names_spine
@@ -309,10 +311,11 @@ def _walk_to_one(
         return (None, _UNREACHABLE, ())
     if chain is None:
         return (None, _NO_EDGE, ())
-    if not all(provably_to_one(edge=e, target_dataset=datasets_by_name[e.to])
-               or (associate and _associates(e, datasets_by_name=datasets_by_name)) for e in chain):
+    universe = with_list_children(datasets_by_name)
+    if not all(provably_to_one(edge=e, target_dataset=universe[e.to])
+               or (associate and _associates(e, datasets_by_name=universe)) for e in chain):
         return (None, _UNREACHABLE, ())
-    return (datasets_by_name[chain[-1].to] if chain else start, _OK, canonical_path(chain))
+    return (universe[chain[-1].to] if chain else start, _OK, canonical_path(chain))
 
 
 def _anchored_tokens(*, start: SlayerDataset, parts: list[str], datasets_by_name: dict[str, SlayerDataset]) -> tuple[list[str] | None, str]:

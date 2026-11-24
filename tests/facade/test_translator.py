@@ -11,7 +11,7 @@ import time
 import pytest
 from pydantic import BaseModel
 
-from slayer.core.enums import DataType, JoinType, PRE_2_0_DATATYPES, TimeGranularity
+from slayer.core.enums import DataType, JoinType, PRE_2_0_DATATYPES, RelationshipCardinality, TimeGranularity
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import DatasetExtension
 from slayer.core.syntax import Cmp, DottedRef, parse_expr
@@ -202,11 +202,28 @@ def test_select_star_browse_mode_expands_to_columns(dialect) -> None:
     assert len(result.query.dimensions) > 0
 
 
+def _fanning_catalog() -> FacadeCatalog:
+    """``orders.customer_id`` many-to-one onto ``customers``: ``customers`` fans out to ``orders``."""
+    orders = SlayerDataset(
+        name="orders", data_source="jaffle", sql_table="orders",
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
+                                           cardinality=RelationshipCardinality.MANY_TO_ONE)],
+    )
+    customers = SlayerDataset(
+        name="customers", data_source="jaffle", sql_table="customers",
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING)],
+    )
+    return build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
+
+
 def test_select_star_browse_mode_skips_fanout_paths(dialect) -> None:
     """``SELECT *`` on the 1-side table keeps its own grain — dims across the
     inverted (fan-out) hop are excluded from expansion."""
     result = translate(
-        sql="SELECT * FROM customers", catalog=_catalog(), dialect=dialect,
+        sql="SELECT * FROM customers", catalog=_fanning_catalog(), dialect=dialect,
         expand_star_in_browse_mode=True,
     )
     assert isinstance(result, QueryResult)

@@ -81,8 +81,9 @@ table carries two fan-outs:
 * **Metrics** — derived from each dataset's `fields` × eligible aggregations, plus saved
   `DatasetMetric` expressions, plus custom aggregations on the dataset, plus a synthetic
   `row_count` metric (`count(*)`).
-* **Dimensions** — every non-hidden field of the dataset, plus reachable relationship targets
-  walked up to depth 3.
+* **Dimensions** — every non-hidden field of the dataset, plus the fields of relationship targets
+  reached over provably to-one hops, walked up to depth 3. A fanning target's fields are not
+  advertised; they still work in a grouped query.
 
 Cross-dataset dimensions use **dotted** path syntax — `customers.regions.name` is a
 multi-hop dimension on `orders` when `orders → customers → regions`. The same dotted
