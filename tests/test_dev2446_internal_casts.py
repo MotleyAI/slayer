@@ -51,7 +51,7 @@ async def test_aggregate_boolean_restoration(backend: tuple[str, SlayerQueryEngi
 
 
 @pytest.mark.parametrize(("expr", "expected"), [
-    ("json_value('{{\"v\": 1.5}}', '$.v' RETURNING INT)", None),
+    ("json_value('{{\"v\": 1.5}}', '$.v' RETURNING INT)", 2),
     ("json_value('{{\"v\": 5}}', '$.v' RETURNING BOOLEAN)", None),
     ("json_value('{{\"v\": \"7\"}}', '$.v' RETURNING INT)", 7),
 ])

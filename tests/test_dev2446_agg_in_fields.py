@@ -64,8 +64,9 @@ async def stored_field_names(engine: SlayerQueryEngine) -> set[str]:
     ("d", {"sql": "AGG(amount)"}),
 ])
 async def test_a_field_calling_agg_is_refused_when_saved(shop: SlayerQueryEngine, name: str, expression: Any) -> None:
+    dataset = orders(agg_field(name, expression))
     with pytest.raises(SlayerError) as info:
-        await shop.storage.save_dataset(orders(agg_field(name, expression)))
+        await shop.storage.save_dataset(dataset)
     assert_agg_refusal(info.value, field=name)
     assert name not in await stored_field_names(shop)
 
@@ -91,11 +92,13 @@ async def test_a_field_saved_without_the_check_fails_every_query(shop: SlayerQue
 
 
 async def test_save_and_query_refuse_with_one_error_class(shop: SlayerQueryEngine) -> None:
+    dataset = orders(agg_field("a", "AGG(amount)"))
     with pytest.raises(SlayerError) as saved:
-        await shop.storage.save_dataset(orders(agg_field("a", "AGG(amount)")))
-    await shop.storage.save_dataset(orders(agg_field("a", "AGG(amount)")), _validate=False)
+        await shop.storage.save_dataset(dataset)
+    await shop.storage.save_dataset(dataset, _validate=False)
+    query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.a"]})
     with pytest.raises(SlayerError) as queried:
-        await shop.execute(SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.a"]}))
+        await shop.execute(query)
     assert type(queried.value) is type(saved.value)
 
 

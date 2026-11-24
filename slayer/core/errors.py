@@ -1237,6 +1237,20 @@ class AggFilterError(SlayerError, ValueError):
         ))
 
 
+def agg_in_field_text(subject: str) -> str:
+    """Why ``subject``, a field, may not call ``AGG`` (the Ossie-document rule's wording)."""
+    return (f"{subject} calls AGG in a field expression. This version allows AGG only in metrics, as "
+            "AGG(dataset.metric) in a model-scoped metric and AGG(source.measure) in a dataset-scoped metric.")
+
+
+class AggInFieldError(SlayerError, ValueError):
+    """A field's Mode-B ``expression`` calls ``AGG``."""
+
+    def __init__(self, *, field: str) -> None:
+        self.field = field
+        super().__init__(agg_in_field_text(f"Field {field!r}"))
+
+
 class CaseCollisionError(SlayerError, ValueError):
     """A save would introduce names that differ only in case into one namespace."""
 

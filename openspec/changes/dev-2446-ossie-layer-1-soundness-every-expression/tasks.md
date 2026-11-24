@@ -16,33 +16,33 @@
 
 ## 2. Author casts (implement stage)
 
-- [ ] 2.1 Dedicated author-cast lowering hook in `slayer/sql/dialects/base.py`, called only from the author-cast render (`render_cast`, `slayer/sql/render/row_expr.py`) with the source type; internal `build_cast` / `build_try_cast` callers unchanged; verify 1.5 stays green
-- [ ] 2.2 Base conversion definition: BOOLEAN (`x <> 0` for numbers), integer rounding half away from zero, DECIMAL scale rounding with omitted scale 0 / precision 38, `VARCHAR(n)` truncation by code points; verify 1.1 on DuckDB
-- [ ] 2.3 Per-dialect overrides where native differs (SQLite, SQL Server, ClickHouse rounding; ClickHouse DECIMAL; MySQL / SQL Server BIT boolean; Snowflake / BigQuery `VARCHAR(n)` errors; BigQuery `BIGNUMERIC(38, 0)`), typed refusal where a dialect cannot express a rule; verify 1.1 emission for every Tier-1 dialect and live runs where available
-- [ ] 2.4 SQLite: boolean / decimal / varchar emulation (UDF or AST) per "SQLite casts to boolean, decimal and varchar types"; verify 1.4
-- [ ] 2.5 `TRY_CAST` built from the same definition: NULL → round → range check on the rounded value → guarded native cast inside the `CASE`; number → BOOLEAN; DECIMAL rounding and overflow NULL; verify 1.2 and 1.3
+- [x] 2.1 Dedicated author-cast lowering hook in `slayer/sql/dialects/base.py`, called only from the author-cast render (`render_cast`, `slayer/sql/render/row_expr.py`) with the source type; internal `build_cast` / `build_try_cast` callers unchanged; verify 1.5 stays green
+- [x] 2.2 Base conversion definition: BOOLEAN (`x <> 0` for numbers), integer rounding half away from zero, DECIMAL scale rounding with omitted scale 0 / precision 38, `VARCHAR(n)` truncation by code points; verify 1.1 on DuckDB
+- [x] 2.3 Per-dialect overrides where native differs (SQLite, SQL Server, ClickHouse rounding; ClickHouse DECIMAL; MySQL / SQL Server BIT boolean; Snowflake / BigQuery `VARCHAR(n)` errors; BigQuery `BIGNUMERIC(38, 0)`), typed refusal where a dialect cannot express a rule; verify 1.1 emission for every Tier-1 dialect and live runs where available
+- [x] 2.4 SQLite: boolean / decimal / varchar emulation (UDF or AST) per "SQLite casts to boolean, decimal and varchar types"; verify 1.4
+- [x] 2.5 `TRY_CAST` built from the same definition: NULL → round → range check on the rounded value → guarded native cast inside the `CASE`; number → BOOLEAN; DECIMAL rounding and overflow NULL; a JSON number with a fraction read as a number on every Tier-1 dialect (decision 25); verify 1.2 and 1.3
 
 ## 3. ROUND
 
-- [ ] 3.1 SQLite two-argument `round` with a negative digits argument rounds left of the point half away from zero; verify 1.6 on every dialect
+- [x] 3.1 SQLite two-argument `round` with a negative digits argument rounds left of the point half away from zero; verify 1.6 on every dialect
 
 ## 4. AGG in field expressions
 
-- [ ] 4.1 One save-time rule refusing `AGG` in a field's Mode-B expression, shared with the Ossie-document rule and its wording; verify 1.7 save cases
-- [ ] 4.2 Query-time backstop: binding a field expression that carries an `AGG`-wrapped reference raises the same typed error; verify 1.7 backstop case
-- [ ] 4.3 SlayerModel v29 migration (`slayer/storage/`, registered after v28; `CURRENT_VERSIONS["SlayerModel"] = 29`) unwrapping `AGG(` in field Mode-B expressions with a logged warning; verify 1.8
+- [x] 4.1 One save-time rule refusing `AGG` in a field's Mode-B expression, shared with the Ossie-document rule and its wording; verify 1.7 save cases
+- [x] 4.2 Query-time backstop: binding a field expression that carries an `AGG`-wrapped reference raises the same typed error; verify 1.7 backstop case
+- [x] 4.3 SlayerModel v29 migration (`slayer/storage/`, registered after v28; `CURRENT_VERSIONS["SlayerModel"] = 29`) unwrapping `AGG(` in field Mode-B expressions with a logged warning; verify 1.8
 
 ## 5. Strict judgement
 
-- [ ] 5.1 `ScalarSpec` gains the Ossie argument counts (declared in `slayer/core/keys.py`; `min_args` / `max_args` unchanged); `log` → {2}; `OSSIE_ARITIES` removed; verify 1.9 / 1.10 and the 1.11 cross-check
-- [ ] 5.2 Aggregate admission from the canonical parse (Ossie spelling + normalises to a built-in + supported shape); verify 1.9 aggregate cases
-- [ ] 5.3 `TIMESTAMP_NTZ` in the strict cast types; scalar wrong argument count → `E_INVALID_QUERY` (judged before lowering); verify 1.9
-- [ ] 5.4 Under strict, a bare Ossie keyword SLayer does not support yet (CURRENT_TIME) raises E_INVALID_QUERY, not E_NAME_NOT_FOUND; verify 1.11
+- [x] 5.1 `ScalarSpec` gains the Ossie argument counts (declared in `slayer/core/keys.py`; `min_args` / `max_args` unchanged); `log` → {2}; `OSSIE_ARITIES` removed; verify 1.9 / 1.10 and the 1.11 cross-check
+- [x] 5.2 Aggregate admission from the canonical parse (Ossie spelling + normalises to a built-in + supported shape); verify 1.9 aggregate cases
+- [x] 5.3 `TIMESTAMP_NTZ` in the strict cast types; scalar wrong argument count → `E_INVALID_QUERY` (judged before lowering); verify 1.9
+- [x] 5.4 Under strict, a bare Ossie keyword SLayer does not support yet (CURRENT_TIME) raises E_INVALID_QUERY, not E_NAME_NOT_FOUND; verify 1.11
 
 ## 6. Docs and close-out
 
-- [ ] 6.1 `docs/concepts/references.md` cast bullets (lines on `CAST` / `TRY_CAST` semantics) and `docs/concepts/expressions.md` `round` row: new meanings; verify by reading the rendered text against the spec
-- [ ] 6.2 `docs/upgrading/2.0.md` Part 1: one section per break (SQLite casts, integer rounding, bare `DECIMAL`, `VARCHAR(n)`, `TRY_CAST` fractional / boolean, SQLite negative-digit `round`, `AGG` in field expressions, strict argument counts), each with before / after
-- [ ] 6.3 `docs/interfaces/ossie-layer-3.md`: strict filter argument-count rule and refused aggregates
-- [ ] 6.4 Post release-note lines for every break as a comment on DEV-2220
-- [ ] 6.5 Enforcement bundle green: `poetry run la-arch-check`, `npx likec4 validate`, `la-typecheck`; `poetry run ruff check slayer/ tests/`; local test scope per the /la:pr flow
+- [x] 6.1 `docs/concepts/references.md` cast bullets (lines on `CAST` / `TRY_CAST` semantics) and `docs/concepts/expressions.md` `round` row: new meanings; verify by reading the rendered text against the spec
+- [x] 6.2 `docs/upgrading/2.0.md` Part 1: one section per break (SQLite casts, integer rounding, bare `DECIMAL`, `VARCHAR(n)`, `TRY_CAST` fractional / boolean, SQLite negative-digit `round`, `AGG` in field expressions, strict argument counts), each with before / after
+- [x] 6.3 `docs/interfaces/ossie-layer-3.md`: strict filter argument-count rule and refused aggregates
+- [x] 6.4 Post release-note lines for every break as a comment on DEV-2220
+- [x] 6.5 Enforcement bundle green: `poetry run la-arch-check`, `npx likec4 validate`, `la-typecheck`; `poetry run ruff check slayer/ tests/`; local test scope per the /la:pr flow

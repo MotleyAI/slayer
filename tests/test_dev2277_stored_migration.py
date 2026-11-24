@@ -163,7 +163,7 @@ class TestRewrites:
         storage = await store(tmp_path, seed_ds, backend=backend, models=(sq,))
         await load(storage, "sq")
         raw = await raw_doc(storage, "sq")
-        assert raw["version"] == UPGRADED_AT["SlayerModel"]
+        assert raw["version"] == CURRENT_VERSIONS["SlayerModel"]
         (written,) = raw["source_queries"]
         assert written["dimensions"] == ["orders.status"]
         assert written["metrics"] == ["count(orders.*)"]

@@ -111,6 +111,11 @@ TRY_CAST_TARGET_CASES: list[tuple[str, str, Any]] = [
     ("1 > 2", "DOUBLE", 0.0),
     ("'1.5'", "DOUBLE", 1.5),
     ("'1e3'", "DOUBLE", 1000.0),
+    # A JSON number is a number, a JSON string text.
+    ("json_value('{{\"v\": 1.5}}', '$.v')", "INT", 2),
+    ("json_value('{{\"v\": -2.5}}', '$.v')", "SMALLINT", -3),
+    ("json_value('{{\"v\": \"1.5\"}}', '$.v')", "INT", None),
+    ("json_value('{{\"v\": 7}}', '$.v')", "INT", 7),
 ]
 TRY_CAST_CASE_IDS = [f"{src}->{to}" for src, to, _ in TRY_CAST_TARGET_CASES]
 
@@ -343,7 +348,8 @@ def boolean_cell(value: Any) -> int | None:
     """A boolean cell as 1 / 0 / None; any other value fails."""
     if value is None:
         return None
-    assert value in (True, False, 0, 1) and not isinstance(value, str), f"not a boolean: {value!r}"
+    assert not isinstance(value, str), f"not a boolean: {value!r}"
+    assert value in (True, False, 0, 1), f"not a boolean: {value!r}"
     return int(value)
 
 
@@ -361,7 +367,8 @@ async def check_boolean_casts(engine: SlayerQueryEngine, *, dataset: str) -> Non
         "population": dataset, "dimensions": [id_ref], "filter": [f"CAST({id_ref} - 3 AS BOOLEAN) = TRUE"],
     }))
     kept = {int(r[id_ref]) for r in resp.data}
-    assert 3 not in kept and len(kept) > 1, resp.sql
+    assert 3 not in kept, resp.sql
+    assert len(kept) > 1, resp.sql
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": dataset, "dimensions": [id_ref], "filter": [f"NOT CAST({id_ref} - 3 AS BOOLEAN)"],
     }))

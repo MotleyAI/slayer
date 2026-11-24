@@ -284,8 +284,8 @@ def render_null_safe(*, op: str, operands: List[Expression], dialect: SqlDialect
 def render_cast(
     *, key: CastKey, part: Callable[[Any], Expression], dialect: SqlDialect, direct: bool = True,
 ) -> Expression:
-    """The database's own cast of the author's type; ``TRY_CAST`` through the dialect's lowering, and a
-    ``TRY_CAST`` of ``json_value`` (``RETURNING``) as the dialect's typed read when ``direct`` (its inputs readable)."""
+    """The author's ``CAST`` / ``TRY_CAST`` through the dialect's author-cast lowering, and a ``TRY_CAST`` of
+    ``json_value`` (``RETURNING``) as the dialect's typed read when ``direct`` (its inputs readable)."""
     to = cast_target(key.type_text, dialect=dialect)
     if key.try_:
         require_library(dialect, "try_cast")
@@ -295,12 +295,9 @@ def render_cast(
         value, path, native = json_operands(source, part=part, dialect=dialect)
         return dialect.build_json_value_as(value, path, native, to, key.data_type)
     value = part(source)
-    if not key.try_:
-        return dialect.build_cast(value, to)
-    value.meta[CONSTANT_INPUT] = reads_no_rows(source)
-    if key.data_type is DataType.INTEGER:
-        return dialect.build_integer_try_cast(value, to, source=key.numeric_source)
-    return dialect.build_try_cast(value, to)
+    if key.try_:
+        value.meta[CONSTANT_INPUT] = reads_no_rows(source)
+    return dialect.build_author_cast(value, to, source=key.numeric_source, try_=key.try_)
 
 
 def render_temporal_comparison(
@@ -331,6 +328,10 @@ def render_scalar_call(
         return dialect.build_modulo(args[0], args[1], True)
     if name == "ln":
         return dialect.natural_log(args[0])
+    if name == "round" and len(args) == 2:
+        rounded = dialect.build_round(args[0], args[1])
+        if rounded is not None:
+            return rounded
     if name == "log" and len(args) == 1:
         # Postgres's one-argument log is base 10; elsewhere bare LOG is often ln.
         return passthrough_call(name="log10", args=args, dialect=dialect)

@@ -1,7 +1,8 @@
 """Ossie Layer 1 conformance of a Mode B filter: which constructs ``OSSIE_SQL_2026`` defines with SLayer's meaning.
 
 The judgment reads the one Mode B parse (``core.syntax``): its node kinds and operators, the calls as written
-(each scalar's ``ossie`` flag) and the non-Ossie spellings the parser reports rewriting.
+(each scalar's Ossie argument counts, each aggregate's spelling, the built-in it names and its shape) and the
+non-Ossie spellings the parser reports rewriting.
 """
 
 from __future__ import annotations
@@ -13,7 +14,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import AMBIGUOUS_WEEKDAY_NAMES, DATE_PART_ALIASES, Conformance
+from slayer.core.enums import (
+    AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, Conformance, normalize_aggregation_name,
+)
 from slayer.core.errors import IllegalWindowInFilterError, UnknownConformanceError
 from slayer.core.keys import SCALAR_SPECS, SCALAR_SPELLINGS
 from slayer.core.syntax import (
@@ -42,11 +45,11 @@ OSSIE_AGGREGATE_SPELLINGS = frozenset({"sum", "count", "avg", "min", "max", "std
 #: The names the parser gives Ossie's ``COUNT(DISTINCT …)`` and ``PERCENTILE_CONT(…) WITHIN GROUP (…)``; SLayer's own
 #: calls of these names are refused by their written callee.
 REWRITTEN_AGGREGATES = frozenset({"count_distinct", "percentile"})
-#: Ossie's argument counts for functions SLayer also defines with other arities.
-OSSIE_ARITIES = {"regexp_extract": 2}
 #: ``CAST`` target types Ossie defines (the first word of the written type).
 OSSIE_CAST_TYPES = frozenset({"VARCHAR", "STRING", "INTEGER", "INT", "BIGINT", "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE",
-                              "BOOLEAN", "DATE", "TIMESTAMP"})
+                              "BOOLEAN", "DATE", "TIMESTAMP", "TIMESTAMP_NTZ"})
+#: Bare Ossie keywords SLayer cannot evaluate yet (the time-of-day type comes with DEV-2282).
+UNSUPPORTED_OSSIE_KEYWORDS = frozenset({"current_time"})
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _ISO_TIME = re.compile(r"[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?")
 _ISO_ZONE = re.compile(r"Z|[+-]\d{2}:?\d{2}")
@@ -144,8 +147,10 @@ def _text_problem(text: str) -> Optional[str]:
         if name in REWRITTEN_AGGREGATES:
             return f"{call.callee}() is a SLayer function Ossie does not define"
         spec = SCALAR_SPECS.get(name)
-        if spec is not None and not spec.ossie:
+        if spec is not None and not spec.ossie_arg_counts:
             return f"{call.callee}() is a SLayer function Ossie does not define"
+        if spec is not None and not spec.ossie_admits(call.arguments):
+            return f"{call.callee}() with {call.arguments} arguments is not an Ossie call"
         if spec is None and name in (SCALAR_SPELLINGS | set(DATE_PART_ALIASES) | AMBIGUOUS_WEEKDAY_NAMES) \
                 and name not in OSSIE_CALL_SPELLINGS:
             return f"{call.callee}() is a SLayer function Ossie does not define"
@@ -181,6 +186,8 @@ def _operator(node: Any, out: FilterReading, allowed: frozenset[str], operands: 
 def _reference_node(node: Any, out: FilterReading) -> None:
     if node.evaluated:
         _refuse(out, "AGG(…) is reserved to model-scoped metrics")
+    if isinstance(node, Ref) and not node.quoted and node.name.lower() in UNSUPPORTED_OSSIE_KEYWORDS:
+        _refuse(out, f"{node.name} is not supported yet")
     out.references.append(node)
 
 
@@ -190,13 +197,6 @@ def _date_trunc(node: DateTrunc, out: FilterReading) -> None:
     _visit(node.value, out)
 
 
-def _scalar(node: ScalarCall, out: FilterReading) -> None:
-    arity = OSSIE_ARITIES.get(node.name.lower())
-    if arity is not None and len(node.args) != arity:
-        _refuse(out, f"{node.name}() takes {arity} arguments in Ossie")
-    _visit_all(node.args, out)
-
-
 def _cast(node: Cast, out: FilterReading) -> None:
     if node.type_text.split("(")[0].split(" ")[0] not in OSSIE_CAST_TYPES:
         _refuse(out, f"CAST to {node.type_text} is not an Ossie type")
@@ -204,13 +204,18 @@ def _cast(node: Cast, out: FilterReading) -> None:
 
 
 def _aggregate(node: AggCall, out: FilterReading) -> None:
-    if node.agg.lower() not in OSSIE_AGGREGATE_SPELLINGS | REWRITTEN_AGGREGATES:
+    written = node.agg.lower()
+    rewritten = written in REWRITTEN_AGGREGATES
+    if written not in OSSIE_AGGREGATE_SPELLINGS and not rewritten:
         _refuse(out, f"{node.agg}() is not an Ossie function")
+    elif normalize_aggregation_name(written) not in BUILTIN_AGGREGATIONS:
+        _refuse(out, f"{node.agg}() is not supported yet")
     out.aggregate = True
     if node.kwargs:
         _refuse(out, f"{node.agg}() takes no keyword arguments in Ossie")
     # A rewritten Ossie aggregate's named arguments are the parser's (``p=`` of ``PERCENTILE_CONT(p)``), not written.
-    rewritten = node.agg.lower() in REWRITTEN_AGGREGATES
+    if not rewritten and node.args:
+        _refuse(out, f"{node.agg}() takes one argument in Ossie")
     args = [a.value if rewritten and isinstance(a, NamedArg) else a for a in node.args]
     _visit_all((p for p in (node.source, *args, node.filter) if p is not None), out)
 
@@ -250,7 +255,7 @@ _VISITORS: Dict[type, Callable[[Any, FilterReading], None]] = {
     TemporalLiteral: lambda _node, _out: None,
     StarSource: lambda _node, _out: None,
     TupleLit: lambda node, out: _visit_all(node.elements, out),
-    ScalarCall: _scalar,
+    ScalarCall: lambda node, out: _visit_all(node.args, out),
     DateTrunc: _date_trunc,
     Cast: _cast,
     Arith: lambda node, out: _operator(node, out, OSSIE_ARITHMETIC, (node.left, node.right)),

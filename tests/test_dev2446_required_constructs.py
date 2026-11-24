@@ -208,8 +208,9 @@ async def test_admitted_aggregate_has_ossies_value(engine: SlayerQueryEngine, ro
 
 @pytest.mark.parametrize("row", RESERVED, ids=_row_id)
 async def test_a_reserved_construct_is_refused(engine: SlayerQueryEngine, row: Row) -> None:
+    query = q(dimensions=[{"field": row.expression, "alias": "v"}], filter="orders.id = 3")
     with pytest.raises(SlayerError):
-        await engine.execute(q(dimensions=[{"field": row.expression, "alias": "v"}], filter="orders.id = 3"))
+        await engine.execute(query)
 
 
 def _strict_code(row: Row) -> str | None:

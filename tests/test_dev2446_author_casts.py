@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expr
 
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._cast_fixtures import (
@@ -122,7 +123,7 @@ class TestNonFiniteDoubles:
         assert single(resp) is None, resp.sql
 
 
-def _sql(sql: str, dialect: str) -> exp.Expression:
+def _sql(sql: str, dialect: str) -> Expr:
     return sqlglot.parse_one(sql, dialect=dialect)
 
 
@@ -159,4 +160,5 @@ class TestEmission:
         sql = await emit(q(dimensions=["orders.id", {"field": "CAST(orders.amount AS DECIMAL(10,2))", "alias": "x"}]),
                          dialect=dialect)
         casts = [c for c in _sql(sql, dialect).find_all(exp.Cast) if "amount" in c.this.sql().lower()]
-        assert casts and all([e.sql() for e in c.to.expressions][-1:] == ["2"] for c in casts), sql
+        assert casts, sql
+        assert all([e.sql() for e in c.to.expressions][-1:] == ["2"] for c in casts), sql

@@ -160,6 +160,13 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
     return node
 
 
+def _jsonb_parts(value: Expression, path: JsonPath) -> tuple[Expression, list[Expression]]:
+    """``value`` as JSONB and ``path`` as its key arguments."""
+    already = isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.JSONB)
+    doc = value.copy() if already else exp.Cast(this=value.copy(), to=exp.DataType.build("JSONB"))
+    return doc, [lit(str(step)) for step in path.steps]
+
+
 def _constant(value: Expression) -> bool:
     """The outermost ``TRY_CAST`` input's own tag (``walk`` is breadth-first), so a nested cast's never counts."""
     return next((bool(node.meta[CONSTANT_INPUT]) for node in value.walk() if CONSTANT_INPUT in node.meta), False)
@@ -167,6 +174,7 @@ def _constant(value: Expression) -> bool:
 
 class PostgresDialect(SqlDialect):
     sqlglot_name: str = "postgres"
+    varchar_cast_truncates: ClassVar[bool] = True
     array_cast_types: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
@@ -311,17 +319,34 @@ class PostgresDialect(SqlDialect):
                     lit("gi" if case_insensitive else "g"))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
-        jsonb = exp.DataType.build("JSONB")
-        already = isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.JSONB)
-        doc = value.copy() if already else exp.Cast(this=value.copy(), to=jsonb)
-        keys = [lit(str(step)) for step in path.steps]
+        doc, keys = _jsonb_parts(value, path)
         found = anon("JSONB_EXTRACT_PATH", doc, *keys)
         scalar = exp.In(this=anon("JSONB_TYPEOF", found), expressions=[lit("string"), lit("number"), lit("boolean")])
         read = case((scalar, anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys)))
+        return self._valid_json(value, read, native=native)
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        doc, keys = _jsonb_parts(value, path)
+        number = exp.EQ(this=anon("JSONB_TYPEOF", anon("JSONB_EXTRACT_PATH", doc, *keys)), expression=lit("number"))
+        read = exp.Cast(this=anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys), to=exp.DataType.build("DOUBLE PRECISION"))
+        return self._valid_json(value, case((number, read)), native=native)
+
+    def round_half_away(self, value: Expression, digits: int) -> Expression:
+        """``round(double precision)`` breaks a tie to even, and a double reaches ``numeric`` through 15 digits:
+        to an integer, the fraction is compared exactly; to digits, through ``numeric``."""
+        if digits:
+            return exp.Round(this=exp.Cast(this=value.copy(), to=exp.DataType.build("DECIMAL")), decimals=lit(digits))
+        magnitude = exp.Abs(this=value.copy())
+        whole = exp.Floor(this=magnitude.copy())
+        up = case((exp.GTE(this=exp.Sub(this=magnitude, expression=whole.copy()), expression=exp.Literal.number("0.5")),
+                   lit(1)), default=lit(0))
+        return exp.Mul(this=exp.Sign(this=value.copy()), expression=exp.Paren(this=exp.Add(this=whole, expression=up)))
+
+    def _valid_json(self, value: Expression, read: Expression, *, native: bool) -> Expression:
+        """``read`` guarded by the input's JSON validity where the server can check it."""
         if native or not self.validates_input():
             return read
-        valid = anon("PG_INPUT_IS_VALID", as_text(value), lit("jsonb"))
-        return case((valid, read))
+        return case((anon("PG_INPUT_IS_VALID", as_text(value), lit("jsonb")), read))
 
     def build_list_call(
         self, fn: ListFn, args: tuple[Expression, ...], *, each: Optional[DataType] = None,

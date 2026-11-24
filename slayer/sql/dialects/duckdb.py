@@ -110,6 +110,7 @@ def _plain_index_columns(sql: str | None) -> list[str] | None:
 
 class DuckdbDialect(SqlDialect):
     sqlglot_name: str = "duckdb"
+    number_cast_rounds: ClassVar[bool] = True
     array_cast_types: ClassVar[bool] = True
     unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
         exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
@@ -166,6 +167,12 @@ class DuckdbDialect(SqlDialect):
                                      expressions=[lit(t) for t in _NON_SCALAR_JSON]))
         read = case((scalar, anon("JSON_EXTRACT_STRING", value, text)))
         return case((anon("JSON_VALID", value), read))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        text = lit(path.text)
+        fraction = exp.EQ(this=anon("JSON_TYPE", value, text), expression=lit("DOUBLE"))
+        number = exp.Cast(this=anon("JSON_EXTRACT_STRING", value, text), to=exp.DataType.build("DOUBLE"))
+        return case((anon("JSON_VALID", value), case((fraction, number))))
 
     def list_length(self, values: Expression) -> Expression:
         return anon("LEN", values)

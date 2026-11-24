@@ -59,6 +59,7 @@ if TYPE_CHECKING:
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
 _DATETIME = exp.DataType.build("DATETIME")
+_NUMERIC_INTEGER_DIGITS, _NUMERIC_SCALE = 29, 9
 
 
 _ELEMENT, _WANTED, _OFFSET = LIST_ELEMENT, "__slayer_w", "__slayer_o"
@@ -129,7 +130,9 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     """BigQuery dialect."""
 
     sqlglot_name: str = "bigquery"
-    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.INT,
+    })
     array_cast_types: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"bigquery"})
     sa_backend_names: frozenset[str] = frozenset({"bigquery"})
@@ -159,6 +162,18 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
+
+    def build_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        """sqlglot drops a type's parameters inside ``CAST``; BigQuery keeps them (``NUMERIC(10, 2)``)."""
+        if not any(isinstance(p, exp.DataTypeParam) for p in to.expressions):
+            return super().build_cast(value, to)
+        spelled = exp.DataType(this=exp.DataType.Type.USERDEFINED, kind=to.sql(dialect=self.sqlglot_name))
+        return super().build_cast(value, spelled)
+
+    def decimal_type(self, precision: int, scale: int) -> exp.DataType:
+        """``NUMERIC`` holds 29 integer and 9 fractional digits; ``BIGNUMERIC`` the rest."""
+        name = "NUMERIC" if precision - scale <= _NUMERIC_INTEGER_DIGITS and scale <= _NUMERIC_SCALE else "BIGNUMERIC"
+        return exp.DataType.build(f"{name}({precision}, {scale})", dialect=self.sqlglot_name)
 
     def list_length(self, values: Expression) -> Expression:
         return anon("ARRAY_LENGTH", values)
@@ -259,6 +274,12 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_VALUE", value, lit(path.text))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        """``JSON_QUERY`` keeps a string's quotes, so only a number reads as one."""
+        found = anon("JSON_QUERY", value, lit(path.text))
+        return exp.TryCast(this=anon("TO_JSON_STRING", found) if native else found,
+                           to=exp.DataType.build("DOUBLE"), safe=True)
 
     def columns_query(self, location: TableLocation) -> exp.Select:
         """Dataset-scoped INFORMATION_SCHEMA: a dataset-scoped account cannot read the project-level view."""

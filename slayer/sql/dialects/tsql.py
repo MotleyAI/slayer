@@ -196,6 +196,7 @@ def _bit_value(predicate: Expr) -> Expression:
 
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     sqlglot_name: str = "tsql"
+    decimal_text_exponent: ClassVar[bool] = False
     native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "SQL Server"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
@@ -389,6 +390,17 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                          expression=is_null(anon("JSON_QUERY", document, lit(text))))
         read = case((is_not_null(lax), lax.copy()), (scalar, anon("JSON_VALUE", document, lit(f"strict {text}"))))
         return case((exp.EQ(this=anon("ISJSON", value, exp.var("VALUE")), expression=lit(1)), read))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        """``JSON_MODIFY`` writes the scalar back as a string and keeps the rest of the text: only a non-string
+        changes the document (a subquery, ``OPENJSON``, is refused inside an aggregate). Read as ``[document]``."""
+        document = anon("CONCAT", lit("["), exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()), lit("]"))
+        text = lit(json_path_text((0, *path.steps)))
+        read = anon("JSON_VALUE", document, text)
+        not_string = exp.NEQ(this=anon("JSON_MODIFY", document, text, read), expression=document.copy())
+        valid = exp.EQ(this=anon("ISJSON", document), expression=lit(1))
+        return case((exp.And(this=valid, expression=not_string),
+                     exp.TryCast(this=read.copy(), to=exp.DataType.build("FLOAT"))))
 
     def describe_result_statement(self, probe: exp.National) -> Expression:
         """``EXEC sp_describe_first_result_set @tsql = N'…'`` (sqlglot's ``exp.Execute`` spells it ``EXECUTE``)."""

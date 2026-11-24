@@ -1413,6 +1413,18 @@ def call_spans(text: str) -> Tuple[CallSpan, ...]:
         return ()
 
 
+def unwrap_agg_calls(text: str) -> str:
+    """``text`` with each ``AGG(x)`` call (any case) replaced by ``x``, every other byte kept."""
+    out: List[str] = []
+    last = 0
+    for call in call_spans(text):
+        if call.callee.casefold() != "agg" or call.arguments != 1 or call.start < last:
+            continue
+        out += [text[last:call.start], text[text.index("(", call.start) + 1:call.end - 1].strip()]
+        last = call.end
+    return "".join([*out, text[last:]])
+
+
 #: Parenthesis depth past which an expression is refused: deeper ones exhaust the parser's recursion.
 MAX_NESTING = 32
 
