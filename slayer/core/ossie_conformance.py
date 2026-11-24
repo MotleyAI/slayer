@@ -285,7 +285,8 @@ def _frame(frame: WindowFrame, out: FilterReading) -> None:
 def _offset_rank(bound: Tuple[str, Optional[Decimal]]) -> Decimal:
     """Order within a bound kind: a farther PRECEDING comes first."""
     offset = bound[1] or Decimal(0)
-    return -offset if bound[0] == "preceding" else offset
+    # ``copy_negate`` is exact: ``-offset`` would round, or overflow on ``1e1000000000``.
+    return offset.copy_negate() if bound[0] == "preceding" else offset
 
 
 def _refusal(why: Callable[[Any], str]) -> Callable[[Any, FilterReading], None]:
