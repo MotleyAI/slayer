@@ -8,30 +8,30 @@ emission helper `tests/_engine_helpers.py::_engine_generate` (dry run); AST asse
 every `exp.Column` whose name is the camelCase leaf has `quoted=True` and the same qualifier in every
 clause.
 
-- [ ] 1.1 Emission, Postgres + Snowflake: dimensions `orderNumber`, `accounts.extRef` + filter
+- [x] 1.1 Emission, Postgres + Snowflake: dimensions `orderNumber`, `accounts.extRef` + filter
   `accounts.extRef = 'a'`; and `accounts.extRef` grouped under `{"formula": "count(*)"}` with no filter.
   Verify: both fail on today's 1.x (projection / `GROUP BY` unquoted).
-- [ ] 1.2 Emission: two-hop `accounts.regions.regionName`, plus a variant whose two-hop join alias is
+- [x] 1.2 Emission: two-hop `accounts.regions.regionName`, plus a variant whose two-hop join alias is
   fitted to the identifier limit or disambiguated against a colliding name; assert the column's
   qualifier equals the emitted `JOIN` alias. Verify: fails on today's 1.x.
-- [ ] 1.3 Emission: time dimension `month(accounts.signedUpAt)` in the base select, as a duration-window
+- [x] 1.3 Emission: time dimension `month(accounts.signedUpAt)` in the base select, as a duration-window
   source, and as a collapsed window grain (the `_raw_time_col_expr_for_planned` callers at
   `generator.py` ~2367 / ~2382 / ~3263). Verify: each fails on today's 1.x.
-- [ ] 1.4 Emission: ranked CTE — a `first` / `last` measure partitioned by `accounts.extRef`, and one
+- [x] 1.4 Emission: ranked CTE — a `first` / `last` measure partitioned by `accounts.extRef`, and one
   ranked by `accounts.signedUpAt`; assert quoting inside the ranked subquery (reaches
   `_ranked_scope_expr`). Verify: fails on today's 1.x; confirm the route by temporarily breakpointing
   or by the subquery shape.
-- [ ] 1.5 Emission: ordering by `accounts.extRef` — projected; grouped but not projected
+- [x] 1.5 Emission: ordering by `accounts.extRef` — projected; grouped but not projected
   (materialised); and an ungrouped query neither projecting nor materialising it (reaches the
   hidden-`ORDER BY` split-reference branch, `generator.py` ~6289). Verify: every route that reads the
   source column fails on today's 1.x; note which, if any, already pass.
-- [ ] 1.6 Lowercase regression: the 1.1 queries with all-lowercase joined columns emit byte-identical
+- [x] 1.6 Lowercase regression: the 1.1 queries with all-lowercase joined columns emit byte-identical
   SQL to today's 1.x (pin today's output as the expected string). Verify: passes on today's 1.x.
-- [ ] 1.7 Execution on Postgres via pytest-postgresql (follow an existing `postgresql_proc` test, e.g.
+- [x] 1.7 Execution on Postgres via pytest-postgresql (follow an existing `postgresql_proc` test, e.g.
   `tests/test_dev2169_postgres.py`; sandboxed Postgres needs TCP only): quoted camelCase DDL, seed
   rows, run both 1.1 queries, compare to hand-computed rows. Not marked `integration`. Verify: fails
   on today's 1.x with an undefined-column error.
-- [ ] 1.8 Fail closed: a plain column reference whose leaf the terminal model does not declare, reaching
+- [x] 1.8 Fail closed: a plain column reference whose leaf the terminal model does not declare, reaching
   emission in a projection and in a filter (drive `ScopeFrame.resolve` / the generator directly — the
   binder refuses it earlier) → `UnknownReferenceError`, no SQL. Verify: fails on today's 1.x (today it
   emits SQL or raises a bare `ValueError`).
