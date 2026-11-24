@@ -41,6 +41,7 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._mcp_results import text_blocks
 
 DS = "acme"
 #: (storage backend, database dialect) pairs; together they cover both of each.
@@ -323,7 +324,7 @@ async def mcp_text(storage: StorageBackend, tool: str, **arguments) -> str:
     """Call one MCP ``tool`` on a fresh server over ``storage``; the text reply."""
     server = create_mcp_server(storage=storage, _seed_help=False)
     try:
-        blocks, _ = await server.call_tool(name=tool, arguments=arguments)
+        blocks = text_blocks(await server.call_tool(name=tool, arguments=arguments))
     finally:
         await getattr(server, "_slayer_engine").aclose()
     return getattr(next(iter(blocks)), "text")

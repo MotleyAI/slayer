@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.client import Client
 from mcp.types import Implementation
 from pydantic import ValidationError
 
@@ -217,7 +217,7 @@ async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) 
     usage_reporting.start()
     server = create_mcp_server(storage=YAMLStorage(base_dir=sentinel_store), _seed_help=False)
     client = Implementation(name=HOSTILE, version=HOSTILE)
-    async with create_connected_server_and_client_session(server, client_info=client) as session:
+    async with Client(server, mode="legacy", client_info=client) as session:
         await session.call_tool("query", {"query": {
             "population": f"{SENT}_model",
             "metrics": [f"{SENT}_agg({SENT}_model.{SENT}_col)"],
@@ -417,7 +417,7 @@ async def test_new_fields_never_carry_a_sentinel(sentinel_store: str) -> None:
     usage_reporting.start()
     server = create_mcp_server(storage=YAMLStorage(base_dir=sentinel_store), _seed_help=False)
     client = Implementation(name=HOSTILE, version=HOSTILE)
-    async with create_connected_server_and_client_session(server, client_info=client) as session:
+    async with Client(server, mode="legacy", client_info=client) as session:
         await session.call_tool("query", {"query": {"population": f"{SENT}_model", "metrics": [f"sum({SENT}_model.{SENT}_col)"]}})
         await session.call_tool("query", {"query": {"population": HOSTILE, "metrics": [f"count({spelled_name(HOSTILE)}.*)"]}})
     end_process()

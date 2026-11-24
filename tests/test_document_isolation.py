@@ -311,7 +311,7 @@ class TestEnumerationSkipsAndWarns:
 
 async def _mcp_text(storage: StorageBackend, *, tool: str, arguments: dict[str, Any]) -> str:
     result: Any = await create_mcp_server(storage=storage).call_tool(name=tool, arguments=arguments)
-    return result[0][0].text
+    return result.content[0].text
 
 
 class TestEnumerationSurfaces:

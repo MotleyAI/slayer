@@ -165,9 +165,9 @@ async def _call(
     name: str,
     arguments: dict[str, Any] | None = None,
 ) -> str:
-    content_blocks, _ = await mcp_server.call_tool(
+    content_blocks = (await mcp_server.call_tool(
         name=name, arguments=arguments or {}
-    )
+    )).content
     return content_blocks[0].text
 
 

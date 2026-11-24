@@ -28,7 +28,7 @@ from tests._dev2015_fixtures import GRANULARITIES, GRANULARITY_NAMES, returns_da
 
 
 async def _call(server, *, name: str, arguments: dict[str, Any]) -> str:
-    blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return blocks[0].text
 
 
