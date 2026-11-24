@@ -953,9 +953,10 @@ class SQLGenerator:
         """A root-bound alias resolver for ``expand_derived_refs_sync`` so a"""
         return lambda path: self._join_alias(root=root, path=path)
 
-    def _scope_frame(self, *, model, relation, bundle, allocator, attached_columns=None):
+    def _scope_frame(self, *, model, relation, bundle, allocator, attached_columns=None, node_models=None):
         """Build a ``ScopeFrame`` rooted at ``model`` / ``relation`` on the"""
         return ScopeFrame(
+            node_models=dict(node_models or {}),
             scope_id=allocator.next_scope_id(relation),
             root_model=model,
             root_relation=relation,
@@ -1962,6 +1963,32 @@ class SQLGenerator:
             placeholder_elements=self._placeholder_elements(),
         )
 
+    @staticmethod
+    def _resolve_plain_row_columns(
+        *, render_slot_ids: Iterable[str], order_slot_ids: Iterable[str], slots_by_id: Dict[str, Any],
+        scope: ScopeFrame,
+    ) -> Dict[str, Expression]:
+        """Resolve rendered ROW slots' plain columns (a ``TimeTruncKey``'s untruncated) through ``scope``;
+        order-only slots, which the base select does not read, register their join path only."""
+
+        def _plain(sid: str) -> Optional[ColumnKey]:
+            slot = slots_by_id.get(sid)
+            if slot is None or slot.phase != Phase.ROW:
+                return None
+            column = slot.key.column if isinstance(slot.key, TimeTruncKey) else slot.key
+            return column if isinstance(column, ColumnKey) else None
+
+        out: Dict[str, Expression] = {}
+        for sid in render_slot_ids:
+            column = _plain(sid)
+            if column is not None and sid not in out:
+                out[sid] = scope.resolve(column)
+        for sid in order_slot_ids:
+            column = _plain(sid)
+            if column is not None and sid not in out:
+                scope.register_path_prefixes(column.path)
+        return out
+
     def _render_computed_dims_via_scope(
         self, *, base_render_order, slots_by_id, scope,
     ) -> Dict[str, Expression]:
@@ -2031,18 +2058,18 @@ class SQLGenerator:
     ):
         """Build the base SELECT (sqlglot ``Select``) for ``generate_from_planned``."""
 
-        # Every join-crossing ref registers its path into host_scope.join_paths as it resolves (Law 1); first-seen order
-        # keeps the FROM byte-identical to the legacy collectors'.
-        needed_join_paths = self._collect_joined_paths_for_base(
-            base_render_order=base_render_order,
-            slots_by_id=slots_by_id,
-            order_slot_ids=[e.slot_id for e in planned_query.order],
-        )
+        # Every join-crossing ref registers its path into host_scope.join_paths as it resolves (Law 1); plain row
+        # columns resolve first, so first-seen order keeps the FROM stable.
         host_allocator = self._gen_allocator or self._new_allocator()
         host_scope = self._scope_frame(
             model=source_model, relation=source_relation,
             bundle=bundle, allocator=host_allocator,
             attached_columns=regroup_env,
+        )
+        plain_expr_by_sid = self._resolve_plain_row_columns(
+            render_slot_ids=base_render_order,
+            order_slot_ids=[e.slot_id for e in planned_query.order],
+            slots_by_id=slots_by_id, scope=host_scope,
         )
         derived_expr_by_sid = self._expand_derived_row_dims(
             base_render_order=base_render_order, slots_by_id=slots_by_id,
@@ -2072,13 +2099,10 @@ class SQLGenerator:
             scope=host_scope,
             skip_cross_model_aggs=skip_cross_model_aggs,
         )
-        for p in host_scope.join_paths.as_list():
-            if p not in needed_join_paths:
-                needed_join_paths.append(p)
         from_clause, base_joins = self._build_from_and_joins(
             source_model=source_model,
             source_relation=source_relation,
-            joined_paths=needed_join_paths,
+            joined_paths=host_scope.join_paths.as_list(),
             bundle=bundle,
         )
 
@@ -2111,26 +2135,17 @@ class SQLGenerator:
             if slot.phase == Phase.ROW:
                 key = slot.key
                 if isinstance(key, ColumnKey):
-                    attached = regroup_env.get(key) if regroup_env else None
-                    if attached is not None:
-                        col_expr = attached.copy()
-                    else:
-                        col_expr = self._joined_or_local_dim_expr(
-                            path=key.path,
-                            leaf=key.leaf,
-                            source_model=source_model,
-                            source_relation=source_relation,
-                            bundle=bundle,
-                        )
+                    col_expr = plain_expr_by_sid[sid]
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, TimeTruncKey):
-                    col_expr = self._raw_time_col_expr_for_planned(
+                    col_expr = plain_expr_by_sid[sid] if sid in plain_expr_by_sid else self._raw_time_col_expr_for_planned(
                         time_column=key.column,
                         source_model=source_model,
                         source_relation=source_relation,
                         bundle=bundle,
+                        scope=host_scope,
                     )
                     trunc_expr = self._build_date_trunc(
                         col_expr=col_expr, granularity=key.granularity,
@@ -2366,7 +2381,7 @@ class SQLGenerator:
             src_scope.resolve(tslot.key.column)
             raw = self._raw_time_col_expr_for_planned(
                 time_column=tslot.key.column, source_model=source_model,
-                source_relation=source_relation, bundle=bundle,
+                source_relation=source_relation, bundle=bundle, scope=src_scope,
             )
             trunc = self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity)
             src_cols.append(trunc.as_(f"_w_td_{idx}"))
@@ -2381,7 +2396,7 @@ class SQLGenerator:
         src_scope.resolve(wtd_slot.key.column)
         raw_time = self._raw_time_col_expr_for_planned(
             time_column=wtd_slot.key.column, source_model=source_model,
-            source_relation=source_relation, bundle=bundle,
+            source_relation=source_relation, bundle=bundle, scope=src_scope,
         )
         src_cols.append(raw_time.copy().as_("_w_time"))
         grain_aliases.append(wtd_alias)
@@ -2635,17 +2650,12 @@ class SQLGenerator:
         if isinstance(key, TimeTruncKey):
             raw = self._raw_time_col_expr_for_planned(
                 time_column=key.column, source_model=root_model,
-                source_relation=root_relation, bundle=bundle,
+                source_relation=root_relation, bundle=bundle, scope=scope,
             )
             _register(raw, column_path(key.column))
             return self._build_date_trunc(col_expr=raw, granularity=key.granularity)
         if isinstance(key, ColumnKey):
-            expr = self._joined_or_local_dim_expr(
-                path=key.path, leaf=key.leaf, source_model=root_model,
-                source_relation=root_relation, bundle=bundle,
-            )
-            _register(expr, key.path)
-            return expr
+            return scope.resolve(key)
         if isinstance(key, ColumnSqlKey):
             expr = self._derived_column_expr(
                 key=key, source_model=root_model,
@@ -3262,7 +3272,7 @@ class SQLGenerator:
             scope.resolve(tslot.key.column)
             raw = self._raw_time_col_expr_for_planned(
                 time_column=tslot.key.column, source_model=source_model,
-                source_relation=source_relation, bundle=bundle,
+                source_relation=source_relation, bundle=bundle, scope=scope,
             )
             _emit(tslot, self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity))
         # ROW filters gate the visible grain; the trailing window in the _src join reaches rows before them via
@@ -4238,40 +4248,6 @@ class SQLGenerator:
             slot=slot, alias_index=alias_index, source_relation=source_relation,
         )
 
-    def _collect_joined_paths_for_base(
-        self,
-        *,
-        base_render_order: List[str],
-        slots_by_id: Dict[str, Any],
-        order_slot_ids: Optional[List[str]] = None,
-    ) -> List[Tuple[str, ...]]:
-        """Walk ROW slots in render order to collect unique joined DIMENSION"""
-
-        seen: set = set()
-        ordered: List[Tuple[str, ...]] = []
-
-        def _add(path: Tuple[str, ...]) -> None:
-            if not path or path in seen:
-                return
-            seen.add(path)
-            ordered.append(path)
-
-        def _add_row_slot(sid: str) -> None:
-            slot = slots_by_id.get(sid)
-            if slot is None or slot.phase != Phase.ROW:
-                return
-            key = slot.key
-            if isinstance(key, ColumnKey):
-                _add(key.path)
-            elif isinstance(key, TimeTruncKey):
-                _add(key.column.path)
-
-        for sid in base_render_order:
-            _add_row_slot(sid)
-        for sid in order_slot_ids or ():
-            _add_row_slot(sid)
-        return ordered
-
     def _oriented_hop_chain(self, *, source_model, path, bundle):
         """``(OrientedJoin, next_model)`` hops of a bound (possibly composed) join ``path``;
         ``ValueError`` when it does not resolve, ``AmbiguousJoinPathError`` on an ambiguous hop."""
@@ -4388,45 +4364,6 @@ class SQLGenerator:
         # Root-relative join type: LEFT keeps the querying root whole in the traversal
         # direction, INNER is symmetric; RIGHT is never emitted.
         return join_expr, on_expr, edge.join_type.value.upper()
-
-    def _joined_or_local_dim_expr(
-        self,
-        *,
-        path: Tuple[str, ...],
-        leaf: str,
-        source_model,
-        source_relation: str,
-        bundle,
-    ) -> Expression:
-        """Resolve a dimension column expression on either the host"""
-        if not path:
-            return self._dim_column_expr_from_planned(
-                source_model=source_model,
-                source_relation=source_relation,
-                leaf=leaf,
-            )
-        current_alias = source_relation
-        chain = self._oriented_hop_chain(
-            source_model=source_model, path=path, bundle=bundle,
-        )
-        current_model = source_model
-        for hop_idx, (_edge, next_model) in enumerate(chain):
-            current_alias = self._join_alias(
-                root=source_relation, path=path[: hop_idx + 1],
-            )
-            current_model = next_model
-        col_def = next(
-            (c for c in current_model.columns if c.name == leaf), None,
-        )
-        if col_def is None:
-            raise ValueError(
-                f"Column {leaf!r} not found on joined model "
-                f"{current_model.name!r}.",
-            )
-        return exp.Column(
-            this=exp.to_identifier(leaf),
-            table=exp.to_identifier(current_alias),
-        )
 
     def _rank_family_window(
         self, *, fn: Expression, measure: Expression, partition_by: Iterable[Expression], descending: bool,
@@ -5125,7 +5062,7 @@ class SQLGenerator:
             if isinstance(key, TimeTruncKey) and isinstance(key.column, ColumnSqlKey):
                 raw = self._raw_time_col_expr_for_planned(
                     time_column=key.column, source_model=source_model,
-                    source_relation=source_relation, bundle=bundle,
+                    source_relation=source_relation, bundle=bundle, scope=scope,
                 )
                 _add(key.column.path)
                 for p in self._joined_paths_in_sql(
@@ -5392,18 +5329,12 @@ class SQLGenerator:
         )
 
     def _raw_time_col_expr_for_planned(
-        self, *, time_column, source_model, source_relation: str, bundle,
+        self, *, time_column, source_model, source_relation: str, bundle, scope: ScopeFrame,
     ) -> Expression:
         """Untruncated time expression for a ``TimeTruncKey.column``"""
 
         if isinstance(time_column, ColumnKey):
-            return self._joined_or_local_dim_expr(
-                path=time_column.path,
-                leaf=time_column.leaf,
-                source_model=source_model,
-                source_relation=source_relation,
-                bundle=bundle,
-            )
+            return scope.resolve(time_column)
         if isinstance(time_column, ColumnSqlKey):
             if time_column.path:
                 joined_model = self._walk_join_path_model(
@@ -5900,7 +5831,7 @@ class SQLGenerator:
         ctx = RenderContext(
             scope=self._scope_frame(
                 model=source_model, relation=source_relation,
-                bundle=bundle, allocator=allocator,
+                bundle=bundle, allocator=allocator, node_models=node_models,
             ),
             dialect=self._dialect,
             filters=FilterFacilities(
@@ -6285,12 +6216,11 @@ class SQLGenerator:
         # grain, so the bare ref is legal and Law 1 pulls the join in).
         key = slot.key
         row_key = key.column if isinstance(key, TimeTruncKey) else key
-        if source_model is not None and isinstance(row_key, ColumnKey):
-            return self._joined_or_local_dim_expr(
-                path=row_key.path, leaf=row_key.leaf,
-                source_model=source_model,
-                source_relation=source_relation, bundle=bundle,
-            )
+        if source_model is not None and bundle is not None and isinstance(row_key, ColumnKey):
+            return self._scope_frame(
+                model=source_model, relation=source_relation, bundle=bundle,
+                allocator=self._gen_allocator or self._new_allocator(),
+            ).resolve(row_key)
 
         # A local derived ORDER BY column renders through the same expansion a projected derived dimension gets, so both
         # spellings sort identically.

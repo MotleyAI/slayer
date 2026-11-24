@@ -58,15 +58,18 @@ spec delta lands in the `sql` group, owned by `python.sql`.
    `orders` / `accounts` / `regions` with camelCase columns (`orderNumber`, `extRef`, `signedUpAt`,
    `regionName`). (default)
 8. **Resolve before the `FROM`; delete the collector.** Base-select row slots (`ColumnKey` and the
-   column of a `TimeTruncKey`), in render order and then order slots, resolve through `host_scope`
-   before `_build_from_and_joins`, in the position `_collect_joined_paths_for_base` holds today; their
-   crossed paths register as a side effect, and the collector is deleted. The `FROM` must stay
+   column of a `TimeTruncKey`) in render order resolve through `host_scope` before
+   `_build_from_and_joins`, in the position `_collect_joined_paths_for_base` holds today; their
+   crossed paths register as a side effect, and the collector is deleted. Order-only slots register
+   their join path prefixes without resolving (the base select does not read them). The `FROM` must stay
    byte-identical (goldens pin it); if goldens show any join reordering, stop and ask the user. (codex)
 9. **Fail closed in the canonical path.** The deleted helper was the only existence check for a joined
    plain column. `ScopeFrame`'s `ColumnKey` branch raises `UnknownReferenceError` when the terminal
    model (`resolved_terminal`) or its leaf (`get_column`) does not resolve — after the regroup
    attach-registry lookup, so attached placeholders are unaffected. Filters gain the same guard. If a
-   legitimate synthetic leaf trips it, stop and ask the user. (codex)
+   legitimate synthetic leaf trips it, stop and ask the user. A semi-join `EXISTS` scope resolves its
+   conjuncts' tree-node paths through the group's node models, which the scope carries; the guard
+   checks those first, then the join graph. (codex)
 10. **No fresh allocators.** A call site uses its caller's own `ScopeFrame` wherever one exists; the
     fallback frame is built on the active generation allocator (`self._gen_allocator`) with the same
     root relation — never `_throwaway_frame`, which mints a fresh allocator whose aliases can diverge

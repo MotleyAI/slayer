@@ -25,6 +25,7 @@ def _orders() -> SlayerModel:
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="amount", type=DataType.DOUBLE),
+            Column(name="__regroup__legacy_col", type=DataType.TEXT),
         ],
     )
 

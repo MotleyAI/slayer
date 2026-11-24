@@ -38,29 +38,30 @@ clause.
 
 ## 2. Implementation (pr-implement stage)
 
-- [ ] 2.1 `slayer/sql/scope.py`: the `ColumnKey` branch, after the attach-registry lookup, raises
+- [x] 2.1 `slayer/sql/scope.py`: the `ColumnKey` branch, after the attach-registry lookup, raises
   `UnknownReferenceError` when `resolved_terminal` or the terminal's `get_column(leaf)` does not
-  resolve. Verify: 1.8 passes; no existing test regresses (if a synthetic leaf trips it, STOP and ask).
-- [ ] 2.2 `slayer/sql/generator.py` `_build_base_select_for_planned`: resolve row `ColumnKey` slots and
-  `TimeTruncKey` columns (render order, then order slots) through `host_scope` before
-  `_build_from_and_joins`, in the collector's position; build the projection / `GROUP BY` from those
+  resolve; a semi-join `EXISTS` scope carries the group's node models, which the guard checks first,
+  then the join graph. Verify: 1.8 passes; no existing test regresses (if a synthetic leaf trips it, STOP and ask).
+- [x] 2.2 `slayer/sql/generator.py` `_build_base_select_for_planned`: resolve row `ColumnKey` slots and
+  `TimeTruncKey` columns in render order through `host_scope` before `_build_from_and_joins`, in the
+  collector's position; order-only slots register their join path prefixes without resolving; build the projection / `GROUP BY` from those
   expressions; delete `_collect_joined_paths_for_base` and the separate `regroup_env` lookup (the
   scope's `attached_columns` covers it). Verify: 1.1, 1.6 pass; goldens show a byte-identical `FROM`
   (any join reorder → STOP and ask).
-- [ ] 2.3 `_raw_time_col_expr_for_planned` takes a `ScopeFrame`; every caller passes its own scope
+- [x] 2.3 `_raw_time_col_expr_for_planned` takes a `ScopeFrame`; every caller passes its own scope
   (`src_scope` / `scope` in the window producers), else a frame built with `self._scope_frame(...,
   allocator=self._gen_allocator)` on the same root relation — never `_throwaway_frame`. Verify: 1.3
   passes.
-- [ ] 2.4 `_ranked_scope_expr` resolves `ColumnKey` through its `scope`; the host base order env's
+- [x] 2.4 `_ranked_scope_expr` resolves `ColumnKey` through its `scope`; the host base order env's
   hidden-row branch resolves through a scope on the generation allocator. Verify: 1.4, 1.5 pass.
-- [ ] 2.5 Delete `_joined_or_local_dim_expr`; no `ColumnKey` render remains outside `ScopeFrame.resolve`
+- [x] 2.5 Delete `_joined_or_local_dim_expr`; no `ColumnKey` render remains outside `ScopeFrame.resolve`
   in `slayer/sql/`. Verify: 1.2 and 1.7 pass; `grep` finds no caller.
-- [ ] 2.6 Local scope: `la-affected-tests --base origin/1.x` plus goldens / conformance cases pinning
+- [x] 2.6 Local scope: `la-affected-tests --base origin/1.x` plus goldens / conformance cases pinning
   generator SQL. Verify: all pass.
 
 ## 3. Gates
 
-- [ ] 3.1 `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors vs the baseline),
+- [x] 3.1 `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors vs the baseline),
   `la-check-conventions`, `poetry run la-arch-check`,
   `openspec validate dev-2405-joined-model-camelcase-columns-are-unquoted-in --strict` all pass.
 - [ ] 3.2 After merge, post forward-port notes for `main` as a comment on DEV-2405: `main` reads a

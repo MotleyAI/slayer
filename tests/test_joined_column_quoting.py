@@ -190,7 +190,8 @@ class TestRankedAggregate:
         ranked = _subquery(tree, "_ranked_src", sql)
         _assert_quoted_reads(ranked, leaf="extRef", table="accounts", sql=sql)
         window = ranked.find(exp.Window)
-        assert window is not None and _reads(window, "extRef"), sql
+        assert window is not None, sql
+        assert _reads(window, "extRef"), sql
 
     async def test_ranked_by_joined_time(self) -> None:
         sql = await _sql({"source_model": "orders", "dimensions": ["orderNumber"],
@@ -199,7 +200,8 @@ class TestRankedAggregate:
         ranked = _subquery(tree, "_ranked_src", sql)
         _assert_quoted_reads(ranked, leaf="signedUpAt", table="accounts", sql=sql)
         window = ranked.find(exp.Window)
-        assert window is not None and _reads(window, "signedUpAt"), sql
+        assert window is not None, sql
+        assert _reads(window, "signedUpAt"), sql
 
 
 class TestOrderingByJoinedColumn:
@@ -219,7 +221,8 @@ class TestOrderingByJoinedColumn:
         tree = _parse(sql, "postgres")
         _assert_quoted_reads(tree, leaf="extRef", table="accounts", sql=sql)
         [ordered] = tree.args["order"].expressions
-        assert isinstance(ordered.this, exp.Column) and ordered.this.name == "extRef", sql
+        assert isinstance(ordered.this, exp.Column), sql
+        assert ordered.this.name == "extRef", sql
 
 
 #: Today's emission, pinned: lowercase names render unchanged on every dialect.
@@ -320,20 +323,33 @@ class TestUnresolvableColumnFailsClosed:
         planned = plan_query(query=q, bundle=_bundle(_models()))
         orders, accounts, regions = _models()
         stripped = accounts.model_copy(update={"columns": [c for c in accounts.columns if c.name != "extRef"]})
+        generator = SQLGenerator(dialect="postgres")
+        bundle = _bundle([orders, stripped, regions])
         with pytest.raises(UnknownReferenceError):
-            SQLGenerator(dialect="postgres").generate_from_planned(planned, bundle=_bundle([orders, stripped, regions]))
+            generator.generate_from_planned(planned, bundle=bundle)
 
     @pytest.mark.parametrize("key", [
         ColumnKey(path=(), leaf="missingCol"),
         ColumnKey(path=("accounts",), leaf="missingCol"),
         ColumnKey(path=("nowhere",), leaf="extRef"),
-    ], ids=["host-leaf", "joined-leaf", "unknown-path"])
+        ColumnKey(path=("node",), leaf="missingCol"),
+    ], ids=["host-leaf", "joined-leaf", "unknown-path", "semi-join-node-leaf"])
     def test_scope_frame(self, key: ColumnKey) -> None:
-        models = _models()
-        alloc = AliasAllocator()
-        frame = ScopeFrame(
-            scope_id=alloc.next_scope_id("orders"), root_model=models[0], root_relation="orders",
-            bundle=_bundle(models), dialect=get_dialect("postgres"), allocator=alloc,
-        )
+        frame = _frame(node_models={("node",): "accounts"})
         with pytest.raises(UnknownReferenceError):
             frame.resolve(key)
+
+    def test_semi_join_node_path_resolves(self) -> None:
+        """A semi-join tree-node path is not a root join path; it resolves through the group's node model."""
+        frame = _frame(node_models={("node",): "accounts"})
+        out = frame.resolve(ColumnKey(path=("node",), leaf="extRef"))
+        assert out.this.quoted, out.sql()
+
+
+def _frame(*, node_models: dict[tuple[str, ...], str]) -> ScopeFrame:
+    models = _models()
+    alloc = AliasAllocator()
+    return ScopeFrame(
+        scope_id=alloc.next_scope_id("orders"), root_model=models[0], root_relation="orders",
+        bundle=_bundle(models), dialect=get_dialect("postgres"), allocator=alloc, node_models=node_models,
+    )
