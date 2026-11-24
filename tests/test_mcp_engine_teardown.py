@@ -2,7 +2,7 @@
 caller-controlled teardown.
 
 ``create_mcp_server`` attaches its closure ``SlayerQueryEngine`` to the
-returned FastMCP object as ``mcp._slayer_engine`` — the cross-repo contract
+returned MCPServer object as ``mcp._slayer_engine`` — the cross-repo contract
 bird-interact-agents disposes at task teardown:
 
     engine = getattr(mcp, "_slayer_engine", None)
@@ -87,7 +87,7 @@ async def _seed_storage(workspace: Path, *, with_sql_mode: bool = False) -> YAML
 
 
 async def _call(server, *, name: str, arguments: dict[str, Any] | None = None) -> str:
-    content_blocks, _ = await server.call_tool(name=name, arguments=arguments or {})
+    content_blocks = (await server.call_tool(name=name, arguments=arguments or {})).content
     return content_blocks[0].text
 
 

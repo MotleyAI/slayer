@@ -6,7 +6,7 @@ Stored-only steps: a fresh payload's bare call stays bare and fails with the mis
 import io
 import tokenize
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from slayer.storage.document_keys import LEGACY_KEYS, DocumentKeys
 from slayer.storage.migrations import is_legacy_root_extension, register_migration, stamp_stored
@@ -72,11 +72,20 @@ def _scan_call(*, tokens: list[tokenize.TokenInfo], open_index: int) -> tuple[in
 
 
 TextRewrite = Callable[[str], str]
-#: A rewrite told the stored field it rewrites (``measures[2].formula``).
-FieldRewrite = Callable[[str, str], str]
+_BoundRewrite = Callable[[str, str], str]
 
 
-def _rewrite_key(item: Any, key: str, fn: FieldRewrite, where: str) -> Any:
+class FieldRewrite(Protocol):
+    """A rewrite told the stored field it rewrites (``measures[2].formula``) and whether it is the query's filter."""
+
+    def __call__(self, text: str, field: str, /, *, filter: bool) -> str: ...
+
+
+def _bound(fn: FieldRewrite, *, filter: bool) -> _BoundRewrite:
+    return lambda text, where: fn(text, where, filter=filter)
+
+
+def _rewrite_key(item: Any, key: str, fn: _BoundRewrite, where: str) -> Any:
     if isinstance(item, dict) and isinstance(item.get(key), str):
         return {**item, key: fn(item[key], f"{where}.{key}")}
     return item
@@ -94,25 +103,25 @@ def _rewrite_items(value: Any, rewrite, where: str) -> Any:
     return rewrite(value, where)
 
 
-def _rewrite_text(value: Any, fn: FieldRewrite, where: str) -> Any:
+def _rewrite_text(value: Any, fn: _BoundRewrite, where: str) -> Any:
     return fn(value, where) if isinstance(value, str) else value
 
 
-def _rewrite_metric(item: Any, fn: FieldRewrite, where: str, keys: DocumentKeys) -> Any:
+def _rewrite_metric(item: Any, fn: _BoundRewrite, where: str, keys: DocumentKeys) -> Any:
     return fn(item, where) if isinstance(item, str) else _rewrite_key(item, keys.query_metric_text, fn, where)
 
 
-def _rewrite_dimension(item: Any, fn: FieldRewrite, where: str, keys: DocumentKeys) -> Any:
+def _rewrite_dimension(item: Any, fn: _BoundRewrite, where: str, keys: DocumentKeys) -> Any:
     return fn(item, where) if isinstance(item, str) else _rewrite_key(item, keys.dimension_text, fn, where)
 
 
-def _rewrite_time_dimension(item: Any, fn: FieldRewrite, where: str, keys: DocumentKeys) -> Any:
+def _rewrite_time_dimension(item: Any, fn: _BoundRewrite, where: str, keys: DocumentKeys) -> Any:
     if isinstance(item, str):
         return fn(item, where)
     return _rewrite_key(_rewrite_key(item, keys.time_field, fn, where), "column", fn, where)
 
 
-def _rewrite_order(item: Any, fn: FieldRewrite, where: str, keys: DocumentKeys) -> Any:
+def _rewrite_order(item: Any, fn: _BoundRewrite, where: str, keys: DocumentKeys) -> Any:
     if not isinstance(item, dict):
         return _rewrite_text(item, fn, where)
     if keys.order_field in item or "direction" in item:
@@ -121,16 +130,17 @@ def _rewrite_order(item: Any, fn: FieldRewrite, where: str, keys: DocumentKeys) 
     return {_rewrite_text(k, fn, where): v for k, v in item.items()}
 
 
-def _rewrite_filter_text(value: Any, fn: FieldRewrite, where: str, keys: DocumentKeys) -> Any:
+def _rewrite_whole_text(value: Any, fn: _BoundRewrite, where: str, keys: DocumentKeys) -> Any:
     return _rewrite_text(value, fn, where)
 
 
 def _text_only(fn: TextRewrite) -> FieldRewrite:
-    return lambda text, _where: fn(text)
+    return lambda text, _where, *, filter: fn(text)
 
 
 def _metric_expressions(metrics: list, fn: FieldRewrite, where: str, keys: DocumentKeys = LEGACY_KEYS) -> list:
-    return [_rewrite_key(m, keys.expression, fn, _item(where, i, m)) for i, m in enumerate(metrics)]
+    bound = _bound(fn, filter=False)
+    return [_rewrite_key(m, keys.expression, bound, _item(where, i, m)) for i, m in enumerate(metrics)]
 
 
 def rewrite_dataset_texts_at(data: dict, fn: FieldRewrite, keys: DocumentKeys = LEGACY_KEYS) -> dict:
@@ -149,13 +159,14 @@ def rewrite_dataset_texts(data: dict, fn: TextRewrite, keys: DocumentKeys = LEGA
 
 def _rewrite_query_fields(data: dict, fn: FieldRewrite, keys: DocumentKeys) -> dict:
     for field, rewrite in (
-        (keys.query_metrics, _rewrite_metric), (keys.query_filter, _rewrite_filter_text),
+        (keys.query_metrics, _rewrite_metric), (keys.query_filter, _rewrite_whole_text),
         ("dimensions", _rewrite_dimension), ("time_dimensions", _rewrite_time_dimension), ("order", _rewrite_order),
-        ("main_time_dimension", _rewrite_filter_text),
+        ("main_time_dimension", _rewrite_whole_text),
     ):
         if data.get(field) is not None:
+            bound = _bound(fn, filter=field == keys.query_filter)
             data[field] = _rewrite_items(
-                data[field], lambda item, where, rewrite=rewrite: rewrite(item, fn, where, keys), field,
+                data[field], lambda item, where, rewrite=rewrite, bound=bound: rewrite(item, bound, where, keys), field,
             )
     return data
 

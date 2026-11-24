@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from typing import Dict, List, Optional, Protocol, Set, Tuple
 
 import sqlglot
+from pydantic import BaseModel, ConfigDict, SkipValidation
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
@@ -79,6 +80,20 @@ class _PathSink(Protocol):
     and receive the crossed paths in emission order."""
 
     def add(self, path: Tuple[str, ...], /) -> None: ...
+
+
+class _Sinks(BaseModel):
+    """The collectors one expansion feeds: each crossed relationship-path prefix, and each dataset path read."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    crossed: SkipValidation[Optional[_PathSink]] = None
+    reads: SkipValidation[Optional[_PathSink]] = None
+
+
+def _record(sink: Optional[_PathSink], path: Tuple[str, ...]) -> None:
+    if sink is not None:
+        sink.add(path)
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +504,7 @@ def _process_reference_site(
     dialect: str,
     visited: Tuple[Tuple[str, str], ...],
     alias_resolver: Optional[AliasResolver],
-    crossed_paths: Optional[_PathSink],
+    sinks: _Sinks,
     site: Optional[Tuple[str, str]] = None,
     sibling_first: bool = False,
 ) -> Optional[exp.Expression]:
@@ -499,12 +514,14 @@ def _process_reference_site(
 
     ``owner_path`` is the ROOT-relative path of ``dataset`` (empty at the scope
     root). A resolved ref's full root-relative path is ``owner_path + path``;
-    its prefixes are added to ``crossed_paths`` so the caller learns every relationship
+    its prefixes are added to ``sinks.crossed`` so the caller learns every relationship
     the fragment crosses WITHOUT re-scanning the (ambiguous) internal-alias
-    output. Returns the replacement node when rewritten, else ``None``.
+    output. Returns the replacement node when rewritten, else ``None``. ``sinks.reads`` receives the root-relative
+    path of each dataset a field is read on.
     """
     sibling = sibling_first and not qualifiers and _expanding_sibling(dataset, leaf=leaf)
     if not sibling and reads_source_column(qualifiers, dataset=dataset):
+        _record(sinks.reads, owner_path)
         return _requalify(node=node, alias=alias_path, leaf=leaf)
     path = _resolve_qualifiers(
         qualifiers=qualifiers, leaf=leaf, source_dataset=dataset,
@@ -517,7 +534,7 @@ def _process_reference_site(
     located = _locate_site_target(
         path=path, full_path=full_path, dataset=dataset, alias_path=alias_path,
         datasets_by_name=datasets_by_name, alias_resolver=alias_resolver,
-        crossed_paths=crossed_paths,
+        crossed_paths=sinks.crossed,
     )
     if located is None:
         return None
@@ -530,6 +547,7 @@ def _process_reference_site(
     if target_col is not None:
         leaf = target_col.name
     if target_col is None or not target_col.needs_expansion:
+        _record(sinks.reads, full_path)
         return _requalify(node=node, alias=canonical_alias, leaf=leaf)
     key = (target_dataset.name, leaf)
     if key in visited:
@@ -540,7 +558,7 @@ def _process_reference_site(
         target_col=target_col, target_dataset=target_dataset,
         canonical_alias=canonical_alias, full_path=full_path,
         datasets_by_name=datasets_by_name, dialect=dialect, visited=(*visited, key),
-        alias_resolver=alias_resolver, crossed_paths=crossed_paths,
+        alias_resolver=alias_resolver, sinks=sinks,
     )
     if value_sql is None:
         return None
@@ -560,7 +578,7 @@ def _expand_target_field(
     dialect: str,
     visited: Tuple[Tuple[str, str], ...],
     alias_resolver: Optional[AliasResolver],
-    crossed_paths: Optional[_PathSink],
+    sinks: _Sinks,
 ) -> Optional[str]:
     """The expanded SQL of a derived / filtered target field: its value (the
     qualified bare field for a filtered physical one) masked by its filter."""
@@ -569,14 +587,15 @@ def _expand_target_field(
             sql=sql, dataset=target_dataset, alias_path=canonical_alias,
             owner_path=full_path, datasets_by_name=datasets_by_name, dialect=dialect,
             visited=visited, alias_resolver=alias_resolver,
-            crossed_paths=crossed_paths, sibling_first=sibling_first,
-            site=(target_dataset.name, target_col.name),
+            crossed_paths=sinks.crossed, sibling_first=sibling_first,
+            site=(target_dataset.name, target_col.name), read_paths=sinks.reads,
         )
 
     definition = target_col.definition_sql
     if definition is None or is_trivial_base(field=target_col):
         # The target's own spelling, not the (possibly unquoted) reference site,
         # so a quoted self-identity keeps its quoting on case-folding dialects.
+        _record(sinks.reads, full_path)
         value_sql: Optional[str] = _qualified_base_sql(
             field=target_col, alias_path=canonical_alias, dialect=dialect,
         )
@@ -604,6 +623,7 @@ def expand_derived_refs_sync(
     crossed_paths: Optional[_PathSink] = None,
     site: Optional[Tuple[str, str]] = None,
     sibling_first: bool = False,
+    read_paths: Optional[_PathSink] = None,
 ) -> Optional[str]:
     """Expand a row definition: qualify every source-column read (a bare name, ``source.x``) and every base field a
     path reads to its internal alias, and inline every derived field a path reads.
@@ -641,6 +661,7 @@ def expand_derived_refs_sync(
             reason=str(exc).splitlines()[0] if str(exc) else None,
         ) from exc
     root_scope_ids = root_scope_field_ids(parsed=parsed)
+    sinks = _Sinks(crossed=crossed_paths, reads=read_paths)
     for node, quals, leaf in reference_sites(parsed, root_scope_ids):
         replacement = _process_reference_site(
             node=node,
@@ -653,7 +674,7 @@ def expand_derived_refs_sync(
             dialect=dialect,
             visited=visited,
             alias_resolver=alias_resolver,
-            crossed_paths=crossed_paths,
+            sinks=sinks,
             site=site,
             sibling_first=sibling_first,
         )

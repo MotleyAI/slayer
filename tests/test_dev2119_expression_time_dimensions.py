@@ -12,7 +12,6 @@ from slayer.core.errors import (
     QueryTypeError,
     TimeDimensionFieldError,
     TimeLiteralError,
-    UnsafeRelationshipInputError,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -92,14 +91,14 @@ class TestExpressionHomes:
 
 
 class TestExpressionTyping:
-    async def test_leaf_across_a_fanning_hop_fails_closed(self, engine) -> None:
+    async def test_parent_and_child_leaf_homed_on_the_child(self, engine) -> None:
         query = SlayerQuery.model_validate({
             "population": "accounts", "metrics": [{"metric": "count(accounts.*)", "alias": "v"}],
-            "time_dimensions": [td("coalesce(orders.shipped_at, accounts.signup_ts)")],
+            "time_dimensions": [td("coalesce(orders.shipped_at, accounts.signup_ts)", alias="t")],
         })
-        msg = str(await _plan_fails(engine, query, UnsafeRelationshipInputError))
-        assert "shipped_at" in msg
-        assert "orders" in msg
+        resp = await engine.execute(query)
+        assert by_bucket(resp, "t", "v") == {"2025-01": 1, "2025-02": 1, "2025-03": 2, "2025-04": 1, None: 1}
+        assert any(getattr(w, "kind", None) == "associated" for w in resp.warnings or [])
 
     async def test_non_temporal_expression_rejected(self, engine) -> None:
         msg = str(await _plan_fails(engine, _count(time_dimensions=[td("upper(orders.status)")]), TimeDimensionFieldError))

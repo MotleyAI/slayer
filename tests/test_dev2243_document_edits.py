@@ -263,7 +263,8 @@ async def test_a_new_relationship_lands_at_the_documents_top_level(tmp_path: Pat
     storage = make_storage(kind, tmp_path)
     await store_document(storage, SALES_STORES)
     await mcp_text(storage, "edit_dataset", dataset_name="orders", data_source=DS, relationships=[
-        {"name": "orders_to_stores", "to": "stores", "from_columns": ["store_id"], "to_columns": ["store_id"]}])
+        {"name": "orders_to_stores", "to": "stores", "from_columns": ["store_id"], "to_columns": ["store_id"],
+         "cardinality": "many_to_one"}])
     doc = await doc_of(storage)
     assert relationship("orders_to_stores", src="orders", to="stores", from_columns=["store_id"],
                         to_columns=["store_id"]) in doc["relationships"]

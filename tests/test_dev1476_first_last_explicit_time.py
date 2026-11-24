@@ -33,6 +33,7 @@ from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.scope import ScopeFrame
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._trusted import trusting_all
 
 
 
@@ -81,7 +82,7 @@ async def _engine_from_sql(
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    for model in datasets:
+    for model in trusting_all(datasets):
         await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 

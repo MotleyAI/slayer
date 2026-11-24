@@ -48,6 +48,7 @@ from tests._dev1901_fixtures import (
 from tests import _dev1954_fixtures
 from tests._dev1954_fixtures import RNAME, WPOP_BY_RNAME, by_key
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting_all
 
 TD = [{"field": "customers.signup_at", "granularity": "month"}]
 CASE_C_Q = CASE_C.replace("spend", "customers.spend")
@@ -60,6 +61,13 @@ def test_oracles_re_derive_from_the_raw_rows():
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request):
     async for e in make_exec_engine(request):
+        yield e
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def trusted_engine(request):
+    """Trusted relationships: the filter/order pins describe the inline join."""
+    async for e in make_exec_engine(request, datasets=trusting_all(dev1901_datasets())):
         yield e
 
 
@@ -142,25 +150,25 @@ class TestDefaultInFilterAndOrder:
         assert await _by(engine, f"{agg}(orders.amount)", dim="status") == WCS_BY_STATUS
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
-    async def test_filter_position(self, engine, agg: str) -> None:
+    async def test_filter_position(self, trusted_engine, agg: str) -> None:
         threshold = (WCS_BY_STATUS["ok"] + WCS_BY_STATUS["new"]) / 2
         query = orders_q(dimensions=["orders.status"], metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
                          filter=[f"{agg}(orders.amount) > {threshold}"])
-        resp = await engine.execute(query)
+        resp = await trusted_engine.execute(query)
         assert {r["orders.status"]: float(r["s"]) for r in resp.data} \
             == {"ok": AMOUNT_BY_STATUS["ok"]}
-        sql = (await engine.execute(query, dry_run=True)).sql
+        sql = (await trusted_engine.execute(query, dry_run=True)).sql
         assert sql is not None
         assert "JOIN customers" in sql, sql
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
-    async def test_order_key(self, engine, agg: str) -> None:
+    async def test_order_key(self, trusted_engine, agg: str) -> None:
         query = orders_q(dimensions=["orders.status"], metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
                          order=[{"field": f"{agg}(orders.amount)", "direction": "asc"}])
-        resp = await engine.execute(query)
+        resp = await trusted_engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == sorted(
             WCS_BY_STATUS, key=WCS_BY_STATUS.__getitem__)
-        sql = (await engine.execute(query, dry_run=True)).sql
+        sql = (await trusted_engine.execute(query, dry_run=True)).sql
         assert sql is not None
         assert "JOIN customers" in sql, sql
 

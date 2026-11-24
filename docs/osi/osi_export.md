@@ -59,16 +59,16 @@ Each form of a field's expression exports as itself: its portable `sql` as `sql`
 
 Each exported dataset, field, metric and relationship carries one `nonportable_extensions` entry with `vendor_name: SLAYER`. Its `data` is a versioned payload object (version 3, a field's definition under `expression`; versions 1 and 2 still import) of what Ossie has no place for:
 
-- join types, names, cardinalities and the dataset that declares each relationship
+- join types, names, cardinalities (an unset one included), `trusted` flags and the dataset that declares each relationship
 - metric expressions, home datasets, labels and types
 - field types, formats, granularities, hidden flags, allowed aggregations and filters
-- dataset sources (table or SQL plus filters, or saved queries plus variables), access tags, custom aggregations, and SLayer-only fields and metrics
+- dataset sources (table or SQL plus filters, or saved queries plus variables), access tags, custom aggregations, enforced keys, and SLayer-only fields and metrics
 
 SLayer-only fields read joined datasets. A comparison with an instant (`ts <= '2024-04-10'`, a date being its midnight) exports as written. SLayer-only metrics are transforms (`change_pct`, `cumsum`, …), comparisons with a period or relative token (`ts in '2025-Q1'`, `ts >= 'last month'`), `first`/`last`, windowed or partitioned aggregates, aggregates reading several datasets, and metrics whose route to another dataset is ambiguous. Each payload records a fingerprint of the Ossie content it was written with. On every load SLayer applies the payload only where the Ossie content is unedited; where a third party edited it, the Ossie content wins and `inspect` shows a load warning on the entity. Other vendors' extensions recorded on imported entities and documents are written back unchanged, with or without `--no-extensions`; one whose `data` is not a JSON object is reported and omitted. A YAML export quotes every string a YAML 1.1 or 1.2 loader would read as a number, boolean, null or date.
 
 ## Without Extensions
 
-`--no-extensions` writes plain Ossie. Every entity that exists only in the extension is reported as not exported. Exported entities that a plain Ossie reader cannot restore exactly, such as a one-to-one, one-to-many or inner-join relationship, or a metric exported away from its dataset, are reported as lossy. A dataset with access tags is not exported, because re-importing it without its tags would make it public.
+`--no-extensions` writes plain Ossie. Every entity that exists only in the extension is reported as not exported. Exported entities that a plain Ossie reader cannot restore exactly, such as a one-to-one, one-to-many, inner-join or trusted relationship, or a metric exported away from its dataset, are reported as lossy: a plain Ossie relationship imports untrusted. A dataset with access tags is not exported, because re-importing it without its tags would make it public.
 
 ## Export Report
 

@@ -52,12 +52,13 @@ class InheritedEdge(BaseModel):
     name: Optional[str] = None
     join_type: JoinType = JoinType.LEFT
     cardinality: Optional[RelationshipCardinality] = None
+    trusted: bool = False
     origin: RelationshipOrigin
 
     def as_relationship(self) -> DatasetRelationship:
         return DatasetRelationship(
             to=self.to, from_columns=list(self.from_columns), to_columns=list(self.to_columns), name=self.name,
-            join_type=self.join_type, cardinality=self.cardinality,
+            join_type=self.join_type, cardinality=self.cardinality, trusted=self.trusted,
         ).as_inherited(self.origin)
 
 

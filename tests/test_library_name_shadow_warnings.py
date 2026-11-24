@@ -185,6 +185,6 @@ class TestEverySurface:
             server: Any = create_mcp_server(storage=engine.storage)  # call_tool's annotation omits its (blocks, dict) tuple
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                blocks, _ = await server.call_tool("query", {"query": _query(), "format": "json"})
+                blocks = (await server.call_tool("query", {"query": _query(), "format": "json"})).content
         payload = json.loads(blocks[0].text)
         assert _shadow_dicts(payload["warnings"]) == _SHADOW

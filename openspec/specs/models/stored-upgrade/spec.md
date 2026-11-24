@@ -212,7 +212,7 @@ A model SHALL NOT store the rendered SQL of its backing query. On load, a stored
 
 ### Requirement: Stored Mode-B text is upgraded to the SQL string and identifier rules
 
-On load, every Mode-B surface of a stored model, saved query or memory written before this change — `DatasetMetric.expression`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL be rewritten so that it means under the current grammar what it meant when stored: a double-quoted string literal becomes the equivalent single-quoted literal, a string literal using backslash escapes is re-encoded with its decoded value, a `|` concatenation becomes `||`, two minus signs written with nothing between them are separated by a space, so a double negation never becomes a comment, and a Python `#` comment becomes a `--` comment. The rewrite SHALL be token-exact: text inside string literals is never otherwise touched, and stored text that cannot be tokenised is left unchanged. Stored text that the grammar of the time it claims to be from could not have held SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
+On load, every Mode-B surface of a stored model, saved query or memory written before this change — `DatasetMetric.expression`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL be rewritten so that it means under the current grammar what it meant when stored: a double-quoted string literal becomes the equivalent single-quoted literal, a string literal using backslash escapes is re-encoded with its decoded value, a `|` concatenation becomes `||`, two minus signs written with nothing between them are separated by a space, so a double negation never becomes a comment, and a Python `#` comment becomes a `--` comment. The rewrite SHALL be token-exact: text inside string literals is never otherwise touched, and stored text that cannot be tokenised is left unchanged. Stored text that the grammar of the time it claims to be from could not have held SHALL be left unchanged, with a warning naming the document and the field. The grammar of the time SHALL be every spelling the release that wrote the text accepted on that surface: on a query filter also `=`, `<>`, `NULL`, the keywords `AND` / `OR` / `NOT` / `IS` / `IN` in any case, `[NOT] LIKE` with a single-quoted pattern and `||`; on every surface also `CASE … END` (its `WHEN` conditions with the filter spellings), `extract(<part> from x)`, `count(distinct x)`, colon aggregations, `*` arguments and `{var}` placeholders. A text is held when that release's reader parsed it; a text it refused only for what the parse means (an unknown function, a chained comparison) counts as held. Held text SHALL be upgraded with no warning. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
 
 #### Scenario: Double-quoted strings in a stored query
 
@@ -234,6 +234,21 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 - **WHEN** a stored measure formula is `sum(amount) --sum(refund)`, another `sum(a--b)`, and a third `sum(a- -b)`
 - **THEN** they load as `sum(amount) - -sum(refund)`, `sum(a- -b)` and `sum(a- -b)` unchanged, and return the values they returned before
 
+#### Scenario: Single equals sign in a stored filter
+
+- **WHEN** a stored memory query and a stored saved query written before this change each filter `status = "ok"`, and another stored saved query filters `status = 'ok'`
+- **THEN** the first two load as `status = 'ok'` (qualified by the later upgrades), the third loads unchanged, all three return the rows they returned before, and no warning about the grammar is logged
+
+#### Scenario: SQL filter spellings in a stored filter
+
+- **WHEN** stored filters written before this change are `status <> "ok"`, `status = "ok" AND NOT region = "EU"`, `region IS NULL OR status = "ok"`, `status IN ("ok", "paid")`, `name LIKE 'A%' AND status = "ok"` and `status || region = "okEU"`
+- **THEN** each loads with its double-quoted literals single-quoted and the rest byte-identical, returns the rows it returned before, and no warning about the grammar is logged
+
+#### Scenario: 1.x expression spellings in a stored measure
+
+- **WHEN** stored measures written before this change are `sum(CASE WHEN status = "ok" THEN amount ELSE 0 END)`, `count(distinct iif(status == "ok", id, None))` and `sum(iif(extract(year from created_at) == 2024 and status == "ok", amount, 0))`
+- **THEN** each loads with its double-quoted literals single-quoted and the rest byte-identical, returns the value it returned before, and no warning about the grammar is logged
+
 #### Scenario: Mode-A text untouched
 
 - **WHEN** a stored model has `DatasetField.sql` `"Order Total" * 2` and a model filter `status = "x"`
@@ -253,6 +268,11 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 
 - **WHEN** a stored model still marked with a version before this rewrite has the measures `sum(x::int)`, `sum(a || b)`, `sum(CAST(x AS INT))` and `sum(x) FILTER (WHERE y > 1)`, and a stored query of the same era filters `x BETWEEN 1 AND 2`
 - **THEN** each loads byte-for-byte unchanged and a warning names the document and each such field
+
+#### Scenario: Spellings the old release refused stay unchanged
+
+- **WHEN** a stored query written before this change filters `name LIKE "A%"` and another filters `status = "ok" {? AND region = {r} ?}`
+- **THEN** each loads byte-for-byte unchanged and a warning names the document and the field
 
 ### Requirement: Stored time dimensions are upgraded to expression text
 
@@ -668,6 +688,7 @@ In a stored dataset written before this version, a field's `expression`, a field
 ### Requirement: Stored queries are upgraded to qualified references
 A stored query written before this change — a saved query, a query-backed model's `source_queries` stage, or a memory's query, nested or not, with or without a version of its own — SHALL load in the qualified syntax of `queries/references`, with no deprecation warning, by a conversion that reads the stored datasets:
 - each reference SHALL be rewritten to the qualified spelling that has the meaning it had before this change, reading the stage's own population;
+- a bare name SHALL read what it read before this change, in this order: inside a metric, dimension or time-dimension entry, or the main time dimension, the population's field, then the population's metric, then an alias of the stage other than the entry's own; in a filter or order, the population's field, then an alias of the stage, then the population's metric; a population that is a stage or a query-backed dataset SHALL offer its output columns as fields;
 - a reference the new routing would send along a different path SHALL be rewritten to the explicit route from the population that keeps its old path;
 - a reference whose anchor was reached by a route longer than its written path SHALL be rewritten to its explicit route from the population, so its column name is kept;
 - a rewritten path SHALL be kept only if it resolves back to the same oriented sequence of relationships;
@@ -700,3 +721,103 @@ A stored query that cannot be converted this way (a dataset it reads is missing,
 #### Scenario: A quoted leaf keeps its exact spelling
 - **WHEN** a stored query on `orders` filters `"Regions"."Opened_At" >= '2024-01-01'`, `Regions` reached by the route `orders → customers → Regions`
 - **THEN** it loads with the leaf still spelt `"Opened_At"` on its explicit route
+
+#### Scenario: A metric alias equal to a population column reads the column
+- **WHEN** a stored query-backed model's stage over the query-backed model `rev_f`, which outputs the metric column `rev`, measures `sum(rev)` aliased `rev` and filters `rev >= 0`
+- **THEN** it loads as `sum(rev_f.rev)` aliased `rev` with the filter `rev_f.rev >= 0`, and returns the sum of `rev_f.rev` over the `rev_f` rows with `rev >= 0`
+
+#### Scenario: A metric reads the population metric a sibling alias shares
+- **WHEN** a stored query on `orders`, whose metric `revenue` is `sum(amount)`, has the dimension `status`, measures `count(*)` aliased `revenue` and `revenue * 10` aliased `r10`, and filters `revenue > 1`
+- **THEN** it loads as `count(orders.*)` aliased `revenue`, `orders.revenue * 10` aliased `r10` and the filter `revenue > 1`, and returns, for each `status` with more than one order, `r10` equal to ten times its sum of `amount`
+
+#### Scenario: A stage over an earlier stage reads the earlier stage's column
+- **WHEN** a stored query-backed model's first stage `s1` outputs `rev`, and its second stage over `s1` measures `sum(rev)` aliased `rev` and filters `rev > 25`
+- **THEN** the second stage loads as `sum(s1.rev)` aliased `rev` with the filter `s1.rev > 25`, and the model returns the sum of the `s1` rows with `rev > 25`
+
+#### Scenario: A partition key naming a computed dimension stays bare
+- **WHEN** a stored query on `orders` has the dimension `status` and the computed dimension `upper(status)` named `su`, and measures `sum(amount, partition_by=su)`
+- **THEN** it loads with `partition_by=su` unchanged and returns the rows it returned before
+
+#### Scenario: A quoted alias matches only its exact spelling
+- **WHEN** a stored query on `orders`, which has the field `amount`, has the dimension `status`, measures `count(*)` aliased `"Amount"` and filters `"Amount" > 1`
+- **THEN** the filter stays `"Amount" > 1`, reading the metric, and returns each `status` with more than one order
+
+### Requirement: A stored memory whose population names no stored dataset reads one datasource
+
+When a stored memory's query is pinned to no datasource and either names no population or names a population spelling the time spine that no stored dataset spells exactly, its datasource SHALL be the one datasource its dataset-level entities (`<datasource>.<dataset>` or `<datasource>.<dataset>.<leaf>`, naming a stored dataset) name, else the only datasource holding a stored dataset. Every load-time upgrade of it — its qualified-reference upgrade, the typing of its literals, the rewrite of its custom-granularity buckets, and the rename of a library-colliding granularity it references — SHALL read that datasource; a root-less memory SHALL infer its population there as a pinned query does and SHALL fail to load when no single dataset there reaches what it reads; no other datasource is tried. With no such datasource, its custom-granularity buckets SHALL NOT be rewritten, no granularity it references SHALL be renamed, and, when its qualified-reference upgrade is pending, it SHALL fail to load with a warning naming it and saying that its datasource cannot be determined. A stored memory whose explicit population names no stored dataset in any other spelling SHALL NOT use this datasource and SHALL fail to load naming the population. A memory's conversion SHALL run on each load and never be written back; only the rename of a library-colliding granularity SHALL be persisted, as for every stored document.
+
+#### Scenario: A root-less memory loads on a single-datasource store
+
+- **WHEN** the one datasource holds `orders` and `customers`, and a stored v4 memory query with no entities has the dimension `status`, the measure `sum(amount)` named `rev` and the filter `status = 'ok'`, with no population
+- **THEN** it loads as `orders.status`, `sum(orders.amount)` and `orders.status = 'ok'`, returns its earlier rows (`ok`: 80), and the stored memory is unchanged
+
+#### Scenario: Its entities pin a root-less memory's datasource over the priority
+
+- **WHEN** datasources `shop` and `shop2` both hold `orders` and `customers`, `status` and `amount` are fields of `orders` in `shop` and of `customers` in `shop2`, `shop` is first in the priority, and the root-less memory above is stored with the entities `shop2.customers`, `shop2.customers.status` and `shop2.customers.amount`
+- **THEN** it loads as `customers.status` and `sum(customers.amount)` and returns its rows when run in `shop2`
+
+#### Scenario: A root-less memory's legacy literal is repaired
+
+- **WHEN** the root-less memory filters `ordered_at >= '2024/01/01'` on a single-datasource store
+- **THEN** it loads as `orders.ordered_at >= '2024-01-01'` and returns its earlier total (200)
+
+#### Scenario: A root-less memory's literal is typed in the datasource it is read in
+
+- **WHEN** datasources `shop` and `shop2` both hold `orders`, `ordered_at` is a TIMESTAMP in `shop` and TEXT in `shop2`, and the root-less memory filters `ordered_at >= '2024/01/01'`
+- **THEN** with the entity `shop.orders` the literal is repaired to `'2024-01-01'`; with the entity `shop2.orders` it is left unchanged
+
+#### Scenario: An entity-pinned memory is read only in its datasource
+
+- **WHEN** the root-less memory reads `status`, its entity `shop.customers` names `shop`, which holds no dataset reaching `status`, and `shop2` holds one
+- **THEN** the memory fails to load with a warning naming it and `status`
+
+#### Scenario: An entity-less memory on a multi-datasource store fails to load
+
+- **WHEN** datasources `shop` and `shop2` both hold `orders` and `customers`, and the root-less memory is stored with no entities, or with entities naming no stored dataset or naming both datasources
+- **THEN** the memory fails to load with a warning naming it and saying that its datasource cannot be determined
+
+#### Scenario: A root-less memory's custom-granularity bucket is rewritten
+
+- **WHEN** the datasource defines the granularity `mid_month`, and a stored pre-v9 root-less memory buckets `created_at` by `mid_month` and filters `created_at:mid_month >= '2025-02-01'`
+- **THEN** it loads with the filter `date_trunc('mid_month', events.created_at) >= '2025-02-01'` and returns its earlier rows
+
+#### Scenario: A root-less memory's library-colliding granularity is renamed
+
+- **WHEN** the datasource defines the granularity `left` and a stored root-less memory buckets `created_at` by `left`
+- **THEN** it loads bucketing by `left_granularity` and returns its earlier rows
+
+#### Scenario: An entity-pinned memory's custom granularities follow its datasource
+
+- **WHEN** datasources `g1` and `g2` both hold `events`, only `g2` defines the granularities `left` and `mid_month`, and a stored pre-v9 root-less memory with the entity `g2.events` buckets `created_at` by `left` and filters `created_at:mid_month >= '2025-02-01'`
+- **THEN** it loads bucketing by `left_granularity` with the filter `date_trunc('mid_month', events.created_at) >= '2025-02-01'`, and returns its earlier rows when run in `g2`
+
+#### Scenario: A time-spine memory's custom granularities are upgraded
+
+- **WHEN** a stored memory with population `time_spine` buckets `time_spine.timestamp` by the datasource's granularity `left`, or filters `events.created_at:mid_month >= '2025-02-01'` with `mid_month` defined
+- **THEN** it loads bucketing by `left_granularity`, or with the filter `date_trunc('mid_month', events.created_at) >= '2025-02-01'`, and returns its earlier rows
+
+#### Scenario: A missing explicit population gets no fallback
+
+- **WHEN** a stored memory names the population `ordrs`, which no datasource stores, and buckets by the datasource's granularity `left`
+- **THEN** no datasource is read for it, its granularity is not renamed, and it fails to load naming `ordrs`
+
+### Requirement: Relationships stored before trust upgrade as trusted
+Loading a stored model, saved query or memory written before relationships carried
+`trusted` SHALL set `trusted: true` on every relationship it stores, its query-extension
+relationships and those of its backing queries included, so its results and SQL are
+unchanged. Stored semantic-model documents are not upgraded.
+
+#### Scenario: A stored model keeps its inline join
+- **WHEN** a model stored at the previous version declares `orders → customers` as
+  `many_to_one`, and the data holds customer C1 twice
+- **THEN** after loading, the relationship is trusted and `orders.total_revenue` by
+  `customers.region` returns EAST 650 as before
+
+#### Scenario: A stored query's extension relationship is trusted
+- **WHEN** a saved query stored at the previous version declares a join in its query extension
+- **THEN** after loading, that relationship is trusted
+
+#### Scenario: A stored memory's query is upgraded
+- **WHEN** a memory stored at the previous version carries a query declaring a join in its
+  query extension
+- **THEN** after loading, that relationship is trusted

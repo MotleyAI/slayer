@@ -190,8 +190,9 @@ def funcstyle_rank_order(raw_formula: str) -> dict:
     return {"column": {"name": "_funcstyle_pending"}, "direction": "asc", "raw_formula": raw_formula}
 
 
-def memory_v2(*, memory_id: str, query: dict, version: int = 2) -> dict:
-    return {"version": version, "id": memory_id, "learning": f"learning {memory_id}", "entities": [], "query": query}
+def memory_v2(*, memory_id: str, query: dict, version: int = 2, entities: Sequence[str] = ()) -> dict:
+    return {"version": version, "id": memory_id, "learning": f"learning {memory_id}", "entities": list(entities),
+            "query": query}
 
 
 # --------------------------------------------------------------------------- #

@@ -212,7 +212,7 @@ async def mcp_server() -> AsyncIterator[Any]:
 
 
 async def _mcp(server: Any, name: str, **overrides: Any) -> str:
-    blocks, _ = await server.call_tool(name="inspect", arguments={**_args(name), **overrides})
+    blocks = (await server.call_tool(name="inspect", arguments={**_args(name), **overrides})).content
     return blocks[0].text
 
 
@@ -264,8 +264,8 @@ class TestInspectMcp:
         _check_failure(json.loads(await _mcp(mcp_server, name)), name)
 
     async def test_the_summary_lists_the_inherited_target(self, mcp_server) -> None:
-        blocks, _ = await mcp_server.call_tool(name="datasets_summary",
-                                               arguments={"datasource_name": DS, "format": "json"})
+        blocks = (await mcp_server.call_tool(name="datasets_summary",
+                                               arguments={"datasource_name": DS, "format": "json"})).content
         payload = json.loads(blocks[0].text)
         (entry,) = [d for d in payload["datasets"] if d["name"] == "customer_revenue"]
         assert "customers" in entry["relationships_to"]
@@ -285,8 +285,8 @@ class TestInspectMcp:
         assert "threshold_var" in entry["inherited_relationships_error"]
 
     async def test_the_markdown_summary_carries_provenance_and_errors(self, mcp_server) -> None:
-        blocks, _ = await mcp_server.call_tool(name="datasets_summary",
-                                               arguments={"datasource_name": DS, "format": "markdown"})
+        blocks = (await mcp_server.call_tool(name="datasets_summary",
+                                               arguments={"datasource_name": DS, "format": "markdown"})).content
         lines = blocks[0].text.splitlines()
         (listed,) = [line for line in lines if line.startswith("Inherited relationships:")]
         assert "`orders.customers`" in listed
@@ -294,8 +294,8 @@ class TestInspectMcp:
                    for line in lines)
 
     async def test_the_compact_collection_carries_provenance_and_errors(self, mcp_server) -> None:
-        blocks, _ = await mcp_server.call_tool(name="inspect", arguments={
-            "entity_type": "dataset", "compact": True, "format": "json"})
+        blocks = (await mcp_server.call_tool(name="inspect", arguments={
+            "entity_type": "dataset", "compact": True, "format": "json"})).content
         (group,) = [g for g in json.loads(blocks[0].text)["datasources"] if g["data_source"] == DS]
         entries = {d["name"]: d for d in group["datasets"]}
         assert entries["customer_revenue"]["inherited_relationships"][0]["inherited_from"] == {
@@ -313,8 +313,8 @@ class TestInspectMcp:
 
 
 async def _summary(server: Any, *, compact: bool) -> dict:
-    blocks, _ = await server.call_tool(name="datasets_summary",
-                                       arguments={"datasource_name": DS, "format": "json", "compact": compact})
+    blocks = (await server.call_tool(name="datasets_summary",
+                                       arguments={"datasource_name": DS, "format": "json", "compact": compact})).content
     return json.loads(blocks[0].text)
 
 

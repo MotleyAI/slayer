@@ -4,7 +4,9 @@ proven to-one hop equals a raw inline-WHERE JOIN oracle on the same database
 file. Fusion half: fused vs forced-unfused renders of one planned query are
 value-identical — the claim is scoped to the no-transform branch, the only
 point where a fusion choice exists (transform/combined paths have no fused
-alternative)."""
+alternative). Untrusted-hop half: the distinct projection equals association
+on data violating declared cardinality, and trusting a hop changes nothing on
+clean data."""
 
 from __future__ import annotations
 
@@ -18,7 +20,21 @@ from slayer.sql.generator import SQLGenerator
 
 from slayer.core.query import QueryMetric
 
+from slayer.core.enums import RelationshipCardinality
+
 from tests._dev1739_fixtures import dev1739_datasets
+from tests._dev2437_fixtures import (
+    CLEAN,
+    DUP_C1,
+    REGION,
+    REVENUE,
+    SPLIT_C1,
+    customers_dataset,
+    orders_dataset,
+    seed_datasets,
+    to_customers,
+)
+from tests._dev2437_fixtures import engine as dev2437_engine
 from tests._law_harness import (
     make_law_engine,
     month_key,
@@ -133,4 +149,48 @@ class TestFusionParity:
         assert fused_rows == pytest.approx(unfused_rows), (
             f"LAW lowering soundness violated — fusion changed values: "
             f"{fused_rows} != {unfused_rows}"
+        )
+
+
+_UNTRUSTED_QUERIES = [
+    pytest.param(DUP_C1, {"dimensions": [REGION]}, id="dimension"),
+    pytest.param(DUP_C1, {"filter": ["customers.region = 'EAST'"]}, id="filter"),
+    pytest.param(SPLIT_C1, {"dimensions": [REGION], "filter": ["customers.tier = 'gold'"]},
+                 id="same-branch-filter-and-dimension"),
+]
+
+
+def _values(resp) -> dict:
+    out = {row.get(REGION): float(row[REVENUE]) for row in resp.data}
+    assert len(out) == len(resp.data), "duplicate group keys"
+    return out
+
+
+class TestUntrustedHop:
+    @pytest.mark.parametrize(("customers", "query"), _UNTRUSTED_QUERIES)
+    @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
+    async def test_distinct_projection_equals_association_on_dirty_data(
+        self, backend: str, customers: list, query: dict,
+    ) -> None:
+        # Keyless and many-to-many: no proof of to-one, so the oracle associates.
+        associated = seed_datasets(customers=customers_dataset(keyed=False), orders=orders_dataset(
+            relationship=to_customers(cardinality=RelationshipCardinality.MANY_TO_MANY)))
+        async with dev2437_engine(backend, customers) as eng:
+            projected = await eng.execute(q(**query, metrics=[REVENUE]))
+        async with dev2437_engine(backend, customers, associated) as eng:
+            oracle = await eng.execute(q(**query, metrics=[REVENUE]))
+        assert _values(projected) == pytest.approx(_values(oracle)), (
+            "LAW lowering soundness violated — the untrusted to-one lowering != association on dirty data"
+        )
+
+    @pytest.mark.parametrize("query", [p.values[1] for p in _UNTRUSTED_QUERIES],
+                             ids=[str(p.id) for p in _UNTRUSTED_QUERIES])
+    @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
+    async def test_trusted_equals_untrusted_on_clean_data(self, backend: str, query: dict) -> None:
+        async with dev2437_engine(backend, CLEAN, trusted=True) as eng:
+            trusted = await eng.execute(q(**query, metrics=[REVENUE]))
+        async with dev2437_engine(backend, CLEAN) as eng:
+            untrusted = await eng.execute(q(**query, metrics=[REVENUE]))
+        assert _values(trusted) == pytest.approx(_values(untrusted)), (
+            "LAW lowering soundness violated — trusting a hop changed values on clean data"
         )

@@ -63,10 +63,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_CI, function="compile_query", exc="ValueError",
          message="compile_query needs an environment produced by elaborate_query (its compile inputs are unset).",
          category="internal", family="internal", user=False, owner="compiler"),
-    _row(module=_EE, function="check_dimension_temporal_axis", exc="TimeAxisError",
-         message="A time-ordered transform evaluates at a grain that does not contain its time axis '…'; a producer bucketed by time joined back on the coarser grain would duplicate result rows."
+    _row(module=_EE, function="check_temporal_axis", exc="TimeAxisError",
+         message="The operand of …() is at a grain that does not contain the time axis '…', so it does not vary along it."
          + AT + "transform …"
-         + SUGGEST + "Include the time key in the aggregate's partition_by= so the transform accumulates within its own grain.",
+         + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_WD, function="parse_window_duration", exc="WindowDurationError",
          message="Window duration must be a compact duration string like '90d', got …."
@@ -132,10 +132,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="A time dimension is row-level; its expression reads an aggregate or transform."
          + AT + "time dimension …" + SUGGEST + "Bucket a field or a row-level expression of fields.",
          category="checker", family="time-axis", user=True, owner="checker"),
-    _row(module=_EE, function="check_time_dimension_home", exc="UnsafeRelationshipInputError",
-         message="The time dimension reads …, which crosses an unproven or fanning relationship hop to … from …: no "
-         "dataset determines every field the expression reads." + AT + "time dimension …" + SUGGEST + "…",
-         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_row_expression_home", exc="UnsafeRelationshipInputError",
+         message="The expression reads …, from …: no dataset determines every field it reads." + AT + "…"
+         + SUGGEST + "Aggregate one operand to a grain the other's dataset determines, or group by each field as "
+         "its own dimension.",
+         category="checker", family="cross-model", user=True, owner="checker"),
     _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
          + SUGGEST + "Pass a field declared DATE / TIMESTAMP (set DatasetField.datatype), min/max/first/last of one, "
@@ -245,6 +246,13 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="The aggregate has an input dependency whose definition no supported dialect can analyse for relationship dependencies; an unanalyzable dependency is unsafe."
          + AT + "metric …"
          + SUGGEST + "Fix the input's SQL, or remove it from the aggregate.",
+         category="checker", family="cross-model", user=True, owner="checker"),
+    _row(module=_EE, function="check_inputs_trusted", exc="UnsafeRelationshipInputError",
+         message="The aggregate reads an input across the untrusted relationship … → …: with repeated … rows it would "
+         "read one of several matching values."
+         + AT + "metric …"
+         + SUGGEST + "Mark the relationship … → … trusted, or record its key as an enforced key of …; or omit "
+         "to_many_handling to read one matching value per … row.",
          category="checker", family="cross-model", user=True, owner="checker"),
     _row(module=_EE, function="check_local_producer_inputs_safe", exc="UnsafeRelationshipInputError",
          message="The aggregate ranks/reads by …, which crosses an unproven relationship hop to … from …."

@@ -292,6 +292,8 @@ Other T-SQL specifics surfaced by the dialect:
 
 `TRY_CAST`'s NULL for an unconvertible value, the text-to-number coercion that reads through it, and `json_value`'s NULL for malformed JSON need Postgres 16 (`pg_input_is_valid`); on an older or unknown server they are a plain cast, so one bad row fails the query.
 
+`ANY_VALUE` also needs Postgres 16; on an older or unknown server SLayer reads `mode() WITHIN GROUP`, which needs a sortable type, so a `json`, `xml` or geometric value there fails the query.
+
 ### ClickHouse caveats
 
 `JSON` and `Object` columns are read natively by `json_value` through their ingested `db_type` (from `system.columns`), so datasets ingested before that need a re-ingest.

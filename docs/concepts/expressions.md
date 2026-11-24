@@ -202,7 +202,7 @@ dimensions), since it defines the grain of a synthesized internal stage.
 
 A `partition_by` aggregate composes with the rest of the query: combined with
 `window=` (a rolling total at the partition grain), on `first`/`last`, nested
-inside a transform (`cumsum(sum(orders.revenue, partition_by=orders.region))`), and referenced
+inside a transform (`cumsum(sum(orders.revenue, partition_by=[orders.region, orders.ordered_at]))`), and referenced
 in a filter (`sum(orders.revenue, partition_by=orders.region) > 5000`) — a filter's top-level
 `AND` conjuncts route independently to the earliest scope where their
 references resolve, and a predicate whose references share no scope raises a
@@ -338,7 +338,7 @@ Functions apply window operations to metrics:
 | `first(x)` | Earliest time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time ASC ...)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
-**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the dataset's `default_time_dimension` is used if it's among the query's time dimensions. A downstream stage's own time dimension counts, so these transforms work over a re-bucketed stage column too. A stage has no dataset-level default, so set `main_time_dimension` when a stage has 2+ time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
+**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the dataset's `default_time_dimension` is used if it's among the query's time dimensions. A downstream stage's own time dimension counts, so these transforms work over a re-bucketed stage column too. A stage has no dataset-level default, so set `main_time_dimension` when a stage has 2+ time dimensions. In every position, the operand grain must contain the time axis: by month, `time_shift(sum(orders.amount, partition_by=orders.region), -1)` is a `TimeAxisError` (add the time key: `partition_by=[orders.region, orders.ordered_at]`), and a nested `first` / `last` drops the axis. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
 
 **Transforms read their operand's cells.** A transform evaluates over its operand's own cells — the cells its inner aggregates have at the operand grain (a dimension-anchor cell when it has no aggregate) — and its result attaches to the query's rows; a row outside those cells reads NULL. Another measure that adds rows never changes a transform's values: `lag` and `lead` step over the operand's present cells (a month with no rows is a gap, never a neighbour), and a rank-family transform or `first` / `last` ranks or picks among those cells only. A NULL time bucket is adjacent to no bucket: it is a running total of its own, `lag` reads NULL there, and `first` / `last` skip it. Over the [time spine](time.md#time-spine) the cells are filled: every bucket in range for each of the operand's tuples.
 

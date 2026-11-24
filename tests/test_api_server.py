@@ -20,7 +20,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._saved_query_refinement_fixtures import BY_REGION_MONTH, month, populate_refine_storage, seed_sqlite
 
 
-# `create_app` builds an MCP server (~2 s of FastMCP/pydantic schema gen)
+# `create_app` builds an MCP server (~2 s of MCPServer/pydantic schema gen)
 # plus a FastAPI app, and the app captures the storage instance. Sharing
 # both across the session and resetting the YAML files between tests
 # avoids paying that cost on every test in this file.

@@ -40,6 +40,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1746_fixtures import cte_names_in_order, find_cte
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting, trusting_all
 
 
 # ---------------------------------------------------------------------------
@@ -122,8 +123,8 @@ async def _sql(
     query: SlayerQuery, *, dataset: SlayerDataset, dialect: str = "postgres",
 ) -> str:
     return await _engine_generate(
-        query=query, dataset=dataset, dialect=dialect, validate=False,
-        extra_datasets=[_customers(), _regions()],
+        query=query, dataset=trusting(dataset), dialect=dialect, validate=False,
+        extra_datasets=trusting_all([_customers(), _regions()]),
     )
 
 

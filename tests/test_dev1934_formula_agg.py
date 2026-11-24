@@ -47,6 +47,7 @@ from tests._dev1910_fixtures import (
     SPEND_WAVG_SOUTH,
 )
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
+from tests._trusted import trusting
 
 TIER1 = ["postgres", "sqlite", "duckdb", "mysql", "clickhouse", "tsql", "snowflake", "bigquery"]
 
@@ -98,7 +99,7 @@ async def _joined_sql(*, agg: Aggregation, expression: str, validate: bool = Tru
     host = _orders((agg,)).model_copy(
         update={"relationships": [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]},
     )
-    return await _engine_generate(query=_q(expression), dataset=host, extra_datasets=[customers], validate=validate)
+    return await _engine_generate(query=_q(expression), dataset=trusting(host), extra_datasets=[customers], validate=validate)
 
 
 async def _fails_as_its_comparison_twin(*, expression: str, twin: str, aggs: tuple[Aggregation, ...]) -> str:

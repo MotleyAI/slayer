@@ -17,6 +17,7 @@ from slayer.memories.models import Memory
 from slayer.database import engine_factory
 from slayer.storage.document_keys import dataset_in, keys_for
 from slayer.storage.migrations import CURRENT_VERSIONS
+from slayer.storage.sql_string_migration import rewrite_query_strings
 from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, metric_total, raw_store, run
 
 _COLUMNS = [
@@ -47,10 +48,10 @@ def _query(*, version: int, **fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 28
-        assert CURRENT_VERSIONS["SlayerQuery"] == 18
+        assert CURRENT_VERSIONS["SlayerModel"] == 29
+        assert CURRENT_VERSIONS["SlayerQuery"] == 19
         assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 13
+        assert CURRENT_VERSIONS["Memory"] == 14
 
 
 #: (stored v17 text, the text it loads as).
@@ -208,9 +209,13 @@ class TestOldGrammarGate:
         assert not [m for m in messages if secret in m], messages
 
     @pytest.mark.parametrize("pad", [" ", "\n  "], ids=["space", "newline"])
-    def test_old_text_with_leading_whitespace_is_upgraded(self, pad: str) -> None:
-        query = _query(version=6, filters=[f'{pad}status == "paid"'])
-        assert query.filter == [f"{pad}status = 'paid'"]
+    def test_old_text_with_leading_whitespace_is_left_unchanged(self, pad: str,
+                                                                caplog: pytest.LogCaptureFixture) -> None:
+        stored = f'{pad}status == "paid"'
+        with _messages(caplog) as messages:
+            out = rewrite_query_strings({"version": 6, "name": "gate_q", "source_model": "orders", "filters": [stored]})
+        assert out["filters"] == [stored]
+        assert _warned(messages, document="gate_q", field=("filters[0]",)), messages
 
     def test_saved_query(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:

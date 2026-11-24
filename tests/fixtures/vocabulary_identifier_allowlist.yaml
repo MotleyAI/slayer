@@ -511,6 +511,15 @@ carve_outs:
   - {name: expected_columns, file: slayer/sql/stage_wrapper.py, reason: "physical database or result-set column"}
   - {name: join, file: slayer/sql/stage_wrapper.py, reason: "SQL JOIN as an operation"}
   - {name: columns, file: slayer/sql/type_probe.py, reason: "physical database or result-set column"}
+  - {name: _COLUMN_PREFIX, file: slayer/sql/untrusted_projection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _scope_columns, file: slayer/sql/untrusted_projection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _subtree_column, file: slayer/sql/untrusted_projection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _subtree_joins, file: slayer/sql/untrusted_projection.py, reason: "SQL JOIN as an operation"}
+  - {name: column, file: slayer/sql/untrusted_projection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: inner_joins, file: slayer/sql/untrusted_projection.py, reason: "SQL JOIN as an operation"}
+  - {name: join, file: slayer/sql/untrusted_projection.py, reason: "SQL JOIN as an operation"}
+  - {name: joins, file: slayer/sql/untrusted_projection.py, reason: "SQL JOIN as an operation"}
+  - {name: outer_joins, file: slayer/sql/untrusted_projection.py, reason: "SQL JOIN as an operation"}
   - {name: embedding_model_name, file: slayer/storage/access_filtered.py, reason: "embedding model"}
   - {name: _SEMANTIC_MODEL, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}
   - {name: delete_semantic_model, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}

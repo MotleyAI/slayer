@@ -8,8 +8,8 @@ from typing import Any
 from collections.abc import AsyncIterator, Generator
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.client import Client
 from mcp.types import TextContent
 from sqlalchemy import exc as sa_exc
 
@@ -107,8 +107,8 @@ async def _dry_run_sql(storage: YAMLStorage, name: str) -> str:
 
 async def _call(mcp_server, *, name: str, arguments: dict[str, Any] | None = None) -> str:
     """Call an MCP tool and return the text result."""
-    content_blocks, result_dict = await mcp_server.call_tool(name=name, arguments=arguments or {})
-    return content_blocks[0].text
+    result = await mcp_server.call_tool(name=name, arguments=arguments or {})
+    return result.content[0].text
 
 
 class TestModelsSummary:
@@ -1466,7 +1466,7 @@ class TestCreateModel:
 
     async def test_create_with_measure_meta_dict(self, mcp_server, storage: YAMLStorage) -> None:
         # Pins metrics as List[Dict[str, Any]]: a narrower type would reject this
-        # dict-valued meta at the FastMCP schema boundary.
+        # dict-valued meta at the MCPServer schema boundary.
         result = await _call(mcp_server, name="create_dataset", arguments={
             "name": "orders",
             "sql_table": "public.orders",
@@ -3134,14 +3134,14 @@ class TestDatabaseFailuresAreToolErrors:
     async def _call_tool(self, storage: YAMLStorage, name: str, arguments: dict[str, Any]):
         server: Any = create_mcp_server(storage=storage, _seed_help=False)
         try:
-            async with create_connected_server_and_client_session(server) as session:
-                return await session.call_tool(name, arguments)
+            async with Client(server, mode="legacy") as client:
+                return await client.call_tool(name, arguments)
         finally:
             await server._slayer_engine.aclose()
 
     @staticmethod
     def _assert_database_tool_error(result) -> None:
-        assert result.isError
+        assert result.is_error
         assert "Database error:" in result.content[0].text
 
     async def test_query_rejected_by_the_database(self, db_storage: YAMLStorage) -> None:
@@ -3157,7 +3157,7 @@ class TestDatabaseFailuresAreToolErrors:
             fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)],
         ))
         result = await self._call_tool(db_storage, "validate_datasets", {"data_source": "shop"})
-        assert not result.isError
+        assert not result.is_error
         content = result.content[0]
         assert isinstance(content, TextContent)
         causes = {entry.get("dataset_name"): entry.get("cause") for entry in json.loads(content.text)}

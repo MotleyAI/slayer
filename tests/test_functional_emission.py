@@ -196,7 +196,7 @@ async def test_mcp_tool_descriptions_are_functional(tmp_path: Path) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path)))
     tools = await server.list_tools()
     for tool in tools:
-        text = (tool.description or "") + json.dumps(tool.inputSchema)
+        text = (tool.description or "") + json.dumps(tool.input_schema)
         assert not _COLON_ANY.search(text), (tool.name, _COLON_ANY.findall(text))
     assert not _COLON_ANY.search(server.instructions or "")
     create_model = next(t for t in tools if t.name == "create_dataset")

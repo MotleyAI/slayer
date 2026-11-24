@@ -68,6 +68,7 @@ __all__ = [
     "resolved_terminal",
     "reverse_token",
     "terminal_dataset",
+    "trusted_to_one",
     "cancelling_revisit",
     "unique_key_sets",
     "WalkMiss",
@@ -113,6 +114,8 @@ class OrientedRelationship(BaseModel):
     aliases: tuple[str, ...] = ()
     # The ``from`` dataset of the semantic-model document relationship it stands for.
     document_from: str | None = None
+    # The relationship is marked trusted (its declared cardinality may be assumed).
+    trusted: bool = False
 
 
 _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
@@ -219,6 +222,7 @@ def _orient(
         target_spelling=spellings.get(to_dataset),
         aliases=relationship.aliases,
         document_from=relationship.document_from,
+        trusted=relationship.trusted,
     )
 
 
@@ -262,6 +266,21 @@ def provably_to_one(*, edge: OrientedLike, target_dataset: SlayerDataset) -> boo
     True iff the oriented cardinality is m:1/1:1, or the traversal-target fields
     fully cover a unique key-set of ``target_dataset``."""
     return _to_one(cardinality=edge.cardinality, target_keys=[p[1] for p in edge.column_pairs], target=target_dataset)
+
+
+def trusted_to_one(*, edge: OrientedLike, target_dataset: SlayerDataset) -> bool:
+    """Is ``edge`` a provably to-one hop that may be lowered assuming its arity: its relationship trusted, its target
+    keys covering an enforced key, or a target key unique by construction (spine instant, stage grain, row number, a
+    list child's own parent row)?"""
+    if not provably_to_one(edge=edge, target_dataset=target_dataset):
+        return False
+    if edge.trusted or is_spine(target_dataset):
+        return True
+    if isinstance(edge, OrientedRelationship) and edge.lateral is not None:
+        return True
+    keys = [p[1] for p in edge.column_pairs]
+    return is_key_set_unique(key_fields=keys, unique_key_sets=[*target_dataset.enforced_keys,
+                                                               *target_dataset.constructed_keys])
 
 
 def ossie_step(*, edge: OrientedRelationship, datasets_by_name: dict[str, SlayerDataset]) -> bool:
