@@ -324,7 +324,7 @@ class TestExpressionAndKeylessGrain:
         resp = await engine.execute(query(
             dimensions=["customers.name", {"field": BAND_EXPR, "alias": "band"}],
             metrics=[m(f"sum({MAX_Q})")]))
-        approx_cells(cells(resp, keys=("customers.name", "band")), {**SUM_MAX_Q_BY_BAND, ("Cy", "lo"): None})
+        approx_cells(cells(resp, keys=("customers.name", "band")), {**SUM_MAX_Q_BY_BAND, ("Cy", None): None})
         _clean(resp)
 
     async def test_keyless(self, engine):

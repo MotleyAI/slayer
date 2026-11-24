@@ -123,32 +123,65 @@ def fragment_closure(
     definition raises ``DatasetFieldCycleError``. ``cache`` (optional, plan-scoped)
     memoises the dialect parse + derived expansion, the loop's expensive part,
     keyed by ``(dataset, sql, owner_path, anchor_relation)``."""
+    paths = _fragment_paths(sql=sql, dataset=dataset, owner_path=owner_path, anchor_relation=anchor_relation,
+                            bundle=bundle, cache=cache)
+    return None if paths is None else paths[0]
+
+
+def _fragment_paths(
+    *, sql: Optional[str], dataset: SlayerDataset, owner_path: Path, anchor_relation: str,
+    bundle: ResolvedSourceBundle, cache: "Optional[dict]",
+) -> Optional[Tuple[Tuple[Path, ...], Tuple[Path, ...]]]:
+    """``(crossed prefixes, read paths)`` of a fragment (:func:`fragment_closure`); ``None`` when unanalysable."""
     if not sql:
-        return ()
+        return (), ()
     ck = ("fragment_closure", dataset.name, sql, tuple(owner_path), anchor_relation)
     if cache is not None and ck in cache:
         return cache[ck]
-    result: Optional[Tuple[Path, ...]] = None
+    result: Optional[Tuple[Tuple[Path, ...], Tuple[Path, ...]]] = None
     for dialect in _PLANNER_PARSE_DIALECT_CHAIN:
         if dialect is None:
             continue  # expand_derived_refs_sync requires a dialect string
-        sink = _OrderedSink()
+        sink, reads = _OrderedSink(), _OrderedSink()
         try:
             expanded = expand_derived_refs_sync(
                 sql=sql, dataset=dataset, alias_path=anchor_relation,
                 owner_path=tuple(owner_path), datasets_by_name=bundle.datasets_by_name,
-                dialect=dialect, crossed_paths=sink,
+                dialect=dialect, crossed_paths=sink, read_paths=reads,
             )
         except (DatasetFieldCycleError, CircularRelationshipPathError, UnreachableDefinitionError):
             raise
         except Exception:
             continue
         if expanded is not None:
-            result = sink.paths
+            result = (sink.paths, reads.paths)
             break
     if cache is not None:
         cache[ck] = result
     return result
+
+
+def field_read_paths(
+    key: ValueKey, *, anchor_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[Path, ...]]:
+    """The path of each dataset a field leaf reads a field on — its own for a base field, its definition's for a
+    derived one; ``None`` when the definition cannot be analysed."""
+    path = tuple(getattr(key, "path", ()) or ())
+    if not isinstance(key, FieldSqlKey):
+        return (path,)
+    terminal = _terminal_dataset(key, anchor_dataset=anchor_dataset, bundle=bundle)
+    col = terminal.get_field(key.field_name) if terminal is not None else None
+    if terminal is None or col is None:
+        return (path,)
+    reads: List[Path] = [path] if is_trivial_base(field=col) or col.definition_sql is None else []
+    owner_relation = "__".join(path) if path else anchor_dataset.name
+    for sql in _definition_fragments(col):
+        frag = _fragment_paths(sql=sql, dataset=terminal, owner_path=path, anchor_relation=owner_relation,
+                               bundle=bundle, cache=None)
+        if frag is None:
+            return None
+        reads.extend(frag[1])
+    return tuple(dict.fromkeys(reads))
 
 
 #: Strict fragment nodes (NULL in, NULL out): a field, arithmetic, a binary

@@ -10,7 +10,7 @@ never renders one (``slayer/sql`` keeps sole Node-building authority).
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Dict, Literal, Protocol, Tuple, Union, runtime_checkable
+from typing import Dict, Literal, Optional, Protocol, Tuple, Union, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field as PydanticField, model_validator
 
@@ -52,6 +52,22 @@ class AggregateHome(BaseModel, frozen=True):
 
     kind: HomeKind
     path: Tuple[str, ...] = ()
+
+
+class HomelessOperand(BaseModel, frozen=True):
+    """An operand of a homeless row-level expression and its first fanning or unproven hop, if any."""
+
+    operand: str
+    hop: Optional[str] = None
+
+
+class RowExpressionHome(BaseModel, frozen=True):
+    """A row-level expression's home (semantics Axiom 2.2): its path, else the operands no dataset determines
+    together, read from ``common``."""
+
+    path: Optional[Tuple[str, ...]] = None
+    operands: Tuple[HomelessOperand, ...] = ()
+    common: str = ""
 
 
 class AggregateHomes(BaseModel, frozen=True):

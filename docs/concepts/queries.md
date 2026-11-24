@@ -71,6 +71,11 @@ and `order`. The alias keys the result even when the field is a bare joined
 path: `{"field": "customers.region_id", "alias": "region_id"}` returns
 `region_id`, and a downstream stage reads it as `<stage>.region_id`.
 
+An expression (as a dimension, time dimension or order key) reads the fields of one dataset and of datasets it
+reaches over to-one relationships, and takes the values a field of that dataset would — so
+`orders.amount * returns.amount`, combining two to-many children of `customers`, is an error, and
+`coalesce(orders.shipped_at, customers.signup_ts)` is NULL for a customer without orders.
+
 #### Grouping by an expression over an aggregate
 
 A computed dimension may also group by a value derived from an aggregate at a

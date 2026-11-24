@@ -132,10 +132,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="A time dimension is row-level; its expression reads an aggregate or transform."
          + AT + "time dimension …" + SUGGEST + "Bucket a field or a row-level expression of fields.",
          category="checker", family="time-axis", user=True, owner="checker"),
-    _row(module=_EE, function="check_time_dimension_home", exc="UnsafeRelationshipInputError",
-         message="The time dimension reads …, which crosses an unproven or fanning relationship hop to … from …: no "
-         "dataset determines every field the expression reads." + AT + "time dimension …" + SUGGEST + "…",
-         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_row_expression_home", exc="UnsafeRelationshipInputError",
+         message="The expression reads …, from …: no dataset determines every field it reads." + AT + "…"
+         + SUGGEST + "Aggregate one operand to a grain the other's dataset determines, or group by each field as "
+         "its own dimension.",
+         category="checker", family="cross-model", user=True, owner="checker"),
     _row(module=_EE, function="check_raw_row_determined", exc="DistinctDimensionValuesError",
          message="distinct_dimension_values=False lists one row per row of …, but the … reads … across the fanning or "
          "unproven relationship hop to …, which would repeat rows of …." + AT + "… …"

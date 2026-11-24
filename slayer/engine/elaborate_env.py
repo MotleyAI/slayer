@@ -134,6 +134,7 @@ from slayer.ir.terms import (
     AggregateHomes,
     Broadcast,
     DatasetT,
+    RowExpressionHome,
     StoredDataset,
     Transform,
 )
@@ -1063,18 +1064,18 @@ def time_dimension_type(source: ValueKey, *, field_type: FieldTypeFn) -> Optiona
     return temporal_type(source, field_type=field_type) or _count_type(source, field_type=field_type)
 
 
-def check_time_dimension_home(*, name: str, crossing: Optional[Tuple[str, Optional[str]]], anchor: str) -> None:
-    """A time dimension expression reads every leaf over provably to-one hops from its anchor (Axiom 2.2)."""
-    if crossing is None:
+def check_row_expression_home(*, location: str, home: RowExpressionHome) -> None:
+    """A row-level expression in a value position has a dataset determining every operand (Axiom 2.2)."""
+    if home.path is not None:
         return
-    leaf, hop = crossing
-    if hop is None:
-        check_entry_dependencies_analyzable(kind="time dimension", name=name, field=leaf)
+    reads = " and ".join(
+        f"{o.operand} across the fanning or unproven hop to {o.hop}" if o.hop else o.operand for o in home.operands
+    )
     raise UnsafeRelationshipInputError(
-        summary=f"The time dimension reads {leaf}, which crosses an unproven or fanning relationship hop "
-        f"to {hop} from {anchor}: no dataset determines every field the expression reads.",
-        location=f"time dimension {name!r}",
-        suggestion=_RELATIONSHIP_REMEDY,
+        summary=f"The expression reads {reads}, from {home.common}: no dataset determines every field it reads.",
+        location=location,
+        suggestion="Aggregate one operand to a grain the other's dataset determines, or group by each field as its "
+        "own dimension.",
     )
 
 
