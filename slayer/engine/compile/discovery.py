@@ -43,6 +43,7 @@ from slayer.engine.cardinality.relationship_safety import (
     crossing_local_root_predicate,
     grain_member_attributable,
     key_host_path,
+    mixes_untrusted_branch,
     reads_population_spine,
 )
 from slayer.ir.elaborated import ConjunctTyping
@@ -189,9 +190,12 @@ class _Walker:
                 window_kwarg_of(k) is not None and self.active_td is not None
                 and not self._attributable(self.active_td, host=host)
             )
-        # The population's spine is counted over each home's own axis, never the product.
+        # The population's spine is counted over each home's own axis, never the product; a member mixing an
+        # untrusted to-one branch with other reads counts each home row once by association.
         return any(
-            reads_population_spine(g, host=host) or not self._attributable(g, host=host) for g in self.grain
+            reads_population_spine(g, host=host) or not self._attributable(g, host=host)
+            or mixes_untrusted_branch(g, root_dataset=host, host_dataset=host, bundle=self.bundle)
+            for g in self.grain
         )
 
     def _associable_key(self, pk: ValueKey, *, host: SlayerDataset) -> bool:

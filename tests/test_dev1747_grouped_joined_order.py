@@ -59,6 +59,7 @@ from tests._dev1747_fixtures import (
     seed_dev1747_sqlite,
 )
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting_all
 
 _METRIC = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
@@ -98,7 +99,7 @@ async def _execute(query: SlayerQuery):
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
-    models = dev1747_datasets()
+    models = trusting_all(dev1747_datasets())
     return await _engine_generate(
         query=query, dataset=models[0], extra_datasets=models[1:], dialect=dialect,
     )

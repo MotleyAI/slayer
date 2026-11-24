@@ -25,6 +25,7 @@ from tests._dev2102_fixtures import (
     PART_PAIRS,
     VIP_CUSTOMERS,
     addresses,
+    base_datasets,
     customers,
     ext,
     relationship_to,
@@ -35,6 +36,7 @@ from tests._dev2102_fixtures import (
     vip_list,
     with_datasets,
 )
+from tests._trusted import trusting_all
 
 VIP_PAIRS = [["id", "customer_id"]]
 REGION_PAIRS = [["region_id", "id"]]
@@ -269,7 +271,7 @@ class TestModes:
         query = q(population="orders", dimensions=["customers.tier"],
                   extensions=[ext("orders", relationships=[relationship_to("customers", CUSTOMER_PAIRS, join_type="inner")])],
                   metrics=[{"metric": "count(orders.*)", "alias": "n"}])
-        async with shop(dialect) as engine:
+        async with shop(dialect, trusting_all(base_datasets())) as engine:
             resp = await engine.execute(query)
             dry = await engine.execute(query, dry_run=True)
         assert rows(resp, "customers.tier", "n") == [("bronze", 1), ("gold", 3), ("silver", 2)]

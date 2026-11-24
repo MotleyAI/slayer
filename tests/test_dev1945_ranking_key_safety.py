@@ -11,6 +11,7 @@ added CAST.
 from __future__ import annotations
 
 import inspect
+import os
 import re
 import warnings
 from typing import Optional
@@ -36,7 +37,10 @@ from tests._dev1945_fixtures import (
     month_key,
     month_td,
     orders_q,
+    seed_dev1945_sqlite,
 )
+from tests._engine_helpers import make_seeded_sqlite_engine
+from tests._trusted import trusting_all
 from slayer.engine.query_engine import SlayerResponse
 
 HOST_HOP = "unproven relationship hop to line_items from orders"
@@ -55,6 +59,15 @@ AMOUNT_LAST_LI_CREATED = AggregateKey(
     source=AMOUNT, agg="last", args=(FieldKey(path=("line_items",), leaf="created_at"),),
 )
 LI_QTY_LAST = AggregateKey(source=FieldKey(path=("line_items",), leaf="qty"), agg="last")
+
+
+async def _trusted_engine(base_dir: str, *, orders_default: str) -> SlayerQueryEngine:
+    """``make_engine`` over trusted relationships: the proven-hop pins describe the inline join."""
+    db_path = os.path.join(base_dir, "dev1945.db")
+    seed_dev1945_sqlite(db_path)
+    return await make_seeded_sqlite_engine(
+        base_dir=base_dir, db_path=db_path, datasets=trusting_all(dev1945_datasets(orders_default=orders_default)),
+    )
 
 
 def _alias_of(msg: str) -> str:
@@ -241,7 +254,7 @@ class TestSafeKeysExecute:
             await engine.execute(query)
 
     async def test_derived_default_over_proven_hop(self, tmp_path) -> None:
-        engine = await make_engine(str(tmp_path), orders_default="cust_signup")
+        engine = await _trusted_engine(str(tmp_path), orders_default="cust_signup")
         resp = await engine.execute(orders_q(metrics=[metric("last(orders.amount)")]))
         assert resp.data == [{"l": LAST_AMOUNT}]
         assert resp.sql is not None
@@ -259,7 +272,7 @@ class TestSafeKeysExecute:
         assert "line_items" not in resp.sql
 
     async def test_windowed_explicit_derived_key_over_proven_hop(self, tmp_path) -> None:
-        engine = await make_engine(str(tmp_path), orders_default="created_at")
+        engine = await _trusted_engine(str(tmp_path), orders_default="created_at")
         resp = await engine.execute(orders_q(
             time_dimensions=month_td(),
             metrics=[metric("last(orders.amount, orders.cust_signup, window='30d')")],

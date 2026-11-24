@@ -26,7 +26,15 @@ from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.sql.scope_check import assert_scope_closed
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _engine_generate as _engine_generate_untrusted
+from tests._trusted import trusting, trusting_all
+
+
+async def _engine_generate(*, query: SlayerQuery, dataset: SlayerDataset, extra_datasets: list[SlayerDataset]) -> str:
+    # These pins describe the inline-join lowering of trusted hops.
+    return await _engine_generate_untrusted(
+        query=query, dataset=trusting(dataset), extra_datasets=trusting_all(extra_datasets),
+    )
 
 
 def _ordered_join_aliases(sql: str, *, dialect: str = "postgres") -> list[str]:

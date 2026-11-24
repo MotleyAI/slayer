@@ -190,5 +190,6 @@ def _inherit(
         to=edge.to, from_columns=from_columns, to_columns=tuple(t for _, t in edge.column_pairs), name=edge.name,
         join_type=JoinType.LEFT if declaration.query_local else edge.join_type,
         cardinality=_cardinality(edge, keys=from_columns, grain=grain),
+        trusted=edge.trusted,
         origin=_origin(edge, declaration, datasets_by_name),
     )

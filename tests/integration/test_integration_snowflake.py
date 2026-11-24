@@ -760,6 +760,37 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
     assert customers_joins["regions"] == ("region_id", "id")
 
 
+def test_a_declared_primary_key_is_not_enforced(sf_datasource, sf_transient_schema) -> None:
+    """Spec: models/fk-ingestion › A Snowflake primary key is not enforced."""
+    models = run_sync(_ingest(sf_datasource, schema=sf_transient_schema))
+    customers = next(m for m in models if m.name.lower() == "customers")
+    assert [f.name.lower() for f in customers.fields if f.primary_key] == ["id"]
+    assert getattr(customers, "enforced_keys") == []
+
+
+def test_an_authors_trusted_flag_survives_drift(sf_datasource, sf_transient_schema, tmp_path) -> None:
+    """Spec: models/schema-drift › An author's trusted flag is never cleared."""
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    result = _ingest_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema)
+    assert not result.errors, result.errors
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        orders = engine.run_sync(storage.get_dataset("orders", data_source=sf_datasource.name))
+        assert orders is not None
+        data = orders.model_dump()
+        for rel in data["relationships"]:
+            rel["trusted"] = True
+        engine.run_sync(storage.save_dataset(SlayerDataset.model_validate(data)))
+        entries = engine.run_sync(engine.validate_datasets(data_source=sf_datasource.name))
+        assert not [e for e in entries if e.dataset_name == "orders"], entries
+        engine.run_sync(engine.apply_drift_deletes(entries))
+        reloaded = engine.run_sync(storage.get_dataset("orders", data_source=sf_datasource.name))
+    finally:
+        engine.close()
+    assert reloaded is not None
+    assert [getattr(r, "trusted") for r in reloaded.relationships] == [True] * len(reloaded.relationships)
+
+
 def test_auto_ingest_imports_comments(sf_datasource, sf_transient_schema) -> None:
     """Snowflake table/column comments must land on dataset/field descriptions."""
     models = run_sync(_ingest(sf_datasource, schema=sf_transient_schema))

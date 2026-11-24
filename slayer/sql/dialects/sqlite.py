@@ -746,6 +746,7 @@ _PLAIN_TIMESTAMP_CASTS = frozenset({
 
 
 class SqliteDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "sqlite"
     database_name: ClassVar[str] = "SQLite"
     type_probe_rows: ClassVar[int] = 1
