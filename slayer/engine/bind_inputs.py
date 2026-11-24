@@ -43,7 +43,6 @@ from slayer.core.keys import (
     attached_operand_keys,
     is_reaggregation_key,
     rewrite_rank_partition_keys,
-    source_anchor_path,
     walk_value_keys,
     window_kwarg_of,
 )
@@ -99,7 +98,6 @@ from slayer.engine.elaborate_env import (
     check_raw_rows_filter_metric_ref,
     check_raw_rows_order_metric_ref,
     check_time_dimension_field,
-    check_time_dimension_home,
     check_time_dimension_row_level,
     check_spine_time_dimension,
     time_dimension_type,
@@ -111,8 +109,8 @@ from slayer.engine.elaborate_env import (
     resolve_time_points,
     date_only_notices,
 )
-from slayer.engine.population.home import row_expression_crossing
 from slayer.engine.cardinality.relationship_safety import assert_partition_key_analysable
+from slayer.engine.population.home import as_home_field
 from slayer.engine.key_metadata import (
     SlotTyping,
     bundle_dialect,
@@ -434,7 +432,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # A computed dimension's name is a query-local alias resolvable in filters/order.
     for dm in declared_metrics:
         if dm.is_dimension and dm.public_name is not None:
-            filter_alias_map.setdefault(dm.public_name, dm.bound.value_key)
+            filter_alias_map.setdefault(dm.public_name, _home_reading(dm.bound.value_key, scope=scope, bundle=bundle))
     # ...and resolvable inside a filter/order ``partition_by=``.
     _computed_names = frozenset(d.name for d in (query.dimensions or []) if d.is_computed)
     dim_alias_map: Dict[str, ValueKey] = {
@@ -864,6 +862,10 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
+    declared_metrics, bound_filters, order_specs, main_time_key = _home_value_positions(
+        declared_metrics, bound_filters=bound_filters, order_specs=order_specs, n_grain=n_dims + n_tds,
+        n_date_range=n_date_range, active_td_key=active_td_key, scope=scope, bundle=bundle,
+    )
 
     return PreboundQuery(
         declared_metrics=declared_metrics,
@@ -871,7 +873,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filter_texts=bound_filter_texts,
         n_date_range=n_date_range,
         order_specs=order_specs,
-        main_time_key=active_td_key,
+        main_time_key=main_time_key,
         n_dims=n_dims,
         n_time_dimensions=n_tds,
         limit=query.limit,
@@ -886,6 +888,80 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
 
 # Helpers
+
+
+def _home_reading(key: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ValueKey:
+    """``key`` read as a field of its home; a time bucket buckets its homed source."""
+    if isinstance(key, TimeTruncKey):
+        source = as_home_field(key.source, host_dataset=scope.population, bundle=bundle)
+        return key if source == key.source else key.model_copy(update={"source": source})
+    return as_home_field(key, host_dataset=scope.population, bundle=bundle)
+
+
+def _home_value_positions(
+    declared_metrics: List[DeclaredMetric], *, bound_filters: List[BoundFilter], order_specs: List[OrderSpec],
+    n_grain: int, n_date_range: int, active_td_key: Optional[TimeTruncKey], scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+) -> Tuple[List[DeclaredMetric], List[BoundFilter], List[OrderSpec], Optional[TimeTruncKey]]:
+    """Every dimension, time dimension and row-level order key read as a field of its home (semantics Axiom 13), once
+    binding has matched them; the partition and sort keys naming them, and each time dimension's date range, follow."""
+    homed: Dict[ValueKey, ValueKey] = {}
+    for dm in declared_metrics[:n_grain]:
+        if (h := _home_reading(dm.bound.value_key, scope=scope, bundle=bundle)) != dm.bound.value_key:
+            homed[dm.bound.value_key] = h
+    grain = {dm.bound.value_key for dm in declared_metrics[:n_grain]} | set(homed.values())
+
+    def order_key(k: ValueKey) -> ValueKey:
+        if k in homed:
+            return homed[k]
+        if k in grain or any(isinstance(n, (AggregateKey, TransformKey)) for n in walk_value_keys(k)):
+            return k
+        return as_home_field(k, host_dataset=scope.population, bundle=bundle)
+
+    def follow(k: ValueKey) -> ValueKey:
+        return _follow_homed(k, homed=homed)
+
+    declared_metrics = [
+        dm.model_copy(update={"bound": dm.bound.model_copy(update={"value_key": homed.get(dm.bound.value_key, dm.bound.value_key)})})
+        if i < n_grain else dm
+        for i, dm in enumerate(declared_metrics)
+    ]
+    order_specs = [
+        sp.model_copy(update={"bound": sp.bound.model_copy(update={"value_key": order_key(sp.bound.value_key)})})
+        for sp in order_specs
+    ]
+    if not homed:
+        return declared_metrics, bound_filters, order_specs, active_td_key
+    grain_dms, rest = declared_metrics[:n_grain], declared_metrics[n_grain:]
+    rest, bound_filters, order_specs = _map_bound_keys(
+        follow, declared_metrics=rest, bound_filters=bound_filters, order_specs=order_specs,
+    )
+    sources = {k.source: h.source for k, h in homed.items() if isinstance(k, TimeTruncKey) and isinstance(h, TimeTruncKey)}
+    _, ranged, _ = _map_bound_keys(
+        lambda k: _substituted(k, mapping=sources), declared_metrics=[], bound_filters=bound_filters[:n_date_range],
+        order_specs=[],
+    )
+    bound_filters = [*ranged, *bound_filters[n_date_range:]]
+    homed_td = homed.get(active_td_key) if active_td_key is not None else None
+    return [*grain_dms, *rest], bound_filters, order_specs, cast(Optional[TimeTruncKey], homed_td or active_td_key)
+
+
+def _substituted(key: ValueKey, *, mapping: Dict[ValueKey, ValueKey]) -> ValueKey:
+    if key in mapping:
+        return mapping[key]
+    return cast(ValueKey, key.map_children(lambda c: _substituted(c, mapping=mapping)))
+
+
+def _follow_homed(key: ValueKey, *, homed: Dict[ValueKey, ValueKey]) -> ValueKey:
+    """``key`` with every partition key and sort key that names a homed grain key replaced by its home reading."""
+    rebuilt = cast(ValueKey, key.map_children(lambda c: _follow_homed(c, homed=homed)))
+    if isinstance(rebuilt, (AggregateKey, TransformKey)) and rebuilt.partition_keys:
+        pks = Grain.of(homed.get(p, p) for p in rebuilt.partition_keys)
+        if pks != rebuilt.partition_keys:
+            rebuilt = rebuilt.model_copy(update={"partition_keys": pks})
+    if isinstance(rebuilt, TransformKey) and (tk := rebuilt.time_key) is not None and tk in homed:
+        rebuilt = rebuilt.model_copy(update={"time_key": homed[tk]})
+    return rebuilt
 
 
 def _format_description_for_dimension(
@@ -1890,12 +1966,6 @@ def _check_time_dimension(
             offender=td.field if _reads_spine(source, scope=scope) else None, remedy=bucket_remedy(source),
         )
         check_time_dimension_row_level(name=td.field, source=source)
-        if scope.population is not None:
-            check_time_dimension_home(
-                name=td.field,
-                crossing=row_expression_crossing(source=source, host_dataset=scope.population, bundle=bundle),
-                anchor=".".join((scope.population.name, *source_anchor_path(source))),
-            )
         field_type = time_dimension_type(source, field_type=scope_field_type(scope=scope, bundle=bundle))
     check_time_dimension_field(
         name=td.field,
