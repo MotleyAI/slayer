@@ -671,3 +671,5 @@ carve_outs:
   - {name: column, file: slayer/storage/semantic_models.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: analyse_model_scoped, file: slayer/storage/semantic_models.py, reason: "Ossie's semantic model (the document)"}
   - {name: embedding_model_name, file: slayer/storage/upgrade.py, reason: "embedding model"}
+  - {name: SEMANTIC_MODEL, file: slayer/storage/upgrade.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _semantic_model_outcome, file: slayer/storage/upgrade.py, reason: "Ossie's semantic model (the document)"}
