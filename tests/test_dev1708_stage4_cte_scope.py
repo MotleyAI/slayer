@@ -62,11 +62,11 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._cross_dataset_chain import (
     _extract_cte_body,
-    _gen,
     _joinback_on_predicate,
     _norm,
     _split_at_ranked_subquery,
 )
+from tests._trusted import trusted_chain_gen as _gen
 
 
 # =========================================================================== #

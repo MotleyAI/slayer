@@ -1016,7 +1016,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             changes.append(f"updated {label}")
         return None
 
-    VALID_REMOVE_KEYS = {"fields", "metrics", "aggregations", "relationships", "relationship_edges"}
+    VALID_REMOVE_KEYS = {"fields", "metrics", "aggregations", "relationships", "relationship_edges", "enforced_keys"}
 
     @tool()
     async def edit_dataset(
@@ -1076,18 +1076,20 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                 "target and key fields, else the sole relationship to the target; a second relationship to a target needs a name. "
                 "Keys name fields by name; a composite key lists several fields on each side, in pair order. "
                 "cardinality (one_to_one / one_to_many / many_to_one / many_to_many, read "
-                "source->target) is descriptive only; omit it when unknown."
+                "source->target) decides paths only; omit it when unknown. trusted: true assumes it holds and "
+                "skips de-duplication (wrong on data violating it)."
             ),
         )] = None,
         add_filters: Annotated[list[str] | None, Field(
             description='SQL conditions always applied to the dataset, e.g. ["deleted_at IS NULL"].',
         )] = None,
         remove_filters: Annotated[list[str] | None, Field(description="Dataset filters to remove (exact text).")] = None,
-        remove: Annotated[dict[str, list[str | dict[str, Any]]] | None, Field(
+        remove: Annotated[dict[str, list[str | dict[str, Any] | list[str]]] | None, Field(
             description=(
                 'Entities to delete before the upserts: {"fields": [...], "metrics": [...], '
                 '"aggregations": [...], "relationships": [target dataset or edge name, ...], '
-                '"relationship_edges": [{"to", "name", "from_columns", "to_columns"}, ...]}.'
+                '"relationship_edges": [{"to", "name", "from_columns", "to_columns"}, ...], '
+                '"enforced_keys": [[field, ...], ...]}.'
             ),
         )] = None,
         meta: Annotated[dict[str, Any] | None, Field(
@@ -1146,6 +1148,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                     f"datasource."
                 )
             dataset.data_source = new_data_source
+            dataset.enforced_keys = []
             changes.append(
                 f"moved data_source from '{original_data_source}' to '{new_data_source}'"
             )
@@ -1222,6 +1225,12 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             if removed:
                 dataset.relationships = without_relationships(dataset=dataset, relationships=removed)
                 dataset_doc_changed = True
+
+            dropped_keys = [sorted(k) for k in remove.get("enforced_keys", []) if isinstance(k, list)]
+            if dropped_keys:
+                dataset.enforced_keys = [k for k in dataset.enforced_keys if sorted(k) not in dropped_keys]
+                changes.append(f"removed enforced keys {dropped_keys}")
+                dataset_level_change = True
 
         # --- Source switch: after the removals, so the switched dataset is checked without them ---
         if sql_table is not None:

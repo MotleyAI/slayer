@@ -711,6 +711,16 @@ class DefaultTimeDimensionTypeError(SlayerError):
         )
 
 
+class EnforcedKeyError(SlayerError):
+    """A dataset records an enforced key that is not one of its declared keys, or carries enforced keys over a
+    source other than a table."""
+
+    def __init__(self, *, dataset: str, key: List[str], reason: str) -> None:
+        self.dataset = dataset
+        self.key = list(key)
+        super().__init__(f"Dataset {dataset!r}: enforced key {list(key)} {reason}.")
+
+
 class DuplicateMetricNameError(NameCollisionError):
     """Two metrics in one query declare the same explicit ``name``."""
 
@@ -1437,6 +1447,18 @@ class UnqualifiableReferenceError(SlayerError):
         super().__init__(
             f"Stored query cannot be upgraded to qualified references: {reference!r} {reason}. Spell it as a "
             f"reference starting at a dataset and save the document again."
+        )
+
+
+class UndeterminedDatasourceError(SlayerError):
+    """A stored memory being upgraded that neither its entities nor a single datasource pin to a datasource."""
+
+    def __init__(self, *, population: str | None) -> None:
+        self.population = population
+        names = "no population" if population is None else f"the population {population!r}"
+        super().__init__(
+            f"Stored memory's datasource cannot be determined: it names {names}, and neither its entities nor a "
+            f"single datasource name one. Add a population or entities naming its datasource and save it again."
         )
 
 

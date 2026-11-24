@@ -127,6 +127,7 @@ def _durable_oauth_material(raw: str) -> str:
 
 class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     """BigQuery dialect."""
+    enforces_unique_keys: ClassVar[bool] = False
 
     sqlglot_name: str = "bigquery"
     aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})

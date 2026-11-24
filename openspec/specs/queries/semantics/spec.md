@@ -43,9 +43,7 @@ Every aggregation — however consumed: directly selected, a composite leaf, fil
 order-only, inside a computed dimension, or nested in a producer, and local and
 cross-model alike — SHALL run over the rows of its own root model, each root row
 counted exactly once per result cell — never over the row product of a join; no join
-fan-out may multiply an aggregation's inputs. The sole exception is the host-grain wrap
-(an aggregate deliberately evaluated over the join result at host grain), as specified
-in `queries/cross-model-aggregates`.
+fan-out may multiply an aggregation's inputs.
 
 #### Scenario: Join fan-out never multiplies aggregation inputs
 - **WHEN** a query rooted at `orders` selects `sum(customers.spend)` and each customer
@@ -1333,3 +1331,158 @@ producers only attaching to its grain.
 - **WHEN** an inferred query measures `orders.total_revenue`, `returns.total_returns` and a
   re-aggregation, in each order
 - **THEN** every order returns the same rows and values
+
+### Requirement: Row-level expressions are homed or refused
+A row-level expression in a value position — a dimension (plain or computed), a time dimension, or a
+row-level order key — SHALL be homed on the deepest dataset that determines every operand over
+provably to-one hops (Axiom 2.2). Each row-level leaf is an operand at the dataset it is declared on,
+or, when its definition reads across a provably fanning hop, at each dataset that definition reads a field on;
+a definition reading across an unproven hop is refused, and one that cannot be analysed keeps its
+resolution error; an attached aggregate or transform operand stands
+for its grain members (Axiom 2.3); a literal constrains nothing, so an expression with one operand
+is always homed. When no dataset determines every operand, the query SHALL fail before any SQL is
+generated with the typed input-safety error, naming the position, two operands that no dataset
+determines together, and the fanning or unproven hop each crosses from their common dataset, with
+the remedy of aggregating one operand to a grain the other's dataset determines or of grouping by
+each field as its own dimension. The refusal SHALL hold in every `to_many_handling` mode, in every
+stage of a query list, under a named or an inferred population, in raw-row mode, and with or without
+metrics. A row-level order key SHALL be judged before any host-grain wrap is built from it. A field
+filter is not a value position: a conjunct whose operands no dataset determines keeps restricting
+by association (*Filters restrict by association or fail loudly*). An operand on a dataset no join
+path reaches from the population SHALL keep the product-hop type error of `queries/unrelated-datasets`,
+reported ahead of this refusal. An expression whose operands a dataset determines SHALL take the
+values of a column of its home, a population row with no home row reading NULL; a population that
+does not determine its home resolves it per the `to_many_handling` mode, as for a column of that home.
+
+Scenarios below run on the seed of `queries/population` › Rows of an inferred query are the row
+supply: `orders` and `returns` are sibling many-to-one children of `customers`; `tickets` is
+reached by no relationship.
+
+#### Scenario: Sibling operands in a dimension are refused
+- **WHEN** a query with `population: "customers"` groups by `{"field": "orders.amount * returns.amount", "alias": "x"}` and measures `count(customers.*)`, with `to_many_handling` omitted, `"associate"`, `"error"` and `"broadcast"`
+- **THEN** each run fails with the input-safety error naming the dimension `x`, `orders.amount` and `returns.amount`, and the hops to `orders` and to `returns` from `customers`, and its remedy
+
+#### Scenario: Refused whatever the query's other parts
+- **WHEN** the same dimension is queried without `population`, with no metrics, with `distinct_dimension_values: false`, or in the second stage of a two-stage query list
+- **THEN** each query fails with the same error
+
+#### Scenario: Sibling operands in an order key are refused before the wrap
+- **WHEN** a query with `population: "customers"` groups by `customers.region`, measures `count(customers.*)` and orders by `orders.amount * returns.amount`
+- **THEN** it fails with the input-safety error naming the order key and both operands — never a `min` or `max` wrap over the pairs
+
+#### Scenario: A constituent grained on a sibling is refused
+- **WHEN** a query with `population: "customers"` groups by `orders.amount * sum(returns.amount, partition_by=[returns.return_id])`, or by `orders.amount * rank(sum(returns.amount, partition_by=[returns.return_id]), direction='desc')`
+- **THEN** each query fails with the input-safety error naming `orders.amount` and the constituent's grain member `returns.return_id`
+
+#### Scenario: The remedy is accepted
+- **WHEN** the query instead groups by `{"field": "orders.amount * sum(returns.amount, partition_by=[customers.customer_id])", "alias": "x"}` and measures `count(customers.*)`
+- **THEN** by executed values the cells are `x` = 2500 → 1, 5000 → 1, NULL → 3, with the `associated` warning
+
+#### Scenario: Parent and child operands are homed on the child
+- **WHEN** a query with `population: "customers"` measuring `count(customers.*)` groups by `{"field": "orders.amount * (customers.region = 'EAST')", "alias": "x"}`; or buckets `case when customers.region = 'EAST' then orders.ordered_at end` at `month`; or groups by `customers.region` and orders by `orders.amount * (customers.region = 'EAST')` descending, NULLs last
+- **THEN** by executed values the dimension cells are 0 → 1, 50 → 1, 100 → 1, 200 → 1, NULL → 1; the time-dimension cells are 2025-01 → 2, 2025-02 → 1, NULL → 2, each with the `associated` warning; and the regions are ordered EAST, WEST, NORTH by the per-region `max` of the key
+
+#### Scenario: A parent and child expression reads NULL without a home row
+- **WHEN** a query with `population: "customers"` measuring `count(customers.*)` groups by `{"field": "coalesce(orders.shipped_at, customers.signup_ts)", "alias": "t"}`
+- **THEN** by executed values the cells equal those of grouping by `orders.eff_col`: 2024-11-01 → 1, 2025-01-12 → 1, 2025-01-25 → 1, 2025-03-01 → 1, NULL → 1 (the customer without orders), with the `associated` warning
+
+#### Scenario: A derived operand is judged by its closure
+- **WHEN** `orders` declares `amount_x2` as `amount * 2` and a query with `population: "customers"` groups by `orders.amount_x2 * returns.amount`
+- **THEN** it fails with the input-safety error naming `amount_x2` and `returns.amount`
+
+#### Scenario: A derived operand reading its own dataset and across a non-determining hop is refused
+- **WHEN** `customers` relates many-to-many to `tags` on the non-unique `segment` and declares `mix` as `region || tags.tag`, and a query with `population: "customers"` groups by `customers.mix`
+- **THEN** it fails with the input-safety error naming `mix` and the hop to `tags`; a field defined as `tags.tag` alone is homed on `tags` and associates
+
+#### Scenario: A derived operand reading across an unproven hop is refused
+- **WHEN** `customers` declares a derived field reading `orders.amount` across an `orders → customers` relationship of unknown cardinality, and a query with `population: "customers"` groups by that field alone, or by `customers.region || <that field>`
+- **THEN** each query fails with the input-safety error naming the field and the hop to `orders`
+
+#### Scenario: An unproven hop determines nothing
+- **WHEN** the `orders → customers` relationship declares no cardinality and `customers` declares no key, and a query with `population: "customers"` groups by `orders.amount * (customers.region = 'EAST')`
+- **THEN** it fails with the input-safety error naming `orders.amount`, `customers.region` and the hop to `orders`
+
+#### Scenario: A field filter with sibling operands still restricts by association
+- **WHEN** a query with `population: "customers"` groups by `customers.region`, measures `count(customers.*)` and filters `orders.amount * returns.amount > 100`
+- **THEN** by executed values the only row is EAST 1, with the semi-join informational entry
+
+#### Scenario: An unrelated operand keeps the product-hop error
+- **WHEN** a query with `population: "customers"` groups by `orders.amount * length(tickets.priority)`, buckets an expression reading `tickets` at `month`, orders by an expression reading `tickets`, or groups by an `orders` derived field whose definition reads `tickets`
+- **THEN** each query fails with the product-hop type error of `queries/unrelated-datasets` naming `tickets` and `customers`, never the input-safety error
+
+### Requirement: Declared cardinality never changes a value
+Every aggregation SHALL count each home row once in each output group it matches after the
+filters, whatever the data, unless every hop it is evaluated across is trusted
+(`models/join-cardinality` › Trusted hops). Declared cardinality and declared keys decide
+which paths exist and what a dataset determines, never how often a home row counts. An
+untrusted provably to-one hop SHALL keep its typing: it determines, raises no associated-grain
+warning, is accepted under `to_many_handling: "error"`, and admits `partition_by=` keys
+across it. A dimension computed from fields beyond such a hop SHALL count a home row once
+per distinct computed value, never once per matching row. With data satisfying every
+declared cardinality, results SHALL be identical whether the hops are trusted or not.
+
+#### Scenario: A duplicated dimension row counts once per group
+- **WHEN** on the Appendix B seed with customer C1 appearing twice, both in `EAST`, and the
+  `orders → customers` relationship untrusted, a query selects dimension
+  `customers.region` and metric `orders.total_revenue`
+- **THEN** EAST is 350 and WEST 300, on SQLite and DuckDB, with no warning
+
+#### Scenario: A filter across a duplicated row counts once
+- **WHEN** the same seed and query run with no dimensions and filter
+  `customers.region = 'EAST'`
+- **THEN** the result is 350
+
+#### Scenario: The duplicated value is reachable only by trusting
+- **WHEN** the same relationship declares `trusted: true`
+- **THEN** EAST is 650
+
+#### Scenario: A row in two groups counts in each
+- **WHEN** customer C3 appears once in `SOUTH` and once in `WEST`, the relationship untrusted
+- **THEN** `orders.total_revenue` is 300 in SOUTH and 300 in WEST
+
+#### Scenario: Clean data does not depend on trust
+- **WHEN** the unmodified Appendix B seed is queried by `customers.region` with the
+  relationship trusted, and again untrusted
+- **THEN** both runs return identical rows
+
+#### Scenario: A computed dimension counts each distinct value once
+- **WHEN** C1 appears once in `EAST` and once in `WEST`, untrusted, and the query groups by
+  `CASE WHEN customers.region IN ('EAST', 'WEST') THEN 'coast' END`
+- **THEN** each of C1's orders counts once in `coast`
+
+#### Scenario: A filter and a dimension on one dataset bind the same row
+- **WHEN** C1 appears once as (`EAST`, `gold`) and once as (`WEST`, `silver`), untrusted, and
+  the query groups by `customers.region` with filter `customers.tier = 'gold'`
+- **THEN** C1's orders count in EAST only
+
+#### Scenario: Error mode accepts an untrusted declared dimension
+- **WHEN** the duplicated-C1 query runs under `to_many_handling: "error"`
+- **THEN** it returns EAST 350 instead of refusing
+
+#### Scenario: Every aggregation family counts the home row once
+- **WHEN** on the duplicated-C1 seed, untrusted, the query groups by `customers.region` and
+  selects `count(*)`, `avg(orders.amount)`, `count_distinct(orders.order_id)`,
+  `last(orders.amount)`, `collect(orders.order_id)`, a windowed and a ranked aggregate over
+  `orders`, and `sum(orders.amount)` with an aggregate filter on `orders`
+- **THEN** each value equals the same query over the de-duplicated seed
+
+### Requirement: An aggregate input across an untrusted hop counts its home row once
+An aggregation whose input, parameter, ranking key or aggregate-filter operand reads a
+field across an untrusted provably to-one hop SHALL count each home row once, reading one
+of the home row's matching values when the data holds several; which one is unspecified.
+Under `to_many_handling: "error"` such an aggregation SHALL be refused with a typed error
+naming the hop and the remedies: mark the relationship `trusted`, or record an enforced key.
+Across trusted hops the input is read as today.
+
+#### Scenario: A weighted sum reads one weight per order
+- **WHEN** C1 appears twice with weights 1 and 3, untrusted, and the query selects
+  `wsum(orders.amount, weight=customers.weight)` by `customers.region`
+- **THEN** each of C1's orders contributes once, weighted by 1 or by 3
+
+#### Scenario: Error mode refuses an input across an untrusted hop
+- **WHEN** the same query runs under `to_many_handling: "error"`
+- **THEN** it fails with the typed error naming `orders → customers` and both remedies
+
+#### Scenario: A trusted hop reads the input as before
+- **WHEN** the relationship declares `trusted: true` and the data holds no duplicates
+- **THEN** the weighted sum equals today's value under every mode

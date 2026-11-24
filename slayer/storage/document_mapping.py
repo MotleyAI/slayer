@@ -158,6 +158,7 @@ def dataset_payload(dataset: SlayerDataset, *, source: str, reader: str, fields:
         entity=dataset.name, source=structure, hidden=dataset.hidden, access_tags=list(dataset.access_tags),
         default_time_dimension=dataset.default_time_dimension, meta=dataset.meta,
         aggregations=list(dataset.aggregations), fields=fields, metrics=metrics, relationships=relationships,
+        enforced_keys=[list(k) for k in dataset.enforced_keys],
     )
     if payload == ext.DatasetPayload(entity=dataset.name, source=ext.SourceStructure()):
         return None
@@ -401,7 +402,7 @@ class _Writer:
         name = self.new.name
         sources = [a for a, _ in relationship.column_pairs]
         targets = [b for _, b in relationship.column_pairs]
-        default = (relationship.cardinality in (None, RelationshipCardinality.MANY_TO_ONE)
+        default = (relationship.cardinality is RelationshipCardinality.MANY_TO_ONE and not relationship.trusted
                    and relationship.join_type is JoinType.LEFT and relationship.description is None
                    and relationship.meta is None and relationship.name == rel_name)
         shapes = [(name, relationship.to, sources, targets), (relationship.to, name, targets, sources)]

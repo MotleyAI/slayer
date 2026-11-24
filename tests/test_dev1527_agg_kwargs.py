@@ -36,7 +36,17 @@ from slayer.core.models import (
 )
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.sql.generator import AggRenderSpec, ResolvedAggKwarg
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _engine_generate as _engine_generate_untrusted
+from tests._trusted import trusting, trusting_all
+
+
+async def _engine_generate(
+    *, query: SlayerQuery, dataset: SlayerDataset, extra_datasets: list[SlayerDataset] | None = None,
+) -> str:
+    # These pins describe the inline-join lowering of trusted hops.
+    return await _engine_generate_untrusted(
+        query=query, dataset=trusting(dataset), extra_datasets=trusting_all(extra_datasets or []),
+    )
 
 
 def _norm(s: str) -> str:

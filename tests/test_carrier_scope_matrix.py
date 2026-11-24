@@ -43,6 +43,7 @@ from slayer.sql.dialects import get_dialect
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.sql.session_policy import apply_session_policy
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting, trusting_all
 
 _ALWAYS = lambda *_args, **_kw: True  # noqa: E731 — RLS has_column probe stub
 
@@ -94,8 +95,9 @@ def _orders(*, extra=None, filters=None) -> SlayerDataset:
 
 
 async def _gen(query, dataset, *, extra_datasets=None, dialect="postgres") -> str:
+    # These pins describe the inline-join lowering of trusted hops.
     return await _engine_generate(
-        query=query, dataset=dataset, extra_datasets=extra_datasets or [], dialect=dialect,
+        query=query, dataset=trusting(dataset), extra_datasets=trusting_all(extra_datasets or []), dialect=dialect,
     )
 
 

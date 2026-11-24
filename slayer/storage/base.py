@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
-from collections.abc import Awaitable, Callable, Hashable, Iterable, Mapping, Set as AbstractSet
+from collections.abc import Awaitable, Callable, Hashable, Iterable, Mapping, Sequence, Set as AbstractSet
 
 from pydantic import BaseModel
 from typing_extensions import deprecated
@@ -29,10 +29,12 @@ from slayer.core.errors import (
     AmbiguousReferenceError,
     CaseCollisionError,
     ColonSpellingError,
+    EnforcedKeyError,
     IdCollisionError,
     NamespaceCollisionError,
     OssieDocumentInvalidError,
     RelationshipTargetCaseError,
+    UndeterminedDatasourceError,
     UnreadableDocumentError,
     SemanticModelsUnsupportedError,
     MemoryNotFoundError,
@@ -46,12 +48,13 @@ from slayer.core.errors import (
 from slayer.engine.field_dependency import (
     check_dataset_filters, check_evaluated_metrics, validate_derived_fields, warn_broken_dependents,
 )
-from slayer.core.relationship_walker import edges_between
+from slayer.core.relationship_walker import edges_between, unique_key_sets
 from slayer.core.names import folded_collisions
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
 from slayer.core.field_expression import stored_definition_text
 from slayer.core.models import (
     DatasourceConfig,
+    DatasetField,
     DatasetRelationship,
     SlayerDataset,
     _validate_field_name,
@@ -121,6 +124,7 @@ from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields, without_extension_fields
 from slayer.storage.qualified_references import qualified_stages, stage_readings
+from slayer.storage.stored_datasource import memory_fallback_population, raw_entities, raw_memory_datasource
 from slayer.storage.stored_literals import LiteralGates, typed_stage
 from slayer.storage.document_mapping import as_expression, with_dataset, without_dataset
 from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle, warn_broken_model_metrics
@@ -250,6 +254,19 @@ def _stage_names(data: dict) -> frozenset[str]:
     queries = data.get("source_queries")
     return frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str)) if isinstance(
         queries, list) else frozenset()
+
+
+def _memory_in_datasource(data: dict, *, data_source: str, identities: Sequence[tuple[str, str]]) -> bool:
+    """Whether a raw stored memory's query reads ``data_source`` (the granularity rename's scope)."""
+    inline_data_source, source = memory_source_dataset(data)
+    if inline_data_source is not None:
+        return inline_data_source == data_source
+    if memory_fallback_population(data, identities=identities)[0]:
+        return raw_memory_datasource(data, identities=identities) == data_source
+    if (data_source, source) not in identities:
+        return False
+    return all(d == data_source for d, n in identities if n == source) or (
+        f"{data_source}.{source}" in raw_entities(data))
 
 
 def _incoming_keys(*, sibling: dict, target: str, target_fields: list) -> list[tuple[Any, str | None]]:
@@ -675,6 +692,29 @@ def _refuse_colon_metrics(dataset: SlayerDataset) -> None:
             continue
 
 
+def check_enforced_keys(dataset: SlayerDataset) -> None:
+    """Every enforced key is a declared key of a table-backed dataset."""
+    declared = [sorted(k) for k in unique_key_sets(dataset)]
+    for key in dataset.enforced_keys:
+        if not dataset.sql_table:
+            raise EnforcedKeyError(dataset=dataset.name, key=key,
+                                   reason="is recorded on a dataset not backed by a table (sql or a backing query)")
+        if sorted(key) not in declared:
+            raise EnforcedKeyError(dataset=dataset.name, key=key,
+                                   reason="is not a declared key (its primary key or a unique field)")
+        computed = [name for name in key if not (field := dataset.get_field(name)) or not field.is_base]
+        if computed:
+            raise EnforcedKeyError(dataset=dataset.name, key=key,
+                                   reason=f"names fields that are not base columns: {computed}")
+
+
+def _repointed_key_field(*, old: DatasetField | None, new: DatasetField | None) -> bool:
+    """A stored base key field that is no longer a base column, or reads a different one."""
+    if old is None or new is None or not old.is_base:
+        return False
+    return not new.is_base or new.physical_name != old.physical_name
+
+
 def _validate_default_time_dimension(dataset: SlayerDataset) -> None:
     field = dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
     if field is not None and field.datatype is not None and field.datatype not in TEMPORAL_DATATYPES:
@@ -855,6 +895,7 @@ class StorageBackend(ABC):
             datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
             if datasource is not None and not dataset.source_queries:
                 dataset = with_converted_sql(dataset, ds_type=datasource.type)
+            dataset = await self._without_repointed_enforced_keys(dataset)
             await self.validate_for_save(dataset, failures=failures)
             warn_library_shadows(dataset)
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
@@ -869,6 +910,22 @@ class StorageBackend(ABC):
                 await self._delete_dataset_row(data_source=dataset.data_source, name=dataset.name)
         self._forget_raw(data_source=dataset.data_source, name=dataset.name)
 
+    async def _without_repointed_enforced_keys(self, dataset: SlayerDataset) -> SlayerDataset:
+        """``dataset`` without the enforced keys a changed source, or a re-pointed key field, leaves describing the old."""
+        if not dataset.enforced_keys:
+            return dataset
+        stored = None
+        with contextlib.suppress(Exception):
+            stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
+        if stored is None:
+            return dataset
+        if (stored.sql_table, stored.sql, stored.source_queries) != (
+                dataset.sql_table, dataset.sql, dataset.source_queries):
+            return dataset.model_copy(update={"enforced_keys": []})
+        kept = [key for key in dataset.enforced_keys if not any(
+            _repointed_key_field(old=stored.get_field(name), new=dataset.get_field(name)) for name in key)]
+        return dataset if kept == dataset.enforced_keys else dataset.model_copy(update={"enforced_keys": kept})
+
     async def _owner_of(self, name: str, *, data_source: str) -> str | None:
         """The one owner lookup: the document declaring dataset ``name``, ``None`` for a standalone or new one."""
         if not self._supports_semantic_models() or not await self._document_data_sources():
@@ -878,6 +935,8 @@ class StorageBackend(ABC):
     async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
         """Write a document dataset's SLayer content as ``SLAYER`` entries, leaving its document's Ossie core as it is."""
         check_whole(dataset)
+        dataset = await self._without_repointed_enforced_keys(dataset)
+        check_enforced_keys(dataset)
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
         if owner is None:
             raise ValueError(f"Dataset {dataset.name!r} is not declared by a semantic model")
@@ -921,6 +980,7 @@ class StorageBackend(ABC):
         if is_spine_spelling(dataset.name) and (dataset.data_source, dataset.name) not in identities:
             raise ReservedDatasetNameError(name=dataset.name)
         _refuse_colon_metrics(dataset)
+        check_enforced_keys(dataset)
         datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
         if datasource is not None and not dataset.source_queries:
             check_forms(dataset, ds_type=datasource.type)
@@ -1440,11 +1500,16 @@ class StorageBackend(ABC):
         return partial(custom_buckets_as_date_trunc, units=frozenset(units))
 
     async def _memory_data_sources(self, data: dict) -> list[str]:
-        """The datasources a stored memory's query reads: its inline dataset's, else those holding its root dataset."""
+        """The datasources a stored memory's query reads: its inline dataset's, else (no stored population) its pinned
+        one, else those holding its root dataset."""
         inline_data_source, source = memory_source_dataset(data)
         if inline_data_source is not None:
             return [inline_data_source]
-        return sorted({d for d, n in await self._list_all_dataset_identities() if n == source})
+        identities = await self._list_all_dataset_identities()
+        if memory_fallback_population(data, identities=identities)[0]:
+            pinned = raw_memory_datasource(data, identities=identities)
+            return [pinned] if pinned is not None else []
+        return sorted({d for d, n in identities if n == source})
 
     async def _settle_library_granularities(self) -> None:
         """Once per instance, before any dataset or memory loads: rename the library-named granularities of every stored
@@ -1480,19 +1545,14 @@ class StorageBackend(ABC):
 
     async def _rename_granularities(self, *, data_source: str, raw: dict, renames: Renames) -> None:
         identities = await self._list_all_dataset_identities()
-        own = {n for d, n in identities if d == data_source}
-        elsewhere = {n for d, n in identities if d != data_source}
         renamed = self._granularity_renamed_docs = getattr(self, "_granularity_renamed_docs", {})
-        for name in sorted(own):
+        for name in sorted({n for d, n in identities if d == data_source}):
             data = await self._load_raw_dataset_dict(name=name, data_source=data_source)
             if isinstance(data, dict) and (new := rename_in_dataset(data, renames=renames)) != data:
                 await self._write_raw_dataset_dict(name=name, data_source=data_source, data=new)
                 renamed[("dataset", f"{data_source}.{name}")] = (data, new)
         for memory_id, data in (await self._raw_memory_dicts()).items():
-            inline_data_source, source = memory_source_dataset(data)
-            in_datasource = inline_data_source == data_source if inline_data_source is not None else (
-                source in own and (source not in elsewhere or f"{data_source}.{source}" in (data.get("entities") or []))
-            )
+            in_datasource = _memory_in_datasource(data, data_source=data_source, identities=identities)
             if in_datasource and (new := rename_in_memory(data, renames=renames)) != data:
                 await self._write_raw_memory_dict(memory_id=memory_id, data=new)
                 renamed[("memory", memory_id)] = (data, new)
@@ -2228,10 +2288,24 @@ class StorageBackend(ABC):
                 gates = _stage_gates(query, document_version=version, entity="Memory",
                                      legacy=version < _MEMORY_FILTER_REPAIR_BELOW_VERSION)
                 if pending or gates.any or version < _EXTENSION_FIELDS_INLINED_AT or holds_removed_forms(query):
-                    converted = await self._converted_queries(queries=[query], gates=[gates], pending=[pending],
-                                                              data_source=None, document=memory_id)
+                    converted = await self._converted_queries(
+                        queries=[query], gates=[gates], pending=[pending],
+                        data_source=await self._memory_upgrade_data_source(data) if pending else None,
+                        document=memory_id)
                     data = {**data, "query": converted[0]}
             return Memory.model_validate(data)
+
+    async def _memory_upgrade_data_source(self, data: dict) -> str | None:
+        """The datasource a stored memory's qualification reads: pinned when its population names no stored dataset
+        (refused when undetermined), else none."""
+        identities = await self._list_all_dataset_identities()
+        triggered, population = memory_fallback_population(data, identities=identities)
+        if not triggered:
+            return None
+        pinned = raw_memory_datasource(data, identities=identities)
+        if pinned is None:
+            raise UndeterminedDatasourceError(population=population)
+        return pinned
 
     @abstractmethod
     async def _delete_memory_row(self, memory_id: str) -> bool:

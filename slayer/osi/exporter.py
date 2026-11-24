@@ -646,10 +646,11 @@ class _Exporter:
             from_dataset=shape[0], to=shape[1], from_columns=shape[2], to_columns=shape[3],
             declaration=ext.RelationshipDeclaration(dataset=name, relationship=relationship)))
         plain = (shape == forward and relationship.cardinality is RelationshipCardinality.MANY_TO_ONE
-                 and relationship.join_type.value == "left" and relationship.name is None)
+                 and relationship.join_type.value == "left" and relationship.name is None and not relationship.trusted)
         if not plain:
             self._lossy(f"{label} ({relationship.cardinality.value if relationship.cardinality else 'no cardinality'}, "
-                        f"{relationship.join_type.value}{', named' if relationship.name else ''}) imports back as a plain "
+                        f"{relationship.join_type.value}{', named' if relationship.name else ''}"
+                        f"{', trusted' if relationship.trusted else ''}) imports back as a plain untrusted "
                         f"many-to-one left join from {shape[0]!r}.", dataset=name)
 
     def _relationship_shape(self, relationship: DatasetRelationship, *, forward: _Shape) -> _Shape | None:
@@ -1029,6 +1030,7 @@ class _Exporter:
             fields=[DatasetField.model_validate(c.model_dump(exclude=_EXCLUDED_FIELD_FIELDS))
                      for c in ds.slayer_fields],
             metrics=ds.slayer_metrics,
+            enforced_keys=[list(k) for k in dataset.enforced_keys],
         )
         self._extensions(entity, meta, payload=payload, dataset=dataset.name,
                          ossie=source_digest(ds.source, reader=self.target))

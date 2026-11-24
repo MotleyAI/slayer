@@ -32,12 +32,16 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1838_fixtures import (
     SPEND_BAND,
+    _seed_duckdb,
+    _seed_sqlite,
     cte_aliases,
     dev1838_datasets,
     gen,
     make_exec_engine,
     q,
 )
+from tests._engine_helpers import seeded_exec_engine
+from tests._trusted import trusting_all
 
 LOCAL_AGG = "sum(orders.amount, partition_by=orders.city)"
 CM_AGG = "sum(customers.spend, partition_by=customers.tier)"
@@ -47,6 +51,15 @@ LOCAL_BAND = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 25 THEN '
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend(request):
     async for engine in make_exec_engine(request):
+        yield request.param, engine
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def trusted_backend(request):
+    """``exec_backend`` over trusted relationships: pins the single-producer lowering."""
+    seed = _seed_duckdb if request.param == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=request.param, seed=seed,
+                                  datasets=trusting_all(dev1838_datasets())) as (engine, _db):
         yield request.param, engine
 
 
@@ -180,8 +193,8 @@ async def test_keyless_dual_role_error_shape_matches_local() -> None:
 # --------------------------------------------------------------------------- #
 # Dimension-only consumption keeps the finer-grain exemption (executes keyless).
 # --------------------------------------------------------------------------- #
-async def test_keyless_banded_only_executes(exec_backend) -> None:
-    dialect, engine = exec_backend
+async def test_keyless_banded_only_executes(trusted_backend) -> None:
+    dialect, engine = trusted_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
         metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
@@ -199,13 +212,13 @@ async def test_keyless_banded_only_executes(exec_backend) -> None:
 # Row-scope references execute row-routed — cross-dataset mirrors local exactly.
 # --------------------------------------------------------------------------- #
 async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
-    exec_backend,
+    trusted_backend,
 ) -> None:
     """The filter references the same aggregate the dimension bands: row-routed,
     the predicate applies per base row against the attached per-tier value before
     aggregation. Only silver rows (spend 210 > 100) survive → the 'lo' group is
     removed and 'hi' keeps its value. One producer, no combined twin."""
-    dialect, engine = exec_backend
+    dialect, engine = trusted_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
         metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
@@ -243,11 +256,11 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
 
 
 async def test_keyless_order_by_dimension_name_cross_model_row_routes(
-    exec_backend,
+    trusted_backend,
 ) -> None:
     """ORDER BY the computed dimension's NAME sorts by the banded value and stays
     row-routed — no combined attach synthesized for the order reference."""
-    dialect, engine = exec_backend
+    dialect, engine = trusted_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
         metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],

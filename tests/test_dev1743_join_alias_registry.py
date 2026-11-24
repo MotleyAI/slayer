@@ -23,6 +23,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 
 from tests._dev1743_fixtures import (
@@ -31,7 +32,17 @@ from tests._dev1743_fixtures import (
     long_chain_datasets,
     LONG_DOTTED_PATH,
 )
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _engine_generate as _engine_generate_untrusted
+from tests._trusted import trusting, trusting_all
+
+
+async def _engine_generate(
+    *, query: SlayerQuery, dataset: SlayerDataset, extra_datasets: list[SlayerDataset], dialect: str = "postgres",
+) -> str:
+    # These pins describe the inline-join lowering of trusted hops.
+    return await _engine_generate_untrusted(
+        query=query, dataset=trusting(dataset), extra_datasets=trusting_all(extra_datasets), dialect=dialect,
+    )
 
 
 def _join_table_to_alias(sql: str, *, dialect: str = "postgres") -> dict[str, str]:
