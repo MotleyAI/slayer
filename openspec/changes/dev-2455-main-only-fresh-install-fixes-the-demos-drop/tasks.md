@@ -1,13 +1,13 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 Demo: a test wraps the DuckDB connection passed to `load_data` (jafgen fixture), records every executed statement, and asserts the load succeeds and no statement creates or drops a view; verify it FAILS on the current code (it executes `CREATE TEMPORARY VIEW` / `DROP VIEW`)
-- [ ] 1.2 CLI query: drive `slayer.cli.main` with a query using `source_model`, `measures`, `filters`, `to_many_handling: "broadcast"` and `==`; assert each deprecation appears exactly once on stderr (count by substring per deprecation, no wording pins); verify it FAILS today
-- [ ] 1.3 CLI query by name: a saved query stored with `"broadcast"` on two stages prints the broadcast deprecation exactly once
-- [ ] 1.4 CLI `memory save --query` with `source_model` + `measures`: each deprecation exactly once in the combined output; verify it FAILS today
-- [ ] 1.5 CLI `search --cypher-filter` with `:Model` (text): the deprecation exactly once; `--format json`: the JSON `warnings` still carries it
-- [ ] 1.6 Python warnings filtered (`ignore`, `once`) and a second `main()` call in the same process: each deprecation still prints exactly once
-- [ ] 1.7 A query response warning that is not a deprecation still prints
-- [ ] 1.8 Carrier: for every Mode-B spelling kind (`==`, `is None`, `is not None`, bare `None`, list after `IN`, method-call form) the `FutureWarning` is a `DeprecationFutureWarning` carrying a `DeprecatedSpellingWarning`, and `str(warning) == payload.human_message()`; `DeprecatedInputFutureWarning` is a `DeprecationFutureWarning`
+- [x] 1.1 Demo: a test wraps the DuckDB connection passed to `load_data` (jafgen fixture), records every executed statement, and asserts the load succeeds and no statement creates or drops a view; verify it FAILS on the current code (it executes `CREATE TEMPORARY VIEW` / `DROP VIEW`)
+- [x] 1.2 CLI query: drive `slayer.cli.main` with a query using `source_model`, `measures`, `filters`, `to_many_handling: "broadcast"` and `==`; assert each deprecation appears exactly once on stderr (count by substring per deprecation, no wording pins); verify it FAILS today
+- [x] 1.3 CLI query by name: a saved query stored with `"broadcast"` on two stages prints the broadcast deprecation exactly once
+- [x] 1.4 CLI `memory save --query` with `source_model` + `measures`: each deprecation exactly once in the combined output; verify it FAILS today
+- [x] 1.5 CLI `search --cypher-filter` with `:Model` (text): the deprecation exactly once; `--format json`: the JSON `warnings` still carries it
+- [x] 1.6 Python warnings filtered (`ignore`, `once`) and a second `main()` call in the same process: each deprecation still prints exactly once
+- [x] 1.7 A query response warning that is not a deprecation still prints
+- [x] 1.8 Carrier: for every Mode-B spelling kind (`==`, `is None`, `is not None`, bare `None`, list after `IN`, method-call form) the `FutureWarning` is a `DeprecationFutureWarning` carrying a `DeprecatedSpellingWarning`, and `str(warning) == payload.human_message()`; `DeprecatedInputFutureWarning` is a `DeprecationFutureWarning`
 - [ ] 1.9 Existing tests pinning the old `deprecated_spelling` payload text or `FutureWarning` class/text: list each file and the exact change, get user approval, then align
 
 ## 2. Demo loader (pr-implement)
