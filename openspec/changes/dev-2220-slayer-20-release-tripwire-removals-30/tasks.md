@@ -77,7 +77,7 @@
       untracked. Verify: `git status` shows it untracked and unstaged.
 - [ ] 6.2 After task 0.1, run the DEV-2205 release gate on a wheel built from this branch, installed with every
       dependency at its newest version. Verify: the gate passes.
-- [ ] 6.3 Check upstream apache/ossie `compliance/portability`'s current runner interface and post SLayer's drafted
+- [x] 6.3 Check upstream apache/ossie `compliance/portability`'s current runner interface and post SLayer's drafted
       registration (`slayer ossie-roundtrip <in> <out>`, every element PORTABLE) as a DEV-2220 comment. Verify: the
       comment exists. Opening the upstream PR waits for 2.0.0 on PyPI and the owner's go-ahead.
 - [ ] 6.4 Once the 2.0 surface is final, propose the Storyline 2.0 migration issue to the owner (search Linear first);
