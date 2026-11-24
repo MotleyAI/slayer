@@ -46,7 +46,7 @@ from slayer.sql.dialects import SnowflakeDialect
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._cast_fixtures import check_try_cast_targets
+from tests._cast_fixtures import check_author_casts, check_try_cast_targets
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
@@ -377,6 +377,10 @@ def test_basic_query(sf_storage_with_datasets) -> None:
 
 def test_try_cast_integer_targets(sf_storage_with_datasets) -> None:
     run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_datasets), dataset="orders"))
+
+
+def test_author_casts(sf_storage_with_datasets) -> None:
+    run_sync(check_author_casts(SlayerQueryEngine(storage=sf_storage_with_datasets), dataset="orders"))
 
 
 def test_functional_aggregation(sf_storage_with_datasets) -> None:

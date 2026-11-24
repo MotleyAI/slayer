@@ -423,14 +423,26 @@ def _mask_placeholders(text: str) -> str:
 
 
 class CallSpan(BaseModel):
-    """A single-name call ``callee(…)`` at ``text[start:end]``: its callee as written and argument count."""
+    """A single-name call ``callee(…)`` at ``text[start:end]``: its callee as written, its name, whether that is
+    double-quoted, the offset of its argument list's ``(`` and its argument count."""
 
     model_config = ConfigDict(frozen=True)
 
     callee: str
+    name: str
+    quoted: bool
     start: int
+    paren: int
     end: int
     arguments: int
+
+
+def _argument_paren(text: str, i: int) -> int:
+    """The offset of the first ``(`` at or after ``i`` outside comments."""
+    while text[i] != "(":
+        span = _span_end(text, i)
+        i = span[1] if span is not None and span[0] == "comment" else i + 1
+    return i
 
 
 class _State:
@@ -756,6 +768,15 @@ def _resolve(node: Any) -> Any:
     return _dispatch_pending(node) if isinstance(node, _PendingCall) else node
 
 
+def _record_call(call: _PendingCall) -> None:
+    """Record the single-name ``call`` as written for ``call_spans``."""
+    word = call.words[0]
+    _STATE.calls[(call.start, call.end)] = CallSpan(
+        callee=word.raw, name=word.name, quoted=word.quoted, start=call.start, end=call.end,
+        paren=_argument_paren(_STATE.text, call.start + len(word.raw)), arguments=len(call.items),
+    )
+
+
 def _dispatch_pending(call: _PendingCall) -> Any:
     words = call.words
     name = words[-1].name
@@ -770,10 +791,7 @@ def _dispatch_pending(call: _PendingCall) -> Any:
         return _method_call(
             path=tuple(w.name for w in words[:-1]), name=name, args=args, kwargs=kwargs, span=(call.start, call.end),
         )
-    if not words[0].quoted:
-        _STATE.calls[(call.start, call.end)] = CallSpan(
-            callee=words[0].raw, start=call.start, end=call.end, arguments=len(call.items),
-        )
+    _record_call(call)
     return _dispatch_call(name, args=args, kwargs=kwargs, original=_STATE.text)
 
 
@@ -1135,9 +1153,7 @@ def _window_function(call: _PendingCall) -> ScalarCall:
     if distinct:
         raise _Problem(f"{_DISTINCT_ONLY}.")
     _reject_bare_star_args(args, (), func_name=word.name, original=_STATE.text)
-    _STATE.calls[(call.start, call.end)] = CallSpan(
-        callee=word.raw, start=call.start, end=call.end, arguments=len(call.items),
-    )
+    _record_call(call)
     return ScalarCall(name=word.name.lower(), args=args, written=word.name)
 
 
@@ -1550,6 +1566,18 @@ def call_spans(text: str, *, windows: bool = False) -> Tuple[CallSpan, ...]:
         return _read(_bound_strings(text), windows).calls
     except Exception:  # noqa: BLE001 — unparseable text has no spans
         return ()
+
+
+def unwrap_agg_calls(text: str) -> str:
+    """``text`` with each ``AGG(x)`` call (any case) replaced by ``x``, every other byte kept."""
+    out: List[str] = []
+    last = 0
+    for call in call_spans(text):
+        if call.name.casefold() != "agg" or call.arguments != 1 or call.start < last:
+            continue
+        out += [text[last:call.start], text[call.paren + 1:call.end - 1].strip()]
+        last = call.end
+    return "".join([*out, text[last:]])
 
 
 #: Parenthesis depth past which an expression is refused: deeper ones exhaust the parser's recursion.
