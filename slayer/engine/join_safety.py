@@ -57,6 +57,7 @@ from slayer.engine.elaborate_env import check_partition_key_attributable
 from slayer.engine.unrelated import crosses_product_hop
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.terms import AggregateHomes
 from slayer.engine.cardinality import (
     CardinalityVerdict,
     JoinCardinalityReport,
@@ -828,7 +829,7 @@ def _path_grain_determined(
 
 
 def crossing_local_root_predicate(
-    *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
+    *, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle, homes: AggregateHomes,
 ) -> Callable[[ValueKey], bool]:
     """Predicate for a LOCAL plain aggregate whose inputs cross a join (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
     host_model = scope.source_model if isinstance(scope, ModelScope) else None
@@ -837,7 +838,7 @@ def crossing_local_root_predicate(
         return (
             isinstance(k, AggregateKey)
             and k.partition_keys is None
-            and not source_anchor_path(k.source)
+            and not homes.target_rooted(k)
             # A host-locus wrap already compiles inline at the producer grain; its
             # attached parameter's crossing closure must not re-route it onto a
             # host-rooted producer (as ``_local_broadcasts`` excludes).

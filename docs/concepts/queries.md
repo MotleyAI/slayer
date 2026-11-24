@@ -805,7 +805,7 @@ association cannot use `window=` or `first` / `last`), inside
 [dimension expressions](#expression-dimensions), and as hidden
 [order-only fields](#ordering-by-something-you-dont-project).
 
-An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-model columns (`sum(amount - customers.discount)`); it is homed at the deepest dataset that determines every operand, so the join hop's cardinality decides exact-grain vs broadcast exactly as for a single cross-model measure.
+An [aggregated expression](formulas.md#expression-aggregation) may mix host and joined-model columns (`sum(amount - customers.discount)`); it is homed on the source's own model when that determines every operand, else the deepest dataset that does, so the join hop's cardinality decides exact-grain vs broadcast exactly as for a single cross-model measure.
 
 A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
 

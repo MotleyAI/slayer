@@ -22,6 +22,7 @@ import pytest
 
 from slayer.ir.planned import MaskTyping
 from slayer.engine.join_safety import crossing_local_root_predicate
+from slayer.engine.elaborate import resolve_homes
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.elaborate_env import type_and_split_filters
@@ -232,9 +233,10 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
     )
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
-    crossing_root = crossing_local_root_predicate(scope=scope, bundle=bundle)
+    homes = resolve_homes(prebound, bundle=bundle, scope=scope)
+    crossing_root = crossing_local_root_predicate(scope=scope, bundle=bundle, homes=homes)
     _, typings = type_and_split_filters(
-        prebound, crossing_root=crossing_root,
+        prebound, crossing_root=crossing_root, homes=homes,
     )
     assert [(t.typing, t.stratum) for t in typings] == [(MaskTyping.FIELD, 1)]
 

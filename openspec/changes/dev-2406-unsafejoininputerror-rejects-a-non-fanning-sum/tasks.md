@@ -10,19 +10,19 @@
 
 ## 3. Route by resolved home (pr-implement)
 
-- [ ] 3.1 Add `AggregateHome` / `AggregateHomes` (with `of`, `target_rooted` exactly per design.md › Decision 3, `carried`) to `slayer/ir/terms.py`, `home_kind` on `Aggregate`, `homes` on the elaborated compile inputs; follow main `f40d3554e` shapes; verify `la-typecheck` passes.
-- [ ] 3.2 `slayer/engine/home.py`: `aggregate_home` returning kind + path, D15 candidate order, `resolve_aggregate_homes` returning `AggregateHomes` (unresolved-at-anchor when there is no model host); verify `tests/test_dev1832_home.py`, `tests/test_dev1931_default_home.py` pass.
-- [ ] 3.3 Resolve homes once in `slayer/engine/elaborate.py` and pass them to `build_environment` / filter typing / `crossing_local_root_predicate`; verify elaboration tests pass.
-- [ ] 3.4 Replace every anchor-reading routing check with `homes.target_rooted` (keys.py predicates, `combined_kind`, `is_partitioned_consumer`, `crossing_local_root_predicate`, discovery, `_has_inline_population_aggregate`, the cross-model slot backstop, `home_of`); verify `grep -n "source_anchor_path" slayer/engine slayer/core/keys.py` leaves only non-routing uses (naming, spine, anchors of definitions).
-- [ ] 3.5 Carry homes through `_strip_redundant_partitions`, `_substitute_reaggregations` and the routed prebound (`_carried_homes`); verify the redundant-partition scenario and 2.2 pass.
-- [ ] 3.6 Port any later main fix a producer kind needs when homed below the root (design.md › Risks); verify every 2.2 scenario passes.
+- [x] 3.1 Add `AggregateHome` / `AggregateHomes` (with `of`, `target_rooted` exactly per design.md › Decision 3, `carried`) to `slayer/ir/terms.py`, `home_kind` on `Aggregate`, `homes` on the elaborated compile inputs; follow main `f40d3554e` shapes; verify `la-typecheck` passes.
+- [x] 3.2 `slayer/engine/home.py`: `aggregate_home` returning kind + path, D15 candidate order, `resolve_aggregate_homes` returning `AggregateHomes` (unresolved-at-anchor when there is no model host); verify `tests/test_dev1832_home.py`, `tests/test_dev1931_default_home.py` pass.
+- [x] 3.3 Resolve homes once in `slayer/engine/elaborate.py` and pass them to `build_environment` / filter typing / `crossing_local_root_predicate`; verify elaboration tests pass.
+- [x] 3.4 Replace every anchor-reading routing check with `homes.target_rooted` (`is_cross_model_agg`, removed; `combined_kind`, `crossing_local_root_predicate`, discovery, `_has_inline_population_aggregate`, the cross-model slot backstop, `home_of`), keeping main's anchor-reading `is_local_partitioned_agg` / `is_local_combined_regroup_ref` (OR'd with `homes.target_rooted` in the filter split) and `is_partitioned_consumer` (host-locus exclusion only); verify `grep -n "source_anchor_path" slayer/engine slayer/core/keys.py` leaves only non-routing uses (naming, spine, anchors of definitions).
+- [x] 3.5 Carry homes through `_strip_redundant_partitions`, `_substitute_reaggregations` and the routed prebound (`_carried_homes`); verify the redundant-partition scenario and 2.2 pass.
+- [x] 3.6 Port any later main fix a producer kind needs when homed below the root (design.md › Risks); verify every 2.2 scenario passes.
 
 ## 4. Parenthesised single literal (pr-implement)
 
-- [ ] 4.1 Capture a parenthesised single literal after `in` / `not in` from the source text before `ast.parse` / `ast.unparse` in `slayer/engine/syntax.py` and `slayer/core/formula.py`, carried on the parsed comparison; number/boolean → one-element tuple at parse time; verify 2.3 key-shape tests for numbers pass.
-- [ ] 4.2 Bind a parenthesised single string as a time-point comparison flagged `parenthesised`; in elaboration, a non-temporal operand lowers it to one-element value-list membership (respecting `not in`), a temporal operand keeps period membership; verify all 2.3 tests pass.
+- [x] 4.1 Capture a parenthesised single literal after `in` / `not in` from the source text before `ast.parse` in `slayer/engine/syntax.py`, carried on the parsed comparison; number/boolean → one-element tuple at parse time; verify 2.3 key-shape tests for numbers pass.
+- [x] 4.2 Bind a parenthesised single string as a time-point comparison flagged `parenthesised`; in elaboration, a non-temporal operand lowers it to one-element value-list membership (respecting `not in`), a temporal operand keeps period membership; verify all 2.3 tests pass.
 
 ## 5. Docs and gates
 
-- [ ] 5.1 Docs: `docs/concepts/queries.md:808` and `docs/concepts/formulas.md:61` get main's D15 wording ("homed on the source's own model when that determines every operand, else the deepest dataset that does"); `docs/concepts/time.md:45` one sentence on `x in ('v')`; verify the docs build has no new warnings.
-- [ ] 5.2 Run the local test scope (la:pr › Local test scope), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `poetry run la-arch-check`; verify all green.
+- [x] 5.1 Docs: `docs/concepts/queries.md:808` and `docs/concepts/formulas.md:61` get main's D15 wording ("homed on the source's own model when that determines every operand, else the deepest dataset that does"); `docs/concepts/time.md:45` one sentence on `x in ('v')`; verify the docs build has no new warnings.
+- [x] 5.2 Run the local test scope (la:pr › Local test scope), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `poetry run la-arch-check`; verify all green.

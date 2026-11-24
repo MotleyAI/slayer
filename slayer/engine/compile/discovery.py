@@ -1,5 +1,5 @@
 """The one regroup discovery walk: every producer root of a prebound query with
-its phase (from the consumer position) and routing (from the key itself)."""
+its phase (from the consumer position) and routing (from its resolved home)."""
 
 from __future__ import annotations
 
@@ -14,11 +14,9 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     attached_inputs,
-    is_cross_model_agg,
     is_kernel_requiring,
     is_reaggregation_key,
     is_row_attach_root,
-    source_anchor_path,
     walk_consumer_positions,
 )
 from slayer.core.scope import ModelScope, StageSchema
@@ -41,6 +39,7 @@ from slayer.ir.elaborated import ConjunctTyping
 from slayer.ir.planned import MaskTyping
 from slayer.ir.prebound import PreboundQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.terms import AggregateHomes
 
 RootPhase = Literal["row", "combined"]
 Routing = Literal[
@@ -65,23 +64,25 @@ class RootDisposition(BaseModel):
     series: Optional[bool] = None
 
 
-def _is_bare_windowed_or_ranked(k: ValueKey) -> bool:
+def _is_bare_windowed_or_ranked(k: ValueKey, *, homes: AggregateHomes) -> bool:
     return (
         is_kernel_requiring(k) and k.partition_keys is None
-        and not source_anchor_path(k.source)
+        and not homes.target_rooted(k)
     )
 
 
-def _input_routing(a: ValueKey) -> Routing:
+def _input_routing(a: ValueKey, *, homes: AggregateHomes) -> Routing:
     if is_reaggregation_key(a):
         return "reaggregation_constituent"
-    return "target_rooted" if is_cross_model_agg(a) else "local_producer"
+    return "target_rooted" if homes.target_rooted(a) else "local_producer"
 
 
-def row_attach_inputs(root: ValueKey, *, names: Tuple[str, ...]) -> List[RootDisposition]:
+def row_attach_inputs(
+    root: ValueKey, *, names: Tuple[str, ...], homes: AggregateHomes,
+) -> List[RootDisposition]:
     """The row-phase dispositions of an inline row-attach root's attached inputs."""
     return [
-        RootDisposition(root=a, phase="row", routing=_input_routing(a),
+        RootDisposition(root=a, phase="row", routing=_input_routing(a, homes=homes),
                         consumer_public_names=names)
         for a in attached_inputs(root)
     ]
@@ -92,13 +93,14 @@ class _Walker:
 
     def __init__(
         self, *, prebound: PreboundQuery, scope: Union[ModelScope, StageSchema],
-        bundle: ResolvedSourceBundle,
+        bundle: ResolvedSourceBundle, homes: AggregateHomes,
     ) -> None:
         self.out: List[RootDisposition] = []
+        self.homes = homes
         n_grain = prebound.n_dims + prebound.n_time_dimensions
         self.classes = position_classes(prebound.declared_measures, n_grain=n_grain)
         self.row_attach_names: Dict[ValueKey, List[str]] = {}
-        self.crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)
+        self.crossing = crossing_local_root_predicate(scope=scope, bundle=bundle, homes=homes)
         self.host = scope.source_model if isinstance(scope, ModelScope) else None
         self.bundle = bundle
         self.grain = [dm.bound.value_key for dm in prebound.declared_measures[:n_grain]]
@@ -117,7 +119,7 @@ class _Walker:
         host = self.host
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
-            or is_cross_model_agg(k) or k.locus == "host" or k.partition_keys is not None
+            or self.homes.target_rooted(k) or k.locus == "host" or k.partition_keys is not None
             or self.crossing(k) or is_kernel_requiring(k)
         ):
             return False
@@ -144,7 +146,7 @@ class _Walker:
                                 declared=declared)
                 continue
             if is_dimension_transform_root(k) or is_grained_aggregate(k):
-                self.emit(k, "row", _input_routing(k))
+                self.emit(k, "row", _input_routing(k, homes=self.homes))
             self.row_attach(k, attach_pk=False)
 
     def row_attach(self, k: ValueKey, *, attach_pk: bool, names: Sequence[str] = ()) -> None:
@@ -181,13 +183,13 @@ class _Walker:
         k = n.key
         if isinstance(k, TransformKey) and k.op == "time_shift":
             self.emit(k, "combined", "shifted", series=_series_mode(k.input, to_original={}))
-        kind = combined_kind(k)
+        kind = combined_kind(k, homes=self.homes)
         if kind is not None and self.classes.combined_admits(n, position=position, root=root):
             if kind == "local":
                 self.emit(k, "combined", "local_producer", names=names)
             else:
                 self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
-        if _is_bare_windowed_or_ranked(k) or self.crossing(k):
+        if _is_bare_windowed_or_ranked(k, homes=self.homes) or self.crossing(k):
             self.emit(k, "combined", "local_producer", names=names)
         elif self.local_broadcasts(k):
             self.emit(k, "combined", "target_rooted", names=names)
@@ -200,16 +202,16 @@ class _Walker:
                 continue
             ns = tuple(names)
             self.emit(root, "combined", "inline", names=ns)
-            for d in row_attach_inputs(root, names=ns):
+            for d in row_attach_inputs(root, names=ns, homes=self.homes):
                 self.emit(d.root, d.phase, d.routing, names=d.consumer_public_names)
 
 
 def discover_roots(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle, homes: AggregateHomes,
 ) -> List[RootDisposition]:
-    """Every producer root of ``prebound``, one disposition per consumer occurrence."""
-    w = _Walker(prebound=prebound, scope=scope, bundle=bundle)
+    """Every producer root of ``prebound``, one disposition per consumer occurrence, routed by its home."""
+    w = _Walker(prebound=prebound, scope=scope, bundle=bundle, homes=homes)
     measure_typed = frozenset(
         i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.MEASURE
     )

@@ -121,8 +121,9 @@ class TestParser:
 
 
 async def test_bare_string_against_text_stays_refused(engine: SlayerQueryEngine) -> None:
+    query = _query(filters=["state in 'paid'"])
     with pytest.raises(DateOperandTypeError, match="state"):
-        await engine.execute(_query(filters=["state in 'paid'"]))
+        await engine.execute(query)
 
 
 class TestParenthesisedStringAgainstTimestampStaysAPeriod:

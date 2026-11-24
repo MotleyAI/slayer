@@ -65,9 +65,11 @@ around a single literal, so `x in ('a')` binds as the bare time-point form `x in
    `ts in ('2025')` period reading on a patch line); B — no parser change, any
    single-string `in` on a non-temporal operand becomes a value list (accepts
    `state in 'v'`, which main refuses). (user)
-7. **The parentheses are captured before any AST round-trip, in both entry points**
-   (`engine/syntax.py` and `core/formula.py`, whose `ast.unparse` would erase them),
-   from the source text, and carried on the parsed comparison node. (codex)
+7. **The parentheses are captured from the source text before `ast.parse` in
+   `engine/syntax.py`** — the parser every query filter and measure goes through — and
+   carried on the parsed comparison node; `core/formula.py` only checks that converter
+   formulas parse and its output is never compiled, so it is unchanged. (codex; amended in
+   pr-implement)
 8. **The string case is decided at elaboration, where the operand's type is known**: a
    parenthesised single string binds as a time-point comparison flagged
    `parenthesised`; elaboration keeps period membership for a temporal operand and

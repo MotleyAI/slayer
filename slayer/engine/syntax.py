@@ -12,7 +12,9 @@ non-allowlisted calls, raw ``OVER(...)``, and chained comparisons.
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 from decimal import Decimal
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
@@ -128,6 +130,8 @@ class Cmp(_BaseNode):
     op: str
     left: Any
     right: Any
+    #: ``in`` / ``not in`` against a single string written in parentheses (``x in ('v')``).
+    parenthesised: bool = False
 
 
 class BoolOp(_BaseNode):
@@ -161,6 +165,9 @@ _PLACEHOLDER_RE = re.compile(rf"^{_PLACEHOLDER_PREFIX}(\d+)__$")
 # ``_preprocess_star_args`` mints this for a call's first-arg ``*`` (``count(*)``);
 # Python's AST cannot parse a bare ``*``.
 _STAR_ARG_TOKEN = "__slayer_star__"
+# ``_mark_parenthesised_literals`` wraps a single literal parenthesised after ``in`` in this call;
+# Python's AST erases parentheses around a single literal.
+_PAREN_LITERAL_TOKEN = "__slayer_paren__"
 _OVER_RE = re.compile(r"\b[oO][vV][eE][rR]\s*\(")
 # Escape-aware Python-string matcher — blanks literals before keyword scans so
 # an ``OVER(`` / ``:sum`` inside a quoted value isn't mistaken for syntax.
@@ -612,7 +619,7 @@ def parse_expr(text: str) -> ParsedExpr:
     # AFTER the legacy colon pass — ``customers.*:count`` must become a
     # placeholder first, so the only ``*`` left in call-first-arg position is
     # the functional spelling (``count(*)`` / ``count(customers.*)``).
-    preprocessed = _preprocess_star_args(preprocessed)
+    preprocessed = _mark_parenthesised_literals(_preprocess_star_args(preprocessed))
 
     try:
         py_ast = ast.parse(preprocessed, mode="eval").body
@@ -629,6 +636,46 @@ def parse_expr(text: str) -> ParsedExpr:
             f"otherwise use date_add(x, n, unit)."
         ))
     return parsed
+
+
+_SKIPPED_TOKENS = frozenset({
+    tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER,
+})
+
+
+def _is_single_literal(toks: List[tokenize.TokenInfo], j: int) -> Optional[int]:
+    """The index past the one literal starting at ``toks[j]`` (a sign then a number counts), else ``None``."""
+    if j < len(toks) and toks[j].type == tokenize.OP and toks[j].string in ("-", "+"):
+        j += 1
+        return j + 1 if j < len(toks) and toks[j].type == tokenize.NUMBER else None
+    if j < len(toks) and (
+        toks[j].type in (tokenize.STRING, tokenize.NUMBER)
+        or (toks[j].type == tokenize.NAME and toks[j].string in ("True", "False"))
+    ):
+        return j + 1
+    return None
+
+
+def _mark_parenthesised_literals(text: str) -> str:
+    """``x in (v)`` → ``x in __slayer_paren__(v)`` for a single literal ``v``, so ``ast`` keeps the parentheses."""
+    try:
+        toks = [t for t in tokenize.generate_tokens(io.StringIO(text).readline) if t.type not in _SKIPPED_TOKENS]
+    except (tokenize.TokenError, SyntaxError):
+        return text  # ``ast.parse`` reports it
+    line_starts = [0]
+    for line in text.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    marks = []
+    for i, t in enumerate(toks):
+        if t.type != tokenize.NAME or t.string != "in" or i + 1 >= len(toks) or toks[i + 1].string != "(":
+            continue
+        end = _is_single_literal(toks, i + 2)
+        if end is not None and end < len(toks) and toks[end].string == ")":
+            row, col = toks[i + 1].start
+            marks.append(line_starts[row - 1] + col)
+    for pos in reversed(marks):
+        text = text[:pos] + _PAREN_LITERAL_TOKEN + text[pos:]
+    return text
 
 
 def _deferred_intervals(node: Any, *, message: str) -> Any:
@@ -1121,6 +1168,14 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
         # (a time-point membership); empty and non-literal RHS are rejected.
         if op_type in (ast.In, ast.NotIn):
             rhs_node = node.comparators[0]
+            if (
+                isinstance(rhs_node, ast.Call) and isinstance(rhs_node.func, ast.Name)
+                and rhs_node.func.id == _PAREN_LITERAL_TOKEN
+            ):
+                return _parenthesised_membership(
+                    op=_CMP_OP_MAP[op_type], left=node.left, literal=rhs_node.args[0],
+                    agg_map=agg_map, original=original,
+                )
             if isinstance(rhs_node, ast.Constant) and isinstance(rhs_node.value, str):
                 return Cmp(
                     op=_CMP_OP_MAP[op_type],
@@ -1194,6 +1249,16 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # N
 
 
 _PLACEHOLDER_NAME_RE = re.compile(r"[a-zA-Z_]\w*", re.ASCII)
+
+
+def _parenthesised_membership(*, op: str, left: ast.AST, literal: ast.AST, agg_map: Dict, original: str) -> Cmp:
+    """``x in (v)``: a string stays a membership flagged ``parenthesised`` (period or value list by the operand's
+    type); a number or boolean is the one-element tuple."""
+    lhs = _convert(left, agg_map=agg_map, original=original)
+    if isinstance(literal, ast.Constant) and isinstance(literal.value, str):
+        return Cmp(op=op, left=lhs, right=Literal(value=literal.value), parenthesised=True)
+    element = _convert_in_rhs_element(literal, agg_map=agg_map, original=original)
+    return Cmp(op=op, left=lhs, right=TupleLit(elements=(element,)))
 
 
 def _placeholder_of(node: ast.AST) -> Optional[Placeholder]:
@@ -1763,6 +1828,8 @@ def canonical_measure_text(parsed: Any) -> str:  # NOSONAR(S3776) — flat per-n
     if isinstance(parsed, (Arith, Cmp)):
         left = canonical_measure_text(parsed.left)
         right = canonical_measure_text(parsed.right)
+        if isinstance(parsed, Cmp) and parsed.parenthesised:
+            right = f"({right})"
         return f"{left} {parsed.op} {right}"
     if isinstance(parsed, UnaryOp):
         operand = canonical_measure_text(parsed.operand)

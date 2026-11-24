@@ -59,7 +59,6 @@ from slayer.core.keys import (
     walk_consumer_positions,
     attached_inputs,
     is_boolean_shaped,
-    is_cross_model_agg,
     is_list_call,
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
@@ -73,6 +72,7 @@ from slayer.core.keys import (
     ColumnSqlKey,
     Grain,
     InKey,
+    normalize_scalar,
     LiteralKey,
     ScalarCallKey,
     StarKey,
@@ -104,6 +104,7 @@ from slayer.ir.bound import BoundFilter, DeclaredMeasure, OrderSpec, bound_filte
 from slayer.ir.prebound import PreboundQuery
 from slayer.ir.terms import (
     Aggregate,
+    AggregateHomes,
     Broadcast,
     DatasetT,
     ModelDataset,
@@ -272,16 +273,17 @@ def is_grained_aggregate(k: ValueKey) -> bool:
     return isinstance(k, AggregateKey) and k.partition_keys is not None
 
 
-def combined_kind(k: ValueKey) -> Optional[str]:
+def combined_kind(k: ValueKey, *, homes: AggregateHomes) -> Optional[str]:
     """``local`` / ``cross_partitioned`` / ``cross_bare`` for a combined consumer."""
     if not isinstance(k, AggregateKey) or is_reaggregation_key(k):
         return None
     partitioned = k.partition_keys is not None
-    if not source_anchor_path(k.source):
-        return "local" if partitioned else None
-    if k.locus == "host":
+    if homes.target_rooted(k):
+        return "cross_partitioned" if partitioned else "cross_bare"
+    # A host-locus wrap beyond its home already compiles inline at the producer grain.
+    if k.locus == "host" and source_anchor_path(k.source):
         return None
-    return "cross_partitioned" if partitioned else "cross_bare"
+    return "local" if partitioned else None
 
 
 def is_partitioned_consumer(k: ValueKey) -> TypeGuard[AggregateKey]:
@@ -451,6 +453,7 @@ def type_and_split_filters(
     *,
     crossing_root: Optional[Callable[[ValueKey], bool]] = None,
     split: bool = True,
+    homes: Optional[AggregateHomes] = None,
 ) -> Tuple[PreboundQuery, List[ConjunctTyping]]:
     """Type every filter conjunct as field or measure (raising the typing error for
     neither), splitting a filter string into per-conjunct masks when its conjuncts
@@ -465,7 +468,7 @@ def type_and_split_filters(
         return any(
             is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
             or is_local_partitioned_agg(k)
-            or is_cross_model_agg(k)
+            or (homes is not None and homes.target_rooted(k))
             or (crossing_root is not None and crossing_root(k))
             for k in walk_value_keys(vk)
         )
@@ -628,11 +631,10 @@ def validate_model_filter(*, mf: str, references: Iterable[Tuple[SlayerModel, st
 
 
 def _aggregate_terms(
-    roots: List[ValueKey], *, home: DatasetT, query_grain: Grain,
-    home_paths: Dict[AggregateKey, Tuple[str, ...]],
+    roots: List[ValueKey], *, home: DatasetT, query_grain: Grain, homes: AggregateHomes,
 ) -> Tuple[Dict[ValueKey, Term], List[TransformKey]]:
     """(aggregate terms, transform keys seen) across ``roots``. Each aggregate's
-    home path comes from the elaborator's map (fallback: the source anchor)."""
+    home comes from the elaborator's map."""
     terms: Dict[ValueKey, Term] = {}
     transforms: List[TransformKey] = []
     for root in roots:
@@ -642,9 +644,9 @@ def _aggregate_terms(
                     k.partition_keys if k.partition_keys is not None
                     else query_grain
                 )
+                resolved = homes.of(k)
                 terms[k] = Aggregate(
-                    home=home, recipe=k, grain=grain,
-                    home_path=home_paths.get(k, source_anchor_path(k.source)),
+                    home=home, recipe=k, grain=grain, home_path=resolved.path, home_kind=resolved.kind,
                 )
             elif isinstance(k, TransformKey):
                 transforms.append(k)
@@ -665,8 +667,7 @@ def _add_transform_terms(
 
 
 def _terms_for(
-    roots: List[ValueKey], *, home: Optional[DatasetT], query_grain: Grain,
-    home_paths: Dict[AggregateKey, Tuple[str, ...]],
+    roots: List[ValueKey], *, home: Optional[DatasetT], query_grain: Grain, homes: AggregateHomes,
 ) -> Dict[ValueKey, Term]:
     """One term per unique aggregate/transform key, memoized by key identity.
 
@@ -676,9 +677,7 @@ def _terms_for(
     """
     if home is None:
         return {}
-    terms, transforms = _aggregate_terms(
-        roots, home=home, query_grain=query_grain, home_paths=home_paths,
-    )
+    terms, transforms = _aggregate_terms(roots, home=home, query_grain=query_grain, homes=homes)
     _add_transform_terms(terms=terms, transforms=transforms)
     return terms
 
@@ -1225,7 +1224,11 @@ def _raise_sub_day(key: TimePointCmpKey) -> NoReturn:
 
 
 def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, CustomGranularity]) -> ValueKey:
-    """A literal time point against a non-temporal operand keeps its plain-string meaning."""
+    """A literal time point against a non-temporal operand keeps its plain-string meaning; a parenthesised one in
+    ``in`` / ``not in`` is the one-element value list."""
+    if key.parenthesised:
+        return InKey(column=key.operand, values=(LiteralKey(value=normalize_scalar(key.point)),),
+                     negated=key.op == "not in")
     if key.op in ("in", "not in") or is_relative_token(key.point, units=units):
         raise DateOperandTypeError(
             summary=f"'{key.point}' is a time point, but `{_operand_display(key.operand)}` "
@@ -1999,10 +2002,9 @@ def build_environment(
     dim_keys: frozenset,
     row_agg_set: frozenset,
     filter_typings: List[ConjunctTyping],
-    home_paths: Optional[Dict[AggregateKey, Tuple[str, ...]]] = None,
+    homes: AggregateHomes,
 ) -> ElaboratedQuery:
     """Assemble the typing environment for one typed, split prebound query."""
-    home_paths = home_paths or {}
     query_grain = Grain.of(dim_keys)
     n_leading = prebound.n_dims + prebound.n_time_dimensions
     dim_roots = [
@@ -2016,7 +2018,7 @@ def build_environment(
 
     terms = _terms_for(
         [*dim_roots, *measure_roots, *filter_roots, *order_roots],
-        home=home, query_grain=query_grain, home_paths=home_paths,
+        home=home, query_grain=query_grain, homes=homes,
     )
 
     def _typed_verdict(root: ValueKey) -> PositionVerdict:

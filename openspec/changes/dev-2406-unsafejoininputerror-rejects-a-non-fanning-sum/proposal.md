@@ -23,7 +23,7 @@ On 1.x, an aggregation whose home is a dataset below the query root — e.g. a s
 
 ## Impact
 
-- Code: `slayer/engine/home.py`, `slayer/ir/terms.py`, `slayer/ir/elaborated.py`, `slayer/engine/elaborate.py`, `slayer/engine/elaborate_env.py`, `slayer/engine/join_safety.py`, `slayer/engine/compile/discovery.py`, `slayer/engine/compile/stages.py`, `slayer/core/keys.py`; `slayer/engine/syntax.py`, `slayer/core/formula.py`, `slayer/engine/binding.py`.
+- Code: `slayer/engine/home.py`, `slayer/ir/terms.py`, `slayer/ir/elaborated.py`, `slayer/engine/elaborate.py`, `slayer/engine/elaborate_env.py`, `slayer/engine/join_safety.py`, `slayer/engine/compile/discovery.py`, `slayer/engine/compile/stages.py`, `slayer/core/keys.py`; `slayer/engine/syntax.py`, `slayer/engine/binding.py`.
 - Behaviour: only queries refused today change (they now compute); every query that executes today keeps its result, except that an aggregation with a one-to-one input now homes on its anchor rather than the deeper dataset (same rows, unmatched anchor rows kept).
 - Docs: `docs/concepts/queries.md`, `docs/concepts/formulas.md`, `docs/concepts/time.md`.
 - Forward merge into main: every code conflict resolves to main's side (main already carries both fixes in its own form).

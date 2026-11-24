@@ -143,13 +143,14 @@ async def test_root_column_and_reverse_to_many_column(engine: SlayerQueryEngine)
     assert home == other == {(): 33.0}
 
 
-#: kind → (formula, dimensions, time dimension) written from ``invoices``, and the cells from both roots.
-PRODUCER_KINDS: dict[str, tuple[str, list[str], Optional[str], dict[tuple[str, ...], float]]] = {
+#: kind → (formula, dimensions, time dimension) written from ``invoices``, and the cells (or typed error) from both roots.
+PRODUCER_KINDS: dict[str, tuple[str, list[str], Optional[str], Outcome]] = {
     "filter": ("sum(CASE WHEN state == 'paid' THEN lines.amount END)", [], None,  # 1.x lowering of FILTER
                {(): 38.0}),
     "ranked": ("rank(sum(iif(state in ('paid', 'sent'), lines.amount, 0)), direction='desc')", ["account_id"], None,
                {("1",): 1.0, ("2",): 2.0}),
-    "first": ("first(fee, lines.shipped_at)", ["account_id"], None, {("1",): 2.0, ("2",): 5.0}),
+    # A ranking key never moves the home: ``fee`` homes on ``invoices`` and ``shipped_at`` fans from it.
+    "first": ("first(fee, lines.shipped_at)", ["account_id"], None, UnsafeJoinInputError),
     "last": ("last(lines.amount, issued_at)", [], "issued_at", {("2024-01-01",): 5.0, ("2024-02-01",): 7.0}),
     "windowed": ("sum(iif(state == 'paid', lines.amount, 0), window='1y')", [], "issued_at",
                  {("2024-01-01",): 30.0, ("2024-02-01",): 38.0}),
@@ -176,6 +177,9 @@ async def test_every_producer_kind_is_independent_of_the_root(engine: SlayerQuer
     home = await _outcome(engine, _body("invoices", formula, dimensions=dims, month=month))
     other = await _outcome(engine, _body("lines", _from_lines(formula), dimensions=[_from_lines(d) for d in dims],
                                          month=None if month is None else _from_lines(month)))
+    if isinstance(expected, type):
+        assert home == other == expected
+        return
     assert other == expected
     _common(home, other)
 
@@ -190,9 +194,9 @@ async def test_undetermined_inputs_refused_from_every_population(engine: SlayerQ
 
 
 async def test_unresolved_aggregation_with_a_cross_model_anchor_is_judged_from_it(engine: SlayerQueryEngine) -> None:
+    query = SlayerQuery.model_validate(_body("accounts", "sum(invoices.lines.amount * invoices.payments.paid)"))
     with pytest.raises(UnsafeJoinInputError, match="lines|payments"):
-        await engine.execute(SlayerQuery.model_validate(
-            _body("accounts", "sum(invoices.lines.amount * invoices.payments.paid)")))
+        await engine.execute(query)
 
 
 async def test_reverse_hop_definition_default_homes_on_the_child(engine: SlayerQueryEngine) -> None:
