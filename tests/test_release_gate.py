@@ -52,11 +52,16 @@ def record_query(leg, query):
 def mcp_server():
     if B["mcp"] == "hang":
         time.sleep(3600)
+    time.sleep(B["mcp_start_delay"])
     server = FastMCP("fake-slayer")
+    first_call = [True]
 
     @server.tool()
     def query(query: Any, variables: Any = None, refine: Any = None, show_sql: bool = False,
               dry_run: bool = False, explain: bool = False, format: str = "markdown") -> Any:
+        if first_call:
+            first_call.clear()
+            time.sleep(B["mcp_first_call_delay"])
         record_query("mcp", query)
         if B["mcp"] == "is_error":
             raise ValueError("fake failure")
@@ -122,6 +127,8 @@ class Behaviour(BaseModel):
     cli_joins: list[str] = ["customers", "stores"]
     mcp: str = "ok"
     mcp_joins: list[str] = ["customers", "stores"]
+    mcp_start_delay: float = 0.0
+    mcp_first_call_delay: float = 0.0
 
 
 class Invocation(BaseModel):
@@ -309,6 +316,24 @@ def test_mcp_start_timeout_stops_the_gate(tmp_path: Path, checkout: Path) -> Non
                    extra=("--mcp-start-timeout", "3"), timeout=120)
     assert result.returncode != 0
     assert "mcp start" in _failed_checks(result), result.stdout + result.stderr
+
+
+def test_slow_mcp_handshake_stops_the_gate(tmp_path: Path, checkout: Path) -> None:
+    slayer = _fake_slayer(tmp_path, Behaviour(mcp_start_delay=release_gate.MCP_HANDSHAKE_LIMIT + 1))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout, timeout=120)
+    assert result.returncode != 0
+    assert "mcp handshake" in _failed_checks(result), result.stdout + result.stderr
+
+
+def test_fast_handshake_with_a_slow_first_call_passes(tmp_path: Path, checkout: Path) -> None:
+    slayer = _fake_slayer(tmp_path, Behaviour(mcp_first_call_delay=release_gate.MCP_HANDSHAKE_LIMIT + 1))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _failed_checks(result) == []
+
+
+def test_mcp_handshake_limit_is_ten_seconds() -> None:
+    assert release_gate.MCP_HANDSHAKE_LIMIT == 10.0
 
 
 def test_mcp_server_that_cannot_spawn_is_a_named_failure(tmp_path: Path, checkout: Path) -> None:

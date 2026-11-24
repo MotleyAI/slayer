@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy.exc
+from pydantic import ValidationError
 
 from slayer import cli
 from slayer.core.errors import MemoryNotFoundError, UnrelatedDatasetError
@@ -116,6 +118,51 @@ class TestProcessBoundary:
         assert proc.returncode == 1
         assert "Traceback (most recent call last)" in proc.stderr
         assert "UnrelatedDatasetError" in proc.stderr
+
+
+class TestValidationErrors:
+    def _line(self, shop: str, query: dict) -> str:
+        return _assert_one_error_line(run_cli_in_process(["query", json.dumps(query), "--storage", shop]))
+
+    def test_names_every_failing_field_with_its_reason(self, shop: str) -> None:
+        line = self._line(shop, {"populaton": "orders", "metricz": ["count(*)"]})
+        assert line.startswith("Error: 2 validation errors for SlayerQuery: "), line
+        assert "populaton: Extra inputs are not permitted" in line
+        assert "metricz: Extra inputs are not permitted" in line
+        assert "--debug" not in line
+
+    def test_nested_path_is_dotted_with_its_list_position(self, shop: str) -> None:
+        line = self._line(shop, {"source_model": "orders", "measures": ["count(*)", {"formula": 3}]})
+        assert "measures.1.formula: " in line, line
+
+    def test_more_than_ten_failing_fields_are_capped(self, shop: str) -> None:
+        line = self._line(shop, {"source_model": "orders", **{f"bogus{n:02d}": 1 for n in range(12)}})
+        named = [f"bogus{n:02d}" for n in range(12) if f"bogus{n:02d}:" in line]
+        assert len(named) == 10, line
+        assert line.endswith("…and 2 more"), line
+
+    def test_rejected_values_are_not_echoed(self, shop: str) -> None:
+        secret = "sk-live-0123456789abcdef"
+        line = self._line(shop, {"source_model": "orders", "measures": ["count(*)"], "limit": secret})
+        assert "limit: " in line, line
+        assert secret not in line
+
+    def test_a_multiline_reason_stays_on_one_line(self) -> None:
+        exc = ValidationError.from_exception_data("SlayerQuery", [
+            {"type": "value_error", "loc": ("measures", 0), "input": "x",
+             "ctx": {"error": ValueError("first line\n  second line")}},
+        ])
+        line = cli._error_line(exc)
+        assert "\n" not in line
+        assert line.startswith("Error: 1 validation error for SlayerQuery: measures.0: "), line
+        assert "first line second line" in line
+
+    def test_debug_still_prints_the_traceback(self, shop: str) -> None:
+        query = json.dumps({"populaton": "orders"})
+        result = run_cli_in_process(["--debug", "query", query, "--storage", shop], uncaught_exit=True)
+        assert result.returncode == 1
+        assert "Traceback (most recent call last)" in result.stderr
+        assert "ValidationError" in result.stderr
 
 
 def _demo_build_fails(*, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, debug: bool) -> CliResult:
