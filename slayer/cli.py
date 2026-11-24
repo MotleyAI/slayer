@@ -23,7 +23,7 @@ from slayer import usage_reporting
 from slayer import otel
 from slayer.async_utils import run_sync
 from slayer.core.enums import Conformance
-from slayer.core.deprecation import deprecations_on_one_line
+from slayer.core.deprecation import deprecations_on_one_line, unshown
 from slayer.core.document_text import parse_document_text
 from slayer.core.errors import OssieQueryError, SlayerError, UnreadableDocumentError
 from slayer.core.models import DatasourceConfig, SlayerDataset
@@ -251,21 +251,19 @@ def main():
     _assign_usage_tokens(parser)
     _add_debug_flags(parser)
     with deprecations_on_one_line():
-        argv = _respelled_argv(sys.argv[1:])
-    args = parser.parse_args(argv)
-    token = getattr(args, "usage_token", None)
-    guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
-    try:
-        with deprecations_on_one_line():
+        args = parser.parse_args(_respelled_argv(sys.argv[1:]))
+        token = getattr(args, "usage_token", None)
+        guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
+        try:
             _run_command(parser, args, token=token, guard=guard)
-    except Exception as exc:
-        if args.debug:
-            raise
-        print(_error_line(exc), file=sys.stderr)
-        sys.exit(1)
-    finally:
-        if guard is not None:
-            guard.restore()
+        except Exception as exc:
+            if args.debug:
+                raise
+            print(_error_line(exc), file=sys.stderr)
+            sys.exit(1)
+        finally:
+            if guard is not None:
+                guard.restore()
 
 
 def _run_command(
@@ -1624,7 +1622,7 @@ def _print_search_response_text(response) -> None:
     the restored body; fall back to ``description`` for compact
     responses.
     """
-    for w in response.warnings:
+    for w in unshown(response.warnings):
         print(f"[warning] {w}")
     if response.resolved_input_entities:
         print(
@@ -1844,8 +1842,8 @@ def _print_query_warnings(result) -> None:
     Stderr specifically, so a piped ``slayer query`` keeps emitting clean data
     on stdout while the operator still sees the advisories.
     """
-    for w in (getattr(result, "warnings", None) or []):
-        print(f"warning: {w.human_message()}", file=sys.stderr)
+    for line in unshown(getattr(result, "warnings", None) or []):
+        print(f"warning: {line}", file=sys.stderr)
 
 
 def _read_at_file(value: str, *, label: str) -> tuple[str, bool]:
@@ -2995,7 +2993,7 @@ def _run_memory_save(args, service):
     print(f"Saved memory {response.memory_id}.")
     if response.resolved_entities:
         print("Resolved entities: " + ", ".join(response.resolved_entities))
-    for warning in response.warnings:
+    for warning in unshown(response.warnings):
         print(f"Warning: {warning}")
 
 
