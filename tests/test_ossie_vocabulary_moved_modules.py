@@ -44,10 +44,22 @@ def _file(module: str) -> Path:
     return REPO / (module.replace(".", "/") + ".py")
 
 
+#: A moved path kept for a known 1.8.4 integrator imports; a name it does not list raises (here, one such name).
+KEPT_UNLISTED: dict[str, str] = {"slayer.sql.column_expansion": "drop_root_hop"}
+
+
+def _reach(old: str) -> object:
+    """The old path itself, or a name it does not list when it is a kept path."""
+    if old in KEPT_UNLISTED:
+        exec(f"from {old} import {KEPT_UNLISTED[old]}", {})  # the spec'd ImportError comes from `from … import`
+        return None
+    return importlib.import_module(old)
+
+
 @pytest.mark.parametrize("old", sorted(STUBS))
 def test_the_old_path_names_its_new_location(old: str) -> None:
     with pytest.raises(ImportError) as raised:
-        importlib.import_module(old)
+        _reach(old)
     message = str(raised.value)
     assert old in message
     assert STUBS[old] in message
@@ -67,7 +79,8 @@ def test_the_stub_is_tagged_for_removal_in_3_0(old: str) -> None:
     ]
     [call] = calls
     assert [ast.literal_eval(a) for a in call.args] == [old, STUBS[old]]
-    assert {k.arg: ast.literal_eval(k.value) for k in call.keywords} == {"removal": "3.0"}
+    attribute = {"attribute": True} if old in KEPT_UNLISTED else {}
+    assert {k.arg: ast.literal_eval(k.value) for k in call.keywords} == {"removal": "3.0", **attribute}
 
 
 @pytest.mark.parametrize("old", sorted(STUBS))

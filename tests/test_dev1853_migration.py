@@ -3,7 +3,7 @@
 The registered v9→v10 converter is a per-doc no-op; the cross-document dedup
 runs in the load path against raw peer documents. Keep rule: the to-one side,
 else the cardinality-carrying side, else lexicographic ``(model, target)``;
-order-independent, idempotent, persisted; non-exact pairs are kept whole.
+order-independent, idempotent, persisted by a save; non-exact pairs are kept whole.
 """
 
 from __future__ import annotations
@@ -165,6 +165,9 @@ class TestMirroredPairCollapses:
             storage = await _seed_yaml(
                 d, [_orders_v9([_fwd()]), _customers_v9([_rev()])])
             await _relationships_after_load(storage)
+            customers = await storage.get_dataset("customers", data_source="ds")
+            assert customers is not None
+            await storage.save_dataset(customers)
             on_disk = yaml.safe_load(
                 open(os.path.join(d, "models", "ds", "customers.yaml")).read())
             assert not on_disk.get("joins")

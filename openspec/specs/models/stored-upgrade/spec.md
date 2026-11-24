@@ -35,7 +35,7 @@ On load, a stored model below schema version 8 SHALL have its DOUBLE and SQLite 
 
 #### Scenario: A v10 model loads with no datasource entry
 - **WHEN** a raw v10 model with a DOUBLE base column is loaded and its datasource has no stored entry
-- **THEN** it loads with the column still DOUBLE and is written back at the current version
+- **THEN** it loads with the column still DOUBLE, the stored document is unchanged, and a later `slayer storage upgrade` persists it at the current version
 
 #### Scenario: A v10 model loads with an unreachable datasource
 - **WHEN** a raw v10 model with a DOUBLE base column is loaded and its datasource is a Postgres server that refuses connections
@@ -203,7 +203,7 @@ A model SHALL NOT store the rendered SQL of its backing query. On load, a stored
 #### Scenario: A v14 query-backed model loads without backing SQL
 
 - **WHEN** a stored v14 query-backed model holding `backing_query_sql` is loaded
-- **THEN** it loads without the field, and is written back at version 15 without it
+- **THEN** it loads without the field, the stored document is unchanged, and a save or `slayer storage upgrade` persists it at the current version without it
 
 #### Scenario: Inspect shows no backing SQL
 
@@ -276,7 +276,7 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 
 ### Requirement: Stored time dimensions are upgraded to expression text
 
-On load, every time dimension of a stored model's `source_queries`, a saved query or a memory's bundled query written before this change, whose `dimension` (or `column`) is stored as a column-reference object `{"name": …, "model": …}`, SHALL be rewritten to the dotted text `model.name` (`name` when `model` is absent), recursively through nested stored queries, and re-saved in that form; the query SHALL return the rows it returned before. A time dimension already stored as text, and a client query without a version, SHALL NOT be rewritten.
+On load, every time dimension of a stored model's `source_queries`, a saved query or a memory's bundled query written before this change, whose `dimension` (or `column`) is stored as a column-reference object `{"name": …, "model": …}`, SHALL be rewritten to the dotted text `model.name` (`name` when `model` is absent), recursively through nested stored queries, and persisted in that form only by a save or `slayer storage upgrade`; the query SHALL return the rows it returned before. A time dimension already stored as text, and a client query without a version, SHALL NOT be rewritten.
 
 #### Scenario: Stored object form becomes text
 
@@ -314,12 +314,12 @@ Every name the Mode-B library reserves — scalar and list functions, function s
 
 ### Requirement: Stored granularities colliding with a library name are renamed
 
-On every load, whatever the document's version, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and every reference to it in that datasource's stored models, saved queries, query-backed models and memories SHALL be rewritten to the new name in every position a granularity name is accepted. Each rename SHALL be logged as a warning naming the datasource and both names. The rename SHALL be a function of the stored datasource alone, and dependent documents SHALL be persisted before the datasource, so a load interrupted at any point completes on the next load. This SHALL hold on both the YAML and the SQLite store. A client saving a custom granularity with a reserved name SHALL still be refused.
+On every load, whatever the document's version, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and every reference to it in that datasource's stored models, saved queries, query-backed models and memories SHALL be rewritten to the new name in every position a granularity name is accepted. Each rename SHALL be logged as a warning naming the datasource and both names. The rename SHALL be a function of the stored datasource alone and SHALL be applied in memory on every load, which writes nothing. `slayer storage upgrade` SHALL persist the dependent documents before the datasource, so an upgrade interrupted at any point completes on its next run. This SHALL hold on both the YAML and the SQLite store. A client saving a custom granularity with a reserved name SHALL still be refused.
 
 #### Scenario: Granularity named left
 
 - **WHEN** a stored datasource defines the granularity `left` and a stored model's query-backed source and a memory's query both bucket `created_at` by it
-- **THEN** after load the granularity is `left_granularity`, both documents reference `left_granularity`, a warning names the rename, and both queries return the rows they returned before
+- **THEN** after load the granularity is `left_granularity`, both documents reference `left_granularity`, a warning names the rename, both queries return the rows they returned before, and no stored document changes
 
 #### Scenario: Granularity named collect
 
@@ -333,12 +333,12 @@ On every load, whatever the document's version, a stored datasource custom granu
 
 #### Scenario: An interrupted load completes
 
-- **WHEN** a load is interrupted after some dependent documents were persisted with the new name and before the datasource was
-- **THEN** the next load renames the datasource's granularity to the same name and rewrites the remaining documents, leaving one consistent store
+- **WHEN** `slayer storage upgrade` is interrupted after some dependent documents were persisted with the new name and before the datasource was
+- **THEN** a load in between reads every document with the new name, and the next upgrade renames the datasource's granularity to the same name and persists the remaining documents, leaving one consistent store
 
 #### Scenario: A rename converges
 
-- **WHEN** a store whose granularity `contains` was renamed is loaded again, on the YAML and on the SQLite store
+- **WHEN** a store whose granularity `contains` was renamed by `slayer storage upgrade` is loaded and upgraded again, on the YAML and on the SQLite store
 - **THEN** no document changes and no rename warning is logged
 
 #### Scenario: A granularity colliding with a later library addition
@@ -516,7 +516,7 @@ A stored query SHALL be unconvertible, and the document holding it SHALL fail to
 - an extension join whose `join_pairs` names an extension column on either side;
 - a reference to an extension column in a position that holds no expression, or one the binder cannot attribute.
 
-A converted query-backed model or saved query SHALL be written back at the current version; a memory SHALL be converted on every load and SHALL NOT be written back.
+A converted document SHALL be converted on every load, which writes nothing; a save or `slayer storage upgrade` SHALL persist a converted query-backed model, saved query or memory at the current version.
 
 #### Scenario: A dimension keeps its result key
 - **WHEN** a stored query-backed model's stage rooted at `orders` extends `customers` with the column `tier_label` (`sql` `upper(tier)`) and selects the dimension `customers.tier_label` and `sum(amount)`
@@ -647,15 +647,15 @@ On load, a stored model, saved query or memory written before this change — ju
 
 ### Requirement: Stored field sql converts to its expression
 
-A stored dataset written before this version SHALL load with each field's `sql` converted to its `expression` by the rules of `models/field-expressions` › A field's sql converts to its expression, with no deprecation warning, and every query SHALL return the values it returned before. The conversion SHALL run in two phases: a context-free version step that turns a bare or double-quoted identifier into its shorthand (into its path when it reads a sibling field) and leaves any other `sql` in place, then a load step with the store's datasource and its datasets that writes each sibling reference as its path and tags the text with the datasource's own dialect. A dataset whose store holds no config for its datasource SHALL load with that `sql` unconverted (`models/field-expressions` › A field's sql waits for its dialect) and SHALL be converted on a later load that has it. A converted dataset SHALL be written back as every other upgraded document is; one left with unconverted `sql` SHALL NOT be written back.
+A stored dataset written before this version SHALL load with each field's `sql` converted to its `expression` by the rules of `models/field-expressions` › A field's sql converts to its expression, with no deprecation warning, and every query SHALL return the values it returned before. The conversion SHALL run in two phases: a context-free version step that turns a bare or double-quoted identifier into its shorthand (into its path when it reads a sibling field) and leaves any other `sql` in place, then a load step with the store's datasource and its datasets that writes each sibling reference as its path and tags the text with the datasource's own dialect. A dataset whose store holds no config for its datasource SHALL load with that `sql` unconverted (`models/field-expressions` › A field's sql waits for its dialect) and SHALL be converted on a later load that has it. A converted dataset SHALL be persisted as every other upgraded document is, by a save or `slayer storage upgrade`; `slayer storage upgrade` SHALL leave a dataset with unconverted `sql` untouched and report it.
 
 #### Scenario: A stored dataset of every shape loads
 - **WHEN** a store holding a DuckDB datasource config and a dataset `orders` written with fields `amount` (`sql: amount`), `label` (`sql: '"Label"'`), `doubled` (`sql: "amount * 2"`) and `ratio` (`sql: "doubled / qty"`) is opened
-- **THEN** the fields load as `expression: amount`, `expression: '"Label"'`, `{dialects: [{dialect: DUCKDB, expression: "amount * 2"}]}` and `{dialects: [{dialect: DUCKDB, expression: "orders.doubled / qty"}]}`, no `FutureWarning` is emitted, the document is written back at the current version, and every field returns its former values
+- **THEN** the fields load as `expression: amount`, `expression: '"Label"'`, `{dialects: [{dialect: DUCKDB, expression: "amount * 2"}]}` and `{dialects: [{dialect: DUCKDB, expression: "orders.doubled / qty"}]}`, no `FutureWarning` is emitted, the stored document is unchanged until `slayer storage upgrade` persists it at the current version, and every field returns its former values
 
 #### Scenario: A stored dataset without its datasource config
 - **WHEN** the same dataset is opened from a store that holds no datasource config
-- **THEN** `amount` and `label` load converted, `doubled` and `ratio` keep their `sql`, the document is not written back, and opening it again after the datasource config is added converts and writes it back
+- **THEN** `amount` and `label` load converted, `doubled` and `ratio` keep their `sql`, `slayer storage upgrade` reports the dataset and leaves it untouched, and after the datasource config is added the upgrade converts and persists it
 
 #### Scenario: Direct validation of a stored document
 - **WHEN** a stored dataset document of the previous version is validated directly, with no store
@@ -696,7 +696,7 @@ A stored query written before this change — a saved query, a query-backed mode
 - `count(*)` SHALL become `count(<population>.*)`.
 - a double-quoted segment SHALL match only its exact spelling, and a rewritten reference SHALL keep each double-quoted segment of its leaf double-quoted.
 
-A stored query that cannot be converted this way (a dataset it reads is missing, or an old path has no unique explicit spelling) SHALL fail to load through the existing unloadable-document boundary, untouched on disk, with a warning naming the document and the reference. Saved queries and query-backed models SHALL be written back as other migrated documents are; memories SHALL convert on each load.
+A stored query that cannot be converted this way (a dataset it reads is missing, or an old path has no unique explicit spelling) SHALL fail to load through the existing unloadable-document boundary, untouched on disk, with a warning naming the document and the reference. Every stored query SHALL convert on each load, which writes nothing, and SHALL be persisted only by a save or `slayer storage upgrade`, as other migrated documents are.
 
 #### Scenario: A saved query loads qualified with its results
 - **WHEN** a store holds a saved query with `population: orders`, the dimension `status`, the metric `sum(amount)` and the filter `customers.region = 'EAST'`
@@ -832,3 +832,90 @@ On load, a stored model written before this change whose field's Mode-B `express
 #### Scenario: A model written before the agg upgrade
 - **WHEN** a stored model written before the `agg` upgrade has the metric `m` with formula `agg(amount)`
 - **THEN** after load the metric's expression is `agg_aggregation(amount)`, as that upgrade defines, and this upgrade leaves it unchanged
+
+### Requirement: A load never writes
+
+Loading a stored dataset, semantic-model document, saved query, memory or datasource SHALL NOT write to the store, on the YAML and the SQLite store alike. Every migration, repair and conversion a stored document needs SHALL apply in memory on each load. This includes schema migrations, join-key and join-target repairs, legacy alias rewrites, field `sql` conversion, query upgrades and the library-granularity settle. The upgraded form SHALL be persisted only by a save of that document or by `slayer storage upgrade`. Datasource priority and embeddings SHALL be neither read as documents to upgrade nor rewritten. Opening a store SHALL keep its one-time layout and schema moves (the YAML pre-v4 flat-layout move, the legacy memory-file split, the SQLite table rebuilds, the embedding sidecar's kind rename), which change no document's content, except that the flat-layout move fills an empty `data_source` when exactly one datasource is registered; they are the only writes opening a store performs.
+
+#### Scenario: Loading an old store leaves it unchanged
+- **WHEN** the committed 0.10.2 and 1.8.2 stores, as YAML and as SQLite, are opened and every dataset, saved query, memory and datasource is loaded twice
+- **THEN** every document loads with its upgraded content both times, the logical content of every stored document is unchanged, and no storage write hook is called
+
+#### Scenario: A save persists the upgraded form
+- **WHEN** a dataset stored below the current version is loaded and then saved
+- **THEN** the stored document is at the current version with the upgraded content
+
+#### Scenario: Opening a pre-v4 flat-layout YAML store
+- **WHEN** a YAML store in the pre-v4 flat layout is opened
+- **THEN** its files move into the per-datasource layout and no document's content changes
+
+### Requirement: A load warns when a document needs upgrading
+
+Loading a stored document that the upgrade would change SHALL emit one structured warning per document per storage instance. The warning SHALL name the entity kind, the document's identity and `slayer storage upgrade`. It is emitted whether the change comes from the document's own version or from a nested stage, removed form or repair. A document the upgrade would not change SHALL load without that warning.
+
+#### Scenario: An old dataset warns once
+- **WHEN** a dataset stored at version 15 is loaded three times through one storage instance
+- **THEN** exactly one warning names the dataset, its datasource and `slayer storage upgrade`
+
+#### Scenario: A current document with an old nested stage warns
+- **WHEN** a query-backed dataset stored at the current version holds a stage written in a form the upgrade converts
+- **THEN** loading it warns naming the dataset
+
+#### Scenario: An upgraded store is quiet
+- **WHEN** a store that `slayer storage upgrade` has upgraded is loaded
+- **THEN** no upgrade warning is emitted
+
+### Requirement: slayer storage upgrade persists the current format
+
+`slayer storage upgrade` SHALL bring every stored document that needs it to the current format, through the same upgrade a load applies. The documents are datasets, semantic-model documents, saved queries, memories and datasources, optionally limited by `--data-source`. Each changed document SHALL be written with its upgraded content and without the semantic checks of a client save, so a legacy document that loads (for instance one holding a cycle or a fanning reference) is upgraded rather than refused. A document SHALL be written only if its stored form is unchanged since the upgrade read it. Otherwise it SHALL be reported as a conflict and left as it is. The library-granularity settle SHALL persist dependent documents before their datasource, and SHALL leave a renaming datasource unwritten while one of its dependents is refused, conflicted or unreadable. `--dry-run` SHALL print, per document, the difference the upgrade would make and SHALL write nothing.
+
+A document the upgrade cannot complete SHALL be reported with its identity and the reason, and SHALL be left untouched, while every other document is upgraded. The command SHALL then exit 1. Such documents include:
+- one that fails to load;
+- one with field `sql` waiting for a datasource dialect that neither the store nor `--datasource-type NAME=TYPE` supplies;
+- one below version 8 whose datasource cannot be reached for type refinement.
+
+`--datasource-type NAME=TYPE`, repeatable, SHALL supply the dialect of a datasource the store holds no config for.
+
+#### Scenario: An old store upgrades
+- **WHEN** `slayer storage upgrade` runs on a store holding v15 datasets, a v15 memory and a datasource
+- **THEN** every document is stored at the current version, loading the store afterwards emits no upgrade warning, every query returns what it returned before, and the command exits 0
+
+#### Scenario: A dry run shows the change and writes nothing
+- **WHEN** `slayer storage upgrade --dry-run` runs on the same store
+- **THEN** it prints each document's difference, every stored document's content is unchanged, and the command exits 0
+
+#### Scenario: A legacy cycle is upgraded, not refused
+- **WHEN** the store holds a dataset written before the current version whose derived fields form a cycle that a client save would refuse
+- **THEN** the upgrade stores it at the current version
+
+#### Scenario: A dataset waiting for its dialect
+- **WHEN** the store holds a v15 dataset with field `sql` `UPPER(status)` and no config for its datasource
+- **THEN** the upgrade reports the dataset and leaves it untouched, upgrades every other document and exits 1; run again with `--datasource-type warehouse=duckdb`, it upgrades the dataset and exits 0
+
+#### Scenario: A corrupt document does not stop the others
+- **WHEN** one stored dataset is corrupt and the others are valid
+- **THEN** the valid ones are upgraded, the corrupt one is reported and untouched, embeddings are preserved, and the command exits 1
+
+#### Scenario: A concurrent edit is not overwritten
+- **WHEN** a document is changed in the store after the upgrade read it and before it would write it
+- **THEN** the upgrade reports a conflict for it, leaves the newer content in place and exits 1
+
+#### Scenario: An interrupted settle converges
+- **WHEN** an upgrade that renames a datasource's library-colliding granularity is interrupted after writing some dependent documents
+- **THEN** a second run completes the rename and leaves one consistent store
+
+#### Scenario: A refused dependent holds its datasource's rename
+- **WHEN** a datasource defines the granularity `left`, one dependent dataset upgrades and another conflicts
+- **THEN** the datasource is reported not upgraded and stays unrenamed, the command exits 1, the conflicted dataset still loads with `left_granularity`, and a later run that can complete it leaves one consistent store
+
+### Requirement: Documents SLayer does not own upgrade without a store
+
+A public entry point SHALL take one datasource's stored dataset documents, an optional datasource type and an optional datasource config, and return each document in the current format. It SHALL apply the same upgrade a load applies, open no store and write nothing. The result of each document SHALL be the same as `slayer storage upgrade` would store. A document the entry point cannot complete without a live datasource (below version 8) or without a dialect SHALL be reported with its identity and the reason, and SHALL not be returned upgraded.
+
+#### Scenario: A v15 model set upgrades in memory
+- **WHEN** two v15 dataset documents of one datasource, one with field `sql` `UPPER(status)`, are passed with the datasource type `duckdb`
+- **THEN** both come back at the current version, every key is one the dataset model declares at its level, they validate to the same datasets a store would load, and nothing is written
+
+#### Scenario: A pre-v8 document is refused
+- **WHEN** a v5 dataset document with a refineable DOUBLE field is passed
+- **THEN** it is reported as needing live type refinement through `slayer storage upgrade`

@@ -27,7 +27,7 @@ Child `migrations` (the registry); the other modules are leaves of the node.
 3. **Versioned persistence**: models, queries, datasource configs and memories
    carry `version`; migrations run automatically on load. [review]
    - **3.1** A load never writes; an upgraded document is persisted only by a
-     save. [target: DEV-1844]
+     save. [enforced: test:tests/test_law_load_never_writes.py]
    - **3.2** Library growth never invalidates a stored artefact: a new library
      function yields to a model's own definition of it inside that model; any
      other newly reserved name ships with a migration.

@@ -365,6 +365,21 @@ class UnloadableDocumentWarning(SlayerWarning):
         return _single_line(f"skipped stored {kind} {document!r}, which cannot be loaded: {self.cause}")
 
 
+class StoredUpgradeNeededWarning(SlayerWarning):
+    """A stored document loaded in a form ``slayer storage upgrade`` would change; ``data_source`` is ``None`` for a
+    memory or a datasource."""
+
+    kind: Literal["stored_upgrade_needed"] = "stored_upgrade_needed"
+    document_kind: Literal["dataset", "memory", "datasource"]
+    data_source: Optional[str] = None
+    name: str
+
+    def human_message(self) -> str:
+        document = f"{self.data_source}.{self.name}" if self.data_source is not None else self.name
+        return (f"stored {self.document_kind} {document!r} is in an older format, upgraded in memory on every load; "
+                f"run `slayer storage upgrade` to store it in the current format")
+
+
 class NarrowedAccessWarning(SlayerWarning):
     """Dataset ``dataset`` reads tagged datasets (``narrowed_by``) whose tags do not cover its own, so some of its readers cannot see it."""
 
@@ -649,6 +664,7 @@ AnySlayerWarning = Annotated[
         UnknownStoredKeyWarning,
         DateOnlyMidnightWarning,
         ChangedReferenceWarning,
+        StoredUpgradeNeededWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -691,6 +707,17 @@ class SlayerUnloadableDocumentWarning(UserWarning):
     """Carrier ``UserWarning`` for an ``UnloadableDocumentWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: UnloadableDocumentWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerStoredUpgradeNeededWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``StoredUpgradeNeededWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: StoredUpgradeNeededWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

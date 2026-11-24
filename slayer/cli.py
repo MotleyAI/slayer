@@ -82,6 +82,7 @@ from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import StorageBackend, default_storage_path, resolve_storage
 from slayer.storage.document_loading import DocumentLoadFailures
+from slayer.storage.upgrade import upgrade_store
 from slayer.live_schema.type_refinement import (
     has_refineable_fields,
     has_sqlite_widenable_fields,
@@ -1211,10 +1212,32 @@ examples:
     # ── storage ──────────────────────────────────────────────────────
     storage_parser = subparsers.add_parser(
         "storage",
-        help="Storage maintenance (migrate-types refines DOUBLE→INT for legacy datasets)",
+        help="Storage maintenance (upgrade stores every document in the current format; migrate-types refines "
+             "DOUBLE→INT for legacy datasets)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     storage_subparsers = storage_parser.add_subparsers(dest="subcommand")
+
+    upgrade_parser = storage_subparsers.add_parser(
+        "upgrade",
+        help=(
+            "Store every dataset, saved query, memory and datasource that loads in an older format in the current "
+            "one (loads upgrade in memory and never write)."
+        ),
+    )
+    upgrade_parser.add_argument(
+        "--data-source", default=None, dest="data_source",
+        help="Optional datasource filter; defaults to all datasources.",
+    )
+    upgrade_parser.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="Print each document's difference without writing anything.",
+    )
+    upgrade_parser.add_argument(
+        "--datasource-type", action="append", default=[], dest="datasource_types", metavar="NAME=TYPE",
+        help="The dialect of a datasource the store holds no config for (repeatable), e.g. warehouse=duckdb.",
+    )
+    _add_storage_arg(upgrade_parser)
 
     migrate_types_parser = storage_subparsers.add_parser(
         "migrate-types",
@@ -1671,10 +1694,41 @@ def _run_search_query(args, storage) -> None:
 def _run_storage(args) -> None:
     """Dispatch the ``slayer storage <subcommand>`` group."""
     subcommand = getattr(args, "subcommand", None)
-    if subcommand == "migrate-types":
+    if subcommand == "upgrade":
+        _run_storage_upgrade(args)
+    elif subcommand == "migrate-types":
         _run_storage_migrate_types(args)
     else:
-        _fail("usage: slayer storage <subcommand>; available: migrate-types")
+        _fail("usage: slayer storage <subcommand>; available: upgrade, migrate-types")
+
+
+def _datasource_types(values: list[str]) -> dict[str, str]:
+    """``--datasource-type NAME=TYPE`` options as a mapping."""
+    out: dict[str, str] = {}
+    for value in values:
+        name, sep, ds_type = value.partition("=")
+        if not sep or not name.strip() or not ds_type.strip():
+            _fail(f"--datasource-type takes NAME=TYPE (e.g. warehouse=duckdb), got {value!r}")
+        out[name.strip()] = ds_type.strip()
+    return out
+
+
+def _run_storage_upgrade(args) -> None:
+    """Store every in-scope document in the current format; exit 1 when one is left behind."""
+    datasource_types = _datasource_types(args.datasource_types)
+    inner = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=inner)
+    try:
+        report = engine.run_sync(upgrade_store(
+            inner, data_source=args.data_source, dry_run=bool(args.dry_run), datasource_types=datasource_types,
+            client_source=engine.client_for,
+        ))
+    finally:
+        engine.close()
+    for outcome in report.outcomes:
+        print(outcome.line())
+    if not report.complete:
+        sys.exit(1)
 
 
 def _run_storage_migrate_types(args) -> None:

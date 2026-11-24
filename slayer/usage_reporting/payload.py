@@ -23,7 +23,7 @@ UsageKey = Literal[
     "cli:datasets.list", "cli:datasets.show", "cli:datasets.create", "cli:datasets.delete",
     "cli:datasources.list", "cli:datasources.show", "cli:datasources.create",
     "cli:datasources.delete", "cli:datasources.test",
-    "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types",
+    "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types", "cli:storage.upgrade",
     "cli:datasources.refresh-samples", "cli:inspect", "cli:search",
     "cli:otel.status", "cli:otel.test",
     "cli:other",

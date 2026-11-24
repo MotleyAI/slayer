@@ -214,7 +214,6 @@ __marimo__/
 # Per-contributor living-architecture overrides
 living-architecture.local.yaml
 
-examples/postgres/slayer_data/
 benchmarks/
 
 # Auto-generated example data (created from scratch by setup_jaffle.py)

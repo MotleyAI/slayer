@@ -89,6 +89,15 @@ storage = SQLiteStorage(db_path="./slayer.db")
 
 Tables: `models`, `datasources`, `semantic_models` (each document's text, verbatim), `settings` (for the datasource priority list), `memories` + `memory_entities` (indexed by canonical entity), and `embeddings` (cached embedding rows keyed by `(canonical_id, embedding_model_name)`). Memory ids are assigned by SQLite's `INTEGER PRIMARY KEY` rowid mechanism inside the save transaction — no separate counter table is needed.
 
+## Upgrading Stored Documents
+
+A load never writes: a document stored by an older release upgrades in memory on every load and stays as stored, so
+the older release can still read it. Each such document loads with one `stored_upgrade_needed` warning. Run
+[`slayer storage upgrade`](../reference/cli.md#slayer-storage) to store every document in the current format, or save
+the document. Opening a store still performs its one-time layout moves (the YAML flat-layout move, the memory-file
+split, SQLite table rebuilds), which change no document's content, except that the flat-layout move fills an empty
+`data_source` (see the layout note above).
+
 ## Storage Resolution
 
 The `resolve_storage()` factory creates a backend from a path or URI:
@@ -162,7 +171,7 @@ A backend implements `_save_datasource_impl` (not `save_datasource`), returns `(
 
 If your backend stores ids as filenames (or another case-insensitive keyspace), set the class attribute `_ids_collide_as_filenames = True` — the base save templates then reject ids differing only by case — and call `await self.check_datasource_id_collision(datasource.name)` at the top of your `_save_datasource_impl`.
 
-Stored-document upgrades that rewrite raw documents, such as renaming a granularity a newer release reserves, run only on backends that expose their raw documents; a backend that builds its own datasource configs is never asked to list or load its datasources for them.
+Stored-document upgrades that read raw documents, such as renaming a granularity a newer release reserves, run only on backends that expose their raw documents; a backend that builds its own datasource configs is never asked to list or load its datasources for them. `slayer storage upgrade` writes through the raw-document hooks (`_write_raw_dataset_dict`, `_write_raw_memory_dict`, `_write_raw_datasource_dict`); override `_write_raw_if_unchanged` to compare and write in one transaction.
 
 Semantic models are optional. To store them, implement `_save_semantic_model_text_impl`, `_get_semantic_model_text_impl`, `_list_semantic_model_identities`, `_delete_semantic_model_row`, and `_patch_semantic_model_text` (read, patch and write one document as one serialised step). A backend without them keeps working for datasets, datasources and memories: it lists no semantic models, and every other semantic-model operation fails with `SemanticModelsUnsupportedError` naming the backend. A backend with them must change `graph_fingerprint()` whenever a document's content or membership changes.
 

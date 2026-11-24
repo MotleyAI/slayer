@@ -64,6 +64,8 @@ carve_outs:
   - {name: target_model, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
   - {name: to_columns, file: slayer/core/models.py, reason: "Ossie's own wire name"}
   - {name: semantic_model, file: slayer/core/models.py, reason: "Ossie's semantic model (the document)"}
+  - {name: is_base_column_sql, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: reads_physical_column, file: slayer/core/models.py, reason: "physical database or result-set column"}
   - {name: SOURCE_MEASURE_REASON, file: slayer/core/ossie_validity.py, reason: "Ossie's source measure (AGG(source.measure))"}
   - {name: column, file: slayer/core/ossie_validity.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: columns, file: slayer/core/ossie_validity.py, reason: "SQL column in a SQL AST, statement or wire surface"}
@@ -615,6 +617,12 @@ carve_outs:
   - {name: ModelMetricNameError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: ModelMetricReferenceError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: UnqualifiedModelMetricReferenceError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _AggregatedMeasureRef, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
+  - {name: _parse_formula, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
+  - {name: formula, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
+  - {name: measure_name, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
+  - {name: measure_names, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
+  - {name: named_measures, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
   - {name: ModelMetricContent, file: slayer/core/slayer_extension.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_metrics, file: slayer/engine/field_dependency.py, reason: "Ossie's semantic model (the document)"}
   - {name: column, file: slayer/engine/unknown_types.py, reason: "physical database or result-set column"}
@@ -625,6 +633,12 @@ carve_outs:
   - {name: _inspect_model_scoped, file: slayer/inspect/service.py, reason: "Ossie's semantic model (the document)"}
   - {name: _inspect_semantic_model, file: slayer/inspect/service.py, reason: "Ossie's semantic model (the document)"}
   - {name: semantic_model, file: slayer/live_schema/schema_drift.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _JoinEdge, file: slayer/live_schema/schema_drift.py, reason: "deprecated twin until 3.0"}
+  - {name: join_edges, file: slayer/live_schema/schema_drift.py, reason: "deprecated twin until 3.0"}
+  - {name: join_pairs, file: slayer/live_schema/schema_drift.py, reason: "deprecated twin until 3.0"}
+  - {name: measures, file: slayer/live_schema/schema_drift.py, reason: "deprecated twin until 3.0"}
+  - {name: model_name, file: slayer/live_schema/schema_drift.py, reason: "deprecated twin until 3.0"}
+  - {name: target_model, file: slayer/live_schema/schema_drift.py, reason: "deprecated twin until 3.0"}
   - {name: create_semantic_model, file: slayer/mcp/server.py, reason: "Ossie's semantic model (the document)"}
   - {name: delete_semantic_model, file: slayer/mcp/server.py, reason: "Ossie's semantic model (the document)"}
   - {name: edit_semantic_model, file: slayer/mcp/server.py, reason: "Ossie's semantic model (the document)"}
@@ -656,3 +670,6 @@ carve_outs:
   - {name: warn_broken_model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: column, file: slayer/storage/semantic_models.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: analyse_model_scoped, file: slayer/storage/semantic_models.py, reason: "Ossie's semantic model (the document)"}
+  - {name: embedding_model_name, file: slayer/storage/upgrade.py, reason: "embedding model"}
+  - {name: SEMANTIC_MODEL, file: slayer/storage/upgrade.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _semantic_model_outcome, file: slayer/storage/upgrade.py, reason: "Ossie's semantic model (the document)"}
