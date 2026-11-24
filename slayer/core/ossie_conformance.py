@@ -44,6 +44,11 @@ OSSIE_AGGREGATE_SPELLINGS = frozenset({"sum", "count", "avg", "min", "max", "std
 #: The names the parser gives Ossie's ``COUNT(DISTINCT …)`` and ``PERCENTILE_CONT(…) WITHIN GROUP (…)``; SLayer's own
 #: calls of these names are refused by their written callee.
 REWRITTEN_AGGREGATES = frozenset({"count_distinct", "percentile"})
+#: Ossie aggregates SLayer reads in no plain-call form, and why.
+OSSIE_UNREAD_CALLS = {
+    "percentile_cont": "PERCENTILE_CONT is read only as PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)",
+    "percentile_disc": "PERCENTILE_DISC is an Ossie aggregate SLayer does not support yet",
+}
 #: The named arguments the parser gives each rewritten aggregate; any other argument was written.
 REWRITTEN_ARGUMENTS = {"count_distinct": (), "percentile": ("p",)}
 #: Ossie's argument counts for functions SLayer also defines with other arities.
@@ -217,23 +222,29 @@ def _aggregate(node: AggCall, out: FilterReading) -> None:
 def _aggregate_call(node: AggCall, out: FilterReading) -> None:
     """An aggregate judged as Ossie writes it, windowed or not."""
     name = node.agg.lower()
+    if name in OSSIE_UNREAD_CALLS:
+        _refuse(out, OSSIE_UNREAD_CALLS[name])
     if name not in OSSIE_AGGREGATE_SPELLINGS | REWRITTEN_AGGREGATES:
         _refuse(out, f"{node.agg}() is not an Ossie function")
     if node.kwargs:
         _refuse(out, f"{node.agg}() takes no keyword arguments in Ossie")
     # A rewritten Ossie aggregate's arguments are the parser's (``p=`` of ``PERCENTILE_CONT(p)``), not written.
     rewritten = name in REWRITTEN_AGGREGATES
+    _aggregate_arguments(node, name=name, rewritten=rewritten, out=out)
+    args = [a.value if rewritten and isinstance(a, NamedArg) else a for a in node.args]
+    _visit_all((p for p in (node.source, *args, node.filter) if p is not None), out)
+
+
+def _aggregate_arguments(node: AggCall, *, name: str, rewritten: bool, out: FilterReading) -> None:
     if rewritten:
         if tuple(a.name if isinstance(a, NamedArg) else None for a in node.args) != REWRITTEN_ARGUMENTS[name]:
             _refuse(out, f"{node.agg}() takes no further arguments in Ossie")
-    else:
-        if isinstance(node.source, StarSource) and name != "count":
-            _refuse(out, f"{node.agg}(*) is not an Ossie aggregate; only COUNT(*) is")
-        extra = OSSIE_AGGREGATE_EXTRA_ARGS.get(name, 0)
-        if len(node.args) != extra:
-            _refuse(out, f"{node.agg}() takes {extra + 1} argument(s) in Ossie")
-    args = [a.value if rewritten and isinstance(a, NamedArg) else a for a in node.args]
-    _visit_all((p for p in (node.source, *args, node.filter) if p is not None), out)
+        return
+    if isinstance(node.source, StarSource) and name != "count":
+        _refuse(out, f"{node.agg}(*) is not an Ossie aggregate; only COUNT(*) is")
+    extra = OSSIE_AGGREGATE_EXTRA_ARGS.get(name, 0)
+    if len(node.args) != extra:
+        _refuse(out, f"{node.agg}() takes {extra + 1} argument(s) in Ossie")
 
 
 def _window(node: WindowCall, out: FilterReading) -> None:

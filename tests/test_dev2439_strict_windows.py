@@ -85,6 +85,8 @@ AGGREGATE_SHAPES = [
     ("PERCENTILE_CONT(0.5, 0.1) WITHIN GROUP (ORDER BY orders.amount)", "E_INVALID_QUERY"),
     ("COUNT(DISTINCT orders.amount, unexpected=1)", "E_INVALID_QUERY"),
     ("COUNT(DISTINCT orders.amount)", "E_AGGREGATE_IN_WHERE"),
+    ("PERCENTILE_CONT(orders.amount)", "E_INVALID_QUERY"),
+    ("PERCENTILE_DISC(orders.amount)", "E_INVALID_QUERY"),
     ("COUNT(*)", "E_AGGREGATE_IN_WHERE"),
     ("COUNT(orders.amount)", "E_AGGREGATE_IN_WHERE"),
     ("APPROX_PERCENTILE(orders.amount, 0.5)", "E_AGGREGATE_IN_WHERE"),
