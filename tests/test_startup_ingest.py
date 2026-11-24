@@ -16,6 +16,7 @@ Covers:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import sys
 import tempfile
@@ -770,13 +771,15 @@ class TestProgrammaticKwarg:
         with pytest.raises(RuntimeError, match="storage offline"):
             create_app(storage=storage, ingest_on_startup=True)
 
-    def test_create_mcp_server_propagates_list_datasources_error(self, monkeypatch):
+    async def test_create_mcp_server_reports_list_datasources_error_on_stderr(self, capsys):
         storage = _stub_storage(
             names=[], list_raises=RuntimeError("storage offline")
         )
 
-        with pytest.raises(RuntimeError, match="storage offline"):
-            create_mcp_server(storage=storage, ingest_on_startup=True)
+        server = create_mcp_server(storage=storage, ingest_on_startup=True, _seed_help=False)
+        async with create_connected_server_and_client_session(server) as session:
+            await asyncio.wait_for(session.call_tool("list_datasources", {}), timeout=30)
+        assert "Ingest-on-startup failed: storage offline" in capsys.readouterr().err
 
 
 # ─────────────────────────────────────────────────────────────────────────────

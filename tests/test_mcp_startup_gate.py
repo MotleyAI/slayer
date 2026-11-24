@@ -237,7 +237,8 @@ class TestPreparationEngine:
             assert not result.isError, result.content
             serving_loop = asyncio.get_running_loop()
         prep_engine = getattr(seen["client_for"], "__self__", None)
-        assert prep_engine is not None and prep_engine is not serving
+        assert prep_engine is not None
+        assert prep_engine is not serving
         assert seen["loop"] is serving_loop
         assert closed.get(id(prep_engine)) is seen["loop"]
         assert seen["client"] not in serving._sql_clients.values()

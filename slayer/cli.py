@@ -16,7 +16,7 @@ from typing import Any, ClassVar, Literal, NoReturn, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from slayer import usage_reporting
 from slayer import otel
@@ -33,6 +33,7 @@ from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.parser import parse_dbt_project
 from slayer.demo import (
     DEMO_NAME,
+    DemoSetupError,
     build_jaffle_shop,
     ensure_demo_datasource,
     ingest_demo_models,
@@ -43,8 +44,7 @@ from slayer.engine import ingestion as engine_ingestion
 from slayer.engine.ingestion import (
     _empty_ingest_message,
     _ingest_result_is_empty,
-    _print_ingest_addition,
-    _print_ingest_drift_and_errors,
+    print_ingest_result,
 )
 from slayer.engine.join_safety import audit_join_safety
 from slayer.flight.cli import add_flight_serve_subparser, run_flight_serve
@@ -184,8 +184,26 @@ def _one_line(text: str) -> str:
     return " ".join(line.strip() for line in text.splitlines() if line.strip())
 
 
+_MAX_VALIDATION_FIELDS = 10
+
+
+def _validation_error_line(exc: ValidationError) -> str:
+    """``Error: <n> validation error(s) for <model>: <loc>: <reason>; …`` — never the rejected values."""
+    errors = exc.errors(include_input=False, include_url=False, include_context=False)
+    fields = [
+        f"{'.'.join(str(part) for part in err['loc'])}: {_one_line(err['msg'])}"
+        for err in errors[:_MAX_VALIDATION_FIELDS]
+    ]
+    if len(errors) > _MAX_VALIDATION_FIELDS:
+        fields.append(f"…and {len(errors) - _MAX_VALIDATION_FIELDS} more")
+    noun = "error" if len(errors) == 1 else "errors"
+    return f"Error: {len(errors)} validation {noun} for {exc.title}: " + "; ".join(fields)
+
+
 def _error_line(exc: Exception) -> str:
-    """One stderr line: a SLayer error's message, else class + message + the ``--debug`` hint."""
+    """One stderr line: a SLayer error's message, a validation error's fields, else class + message + ``--debug`` hint."""
+    if isinstance(exc, ValidationError):
+        return _validation_error_line(exc)
     if isinstance(exc, SlayerError):
         return "Error: " + _one_line(str(exc))
     first = next((line.strip() for line in str(exc).splitlines() if line.strip()), "")
@@ -1012,8 +1030,11 @@ examples:
     datasources_create_parser.add_argument(
         "--years",
         type=int,
-        default=2,
-        help="(demo only) Years of synthetic data to generate (default: 2)",
+        default=None,
+        help=(
+            "(demo only) Years of synthetic data (default: reuse the existing demo, else 2); "
+            "differing from the existing demo's years rebuilds it"
+        ),
     )
     datasources_create_parser.add_argument(
         "-y",
@@ -1848,7 +1869,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
 
 
 def _prepare_demo(args, storage, *, stream=None):
-    """Ensure the Jaffle Shop demo is set up before a long-running server starts.
+    """Ensure the Jaffle Shop demo is set up for a long-running server; raises ``DemoSetupError``.
 
     Writes status messages to ``stream`` (default: stderr) so stdio-based
     transports (``slayer mcp``) remain protocol-safe.
@@ -1864,7 +1885,7 @@ def _prepare_demo(args, storage, *, stream=None):
             stream=out,
         )
     except Exception as e:
-        _fail(f"Failed to set up the Jaffle Shop demo: {e}")
+        raise DemoSetupError(str(e)) from e
 
     state = "generated" if db_built else "reused"
     print(
@@ -1896,9 +1917,8 @@ def _run_mcp(args):
     from slayer.mcp.server import create_mcp_server  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps FastMCP off non-mcp commands
 
     storage = _resolve_storage(args)
-    if getattr(args, "demo", False):
-        _prepare_demo(args, storage)
-    mcp = create_mcp_server(storage=storage, **_server_flags(args))
+    demo_setup = (lambda: _prepare_demo(args, storage)) if getattr(args, "demo", False) else None
+    mcp = create_mcp_server(storage=storage, demo_setup=demo_setup, **_server_flags(args))
     _serve_until_terminated(run=mcp.run, stop=None)
 
 
@@ -1955,9 +1975,7 @@ async def _ingest_and_print(*, engine: SlayerQueryEngine, ds: DatasourceConfig, 
             retry_hint="Try re-running with --schema set to one of these.",
         ))
         return None
-    for addition in result.additions:
-        _print_ingest_addition(addition)
-    _print_ingest_drift_and_errors(result, data_source=ds.name)
+    print_ingest_result(result, data_source=ds.name)
     return result
 
 
@@ -2754,9 +2772,8 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
     db_path = resolve_demo_db_path(storage_path)
 
     try:
-        db_built = build_jaffle_shop(
-            db_path=db_path, years=max(1, args.years), stream=sys.stderr
-        )
+        years = None if args.years is None else max(1, args.years)
+        db_built = build_jaffle_shop(db_path=db_path, years=years, stream=sys.stderr)
     except Exception as e:
         _fail(f"Failed to build Jaffle Shop demo: {e}")
 
@@ -2793,11 +2810,10 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
         return
 
     try:
-        models = ingest_demo_models(storage=storage, datasource=ds)
+        demo = ingest_demo_models(storage=storage, datasource=ds)
     except Exception as e:
         _fail(f"Ingestion failed: {e}")
-    for model in models:
-        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+    print_ingest_result(demo.ingest, data_source=ds.name)
 
 
 def _load_query_arg(value):

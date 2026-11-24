@@ -78,8 +78,9 @@ class TestUnseedableGenerator:
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: None)
         db = tmp_path / "demo" / "jaffle_shop.duckdb"
         db.parent.mkdir()
+        db_path, stream = str(db), io.StringIO()
         with pytest.raises(RuntimeError, match="jafgen"):
-            jaffle_shop.build_jaffle_shop(db_path=str(db), stream=io.StringIO())
+            jaffle_shop.build_jaffle_shop(db_path=db_path, stream=stream)
         assert not db.exists()
         assert list(tmp_path.rglob("*.csv")) == []
 
@@ -89,7 +90,8 @@ def _documented_count() -> tuple[str, str]:
     section = CLI_GUIDE.read_text(encoding="utf-8").split("## Verify it works", 1)[1].split("\n## ", 1)[0]
     command = re.search(r"```bash\n(slayer query .+?)\n```", section)
     expected = re.search(r"Expected output:\s*\n```[^\n]*\n(.*?)```", section, re.S)
-    assert command and expected, section
+    assert command, section
+    assert expected, section
     return command.group(1), expected.group(1)
 
 

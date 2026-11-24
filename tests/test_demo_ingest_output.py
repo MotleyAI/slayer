@@ -87,7 +87,8 @@ class TestOneRenderer:
         result = _cli(["datasources", "--storage", str(tmp_path / "demo_store"), "create", "demo", "--ingest"])
         assert result.returncode == 0, result.stderr
         head, sep, rest = result.stdout.partition(f"Created datasource '{DS}' (duckdb).\n")
-        assert sep and head.startswith("Generated Jaffle Shop DuckDB at "), result.stdout
+        assert sep, result.stdout
+        assert head.startswith("Generated Jaffle Shop DuckDB at "), result.stdout
         assert rest == golden
 
     async def test_startup_orchestrator_prints_the_golden(self, fixed_result: None, tmp_path: Path) -> None:
@@ -127,7 +128,8 @@ class TestDemoCreate:
         result = _cli(["datasources", "--storage", str(store), "create", "demo", "--ingest"])
         assert result.returncode == 1
         failures = [line for line in result.stderr.splitlines() if "Ingestion failed:" in line]
-        assert len(failures) == 1 and "boom" in failures[0], result.stderr
+        assert len(failures) == 1, result.stderr
+        assert "boom" in failures[0], result.stderr
         assert run_sync(YAMLStorage(base_dir=str(store)).get_datasource(DS)) is not None
 
 

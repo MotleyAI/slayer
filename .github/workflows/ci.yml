@@ -12,10 +12,6 @@ on:
     # same lint + test gate as PRs to main.
     branches: ['**']
 
-env:
-  # jaffle-shop-generator is not on PyPI; the demo-DB cache key carries this pin too.
-  JAFGEN_SHA: 09557a1118b000071f8171aa97d54d5029bf0f0b
-
 jobs:
   # Full basedpyright check against the committed ratchet baseline; parallel, as it needs ~3 GB.
   type-check:
@@ -66,9 +62,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
-
       - name: Run unit tests (shard ${{ matrix.shard }}/3)
         timeout-minutes: 20
         # One of three duration-balanced module groups (tests/_sharding.py); -n logical
@@ -104,9 +97,6 @@ jobs:
       - uses: ./.github/actions/poetry-env
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
 
       # Install a pinned, checksum-verified DuckDB CLI into ~/.duckdb/cli/latest
       # (the layout the installer uses and the 15_duckdb notebook expects on
@@ -154,7 +144,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: docs/examples/jaffle_data/demo/jaffle_shop.duckdb
-          key: notebook-demo-db-${{ runner.os }}-${{ env.JAFGEN_SHA }}-${{ hashFiles('poetry.lock', 'slayer/demo/**', 'tests/integration/_demo_build.py') }}
+          key: notebook-demo-db-${{ runner.os }}-${{ hashFiles('poetry.lock', 'slayer/demo/**', 'tests/integration/_demo_build.py') }}
 
       - name: Build or refresh the notebook demo DuckDB
         run: poetry run python -c "from tests.integration._demo_build import build_notebook_demo_db; build_notebook_demo_db()"

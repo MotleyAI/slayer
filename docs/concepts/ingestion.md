@@ -252,8 +252,9 @@ FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more joins
 `slayer serve` and `slayer mcp` both accept `--ingest-on-startup`, an
 **opt-in** flag that walks every configured datasource and runs the same
 idempotent ingestion pass described in [Idempotent
-Re-Ingestion](#idempotent-re-ingestion) **before** the port opens / before
-stdio JSON-RPC starts. Mirrors the existing `--demo` boot hook, so both
+Re-Ingestion](#idempotent-re-ingestion). `slayer serve` runs it **before**
+the port opens; `slayer mcp` runs it in the background once stdio JSON-RPC
+starts, and every tool call waits for it. Mirrors the existing `--demo` boot hook, so both
 flags compose: `--demo` runs first (creating the Jaffle Shop datasource),
 then the startup-ingest pass runs over every datasource including the
 freshly-created demo.

@@ -87,7 +87,8 @@ class TestYears:
         assert "Generated Jaffle Shop DuckDB" in result.stdout
         assert jaffle_generator.calls == 2
         stamp = _stamp(_store_db(store))
-        assert stamp is not None and stamp.years == after
+        assert stamp is not None
+        assert stamp.years == after
 
     def test_create_demo_without_years_reuses_a_four_year_demo(self, jaffle_generator, tmp_path: Path) -> None:
         store = tmp_path / "store"
@@ -96,7 +97,8 @@ class TestYears:
         assert "Reusing existing Jaffle Shop DuckDB" in result.stdout
         assert jaffle_generator.calls == 1
         stamp = _stamp(_store_db(store))
-        assert stamp is not None and stamp.years == 4
+        assert stamp is not None
+        assert stamp.years == 4
 
     def test_mcp_demo_reuses_a_four_year_demo(self, shared_demo_duckdb: str, tmp_path: Path) -> None:
         store = tmp_path / "store"
