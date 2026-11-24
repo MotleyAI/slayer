@@ -12,7 +12,7 @@ from typing import AsyncIterator, List
 
 import pytest
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
@@ -40,7 +40,8 @@ def _with_query_backed(datasets: List[SlayerDataset]) -> List[SlayerDataset]:
     reading its field by the stale spelling over a ``regions`` relationship."""
     regions = next(m for m in datasets if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
-        to="region_amounts", from_columns=["id"], to_columns=["customers__region_id"]))
+        to="region_amounts", from_columns=["id"], to_columns=["customers__region_id"],
+        cardinality=RelationshipCardinality.ONE_TO_ONE))
     regions.fields.append(DatasetField(name="qb_label", expression=ExpressionObject(
         dialects=[DialectEntry(dialect=d, expression=f"region_amounts.{STALE}") for d in ("SQLITE", "DUCKDB")])))
     return [*datasets, SlayerDataset(

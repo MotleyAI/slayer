@@ -5,12 +5,12 @@ Stored-only: a fresh payload's colon spelling is refused by the parser.
 """
 
 import logging
-from collections.abc import Callable
 from typing import Any
 
 from slayer.core.syntax import rewrite_colon_spans
 from slayer.storage.migrations import document_label, register_migration
 from slayer.storage.rank_direction_migration import (
+    FieldRewrite,
     rewrite_dataset_texts_at,
     rewrite_query_texts_at,
     stamp_memory_query,
@@ -18,11 +18,8 @@ from slayer.storage.rank_direction_migration import (
 
 logger = logging.getLogger(__name__)
 
-FieldRewrite = Callable[[str, str], str]
-
-
 def _rewriter(document: str | None) -> FieldRewrite:
-    def rewrite(text: str, field: str) -> str:
+    def rewrite(text: str, field: str, /, *, filter: bool) -> str:
         try:
             return rewrite_colon_spans(text)
         except ValueError:
@@ -35,18 +32,18 @@ def _rewriter(document: str | None) -> FieldRewrite:
 def _order_item(item: Any, fn: FieldRewrite, where: str) -> Any:
     """``item`` rewritten; an expression key that changes is stored as the fresh functional key would be."""
     if isinstance(item, str):
-        return fn(item, where)
+        return fn(item, where, filter=False)
     if not isinstance(item, dict):
         return item
     if "column" not in item and "direction" not in item:
-        return {fn(k, where) if isinstance(k, str) else k: v for k, v in item.items()}
+        return {fn(k, where, filter=False) if isinstance(k, str) else k: v for k, v in item.items()}
     column = item.get("column")
     raw = item.get("raw_formula")
     if not isinstance(raw, str) and isinstance(column, dict) and set(column) == {"name"}:
         raw = column["name"]
     if not isinstance(raw, str):
-        return {**item, "column": fn(column, f"{where}.column")} if isinstance(column, str) else item
-    rewritten = fn(raw, f"{where}.column")
+        return {**item, "column": fn(column, f"{where}.column", filter=False)} if isinstance(column, str) else item
+    rewritten = fn(raw, f"{where}.column", filter=False)
     if rewritten == raw:
         return item
     return {**{k: v for k, v in item.items() if k not in ("column", "raw_formula")}, "column": rewritten}

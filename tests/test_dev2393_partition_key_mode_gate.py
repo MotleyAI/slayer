@@ -76,11 +76,10 @@ SAME_ROW_SPEND_BY_STATUS_MONTH = {
 SPEND_BY_STATUS_EVENT = {
     ("ok", 50.0): 280.0, ("new", 50.0): 250.0, ("ok", 30.0): 140.0, ("new", None): 40.0, (None, 30.0): 55.0,
 }
-#: ``sum(amount, window='90d', partition_by=bad_amt)``: each order its own cell but the two region-less ones.
+#: ``sum(amount, window='90d', partition_by=bad_amt)``: each region's event value; the region-less orders share None.
 WINDOWED_AMOUNT_BY_BAD_AMT_MONTH = {
-    (60.0, "2024-01"): 10.0, (70.0, "2024-01"): 20.0, (53.0, "2024-01"): 3.0, (80.0, "2024-02"): 30.0,
-    (75.0, "2024-02"): 25.0, (35.0, "2024-03"): 5.0, (None, "2024-03"): 47.0, (45.0, "2024-04"): 15.0,
-    (62.0, "2024-04"): 12.0,
+    (50.0, "2024-01"): 33.0, (50.0, "2024-02"): 88.0, (50.0, "2024-04"): 67.0, (30.0, "2024-03"): 5.0,
+    (30.0, "2024-04"): 20.0, (None, "2024-03"): 47.0,
 }
 #: ``time_shift(sum(spend, partition_by=[orders.status, signup_at]), -1)`` by status and signup month.
 SHIFTED_BY_STATUS_SIGNUP = {
@@ -106,7 +105,7 @@ def _fan_datasets() -> list[SlayerDataset]:
     models = dev1900_datasets()
     orders = next(m for m in models if m.name == "orders")
     orders.fields.append(DatasetField(
-        name="bad_amt", datatype=DataType.FLOAT, expression="amount + customers.regions.region_events.value"))
+        name="bad_amt", datatype=DataType.FLOAT, expression="customers.regions.region_events.value"))
     regions = next(m for m in models if m.name == "regions")
     regions.metrics.append(DatasetMetric(name="pop_by_bad_pop", expression="sum(pop, partition_by=bad_pop)"))
     return models
