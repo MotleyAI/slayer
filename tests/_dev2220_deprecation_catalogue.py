@@ -498,6 +498,7 @@ def _mcp_reply(text: str) -> tuple[Any, list[str]]:
 async def _mcp_edit_agrees(ctx: Ctx, *, tool: str, old: dict[str, Any], new: dict[str, Any],
                            dataset: str = "orders") -> Observed:
     stores = {s: await seeded_shop(ctx.tmp_path / s) for s in ("old", "new")}
+    seeded = await stores["new"].get_dataset(dataset, data_source=DS)
     expected, quiet = _mcp_reply(await mcp_text(stores["new"], tool, **_copy(new)))
     converted, reported = _mcp_reply(await mcp_text(stores["old"], tool, **_copy(old)))
     assert quiet == []
@@ -506,6 +507,7 @@ async def _mcp_edit_agrees(ctx: Ctx, *, tool: str, old: dict[str, Any], new: dic
     assert saved[0] is not None
     assert saved[1] is not None
     assert saved[0].model_dump(mode="json") == saved[1].model_dump(mode="json")
+    assert seeded is None or saved[1].model_dump(mode="json") != seeded.model_dump(mode="json")
     return Observed(warnings=reported)
 
 

@@ -52,7 +52,8 @@ Its audits run against `main` as it stands once those have merged.
    strict-window case this slice pinned, so Layer 3 lists no gap. (user)
 9. **The grader registration is drafted as a DEV-2220 comment**; the upstream PR waits for 2.0.0 on PyPI and the
    owner's go-ahead. (default)
-10. **`skip_specs: true`.** No product behaviour changes. (default)
+10. **One spec delta: `models/stored-upgrade`** (decision 27). Otherwise no product behaviour changes. (default;
+    amended in review, user)
 11. **Claims are scoped to the databases where CI executes the evidence** (the pins on DuckDB and SQLite; the Tier-1
     library matrix `tests/test_dev2120_library_matrix.py`); other databases are stated as not certified. (codex)
 12. **The format claim states what passes** against the pinned corpus revision and the grader; wider support is
@@ -93,6 +94,11 @@ Its audits run against `main` as it stands once those have merged.
     today), and becomes one strict xfail per database; there is no separate Layer 1 gap table. The DEV-2244 cases
     stay in a DEV-2220 table. Alternative, a DEV-2220 Layer 1 table cross-checked against the manifest:
     two hand-kept lists of the same gaps. (user)
+27. **A datasource save is refused while its stored document has a pending reserved-name granularity rename.** The
+    error names the stored name and says to run `slayer storage upgrade`, which upgrades the dependents before the
+    datasource. The error class is the existing `GranularityDefinitionError`. Alternatives: the save upgrades the
+    dependents first (rejected: a save writing many documents, and the write-order logic DEV-2466 retires); the
+    durable `renamed_from` record (rejected for 2.0: a stored-format change ahead of DEV-2452; it is DEV-2466). (user)
 
 ## Risks / Trade-offs
 

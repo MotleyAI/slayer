@@ -12,6 +12,9 @@ from tests._dev2446_required_manifest import ROWS, Row
 from tests.test_dev2446_required_constructs import assert_ossie_value
 
 GAPS = [r for r in ROWS if r.gap is not None]
+NULL_PLACEMENT = "DEFAULT NULL PLACEMENT"
+#: ``RANK() OVER (ORDER BY orders.amount DESC)`` per order id: NULL sorts first for DESC (row 5's amount is NULL).
+NULL_PLACEMENT_RANKS = {5: 1, 6: 2, 4: 3, 3: 4, 2: 5, 1: 6}
 
 
 @pytest.fixture(scope="module")
@@ -41,6 +44,11 @@ def _cases() -> list[object]:
 
 @pytest.mark.parametrize(("engine", "row"), _cases(), indirect=["engine"])
 async def test_gap_has_ossies_value(engine: SlayerQueryEngine, row: Row) -> None:
+    if row.form == NULL_PLACEMENT:  # one row ranks 1 under any NULL order: rank every order
+        response = await engine.execute(q(dimensions=[{"field": "orders.id", "alias": "id"},
+                                                      {"field": row.expression, "alias": "v"}]))
+        assert {r["id"]: int(r["v"]) for r in response.data} == NULL_PLACEMENT_RANKS
+        return
     if row.kind == "aggregate":
         query = q(metrics=[{"metric": row.expression, "alias": "v"}])
     else:

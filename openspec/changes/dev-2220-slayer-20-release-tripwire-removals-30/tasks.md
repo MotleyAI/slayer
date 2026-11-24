@@ -80,9 +80,17 @@
 - [x] 6.3 Check upstream apache/ossie `compliance/portability`'s current runner interface and post SLayer's drafted
       registration (`slayer ossie-roundtrip <in> <out>`, every element PORTABLE) as a DEV-2220 comment. Verify: the
       comment exists. Opening the upstream PR waits for 2.0.0 on PyPI and the owner's go-ahead.
-- [ ] 6.4 Once the 2.0 surface is final, propose the Storyline 2.0 migration issue to the owner (search Linear first);
+- [x] 6.4 Once the 2.0 surface is final, propose the Storyline 2.0 migration issue to the owner (search Linear first);
       file it only on an explicit yes.
 - [ ] 6.5 Tag and publish 2.0.0 only after merge and with the owner's explicit go-ahead.
+
+## 8. Review fixes
+
+- [x] 8.1 Refuse `save_datasource` while the stored datasource has a pending reserved-name granularity rename
+      (decision 27), tests first on YAML and SQLite. Note the refusal in `docs/upgrading/2.0.md` beside the rename
+      entry. Verify: the new scenarios pass and fail without the fix.
+- [x] 8.2 Thread 13 / nitpick test alignments (approved): the NULL-placement probe ranks every row; the MCP edit
+      cases assert the canonical edit took effect. Verify: both files green.
 
 ## 7. Gates
 

@@ -475,6 +475,9 @@ class AccessFilteredStorage(StorageBackend):
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await self._inner._save_datasource_impl(datasource)
 
+    async def _raw_datasource_dicts(self) -> dict[str, dict]:
+        return await self._inner._raw_datasource_dicts()
+
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
         return await self._inner.get_datasource(name)
 

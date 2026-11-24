@@ -32,6 +32,7 @@ from slayer.core.errors import (
     CaseCollisionError,
     ColonSpellingError,
     EnforcedKeyError,
+    GranularityDefinitionError,
     IdCollisionError,
     NamespaceCollisionError,
     OssieDocumentInvalidError,
@@ -2224,8 +2225,17 @@ class StorageBackend(ABC):
         check_whole(datasource)
         datasource.check_granularities()
         connection_policy.check_transaction_pooler(datasource)
+        await self._check_no_pending_rename(datasource.name)
         await self._save_datasource_impl(datasource)
         self._forget_granularity_renames()
+
+    async def _check_no_pending_rename(self, name: str) -> None:
+        """Refuse while the stored datasource still has a reserved-name granularity: saving would drop its rename."""
+        pending = _library_renames(await self._stored_raw(kind="datasource", data_source=None, name=name))
+        if pending:
+            raise GranularityDefinitionError(name=next(iter(pending)), rule=(
+                f"stored datasource {name!r} still defines this reserved name; run `slayer storage upgrade` to store "
+                f"its rename before saving the datasource"))
 
     async def _datasource_from_stored(self, *, name: str, data: Any) -> DatasourceConfig:
         """A stored datasource dict upgraded in memory and validated (env vars unresolved); never written back."""

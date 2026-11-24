@@ -27,7 +27,8 @@ None.
 
 ### Modified Capabilities
 
-None. No product behaviour changes: the slice adds docs, tests and the version (`skip_specs: true`). A deprecated
+`models/stored-upgrade`: a datasource save is refused while the stored datasource still has a pending reserved-name
+granularity rename, so a save cannot strand dependents that still use the old name (found in review). A deprecated
 form found converting without its warning is fixed under the existing compatibility/removal-tripwire requirement
 "Deprecated input forms convert with a structured warning".
 
