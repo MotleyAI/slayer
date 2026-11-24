@@ -15,10 +15,9 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.storage import base as storage_base
-from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction
 from tests._gateway_harness import RecordingClient
-from tests._stored_upgrade_fixtures import BACKENDS, DS, field_of, raw_doc, raw_store
+from tests._stored_upgrade_fixtures import BACKENDS, DS, field_of, raw_store, stored_bytes
 
 
 def _items(*, version: int, amount_type: str = "DOUBLE", sql_table: str = "items", columns: list[dict] | None = None) -> dict:
@@ -66,10 +65,11 @@ def no_live_access(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_v10_model_loads_without_datasource_entry(tmp_path, backend):
     storage = await raw_store(backend=backend, base=str(tmp_path), datasource=None, models=[_items(version=10)])
+    before = stored_bytes(backend=backend, base=str(tmp_path), name="items")
     model = await storage.get_dataset("items", data_source=DS)
     assert model is not None
     assert field_of(model, "amount").datatype is DataType.FLOAT
-    assert (await raw_doc(storage, "items"))["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
+    assert stored_bytes(backend=backend, base=str(tmp_path), name="items") == before
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

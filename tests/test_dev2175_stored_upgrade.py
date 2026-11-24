@@ -6,6 +6,7 @@ Specs: models/stored-upgrade, compatibility/removal-tripwire, compatibility/ossi
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from collections.abc import AsyncGenerator
@@ -32,6 +33,7 @@ from tests._dev2175_fixtures import (
     seed,
 )
 from tests._engine_helpers import owned_query_engine
+from tests._storage_upgrade_cli import store_path, upgrade
 from tests._stored_upgrade_fixtures import BACKENDS, raw_store, stored_bytes
 
 STORES = pytest.mark.parametrize("backend", BACKENDS)
@@ -79,6 +81,7 @@ class TestStoredFieldSql:
     @STORES
     async def test_a_stored_dataset_of_every_shape_loads(self, backend: str) -> None:
         async with store_over(backend=backend, models=[items_v()]) as (storage, base, db_path):
+            before = stored_bytes(backend=backend, base=base, name="items")
             with recorded() as caught:
                 loaded = await storage.get_dataset("items")
             assert loaded is not None
@@ -87,6 +90,8 @@ class TestStoredFieldSql:
             assert dumped_field(loaded, "doubled")["expression"] == {"dialects": [entry("DUCKDB", "amount * 2")]}
             assert dumped_field(loaded, "ratio")["expression"] == {"dialects": [entry("DUCKDB", "items.doubled / qty")]}
             assert not [w for w in caught if issubclass(w.category, FutureWarning)]
+            assert stored_bytes(backend=backend, base=base, name="items") == before
+            assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
             assert f"{CURRENT_VERSIONS['SlayerModel']}" in stored_bytes(backend=backend, base=base, name="items")
             assert "items.doubled" in stored_bytes(backend=backend, base=base, name="items")
             async with engine_on(storage, db_path) as engine:
@@ -111,6 +116,8 @@ class TestStoredFieldSql:
             assert reloaded is not None
             assert dumped_field(reloaded, "ratio")["expression"] == {
                 "dialects": [entry("DUCKDB", "items.doubled / qty")]}
+            assert stored_bytes(backend=backend, base=base, name="items") == before
+            assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
             assert "items.doubled" in stored_bytes(backend=backend, base=base, name="items")
 
     def test_direct_validation_of_a_stored_document(self) -> None:

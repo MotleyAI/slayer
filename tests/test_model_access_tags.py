@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -21,6 +22,7 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dataset_access_fixtures import make_storage, mcp_text, must_get
+from tests._storage_upgrade_cli import store_path, upgrade
 from tests._stored_upgrade_fixtures import DS as SHOP, customers_v10, orders_v10, raw_doc, raw_store
 
 DS = "tagds"
@@ -63,7 +65,7 @@ class TestStorage:
 
 
 @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
-async def test_v14_model_loads_untagged_and_writes_back_at_the_current_version(backend: str) -> None:
+async def test_v14_model_loads_untagged_and_upgrades_later(backend: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = await raw_store(
             backend=backend, base=tmp,
@@ -71,6 +73,8 @@ async def test_v14_model_loads_untagged_and_writes_back_at_the_current_version(b
             models=[orders_v10(version=14), customers_v10(version=14)],
         )
         assert (await must_get(storage, "orders", SHOP)).access_tags == []
+        assert (await raw_doc(storage, "orders"))["version"] == 14
+        assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
         assert (await raw_doc(storage, "orders"))["version"] == CURRENT_VERSIONS["SlayerModel"]
 
 

@@ -27,6 +27,20 @@ HELPER_MODULE = "slayer/core/deprecation.py"
 #: The deprecated Mode-B spellings, each warned with a message spelling its token literally.
 MODE_B_SPELLING_TOKENS = ("==", "is None", "is not None", "bare None", "list after IN", "method-call")
 
+#: Moved paths that keep the names a known 1.8.4 integrator imports (compatibility/integrator-1x-calls).
+INTEGRATOR_KEPT_NAMES: dict[str, tuple[str, ...]] = {
+    "core.formula": ("parse_formula", "AggregatedMeasureRef", "ArithmeticField", "MixedArithmeticField", "TransformField"),
+    "engine.syntax": (
+        "AggCall", "Arith", "ArrayLit", "BoolOp", "Cmp", "DottedRef", "Literal", "Placeholder", "Ref", "ScalarCall",
+        "StarSource", "TransformCall", "TupleLit", "UnaryOp", "parse_filter_expr",
+    ),
+    "engine.schema_drift": (
+        "EditModelDelete", "LiveTable", "WholeModelDelete", "compute_datasource_drops", "data_type_bucket",
+        "diff_sql_table_model", "retype_findings",
+    ),
+    "sql.column_expansion": ("resolve_ref_target",),
+}
+
 #: Every covered workaround: (file, a token its message spells literally) -> removal version.
 PINNED: dict[tuple[str, str], str] = {
     **{
@@ -42,6 +56,12 @@ PINNED: dict[tuple[str, str], str] = {
             "sql.column_expansion", "storage.extension_columns", "storage.model_overlay", "osi.slayer_extension",
             "osi.dialects", "osi.source",
         )
+    },
+    # The names a known 1.8.4 integrator imports from four moved paths, one site each.
+    **{
+        (f"slayer/{old.replace('.', '/')}.py", f"slayer.{old}.{name}"): "3.0"
+        for old, names in INTEGRATOR_KEPT_NAMES.items()
+        for name in names
     },
     ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
@@ -143,8 +163,10 @@ def _problems(sites: list[Site], *, version: str) -> list[str]:
 
 
 def _feature(site: Site) -> tuple[str, str] | None:
+    """The one pinned workaround a site's message names: its most specific matching token."""
     matches = [(f, token) for f, token in PINNED if f == site.file and token in site.message]
-    return matches[0] if len(matches) == 1 else None
+    specific = [m for m in matches if all(other[1] in m[1] for other in matches)]
+    return specific[0] if len(specific) == 1 else None
 
 
 def test_no_tagged_code_outlives_its_removal_version() -> None:

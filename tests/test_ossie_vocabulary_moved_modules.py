@@ -44,10 +44,17 @@ def _file(module: str) -> Path:
     return REPO / (module.replace(".", "/") + ".py")
 
 
+#: A moved path kept for a known 1.8.4 integrator imports; a name it does not list raises (here, one such name).
+KEPT_UNLISTED: dict[str, str] = {"slayer.sql.column_expansion": "drop_root_hop"}
+
+
 @pytest.mark.parametrize("old", sorted(STUBS))
 def test_the_old_path_names_its_new_location(old: str) -> None:
     with pytest.raises(ImportError) as raised:
-        importlib.import_module(old)
+        if old in KEPT_UNLISTED:
+            getattr(importlib.import_module(old), KEPT_UNLISTED[old])
+        else:
+            importlib.import_module(old)
     message = str(raised.value)
     assert old in message
     assert STUBS[old] in message

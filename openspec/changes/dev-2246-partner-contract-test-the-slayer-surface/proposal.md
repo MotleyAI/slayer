@@ -10,7 +10,7 @@ A known 1.8.4 integrator validates SLayer model files with our classes, parses f
   - old keyword arguments and drift-result attributes are accepted;
   - `DataType.INT`/`DOUBLE`/`TEXT`/`TIMESTAMP` become legacy aliases;
   - `TimeDimension` and `OrderItem` accept a column-reference object.
-- **BREAKING (behaviour):** a load never writes. Migrations, repairs and the library-granularity settle run in memory, and a document is persisted in the current format only by a save or by the new `slayer storage upgrade`. Previously, reads rewrote stored files. YAML's one-time open move of a pre-v4 flat layout is unchanged.
+- **BREAKING (behaviour):** a load never writes. Migrations, repairs and the library-granularity settle run in memory, and a document is persisted in the current format only by a save or by the new `slayer storage upgrade`. Previously, reads rewrote stored files. The one-time layout and schema moves a store performs on open are unchanged.
 - New `slayer storage upgrade [--data-source] [--dry-run] [--datasource-type NAME=TYPE] [--storage]`, plus a pure upgrade entry point for files SLayer does not own. Both run through one upgrade service, which ordinary loads also use.
 - Loading a document that still needs upgrading emits a structured warning naming `slayer storage upgrade`.
 - Schema drift checks the source column of every base field, including filtered ones. A filtered field whose column vanished is dropped, together with the metrics that read it.

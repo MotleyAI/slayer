@@ -121,17 +121,18 @@ class TestDimension:
         assert _rows(resp, "rev_by_tier.customers__tier_label", "t") == [("NORTH", 120.0), ("SOUTH", 90.0)]
 
     @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_a_converted_model_is_written_back(self, tmp_path, shop_ds, backend: str) -> None:
+    async def test_a_converted_model_is_persisted_by_a_save(self, tmp_path, shop_ds, backend: str) -> None:
         storage = await _store(tmp_path, shop_ds, backend, _qb("rev_by_tier", _TIER))
         model, _ = await _load(storage, "rev_by_tier")
+        again, caught = await _load(storage, "rev_by_tier")
+        assert again == model
+        assert _conversion_warnings(caught, document="rev_by_tier", column="tier_label") != []
+        await storage.save_dataset(model)
         doc = await raw_doc(storage, "rev_by_tier")
         assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
         [stage] = doc["source_queries"]
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
         assert all("columns" not in e for e in stage.get("extensions") or [])
-        again, caught = await _load(storage, "rev_by_tier")
-        assert again == model
-        assert _conversion_warnings(caught, document="rev_by_tier", column="tier_label") == []
         async with owned_query_engine(storage=storage) as engine:
             by_name = await engine.execute("rev_by_tier")
         key = next(k for k in by_name.columns if k.endswith("tier_label"))

@@ -227,10 +227,9 @@ class TestStoredUpgrade:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_stored_case_only_target_is_repaired_on_load(self, tmp_path, shop_ds, backend) -> None:
         storage = await _store(tmp_path, backend=backend, ds=shop_ds, docs=[_orders_doc(), _customers_doc()])
+        before = stored_bytes(backend=backend, base=str(tmp_path / "store"), name="orders")
         assert await _targets(storage, "orders") == ["Customers"]
-        doc = await raw_doc(storage, "orders")
-        assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert [j["to"] for j in doc["relationships"]] == ["Customers"]
+        assert stored_bytes(backend=backend, base=str(tmp_path / "store"), name="orders") == before
         resp = await run(storage, NAME_QUERY)
         assert {k: int(v) for k, v in by_dimension(resp, dim_suffix="name").items()} == ORDERS_BY_NAME
         written = stored_bytes(backend=backend, base=str(tmp_path / "store"), name="orders")
@@ -339,7 +338,7 @@ async def test_a_stored_join_to_the_spine_is_dropped_on_load(tmp_path, shop_ds, 
     assert model.relationships == []
     assert [w for w in messages(caught, "spine_link") if "ev" in w]
     doc = await raw_doc(storage, "ev")
-    assert (doc["version"], doc.get("joins") or []) == (mig.CURRENT_VERSIONS["SlayerModel"], [])
+    assert [j["name"] for j in doc.get("joins") or []] == ["spine_link"]
     resp = await run(storage, SPINE_QUERY)
     plain = await _store(tmp_path, backend=backend, ds=shop_ds, base="plain", docs=[_ev_doc(relationships=[])])
     expected = await run(plain, SPINE_QUERY)

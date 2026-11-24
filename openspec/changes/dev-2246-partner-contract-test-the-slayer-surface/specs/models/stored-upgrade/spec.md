@@ -2,7 +2,7 @@
 
 ### Requirement: A load never writes
 
-Loading a stored dataset, semantic-model document, saved query, memory or datasource SHALL NOT write to the store, on the YAML and the SQLite store alike. Every migration, repair and conversion a stored document needs SHALL apply in memory on each load. This includes schema migrations, join-key and join-target repairs, legacy alias rewrites, field `sql` conversion, query upgrades and the library-granularity settle. The upgraded form SHALL be persisted only by a save of that document or by `slayer storage upgrade`. Datasource priority and embeddings SHALL be neither read as documents to upgrade nor rewritten. Opening a YAML store that still has the pre-v4 flat layout SHALL keep moving its files into the per-datasource layout once, as the one write opening a store performs.
+Loading a stored dataset, semantic-model document, saved query, memory or datasource SHALL NOT write to the store, on the YAML and the SQLite store alike. Every migration, repair and conversion a stored document needs SHALL apply in memory on each load. This includes schema migrations, join-key and join-target repairs, legacy alias rewrites, field `sql` conversion, query upgrades and the library-granularity settle. The upgraded form SHALL be persisted only by a save of that document or by `slayer storage upgrade`. Datasource priority and embeddings SHALL be neither read as documents to upgrade nor rewritten. Opening a store SHALL keep its one-time layout and schema moves (the YAML pre-v4 flat-layout move, the legacy memory-file split, the SQLite table rebuilds, the embedding sidecar's kind rename), which change no document's content; they are the only writes opening a store performs.
 
 #### Scenario: Loading an old store leaves it unchanged
 - **WHEN** the committed 0.10.2 and 1.8.2 stores, as YAML and as SQLite, are opened and every dataset, saved query, memory and datasource is loaded twice
@@ -52,7 +52,7 @@ A document the upgrade cannot complete SHALL be reported with its identity and t
 - **THEN** it prints each document's difference, every stored document's content is unchanged, and the command exits 0
 
 #### Scenario: A legacy cycle is upgraded, not refused
-- **WHEN** the store holds a dataset written before the current version whose relationships form a cycle that a client save would refuse
+- **WHEN** the store holds a dataset written before the current version whose derived fields form a cycle that a client save would refuse
 - **THEN** the upgrade stores it at the current version
 
 #### Scenario: A dataset waiting for its dialect

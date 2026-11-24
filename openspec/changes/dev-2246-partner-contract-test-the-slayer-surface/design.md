@@ -52,7 +52,7 @@ Expected 1.8.4 values for the tests come from running the same calls against `mo
   The tripwire pins one feature per restored name, plus one moved-module fallback per module.
 - **1.x formula adapter.** `slayer.core.formula.parse_formula` calls `slayer.core.syntax.parse_expr` and projects its tree onto 1.x result classes:
   - private pydantic models carrying `inner`, `agg_refs`, `sub_transforms`, `measure_name` and `aggregation_name`;
-  - sibling names from `named_measures` are substituted by re-parsing their formulas, recursively, with a cycle raising `RecursionError`;
+  - sibling names from `named_measures` are substituted by re-parsing their formulas, recursively, with a cycle raising `ValueError` naming the cycle, as 1.8.4 did;
   - `extra_agg_names` lets a bare custom-aggregation call count as an aggregation.
 
   `core.syntax` stays the one Mode-B reader (system P8) and the parser stays pure (engine P2).
@@ -75,7 +75,7 @@ Expected 1.8.4 values for the tests come from running the same calls against `mo
 - **Load warning.** It is keyed on the service's "changes this document" result, not on the top-level version. It is emitted once per document per storage instance.
 - **Entities covered.** Datasets, semantic-model documents, saved queries, memories and datasources. Datasource priority and embeddings are untouched.
 - **Drift predicate.** A named "reads a physical column" predicate (`is_base`, filter or not) replaces `is_physical_reader` in every drift and cascade use. `is_physical_reader` stays for relationship keys and live typing, and its docstring drops "drift".
-- **Law test.** `tests/test_law_load_never_writes.py` compares logical store contents (YAML document bytes; SQLite rows through a read-only snapshot) and spies the backend write hooks. The pre-v4 layout move is tested separately as the one licensed write on open.
+- **Law test.** `tests/test_law_load_never_writes.py` compares logical store contents (YAML document bytes; SQLite rows through a read-only snapshot) and spies the backend write hooks. The open-time layout and schema moves are tested separately as the licensed writes on open.
 
 ### Decisions log
 1. The compat suite pins the integrator's current calls, kept working by deprecated forms on `main`, not a change-detecting partner contract. Options: 2.0 forms plus a heads-up; 1.8.4 forms plus exceptions; deprecated forms. (user)

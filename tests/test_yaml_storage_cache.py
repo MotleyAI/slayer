@@ -380,24 +380,21 @@ def _write_legacy_model(storage: YAMLStorage) -> str:
 
 async def test_migration_applied_on_first_load(storage: YAMLStorage) -> None:
     path = _write_legacy_model(storage)
+    with open(path) as f:
+        before = f.read()
     model = await storage.get_dataset("m", data_source="ds")
     assert model is not None
     assert model.version == _mig.CURRENT_VERSIONS["SlayerModel"]
     with open(path) as f:
-        on_disk = _yaml.safe_load(f)
-    assert on_disk["version"] == _mig.CURRENT_VERSIONS["SlayerModel"]  # write-back upgraded
+        assert f.read() == before
 
 
-async def test_migration_writeback_not_cached_then_coherent(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_migration_first_load_is_cached(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     path = _write_legacy_model(storage)
-    # First load migrates + writes the file back (new mtime), so the stable-read
-    # guard does NOT cache it — the just-parsed bytes no longer match the file.
-    await storage.get_dataset("m", data_source="ds")
-    assert path not in storage._dataset_cache
-    # Second load reads the now-current file and caches it coherently.
+    # A load migrates in memory and leaves the file as read, so the first load caches it.
     await storage.get_dataset("m", data_source="ds")
     assert storage._dataset_cache[path][0] == _yaml_storage.stat_key(path)
-    # Third load is a hit — no parse.
+    # Second load is a hit — no parse.
     loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
     await storage.get_dataset("m", data_source="ds")
     assert loads["n"] == 0
