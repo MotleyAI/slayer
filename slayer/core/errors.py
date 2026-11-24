@@ -536,7 +536,8 @@ class TimeLiteralError(QueryTypeError):
 
 
 class DistinctDimensionValuesError(QueryTypeError):
-    """``distinct_dimension_values=False`` (raw rows) conflicts with an aggregation or an empty projection."""
+    """``distinct_dimension_values=False`` (raw rows) conflicts with an aggregation, an empty projection, or a
+    dimension the population does not determine."""
 
 
 class UnknownGranularityError(QueryTypeError):

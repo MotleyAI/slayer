@@ -53,6 +53,7 @@ from slayer.facade.catalog import (
     FacadeRelationship,
     FacadeMetric,
     FacadeTable,
+    advertised_dimensions,
     build_local_view,
 )
 from slayer.facade.info_schema import match_info_schema
@@ -220,9 +221,8 @@ def _expand_select_star(
 ) -> list[Expression]:
     """Replace each top-level ``exp.Star`` with one column ref per non-hidden
     column on ``table``, preserving the order of any non-Star projections.
-    Only row-preserving dims expand — a fan-out relationship path would multiply the
-    browse-mode row grain; those dims stay individually addressable."""
-    column_names = [d.name for d in table.dimensions if d.row_preserving]
+    Only advertised dims expand; a fanning one stays resolvable in grouped queries."""
+    column_names = [d.name for d in advertised_dimensions(table)]
     out: list[Expression] = []
     for expr in proj_exprs:
         if isinstance(expr, exp.Star):
