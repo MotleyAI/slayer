@@ -229,7 +229,7 @@ from slayer.sql.generator import (
 from slayer.sql.physical_tables import physical_tables
 from slayer.sql.session_policy import HasColumn, ScopedTable, apply_session_policy, policy_column_checks
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-from slayer.storage.base import StorageBackend, with_canonical_spellings
+from slayer.storage.base import StorageBackend, one_upgrade_pass, with_canonical_spellings
 from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.yaml_storage import YAMLStorage
@@ -1267,7 +1267,7 @@ class SlayerQueryEngine:
                                         data_source=data_source, cache=cache, refine=refine, run=self.execute)
         runtime_kwarg = variables or {}
         deprecations: List[DeprecatedInputWarning] = []
-        with collect_legacy_spellings() as legacy, announced_by_caller():
+        with collect_legacy_spellings() as legacy, announced_by_caller(), one_upgrade_pass():
             run_input = _validated_run_input(resolve_run_input(query, refine))
             _check_fresh_result_names(run_input)
             main_query, named_queries, prefer_data_source, splice_chain = await self._normalize_input(

@@ -389,15 +389,14 @@ async def test_migration_applied_on_first_load(storage: YAMLStorage) -> None:
         assert f.read() == before
 
 
-async def test_migration_first_load_is_cached(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_an_old_document_is_not_cached(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     path = _write_legacy_model(storage)
-    # A load migrates in memory and leaves the file as read, so the first load caches it.
+    # An older document upgrades in memory on every load until it is stored upgraded.
     await storage.get_dataset("m", data_source="ds")
-    assert storage._dataset_cache[path][0] == _yaml_storage.stat_key(path)
-    # Second load is a hit — no parse.
+    assert path not in storage._dataset_cache
     loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
     await storage.get_dataset("m", data_source="ds")
-    assert loads["n"] == 0
+    assert loads["n"] == 1
 
 
 async def test_mid_read_external_edit_not_cached(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:

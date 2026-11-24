@@ -23,11 +23,11 @@
 
 ## 3. Loads never write, and the upgrade (pr-implement)
 
-- [ ] 3.1 Extract the upgrade service: a snapshot context in, upgraded documents plus diagnostics plus a "changes this document" flag out. It covers datasets, semantic-model documents, saved queries, memories, datasources and the settle's rename map. Verify: the existing stored-upgrade suite passes through it.
-- [ ] 3.2 Route every load path (YAML, SQLite, the base pipeline) through the service without writing. Remove the write-back, the settle's persistence and the peer-repair save from load. Add the once-per-document-per-instance load warning. Verify: 1.6 and the load-warning tests pass.
-- [ ] 3.3 The upgrade write path: migration-write semantics (no client-save semantic validation), conditional on an unchanged stored form, dependents before datasources. Verify: the conflict, legacy-cycle and interrupted-settle tests pass.
-- [ ] 3.4 `slayer storage upgrade` CLI (`--data-source`, `--dry-run` diff, `--datasource-type NAME=TYPE`, `--storage`, per-document lines, exit codes). Verify: the CLI tests pass.
-- [ ] 3.5 The pure entry point over the service. Verify: the pure-upgrade tests pass, as does the upgraded-files version and key-walk test in 1.3.
+- [x] 3.1 Extract the upgrade service: a snapshot context in, upgraded documents plus diagnostics plus a "changes this document" flag out. It covers datasets, semantic-model documents, saved queries, memories, datasources and the settle's rename map. Verify: the existing stored-upgrade suite passes through it.
+- [x] 3.2 Route every load path (YAML, SQLite, the base pipeline) through the service without writing. Remove the write-back, the settle's persistence and the peer-repair save from load. Add the once-per-document-per-instance load warning. Verify: 1.6 and the load-warning tests pass.
+- [x] 3.3 The upgrade write path: migration-write semantics (no client-save semantic validation), conditional on an unchanged stored form, dependents before datasources. Verify: the conflict, legacy-cycle and interrupted-settle tests pass.
+- [x] 3.4 `slayer storage upgrade` CLI (`--data-source`, `--dry-run` diff, `--datasource-type NAME=TYPE`, `--storage`, per-document lines, exit codes). Verify: the CLI tests pass.
+- [x] 3.5 The pure entry point over the service. Verify: the pure-upgrade tests pass, as does the upgraded-files version and key-walk test in 1.3.
 
 ## 4. Drift fix (pr-implement)
 

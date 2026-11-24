@@ -24,6 +24,7 @@ from slayer.embeddings.models import Embedding
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
+from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 from tests import _granularity_rename_fixtures as gran
 from tests import _stored_upgrade_fixtures as su
@@ -298,6 +299,31 @@ def test_a_concurrent_edit_is_not_overwritten(tmp_path: Path, monkeypatch: pytes
     assert any("orders" in line and "conflict" in line.lower() for line in (result.out + result.err).splitlines())
 
 
+def test_a_concurrent_edit_is_not_overwritten_on_sqlite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base = str(tmp_path / "store")
+    storage = warehouse_store(backend="sqlite", base=base)
+    db_path = os.path.join(base, "store.db")
+    edited = json.dumps({**raw_documents()["orders"], "description": "edited meanwhile"})
+    read = SQLiteStorage._load_raw_dataset_dict
+    edits: list[str] = []
+
+    async def read_then_edit(self: SQLiteStorage, *args: Any, **kwargs: Any) -> Any:
+        doc = await read(self, *args, **kwargs)
+        if doc is not None and doc.get("name") == "orders" and not edits:
+            edits.append("orders")
+            with transaction(db_path) as conn:
+                conn.execute("UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
+                             (edited, DATA_SOURCE, "orders"))
+        return doc
+
+    monkeypatch.setattr(SQLiteStorage, "_load_raw_dataset_dict", read_then_edit)
+    result = upgrade(store_path(storage))
+    assert edits == ["orders"]
+    assert result.code == 1, result
+    assert _select(db_path, data_source=DATA_SOURCE, name="orders") == [(edited,)]
+    assert any("orders" in line and "conflict" in line.lower() for line in (result.out + result.err).splitlines())
+
+
 # --- The library-granularity settle through the upgrade ------------------------------------------------------------
 
 
@@ -310,6 +336,20 @@ async def _granularity_store(*, backend: str, base: str, name: str) -> StorageBa
                   gran.query_backed_doc(name="bucketed_too", stage=gran.bucket_stage(name))],
         memories=[gran.memory_doc(memory_id="m1", query=gran.bucket_stage(name))],
     )
+
+
+def _comparable(docs: dict[str, str], *, base: str) -> dict[str, Any]:
+    """Each stored document with its own store's path a placeholder, a memory without its read-time ``created_at``."""
+    out: dict[str, Any] = {}
+    for key, text in docs.items():
+        text = text.replace(base, "<store>")
+        if key.startswith("memories/"):
+            markdown = text.startswith("---")
+            data = yaml.safe_load(text.split("---")[1]) if markdown else json.loads(text)
+            out[key] = ({k: v for k, v in data.items() if k != "created_at"}, text.split("---")[-1] if markdown else "")
+        else:
+            out[key] = text
+    return out
 
 
 def _mentions_granularity(text: str, name: str) -> bool:
@@ -349,7 +389,7 @@ def test_an_interrupted_settle_converges(backend: str, tmp_path: Path) -> None:
 
     assert upgrade(store_path(gran.reopen(backend=backend, base=interrupted))).code == 0
     finished = raw(backend=backend, base=interrupted)
-    assert finished == raw(backend=backend, base=done)
+    assert _comparable(finished, base=interrupted) == _comparable(raw(backend=backend, base=done), base=done)
     assert "left_granularity" in finished[f"datasources/{gran.DS}"]
     assert not any(_mentions_granularity(text, "left") for text in finished.values())
 

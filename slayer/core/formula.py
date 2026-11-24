@@ -97,14 +97,14 @@ class _Projection:
             raise ValueError(f"Unknown aggregation '{node.agg}' in formula {self.original!r}")
         source = node.source
         if isinstance(source, syntax.StarSource):
-            measure = "*"
+            source_path = "*"
         elif isinstance(source, (syntax.Ref, syntax.DottedRef)):
-            measure = _path(source)
+            source_path = _path(source)
         else:
             raise ValueError(f"'{node.agg}' aggregates a column or '*', not an expression, in formula {self.original!r}")
         positional, named = _split(node.args, node.kwargs)
         return _AggregatedMeasureRef(
-            measure_name=measure,
+            measure_name=source_path,
             aggregation_name=node.agg if node.agg in self.custom else normalize_aggregation_name(node.agg),
             agg_args=[syntax.canonical_metric_text(a) for a in positional],
             agg_kwargs={k: syntax.canonical_metric_text(v) for k, v in named},

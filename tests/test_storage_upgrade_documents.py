@@ -65,7 +65,8 @@ def test_a_v15_model_set_upgrades_in_memory(tmp_path: Path) -> None:
     store = warehouse_store(backend="yaml", base=str(tmp_path / "store"))
     for document in result.documents:
         loaded = asyncio.run(store.get_dataset(document["name"], data_source=DATA_SOURCE))
-        assert SlayerDataset.model_validate(document) == loaded
+        assert loaded is not None
+        assert SlayerDataset.model_validate(document).model_dump(mode="json") == loaded.model_dump(mode="json")
 
 
 def test_the_result_matches_what_the_store_upgrade_stores(tmp_path: Path) -> None:

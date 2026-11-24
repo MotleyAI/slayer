@@ -453,15 +453,11 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                     f"invalid YAML in {path} — {exc}. Delete the file and re-run "
                     f"`slayer ingest` to recreate it."
                 ) from exc
-            dataset = await self._migrate_and_refine_on_load(
-                name=name, data=data, data_source=data_source,
-            )
-        # Admit only a stable read. A legacy migration write-back rewrites the
-        # file, so its first load is (correctly) not cached — the next load
-        # reads the now-current file and caches it normally. A field sql waiting
-        # for its datasource's dialect converts on a later load, so is never cached.
+            dataset, changes = await self._loaded_dataset(name=name, data=data, data_source=data_source)
+        # Admit only a stable read of a current document: an older one upgrades in
+        # memory on every load until it is stored upgraded.
         admit = _cache_admit(path=path, key_before=key_before)
-        if admit is not None and not any(c.sql is not None for c in dataset.fields):
+        if admit is not None and not changes and not any(c.sql is not None for c in dataset.fields):
             self._dataset_cache[path] = (admit, dataset)
         return dataset.model_copy(deep=True)
 
@@ -612,8 +608,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             else:
                 with open(path) as f:  # NOSONAR(S2083,S8707,S7493) — path from _datasource_path, which validates the name; sync I/O by design
                     data = yaml.safe_load(f)
-                data = await self._with_library_granularities_renamed(name=name, data=data)
-                ds = DatasourceConfig.model_validate(data)
+                ds = await self._datasource_from_stored(name=name, data=data)
                 admit = _cache_admit(path=path, key_before=key)  # skip if changed mid-read
                 if admit is not None:
                     self._datasource_cache[path] = (admit, ds)

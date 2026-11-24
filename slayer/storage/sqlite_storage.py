@@ -406,6 +406,44 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _raw_datasource_dicts(self) -> dict[str, dict]:
         return dict(await asyncio.to_thread(self._raw_rows_sync, "SELECT name, data FROM datasources ORDER BY name"))
 
+    def _write_if_unchanged_sync(self, *, table: str, where: dict[str, str], expected: dict, data: dict) -> bool:
+        """``UPDATE`` one row's ``data`` in the transaction that checks it still reads ``expected``."""
+        condition = " AND ".join(f"{key} = ?" for key in where)
+        params = tuple(where.values())
+        with open_connection(self.db_path, isolation_level=None) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(f"SELECT data FROM {table} WHERE {condition}", params).fetchone()  # NOSONAR(S2077,S3649) — fixed table and column names
+                try:
+                    current = json.loads(row[0]) if row else None
+                except ValueError:
+                    current = None
+                unchanged = current == expected
+                if unchanged:
+                    conn.execute(f"UPDATE {table} SET data = ? WHERE {condition}", (json.dumps(data), *params))  # NOSONAR(S2077,S3649) — fixed table and column names
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        return unchanged
+
+    async def _write_raw_if_unchanged(
+        self, *, kind: str, data_source: str | None, name: str, expected: dict, data: dict,
+    ) -> bool:
+        if kind == "dataset" and data_source is not None:
+            table, where = "models", {"data_source": data_source, "name": name}
+        elif kind == "memory":
+            table, where = "memories", {"id": name}
+        else:
+            table, where = "datasources", {"name": name}
+        written = await asyncio.to_thread(self._write_if_unchanged_sync, table=table, where=where, expected=expected,
+                                          data=data)
+        if written and kind == "dataset" and data_source is not None:
+            self._forget_raw(data_source=data_source, name=name)
+        if written and kind == "datasource":
+            self._forget_granularity_renames()
+        return written
+
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
         await asyncio.to_thread(self._update_sync, "UPDATE datasources SET data = ? WHERE name = ?", (json.dumps(data), name))
 
@@ -489,8 +527,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         raw = await asyncio.to_thread(self._get_datasource_sync, name)
         if raw is None:
             return None
-        data = await self._with_library_granularities_renamed(name=name, data=json.loads(raw))
-        ds = DatasourceConfig.model_validate(data)
+        ds = await self._datasource_from_stored(name=name, data=json.loads(raw))
         return ds.resolve_env_vars()
 
     async def list_datasources(self) -> list[str]:
