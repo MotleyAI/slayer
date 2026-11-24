@@ -1,7 +1,7 @@
 ## 0. Preconditions
 
 - [ ] 0.1 Merge `origin/main` once DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430,
-      DEV-2443, DEV-2439 and DEV-2455 have all merged; verify each is Done in Linear and its PR is merged. Until then, tests that depend
+      DEV-2443, DEV-2439, DEV-2455 and DEV-2246 have all merged; verify each is Done in Linear and its PR is merged. Until then, tests that depend
       on them (DEV-2446's cases) start as strict xfails pointing at the open issue; none may remain at merge.
 - [x] 0.2 Before writing tests, merge `origin/main`, then read the plan of every prerequisite not yet merged (DEV-2443
       included): its OpenSpec change (proposal, design, tasks, delta specs) in its worktree under
@@ -57,9 +57,9 @@
 
 ## 4. Migration-guide audit
 
-- [x] 4.1 Check `docs/upgrading/2.0.md` against every merged 2.0 slice and prerequisite (DEV-1695, DEV-2398, DEV-2264,
+- [ ] 4.1 Check `docs/upgrading/2.0.md` against every merged 2.0 slice and prerequisite (DEV-1695, DEV-2398, DEV-2264,
       DEV-2136, DEV-1914, DEV-2385, DEV-2018, DEV-2388, DEV-2217, DEV-2243, DEV-2394, DEV-2266, DEV-2255, DEV-2249,
-      DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430, DEV-2443, DEV-2439): each breaking change has a
+      DEV-2441, DEV-2434, DEV-2444, DEV-1760, DEV-2446, DEV-2437, DEV-2428, DEV-2430, DEV-2443, DEV-2439, DEV-2246): each breaking change has a
       Part 1 before/after, each deprecation a Part 2 entry. Write what is missing. Verify: a checklist of the slices
       against guide sections, all ticked; `tests/test_doc_examples.py` passes.
 - [x] 4.2 List the moved modules `slayer.engine.syntax`, `slayer.core.formula`, `slayer.osi.expression` with their
