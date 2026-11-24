@@ -272,8 +272,9 @@ async def test_enforced_keys_round_trip(kind: str) -> None:
 async def test_an_undeclared_enforced_key_is_refused_by_an_extensions_save(kind: str) -> None:
     async with dirty_sales(kind) as eng:
         customers = await doc_get(eng.storage, "customers")
+        undeclared = customers.model_copy(update={"enforced_keys": [["region"]]})
         with pytest.raises(EnforcedKeyError, match="region"):
-            await eng.storage.save_dataset_extensions(customers.model_copy(update={"enforced_keys": [["region"]]}))
+            await eng.storage.save_dataset_extensions(undeclared)
         [written] = [d for d in (await stored_doc(eng.storage))["datasets"] if d["name"] == "customers"]
     assert "enforced_keys" not in slayer_entries(written)
 

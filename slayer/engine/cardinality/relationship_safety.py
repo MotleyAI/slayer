@@ -126,7 +126,7 @@ def untrusted_input_hop(
 ) -> Optional[Tuple[str, str]]:
     """The first provably but untrusted to-one hop ``agg``'s inputs cross from its home, as ``(from, to)``; ``None``
     when an input also crosses an unproven hop, which every mode refuses."""
-    target_path = source_anchor_path(agg.source) if homes.target_rooted(agg) else ()
+    target_path = homes.of(agg).path if homes.target_rooted(agg) else ()
     closure = aggregate_input_closure(key=agg, anchor_dataset=host, anchor_relation=host.name, bundle=bundle)
     datasets = bundle.datasets_by_name
     try:

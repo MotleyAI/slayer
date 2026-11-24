@@ -245,6 +245,14 @@ async def test_error_mode_refuses_a_population_input_read_back_across_the_hop(ba
                 {"metric": "wsum(orders.amount, weight=customers.weight)", "alias": "v"}], to_many_handling="error")
 
 
+async def test_error_mode_refuses_an_input_read_at_the_inputs_meet(backend: str) -> None:
+    # Home orders (where the inputs meet), population customers: each order reads its customer's weight across the hop.
+    async with engine(backend, DUP_C1, weighted_datasets()) as eng:
+        with pytest.raises(UnsafeRelationshipInputError, match="orders → customers"):
+            await run(eng, population="customers", metrics=[
+                {"metric": "sum(customers.weight * orders.amount)", "alias": "v"}], to_many_handling="error")
+
+
 @pytest.mark.parametrize("metric", INPUT_ACROSS_HOP)
 async def test_error_mode_refuses_an_input_across_an_untrusted_hop(backend: str, metric: str) -> None:
     async with engine(backend, DUP_C1, weighted_datasets()) as eng:

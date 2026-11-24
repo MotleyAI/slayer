@@ -377,4 +377,5 @@ class TestSaveValidation:
             repointed = await _stored(eng, "customers", data_source=DS)
         key_field = repointed.get_field("customer_id")
         assert repointed.enforced_keys == []
-        assert key_field is not None and key_field.expression == expression
+        assert key_field is not None
+        assert key_field.expression == expression
