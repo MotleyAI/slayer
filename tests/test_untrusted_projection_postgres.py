@@ -69,6 +69,18 @@ def test_the_pre_16_any_value_reads_a_non_null_boolean_or_array(postgresql_proc:
     assert rows == [(1, True, ["x", "y"]), (2, None, None)]
 
 
+async def test_an_unorderable_input_reads_the_representative_row(postgresql_proc: Any, tmp_path: Path) -> None:
+    # ``json`` has no ordering: the representative row must not order by it.
+    ddl = [*DDL, "ALTER TABLE clusters ADD COLUMN meta JSON", "UPDATE clusters SET meta = '{\"a\": 1}'"]
+    with pg_database(postgresql_proc, statements=ddl) as ds:
+        found = datasets(ds.name)
+        found[0].fields.append(DatasetField(name="meta", datatype=DataType.STRING))
+        async with pg_query_engine(ds, base_dir=str(tmp_path), datasets=found) as eng:
+            resp = await eng.execute(SlayerQuery.model_validate(
+                {"population": "accounts", "metrics": [{"metric": "sum(accounts.amount * CASE WHEN clusters.meta IS NULL THEN 0 ELSE 1 END)", "alias": "n"}]}))
+    assert [float(r["n"]) for r in resp.data] == [70.0]
+
+
 async def test_a_mixed_case_join_key_reads_the_projection(postgresql_proc: Any, tmp_path: Path) -> None:
     with pg_database(postgresql_proc, statements=DDL) as ds:
         async with pg_query_engine(ds, base_dir=str(tmp_path), datasets=datasets(ds.name)) as eng:

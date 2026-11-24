@@ -21,6 +21,8 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1838_fixtures import (
+    _seed_duckdb,
+    _seed_sqlite,
     BAND,
     BAND_WM,
     SPEND_BAND,
@@ -31,6 +33,8 @@ from tests._dev1838_fixtures import (
     month_td,
     q,
 )
+from tests._engine_helpers import seeded_exec_engine
+from tests._trusted import trusting_all
 from slayer.ir import planned
 from slayer.engine import plan
 
@@ -40,6 +44,14 @@ M = QueryMetric(metric="sum(orders.amount)", alias="m")
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend(request):
     async for engine in make_exec_engine(request):
+        yield request.param, engine
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def trusted_backend(request):
+    """``exec_backend`` over trusted relationships: pins the lowering these tests were written for."""
+    seed = _seed_duckdb if request.param == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=request.param, seed=seed, datasets=trusting_all(dev1838_datasets())) as (engine, _db):
         yield request.param, engine
 
 
@@ -134,12 +146,12 @@ class TestSharedAcrossScopes:
         )
 
     async def test_same_aggregate_in_both_roles_shares_one_producer(
-        self, exec_backend,
+        self, trusted_backend,
     ) -> None:
         """Green pin — the cross-dataset dual-role shape (per-tier spend banded
         AND selected, tier in the grain) already shares one producer; interning
         must keep it that way with both roles' values correct."""
-        dialect, engine = exec_backend
+        dialect, engine = trusted_backend
         query = q(
             dimensions=["customers.tier", {"field": SPEND_BAND,
                                            "alias": "sband"}],
@@ -259,11 +271,11 @@ class TestWarningsUnchangedBySharing:
     interning must neither drop nor double-surface them (green pins)."""
 
     async def test_pushed_filter_names_each_producer_once(
-        self, exec_backend,
+        self, trusted_backend,
     ) -> None:
         """Two producers (the band's inner and ``cm``) each push the mixed-OR
         filter: one entry per metric; ``cm`` counts the CityA customer only."""
-        _, engine = exec_backend
+        _, engine = trusted_backend
         resp = await engine.execute(q(
             dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M, QueryMetric(metric="sum(customers.spend)", alias="cm")],

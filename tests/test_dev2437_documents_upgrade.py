@@ -279,6 +279,17 @@ async def test_an_undeclared_enforced_key_is_refused_by_an_extensions_save(kind:
 
 
 @pytest.mark.parametrize("kind", STORAGES)
+async def test_an_extensions_save_re_pointing_a_key_field_drops_its_enforced_key(kind: str) -> None:
+    async with dirty_sales(kind) as eng:
+        customers = await doc_get(eng.storage, "customers")
+        await eng.storage.save_dataset(customers.model_copy(update={"enforced_keys": [["customer_id"]]}))
+        stored = await doc_get(eng.storage, "customers")
+        fields = [f.model_copy(update={"expression": "region"}) if f.name == "customer_id" else f for f in stored.fields]
+        await eng.storage.save_dataset_extensions(stored.model_copy(update={"fields": fields}))
+        assert (await doc_get(eng.storage, "customers")).enforced_keys == []
+
+
+@pytest.mark.parametrize("kind", STORAGES)
 async def test_a_stale_dataset_entry_restores_no_enforced_keys(kind: str) -> None:
     """A hand-edited document source leaves its entry's enforced keys describing the old table."""
     async with dirty_sales(kind) as eng:

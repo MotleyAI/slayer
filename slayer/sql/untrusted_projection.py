@@ -206,8 +206,11 @@ class _Projection:
             body = body.where(exp.and_(*(c.copy() for c in inside)))
         if not other:
             return body.distinct()
+        # Any row will do; an ORDER BY over the grouped values (comparable by construction) satisfies dialects that
+        # require one without ordering by a value whose type may have no ordering.
+        order = [g.copy() for g in group] or [exp.Subquery(this=exp.select(exp.Null()))]
         rank = exp.Window(this=exp.RowNumber(), partition_by=[g.copy() for g in group],
-                          order=exp.Order(expressions=[exp.Ordered(this=other[0].this.copy())]))
+                          order=exp.Order(expressions=[exp.Ordered(this=o) for o in order]))
         numbered = exp.Subquery(this=body.select(rank.as_(_ROW)), alias=exp.TableAlias(this=exp.to_identifier(_ONE)))
         names = [exp.Column(this=p.args["alias"].copy(), table=exp.to_identifier(_ONE)) for p in [*self.projected, *other]]
         first = exp.EQ(this=exp.Column(this=exp.to_identifier(_ROW), table=exp.to_identifier(_ONE)),

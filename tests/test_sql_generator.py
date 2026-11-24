@@ -3770,8 +3770,8 @@ class TestDev1709WidenedIsolationShapes:
         ])
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            population=orders,
-            referenced_datasets=[self._customers_dataset(), self._regions_dataset()],
+            population=trusting(orders),
+            referenced_datasets=trusting_all([self._customers_dataset(), self._regions_dataset()]),
         )
         query = SlayerQuery(
             population="orders",
@@ -7473,7 +7473,8 @@ class TestIsolatedFilteredMeasureCTEs:
                 TimeDimension(field="claim_amount.created_at", granularity=TimeGranularity.MONTH),
             ],
         )
-        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
+        sql = await self._sql(trusting(claim_amount_dataset_with_time),
+                              {name: trusting(d) for name, d in related_datasets.items()}, query)
 
         base_body = _extract_cte_body(sql, r"_base")
         assert "ROW_NUMBER" not in base_body, (

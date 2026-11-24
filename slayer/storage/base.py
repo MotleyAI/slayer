@@ -935,6 +935,7 @@ class StorageBackend(ABC):
     async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
         """Write a document dataset's SLayer content as ``SLAYER`` entries, leaving its document's Ossie core as it is."""
         check_whole(dataset)
+        dataset = await self._without_repointed_enforced_keys(dataset)
         check_enforced_keys(dataset)
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
         if owner is None:
