@@ -4,8 +4,7 @@
 In raw-row mode (`distinct_dimension_values: false`) the population — named, inferred, pinned by a saved stage, or a
 query stage — SHALL provably determine every dimension and time dimension: each row-level field the entry reads,
 through the dependency closure of every derived field it names, SHALL be reached from the population over provably
-to-one hops only. An entry reached across a fanning hop (a list child included) or a hop of unknown cardinality SHALL
-fail with `DistinctDimensionValuesError` naming the entry and that hop, in every `to_many_handling` mode, never listing
+to-one hops only. An entry reached across a fanning hop (a list child included) or an unproven hop (no declared cardinality and no covering unique key) SHALL fail with `DistinctDimensionValuesError` naming the entry and that hop, in every `to_many_handling` mode, never listing
 a population row more than once. An entry whose dependencies cannot be analysed SHALL fail closed with
 `UnanalyzableDependencyError`. An entry no dataset determines (Axiom 2.2) keeps its own error, raised before this
 rule. A query omitting `population` SHALL still be refused at inference with `PopulationInferenceError` when no

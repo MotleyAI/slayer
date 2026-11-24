@@ -38,7 +38,7 @@ enforcing test file `tests/test_dev2212_raw_rows.py` receives the new tests. The
    dimension and time dimension is closed under derived-field definitions (P10) and every closure path must be
    `safe_reachable` from the population itself — not from the expression's anchor. The first unsafe hop is named.
    The crossing helper in `population/home.py` walks from the population.
-3. **Unknown-cardinality hops are refused** (default). Axiom 12.5 says "provably determined"; inferred raw rows
+3. **Unproven hops are refused** (default). Axiom 12.5 says "provably determined"; inferred raw rows
    already refuse them, so named and inferred agree.
 4. **Error type `DistinctDimensionValuesError`** (default). The condition exists only in raw-row mode — the same
    dimension is legal grouped — and raw-row refusals already use this type. Its docstring widens to cover it. The
@@ -60,6 +60,13 @@ enforcing test file `tests/test_dev2212_raw_rows.py` receives the new tests. The
     child) still raise `PopulationInferenceError` before binding.
 11. **Ownership-boundary control** (codex). A derived field local to the population stays accepted in raw rows,
     guarding against a mis-rooted closure.
+12. **The SQL facades advertise only determined joined dimensions** (user). A facade `SELECT <column> FROM <table>` is
+    raw rows with that table as population, so `facade/projection`'s "one row per joined record" for a fanning
+    dimension contradicts Axiom 12.5. The catalog decides advertisability with the engine's own to-one test
+    (`provably_to_one`) and lists only determined dimensions in `INFORMATION_SCHEMA.DIMENSIONS` and `SELECT *`. Every
+    dimension stays resolvable, so grouped queries over a fanning column still bind. The pg catalog-cache fingerprint
+    includes advertisability (codex). Rejected: using the determining dataset as population, which silently changes
+    the rows `FROM` names.
 
 ## Risks / Trade-offs
 

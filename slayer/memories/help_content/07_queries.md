@@ -31,7 +31,8 @@ declared.
 
 A query with dimensions only returns distinct combinations; set
 `distinct_dimension_values: false` for raw rows (no metrics allowed; a dimension the population
-reaches over a fanning or unknown-cardinality hop raises `DistinctDimensionValuesError`). Without a
+reaches over a fanning hop, or one with neither a declared cardinality nor a covering unique key,
+raises `DistinctDimensionValuesError`). Without a
 `limit`, the MCP response stops at 20 rows with a notice; for a longer list set a
 `limit` that covers it. Use `limit` for top N, never to cut a list asked for in full.
 

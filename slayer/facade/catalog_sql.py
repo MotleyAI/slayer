@@ -1,36 +1,11 @@
 """DuckDB-backed catalog SQL executor.
 
-Replaces the canned-row ``match_pg_catalog`` and (for the Postgres facade)
-``match_info_schema`` matching with arbitrary SQL execution against an
-in-memory DuckDB that materialises the catalog corpus as flat tables under
-the ``main`` schema. The translator routes catalog-shaped queries here when
-``catalog_sql_executor`` is provided; Flight's path keeps the canned
-``match_info_schema`` answer unchanged.
-
-The pipeline:
-
-1. Pre-rewrite the parsed AST: strip ``pg_catalog.`` and
-   ``information_schema.`` qualifiers (info-schema tables rewrite to
-   ``_is_<X>``); rewrite ``::regclass`` casts (literal → OID, dynamic →
-   ``slayer_regclass_oid(...)`` UDF); rewrite ``::regproc``/``::regtype`` to
-   ``0``; substitute ``current_database``/``current_catalog``/
-   ``current_user``/``session_user``/``current_role`` with stored literals;
-   short-circuit ``current_schemas(true)[1]`` to ``'public'``; rewrite
-   Postgres regex operators (``~``/``!~``/``~*``/``!~*``) to
-   ``regexp_matches``; AST-rename every stub function (``format_type``,
-   ``obj_description`` …) to a private ``_slayer_*`` name so the macros
-   can't be shadowed by DuckDB built-ins.
-2. Transpile postgres → duckdb via sqlglot.
-3. Execute synchronously.
-4. Map DuckDB cursor description → ``RowBatch`` with the six coarse
-   ``DataType``s.
-
-Errors → ``TranslationError`` after a WARNING log carrying the offending
-SQL.
-
-Caching: ``executor_for(catalog)`` returns a process-cached executor keyed
-by a SHA-256 fingerprint of a compact ``FacadeCatalog`` summary; FIFO
-eviction at 4 entries. No lock — single-threaded asyncio + sync execute.
+Materialises the catalog corpus as in-memory DuckDB tables and runs catalog
+queries against it: pre-rewrite the AST (strip catalog qualifiers, resolve
+``::regclass``/``::regtype``, substitute session functions, rename stub
+functions to ``_slayer_*`` so DuckDB built-ins can't shadow them), transpile
+postgres → duckdb, execute, map to ``RowBatch``. ``executor_for`` caches
+executors by catalog fingerprint (FIFO, 4 entries; no lock — single-threaded).
 """
 
 from __future__ import annotations
@@ -53,6 +28,7 @@ from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,
     FacadeTable,
+    advertised_dimensions,
     local_dimensions,
     local_metrics,
 )
@@ -65,15 +41,11 @@ from slayer.pg_facade.types import datatype_to_oid
 logger = logging.getLogger(__name__)
 
 
-# --- OID constants (moved from slayer/pg_facade/pg_catalog.py) ---------------
-
 PUBLIC_NAMESPACE_OID = 2200
 PG_CATALOG_NAMESPACE_OID = 11
 DEFAULT_OWNER_OID = 10
 
-# Well-known Postgres system catalog OIDs. Hardcoded so ``'pg_class'::regclass``
-# resolves to ``1259`` (matching ``pg_description.classoid``) and Metabase's
-# get-tables JOIN works end-to-end.
+# Real Postgres OIDs, so e.g. ``'pg_class'::regclass`` matches ``pg_description.classoid`` (Metabase).
 KNOWN_SYSTEM_OIDS: dict[str, int] = {
     "pg_class": 1259,
     "pg_namespace": 2615,
@@ -84,25 +56,18 @@ KNOWN_SYSTEM_OIDS: dict[str, int] = {
     "pg_constraint": 2606,
     "pg_index": 2610,
     "pg_attrdef": 2604,
-    # psql backslash-command coverage stubs.
     "pg_am": 2601,
     "pg_database": 1262,
     "pg_authid": 1260,
 }
 
-# Postgres heap access-method OID. Hardcoded to match real Postgres so
-# ``pg_class.relam = 2`` round-trips against any tool that knows the
-# canonical value.
-PG_AM_HEAP_OID = 2
-# Single synthetic role for ``\du`` / ``pg_get_userbyid``. The facade's
-# auth model is shared-token, so there's exactly one principal.
+PG_AM_HEAP_OID = 2  # real Postgres heap access-method OID
+# Shared-token auth → exactly one principal.
 PG_SLAYER_ROLE_OID = 10
 PG_SLAYER_ROLE_NAME = "slayer"
-# UTF8 is the only encoding the facade ever advertises.
 PG_ENCODING_UTF8 = 6
 
-# Per-OID metadata (typname, typlen, typcategory) for the six wire types.
-
+# OID → (typname, typlen, typcategory) for the six wire types.
 _TYPE_META: dict[int, tuple[str, int, str]] = {
     OID_BOOL: ("bool", 1, "B"),
     OID_INT8: ("int8", 8, "N"),
@@ -112,9 +77,7 @@ _TYPE_META: dict[int, tuple[str, int, str]] = {
     OID_TIMESTAMP: ("timestamp", 8, "D"),
 }
 
-# Inverse of _TYPE_META: type name → OID. Used to resolve ``::regtype``
-# casts to the underlying ``pg_type.oid`` so catalog queries like
-# ``WHERE oid = 'int8'::regtype`` work.
+# typname → OID, for resolving ``::regtype`` casts.
 _KNOWN_TYPE_OIDS: dict[str, int] = {
     typname: oid for oid, (typname, _len, _cat) in _TYPE_META.items()
 }
@@ -137,24 +100,14 @@ def stable_oid(*parts: str) -> int:
     return zlib.crc32(key) & 0x7FFFFFFF
 
 
-# --- CatalogRelation Pydantic ------------------------------------------------
-
-
 class CatalogRelation(BaseModel):
-    """One catalog table's content — facade-neutral.
-
-    ``columns`` is a list of typed FacadeColumns; ``rows`` is a list of
-    ``{column_name: value}`` dicts.
-    """
+    """One catalog table's content; ``rows`` are ``{column_name: value}`` dicts."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str
     columns: list[FacadeColumn]
     rows: list[dict[str, Any]]
-
-
-# --- corpus builder ---------------------------------------------------------
 
 
 def build_catalog_relations(
@@ -165,20 +118,9 @@ def build_catalog_relations(
 ) -> list[CatalogRelation]:
     """Build every catalog table from ``catalog``.
 
-    ``datasource`` is used as the ``catalog_name`` / ``table_catalog``
-    value in the ``information_schema.*`` relations so queries that
-    filter by ``current_database()`` (which the AST rewrite substitutes
-    with the connection's datasource) see consistent rows. When omitted,
-    falls back to the catalog's static name (``slayer``) for backward
-    compatibility.
-
-    ``extra_relations`` is the extensibility hook for embedders: each
-    ``CatalogRelation`` provided either **replaces** the default builder's
-    output for that table name (override case — e.g. project real per-tenant
-    rows into ``pg_roles``) or **adds** a new relation the default doesn't
-    know about. Override is by table-name match; order of the returned
-    list places overrides where the default originally appeared, with
-    additions appended at the end.
+    ``datasource`` (default: the catalog name) fills ``catalog_name``/``table_catalog``
+    to match the ``current_database()`` substitution. ``extra_relations`` replace
+    same-named default relations in place, or are appended.
     """
     ds = datasource or catalog.catalog_name
     out: list[CatalogRelation] = []
@@ -202,9 +144,6 @@ def build_catalog_relations(
     out.append(_build_pg_roles())
     out.append(_build_pg_collation())
     out.append(_build_pg_policy())
-    # Empty stubs for catalog tables psql's ``\d`` variants touch
-    # (triggers / inheritance / publications / partitioning / views
-    # rewrite / extensions) — all legitimately empty for SLayer.
     out.append(_build_pg_trigger())
     out.append(_build_pg_inherits())
     out.append(_build_pg_publication())
@@ -239,15 +178,7 @@ def _table_oid(datasource: str, table: FacadeTable) -> int:
 
 
 def _column_specs(table: FacadeTable):
-    """Yield ``(name, DataType)`` for every projectable column (dims +
-    metrics).
-
-    cross-dataset entries are excluded so ``pg_attribute`` /
-    ``pg_class.relnatts`` advertise only the same-dataset column list. BI
-    tools that flatten the catalog into a column view (Metabase, dbt
-    schema scan) discover only base columns and don't issue fingerprint
-    queries that would lead to dotted ``SlayerQuery.metrics[*].name``.
-    """
+    """Yield ``(name, DataType)`` for every local (same-dataset) dimension and metric."""
     for d in local_dimensions(table):
         yield d.name, d.data_type
     for m in local_metrics(table):
@@ -255,9 +186,7 @@ def _column_specs(table: FacadeTable):
 
 
 def _namespace_oid(schema: str) -> int:
-    """Stable namespace OID for a facade schema. ``public`` keeps Postgres's
-    well-known 2200 so clients that hardcode it keep working; other
-    ``postgres_schema`` values get a deterministic derived OID."""
+    """Stable namespace OID; ``public`` keeps Postgres's well-known 2200."""
     if schema == "public":
         return PUBLIC_NAMESPACE_OID
     return stable_oid("namespace", schema)
@@ -308,12 +237,7 @@ def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
         FacadeColumn(name="relhastriggers", type=DataType.BOOLEAN),
         FacadeColumn(name="relrowsecurity", type=DataType.BOOLEAN),
         FacadeColumn(name="relispartition", type=DataType.BOOLEAN),
-        # Access-method OID — points at ``pg_am.oid``. psql's ``\d`` LEFT
-        # JOINs on this; ``heap`` is the only access method we advertise.
-        FacadeColumn(name="relam", type=DataType.INTEGER),
-        # psql's ``\d <table>`` reads these too. Sensible defaults: no
-        # CHECK constraints, no TOAST, no forced RLS, default tablespace
-        # / replica identity, not a typed table.
+        FacadeColumn(name="relam", type=DataType.INTEGER),  # → pg_am.oid (heap)
         FacadeColumn(name="relchecks", type=DataType.INTEGER),
         FacadeColumn(name="relforcerowsecurity", type=DataType.BOOLEAN),
         FacadeColumn(name="reloftype", type=DataType.INTEGER),
@@ -327,9 +251,6 @@ def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
         oid = _table_oid(ds, tbl)
         _check_collision(seen_oids, oid, f"{ds}.{tbl.name}")
         natts = sum(1 for _ in _column_specs(tbl))
-        # SQL-backed datasets are advertised as views (relkind='v') so
-        # ``pg_views`` discovery and JDBC view-specific paths see them;
-        # ``sql_table``-mode datasets stay as regular tables ('r').
         relkind = "v" if tbl.table_type == "VIEW" else "r"
         rows.append({
             "oid": oid, "relname": tbl.name,
@@ -360,10 +281,7 @@ def _build_pg_attribute(catalog: FacadeCatalog) -> CatalogRelation:
         FacadeColumn(name="attisdropped", type=DataType.BOOLEAN),
         FacadeColumn(name="attidentity", type=DataType.STRING),
         FacadeColumn(name="attgenerated", type=DataType.STRING),
-        # Collation OID — psql's ``\d <table>`` LEFT JOINs pg_collation on
-        # this. Zero (== no non-default collation) is fine for all our
-        # ASCII columns; the join returns no rows and the whole
-        # ``attcollation`` sub-select is NULL — the exact ``\d`` fast path.
+        # 0 = default collation: psql's ``\d`` collation sub-select yields NULL.
         FacadeColumn(name="attcollation", type=DataType.INTEGER),
     ]
     rows = []
@@ -399,10 +317,6 @@ def _build_pg_type() -> CatalogRelation:
         FacadeColumn(name="typnotnull", type=DataType.BOOLEAN),
         FacadeColumn(name="typbasetype", type=DataType.INTEGER),
         FacadeColumn(name="typtypmod", type=DataType.INTEGER),
-        # Default collation OID. psql's ``\d <table>`` compares this to
-        # ``pg_attribute.attcollation``; matching zero (== default
-        # collation) means the ``attcollation`` sub-select returns NULL,
-        # which is the correct behavior for columns using the DB default.
         FacadeColumn(name="typcollation", type=DataType.INTEGER),
     ]
     rows = []
@@ -472,9 +386,7 @@ def _build_pg_description(catalog: FacadeCatalog) -> CatalogRelation:
         if tbl.description:
             rows.append({"objoid": oid, "classoid": KNOWN_SYSTEM_OIDS["pg_class"],
                          "objsubid": 0, "description": tbl.description})
-        attnum = 1
-        # stay within the (filtered) pg_attribute attnum space so
-        # ``objsubid`` always matches a real pg_attribute row.
+        attnum = 1  # mirrors pg_attribute's attnum space
         for d in local_dimensions(tbl):
             if d.description:
                 rows.append({"objoid": oid, "classoid": KNOWN_SYSTEM_OIDS["pg_class"],
@@ -520,7 +432,6 @@ def _build_pg_tables(catalog: FacadeCatalog) -> CatalogRelation:
     ]
     rows = []
     for ds, tbl in _all_tables(catalog):
-        # M1 — VIEW-typed datasets are excluded from pg_tables.
         if tbl.table_type != "TABLE":
             continue
         rows.append({
@@ -539,11 +450,7 @@ def _build_pg_views(catalog: FacadeCatalog) -> CatalogRelation:
         FacadeColumn(name="viewowner", type=DataType.STRING),
         FacadeColumn(name="definition", type=DataType.STRING),
     ]
-    # SQL-backed datasets surface here so view-aware clients
-    # (pgAdmin, dbeaver view category, JDBC ``getTables`` with
-    # ``types=['VIEW']``) discover them as views. We do NOT include the
-    # underlying SQL definition — it's a SLayer abstraction detail and
-    # exposing it would leak datasource SQL through the facade.
+    # ``definition`` stays NULL: never leak datasource SQL through the facade.
     rows = []
     for ds, tbl in _all_tables(catalog):
         if tbl.table_type != "VIEW":
@@ -604,10 +511,7 @@ def _build_pg_attrdef() -> CatalogRelation:
 
 
 def _build_pg_am() -> CatalogRelation:
-    """Stub access-method table. Real Postgres exposes heap/btree/hash/gist/gin/
-    brin; for the facade only ``heap`` matters (every ``pg_class.relam`` we emit
-    points at it). psql's ``\\d`` LEFT JOINs ``pg_class.relam = pg_am.oid``;
-    without ``heap`` the JOIN would yield NULL for every relation."""
+    """Access methods: only ``heap``, which every ``pg_class.relam`` points at."""
     return CatalogRelation(
         name="pg_am",
         columns=[
@@ -624,10 +528,7 @@ def _build_pg_am() -> CatalogRelation:
 
 
 def _build_pg_policy() -> CatalogRelation:
-    """Stub RLS-policies table — empty. psql's ``\\d <table>`` queries
-    this per relation to render the "Policies:" section; an empty
-    ``pg_policy`` correctly yields zero rows, matching real Postgres
-    behavior for a table with no row-level security policies."""
+    """RLS policies — empty (psql ``\\d`` "Policies:" section)."""
     return CatalogRelation(
         name="pg_policy",
         columns=[
@@ -644,19 +545,11 @@ def _build_pg_policy() -> CatalogRelation:
     )
 
 
-# --- Empty stubs for catalog tables psql's ``\d`` variants touch.
-#
-# SLayer has no triggers, no inheritance, no publications, no partitioning,
-# no extensions by construction — every one of these tables is legitimately
-# empty. Real Postgres returns zero rows too. Each stub declares the full
-# column set psql's queries reference so DuckDB doesn't error on unknown
-# columns; the ``_PG_CATALOG_NAMES`` allowlist entry is what stops the
-# "Unknown schema: 'pg_catalog'" from the routing decision.
+# Empty stubs for tables psql's ``\d`` touches; each declares the full column set psql references.
 
 
 def _build_pg_trigger() -> CatalogRelation:
-    """Triggers — empty. psql's ``\\d <table>`` reads this for the
-    "Triggers:" section per relation."""
+    """Triggers — empty."""
     return CatalogRelation(
         name="pg_trigger",
         columns=[
@@ -684,8 +577,7 @@ def _build_pg_trigger() -> CatalogRelation:
 
 
 def _build_pg_inherits() -> CatalogRelation:
-    """Inheritance — empty. Read by ``\\d`` to render parent/child
-    relationships. SLayer datasets are flat."""
+    """Inheritance — empty; datasets are flat."""
     return CatalogRelation(
         name="pg_inherits",
         columns=[
@@ -763,8 +655,7 @@ def _build_pg_partitioned_table() -> CatalogRelation:
 
 
 def _build_pg_rewrite() -> CatalogRelation:
-    """Rewrite rules (used by views) — empty. SLayer views are surfaced
-    via ``pg_class.relkind = 'v'`` but the rewrite text isn't tracked."""
+    """Rewrite rules — empty; views surface only via ``relkind = 'v'``."""
     return CatalogRelation(
         name="pg_rewrite",
         columns=[
@@ -800,12 +691,7 @@ def _build_pg_extension() -> CatalogRelation:
 
 
 def _build_pg_collation() -> CatalogRelation:
-    """Stub collation table — empty. psql's ``\\d <table>`` LEFT JOINs
-    ``pg_collation`` on ``pg_attribute.attcollation``; with every column
-    reporting ``attcollation = 0`` (default collation), the join returns
-    zero rows and the whole ``attcollation`` sub-select in the ``\\d``
-    query evaluates to NULL — matching real Postgres behavior for
-    columns using the database default."""
+    """Collations — empty; every ``attcollation`` is 0 (default)."""
     return CatalogRelation(
         name="pg_collation",
         columns=[
@@ -821,10 +707,7 @@ def _build_pg_collation() -> CatalogRelation:
 
 
 def _build_pg_roles() -> CatalogRelation:
-    """Stub roles table. SLayer's auth is shared-token (one principal at a
-    time); ``\\du`` gets one synthetic row so the listing renders. Embedders
-    can override via the ``extra_relations`` hook on ``build_catalog_relations``
-    to project real per-tenant principals."""
+    """Roles: one synthetic principal (override via ``extra_relations``)."""
     return CatalogRelation(
         name="pg_roles",
         columns=[
@@ -851,10 +734,7 @@ def _build_pg_roles() -> CatalogRelation:
 
 
 def _build_pg_database(catalog: FacadeCatalog, datasource: str) -> CatalogRelation:
-    """Stub databases table. The facade scopes one connection to one SLayer
-    datasource (= one Postgres ``database``); ``\\l`` returns a single row for
-    the connected datasource. Embedders that want to enumerate every available
-    datasource (multi-tenant management UIs, etc.) override this builder."""
+    """Databases: one row, the connected datasource."""
     return CatalogRelation(
         name="pg_database",
         columns=[
@@ -885,11 +765,7 @@ def _build_pg_database(catalog: FacadeCatalog, datasource: str) -> CatalogRelati
 
 
 def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelation:
-    """Postgres-shape information_schema.columns with SLayer extension fields.
-
-    Materialised as ``_is_columns`` in DuckDB; the AST rewrite pass strips
-    the ``information_schema.`` qualifier and rewrites the table name.
-    """
+    """``information_schema.columns`` (as ``_is_columns``) plus SLayer extension fields."""
     columns = [
         FacadeColumn(name="table_catalog", type=DataType.STRING),
         FacadeColumn(name="table_schema", type=DataType.STRING),
@@ -903,15 +779,11 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
         FacadeColumn(name="udt_name", type=DataType.STRING),
         FacadeColumn(name="is_identity", type=DataType.STRING),
         FacadeColumn(name="is_generated", type=DataType.STRING),
-        # SLayer extension columns (Q3 sub-b-ii).
         FacadeColumn(name="column_kind", type=DataType.STRING),
         FacadeColumn(name="description", type=DataType.STRING),
         FacadeColumn(name="label", type=DataType.STRING),
     ]
     rows: list[dict[str, Any]] = []
-    # exclude cross-dataset entries — they leak as dotted "columns"
-    # that Metabase fingerprint scans then project (see local_metrics
-    # docstring in slayer/facade/catalog.py).
     for ds, tbl in _all_tables(catalog):
         position = 1
         for d in local_dimensions(tbl):
@@ -973,9 +845,7 @@ def _build_is_key_column_usage() -> CatalogRelation:
 def _build_is_schemata(
     catalog: FacadeCatalog, datasource: str,
 ) -> CatalogRelation:
-    """INFORMATION_SCHEMA.SCHEMATA — one row per facade schema. Datasources
-    map to schemas via ``postgres_schema`` (default ``public``); multiple
-    datasources sharing a schema collapse to one row."""
+    """INFORMATION_SCHEMA.SCHEMATA — one row per distinct facade schema."""
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.STRING),
         FacadeColumn(name="schema_name", type=DataType.STRING),
@@ -1005,9 +875,7 @@ def _build_is_tables(
 def _build_is_metrics(
     catalog: FacadeCatalog, datasource: str,
 ) -> CatalogRelation:
-    """SLayer's INFORMATION_SCHEMA.METRICS extension — JDBC-style type
-    names (``DOUBLE`` / ``BIGINT`` / ``TIMESTAMP``) to match the contract
-    the canned ``match_info_schema._serve_metrics`` previously emitted."""
+    """SLayer's INFORMATION_SCHEMA.METRICS extension, with JDBC-style type names."""
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.STRING),
         FacadeColumn(name="schema_name", type=DataType.STRING),
@@ -1036,9 +904,7 @@ def _build_is_metrics(
 def _build_is_dimensions(
     catalog: FacadeCatalog, datasource: str,
 ) -> CatalogRelation:
-    """SLayer's INFORMATION_SCHEMA.DIMENSIONS extension — JDBC-style type
-    names to match the contract the canned ``_serve_dimensions``
-    previously emitted."""
+    """SLayer's INFORMATION_SCHEMA.DIMENSIONS extension, with JDBC-style type names."""
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.STRING),
         FacadeColumn(name="schema_name", type=DataType.STRING),
@@ -1052,7 +918,7 @@ def _build_is_dimensions(
     rows: list[dict[str, Any]] = []
     for sch in catalog.schemas:
         for tbl in sch.tables:
-            for d in tbl.dimensions:
+            for d in advertised_dimensions(tbl):
                 rows.append({
                     "catalog_name": datasource,
                     "schema_name": sch.name, "table_name": tbl.name,
@@ -1072,24 +938,12 @@ def _check_collision(seen: dict[int, str], oid: int, key: str) -> None:
     seen[oid] = key
 
 
-# --- is_catalog_only --------------------------------------------------------
-
-# The set of known catalog relation names (bare). Both `pg_catalog.X` and
-# `information_schema.X` schema qualifiers are stripped before lookup; the
-# pre-rewrite pass aliases information_schema names to `_is_<X>` so those go
-# under their alias forms too.
-#
-# Must stay in lockstep with the relations built by ``build_catalog_relations``
-# above — every ``out.append(_build_pg_<name>(...))`` needs a corresponding
-# entry here, or the routing decision misclassifies the catalog query as a
-# user-table reference and falls through to "Unknown schema: 'pg_catalog'".
+# Must list every ``_build_pg_*`` relation, or bare refs misroute as user tables.
 _PG_CATALOG_NAMES = frozenset({
     "pg_namespace", "pg_class", "pg_attribute", "pg_type", "pg_proc",
     "pg_settings", "pg_description", "pg_stat_user_tables", "pg_enum",
     "pg_tables", "pg_views", "pg_matviews", "pg_constraint", "pg_index",
     "pg_attrdef",
-    # psql backslash-command coverage. Every one is legitimately empty
-    # for SLayer (no roles / policies / triggers / publications / etc.).
     "pg_am", "pg_roles", "pg_database", "pg_collation", "pg_policy",
     "pg_trigger", "pg_inherits",
     "pg_publication", "pg_publication_rel", "pg_publication_tables",
@@ -1103,15 +957,10 @@ _INFO_SCHEMA_NAMES = frozenset({
 
 
 def _is_known_catalog_table(tbl: exp.Table) -> bool:
-    """True if ``tbl`` resolves to a catalog relation the executor should
-    handle — either one we've explicitly cataloged, or any table under
-    ``pg_catalog`` / ``information_schema`` (unknown ones are synthesized
-    as empty relations at execute time; see
-    ``_synthesize_missing_catalog_tables``).
+    """True if ``tbl`` is any ``pg_catalog``/``information_schema`` table, or a known bare pg_catalog name.
 
-    Bare table names still require an explicit allowlist match — bare
-    ``columns`` / ``tables`` from ``information_schema`` would otherwise
-    hijack user datasets with the same name.
+    Unknown qualified tables are synthesized empty at execute time; bare names need
+    an allowlist match so they never shadow same-named user datasets.
     """
     name = str(tbl.name).lower()
     schema_part = tbl.args.get("db")
@@ -1124,39 +973,22 @@ def _is_known_catalog_table(tbl: exp.Table) -> bool:
         catalog = (
             str(catalog_part.this) if hasattr(catalog_part, "this") else str(catalog_part)
         ).lower()
-        # Three-part catalog-qualified refs must name the SLayer catalog.
-        # Anything else (a foreign catalog) is never our catalog SQL.
         if catalog != CATALOG_NAME.lower():
             return False
     if schema == "information_schema":
-        # Explicit info_schema refs route to the executor — unknown ones
-        # get synthesized as empty at execute time.
         return True
     if schema == "pg_catalog":
-        # Any explicit pg_catalog.<x> ref routes to the executor. Unknown
-        # ones get synthesized as empty at execute time.
         return True
     if schema is None:
-        # Bare names — only well-known pg_catalog relations. Unknown bare
-        # names would shadow user datasets with the same name, so they
-        # never route to the catalog executor.
         return name in _PG_CATALOG_NAMES
     return False
 
 
 def is_catalog_only(parsed: exp.Expression) -> bool:
-    """True iff ``parsed`` references at least one known catalog relation
-    or qualified catalog function, AND every Table node it walks resolves
-    to a known catalog relation (or a same-statement CTE).
+    """True iff every table in ``parsed`` is a catalog relation or CTE, and it references at least one.
 
-    Tableless SELECTs are NOT auto-routed to the executor (CR review
-    feedback): the probe matcher already handles the standard tableless
-    probes (``SELECT 1``, ``SELECT current_database()``, ``SHOW …``),
-    and routing unknown tableless SQL through DuckDB would expand the
-    facade's accepted SQL surface with DuckDB semantics. Only tableless
-    SELECTs that explicitly reference catalog functions
-    (``::regclass``, ``pg_catalog.<fn>``, ``information_schema.<fn>``)
-    are accepted here.
+    A tableless SELECT qualifies only if it references a catalog function; otherwise
+    routing it through DuckDB would widen the accepted SQL surface.
     """
     cte_names = {
         str(cte.alias).lower() for cte in parsed.find_all(exp.CTE)
@@ -1172,9 +1004,6 @@ def is_catalog_only(parsed: exp.Expression) -> bool:
         saw_catalog_table = True
     if saw_catalog_table:
         return True
-    # Tableless: only catalog-only if the statement references a catalog
-    # function explicitly (regclass cast, qualified pg_catalog/info_schema
-    # function call, or a known stub function name).
     return _references_catalog_function(parsed)
 
 
@@ -1187,8 +1016,6 @@ _CATALOG_FUNCTION_NAMES = frozenset({
     "pg_encoding_to_char",
     "has_table_privilege", "has_any_column_privilege", "has_schema_privilege",
     "_pg_expandarray",
-    # psql / BI-tool helper stubs — see ``_CONSTANT_STUB_LITERALS`` for
-    # their return values (mostly NULL for features SLayer doesn't advertise).
     "pg_get_constraintdef", "pg_get_indexdef", "pg_get_triggerdef",
     "pg_get_viewdef", "pg_get_partkeydef", "pg_get_ruledef",
     "pg_get_functiondef", "pg_get_statisticsobjdef",
@@ -1197,20 +1024,14 @@ _CATALOG_FUNCTION_NAMES = frozenset({
     "pg_get_object_address", "pg_identify_object", "pg_size_pretty",
     "pg_relation_size", "pg_indexes_size", "pg_table_size",
     "pg_database_size", "pg_tablespace_size",
-    # sqlglot's class-key forms for the dedicated Func subclasses
-    # (``type(node).key`` returns e.g. ``currentdatabase`` without the
-    # underscore — they appear here via ``_function_name_lower``).
+    # sqlglot Func class keys (no underscore).
     "currentdatabase", "currentcatalog", "currentuser", "sessionuser",
     "currentrole", "currentschema", "currentschemas",
 })
 
 
 def _references_catalog_function(parsed: exp.Expression) -> bool:
-    """True iff ``parsed`` contains a ``::regclass``/``::regproc``/
-    ``::regtype`` cast, a ``pg_catalog.<fn>`` or
-    ``information_schema.<fn>`` qualified function call, or a bare known
-    stub function name. Used by ``is_catalog_only`` to admit tableless
-    SELECTs only when they explicitly target catalog metadata."""
+    """True iff ``parsed`` has a ``::reg*`` cast, a catalog-qualified call, or a known stub function."""
     return (
         _has_catalog_cast(parsed)
         or _has_catalog_qualified_dot(parsed)
@@ -1243,12 +1064,7 @@ def _has_catalog_function_call(parsed: exp.Expression) -> bool:
     for node in parsed.walk():
         if _function_name_lower(node) in _CATALOG_FUNCTION_NAMES:
             return True
-        # sqlglot parses bareword niladic context functions
-        # (``current_role``, ``current_user``, ``current_catalog`` …) as
-        # an unqualified ``Column``. Treat those as catalog-only too so
-        # ``SELECT current_role`` routes to the executor instead of
-        # falling through to the SLayer dataset-query path (which then
-        # errors with "no FROM clause"). CR/Codex review.
+        # sqlglot parses bareword niladic functions (``current_role``) as an unqualified Column.
         if isinstance(node, exp.Column) and not node.table:
             ident = node.this
             if isinstance(ident, exp.Identifier):
@@ -1258,12 +1074,7 @@ def _has_catalog_function_call(parsed: exp.Expression) -> bool:
     return False
 
 
-# --- AST pre-rewrite pass ---------------------------------------------------
-
-
-# Constant-return stubs are AST-rewritten directly to literals (no DuckDB
-# macros). This sidesteps DuckDB's lack of macro arity overloading — the
-# corpus has 2-arg and 3-arg variants of has_*_privilege.
+# Rewritten to literals, not macros: DuckDB macros can't overload arity (has_*_privilege has 2 and 3).
 _CONSTANT_STUB_LITERALS: dict[str, Any] = {
     "has_table_privilege": True,
     "has_any_column_privilege": True,
@@ -1272,14 +1083,8 @@ _CONSTANT_STUB_LITERALS: dict[str, Any] = {
     "pg_table_is_visible": True,
     "pg_total_relation_size": 0,
     "pg_get_expr": None,
-    # SLayer always emits UTF8; ``\l`` calls this with ``d.encoding``.
     "pg_encoding_to_char": "UTF8",
-    # Postgres helper functions psql's ``\d`` and BI tools call for
-    # definitions of things SLayer doesn't advertise (constraints /
-    # indexes / triggers / views / partitions / rules / stats objects /
-    # functions / serial-sequence / column-updatable). NULL is the right
-    # answer for absence — matches real Postgres behavior for a table
-    # that has none of these features.
+    # NULL = absent, as real Postgres answers for objects that don't exist.
     "pg_get_constraintdef": None,
     "pg_get_indexdef": None,
     "pg_get_triggerdef": None,
@@ -1292,7 +1097,6 @@ _CONSTANT_STUB_LITERALS: dict[str, Any] = {
     "pg_get_statisticsobjdef_expressions": None,
     "pg_get_serial_sequence": None,
     "pg_column_is_updatable": False,
-    # ACL / policy-role helpers — return NULL / empty for absence.
     "pg_get_object_address": None,
     "pg_identify_object": None,
     "pg_size_pretty": "0 bytes",
@@ -1303,10 +1107,7 @@ _CONSTANT_STUB_LITERALS: dict[str, Any] = {
     "pg_tablespace_size": 0,
 }
 
-# Data-lookup stubs are AST-renamed to private names; the macros are
-# registered with a single arity per name. ``obj_description`` has two
-# Postgres arities; the 2-arg form is normalised to the 1-arg by dropping
-# the second argument at rewrite time.
+# Renamed to single-arity private macros; 2-arg ``obj_description`` drops its second arg.
 _LOOKUP_STUB_NAMES: dict[str, str] = {
     "format_type": "_slayer_format_type",
     "obj_description": "_slayer_obj_description",
@@ -1316,15 +1117,12 @@ _LOOKUP_STUB_NAMES: dict[str, str] = {
 
 
 def _function_name_lower(node: exp.Expression) -> str | None:
-    """Return the lowercased function name for any kind of function node,
-    or None if ``node`` isn't a function call."""
+    """Lowercased function name of ``node``, or None if it isn't a function call."""
     if isinstance(node, exp.Anonymous):
         n = node.args.get("this")
         if n is not None:
             return str(n).lower()
     if isinstance(node, exp.Func):
-        # exp.Func sub-classes carry their name in `sql_name()` (CamelCase
-        # class -> snake_case). We use the class's `key` attribute.
         return type(node).key.lower()
     return None
 
@@ -1341,14 +1139,7 @@ def _to_literal(value: Any) -> exp.Expression:
 
 
 def _unwrap_qualified_stub_call(node: exp.Expression) -> exp.Expression | None:
-    """Detect ``information_schema.<stub>(args)`` (and the same for
-    ``pg_catalog.``) and rewrite the qualified call as a bare private-name
-    Anonymous so DuckDB resolves the macro.
-
-    sqlglot parses ``information_schema._pg_expandarray(arr)`` as
-    ``Dot(this=Identifier("information_schema"), expression=Anonymous("_pg_expandarray", [arr]))``.
-    Returns the rewritten Anonymous, or None if no match.
-    """
+    """Rewrite a ``pg_catalog.``/``information_schema.``-qualified call (a sqlglot Dot) as a bare call, or None."""
     if not isinstance(node, exp.Dot):
         return None
     lhs = node.this
@@ -1369,39 +1160,14 @@ def _unwrap_qualified_stub_call(node: exp.Expression) -> exp.Expression | None:
         if name == "obj_description" and len(args) > 1:
             args = args[:1]
         return exp.Anonymous(this=private, expressions=args)
-    # Unknown ``pg_catalog.<fn>`` / ``information_schema.<fn>`` — strip the
-    # schema qualifier and emit a bare call. Many such names (``array_to_string``,
-    # ``string_agg``, …) are real functions in DuckDB and resolve cleanly
-    # without the qualifier. Leaving the Dot node in place makes DuckDB
-    # interpret ``pg_catalog`` as a column reference and surface a
-    # misleading "column not found" Binder error; baring the call yields
-    # either a working resolution or a sensible "function not found".
+    # Unknown fn: bare it — many exist in DuckDB; a left-in Dot reads as a missing column.
     args = list(rhs.args.get("expressions") or [])
     return exp.Anonymous(this=name, expressions=args)
 
 
 class _AstRewriter:
-    """Encapsulates the pre-rewrite pass.
-
-    The pass walks the AST top-down and applies, in order:
-
-    1. Schema-qualifier strip on every Table node:
-       ``pg_catalog.X`` → ``X``; ``information_schema.X`` → ``_is_X``.
-    2. ``current_schemas(...)[1]`` → ``'public'`` (short-circuit).
-    3. ``::regclass`` casts (literal + dynamic).
-    4. ``::regproc`` / ``::regtype`` → ``0``.
-    5. Substitute zero-arg ``current_database``/``current_catalog``/
-       ``current_user``/``session_user``/``current_role`` with stored
-       literals.
-    6. Rename Postgres-only stubs (``format_type``, ``obj_description``…)
-       to private ``_slayer_*`` names.
-    7. Rewrite Postgres regex operators (``~``/``!~``/``~*``/``!~*``)
-       to ``regexp_matches``/``NOT regexp_matches`` with the case flag.
-    8. Unwrap Postgres schema-qualified operator syntax — psql emits
-       ``x OPERATOR(pg_catalog.~) y`` for ``\\du <pattern>`` etc.
-    9. Strip ``COLLATE pg_catalog.default`` (no DuckDB equivalent;
-       ASCII byte-compare is the right semantic for catalog names).
-    """
+    """Postgres → DuckDB-ready AST pre-rewrite (qualifiers, ``::reg*`` casts, session functions,
+    stub renames, regex and ``OPERATOR(pg_catalog.x)`` operators, ``COLLATE pg_catalog.default``)."""
 
     def __init__(self, *, datasource: str,
                  regclass_map: dict[str, int] | None = None) -> None:
@@ -1409,17 +1175,12 @@ class _AstRewriter:
         self.regclass_map: dict[str, int] = regclass_map or {}
 
     def rewrite(self, parsed: exp.Expression) -> exp.Expression:
-        # Strip schema qualifiers AND rewrite information_schema names first
-        # so subsequent passes see the canonical bare names.
         parsed = parsed.transform(self._strip_schema_qualifiers)
         parsed = parsed.transform(self._strip_column_schema_qualifiers)
         parsed = parsed.transform(self._rewrite_current_schemas_indexed)
         parsed = parsed.transform(self._rewrite_current_schemas_bare)
         parsed = parsed.transform(self._rewrite_pg_format_quoted_ident)
-        # Normalise schema-qualified CAST target types BEFORE the reg*
-        # rewriters below — ``pg_catalog.regclass`` becomes a bare
-        # ``regclass`` DataType so ``_rewrite_regclass_casts`` still
-        # catches it and performs the ``'foo'::regclass → OID`` lookup.
+        # Before the reg* passes, so ``pg_catalog.regclass`` reaches them as bare ``regclass``.
         parsed = parsed.transform(self._rewrite_schema_qualified_cast)
         parsed = parsed.transform(self._rewrite_regclass_casts)
         parsed = parsed.transform(self._rewrite_regproc_regtype_casts)
@@ -1429,14 +1190,9 @@ class _AstRewriter:
         parsed = parsed.transform(self._rewrite_schema_qualified_operator)
         parsed = parsed.transform(self._strip_collate_clause)
         parsed = parsed.transform(self._rewrite_pg_any_array)
-        # Fallback for any lingering unknown ``pg_*`` function call —
-        # becomes NULL. Runs last so all known stubs claim their calls
-        # first. Semantically "SLayer doesn't advertise this feature",
-        # matching real Postgres for empty catalogs.
+        # Last, so known stubs claim their calls first.
         parsed = parsed.transform(self._stub_unknown_pg_functions)
         return parsed
-
-    # ----- 1. schema qualifier strip ----------------------------------------
 
     @staticmethod
     def _strip_schema_qualifiers(node: exp.Expression) -> exp.Expression:
@@ -1451,12 +1207,9 @@ class _AstRewriter:
         if schema_name == "pg_catalog":
             new = node.copy()
             new.set("db", None)
-            # Drop any outer catalog qualifier too (e.g.
-            # ``slayer.pg_catalog.pg_class`` → ``pg_class``).
             new.set("catalog", None)
             return new
         if schema_name == "information_schema":
-            # Rewrite the table name itself: information_schema.X → _is_X.
             new = node.copy()
             new.set("db", None)
             new.set("catalog", None)
@@ -1465,20 +1218,14 @@ class _AstRewriter:
             return new
         return node
 
-    # ----- 1b. FORMAT('%I.%I', a, b) → CONCAT(a, '.', b) --------------------
-
     @staticmethod
     def _rewrite_pg_format_quoted_ident(node: exp.Expression) -> exp.Expression:
-        """Postgres' ``FORMAT('%I.%I', a, b)`` quotes both arguments and
-        returns ``"a"."b"``. DuckDB's ``FORMAT`` is printf-style and treats
-        ``%I`` literally. Rewrite the schema-qualified ident pattern to a
-        plain ``CONCAT(a, '.', b)`` so the regclass UDF sees ``public.orders``
-        instead of an unfilled format string. Same shape applies to the
-        single-argument ``FORMAT('%I', a)`` → ``a``.
+        """``FORMAT('%I.%I', a, b)`` → ``CONCAT(a, '.', b)`` and ``FORMAT('%I', a)`` → ``a``.
+
+        DuckDB's printf-style ``FORMAT`` doesn't know ``%I``.
         """
         if not isinstance(node, exp.Format):
             return node
-        # sqlglot puts the spec at .this and the args under .expressions.
         fmt = node.this
         if not (isinstance(fmt, exp.Literal) and fmt.is_string):
             return node
@@ -1493,28 +1240,9 @@ class _AstRewriter:
             return rest[0]
         return node
 
-    # ----- 2. current_schemas(...)[1] → 'public' ----------------------------
-
     @staticmethod
     def _strip_column_schema_qualifiers(node: exp.Expression) -> exp.Expression:
-        """Rewrite ``pg_catalog.<X>.<col>`` / ``information_schema.<X>.<col>``
-        column refs so they match the underlying DuckDB table names
-        after the FROM-side strip (Codex review).
-
-        sqlglot's ``exp.Column`` represents the dotted qualifiers as
-        ``this`` (leaf), ``table`` (the table-qualifier), ``db`` (the
-        schema-qualifier), ``catalog`` (the catalog-qualifier — only
-        for 4-part refs).
-
-        * For ``pg_catalog`` the underlying table keeps the same name
-          (``pg_namespace.nspname``); we drop ``db`` so the column
-          resolves as a 2-part ``pg_namespace.nspname`` ref.
-        * For ``information_schema`` the table is renamed to ``_is_<X>``
-          by ``_strip_schema_qualifiers``; here we apply the same
-          rename to the column's ``table`` qualifier so
-          ``information_schema.columns.column_name`` resolves to
-          ``_is_columns.column_name``.
-        """
+        """Column-side mirror of ``_strip_schema_qualifiers`` (``information_schema.X.c`` → ``_is_X.c``)."""
         if not isinstance(node, exp.Column):
             return node
         db_part = node.args.get("db")
@@ -1528,13 +1256,7 @@ class _AstRewriter:
             return node
         new = node.copy()
         new.set("db", None)
-        # Drop any outer catalog qualifier too (e.g.
-        # ``slayer.pg_catalog.pg_class.oid``) — symmetric with the
-        # FROM-side strip in ``_strip_schema_qualifiers``. Otherwise the
-        # 4-part column ref keeps a stale ``slayer.pg_class.oid`` form
-        # that fails to bind against DuckDB's ``main.pg_class`` (Codex
-        # round-20 follow-up).
-        new.set("catalog", None)
+        new.set("catalog", None)  # else a stale ``slayer.pg_class.oid`` fails to bind
         if schema == "information_schema" and table_part is not None:
             tbl_name = (
                 str(table_part.this) if hasattr(table_part, "this") else str(table_part)
@@ -1544,13 +1266,7 @@ class _AstRewriter:
 
     @staticmethod
     def _rewrite_current_schemas_bare(node: exp.Expression) -> exp.Expression:
-        """Rewrite a bare ``current_schemas(...)`` call (no bracket index)
-        to ``['public']`` — the facade only advertises one schema, so
-        the unindexed call must return the single-element list rather
-        than fall through to DuckDB's internal schema list (CR/Codex
-        review). Handles bare and ``pg_catalog.current_schemas(...)``
-        qualified forms; the indexed form is rewritten separately by
-        ``_rewrite_current_schemas_indexed``."""
+        """Unindexed ``current_schemas(...)`` → ``['public']``, not DuckDB's own schema list."""
         if _AstRewriter._is_current_schemas(node):
             return exp.Anonymous(
                 this="list_value", expressions=[exp.Literal.string("public")],
@@ -1563,7 +1279,6 @@ class _AstRewriter:
             return True
         if _function_name_lower(node) == "current_schemas":
             return True
-        # Qualified ``pg_catalog.current_schemas(...)`` form.
         if isinstance(node, exp.Dot):
             lhs = node.this
             rhs = node.expression
@@ -1576,13 +1291,7 @@ class _AstRewriter:
 
     @staticmethod
     def _rewrite_current_schemas_indexed(node: exp.Expression) -> exp.Expression:
-        # Match Bracket(this=Paren?(CurrentSchemas|Anonymous("current_schemas")))
-        # AND a single literal index ``[1]`` — other indices are not
-        # safely collapsible to 'public' because the facade only advertises
-        # one schema (cf. CR review feedback). sqlglot normalises 1-based
-        # SQL array indices to 0-based internally, so user-level ``[1]``
-        # arrives as ``Literal(0)``. Handles bare and
-        # ``pg_catalog.current_schemas(...)`` qualified forms.
+        # Only ``current_schemas(...)[1]`` (sqlglot: 0-based ``Literal(0)``) collapses to 'public'.
         if not isinstance(node, exp.Bracket):
             return node
         inner = node.this
@@ -1603,8 +1312,6 @@ class _AstRewriter:
             return node
         return exp.Literal.string("public")
 
-    # ----- 3. regclass casts ------------------------------------------------
-
     def _rewrite_regclass_casts(self, node: exp.Expression) -> exp.Expression:
         if not isinstance(node, exp.Cast):
             return node
@@ -1612,24 +1319,15 @@ class _AstRewriter:
         if target_kind != "regclass":
             return node
         inner = node.this
-        # Static: CAST('foo' AS REGCLASS) → integer OID literal.
         if isinstance(inner, exp.Literal) and inner.is_string:
             text = inner.this  # raw string value (no quotes)
             return exp.Literal.number(self._lookup_static_regclass(text))
-        # Numeric-typed inner (column ref or number literal): pass through
-        # unchanged. Column refs are OID columns like ``c.oid``, and
-        # ``CAST(0 AS regclass)`` is Postgres's InvalidOid sentinel. Both
-        # would fail against the VARCHAR-only UDF, and the numeric value
-        # itself is the most useful answer for SLayer's minimal catalog.
+        # Numeric inners (``c.oid``, ``0``) are already OIDs; the UDF is VARCHAR-only.
         if isinstance(inner, exp.Column):
             return inner
         if isinstance(inner, exp.Literal) and not inner.is_string:
             return inner
-        # Everything else — function calls, nested casts, expressions —
-        # routes through the UDF lookup. Metabase's real query uses
-        # ``CAST(FORMAT('%I.%I', schema, table) AS regclass)`` to look up
-        # a class OID by its qualified name; that's the shape the UDF was
-        # built for.
+        # Dynamic names, e.g. Metabase's ``CAST(FORMAT('%I.%I', s, t) AS regclass)``.
         return exp.Anonymous(this="slayer_regclass_oid", expressions=[inner])
 
     @staticmethod
@@ -1643,23 +1341,14 @@ class _AstRewriter:
         return None
 
     def _lookup_static_regclass(self, text: str) -> int:
-        # Check the full schema-qualified name, then the bare leaf name.
-        # The map carries both forms for user tables ('public.orders' AND
-        # 'orders') plus the well-known system OIDs.
         return (
             self.regclass_map.get(text)
             or self.regclass_map.get(text.lower())
             or self.regclass_map.get(text.split(".")[-1].lower(), 0)
         )
 
-    # ----- 4. regproc / regtype casts ---------------------------------------
-
     def _rewrite_regproc_regtype_casts(self, node: exp.Expression) -> exp.Expression:
-        """``::regproc`` / ``::regoper`` / ``::regoperator`` / ``::regprocedure``
-        → ``0`` (their catalog tables are empty in this facade).
-        ``::regtype`` → ``pg_type.oid`` lookup for known type names, ``0``
-        otherwise — so ``WHERE oid = 'int8'::regtype`` matches the int8
-        row in pg_type."""
+        """``::regproc``-family casts → ``0``; ``::regtype`` → the known ``pg_type.oid``, else ``0``."""
         if not isinstance(node, exp.Cast):
             return node
         target_kind = self._cast_target_kind(node)
@@ -1674,10 +1363,7 @@ class _AstRewriter:
             return exp.Literal.number(0)
         return node
 
-    # ----- 5. context function substitution ---------------------------------
-
     def _substitute_context_functions(self, node: exp.Expression) -> exp.Expression:
-        # Try each substitution branch in order; first hit wins.
         substituted = (
             self._substitute_qualified_context_call(node)
             or self._substitute_qualified_context_column(node)
@@ -1690,14 +1376,7 @@ class _AstRewriter:
     def _substitute_qualified_context_call(
         self, node: exp.Expression,
     ) -> exp.Expression | None:
-        """Replace ``pg_catalog.<ctx-fn>`` (and ``pg_catalog.<ctx-fn>()``)
-        as a whole so the outer ``Dot`` doesn't end up wrapping a string
-        literal (``pg_catalog.'jaffle'`` — invalid SQL).
-
-        sqlglot parses ``pg_catalog.current_database()`` as
-        ``Dot(Identifier('pg_catalog'), CurrentDatabase(...))``; without
-        this branch the inner-node rewrite would leave the Dot intact.
-        """
+        """Replace the whole ``pg_catalog.<ctx-fn>()`` Dot, so it can't end up wrapping a literal."""
         if not isinstance(node, exp.Dot):
             return None
         lhs = node.this
@@ -1715,13 +1394,7 @@ class _AstRewriter:
     def _substitute_qualified_context_column(
         self, node: exp.Expression,
     ) -> exp.Expression | None:
-        """Replace ``pg_catalog.<bareword-ctx-fn>`` where sqlglot parses the
-        whole thing as ``Column(this=<ctx-fn>, table='pg_catalog')`` — the
-        no-parens shape (``pg_catalog.current_user``,
-        ``pg_catalog.current_catalog``). The Dot-shaped variant
-        (``pg_catalog.current_database()``) is handled by
-        ``_substitute_qualified_context_call``.
-        """
+        """Replace no-parens ``pg_catalog.current_user`` (a Column with table ``pg_catalog``)."""
         if not isinstance(node, exp.Column):
             return None
         table = node.args.get("table")
@@ -1748,10 +1421,7 @@ class _AstRewriter:
         return None
 
     def _substitute_bareword_column(self, node: exp.Expression) -> exp.Expression | None:
-        """sqlglot parses ``current_role`` (no parens) as a Column reference.
-        Treat single-token unqualified Column refs naming a known niladic ctx
-        function as that function. ``node.table`` is ``""`` (not None) for an
-        unqualified column."""
+        """Bare ``current_role`` parses as an unqualified Column (``node.table == ""``)."""
         if not (isinstance(node, exp.Column) and not node.table):
             return None
         ident = node.this
@@ -1773,64 +1443,38 @@ class _AstRewriter:
         if name in {"current_user", "session_user", "current_role",
                     "currentuser", "sessionuser", "currentrole"}:
             return exp.Literal.string("slayer")
-        # current_schema() / current_schema → 'public' (the single schema
-        # the pg facade advertises). DuckDB has its own current_schema
-        # (returning 'main'), so we must rewrite explicitly even inside
-        # catalog SQL.
+        # DuckDB's own current_schema returns 'main'.
         if name in {"current_schema", "currentschema"}:
             return exp.Literal.string("public")
         return None
 
-    # ----- 6. rename stub functions to private names ------------------------
-
     @staticmethod
     def _rename_stub_functions(node: exp.Expression) -> exp.Expression:
-        # Strip qualified function calls of the form
-        # ``Dot(this=Paren?(Dot(Identifier(<pg_catalog|information_schema>),
-        # expression=Anonymous(<stub_name>(args)))), expression=<field>)``.
-        # The full pattern arises from corpus #14's
-        # ``(information_schema._pg_expandarray(i.indkey)).n`` — we want to
-        # rewrite the inner Anonymous to the private name in place and let
-        # the outer Dot continue to extract the field.
+        # e.g. ``(information_schema._pg_expandarray(i.indkey)).n``: rename inner, keep outer field access.
         unwrapped = _unwrap_qualified_stub_call(node)
         if unwrapped is not None:
             return unwrapped
         name = _function_name_lower(node)
         if name is None:
             return node
-        # Constant-return stubs collapse straight to a literal regardless of
-        # arity (sidesteps DuckDB's no-overload-by-arity macro limitation).
         if name in _CONSTANT_STUB_LITERALS:
             return _to_literal(_CONSTANT_STUB_LITERALS[name])
         if name in _LOOKUP_STUB_NAMES:
             private = _LOOKUP_STUB_NAMES[name]
             args = list(node.args.get("expressions") or [])
-            # Postgres obj_description has 2-arg form (oid, catname); the
-            # macro is single-arg, so drop the second.
             if name == "obj_description" and len(args) > 1:
                 args = args[:1]
             return exp.Anonymous(this=private, expressions=args)
         return node
 
-    # ----- 8. <expr> = ANY(<col>) → FALSE -----------------------------------
-
     @staticmethod
     def _rewrite_pg_any_array(node: exp.Expression) -> exp.Expression:
-        """Postgres' ``<x> = ANY(<arr-col>)`` performs array-membership testing.
-        DuckDB needs typed array columns to evaluate this; declaring
-        ``pg_constraint.conkey`` as ``BIGINT[]`` would work but couples
-        the wire-type abstraction. Since the relations that carry array
-        columns (``pg_constraint``, ``pg_index``) are always empty, the
-        WHERE result is always false anyway — rewrite the comparison to a
-        literal ``FALSE`` so the bind step succeeds.
-        """
+        """``<x> = ANY(<col>)`` → ``FALSE``: array columns are untyped here, and their relations are empty."""
         if not isinstance(node, exp.EQ):
             return node
         rhs = node.expression
         if not isinstance(rhs, exp.Any):
             return node
-        # ``ANY(<expr>)`` wraps the inner in a Paren; unwrap before the
-        # column check.
         inner = rhs.this
         if isinstance(inner, exp.Paren):
             inner = inner.this
@@ -1838,38 +1482,21 @@ class _AstRewriter:
             return exp.Boolean(this=False)
         return node
 
-    # ----- Unknown pg_* function fallback -----------------------------------
-
-    # DuckDB-native ``pg_*`` names we must NOT rewrite. Extend as DuckDB
-    # adds new Postgres compatibility helpers.
+    # DuckDB-native ``pg_*`` names we must NOT rewrite.
     _DUCKDB_NATIVE_PG_FUNCTIONS: frozenset[str] = frozenset()
 
     @classmethod
     def _stub_unknown_pg_functions(cls, node: exp.Expression) -> exp.Expression:
-        """Fallback for unknown ``pg_*`` function calls — return NULL.
-
-        Any Anonymous call whose name starts with ``pg_`` and isn't a known
-        catalog stub or DuckDB native gets replaced with a NULL literal +
-        WARN log. Semantically "SLayer doesn't advertise this feature" —
-        the same answer real Postgres gives when the underlying catalog
-        table is empty.
-
-        User-defined SQL functions (no ``pg_`` prefix) are left alone —
-        typos in user queries still surface loudly.
-        """
+        """Unknown ``pg_*`` calls → NULL with a warning; non-``pg_`` names stay so typos still fail."""
         if not isinstance(node, exp.Anonymous):
             return node
         name = str(node.args.get("this", "")).lower()
         if not name.startswith("pg_"):
             return node
-        # Already-known stubs get resolved by earlier passes; if we still
-        # see a ``pg_*`` Anonymous here it's genuinely unknown.
         if name in _CATALOG_FUNCTION_NAMES:
             return node
         if name in cls._DUCKDB_NATIVE_PG_FUNCTIONS:
             return node
-        # The AST-renamed private stubs (``_slayer_*``) don't start with
-        # ``pg_``, so they can't hit this branch — safe.
         logger.warning(
             "pg-facade: stubbed unknown Postgres helper function %s(...) → NULL — "
             "consider adding it to _CONSTANT_STUB_LITERALS if this recurs.",
@@ -1877,15 +1504,8 @@ class _AstRewriter:
         )
         return exp.Null()
 
-    # ----- 7. regex operator rewrites ---------------------------------------
-
     @staticmethod
     def _rewrite_regex_operators(node: exp.Expression) -> exp.Expression:
-        # Postgres parses these as exp.Binary subclasses. sqlglot maps:
-        #   x ~ y   → exp.RegexpLike(this=x, expression=y)
-        #   x ~* y  → exp.RegexpILike (or RegexpLike with flag=i)
-        #   x !~ y  → exp.Not(this=RegexpLike(...))
-        # The cleanest approach: rebuild as Anonymous regexp_matches calls.
         if isinstance(node, exp.RegexpLike):
             return exp.Anonymous(
                 this="regexp_matches",
@@ -1898,13 +1518,7 @@ class _AstRewriter:
             )
         return node
 
-    # Postgres's ``OPERATOR(<schema>.<op>)`` calls a schema-qualified operator
-    # — psql emits ``x OPERATOR(pg_catalog.~) y`` for ``\du <pattern>`` /
-    # ``\dt <pattern>`` etc. sqlglot parses this as ``exp.Operator(this=lhs,
-    # operator="pg_catalog.~", expression=rhs)``. DuckDB has no OPERATOR()
-    # syntax; strip the schema qualifier and rebuild the equivalent
-    # expression the previous pass understands (RegexpLike / RegexpILike or
-    # a plain binary op).
+    # psql emits ``x OPERATOR(pg_catalog.~) y`` (``\du <pattern>``); DuckDB has no OPERATOR() syntax.
     _PG_REGEX_OPS = {"~", "~*", "!~", "!~*"}
 
     @staticmethod
@@ -1912,7 +1526,6 @@ class _AstRewriter:
         if not isinstance(node, exp.Operator):
             return node
         raw = str(node.args.get("operator", ""))
-        # ``pg_catalog.~`` → ``~``; a plain ``=`` etc. stays unchanged.
         op = raw.rsplit(".", 1)[-1]
         lhs = node.this
         rhs = node.expression
@@ -1932,27 +1545,16 @@ class _AstRewriter:
                 this="regexp_matches",
                 expressions=[lhs, rhs, exp.Literal.string("i")],
             ))
-        # Unknown / plain operator: strip the schema qualifier and re-emit
-        # as a bare binary operation. Preserves generality without adding
-        # per-operator branches.
         return exp.condition(f"({lhs.sql()}) {op} ({rhs.sql()})")
 
-    # ``COLLATE pg_catalog."default"`` (psql emits this next to the regex
-    # match on \du etc.) has no DuckDB equivalent. Strip the whole Collate
-    # wrapper — matching is done byte-wise, which is the right semantic
-    # against ASCII role / table names.
+    # psql's ``COLLATE pg_catalog."default"`` has no DuckDB equivalent; byte-wise suits ASCII names.
     @staticmethod
     def _strip_collate_clause(node: exp.Expression) -> exp.Expression:
         if isinstance(node, exp.Collate):
             return node.this
         return node
 
-    # ``CAST(x AS pg_catalog.text)`` — psql's ``\d`` emits schema-qualified
-    # type names. sqlglot parses these as ``DataType(USERDEFINED,
-    # kind=Dot(pg_catalog, <name>))``. DuckDB doesn't accept them; map
-    # each Postgres type to its DuckDB equivalent. Postgres OID-family
-    # types (regtype, regclass, regproc, …) all become BIGINT since OIDs
-    # are integers on the wire. Unknown types fall back to VARCHAR.
+    # psql's ``CAST(x AS pg_catalog.text)`` → DuckDB type; unknown → VARCHAR.
     _PG_TO_DUCKDB_TYPES: dict[str, str] = {
         "text": "VARCHAR", "varchar": "VARCHAR", "char": "VARCHAR",
         "name": "VARCHAR",
@@ -1963,10 +1565,7 @@ class _AstRewriter:
         "timestamp": "TIMESTAMP", "timestamptz": "TIMESTAMP",
         "bytea": "BLOB",
     }
-    # Reg-family types need OID-lookup semantics (``'foo'::regclass →
-    # pg_class.oid``), not plain integer coercion. Normalise them to
-    # bare DataType names so the existing ``_rewrite_regclass_casts`` /
-    # ``_rewrite_regproc_regtype_casts`` passes catch them next.
+    # Kept as bare reg* types so the OID-lookup passes handle them.
     _PG_REG_TYPES = frozenset({
         "regclass", "regproc", "regtype",
         "regoper", "regoperator", "regprocedure",
@@ -1976,8 +1575,7 @@ class _AstRewriter:
     def _rewrite_schema_qualified_cast(cls, node: exp.Expression) -> exp.Expression:
         if not isinstance(node, exp.DataType):
             return node
-        # USERDEFINED with a dotted ``kind`` is how sqlglot represents
-        # ``pg_catalog.<type>`` on the postgres dialect.
+        # sqlglot: ``pg_catalog.<type>`` = USERDEFINED with a dotted ``kind``.
         if node.args.get("this") != exp.DataType.Type.USERDEFINED:
             return node
         kind = node.args.get("kind")
@@ -1991,18 +1589,12 @@ class _AstRewriter:
             return node
         pg_type = str(rhs.this).lower()
         if pg_type in cls._PG_REG_TYPES:
-            # Rebuild as a bare DataType so the reg* rewriters below can
-            # dispatch on ``_cast_target_kind() == 'regclass'`` etc.
             return exp.DataType.build(pg_type.upper(), dialect="postgres")
         duckdb_type = cls._PG_TO_DUCKDB_TYPES.get(pg_type, "VARCHAR")
         return exp.DataType.build(duckdb_type)
 
 
-# --- DuckDB type mapping ----------------------------------------------------
-
-
 _DUCKDB_TO_DATATYPE: dict[str, DataType] = {
-    # ints
     "TINYINT": DataType.INTEGER, "SMALLINT": DataType.INTEGER,
     "INTEGER": DataType.INTEGER, "BIGINT": DataType.INTEGER, "HUGEINT": DataType.INTEGER,
     "UTINYINT": DataType.INTEGER, "USMALLINT": DataType.INTEGER,
@@ -2010,12 +1602,10 @@ _DUCKDB_TO_DATATYPE: dict[str, DataType] = {
     "INT1": DataType.INTEGER, "INT2": DataType.INTEGER, "INT4": DataType.INTEGER,
     "INT8": DataType.INTEGER,
     "BIGINT[]": DataType.STRING,  # arrays fall back to TEXT
-    # floats
     "REAL": DataType.FLOAT, "FLOAT": DataType.FLOAT,
     "DOUBLE": DataType.FLOAT, "DECIMAL": DataType.FLOAT,
     "NUMERIC": DataType.FLOAT, "FLOAT4": DataType.FLOAT,
     "FLOAT8": DataType.FLOAT,
-    # bool / date / timestamp / text
     "BOOLEAN": DataType.BOOLEAN, "BOOL": DataType.BOOLEAN,
     "DATE": DataType.DATE,
     "TIMESTAMP": DataType.DATETIME,
@@ -2028,14 +1618,9 @@ _DUCKDB_TO_DATATYPE: dict[str, DataType] = {
 
 
 def _duckdb_typename_to_datatype(typename: str) -> DataType:
-    """Map a DuckDB column type name to one of the six coarse SLayer
-    ``DataType``s. Anything unmapped falls back to ``TEXT`` so wire encoding
-    has a safe path."""
+    """Map a DuckDB type name to a coarse ``DataType``; unmapped → STRING."""
     base = str(typename).split("(")[0].split("[")[0].strip().upper()
     return _DUCKDB_TO_DATATYPE.get(base, DataType.STRING)
-
-
-# --- DuckDB type mapping for table columns at creation time ----------------
 
 
 _KIND_TO_DUCKDB_CREATE: dict[TypeKind, str] = {
@@ -2050,15 +1635,8 @@ _DATATYPE_TO_DUCKDB_CREATE: dict[DataType, str] = {
     t: _KIND_TO_DUCKDB_CREATE[t.kind] for t in DataType if t.kind in _KIND_TO_DUCKDB_CREATE}
 
 
-# --- CatalogSqlExecutor -----------------------------------------------------
-
-
 class CatalogSqlExecutor:
-    """Owns one in-memory DuckDB connection with the catalog materialised.
-
-    Construction is expensive (table creates + bulk inserts + macro defs);
-    cache via ``executor_for(catalog)``.
-    """
+    """In-memory DuckDB with the catalog materialised; expensive — cache via ``executor_for``."""
 
     def __init__(
         self,
@@ -2069,33 +1647,13 @@ class CatalogSqlExecutor:
     ) -> None:
         self._datasource = datasource
         self._conn = duckdb.connect(":memory:")
-        # lock down the
-        # DuckDB instance so a catalog-shaped query can't pivot through
-        # built-ins like ``read_text('/etc/hostname')`` to exfiltrate
-        # local files. ``enable_external_access=false`` is DuckDB's
-        # one-shot kill switch — it blocks all filesystem / HTTP / S3
-        # readers at bind time (BinderException). The setting cannot be
-        # re-enabled within the same connection by an authenticated
-        # client. ``lock_configuration`` (DuckDB 1.x) further prevents
-        # any later SET from re-opening the door if a future code path
-        # registers something risky.
+        # Block file/HTTP readers (``read_text('/etc/hostname')``) and lock config against re-enabling.
         self._conn.execute("SET enable_external_access = false")
         try:
             self._conn.execute("SET lock_configuration = true")
         except duckdb.Error:
-            # Older DuckDB versions don't have lock_configuration;
-            # enable_external_access alone is still binding.
-            pass
-        # OID lookup for the regclass UDF: maps schema-qualified and bare
-        # names to OIDs (system catalogs + user tables). Three forms are
-        # registered per table so Metabase's COL_DESCRIPTION etc. resolve
-        # whichever spelling psql / a BI tool emits:
-        # - ``<real_schema>.<table>`` — the authoritative form for custom
-        #   postgres_schema datasources (without this, COL_DESCRIPTION
-        #   silently returns OID 0 and drops descriptions);
-        # - ``public.<table>`` — the back-compat alias the facade always
-        #   advertised before custom schemas existed;
-        # - ``<table>`` — bare, for clients that don't qualify.
+            pass  # older DuckDB lacks lock_configuration
+        # regclass names: ``<schema>.<t>`` (else COL_DESCRIPTION gets OID 0), ``public.<t>`` alias, bare ``<t>``.
         self._regclass_map: dict[str, int] = dict(KNOWN_SYSTEM_OIDS)
         for ds, tbl in _all_tables(catalog):
             oid = _table_oid(ds, tbl)
@@ -2137,8 +1695,6 @@ class CatalogSqlExecutor:
         self._conn.executemany(insert.sql(dialect="duckdb"), params)
 
     def _register_stubs(self) -> None:
-        # Only the data-aware stubs need DuckDB macros — constant-return
-        # stubs collapse to literals in the AST rewrite pass.
         macros = [
             "CREATE MACRO _slayer_format_type(p_oid, p_typmod) AS "
             "    COALESCE((SELECT typname FROM pg_type WHERE oid = p_oid LIMIT 1), 'text')",
@@ -2148,15 +1704,12 @@ class CatalogSqlExecutor:
             "CREATE MACRO _slayer_col_description(p_oid, p_attnum) AS "
             "    (SELECT description FROM pg_description "
             "     WHERE objoid = p_oid AND objsubid = p_attnum LIMIT 1)",
-            # _pg_expandarray returns a struct with x and n fields so
-            # `(stub).x` / `(stub).n` field-access parses; combined with
-            # empty pg_index, corpus #14 yields zero rows.
+            # Struct so ``(stub).x`` / ``(stub).n`` field access binds.
             "CREATE MACRO _slayer_pg_expandarray(p_arr) AS "
             "    STRUCT_PACK(x := CAST(NULL AS INTEGER), n := CAST(NULL AS INTEGER))",
         ]
         for sql in macros:
             self._conn.execute(sql)
-        # Python UDF for the dynamic-regclass path.
         self._conn.create_function(
             "slayer_regclass_oid", self._regclass_oid,
             ["VARCHAR"], "INTEGER",
@@ -2165,7 +1718,6 @@ class CatalogSqlExecutor:
     def _regclass_oid(self, text: str | None) -> int:
         if text is None:
             return 0
-        # Both schema-qualified and bare lookups go through the same map.
         return self._regclass_map.get(text, self._regclass_map.get(text.lower(), 0))
 
     _SYNTHETIC_SCHEMAS: frozenset[str] = frozenset({
@@ -2175,26 +1727,13 @@ class CatalogSqlExecutor:
     def _synthesize_missing_catalog_tables(
         self, root: exp.Expression,
     ) -> exp.Expression:
-        """Replace ``pg_catalog.<x>`` / ``information_schema.<x>`` Table
-        refs whose ``<x>`` isn't in ``self._registered_tables`` with an
-        inline ``(SELECT NULL::VARCHAR AS c1, ... WHERE FALSE) AS <alias>``
-        subquery. Columns come from scanning the same query for column
-        refs against the Table's alias (or bare-name qualifier). NEVER
-        fires for user-schema references — those keep the loud "unknown
-        table" error.
+        """Replace unregistered ``pg_catalog.<x>``/``information_schema.<x>`` refs with an empty subquery.
 
-        Fallback for obscure catalog tables (``pg_statistic_ext``,
-        ``pg_hba_file_rules``, …) SLayer doesn't advertise. Empty result
-        matches real Postgres for tables with no rows. Emits a WARN log
-        per synthesis so recurring hits are visible.
+        Columns are those the query references off the table; bare (user-schema)
+        names never get synthesized, so typos stay loud.
         """
         replacements: list[tuple[exp.Table, exp.Subquery]] = []
         for tbl in root.find_all(exp.Table):
-            # Runs BEFORE strip-schema-qualifier, so ``db`` still carries
-            # the original schema qualifier. Only synthesize when it's
-            # explicitly ``pg_catalog`` / ``information_schema`` — bare
-            # names might be user tables or aliases, and never fabricating
-            # for those keeps typo diagnostics loud.
             db_part = tbl.args.get("db")
             if db_part is None:
                 continue
@@ -2206,29 +1745,13 @@ class CatalogSqlExecutor:
             name = str(tbl.name).lower()
             if name in self._registered_tables:
                 continue
-            # Info-schema tables are registered under the ``_is_<x>``
-            # alias in DuckDB (see the builder-name remap in
-            # ``_index_catalog_relations``); check that form too.
             if schema == "information_schema" and f"_is_{name}" in self._registered_tables:
                 continue
-            # Discover column names the same query references off this
-            # Table's alias (or bare name). Column discovery matches on the
-            # user-visible handle (still ``pg_publication`` / ``character_sets``
-            # at this point — the strip pass hasn't run).
             handle = tbl.alias or tbl.name
             columns = self._discover_referenced_columns(root, handle)
             if not columns:
-                # No column refs — the query probably does ``SELECT *``;
-                # give it a single throwaway ``oid`` column so DuckDB has
-                # something to project. Real queries always reference some
-                # column, so this is a rare path.
-                columns = ["oid"]
-            # For information_schema tables without a user-supplied alias,
-            # the subquery must ALIAS AS ``_is_<name>`` — that's what the
-            # downstream ``_strip_column_schema_qualifiers`` pass rewrites
-            # bare ``information_schema.character_sets.col`` refs to. If we
-            # aliased the synthetic subquery as ``character_sets``, the
-            # binder would miss the column.
+                columns = ["oid"]  # e.g. ``SELECT *``: DuckDB needs something to project
+            # Unaliased info-schema refs must be ``_is_<name>``, matching the column-qualifier rewrite.
             output_alias = handle
             if schema == "information_schema" and not tbl.alias:
                 output_alias = f"_is_{name}"
@@ -2248,19 +1771,10 @@ class CatalogSqlExecutor:
     def _discover_referenced_columns(
         root: exp.Expression, handle: str,
     ) -> list[str]:
-        """Scan ``root`` for Column refs that plausibly belong to the
-        Table being synthesized:
+        """Distinct column names referenced as ``handle.col`` or bare ``col``, first-seen order.
 
-        - qualified refs (``handle.col``): keep — unambiguous.
-        - bare refs (``col`` with no ``table=`` qualifier): keep too. A
-          bare col could technically belong to any FROM table, but when
-          we synthesize an empty-relation stand-in the columns type as
-          VARCHAR NULL — adding one that "shouldn't" belong is harmless
-          (the query never reads from the synthetic row set anyway).
-          The alternative would need sqlglot Scope resolution across all
-          FROM tables, which is complex for negligible correctness gain.
-
-        Returns distinct column names in first-seen order."""
+        Over-including bare columns is harmless: the synthetic relation is empty.
+        """
         seen: dict[str, None] = {}
         handle_lower = handle.lower()
         for col in root.find_all(exp.Column):
@@ -2272,7 +1786,6 @@ class CatalogSqlExecutor:
                 ).lower()
                 if tbl_name != handle_lower:
                     continue
-            # tbl_ident is None (bare) OR matches handle — take it.
             colname = str(col.name)
             if colname and colname not in seen:
                 seen[colname] = None
@@ -2282,11 +1795,7 @@ class CatalogSqlExecutor:
     def _build_empty_subquery(
         columns: list[str], *, alias: str,
     ) -> exp.Subquery:
-        """Emit ``(SELECT NULL::VARCHAR AS c1, ... WHERE FALSE) AS <alias>``.
-        Every column types as VARCHAR — NULL literals coerce freely to any
-        downstream type, and the ``WHERE FALSE`` guarantees zero rows so
-        the type choice is only for column-shape validation.
-        """
+        """Emit ``(SELECT NULL::VARCHAR AS c1, ... WHERE FALSE) AS <alias>``."""
         varchar = exp.DataType.build("VARCHAR", dialect="duckdb")
         parsed_sub = exp.select(
             *(exp.alias_(exp.cast(exp.null(), to=varchar), c, quoted=True) for c in columns)
@@ -2297,11 +1806,7 @@ class CatalogSqlExecutor:
         )
 
     def execute(self, *, parsed: exp.Expression, sql: str) -> RowBatch:
-        # Synthesize empties for unknown ``pg_catalog.<x>`` refs BEFORE
-        # the rewriter's strip-schema-qualifier pass — after that runs,
-        # the ``db=pg_catalog`` qualifier is gone and we can't distinguish
-        # "originally schema-qualified" from "bare name that happens to
-        # shadow a user table".
+        # Before the rewriter strips the qualifiers that mark a ref as catalog-qualified.
         parsed = self._synthesize_missing_catalog_tables(parsed.copy())
         rewritten = self._rewriter.rewrite(parsed)
         try:
@@ -2321,12 +1826,7 @@ class CatalogSqlExecutor:
         for col in description:
             name = col[0]
             typename = col[1] if len(col) > 1 else "VARCHAR"
-            # CR/Codex review: Postgres allows duplicate output names
-            # (``SELECT oid AS x, relname AS x``); the row-as-dict shape
-            # would collapse them. Keep the user-visible ``name`` on the
-            # FacadeColumn (so the wire RowDescription still reports the
-            # duplicate name) but disambiguate the per-row dict key by
-            # appending ``__<n>`` to the second and later occurrences.
+            # Duplicate output names keep their wire name; dict keys get ``__<n>`` suffixes.
             base_key = name
             n = seen_keys.get(base_key, 0)
             seen_keys[base_key] = n + 1
@@ -2339,16 +1839,10 @@ class CatalogSqlExecutor:
             {col_keys[i]: value for i, value in enumerate(row)}
             for row in data_rows
         ]
-        # Stash the row-key list on the batch so wire emitters can look
-        # up values by position-aware key even when names duplicate.
         batch = RowBatch(columns=columns, rows=rows)
-        # Pydantic v2 model_extra lets us attach a non-schema attribute;
-        # consumers that don't care about duplicates still read via name.
+        # Non-schema attribute: positional row keys for wire emitters when names duplicate.
         object.__setattr__(batch, "_row_keys", col_keys)
         return batch
-
-
-# --- caching ----------------------------------------------------------------
 
 
 _EXECUTOR_CACHE_LIMIT = 4
@@ -2356,22 +1850,14 @@ _EXECUTOR_CACHE: "collections.OrderedDict[str, CatalogSqlExecutor]" = collection
 
 
 def _fingerprint(catalog: FacadeCatalog, datasource: str) -> str:
-    """Stable cache key for an executor.
-
-    Tables are sorted for cross-build determinism (table order doesn't
-    affect any catalog row content). Dimensions and metrics WITHIN each
-    table are NOT sorted because their position drives ``attnum``,
-    ``ordinal_position``, and ``pg_description.objsubid`` — reordering
-    columns under the same name set is a real catalog change that the
-    fingerprint must distinguish.
-    """
+    """Stable executor cache key; tables sorted, columns not (their order drives ``attnum``)."""
     summary = [
         catalog.catalog_name,
         datasource,
         sorted([(
             sch.name, tbl.name, tbl.table_type, tbl.description,
             [
-                (d.name, d.data_type.value, d.description, d.label, d.is_time)
+                (d.name, d.data_type.value, d.description, d.label, d.is_time, d.row_preserving)
                 for d in tbl.dimensions
             ],
             [
@@ -2393,29 +1879,14 @@ def executor_for(
 ) -> CatalogSqlExecutor:
     """Return a process-cached ``CatalogSqlExecutor`` for ``catalog``.
 
-    ``datasource`` scopes ``current_database()`` / ``current_catalog`` /
-    ``current_user`` literal substitution. When omitted, falls back to the
-    catalog's first schema name (or the catalog name for empty catalogs).
-    The pg facade always passes the real datasource explicitly because its
-    catalog schema is the literal ``public``.
-
-    ``extra_relations`` is the per-call extensibility hook. Passing it
-    BYPASSES the cache (the cache key would otherwise need to digest the
-    relations' row data, which is the expensive part we're trying to skip).
-    Embedders that want fast repeat introspection should call this once at
-    setup and hold the returned executor.
-
-    Cache (default path) is keyed by a stable SHA-256 of (catalog, datasource).
-    FIFO eviction at 4 entries. Single-threaded asyncio + sync execute, so no
-    lock is needed.
+    ``datasource`` (default: first schema name) is what ``current_database()`` returns.
+    Passing ``extra_relations`` bypasses the cache — hold the returned executor.
     """
     if datasource is None:
         datasource = (
             catalog.schemas[0].name if catalog.schemas else catalog.catalog_name
         )
     if extra_relations is not None:
-        # Hot path is the default-relations cache; embedders with extras
-        # opt out of caching to avoid digesting row payloads in the key.
         return CatalogSqlExecutor(
             catalog=catalog, datasource=datasource,
             extra_relations=extra_relations,
@@ -2427,7 +1898,6 @@ def executor_for(
     executor = CatalogSqlExecutor(catalog=catalog, datasource=datasource)
     _EXECUTOR_CACHE[fp] = executor
     if len(_EXECUTOR_CACHE) > _EXECUTOR_CACHE_LIMIT:
-        # FIFO eviction.
         _EXECUTOR_CACHE.popitem(last=False)
     return executor
 
@@ -2443,7 +1913,4 @@ __all__ = [
 ]
 
 
-# Trigger Pydantic to fully construct the forward-ref classes (so the
-# translator's imports don't run into a stale reference when this module
-# is the entry point).
 _ = sqlglot  # quiet linters about the conditional import
