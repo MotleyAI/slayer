@@ -591,12 +591,14 @@ def _references(
     fragment: Fragment, *, host: SlayerDataset, reachable: dict[str, SlayerDataset], via: tuple[str, ...],
     seen: set[tuple[str, str]], dialect: str | None,
 ) -> Iterator[tuple[SlayerDataset, str, tuple[str, ...]]]:
-    """A windowed column reads its owner's dataset: its owner joins the path, its definition is the owner's read."""
+    """A windowed column reads its owner's dataset: its owner joins the path, its definition is the owner's read; a hop
+    keyed by a windowed column reads that column."""
     for quals, leaf in _refs(fragment, host=host):
         resolved = _resolve_owner(quals=quals, host=host, reachable=reachable)
         if resolved is None:
             continue
         owner, chain = resolved
+        yield from _windowed_keys(chain, via=via, reachable=reachable, dialect=dialect)
         on_path = (*via, *(edge.to for edge in chain))
         field = owner.get_field(leaf, quoted=True)
         if field is not None and windowed_field(field, dialect=dialect):
@@ -606,8 +608,37 @@ def _references(
         if field is None or (owner.name, leaf) in seen:
             continue
         seen.add((owner.name, leaf))
-        for inner in _arity_reference_sources(field, host=owner):
+        for inner in _running_fragments(field, host=owner, dialect=dialect):
             yield from _references(inner, host=owner, reachable=reachable, via=on_path, seen=seen, dialect=dialect)
+
+
+def _windowed_keys(
+    chain: list[OrientedRelationship], *, via: tuple[str, ...], reachable: dict[str, SlayerDataset], dialect: str | None,
+) -> Iterator[tuple[SlayerDataset, str, tuple[str, ...]]]:
+    """Each windowed key column ``chain``'s hops join on, read of its dataset."""
+    path = via
+    for edge in chain:
+        for name, keys in ((edge.source_dataset, [s for s, _ in edge.column_pairs]),
+                           (edge.to, [t for _, t in edge.column_pairs])):
+            dataset = reachable.get(name)
+            if dataset is None:
+                continue
+            for key in keys:
+                field = dataset.get_field(key)
+                if field is not None and windowed_field(field, dialect=dialect):
+                    yield dataset, key, (*path, name)
+        path = (*path, edge.to)
+
+
+def _running_fragments(field: DatasetField, *, host: SlayerDataset, dialect: str | None) -> list[Fragment]:
+    """``field``'s fragments that run on ``dialect``: its running form and ``filter`` (every form when unknown)."""
+    if field.resolved or dialect is None or field.expression is None:
+        return _arity_reference_sources(field, host=host)
+    try:
+        form = running_form(owner=field.name, expression=field.expression, dialect=dialect)
+    except FieldExpressionError:
+        return _arity_reference_sources(field, host=host)
+    return [_native(form.text) if form.native else (form.text, True), *([_native(field.filter)] if field.filter else [])]
 
 
 def _dataset_reads(
@@ -617,7 +648,7 @@ def _dataset_reads(
     the windowed columns read of it."""
     fragments = [_native(f) for f in dataset.filters]
     fragments += [fragment for name in sorted(windowed) if (field := dataset.get_field(name)) is not None
-                  for fragment in _arity_reference_sources(field, host=dataset)]
+                  for fragment in _running_fragments(field, host=dataset, dialect=dialect)]
     out: dict[str, set[str]] = {}
     for fragment in fragments:
         for owner, leaf, path in _references(fragment, host=dataset, reachable=reachable, via=(), seen=set(),

@@ -3134,9 +3134,13 @@ class SlayerQueryEngine:
         tgt_cols = [p[1] for p in relationship.column_pairs]
         target = by_name.get(relationship.to)
 
-        note = _detection_skip_reason(
-            dataset=dataset, target=target, src_cols=src_cols, tgt_cols=tgt_cols,
-        )
+        note = _detection_skip_reason(dataset=dataset, target=target, src_cols=src_cols, tgt_cols=tgt_cols)
+        if note is None:
+            # Keys are read in the form each side runs on this datasource.
+            peers = list(by_name.values())
+            dataset = await self._resolved(dataset, datasource=datasource_cfg, datasets=peers)
+            target = await self._resolved(target, datasource=datasource_cfg, datasets=peers)
+            note = _filtered_window_key_reason(sides=((dataset, src_cols), (target, tgt_cols)), dialect=sqlglot_name)
         if note is not None:
             return RelationshipCardinalityFinding(
                 data_source=data_source, dataset=dataset.name,
@@ -3887,6 +3891,15 @@ def _detection_skip_reason(
                     f"{str(err).splitlines()[0]}; cardinality profiling "
                     f"supports keys over each dataset's own source only"
                 )
+    return None
+
+
+def _filtered_window_key_reason(*, sides, dialect: str) -> str | None:
+    """Why a windowed key of a filtered dataset can't be profiled: its values depend on the filtered rows."""
+    for dataset, keys in sides:
+        if dataset.filters and any(r.find(exp.Window) for r in _key_reads(dataset=dataset, keys=keys, dialect=dialect)):
+            return (f"a key of dataset {dataset.name!r} is windowed and the dataset has filters; cardinality profiling "
+                    f"computes windows over the unfiltered table, so it skips this relationship")
     return None
 
 

@@ -7213,6 +7213,7 @@ def _prune_window_layers(statement: Expression) -> None:
         if not any(isinstance(p, exp.Alias) for p in layer.this.expressions):
             inner = layer.this.args["from_"].this
             inner.set("alias", layer.args["alias"])
+            inner.meta.update({k: v for k, v in layer.meta.items() if k != _WINDOW_LAYER})
             layer.replace(inner)
 
 

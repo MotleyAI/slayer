@@ -33,7 +33,11 @@ from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
+from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.ir.variables import substitute_dataset_sql_surfaces
+from slayer.sql.generator import _WINDOW_LAYER, _prune_window_layers
+from slayer.sql.untrusted_projection import UNTRUSTED_HOP, mark_untrusted
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2210_fixtures import DDL as FILTER_DDL
 from tests._dev2210_fixtures import seed, table_datasets
@@ -345,6 +349,29 @@ async def test_cardinality_profiling_reads_a_windowed_key_as_a_column(engine, so
     assert finding.detected is RelationshipCardinality.MANY_TO_ONE, finding
 
 
+async def test_cardinality_profiling_skips_a_windowed_key_of_a_filtered_dataset(engine):
+    await engine.storage.save_dataset(_orders_like("orders_fk", fields=[native("rn", RN)], filters=["amount >= 20"],
+                                                   relationships=[DatasetRelationship(to="slots", from_columns=["rn"],
+                                                                                      to_columns=["pos"])]))
+    report = await engine.detect_relationship_cardinality(dataset="orders_fk")
+    finding = next(f for f in report.findings if f.dataset == "orders_fk" and f.to == "slots")
+    assert finding.verdict is CardinalityVerdict.SKIPPED_UNSUPPORTED, finding
+    assert finding.detected is None
+    assert "windowed" in (finding.note or "")
+
+
+async def test_cardinality_profiling_reads_the_key_form_running_on_the_datasource(engine, request):
+    own = request.node.callspec.params["engine"].upper()
+    other = "DUCKDB" if own == "SQLITE" else "SQLITE"
+    key = DatasetField(name="k", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[
+        DialectEntry(dialect=other, expression=RN), DialectEntry(dialect=own, expression="slot")]))
+    await engine.storage.save_dataset(_orders_like("orders_dk", fields=[key], filters=["amount >= 20"], relationships=[
+        DatasetRelationship(to="slots", from_columns=["k"], to_columns=["pos"])]))
+    report = await engine.detect_relationship_cardinality(dataset="orders_dk")
+    finding = next(f for f in report.findings if f.dataset == "orders_dk" and f.to == "slots")
+    assert finding.detected is RelationshipCardinality.MANY_TO_ONE, finding
+
+
 class TestBacking:
     async def test_sql_backed_dataset(self, engine):
         grouped = await _run(engine, _grouped("sql_orders", "sql_orders.rn", "sum(sql_orders.amount)"))
@@ -569,6 +596,26 @@ class TestModelFilterOnWindowedColumn:
         assert exc.value.cycle[0] == "a"
         assert exc.value.cycle[-1] == "a"
 
+    async def test_another_dialects_window_reading_back_is_not_a_cycle(self, filter_engine, door):
+        w = DatasetField(name="w", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[
+            DialectEntry(dialect="SQLITE", expression="ROW_NUMBER() OVER (ORDER BY id)"),
+            DialectEntry(dialect="DUCKDB", expression="ROW_NUMBER() OVER (PARTITION BY b_to_a.flag ORDER BY id)")]))
+        await _save(filter_engine, _cycle_dataset("b", "a", extra=[w]), door=door)
+        await _save(filter_engine, _cycle_dataset("a", "b", filters=["a_to_b.w = 1"]), door=door)
+        resp = await _run(filter_engine, {"population": "a", "dimensions": ["a.id"]})
+        assert [int(r["a.id"]) for r in resp.data] == [1]
+
+    async def test_a_hop_keyed_by_its_own_window_is_a_cycle(self, filter_engine, door):
+        keyed = SlayerDataset(
+            name="a", data_source="test", sql_table="a", filters=["a_rn.flag = 1"],
+            fields=[_col("id", primary_key=True), _col("flag"), _col("b_id"), native("rn", "ROW_NUMBER() OVER (ORDER BY id)")],
+            relationships=[DatasetRelationship(to="b", name="a_rn", from_columns=["rn"], to_columns=["id"],
+                                               cardinality=RelationshipCardinality.MANY_TO_ONE)])
+        with pytest.raises(DatasetFilterCycleError) as exc:
+            await _save(filter_engine, keyed, door=door)
+        assert exc.value.cycle == ["a", "a"]
+        await _save(filter_engine, _cycle_dataset("a", "b", filters=["a_to_b.flag = 1"]), door=door)
+
     async def test_a_window_in_another_dialects_entry_is_not_a_cycle(self, filter_engine, door):
         flag = DatasetField(name="flag2", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[
             DialectEntry(dialect="DUCKDB", expression="ROW_NUMBER() OVER (ORDER BY id)"),
@@ -594,6 +641,25 @@ async def test_windows_of_two_datasets_reading_each_other_across_to_one_hops(fil
     assert sorted(int(r["a.id"]) for r in ids.data) == [1, 2]
     windows = await _run(filter_engine, _grouped("a", "a.w", "count(a.*)"))
     assert _num(_by(windows, "a.w", "m")) == {1: 2}
+
+
+def test_variable_substitution_keeps_the_window_flag():
+    dataset = _orders_like("orders_v", fields=[native("rn", RN).with_native(RN, windowed=True)], filters=["region <> '{r}'"])
+    bound = substitute_dataset_sql_surfaces(dataset=dataset, variables={"r": "AS"}, bind_mode_a=lambda text, _v, **_kw: text)
+    field = bound.get_field("rn")
+    assert field is not None
+    assert field.windowed
+
+
+def test_collapsing_an_unread_window_layer_keeps_the_untrusted_mark():
+    layer = exp.select("t.*").from_("tbl AS t").subquery("t")
+    layer.meta[_WINDOW_LAYER] = True
+    mark_untrusted(layer)
+    statement = exp.select("x.id").from_("x").join(layer, on="x.id = t.id", join_type="LEFT")
+    _prune_window_layers(statement)
+    joined = next(statement.find_all(exp.Join)).this
+    assert isinstance(joined, exp.Table)
+    assert joined.meta.get(UNTRUSTED_HOP)
 
 
 LONG_A = "first_relationship_with_a_rather_long_descriptive_name"

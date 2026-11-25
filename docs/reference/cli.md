@@ -301,7 +301,7 @@ Exit code is `0` for any report about the data, including `contradicts_hard` —
 | `confirms` | Detected value matches what was stored. |
 | `refines` | Differs from the stored value, but the data does not disprove it — "no duplicates observed" only *suggests* uniqueness. |
 | `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
-| `skipped_unsupported` | Not profilable — a non-`sql_table` dataset (sql-mode / query-backed) or an expression-valued join key. |
+| `skipped_unsupported` | Not profilable — a non-`sql_table` dataset (sql-mode / query-backed), a join key reading beyond its own dataset's source, or a windowed join key on a dataset with filters. |
 | `no_evidence` | Profiled fine, but one side had no non-null key rows. An empty scan says nothing about arity, so nothing is detected or written. Worth re-running once data lands — unlike `skipped_unsupported`, which never becomes profilable. |
 | `scan_failed` | The scan itself raised; the message is in `note`. Contained per relationship, so one unreadable table costs one finding rather than the whole report — but the command still exits 1, since that relationship was not profiled. |
 
