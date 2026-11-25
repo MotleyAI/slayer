@@ -216,7 +216,7 @@ from slayer.database.client import (
     render_type_probe,
     sql_dataset_trial_query,
 )
-from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect, ossie_token
 from slayer.sql.mode_a_variables import bind_mode_a, check_mode_a_placeholders, check_placeholders
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.render.library import check_library_support
@@ -3230,10 +3230,7 @@ class SlayerQueryEngine:
         tgt_cols = [p[1] for p in relationship.column_pairs]
         target = by_name.get(relationship.to)
 
-        note = _detection_skip_reason(
-            dataset=dataset, target=target, src_cols=src_cols, tgt_cols=tgt_cols,
-        )
-        if note is not None:
+        def skipped(note: str) -> "tuple[RelationshipCardinalityFinding, None]":
             return RelationshipCardinalityFinding(
                 data_source=data_source, dataset=dataset.name,
                 to=relationship.to, column_pairs=pairs,
@@ -3241,14 +3238,28 @@ class SlayerQueryEngine:
                 verdict=CardinalityVerdict.SKIPPED_UNSUPPORTED, note=note,
             ), None
 
+        note = _detection_skip_reason(dataset=dataset, target=target, src_cols=src_cols, tgt_cols=tgt_cols)
+        if note is not None:
+            return skipped(note)
+        # Keys are read in the form each side runs on this datasource; no other field is resolved.
+        peers = list(by_name.values())
+        src_keyed, tgt_keyed = [
+            await self._resolved(side.model_copy(update={"fields": [f for f in side.fields if f.name in keys],
+                                                         "metrics": []}), datasource=datasource_cfg, datasets=peers)
+            for side, keys in ((dataset, src_cols), (target, tgt_cols))
+        ]
+        note = _filtered_window_key_reason(sides=((src_keyed, src_cols), (tgt_keyed, tgt_cols)), dialect=sqlglot_name)
+        if note is not None:
+            return skipped(note)
+
         src_side = await self._side_stats(
             client=client, table=dataset.sql_table,
-            key_cols=_key_reads(dataset=dataset, keys=src_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=src_keyed, keys=src_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         tgt_side = await self._side_stats(
             client=client, table=target.sql_table,
-            key_cols=_key_reads(dataset=target, keys=tgt_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=tgt_keyed, keys=tgt_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         # 0 == 0 reads as observed_unique, so an empty side would falsely detect
@@ -3296,8 +3307,13 @@ class SlayerQueryEngine:
     def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[exp.Select, exp.Select]:
         """(row-count, distinct-count) profiling statements reading the table and keys as SLayer reads them; NULL key
         rows excluded from both."""
-        tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
+        tbl: Expr = parse_table(name=table, dialect=get_dialect(sqlglot_name))
         cols = [exp.column(c) if isinstance(c, exp.Identifier) else c for c in key_cols]
+        if any(c.find(exp.Window) is not None for c in cols):
+            # A windowed key is computed over the table's rows first; every key is then read as a column.
+            names = [f"__slayer_key_{i}" for i in range(len(cols))]
+            tbl = exp.select(*(exp.alias_(c.copy(), n) for c, n in zip(cols, names))).from_(tbl).subquery("__slayer_t")
+            cols = [exp.column(n) for n in names]
         predicate = None
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
@@ -3801,11 +3817,12 @@ class SlayerQueryEngine:
         # Parse with the datasource's own dialect (matching generation), else
         # valid non-Postgres Mode-A SQL could be mis-rejected. Missing → postgres.
         datasource = await self.storage.get_datasource(dataset.data_source)
-        dialect = self._dialect_for_type(datasource.type if datasource else None)
+        ds_type = datasource.type if datasource else None
+        dialect = self._dialect_for_type(ds_type)
         datasets_by_name = {k: v for k, v in loaded.items() if v is not None}
         check_definition_reach(dataset=dataset, reachable=datasets_by_name)
         check_definition_ambiguity(dataset=dataset, reachable=datasets_by_name)
-        check_dataset_filters(dataset=dataset, reachable=datasets_by_name)
+        check_dataset_filters(dataset=dataset, reachable=datasets_by_name, dialect=ossie_token(ds_type))
 
         def _expand(sql: str) -> None:
             expand_derived_refs_sync(
@@ -3977,6 +3994,15 @@ def _detection_skip_reason(
                     f"{str(err).splitlines()[0]}; cardinality profiling "
                     f"supports keys over each dataset's own source only"
                 )
+    return None
+
+
+def _filtered_window_key_reason(*, sides, dialect: str) -> str | None:
+    """Why a windowed key of a filtered dataset can't be profiled: its values depend on the filtered rows."""
+    for dataset, keys in sides:
+        if dataset.filters and any(r.find(exp.Window) for r in _key_reads(dataset=dataset, keys=keys, dialect=dialect)):
+            return (f"a key of dataset {dataset.name!r} is windowed and the dataset has filters; cardinality profiling "
+                    f"computes windows over the unfiltered table, so it skips this relationship")
     return None
 
 

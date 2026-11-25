@@ -38,6 +38,7 @@ from slayer.core.scope import resolve_generated_field
 from slayer.core.syntax import drop_root_hop
 from slayer.core.vocabulary import old_keywords
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.sql.naming import windowed_column
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.root_scope import root_scope_field_ids
 from slayer.sql.zoned_reads import STORED, VALUE, Context, ReadSite, field_for_column
@@ -623,11 +624,15 @@ def _expand_target_field(
         )
 
     definition = target_col.definition_sql
-    if definition is None or is_trivial_base(field=target_col):
+    value: Optional[Expression]
+    if target_col.windowed:
+        _record(sinks.reads, full_path)
+        value = windowed_column_ast(field=target_col, alias_path=canonical_alias)
+    elif definition is None or is_trivial_base(field=target_col):
         # The target's own spelling, not the (possibly unquoted) reference site,
         # so a quoted self-identity keeps its quoting on case-folding dialects.
         _record(sinks.reads, full_path)
-        value: Optional[Expression] = _qualified_base_ast(
+        value = _qualified_base_ast(
             field=target_col, dataset=target_dataset, alias_path=canonical_alias, dialect=dialect, path=full_path,
             sinks=sinks,
         )
@@ -864,7 +869,9 @@ def expand_field_definition_parts_ast(
         return out if out is not None else cast(Expression, sqlglot.parse_one(sql, dialect=dialect))
 
     definition = field.definition_sql
-    if definition is None or is_trivial_base(field=field):
+    if field.windowed:
+        value = windowed_column_ast(field=field, alias_path=alias_path)
+    elif definition is None or is_trivial_base(field=field):
         value = _qualified_base_ast(field=field, dataset=dataset, alias_path=alias_path, dialect=dialect,
                                     path=owner_path, sinks=ExpansionSinks(read=read, context=context))
     else:
@@ -881,3 +888,8 @@ def _qualified_base_ast(
     node = exp.maybe_parse(raw, dialect=dialect)
     return _read(_requalify(node=node, alias=alias_path, leaf=field.name), sinks=sinks, dataset=dataset, field=field,
                  path=path)
+
+
+def windowed_column_ast(*, field: DatasetField, alias_path: str) -> Expression:
+    """A windowed field as the column its dataset's relation materialises it in: ``alias.<column>``."""
+    return exp.column(windowed_column(field.name), table=exp.to_identifier(alias_path))

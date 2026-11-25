@@ -206,9 +206,7 @@ Cycles in the reference graph (e.g., `c1: "orders.c2 + 1"` and `c2: "orders.c1 -
 
 ### Window functions in a field's expression
 
-A field's expression may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The field behaves like any other field when used in `dimensions` / SELECT.
-
-> **Filtering on a windowed field is rejected.** A query filter naming a field whose expression contains a window function (e.g. `{"filter": ["orders.rn <= 3"]}` against a field defined as `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [expressions.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
+A field whose dialect entry contains a window function (`row_number() over (...)`, …) is computed over its dataset's filtered rows before any join, query filter or aggregation, then read as a column in every position — so a dataset filter reading its own dataset's windowed field is a filter cycle, and a window in a field's portable `sql` is refused at save.
 
 ### SQLite JSON extraction
 

@@ -1,11 +1,11 @@
-"""Detect SQL window functions (`OVER (...)`) in field SQL or filter strings.
-
-A window function cannot appear in a WHERE clause on most dialects: a filter on a windowed
-`DatasetField.sql` auto-promotes to a post-aggregation outer WHERE, and a raw window in a filter or
-metric expression gets an actionable error.
-"""
+"""Detect SQL window functions: a raw ``OVER (...)`` in filter or metric text is refused, and a field whose native SQL
+holds one is read as a column its dataset's relation materialises."""
 
 import re
+
+import sqlglot
+import sqlglot.errors
+from sqlglot import exp
 
 _OVER_RE = re.compile(r"\bover\s*\(", re.IGNORECASE)
 
@@ -22,6 +22,15 @@ def has_window_function(sql: str) -> bool:
     if not sql:
         return False
     return bool(_OVER_RE.search(sql))
+
+
+def holds_window(sql: str, *, dialect: str | None = None) -> bool:
+    """Whether native ``sql`` parses holding a window function (an ``OVER (`` inside a string literal is not one)."""
+    try:
+        parsed = sqlglot.parse_one(sql, dialect=dialect)
+    except sqlglot.errors.ParseError:
+        return False
+    return parsed.find(exp.Window) is not None
 
 
 WINDOW_IN_FILTER_ERROR = (

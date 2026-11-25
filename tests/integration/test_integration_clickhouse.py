@@ -1089,15 +1089,16 @@ def planets_clickhouse_env(clickhouse_container):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_clickhouse_raises(planets_clickhouse_env) -> None:
+async def test_filter_on_windowed_column_clickhouse(planets_clickhouse_env) -> None:
+    """A filter on a windowed field applies outside the materialised window."""
     engine = planets_clickhouse_env
     query = SlayerQuery(
         population="planets",
         dimensions=["planets.name"],
         filter=["planets.rn <= 3"],
     )
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await engine.execute(query)
+    result = await engine.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Neptune"}
 
 
 # ---------------------------------------------------------------------------

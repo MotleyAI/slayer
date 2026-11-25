@@ -31,6 +31,7 @@ from slayer.engine.binding import (
     bind_expr,
     bind_filter,
 )
+from slayer.engine.definitions import resolved_dataset
 from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from slayer.core.syntax import Ref, parse_expr
 
@@ -515,10 +516,7 @@ class TestFilterBinder:
 
 
 class TestWindowInFilter:
-    def test_filter_on_windowed_column_sql_raises(self):
-        # A DatasetField.sql containing a window function. A filter referencing
-        # that field raises IllegalWindowInFilterError (no
-        # auto-promotion).
+    def test_portable_windowed_field_is_refused_at_resolution(self):
         model = _orders().model_copy(update={
             "fields": list(_orders().fields) + [
                 DatasetField(
@@ -528,15 +526,9 @@ class TestWindowInFilter:
                 ),
             ],
         })
-        scope = DatasetScope(population=model)
-        bundle = ResolvedSourceBundle(
-            dialect="postgres",
-            population=model,
-            referenced_datasets=[_customers(), _regions()],
-        )
-        expr = parse_expr("rolling_rank > 1")
-        with pytest.raises(IllegalWindowInFilterError):
-            bind_filter(expr, scope=scope, bundle=bundle)
+        peers = [_customers(), _regions()]
+        with pytest.raises(IllegalWindowInFilterError, match="rolling_rank"):
+            resolved_dataset(model, ds_type="postgres", datasets=peers, live={})
 
 
 class TestNestedAggregateParamDimAliasMap:

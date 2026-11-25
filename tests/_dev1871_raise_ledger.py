@@ -406,11 +406,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "dataset filter …"
          + SUGGEST + "Use query-level filters for metric conditions.",
          category="checker", family="model-filters", user=True, owner="checker"),
-    _row(module=_EE, function="validate_dataset_filter", exc="DatasetFilterError",
-         message="The dataset filter references field … whose SQL contains a window function."
-         + AT + "dataset filter …"
-         + SUGGEST + "Factor it into a multi-stage source_queries dataset or use a rank-family transform at query time.",
-         category="checker", family="model-filters", user=True, owner="checker"),
     # Two sites: leaf-collision disambiguation and same-field multi-granularity.
     _row(module=_BI, function="_resolve_main_time_dimension", exc="AmbiguousReferenceError", message="",
          category="bind", family="time-axis", user=True, owner="bind", sites=2),

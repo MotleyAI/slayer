@@ -17,6 +17,7 @@ import re
 import threading
 import unicodedata
 from decimal import Decimal
+from enum import Enum
 from functools import lru_cache, partial
 from itertools import count
 from types import MappingProxyType
@@ -470,7 +471,8 @@ class _State:
 
 
 _STATE = _State()
-_PARSE_LOCK = threading.Lock()
+# Re-entrant: rendering inside a parse action probes the grammar (``_probe_tree``).
+_PARSE_LOCK = threading.RLock()
 
 
 def _spelled(kind: str) -> None:
@@ -2958,47 +2960,105 @@ def call_source(text: str) -> Optional[CallSource]:
 _CANONICAL_OPS = {"==": "="}
 
 
+class _Style(Enum):
+    """How the renderer spells: canonical with written quoting kept, canonical quote-blind (identity), or the pre-2.0
+    result-name seed (quote-blind)."""
+
+    CANONICAL = "canonical"
+    IDENTITY = "identity"
+    LEGACY = "legacy"
+
+
 def _is_null(node: Any) -> bool:
     return isinstance(node, Literal) and node.value is None
 
 
-def _argument_text(node: Any, *, legacy: bool) -> str:
+def _argument_text(node: Any, *, style: _Style) -> str:
     """A non-scalar call's argument: a ``name = value`` comparison parenthesised, so it never reads as a keyword."""
-    text = _render(node, legacy=legacy)
-    if not legacy and isinstance(node, Cmp) and node.op == "==" and isinstance(node.left, Ref) and not node.left.quoted:
+    text = _render(node, style=style)
+    if (style is not _Style.LEGACY and isinstance(node, Cmp) and node.op == "==" and isinstance(node.left, Ref)
+            and not _reference_text(node.left, style=style).startswith('"')):
         return f"({text})"
     return text
 
 
 def _canonical_call_params(
-    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], *, bare_direction: bool = False, legacy: bool = False,
+    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], *, bare_direction: bool = False, style: _Style = _Style.CANONICAL,
 ) -> str:
     parts = [
-        _canonical_kwarg(a.name, a.value, bare_direction=bare_direction, legacy=legacy) if isinstance(a, NamedArg)
-        else _argument_text(a, legacy=legacy)
+        _canonical_kwarg(a.name, a.value, bare_direction=bare_direction, style=style) if isinstance(a, NamedArg)
+        else _argument_text(a, style=style)
         for a in args
     ]
-    parts += [_canonical_kwarg(k, v, bare_direction=bare_direction, legacy=legacy) for k, v in kwargs]
+    parts += [_canonical_kwarg(k, v, bare_direction=bare_direction, style=style) for k, v in kwargs]
     return f"({', '.join(parts)})" if parts else ""
 
 
-def _canonical_kwarg(name: str, value: Any, *, bare_direction: bool, legacy: bool) -> str:
+def _canonical_kwarg(name: str, value: Any, *, bare_direction: bool, style: _Style) -> str:
     """``name=value``; a transform's recognised ``direction`` renders normalised (bare in the legacy seed)."""
     if bare_direction and name == "direction" and isinstance(value, Literal):
         direction = normalize_direction(value.value)
         if direction is not None:
-            return direction if legacy else f"direction='{direction}'"
-    return f"{name}={_canonical_kwarg_text(value, legacy=legacy)}"
+            return direction if style is _Style.LEGACY else f"direction='{direction}'"
+    return f"{name}={_canonical_kwarg_text(value, style=style)}"
 
 
-def _canonical_kwarg_text(value: Any, *, legacy: bool) -> str:
+def _canonical_kwarg_text(value: Any, *, style: _Style) -> str:
     if isinstance(value, tuple):
-        return f"[{', '.join(_render(v, legacy=legacy) for v in value)}]"
-    return _render(value, legacy=legacy)
+        return f"[{', '.join(_render(v, style=style) for v in value)}]"
+    return _render(value, style=style)
+
+
+def _quoted_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 def _identifier_text(name: str) -> str:
-    return name if name.isidentifier() else '"' + name.replace('"', '""') + '"'
+    return name if name.isidentifier() else _quoted_identifier(name)
+
+
+def _probe_tree(text: str) -> Any:
+    """``text`` parsed under its own scratch state, so a parse action may call it mid-parse."""
+    global _STATE
+    with _PARSE_LOCK:
+        outer, _STATE = _STATE, _State()
+        try:
+            _STATE.reset(text)
+            return _parse_tree(text)
+        finally:
+            _STATE = outer
+
+
+@lru_cache(maxsize=4096)
+def _reads_back_bare(name: str, *, head: bool) -> bool:
+    """Whether ``name`` written bare reads back as that unquoted segment: alone at a path's head, else after a dot."""
+    try:
+        parsed = _probe_tree(name if head else f"x.{name}")
+    except Exception:  # noqa: BLE001 — any failure to read back means it must be quoted
+        return False
+    if head:
+        return isinstance(parsed, Ref) and parsed.name == name and not parsed.quoted and not parsed.evaluated
+    return isinstance(parsed, DottedRef) and parsed.parts == ("x", name) and not parsed.quoted and not parsed.evaluated
+
+
+def _segment_text(name: str, *, quoted: bool, head: bool, style: _Style) -> str:
+    if style is not _Style.CANONICAL:
+        return _identifier_text(name)
+    return _quoted_identifier(name) if quoted or not _reads_back_bare(name, head=head) else name
+
+
+def _path_segment_text(node: DottedRef, i: int, *, style: _Style) -> str:
+    """Segment ``i`` of a dotted path; a ``*`` segment is the star unless written quoted (canonical style)."""
+    part, quoted = node.parts[i], node.quoted_at(i)
+    if part == "*" and not (quoted and style is _Style.CANONICAL):
+        return part
+    return _segment_text(part, quoted=quoted, head=i == 0, style=style)
+
+
+def _reference_text(node: Ref | DottedRef, *, style: _Style) -> str:
+    if isinstance(node, Ref):
+        return _segment_text(node.name, quoted=node.quoted, head=True, style=style)
+    return ".".join(_path_segment_text(node, i, style=style) for i in range(len(node.parts)))
 
 
 _P_OR, _P_AND, _P_NOT, _P_CMP, _P_ADD, _P_MUL, _P_UNARY, _P_ATOM = range(1, 9)
@@ -3019,27 +3079,31 @@ def _precedence(node: Any) -> int:
     return _P_ATOM
 
 
-def _operand_text(node: Any, *, minimum: int, legacy: bool) -> str:
+def _operand_text(node: Any, *, minimum: int, style: _Style) -> str:
     """``node``'s canonical text, parenthesised when it binds looser than ``minimum``."""
-    text = _render(node, legacy=legacy)
+    text = _render(node, style=style)
     return f"({text})" if _precedence(node) < minimum else text
 
 
 def canonical_metric_text(parsed: Any) -> str:
-    """Render a ``ParsedExpr`` to canonical functional text that parses back to the same tree."""
-    return _render(parsed, legacy=False)
+    """Render a ``ParsedExpr`` to canonical functional text that parses back to the same tree, quoting included."""
+    return _render(parsed, style=_Style.CANONICAL)
+
+
+def quote_blind_metric_text(parsed: Any) -> str:
+    """The canonical text with written quoting ignored: tells expressions apart before binding. Never parsed."""
+    return _render(parsed, style=_Style.IDENTITY)
 
 
 def legacy_result_name_seed(parsed: Any) -> str:
     """The text result keys are named from: the canonical text in the pre-2.0 aggregation spelling, so keys stay
     stable. Never parsed or shown."""
-    return _render(parsed, legacy=True)
+    return _render(parsed, style=_Style.LEGACY)
 
 
-def _render(parsed: Any, *, legacy: bool) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
+def _render(parsed: Any, *, style: _Style) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
     if isinstance(parsed, (Ref, DottedRef)):
-        text = _identifier_text(parsed.name) if isinstance(parsed, Ref) else ".".join(
-            p if p == "*" else _identifier_text(p) for p in parsed.parts)
+        text = _reference_text(parsed, style=style)
         return f"AGG({text})" if parsed.evaluated else text
     if isinstance(parsed, StarSource):
         return "*"
@@ -3052,51 +3116,51 @@ def _render(parsed: Any, *, legacy: bool) -> str:  # NOSONAR(S3776) — flat per
     if isinstance(parsed, (Placeholder, BoundVariable)):
         return f"{{{parsed.name}}}"
     if isinstance(parsed, TupleLit):
-        return f"({', '.join(_render(e, legacy=legacy) for e in parsed.elements)})"
+        return f"({', '.join(_render(e, style=style) for e in parsed.elements)})"
     if isinstance(parsed, ArrayLit):
-        return f"[{', '.join(_render(e, legacy=legacy) for e in parsed.elements)}]"
+        return f"[{', '.join(_render(e, style=style) for e in parsed.elements)}]"
     if isinstance(parsed, AggCall):
-        return _canonical_agg_text(parsed, legacy=legacy)
+        return _canonical_agg_text(parsed, style=style)
     if isinstance(parsed, TransformCall):
-        inner = _argument_text(parsed.input, legacy=legacy)
-        params = _canonical_call_params(parsed.args, parsed.kwargs, bare_direction=True, legacy=legacy)
+        inner = _argument_text(parsed.input, style=style)
+        params = _canonical_call_params(parsed.args, parsed.kwargs, bare_direction=True, style=style)
         return f"{parsed.op}({inner}{', ' + params[1:-1] if params else ''})"
     if isinstance(parsed, ScalarCall):
-        return f"{parsed.name}({', '.join(_render(a, legacy=legacy) for a in parsed.args)})"
+        return f"{parsed.name}({', '.join(_render(a, style=style) for a in parsed.args)})"
     if isinstance(parsed, DateTrunc):
-        return f"date_trunc('{parsed.unit}', {_render(parsed.value, legacy=legacy)})"
+        return f"date_trunc('{parsed.unit}', {_render(parsed.value, style=style)})"
     if isinstance(parsed, NamedArg):
-        return f"{parsed.name}={_canonical_kwarg_text(parsed.value, legacy=legacy)}"
+        return f"{parsed.name}={_canonical_kwarg_text(parsed.value, style=style)}"
     if isinstance(parsed, Cast):
         fn = "TRY_CAST" if parsed.try_ else "CAST"
-        return f"{fn}({_render(parsed.source, legacy=legacy)} AS {parsed.type_text})"
+        return f"{fn}({_render(parsed.source, style=style)} AS {parsed.type_text})"
     if isinstance(parsed, (Arith, Cmp)):
         prec = _precedence(parsed)
-        left = _operand_text(parsed.left, minimum=prec + 1 if isinstance(parsed, Cmp) else prec, legacy=legacy)
-        if not legacy and isinstance(parsed, Cmp) and parsed.op in ("is", "is not") and _is_null(parsed.right):
+        left = _operand_text(parsed.left, minimum=prec + 1 if isinstance(parsed, Cmp) else prec, style=style)
+        if style is not _Style.LEGACY and isinstance(parsed, Cmp) and parsed.op in ("is", "is not") and _is_null(parsed.right):
             return f"{left} {parsed.op.upper()} NULL"
-        right = _operand_text(parsed.right, minimum=prec + 1, legacy=legacy)
-        return f"{left} {parsed.op if legacy else _CANONICAL_OPS.get(parsed.op, parsed.op)} {right}"
+        right = _operand_text(parsed.right, minimum=prec + 1, style=style)
+        return f"{left} {parsed.op if style is _Style.LEGACY else _CANONICAL_OPS.get(parsed.op, parsed.op)} {right}"
     if isinstance(parsed, UnaryOp):
-        operand = _operand_text(parsed.operand, minimum=_precedence(parsed) + 1, legacy=legacy)
+        operand = _operand_text(parsed.operand, minimum=_precedence(parsed) + 1, style=style)
         return f"not {operand}" if parsed.op == "not" else f"{parsed.op}{operand}"
     if isinstance(parsed, BoolOp):
         prec = _precedence(parsed)
-        return f" {parsed.op} ".join(_operand_text(o, minimum=prec + 1, legacy=legacy) for o in parsed.operands)
+        return f" {parsed.op} ".join(_operand_text(o, minimum=prec + 1, style=style) for o in parsed.operands)
     return str(parsed)
 
 
-def _canonical_agg_text(parsed: AggCall, *, legacy: bool) -> str:
-    source = _render(parsed.source, legacy=legacy)
-    if legacy and isinstance(parsed.source, (Ref, DottedRef, StarSource)):
-        text = f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs, legacy=legacy)}"
+def _canonical_agg_text(parsed: AggCall, *, style: _Style) -> str:
+    source = _render(parsed.source, style=style)
+    if style is _Style.LEGACY and isinstance(parsed.source, (Ref, DottedRef, StarSource)):
+        text = f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs, style=style)}"
     else:
-        parts = [_argument_text(parsed.source, legacy=legacy)]
-        parts += [_argument_text(a, legacy=legacy) for a in parsed.args]
-        parts += [f"{k}={_canonical_kwarg_text(v, legacy=legacy)}" for k, v in parsed.kwargs]
+        parts = [_argument_text(parsed.source, style=style)]
+        parts += [_argument_text(a, style=style) for a in parsed.args]
+        parts += [f"{k}={_canonical_kwarg_text(v, style=style)}" for k, v in parsed.kwargs]
         text = f"{parsed.agg}({', '.join(parts)})"
     if parsed.filter is not None:
-        text += f" FILTER (WHERE {_render(parsed.filter, legacy=legacy)})"
+        text += f" FILTER (WHERE {_render(parsed.filter, style=style)})"
     return text
 
 
@@ -3213,6 +3277,7 @@ __all__ = [
     "classify_arguments", "colon_twin", "comparison_hint",
     "bare_literal_text", "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",
     "legacy_result_name_seed", "map_refs", "metric_dependency_problems", "metric_text_at_path", "onto_path",
+    "quote_blind_metric_text",
     "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths",
     "rewrite_colon_spans", "root_relative", "split_entity_agg_ref", "StringLiteralSpan", "string_literal_spans",
     "text_paths", "value_text", "variable_names", "walk_parsed", "walk_parsed_refs",

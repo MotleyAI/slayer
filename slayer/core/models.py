@@ -363,6 +363,8 @@ class DatasetField(DatasetPart):
     # Runtime-only: the native SQL this field runs on its datasource (``with_native``); ``None`` is unresolved.
     _native: str | None = PrivateAttr(default=None)
     _resolved: bool = PrivateAttr(default=False)
+    # Runtime-only: the native SQL holds a window function (a column of the dataset's materialised relation).
+    _windowed: bool = PrivateAttr(default=False)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -430,17 +432,22 @@ class DatasetField(DatasetPart):
         """Whether this field carries the native SQL it runs on its datasource."""
         return self._resolved
 
-    def with_native(self, native: str | None) -> "DatasetField":
-        """A copy running ``native`` (``None``: the source column of its name)."""
+    def with_native(self, native: str | None, *, windowed: bool = False) -> "DatasetField":
+        """A copy running ``native`` (``None``: the source column of its name); ``windowed`` when it holds a window."""
         out = self.model_copy()
-        out._native, out._resolved = native, True
+        out._native, out._resolved, out._windowed = native, True, windowed
         return out
 
     def unresolved(self) -> "DatasetField":
         """A copy whose running SQL is resolved again from its forms."""
         out = self.model_copy()
-        out._native, out._resolved = None, False
+        out._native, out._resolved, out._windowed = None, False, False
         return out
+
+    @property
+    def windowed(self) -> bool:
+        """Whether the resolved definition holds a window function, so it is read as a materialised column."""
+        return self._windowed
 
     @property
     def definition_sql(self) -> str | None:

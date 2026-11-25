@@ -1296,15 +1296,16 @@ def planets_mysql_env(mysql_container):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_mysql_raises(planets_mysql_env) -> None:
+async def test_filter_on_windowed_column_mysql(planets_mysql_env) -> None:
+    """A filter on a windowed field applies outside the materialised window."""
     engine = planets_mysql_env
     query = SlayerQuery(
         population="planets",
         dimensions=["planets.name"],
         filter=["planets.rn <= 3"],
     )
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await engine.execute(query)
+    result = await engine.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Neptune"}
 
 
 # ---------------------------------------------------------------------------

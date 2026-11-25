@@ -38,7 +38,7 @@ from slayer.core.refs import (
     key_display,
     partition_by_suffix,
 )
-from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_metric_text, legacy_result_name_seed
+from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, legacy_result_name_seed, quote_blind_metric_text
 from slayer.sql._identifier_fit import fit_identifier
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, get_dialect
 from slayer.sql.dialects.base import LIST_POSITION
@@ -256,6 +256,13 @@ OUTER_WRAP_ALIAS = "_outer"
 STAGE_INNER_ALIAS = "_stage_inner"
 #: A keyless association home's per-query row number (``__slayer_`` is reserved at save time: no dataset field collides).
 ROW_IDENTITY_FIELD = "__slayer_row_id"
+#: The shortest identifier ceiling of the dialects, so a materialised column's name fits every one.
+_WINDOWED_COLUMN_BYTES = 63
+
+
+def windowed_column(field: str) -> str:
+    """The column a windowed field is materialised as in its dataset's relation (reserved ``__slayer_`` prefix)."""
+    return fit_identifier(f"__slayer_w_{field}", limit=_WINDOWED_COLUMN_BYTES)
 
 
 def with_row_identity(dataset: SlayerDataset) -> SlayerDataset:
@@ -357,7 +364,7 @@ def expression_text_alias(parsed: object) -> str:
     field or star, else the sanitised legacy naming seed."""
     if (isinstance(parsed, AggCall) and not parsed.args and not parsed.kwargs and parsed.filter is None
             and isinstance(parsed.source, (Ref, DottedRef, StarSource)) and _PLAIN_NAME_RE.fullmatch(parsed.agg)):
-        base = canonical_metric_text(parsed.source)
+        base = quote_blind_metric_text(parsed.source)
         if _PLAIN_SOURCE_RE.fullmatch(base):
             if base.endswith(".*"):
                 return f"{base[:-2]}.{canonical_agg_name(metric_name='*', aggregation_name=parsed.agg)}"
