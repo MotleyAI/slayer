@@ -1,0 +1,12 @@
+document:
+  name: EnterpriseOntology
+  ontology:
+  - concept: SocialSecurityNr
+    type: ValueType
+    extends:
+    - Integer
+  - concept: Employee
+    type: EntityType
+    extends:
+    - Person
+files: {}
