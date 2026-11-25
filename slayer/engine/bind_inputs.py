@@ -47,7 +47,9 @@ from slayer.core.keys import (
     operand_constituents,
     settle_ranked_grains,
     source_anchor_path,
+    substitute_value_keys,
     transform_operand_grain,
+    value_grain,
     walk_value_keys,
     window_kwarg_of,
 )
@@ -851,19 +853,29 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
-    # A ranked aggregation's grain drops its ranking key (semantics Axiom 5), before any grain is read.
-    row_default_key = None if scope.population is None else temporal_row_dimension_key(
-        row_keys=[dm.bound.value_key for dm in declared_metrics[:n_dims + n_tds]],
-        source_dataset=scope.population, bundle=bundle,
+    # A ranked aggregation's grain drops its ranking key (semantics Axiom 5), before any grain is read: the
+    # dimensions settle first, and every other position reads them, and the grain, as settled.
+    def _settle(vk: ValueKey) -> ValueKey:
+        return settle_ranked_grains(vk, query_grain=_query_grain, active_bucket=active_td_key, row_default_key=_default_key)
+
+    _default_key = _row_default_key_resolver(
+        row_keys=[dm.bound.value_key for dm in declared_metrics[:n_dims + n_tds]], scope=scope, bundle=bundle,
     )
+    n_grain = n_dims + n_tds
+    settled_dims = [_settle(dm.bound.value_key) for dm in declared_metrics[:n_grain]]
+    renamed = {dm.bound.value_key: s for dm, s in zip(declared_metrics, settled_dims) if s != dm.bound.value_key}
+    _query_grain = Grain.of(settled_dims)
     declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lambda vk: settle_ranked_grains(
-            vk, query_grain=_query_grain, active_bucket=active_td_key, row_default_key=row_default_key,
-        ),
+        lambda vk: _settle(substitute_value_keys(key=vk, mapping=renamed) if renamed else vk),
         declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
+        skip_dimensions=True,
     )
+    declared_metrics = [
+        dm.model_copy(update={"bound": dm.bound.model_copy(update={"value_key": s})})
+        for dm, s in zip(declared_metrics, settled_dims)
+    ] + declared_metrics[n_grain:]
     check_transform_partition_keys_in_operand_grain(
         roots=[
             *(dm.bound.value_key for dm in declared_metrics),
@@ -918,13 +930,6 @@ def _check_ranking_keys_determined(
     """A ranked aggregation's key is a field of its home dataset (semantics Axiom 2.4). Over an aggregate: a grain
     member, a field the grain pins, or an attached value at a grain the operand determines; over rows, an attached
     value at a grain the home's rows determine (row-level keys are judged by closure at plan time)."""
-    def grain_of(c: ValueKey) -> Grain:
-        if isinstance(c, AggregateKey):
-            return query_grain if c.partition_keys is None else c.partition_keys
-        if isinstance(c, TransformKey):
-            return transform_operand_grain(c.input, query_grain=query_grain, active_bucket=active_bucket)
-        return Grain.of([c])
-
     for k in (k for root in roots for k in walk_value_keys(root)):
         if not isinstance(k, AggregateKey):
             continue
@@ -932,26 +937,70 @@ def _check_ranking_keys_determined(
         if rk is None or rk == active_bucket:  # the time axis is check_temporal_axis's
             continue
         if is_ranked_over_cells(k):
-            operand = transform_operand_grain(k.source, query_grain=query_grain, active_bucket=active_bucket)
-            check_ranking_key_determined(term=k, key=rk, home=f"the operand grain ({grain_display(operand)})",
-                                         determined=all(
-                m in operand or grain_determines(
-                    key=m, grain=operand, host_dataset=host, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
-                )
-                for m in grain_of(rk)
-            ))
-            continue
-        path = source_anchor_path(k.source)
-        home = walk_key_path(dataset=host, path=path, bundle=bundle)
-        if home is None:
-            continue
-        check_ranking_key_determined(term=k, key=rk, home=f"the rows of {home.name}", determined=all(
-            grain_member_attributable(
-                key=m, target_path=path, root_dataset=home, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+            _check_key_over_cells(k, rk=rk, query_grain=query_grain, active_bucket=active_bucket, host=host,
+                                  bundle=bundle)
+        else:
+            _check_key_over_rows(k, rk=rk, query_grain=query_grain, active_bucket=active_bucket, host=host,
+                                 bundle=bundle)
+
+
+def _row_default_key_resolver(
+    *, row_keys: List[ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Callable[[AggregateKey], Optional[ValueKey]]:
+    """A ranked aggregation's default ranking key among the query's dimensions: the first temporal row-level one its
+    home determines, by the predicate its explicit key meets (functional-form › Default ranking key)."""
+    host = scope.population
+    if host is None:
+        return lambda _agg: None
+
+    def determined(key: ValueKey, *, path: Tuple[str, ...], home: SlayerDataset) -> bool:
+        try:
+            return grain_member_attributable(
+                key=key, target_path=path, root_dataset=home, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
                 host_dataset=host, host_name=host.name,
             )
-            for c in operand_constituents(rk) for m in grain_of(c)
-        ))
+        except UnresolvableDimensionRelationshipError:
+            return False
+
+    def resolve(agg: AggregateKey) -> Optional[ValueKey]:
+        path = source_anchor_path(agg.source)
+        home = walk_key_path(dataset=host, path=path, bundle=bundle) if path else host
+        if home is None:
+            return None
+        candidates = row_keys if not path else [k for k in row_keys if determined(k, path=path, home=home)]
+        return temporal_row_dimension_key(row_keys=candidates, source_dataset=host, bundle=bundle)
+
+    return resolve
+
+
+def _check_key_over_cells(
+    k: AggregateKey, *, rk: ValueKey, query_grain: Grain, active_bucket: Optional[TimeTruncKey],
+    host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    operand = transform_operand_grain(k.source, query_grain=query_grain, active_bucket=active_bucket)
+    check_ranking_key_determined(term=k, key=rk, home=f"the operand grain ({grain_display(operand)})", determined=all(
+        m in operand or grain_determines(
+            key=m, grain=operand, host_dataset=host, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+        )
+        for m in value_grain(rk, query_grain=query_grain, active_bucket=active_bucket)
+    ))
+
+
+def _check_key_over_rows(
+    k: AggregateKey, *, rk: ValueKey, query_grain: Grain, active_bucket: Optional[TimeTruncKey],
+    host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    path = source_anchor_path(k.source)
+    home = walk_key_path(dataset=host, path=path, bundle=bundle)
+    if home is None:
+        return
+    check_ranking_key_determined(term=k, key=rk, home=f"the rows of {home.name}", determined=all(
+        grain_member_attributable(
+            key=m, target_path=path, root_dataset=home, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+            host_dataset=host, host_name=host.name,
+        )
+        for c in operand_constituents(rk) for m in value_grain(c, query_grain=query_grain, active_bucket=active_bucket)
+    ))
 
 
 def _home_reading(key: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ValueKey:

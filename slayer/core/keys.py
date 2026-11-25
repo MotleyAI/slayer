@@ -1221,7 +1221,7 @@ def effective_root_grain(
             return Grain.of([*projected_dim_keys, *projected_td_keys]), False
         # A transform over a window= inner gains the active bucket in its union grain.
         if (
-            not windowed and active_bucket is not None
+            not windowed and isinstance(agg, TransformKey) and active_bucket is not None
             and any(window_kwarg_of(k) is not None for k in walk_value_keys(agg))
         ):
             return grain | {active_bucket}, True
@@ -1265,6 +1265,12 @@ def transform_operand_grain(
     # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1).
     grained = any(isinstance(k, (TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)) for k in walk_value_keys(input))
     return query_grain if grain.is_empty and not grained else grain
+
+
+def value_grain(k: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey]) -> Grain:
+    """The grain ``k``'s value varies at: an aggregate's (a windowed one's with the active bucket), a transform's
+    operand grain, a row leaf itself; a compound the union of its parts'."""
+    return _operand_grain(k, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=None)
 
 
 def _operand_grain(
@@ -2560,11 +2566,13 @@ def is_ranked_over_cells(key: ValueKey) -> TypeGuard[AggregateKey]:
 
 
 def settle_ranked_grains(
-    key: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey], row_default_key: Optional[ValueKey],
+    key: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
+    row_default_key: Callable[["AggregateKey"], Optional[ValueKey]],
 ) -> ValueKey:
     """Each unwindowed ranked aggregation's grain drops its ranking key on an exact match (semantics Axiom 5): its
     base is ``partition_by=``, else the query's dimensions over rows or the operand's grain over an aggregate. A
-    dropped row-form default key (``row_default_key``) becomes explicit. Post-order: a nested pick settles first."""
+    dropped row-form default key (``row_default_key`` of that aggregation, read for its home) becomes explicit.
+    Post-order: a nested pick settles first."""
     rebuilt = cast(ValueKey, key.map_children(lambda c: settle_ranked_grains(
         c, query_grain=query_grain, active_bucket=active_bucket, row_default_key=row_default_key,
     )))
@@ -2579,7 +2587,7 @@ def settle_ranked_grains(
         base = transform_operand_grain(
             rebuilt.source, query_grain=query_grain, active_bucket=active_bucket,
         ) if over_cells else query_grain
-    rk = explicit_ranking_key(rebuilt) or (None if over_cells else row_default_key)
+    rk = explicit_ranking_key(rebuilt) or (None if over_cells else row_default_key(rebuilt))
     if rk is None or rk not in base:
         return rebuilt.model_copy(update={"partition_keys": base}) if over_cells else rebuilt
     return rebuilt.model_copy(update={"args": (rk,), "partition_keys": base - {rk}})

@@ -244,8 +244,10 @@ determination being closed under row-level combination. Over rows the key SHALL 
 a column of the home, a field reached from it over provably to-one hops, or an
 attached value (an aggregate or a transform) whose grain the home determines, broadcast
 onto the home's rows before the ranking exactly as a mixed-source constituent is. Over
-an aggregate operand the key SHALL be a member of the operand's grain, or an attached
-value whose grain the operand's grain determines. A literal-only key stays refused (› Positional
+an aggregate operand the key SHALL be determined by the operand's grain (`queries/semantics`
+Axiom 1): a member of the grain, a field the grain determines over an entity key or provably
+to-one hops, or an attached value whose grain the operand's grain determines. A literal-only
+key stays refused (› Positional
 parameters fold onto declared parameter order). For local and cross-model
 (target-rooted) producers alike, a key reading a leaf across a fanning or unproven
 hop from the home SHALL fail with the existing ranked-input safety error naming that
@@ -291,6 +293,13 @@ stay separate producers; equal keys, however spelled, SHALL share one.
   selects `first(sum(balance, partition_by=[customer_id, snapshot_date]), customer_id)`
 - **THEN** January reads 370 and February 160 — customer 100's monthly total — by executed
   values on SQLite and DuckDB
+
+#### Scenario: A field the operand grain determines ranks its cells
+- **WHEN** a query by `customers.region` selects
+  `last(sum(orders.amount, partition_by=customers.id), customers.signup_ts, partition_by=customers.region)`
+- **THEN** each region's value is the sum of its customer latest by `signup_ts`, identical
+  to ranking by `max(customers.signup_ts, partition_by=customers.id)`; the same key over
+  an operand grained by `customers.region` alone fails with the ranking-key safety error
 
 #### Scenario: A key the operand does not determine fails closed
 - **WHEN** the same query selects

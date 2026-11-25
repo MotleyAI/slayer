@@ -328,6 +328,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
     window_td_key: Optional[TimeTruncKey] = None,
+    active_td_key: Optional[TimeTruncKey] = None,
     mode_policy: ModePolicy,
     ranking_candidates: Sequence[ValueKey],
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
@@ -410,7 +411,7 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
         bound_filter_texts=[None] * len(inherited),
         n_date_range=n_date_range,
         order_specs=[],
-        main_time_key=window_td_key,
+        main_time_key=window_td_key or active_td_key,
         n_dims=len(dims),
         n_time_dimensions=len(tds),
         distinct_dimension_values=True,
@@ -950,30 +951,20 @@ def _trailing_window_kernel(
     src_where_ids, src_rewrites = _plan_src_row_filters(
         producer_plan=producer_plan,
     )
+    attached = _row_attach_fields(producer_plan)
     # first/last rank the interval rows by the same closure-judged key plain first/last would.
     ranking_time_key = (
-        _checked_ranking_time_key(
+        substitute_value_keys(key=_checked_ranking_time_key(
             row_keys=ranking_candidates, agg_key=agg_key,
             root_dataset=root_dataset, bundle=bundle, alias=alias, target_rooted=target_rooted,
-        )
+        ), mapping=attached)
         if is_ranked(agg_key) else None
     )
-    # Reference-bearing parameters read per interval row, each key remapped through
-    # the sub-plan's regroup substitutions so an attached-aggregate parameter reads
-    # its row-attach field.
-    picked_params = _picked_params(agg_key)
-    param_subst = {
-        sub.original_key: sub.placeholder
-        for a in producer_plan.regroup_attach_plans
-        for sub in a.substitutions
-    }
-    if param_subst:
-        picked_params = [
-            pp.model_copy(update={
-                "key": substitute_value_keys(key=pp.key, mapping=param_subst),
-            })
-            for pp in picked_params
-        ]
+    # Reference-bearing parameters read per interval row.
+    picked_params = [
+        pp.model_copy(update={"key": substitute_value_keys(key=pp.key, mapping=attached)})
+        for pp in _picked_params(agg_key)
+    ]
     return TrailingWindowProducerKernel(
         window_raw=window_raw,
         window_parts=parse_window_duration(window_raw),
@@ -1055,11 +1046,14 @@ def _decided_kernel(
         agg_key=decision.answer, root_dataset=root_dataset, bundle=bundle,
         alias=alias, target_rooted=target_rooted, ranking_candidates=ranking_candidates,
     )
-    # An attached ranking key reads its row-attach field (semantics Axiom 2.3).
-    attached = {sub.original_key: sub.placeholder for a in producer_plan.regroup_attach_plans for sub in a.substitutions}
     return {"kernel": kernel.model_copy(update={
-        "ranking_time_key": substitute_value_keys(kernel.ranking_time_key, attached),
-    }) if attached else kernel}
+        "ranking_time_key": substitute_value_keys(kernel.ranking_time_key, _row_attach_fields(producer_plan)),
+    })}
+
+
+def _row_attach_fields(producer_plan: PlannedQuery) -> Dict[ValueKey, ValueKey]:
+    """Each attached value a kernel reads per row → its row-attach field (semantics Axiom 2.3)."""
+    return {sub.original_key: sub.placeholder for a in producer_plan.regroup_attach_plans for sub in a.substitutions}
 
 
 def _empty_value(key: ValueKey, *, bundle: ResolvedSourceBundle) -> EmptyValue:
@@ -3178,6 +3172,8 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # a transform at the union of its inner aggregates' grains (Axiom 2.3). The
     # union grain is the carrier grain.
     constituents = operand_constituents(root.source)
+    # Only the source's constituents supply cells; a ranking key, parameter or outer key attaches to them (Axiom 6).
+    source_constituents = tuple(constituents)
     union_grain = Grain.EMPTY
     for c in constituents:
         union_grain = union_grain | constituent_grain(
@@ -3292,10 +3288,11 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
                     for k in outside_aggregates(v) if isinstance(k, (FieldKey, FieldSqlKey))]
     # An outer grain key carrying an attached value reads it as a constituent column; row-level ones are grain columns.
     row_outer = [g for g in outer_grain if not operand_constituents(g)]
+    # An attached outer key already in the operand grain is a carrier grain column, never also a constituent.
+    attached_outer = [g for g in outer_grain if operand_constituents(g) and g not in union_grain]
     # Its row fields beside the attached value (`sum(...) + customers.multiplier`) are grain columns too.
-    mixed_fields = [k for g in outer_grain if operand_constituents(g) for k in outside_aggregates(g)
-                    if isinstance(k, (FieldKey, FieldSqlKey))]
-    for g in outer_grain:
+    mixed_fields = [k for g in attached_outer for k in outside_aggregates(g) if isinstance(k, (FieldKey, FieldSqlKey))]
+    for g in attached_outer:
         constituents.extend(c for c in operand_constituents(g) if c not in constituents)
     carrier_grain = union_grain | Grain.of([*row_outer, *field_params, *mixed_fields, *key_fields])
     grain_placeholders: Dict[ValueKey, ValueKey] = (
@@ -3333,7 +3330,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         mode_policy=policy, ranking_candidates=prebound.ranking_candidates,
         grain_placeholders=grain_placeholders,
         supply=None if not grain_placeholders else lambda names: _operand_supply(
-            carrier_grain=carrier_grain, union_grain=union_grain, names=names, constituents=constituents,
+            carrier_grain=carrier_grain, union_grain=union_grain, names=names, constituents=source_constituents,
             context=context, inherited=inherited, producer_registry=producer_registry,
         ),
     )
@@ -3923,7 +3920,7 @@ def _group_routed_roots(  # NOSONAR(S3776) — one grouping pass over the dispos
         is_input = d.phase == "row" and d.root in inputs
         k = d.root if is_input else _mapped(d.root, d.phase)
         if d.phase == "row":
-            if is_input or nests(k, "row"):
+            if is_input or nests(d.root, "row"):
                 _add(out.row_target if d.routing == "target_rooted" else out.row_local, k)
             continue
         if d.consumer_public_names:
@@ -3934,7 +3931,7 @@ def _group_routed_roots(  # NOSONAR(S3776) — one grouping pass over the dispos
     for k, d in sorted(combined, key=lambda kd: _combined_rank(kd[0], target_rooted=kd[1].routing == "target_rooted")):
         if d.routing == "target_rooted":
             _add(out.combined_target, k)
-        elif nests(k, "combined"):
+        elif nests(d.root, "combined"):
             _add(out.combined_local, k)
     producer_bound = {*out.row_local, *out.row_target, *out.combined_local, *out.combined_target}
     demoted = [
@@ -4187,6 +4184,9 @@ def _synthesize_local_regroup(
         },
         grain_name_by_key=grain_names,
         window_td_key=_producer_window_td(prebound, windowed=windowed, root=aggs[0], pks=pks),
+        # An attached windowed inner resolves its axis from the producer; never a grain member of it.
+        active_td_key=prebound.main_time_key if any(
+            window_kwarg_of(k) is not None for a in aggs for k in walk_value_keys(a)) else None,
         mode_policy=prebound.mode_policy,
         ranking_candidates=prebound.ranking_candidates,
     )
@@ -4360,6 +4360,8 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
         d.root: registry.placeholder_for(d.root)
         for d in dispositions if d.routing == "reaggregation"
     }
+    # A re-aggregation root keeps the query's own identities: it is typed against the unsubstituted dimensions.
+    reagg_grain_dms = prebound.grain_declared_metrics
     if reagg_mapping:
         substituted = _substitute_reaggregations(
             prebound, reagg_mapping, filter_typings=filter_typings,
@@ -4465,6 +4467,10 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
         population=population, population_filters=inherited, n_population_date=n_inherited_date,
     )
     _check_inline_params_determined(dispositions=dispositions, context=synthesis_context)
+    reagg_context = synthesis_context.model_copy(update={
+        "projected_dim_keys": [dm.bound.value_key for dm in reagg_grain_dms[:prebound.n_dims]],
+        "projected_td_keys": [dm.bound.value_key for dm in reagg_grain_dms[prebound.n_dims:]],
+    })
     cm_phases: List[Tuple[Literal["row", "combined"], List[ValueKey]]] = [
         ("combined", cm_combined), ("row", cm_row),
     ]
@@ -4475,7 +4481,7 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
         reagg_attaches.append(_synthesize_reaggregation_producer(
             root=root, placeholder=reagg_mapping[root], attach_phase="combined",
             public_alias=public_alias_by_agg.get(root),
-            context=synthesis_context,
+            context=reagg_context,
             declared_type=cm_type.get(root),
             producer_registry=producer_registry, registry=registry,
             inherited=inherited, n_date_range=n_inherited_date,
@@ -4485,14 +4491,14 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
     # query dimensions) and broadcast per partition onto the base rows; a first / last's operand keeps the query's
     # grain, its pick coarsening it (semantics Axiom 5).
     for c in row_reaggs:
-        c_grain = Grain.of([*projected_dim_keys, *projected_td_keys]) if is_ranked_over_cells(c) else constituent_grain(
-            c=c, projected_dim_keys=projected_dim_keys,
-            projected_td_keys=projected_td_keys, active_bucket=active_bucket,
+        c_grain = Grain.of([*reagg_context.projected_dim_keys, *reagg_context.projected_td_keys]) if is_ranked_over_cells(c) else constituent_grain(
+            c=c, projected_dim_keys=reagg_context.projected_dim_keys,
+            projected_td_keys=reagg_context.projected_td_keys, active_bucket=active_bucket,
         )
         reagg_attaches.append(_synthesize_reaggregation_producer(
             root=c, placeholder=mapping[c], attach_phase="row",
             public_alias=public_alias_by_agg.get(c),
-            context=synthesis_context.model_copy(update={
+            context=reagg_context.model_copy(update={
                 "projected_dim_keys": [
                     k for k in c_grain if not isinstance(k, TimeTruncKey)
                 ],
@@ -5224,6 +5230,15 @@ def _plan_domain(
 
 
 
+def _inline_subterms(key: ValueKey) -> Iterator[ValueKey]:
+    """``walk_value_keys`` minus partition keys: a grain member is the producer's dimension, never rendered inline."""
+    yield key
+    pks = frozenset(key.partition_keys or ()) if isinstance(key, AggregateKey) else frozenset()
+    for c in key.children():
+        if c not in pks:
+            yield from _inline_subterms(c)
+
+
 def _assert_no_inline_kernel_aggregates(
     *, slots: Sequence[ValueSlot], kernel_answer: Optional[AggregateKey],
     attaches: Sequence[RegroupAttachPlan],
@@ -5231,7 +5246,7 @@ def _assert_no_inline_kernel_aggregates(
     """A kernel-requiring aggregate renders only as its own producer's kernel answer (sql P10)."""
     to_original = {sub.placeholder: sub.original_key for a in attaches for sub in a.substitutions}
     for slot in slots:
-        for k in walk_value_keys(slot.key):
+        for k in _inline_subterms(slot.key):
             assert not is_kernel_requiring(k) or (
                 _original_key(k, to_original=to_original) == kernel_answer
             ), (

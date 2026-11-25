@@ -114,6 +114,35 @@ async def test_an_aggregate_ranks_an_aggregates_cells(backend: str) -> None:
     assert not _grain_warnings(resp)
 
 
+@pytest.mark.parametrize("key", ["customers.signup_ts", "max(customers.signup_ts, partition_by=customers.id)"])
+async def test_a_field_the_operand_grain_determines_ranks_its_cells(backend: str, key: str) -> None:
+    # dev2119: North's customer latest by signup_ts sums 50; South's has no orders
+    async with f2119.engine_for(backend) as eng:
+        resp = await eng.execute(f2119.q(dimensions=[REG], metrics=[f2119.m(
+            f"last(sum(orders.amount, partition_by=customers.id), {key}, partition_by=customers.region)")]))
+    assert _cells(resp, REG) == {("North",): 50.0, ("South",): None}
+
+
+async def test_a_field_a_coarser_operand_grain_does_not_determine_fails(backend: str) -> None:
+    query = f2119.q(dimensions=[REG], metrics=[f2119.m(
+        "last(sum(orders.amount, partition_by=customers.region), customers.signup_ts)")])
+    async with f2119.engine_for(backend) as eng:
+        with pytest.raises(UnsafeRelationshipInputError, match="signup_ts"):
+            await eng.execute(query)
+
+
+# Windowed ranked aggregations with an attached key (dev2119 orders, by region and created month)
+async def test_a_windowed_pick_ranks_by_an_attached_key(backend: str) -> None:
+    # 90d intervals ranked by amount above the region's average
+    async with f2119.engine_for(backend) as eng:
+        resp = await eng.execute(f2119.q(
+            dimensions=["orders.region"], time_dimensions=[f2119.td("orders.created_at")], metrics=[f2119.m(
+                "last(orders.amount, orders.amount - avg(orders.amount, partition_by=orders.region), window='90d')")]))
+    tkey = f2119.column(resp, "created_at")
+    assert {(r["orders.region"], f2119.bucket(r[tkey])): _num(r["v"]) for r in resp.data} == {
+        ("EU", "2025-01"): 20.0, ("EU", "2025-03"): 50.0, ("US", "2024-12"): 60.0, ("US", "2025-02"): 60.0}
+
+
 # --------------------------------------------------------------------------- #
 # Default ranking key on a query dimension (dev2119 orders)
 # --------------------------------------------------------------------------- #
@@ -171,6 +200,71 @@ async def test_a_second_order_last_as_a_dimension(region_engine: SlayerQueryEngi
                    (None, "2024-03"): (60.0, 60.0)}
 
 
+@pytest.mark.parametrize("d", [
+    "last(orders.amount, orders.ordered_at, partition_by=[orders.region])",
+    "last(orders.amount, orders.ordered_at, partition_by=[orders.region, orders.ordered_at])",
+], ids=["region", "region_and_key"])
+async def test_a_ranked_dimension_beside_a_ranked_metric(region_engine: SlayerQueryEngine, d: str) -> None:
+    # the metric consumes ordered_at: latest per (region, d) — North 02-15 30, South 03-05 25, NULL 60
+    resp = await region_engine.execute(orders_q(
+        dimensions=["orders.region", "orders.ordered_at", {"field": d, "alias": "d"}],
+        metrics=[QueryMetric(metric="last(orders.amount, orders.ordered_at)", alias="v")]))
+    got: dict = {}
+    for r in resp.data:
+        got.setdefault(r["orders.region"], set()).add(_num(r["v"]))
+    assert got == {"North": {30.0}, "South": {25.0}, None: {60.0}}
+
+
+async def test_a_ranked_aggregate_beside_an_aggregate_dimension(region_engine: SlayerQueryEngine) -> None:
+    # each region's last month total, as the transform reading gave
+    resp = await region_engine.execute(orders_q(
+        dimensions=["orders.region", {"field": "sum(orders.amount, partition_by=[orders.region])", "alias": "d"}],
+        time_dimensions=month_td(), metrics=[QueryMetric(metric="last(sum(orders.amount))", alias="v")]))
+    assert _region_month(resp) == {("North", "2024-01"): 70.0, ("North", "2024-02"): 70.0,
+                                   ("South", "2024-01"): 25.0, ("South", "2024-03"): 25.0, (None, "2024-03"): 60.0}
+
+
+@pytest.mark.parametrize(("d", "metric", "expected"), [
+    # last month's total per region, as the transform reading gave
+    (f"last({REGION_TOTAL})", "last(sum(orders.amount))", {
+        ("North", "2024-01"): 70.0, ("North", "2024-02"): 70.0, ("South", "2024-01"): 25.0,
+        ("South", "2024-03"): 25.0, (None, "2024-03"): 60.0}),
+    # an identity at the query grain: each cell's own total
+    (f"max({REGION_TOTAL}, partition_by=[orders.region])", "max(sum(orders.amount))", {
+        ("North", "2024-01"): 30.0, ("North", "2024-02"): 70.0, ("South", "2024-01"): 25.0,
+        ("South", "2024-03"): 25.0, (None, "2024-03"): 60.0}),
+], ids=["last", "max"])
+async def test_a_reaggregation_beside_a_reaggregation_dimension(
+    region_engine: SlayerQueryEngine, d: str, metric: str, expected: dict,
+) -> None:
+    resp = await region_engine.execute(orders_q(
+        dimensions=["orders.region", {"field": d, "alias": "d"}], time_dimensions=month_td(),
+        metrics=[QueryMetric(metric=metric, alias="v")]))
+    assert _region_month(resp) == expected
+
+
+W1M = "sum(orders.amount, partition_by=orders.region, window='1m')"
+
+
+async def test_a_windowed_attached_key_ranks_the_rows(region_engine: SlayerQueryEngine) -> None:
+    # W1M: North Jan 30, Feb 70 → a Feb row (40 or 30, tied), never a Jan row; South 25; NULL 60
+    resp = await region_engine.execute(orders_q(dimensions=["orders.region"], time_dimensions=month_td(), metrics=[
+        QueryMetric(metric=f"last(orders.amount, {W1M}, partition_by=[orders.region])", alias="v")]))
+    got = _region_month(resp)
+    assert {got[("North", "2024-01")], got[("North", "2024-02")]} <= {30.0, 40.0}
+    assert got[("South", "2024-01")] == got[("South", "2024-03")] == 25.0
+    assert got[(None, "2024-03")] == 60.0
+
+
+@pytest.mark.parametrize(("agg", "expected"), [("sum", {"North": 300.0, "South": 100.0, None: 120.0}),
+                                               ("max", {"North": 110.0, "South": 50.0, None: 120.0})])
+async def test_a_windowed_inner_keeps_the_outer_grain(region_engine: SlayerQueryEngine, agg: str, expected) -> None:
+    # amount + W1M per row (North 40, 50, 110, 100), aggregated per region — the bucket is no grain member
+    resp = await region_engine.execute(orders_q(dimensions=["orders.region"], time_dimensions=month_td(), metrics=[
+        QueryMetric(metric=f"{agg}(orders.amount + {W1M}, partition_by=[orders.region])", alias="v")]))
+    assert {r["orders.region"]: _num(r["v"]) for r in resp.data} == expected
+
+
 class TestRankedOverACityGrainedOperand:
     async def test_without_the_bucket_fails(self, region_engine: SlayerQueryEngine) -> None:
         query = orders_q(dimensions=["orders.region"], time_dimensions=month_td(), metrics=[
@@ -204,6 +298,15 @@ async def test_a_ranked_aggregation_without_the_axis_fails_in_every_position(reg
     with pytest.raises(TimeAxisError) as info:
         await region_engine.execute(query)
     assert not isinstance(info.value, NotImplementedError)
+
+
+async def test_a_windowed_key_the_operand_does_not_determine_fails(region_engine: SlayerQueryEngine) -> None:
+    # the windowed key varies by month; the region-grained operand has one cell per region
+    query = orders_q(dimensions=["orders.region"], time_dimensions=month_td(), metrics=[QueryMetric(
+        metric="last(sum(orders.amount, partition_by=orders.region), "
+               "sum(orders.amount, partition_by=orders.region, window='1m'))", alias="v")])
+    with pytest.raises(UnsafeRelationshipInputError, match="window"):
+        await region_engine.execute(query)
 
 
 async def test_no_time_dimension_fails(region_engine: SlayerQueryEngine) -> None:
@@ -353,6 +456,35 @@ class TestRankedRowSupply:
             summed = await run(eng, dimensions=["products.category"], metrics=[_m("sum(orders.amount)")])
         assert _cells(ranked, "products.category") == {("food",): 30.0, ("toys",): 5.0, (None,): 60.0}
         assert set(_cells(ranked, "products.category")) == set(_cells(summed, "products.category"))
+
+
+# Operand cells: only the source supplies them; a key, parameter or dimension attaches (orders: c1 30, c2 5, c3 68)
+OP, CREDIT = "sum(orders.amount, partition_by=customers.id)", "max(customers.credit, partition_by=customers.id)"
+
+
+async def _supply_run(backend: str, *, dimensions: list, metric: str) -> SlayerResponse:
+    async with _supply_engine(backend) as eng:
+        return await eng.execute(SlayerQuery.model_validate(
+            {"population": "orders", "dimensions": dimensions, "metrics": [_m(metric)]}))
+
+
+class TestOperandCellsComeFromTheSource:
+    async def test_a_ranking_key_on_another_home_adds_no_cell(self, backend: str) -> None:
+        # credit: c1 50, c2 70, c3 60 → first is c1 (30), never Fay (25, no orders)
+        resp = await _supply_run(backend, dimensions=["customers.id"],
+                                 metric=f"first({OP}, {CREDIT}, partition_by=[])")
+        assert _cells(resp, "customers.id") == {(1,): 30.0, (2,): 30.0, (3,): 30.0}
+
+    async def test_an_aggregate_parameter_adds_no_cell(self, backend: str) -> None:
+        # (30*50 + 5*70 + 68*60) / 180, never Fay's (0, weight 25) cell
+        resp = await _supply_run(backend, dimensions=[], metric=f"weighted_avg(coalesce({OP}, 0), weight={CREDIT})")
+        assert _num(resp.data[0]["v"]) == pytest.approx(5930 / 180)
+
+    async def test_an_aggregate_dimension_adds_no_cell(self, backend: str) -> None:
+        # credit > 55: c1 no, c2 / c3 yes; Fay (25) and Eve (NULL) have no orders
+        resp = await _supply_run(backend, dimensions=[{"field": f"{CREDIT} > 55", "alias": "hi"}],
+                                 metric=f"count(coalesce({OP}, 0))")
+        assert {bool(r["hi"]): _num(r["v"]) for r in resp.data} == {False: 1.0, True: 2.0}
 
 
 # --------------------------------------------------------------------------- #

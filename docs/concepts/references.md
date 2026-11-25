@@ -67,8 +67,8 @@ keep their positional ranking key instead). An aggregation that declares no
 parameters takes no positional value at all, and `first`/`last` at most one —
 their ranking key, a field of the ranked dataset: over rows a row-level expression
 (`last(accounts.balance, accounts.updated_at)`, `last(accounts.balance, CAST(accounts.updated_at AS DATE))`) or an
-attached aggregate the rows determine, over an aggregate a grain member or an aggregate at a grain the operand
-determines (`last(sum(orders.revenue), sum(orders.units))`); never a literal.
+attached aggregate the rows determine, over an aggregate a field the operand's grain determines (a grain member,
+or a field it reaches over an entity key or to-one hops) or an aggregate at a grain the operand determines (`last(sum(orders.revenue), sum(orders.units))`); never a literal.
 
 Naming and matching read the parse tree, not the text: a metric declared
 `{"metric": "sum(orders.revenue)", "alias": "rev"}` is matched by a filter written
