@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import sqlglot
 import sqlglot.errors
+from sqlglot import exp
 from pydantic import ValidationError as PydanticValidationError
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
@@ -5617,7 +5618,7 @@ class TestDev1501HiddenFirstLastRender:
     async def test_composite_first_last_with_joined_time_arg_adds_join(
         self, generator: SQLGenerator
     ) -> None:
-        """A composite measure containing a first/last operand with a JOINED explicit time arg (``revenue:last(customers.signed_up_at) + 1``) must pull the ``customers`` join into the FROM so the ranked subquery's ORDER BY can reference ``customers.signed_up_at``. Without composite-aware path discovery in ``_collect_joined_paths_for_base``, the join is missing and the SQL references an unjoined alias."""
+        """A composite measure containing a first/last operand with a JOINED explicit time arg (``revenue:last(customers.signed_up_at) + 1``) must pull the ``customers`` join into the FROM so the ranked subquery's ORDER BY can reference ``customers.signed_up_at``. Without composite-aware join discovery, the join is missing and the SQL references an unjoined alias."""
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
@@ -5836,7 +5837,7 @@ class TestDev1501HiddenFirstLastRender:
     async def test_derived_time_arg_pulls_in_referenced_join(
         self, generator: SQLGenerator,
     ) -> None:
-        """A DERIVED first/last time arg whose ``Column.sql`` references a joined column must pull that join into the base FROM. Join discovery (``_resolve_agg_inputs_via_scope`` via ``_explicit_time_arg_of``) registers it, and the ranked plan expands ``net_signed_at.sql = "customers.signed_up_at"`` so the ranked subquery's ``ORDER BY`` emits ``customers.signed_up_at``; without a corresponding ``LEFT JOIN customers`` the SQL is broken. Previously ``_collect_joined_paths_for_base`` only walked ``ColumnKey`` args; ``ColumnSqlKey`` derived time args were invisible to join discovery."""
+        """A DERIVED first/last time arg whose ``Column.sql`` references a joined column must pull that join into the base FROM. Join discovery (``_resolve_agg_inputs_via_scope`` via ``_explicit_time_arg_of``) registers it, and the ranked plan expands ``net_signed_at.sql = "customers.signed_up_at"`` so the ranked subquery's ``ORDER BY`` emits ``customers.signed_up_at``; without a corresponding ``LEFT JOIN customers`` the SQL is broken."""
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
@@ -5881,7 +5882,7 @@ class TestDev1501HiddenFirstLastRender:
             assert "customers.signed_up_at" in sql, (
                 f"Expected expanded customers.signed_up_at ranking expression in SQL:\n{sql}"
             )
-            # The customers join must be present in the base FROM. Without composite-aware discovery, ``_collect_joined_paths_for_base`` skipped the ColumnSqlKey arg and the join was missing → broken SQL.
+            # The customers join must be present in the base FROM.
             assert _re.search(
                 r"LEFT JOIN\s+customers\b", sql, _re.IGNORECASE,
             ) is not None, (
@@ -10424,3 +10425,39 @@ class TestWindowedMeasureGuards:
         sql = await _engine_generate(query=query, model=orders_model)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
+
+
+class TestFilterJoinAliasMatchesFrom:
+    """A filter reads the same join alias FROM assigns, even when a hop path's alias collides with a model name."""
+
+    @staticmethod
+    def _models() -> list[SlayerModel]:
+        def pk() -> Column:
+            return Column(name="id", type=DataType.INT, primary_key=True)
+
+        orders = SlayerModel(name="orders", sql_table="orders", data_source="test", columns=[
+            pk(), Column(name="store_id", type=DataType.INT), Column(name="tag_id", type=DataType.INT),
+        ], joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]]),
+                  ModelJoin(target_model="stores__regions", join_pairs=[["tag_id", "id"]])])
+        stores = SlayerModel(name="stores", sql_table="stores", data_source="test", columns=[
+            pk(), Column(name="region_id", type=DataType.INT),
+        ], joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])
+        regions = SlayerModel(name="regions", sql_table="regions", data_source="test", columns=[
+            pk(), Column(name="population", type=DataType.INT),
+        ])
+        tags = SlayerModel(name="stores__regions", sql_table="tags", data_source="test", columns=[
+            pk(), Column(name="label", type=DataType.TEXT),
+        ])
+        return [orders, stores, regions, tags]
+
+    @pytest.mark.parametrize("dimensions", [["stores__regions.label"], ["stores__regions.label", "stores.regions.population"]])
+    async def test_two_hop_filter_reads_from_alias(self, dimensions: list[str]) -> None:
+        host, *extra = self._models()
+        query = SlayerQuery.model_validate(
+            {"source_model": "orders", "dimensions": dimensions, "filters": ["stores.regions.population = 1"]},
+        )
+        sql = await _engine_generate(query=query, model=host, extra_models=extra)
+        tree = sqlglot.parse_one(sql, read="postgres")
+        regions_alias = next(t.alias_or_name for t in tree.find_all(exp.Table) if t.name == "regions")
+        where_tables = {c.table for c in tree.args["where"].find_all(exp.Column) if c.name == "population"}
+        assert where_tables == {regions_alias}, sql

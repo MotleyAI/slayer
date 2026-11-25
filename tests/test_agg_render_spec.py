@@ -43,7 +43,7 @@ from slayer.core.keys import (
     Phase,
     StarKey,
 )
-from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, SlayerModel
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.syntax import parse_expr
@@ -569,12 +569,24 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.DOUBLE,
         )
-        spec = _invoke(
+        orders = _orders_model().model_copy(update={
+            "joins": [ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        })
+        customers = SlayerModel(
+            name="customers", data_source="prod", sql_table="customers",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="quantity", type=DataType.INT),
+            ],
+        )
+        spec = SQLGenerator(dialect="postgres")._build_agg_render_spec_from_planned(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_model=orders,
             source_relation="orders",
             full_alias="orders.amount_weighted_avg",
+            bundle=ResolvedSourceBundle(
+                dialect="postgres", source_model=orders, referenced_models=[customers]),
         )
         assert spec is not None
 
