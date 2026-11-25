@@ -5,8 +5,9 @@ When any `slayer` command fails with an exception, the CLI SHALL print exactly o
 and exit with status 1, printing no traceback. A SLayer error SHALL print as `Error: <message>`. A
 validation error SHALL print as `Error: <count> validation error(s) for <model>: <location>: <reason>`,
 listing every failing field as `<location>: <reason>` separated by `; ` — the location's parts joined by
-dots, list positions included — up to ten fields followed by `…and <n> more` when there are more; it SHALL
-NOT echo the rejected input values. Any other exception SHALL print as `Error: <exception class>:
+dots, list positions included — up to ten fields followed by `…and <n> more` when there are more; an entry
+with no location (a refusal of the whole object, such as an unknown key) SHALL print as its reason alone; it
+SHALL NOT echo the rejected input values. Any other exception SHALL print as `Error: <exception class>:
 <message> (rerun with --debug for the traceback)`. Every error message a command prints SHALL go to
 stderr, never stdout. An interrupt or an explicit exit SHALL keep its own behaviour.
 
@@ -21,8 +22,13 @@ stderr, never stdout. An interrupt or an explicit exit SHALL keep its own behavi
   status is 1
 
 #### Scenario: A validation error names its fields
-- **WHEN** `slayer query '{"populaton": "orders", "metricz": ["count(*)"]}'` runs
-- **THEN** stderr holds one line naming `populaton` and `metricz`, each with the reason it failed, and
+- **WHEN** `slayer query '{"population": "orders", "metrics": ["count(orders.*)"], "limit": "ten", "offset": "two"}'` runs
+- **THEN** stderr holds one line naming `limit` and `offset`, each with the reason it failed, and the exit
+  status is 1
+
+#### Scenario: An unknown key names the key
+- **WHEN** `slayer query '{"populaton": "orders", "metrics": ["count(orders.*)"]}'` runs
+- **THEN** stderr holds one line naming `populaton` and the keys a query takes, with no empty location, and
   the exit status is 1
 
 #### Scenario: A nested validation error names its path
