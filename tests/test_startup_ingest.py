@@ -16,6 +16,7 @@ Covers:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import sys
 import tempfile
@@ -24,6 +25,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from mcp.shared.memory import create_connected_server_and_client_session
 
 from slayer import cli
 from slayer.core.models import DatasourceConfig
@@ -648,10 +650,11 @@ class TestDemoIngestOrdering:
         cli._run_mcp(_mcp_args(demo=True, ingest_on_startup=True))
 
         order = [c[0] for c in capture]
-        assert order.index("prepare_demo") < order.index("create_mcp_server")
-        assert order.index("create_mcp_server") < order.index("mcp_run")
+        assert order == ["create_mcp_server", "mcp_run"]
         kwargs = next(c[1] for c in capture if c[0] == "create_mcp_server")
         assert kwargs.get("ingest_on_startup") is True
+        kwargs["demo_setup"]()
+        assert [c[0] for c in capture][-1] == "prepare_demo"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -714,10 +717,10 @@ class TestProgrammaticKwarg:
 
         assert calls == []
 
-    def test_create_mcp_server_with_kwarg_triggers_orchestrator(self, monkeypatch):
+    async def test_create_mcp_server_with_kwarg_ingests_once_the_server_runs(self, monkeypatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
+        async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent
             calls.append((storage, stream))
             return StartupIngestSummary()
 
@@ -730,7 +733,9 @@ class TestProgrammaticKwarg:
         storage = _stub_storage(names=[])
         server = create_mcp_server(storage=storage, ingest_on_startup=True)
 
-        assert server is not None
+        assert calls == []
+        async with create_connected_server_and_client_session(server) as session:
+            await session.call_tool("list_datasources", {})
         assert len(calls) == 1
         captured_storage, captured_stream = calls[0]
         assert captured_storage.inner is storage
@@ -766,13 +771,15 @@ class TestProgrammaticKwarg:
         with pytest.raises(RuntimeError, match="storage offline"):
             create_app(storage=storage, ingest_on_startup=True)
 
-    def test_create_mcp_server_propagates_list_datasources_error(self, monkeypatch):
+    async def test_create_mcp_server_reports_list_datasources_error_on_stderr(self, capsys):
         storage = _stub_storage(
             names=[], list_raises=RuntimeError("storage offline")
         )
 
-        with pytest.raises(RuntimeError, match="storage offline"):
-            create_mcp_server(storage=storage, ingest_on_startup=True)
+        server = create_mcp_server(storage=storage, ingest_on_startup=True, _seed_help=False)
+        async with create_connected_server_and_client_session(server) as session:
+            await asyncio.wait_for(session.call_tool("list_datasources", {}), timeout=30)
+        assert "Ingest-on-startup failed: storage offline" in capsys.readouterr().err
 
 
 # ─────────────────────────────────────────────────────────────────────────────

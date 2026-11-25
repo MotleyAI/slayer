@@ -29,7 +29,7 @@ This generates ~2 years of synthetic coffee-shop data into a local DuckDB file u
 slayer query '{"source_model": "orders", "measures": [{"formula": "total_revenue"}, {"formula": "avg_order_value"}], "dimensions": ["stores.name"]}'
 ```
 
-Monetary columns (`price`, `subtotal`, `tax_paid`, `order_total`, `cost`) are stored as exact `DECIMAL(12,2)` dollars, so revenue sums carry no floating-point noise. Re-running is idempotent — an up-to-date DuckDB is reused (one built with an older schema is regenerated), and ingestion plus enrichment are additive-only (missing joins are added; your edits to labels, descriptions, or measures are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
+Monetary columns (`price`, `subtotal`, `tax_paid`, `order_total`, `cost`) are stored as exact `DECIMAL(12,2)` dollars, so revenue sums carry no floating-point noise. Re-running is idempotent — an up-to-date DuckDB is reused (one built with an older schema is regenerated), and ingestion plus enrichment are additive-only (missing joins are added; your edits to labels, descriptions, or measures are never overwritten). The data is seeded, so every build with the same jafgen and Faker versions, the same SLayer seed recipe and the same years gives the same rows, apart from the date shift. Override the years with `--years N` (default 2); an explicit `--years` that differs from the existing demo's rebuilds it. `slayer mcp --demo` answers the MCP handshake at once and builds the demo in the background; the first tool call waits for it. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
 
 Pre-populate once and `--demo` is instant afterwards:
 
@@ -129,7 +129,7 @@ Expected output:
 ```
 orders._count
 -------------
-42
+275K
 
 1 row(s)
 ```
@@ -177,6 +177,6 @@ slayer serve --storage slayer.db       # Using SQLite storage
 slayer serve --ingest-on-startup       # Run idempotent ingest over every configured datasource before opening the port — pairs well with YAML-drop datasource configs
 ```
 
-`--ingest-on-startup` also works on `slayer mcp`. See [Auto-Ingestion → Ingesting at Startup](../concepts/ingestion.md#ingesting-at-startup).
+`--ingest-on-startup` also works on `slayer mcp`, where it runs in the background after the handshake and tool calls wait for it. See [Auto-Ingestion → Ingesting at Startup](../concepts/ingestion.md#ingesting-at-startup).
 
 See the [CLI Reference](../reference/cli.md) for all commands and flags.

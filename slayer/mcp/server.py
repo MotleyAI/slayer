@@ -1,16 +1,20 @@
 """MCP server for SLayer."""
 
+import asyncio
 import json
 import logging
 import sys
 import weakref
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
+from contextlib import asynccontextmanager
 from inspect import cleandoc
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import Discriminator, Field, Tag
+import anyio
+import anyio.to_thread
+from pydantic import BaseModel, Discriminator, Field, Tag
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__, usage_reporting
@@ -18,6 +22,7 @@ from slayer import otel
 from slayer.usage_reporting.payload import USAGE_KEYS
 
 from slayer.core.deprecation import warn_deprecated
+from slayer.demo.jaffle_shop import DemoSetupError
 from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
@@ -190,12 +195,104 @@ def _tool_operation(bound: Any) -> dict[str, str]:
     }
 
 
-def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
-    """``fastmcp_cls`` counting every tool call, and each session's client once."""
+_PROGRESS_INTERVAL_S = 1.0
+_PREPARING = "Waiting for SLayer startup preparation (demo setup / startup ingest)"
+
+
+class StartupOutcome(BaseModel):
+    """Where startup preparation stands; only a demo failure fails tool calls."""
+
+    state: Literal["pending", "ready", "demo_failed"] = "pending"
+    reason: str | None = None
+
+
+class StartupPreparation:
+    """Demo setup, then startup ingest, run once in the background on the server's loop; tool calls wait for it."""
+
+    def __init__(
+        self,
+        *,
+        demo_setup: Callable[[], object] | None,
+        ingest: Callable[[], Coroutine[Any, Any, object]] | None,
+    ) -> None:
+        self._demo_setup = demo_setup
+        self._ingest = ingest
+        self._task: asyncio.Task[None] | None = None
+        self._sessions = 0
+        self.outcome = StartupOutcome() if demo_setup or ingest else StartupOutcome(state="ready")
+
+    @asynccontextmanager
+    async def lifespan(self, _app: object) -> AsyncIterator[None]:
+        """Run preparation while any session is open (FastMCP enters this per session); the last one out cancels it."""
+        if self.outcome.state != "pending":
+            yield
+            return
+        self._sessions += 1
+        self._ensure_running()
+        try:
+            yield
+        finally:
+            self._sessions -= 1
+            if self._sessions == 0 and self._task is not None:
+                with anyio.CancelScope(shield=True):
+                    self._task.cancel()
+                    await asyncio.wait({self._task})
+                if self._sessions:  # a session arrived while the cancel was awaited
+                    self._ensure_running()
+
+    def _ensure_running(self) -> None:
+        """Start preparation unless it is running or has finished; a cancelled run starts afresh."""
+        if self.outcome.state == "pending" and (self._task is None or self._task.done()):
+            self._task = asyncio.get_running_loop().create_task(self._run())
+
+    async def _run(self) -> None:
+        if self._demo_setup is not None:
+            try:
+                await self._finish_on_cancel(anyio.to_thread.run_sync(self._demo_setup))
+            except Exception as exc:  # noqa: BLE001 — becomes every tool call's error
+                failure = exc if isinstance(exc, DemoSetupError) else DemoSetupError(str(exc))
+                print(failure, file=sys.stderr, flush=True)
+                self.outcome = StartupOutcome(state="demo_failed", reason=failure.reason)
+                return
+        if self._ingest is not None:
+            try:
+                await self._ingest()
+            except Exception as exc:  # noqa: BLE001 — a startup-ingest failure never blocks tool calls
+                print(f"Ingest-on-startup failed: {exc}", file=sys.stderr, flush=True)
+        self.outcome = StartupOutcome(state="ready")
+
+    @staticmethod
+    async def _finish_on_cancel(work: Coroutine[Any, Any, object]) -> None:
+        """Await ``work``; a cancel waits for it to finish (a thread cannot be stopped) before propagating."""
+        task = asyncio.ensure_future(work)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.wait({task})
+            raise
+
+    async def wait(self, *, report_progress: Callable[[float, str], Coroutine[Any, Any, None]]) -> None:
+        """Hold the calling request until preparation ends, reporting progress; a cancelled caller never cancels it."""
+        tick = 0
+        while (task := self._task) is not None and not task.done():
+            tick += 1
+            try:
+                await report_progress(tick, _PREPARING)
+            except Exception:  # noqa: BLE001 — progress is best-effort
+                logger.debug("MCP progress notification failed", exc_info=True)
+            await asyncio.wait({task}, timeout=_PROGRESS_INTERVAL_S)
+        if self.outcome.state == "demo_failed":
+            raise DemoSetupError(self.outcome.reason or "unknown error")
+        if self.outcome.state == "pending" and self._task is not None:
+            raise RuntimeError("SLayer startup preparation was interrupted; reconnect to retry")
+
+
+def _counted(fastmcp_cls: "type[FastMCP]", *, preparation: StartupPreparation) -> "type[FastMCP]":
+    """``fastmcp_cls`` counting every tool call, and each session's client once; calls wait for ``preparation``."""
 
     class CountedFastMCP(fastmcp_cls):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            super().__init__(*args, **kwargs)
+            super().__init__(*args, lifespan=preparation.lifespan, **kwargs)
             self._usage_reporting_sessions: weakref.WeakSet = weakref.WeakSet()
 
         @otel.request(surface="mcp", extract=_tool_operation)
@@ -203,6 +300,7 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             session = self._observe_session()
             with usage_reporting.action() as action:
                 try:
+                    await preparation.wait(report_progress=self._report_progress)
                     result = await super().call_tool(name, arguments)
                 except BaseException as exc:
                     usage_reporting.record(
@@ -211,6 +309,9 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
                     raise
             usage_reporting.record(surface="mcp", token=name, dry_run=action.dry_run, session=session)
             return result
+
+        async def _report_progress(self, progress: float, message: str) -> None:
+            await self.get_context().report_progress(progress, message=message)
 
         def _observe_session(self) -> object | None:
             """The calling session (counting its client at its first call), or ``None``."""
@@ -501,6 +602,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
     client_factory: ClientFactory | None = None,
+    demo_setup: Callable[[], object] | None = None,
     _seed_help: bool = True,
 ):
     _check_budget(what="MCP server instructions", text=SERVER_INSTRUCTIONS)
@@ -518,17 +620,24 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "SLayer help-memory seeding skipped: %s", exc, exc_info=True
             )
 
+    raw_storage = storage
+
+    async def startup_ingest() -> None:
+        # Its own engine, so no client bound to this job outlives it in the serving engine.
+        prep = SlayerQueryEngine(storage=raw_storage, client_factory=client_factory)
+        try:
+            await engine_ingestion.ingest_all_datasources_idempotent(
+                storage=prep.storage, client_for=prep.client_for, stream=sys.stderr,
+            )
+        finally:
+            await prep.aclose()
+
+    preparation = StartupPreparation(demo_setup=demo_setup, ingest=startup_ingest if ingest_on_startup else None)
     # Every tool reads models, and the live database, through the server's engine.
     storage = engine.storage
-    if ingest_on_startup:
-        engine.run_sync(
-            engine_ingestion.ingest_all_datasources_idempotent(
-                storage=storage, client_for=engine.client_for, stream=sys.stderr,
-            )
-        )
     FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
 
-    mcp = _counted(FastMCP)("SLayer", instructions=SERVER_INSTRUCTIONS)
+    mcp = _counted(FastMCP, preparation=preparation)("SLayer", instructions=SERVER_INSTRUCTIONS)
     _set_server_version(mcp)
     # Expose the closure engine so callers can dispose per-task pools via
     # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).

@@ -59,28 +59,59 @@ jobs:
           print(f"run={str(run).lower()}")
           EOF
 
-  # A fresh `pip install` resolves the newest allowed SQLAlchemy / DuckDB, not the lock's.
+  # What a fresh `pip install motley-slayer[all]` resolves: every dependency at its newest allowed
+  # version, in a clean venv with no lockfile.
   unit-test-latest-deps:
     needs: deps-changed
     if: needs.deps-changed.outputs.run == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/poetry-env
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
-      - name: Install jafgen (for the demo tests, not on PyPI)
-        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
-
-      - name: Upgrade SQLAlchemy, duckdb and duckdb-engine to the newest allowed
-        env:
-          POETRY_INSTALLER_ONLY_BINARY: ":all:"
+      - name: Create a clean virtualenv
         run: |
-          poetry run pip install --upgrade --only-binary :all: "sqlalchemy>=2.0,<2.1" duckdb duckdb-engine
-          poetry run python -c "import duckdb, duckdb_engine, sqlalchemy; print('sqlalchemy', sqlalchemy.__version__, '| duckdb', duckdb.__version__, '| duckdb-engine', duckdb_engine.__version__)"
+          python -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      # Poetry's dev-group constraints, as pip requirements (caret → upper bound).
+      - name: List the dev tools
+        run: |
+          python - <<'EOF' > "$RUNNER_TEMP/dev-requirements.txt"
+          import re, tomllib
+
+          def spec(constraint):
+              if not constraint.startswith("^"):
+                  return constraint if re.match(r"[<>=!~]", constraint) else f"=={constraint}"
+              parts = [int(p) for p in constraint[1:].split(".")]
+              bump = next((i for i, p in enumerate(parts) if p), len(parts) - 1)
+              upper = parts[:bump] + [parts[bump] + 1]
+              return f">={constraint[1:]},<{'.'.join(map(str, upper))}"
+
+          dev = tomllib.load(open("pyproject.toml", "rb"))["tool"]["poetry"]["group"]["dev"]["dependencies"]
+          for name, value in dev.items():
+              if isinstance(value, str):
+                  print(f"{name}{spec(value)}")
+              else:
+                  extras = f"[{','.join(value['extras'])}]" if value.get("extras") else ""
+                  print(f"{name}{extras}{spec(value['version'])}")
+          EOF
+          cat "$RUNNER_TEMP/dev-requirements.txt"
+
+      - name: Resolve every dependency fresh
+        run: |
+          python -m pip install --upgrade pip  # NOSONAR(S8541, S8544) — tests the unlocked, sdist-allowed resolve a fresh install performs
+          python -m pip install ".[all]" -r "$RUNNER_TEMP/dev-requirements.txt"  # NOSONAR(S8541, S8544) — same: what users resolve
+          python -m pip check
+          python -m pip freeze
 
       - name: Run unit tests
         timeout-minutes: 30
-        run: poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
+        run: python -m pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
