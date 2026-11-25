@@ -8,6 +8,8 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
+from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.query import SlayerQuery
 
 from tests._dev2000_fixtures import (
@@ -24,6 +26,7 @@ from tests._dev2000_fixtures import (
     d,
     day,
     default_datasets,
+    field,
     local,
     m,
     naive,
@@ -154,3 +157,15 @@ async def test_zoned_json_try_cast_is_converted_at_the_cast() -> None:
         resp = await engine.execute(q(time_zone=TOKYO, dimensions=[
             d("""TRY_CAST(json_value('["2025-01-01 00:00:00+00:00"]', '$[0]') AS TIMESTAMPTZ)""", "v")]))
     assert naive(resp.data[0]["v"]) == datetime(2025, 1, 1, 9, 0), resp.sql
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_windowed_field_reads_converted_values(backend) -> None:
+    lag = "lag(ordered_at) OVER (ORDER BY id)"
+    prior = field("prior_at", DataType.DATETIME, expression=ExpressionObject(dialects=[
+        DialectEntry(dialect="SQLITE", expression=lag), DialectEntry(dialect="DUCKDB", expression=lag)]))
+    async with tz_engine(backend, datasets=default_datasets(orders_dataset(extra_fields=[prior]))) as engine:
+        resp = await engine.execute(q(time_zone=TOKYO, dimensions=["orders.id", "orders.prior_at"]))
+    got = {int(r["orders.id"]): r["orders.prior_at"] for r in resp.data}
+    assert {i: naive(v) if v is not None else None for i, v in got.items()} == {
+        i: local(i - 1, TOKYO) if i - 1 in ROWS else None for i in ROWS}, resp.sql
