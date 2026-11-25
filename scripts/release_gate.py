@@ -20,6 +20,7 @@ from email.parser import HeaderParser
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from pydantic import BaseModel, ValidationError
@@ -232,22 +233,26 @@ async def mcp_leg(opts: Options, queries: list[DocQuery], *, leg: Path) -> list[
     params = StdioServerParameters(command=str(opts.slayer), args=["mcp", "--demo"], env=_child_env(leg), cwd=leg)
     failures: list[GateFailure] = []
     started = False
+    handshake_timed_out = False
     launched = time.monotonic()
     try:
         async with stdio_client(params) as (read, write), ClientSession(
             read, write, read_timeout_seconds=timedelta(seconds=opts.mcp_start_timeout),
         ) as session:
-            await session.initialize()
-            started = True
-            await session.list_tools()
-            elapsed = time.monotonic() - launched
-            if elapsed > MCP_HANDSHAKE_LIMIT:
-                failures.append(GateFailure(
-                    "mcp handshake", f"initialize + tools/list took {elapsed:.1f}s (limit {MCP_HANDSHAKE_LIMIT:.0f}s)",
-                ))
-            await _mcp_checks(session, opts, queries, failures=failures)
+            try:
+                with anyio.fail_after(max(0.0, MCP_HANDSHAKE_LIMIT - (time.monotonic() - launched))):
+                    await session.initialize()
+                    started = True
+                    await session.list_tools()
+            except TimeoutError:
+                handshake_timed_out = True
+            else:
+                await _mcp_checks(session, opts, queries, failures=failures)
     except Exception as exc:  # noqa: BLE001 — any server lifecycle failure stops the leg
-        failures.append(GateFailure("mcp transport" if started else "mcp start", f"{type(exc).__name__}: {exc}"))
+        if not handshake_timed_out:  # tearing down a hung server is no failure of its own
+            failures.append(GateFailure("mcp transport" if started else "mcp start", f"{type(exc).__name__}: {exc}"))
+    if handshake_timed_out:
+        failures.append(GateFailure("mcp handshake", f"initialize + tools/list took over {MCP_HANDSHAKE_LIMIT:.0f}s"))
     return failures
 
 

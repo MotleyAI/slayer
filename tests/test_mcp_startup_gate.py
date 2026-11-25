@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -292,6 +293,21 @@ class TestPreparationEngine:
             await asyncio.wait_for(entered.wait(), timeout=HANDSHAKE_S)
         assert outcome[-1] == "cancelled"
         assert outcome[0] in {f"engine:{id(e)}" for e in closed}
+
+    async def test_shutdown_awaits_a_running_demo_setup(self, tmp_path: Path) -> None:
+        entered = threading.Event()
+        finished = threading.Event()
+
+        def demo_setup() -> None:
+            entered.set()
+            time.sleep(1.0)
+            finished.set()
+
+        server = create_mcp_server(storage=YAMLStorage(base_dir=_store(tmp_path)), demo_setup=demo_setup,
+                                   _seed_help=False)
+        async with create_connected_server_and_client_session(server):
+            assert await asyncio.to_thread(entered.wait, HANDSHAKE_S)
+        assert finished.is_set()
 
 
 def test_factory_does_not_run_the_startup_ingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

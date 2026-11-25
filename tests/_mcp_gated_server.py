@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -26,6 +25,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine import ingestion
 from slayer.engine.schema_drift import IdempotentIngestResult, IngestionError
+from slayer.storage.sqlite_conn import transaction
 
 ORDERS_ROWS = 3
 _RELEASE = Path(os.environ.get("GATE_RELEASE", "/nonexistent-gate-release"))
@@ -34,7 +34,7 @@ _RELEASE = Path(os.environ.get("GATE_RELEASE", "/nonexistent-gate-release"))
 def tiny_orders_datasource(*, directory: str, name: str) -> tuple[DatasourceConfig, SlayerModel]:
     """A SQLite datasource with an ``orders`` table of ``ORDERS_ROWS`` rows, and its model."""
     db = os.path.join(directory, f"{name}.sqlite")
-    with sqlite3.connect(db) as conn:
+    with transaction(db) as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY)")
         conn.execute("DELETE FROM orders")
         conn.executemany("INSERT INTO orders (id) VALUES (?)", [(i,) for i in range(ORDERS_ROWS)])

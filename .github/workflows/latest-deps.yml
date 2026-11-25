@@ -107,8 +107,8 @@ jobs:
 
       - name: Resolve every dependency fresh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[all]" -r "$RUNNER_TEMP/dev-requirements.txt"
+          python -m pip install --upgrade pip  # NOSONAR(S8541, S8544) — tests the unlocked, sdist-allowed resolve a fresh install performs
+          python -m pip install ".[all]" -r "$RUNNER_TEMP/dev-requirements.txt"  # NOSONAR(S8541, S8544) — same: what users resolve
           python -m pip check
           python -m pip freeze
 

@@ -159,6 +159,14 @@ def _fake_slayer(directory: Path, behaviour: Behaviour, *, interpreter: str = sy
     return path
 
 
+def _pythonpath_interpreter(directory: Path, entry: Path) -> str:
+    """A ``sys.executable`` wrapper that puts ``entry`` on ``PYTHONPATH``."""
+    wrapper = directory / "python-wrapper"
+    wrapper.write_text(f'#!/bin/sh\nPYTHONPATH="{entry}" exec "{sys.executable}" "$@"\n')
+    wrapper.chmod(0o755)
+    return str(wrapper)
+
+
 def _invocations(directory: Path) -> list[Invocation]:
     return [Invocation.model_validate_json(p.read_text()) for p in sorted((directory / "record").glob("*.json"))]
 
@@ -325,6 +333,13 @@ def test_slow_mcp_handshake_stops_the_gate(tmp_path: Path, checkout: Path) -> No
     assert "mcp handshake" in _failed_checks(result), result.stdout + result.stderr
 
 
+def test_hung_mcp_handshake_stops_at_the_limit(tmp_path: Path, checkout: Path) -> None:
+    slayer = _fake_slayer(tmp_path, Behaviour(mcp_start_delay=release_gate.MCP_HANDSHAKE_LIMIT * 10))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout,
+                   timeout=release_gate.MCP_HANDSHAKE_LIMIT * 4)
+    assert "mcp handshake" in _failed_checks(result), result.stdout + result.stderr
+
+
 def test_fast_handshake_with_a_slow_first_call_passes(tmp_path: Path, checkout: Path) -> None:
     slayer = _fake_slayer(tmp_path, Behaviour(mcp_first_call_delay=release_gate.MCP_HANDSHAKE_LIMIT + 1))
     result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout, timeout=120)
@@ -356,18 +371,16 @@ def test_mcp_call_timeout_stops_the_gate(tmp_path: Path, checkout: Path, hang: s
 
 
 def test_package_inside_the_checkout_fails_provenance(tmp_path: Path) -> None:
-    # The dev install is editable, so with the default checkout its package resolves inside it.
-    result = _gate(slayer=_fake_slayer(tmp_path, Behaviour()), wheel=_wheel(tmp_path, "9.9.9"), checkout=None)
+    # The package resolves inside the default checkout, however the test environment installed it.
+    slayer = _fake_slayer(tmp_path, Behaviour(), interpreter=_pythonpath_interpreter(tmp_path, REPO_ROOT))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=None)
     assert result.returncode != 0
     assert "provenance" in _failed_checks(result), result.stdout + result.stderr
 
 
 def test_import_path_inside_the_checkout_fails_provenance(tmp_path: Path, checkout: Path) -> None:
     (checkout / "lib").mkdir()
-    wrapper = tmp_path / "python-wrapper"
-    wrapper.write_text(f'#!/bin/sh\nPYTHONPATH="{checkout / "lib"}" exec "{sys.executable}" "$@"\n')
-    wrapper.chmod(0o755)
-    slayer = _fake_slayer(tmp_path, Behaviour(), interpreter=str(wrapper))
+    slayer = _fake_slayer(tmp_path, Behaviour(), interpreter=_pythonpath_interpreter(tmp_path, checkout / "lib"))
     result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout)
     assert result.returncode != 0
     assert "provenance" in _failed_checks(result), result.stdout + result.stderr

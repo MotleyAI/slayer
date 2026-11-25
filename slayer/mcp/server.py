@@ -237,7 +237,7 @@ class StartupPreparation:
     async def _run(self) -> None:
         if self._demo_setup is not None:
             try:
-                await anyio.to_thread.run_sync(self._demo_setup, abandon_on_cancel=True)
+                await self._finish_on_cancel(anyio.to_thread.run_sync(self._demo_setup))
             except Exception as exc:  # noqa: BLE001 — becomes every tool call's error
                 failure = exc if isinstance(exc, DemoSetupError) else DemoSetupError(str(exc))
                 print(failure, file=sys.stderr, flush=True)
@@ -249,6 +249,16 @@ class StartupPreparation:
             except Exception as exc:  # noqa: BLE001 — a startup-ingest failure never blocks tool calls
                 print(f"Ingest-on-startup failed: {exc}", file=sys.stderr, flush=True)
         self.outcome = StartupOutcome(state="ready")
+
+    @staticmethod
+    async def _finish_on_cancel(work: Coroutine[Any, Any, object]) -> None:
+        """Await ``work``; a cancel waits for it to finish (a thread cannot be stopped) before propagating."""
+        task = asyncio.ensure_future(work)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.wait({task})
+            raise
 
     async def wait(self, *, report_progress: Callable[[float, str], Coroutine[Any, Any, None]]) -> None:
         """Hold the calling request until preparation ends, reporting progress; a cancelled caller never cancels it."""
