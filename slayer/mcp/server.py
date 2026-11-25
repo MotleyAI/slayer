@@ -1378,8 +1378,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     # Datasource management
 
     @tool()
-    async def create_datasource(  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
-        name: Annotated[str, Field(description="Unique datasource name.")],
+    async def create_datasource(
+        name: Annotated[str, Field(description="Unique datasource name.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
         type: Annotated[str, Field(description="Database type: postgres, mysql, sqlite, bigquery, snowflake, ...")],
         host: Annotated[str | None, Field(description="Database host (default localhost).")] = None,
         port: Annotated[int | None, Field(description="Database port, e.g. 5432.")] = None,

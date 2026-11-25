@@ -137,6 +137,12 @@ async def test_tier2_fails_when_a_conversion_is_needed(dialect: str) -> None:
         await render(dialect, query)
 
 
+async def test_presto_a_tier2_trino_sibling_refuses_a_conversion() -> None:
+    query = zoned_query(zone="UTC", **_queries("ordered_at")["bucket"])
+    with pytest.raises(TimeZoneError):
+        await render("presto", query)
+
+
 @pytest.mark.parametrize("dialect", TIER2)
 async def test_tier2_renders_without_a_conversion(dialect: str) -> None:
     sql = await render(dialect, zoned_query(
