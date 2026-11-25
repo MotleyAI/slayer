@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import Field
@@ -39,6 +41,8 @@ from slayer.sql.dialects.base import (
     operand_copy,
     ordinal_elements,
     pad_fill,
+    at_time_zone,
+    iso_text,
 )
 from slayer.sql.dialects.patterns import POSTGRES, RegexFlavour
 from slayer.sql.dialects.reflection import (
@@ -216,6 +220,13 @@ class PostgresDialect(SqlDialect):
     })
     regex_flavour: ClassVar[Optional[RegexFlavour]] = POSTGRES
     read_only_transaction_sql: ClassVar[str | None] = SET_TRANSACTION_READ_ONLY
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``(v AT TIME ZONE S) AT TIME ZONE Q``; an instant: ``v AT TIME ZONE Q``."""
+        return at_time_zone(value, source=source, target=target)
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"), to=exp.DataType.build("TIMESTAMPTZ"))
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         return describe_pg_cursor_column(description_row)

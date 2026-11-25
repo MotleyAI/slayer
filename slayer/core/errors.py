@@ -623,6 +623,21 @@ class GranularityDefinitionError(SlayerError):
         super().__init__(f"Granularity {name!r}: {rule}.")
 
 
+class TimeZoneError(SlayerError):
+    """A time zone that cannot apply: unknown, misplaced, or not convertible on the backend."""
+
+    def __init__(self, message: str, *, zone: str | None = None) -> None:
+        self.zone = zone
+        super().__init__(message)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _rebuild_time_zone_error, (str(self), self.zone)
+
+
+def _rebuild_time_zone_error(message: str, zone: str | None) -> TimeZoneError:
+    return TimeZoneError(message, zone=zone)
+
+
 class ReservedDatasetNameError(SlayerError):
     """A user dataset named after a built-in dataset."""
 

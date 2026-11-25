@@ -113,8 +113,8 @@ def extension_relationships(query: SlayerQuery) -> list[DatasetRelationship]:
 
 
 def test_versions_bumped() -> None:
-    # SlayerModel 30 then unwraps AGG in field expressions.
-    assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == {**UPGRADED_AT, "SlayerModel": 30}
+    # SlayerModel 30 then unwraps AGG in field expressions; 31 types BigQuery TIMESTAMP fields DateTimeTz.
+    assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == {**UPGRADED_AT, "SlayerModel": 31}
 
 
 @pytest.mark.parametrize("kind", STORE_KINDS)

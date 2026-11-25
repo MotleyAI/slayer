@@ -13,6 +13,8 @@ from typing import Dict, Iterator, List, Optional, Set, Tuple, TypeVar
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
+from slayer.sql.zoned_reads import READ_TAG
+
 UNTRUSTED_HOP = "slayer_untrusted_hop"
 # Under the save-time reserved ``__slayer_`` prefix: no column or field read through the projection can collide.
 _DIMENSION_PREFIX = "__slayer_d"
@@ -262,6 +264,8 @@ class _Projection:
             if ident not in self.names:
                 self.names[ident] = self._name(column)
                 source = exp.Column(this=column.this.copy(), table=exp.to_identifier(column.table))
+                if READ_TAG in column.meta:  # the read moved inside keeps how the read path read it
+                    source.meta[READ_TAG] = column.meta[READ_TAG]
                 aliased = source.as_(_ident(column, self.names[ident]))
                 if ident in grouped:
                     group.append(source)

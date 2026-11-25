@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re as _re
 from collections.abc import Callable, Sequence
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from urllib.parse import quote
 
@@ -23,6 +25,8 @@ from slayer.sql.dialects.base import (
     LIST_POSITION, LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
     case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
+    iso_text,
+    zone_name,
 )
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
@@ -174,6 +178,17 @@ class SnowflakeDialect(SqlDialect):
     row_number_needs_order: bool = True
     url_scheme: str | None = "snowflake"
     install_extra: str | None = "snowflake"
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``CONVERT_TIMEZONE(S, Q, v)``; an instant: ``CONVERT_TIMEZONE(Q, v)::TIMESTAMP_NTZ``."""
+        if source is not None:
+            return exp.ConvertTimezone(source_tz=zone_name(source), target_tz=zone_name(target), timestamp=value)
+        converted = exp.ConvertTimezone(target_tz=zone_name(target), timestamp=value)
+        return exp.Cast(this=converted, to=exp.DataType.build("TIMESTAMP_NTZ", dialect="snowflake"))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"),
+                        to=exp.DataType.build("TIMESTAMP_TZ", dialect="snowflake"))
 
     def normalize_reflected_name(self, name: str) -> str:
         return name.lower() if name == name.upper() else name

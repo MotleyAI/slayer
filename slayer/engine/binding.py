@@ -106,10 +106,12 @@ from slayer.engine.population.anchors import (
     unqualified_count,
 )
 from slayer.engine.key_metadata import bundle_dialect, scope_field_type
+from slayer.core.time_zones import check_bucketed_zones
 from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
+from slayer.core.time_zones import CIVIL
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
@@ -332,15 +334,18 @@ def bind_time_dimension(
         return BoundTimeDimension(
             bound=BoundExpr(value_key=TimeTruncKey(source=source, granularity=resolved)),
             bucketed_leaves=_bucketed_leaves(source, scope=scope, bundle=bundle),
+            bucketed_zones=_bucketed_zones(source, scope=scope, bundle=bundle),
             is_expression=True,
         )
     bound_col = _resolve_field_ref(parsed, scope=scope, bundle=bundle)
     field_type, upstream = _field_facts(bound_col, scope=scope, bundle=bundle)
     routed = _canonical_if_routed(parsed=parsed, value_key=bound_col)
+    zone = _bucket_zone(bound_col, scope=scope, bundle=bundle) if upstream is not None else None
     return BoundTimeDimension(
         bound=BoundExpr(value_key=TimeTruncKey(source=bound_col, granularity=resolved), routed_dotted=routed),
         field_type=field_type,
         bucketed_leaves=() if upstream is None else ((text, upstream),),
+        bucketed_zones=() if zone is None else ((text, zone),),
     )
 
 
@@ -401,6 +406,32 @@ def _bucketed_leaves(
         field_type, upstream = _field_facts(leaf, scope=scope, bundle=bundle)
         if upstream is not None and field_type in TEMPORAL_DATATYPES:
             out.setdefault(".".join((*field_path(leaf), field_leaf(leaf))), upstream)
+    return tuple(out.items())
+
+
+def _bucket_zone(col: FieldKey | FieldSqlKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Optional[str]:
+    """The zone a bucketed timestamp field's buckets are in: its own (a stage's zone state), else, on a dataset of the
+    datasource, the datasource's; ``None``: civil or undeclared."""
+    terminal = _terminal_dataset_for_path(path=field_path(col), scope=scope, bundle=bundle)
+    found = terminal.get_field(field_leaf(col)) if terminal is not None else None
+    if found is None or found.datatype is not DataType.DATETIME:
+        return None
+    zone = found.time_zone
+    if zone is None and terminal is not None and terminal.name not in bundle.stage_displays:
+        zone = bundle.datasource_time_zone
+    return None if zone == CIVIL else zone
+
+
+def _bucketed_zones(
+    source: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Tuple[Tuple[str, str], ...]:
+    """``(leaf, zone)`` of every bucketed timestamp leaf of ``source`` in a zone."""
+    out: Dict[str, str] = {}
+    for leaf in walk_value_keys(source):
+        if isinstance(leaf, (FieldKey, FieldSqlKey)) and _field_facts(leaf, scope=scope, bundle=bundle)[1] is not None:
+            zone = _bucket_zone(leaf, scope=scope, bundle=bundle)
+            if zone is not None:
+                out.setdefault(".".join((*field_path(leaf), field_leaf(leaf))), zone)
     return tuple(out.items())
 
 
@@ -491,7 +522,7 @@ def _bind(
     if isinstance(parsed, Cast):
         return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
     if isinstance(parsed, DateTrunc):
-        return _bind_date_trunc(parsed, source=sub(parsed.value), bundle=bundle)
+        return _bind_date_trunc(parsed, source=sub(parsed.value), scope=scope, bundle=bundle)
     if isinstance(parsed, NamedArg):
         raise CallArgumentError(f"`{canonical_metric_text(parsed)}` is only an argument of a call.")
     if isinstance(parsed, AggCall):
@@ -1910,8 +1941,11 @@ def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
     return key.model_copy(update={"filter": condition})
 
 
-def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSourceBundle) -> TimeTruncKey:
-    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``."""
+def _bind_date_trunc(
+    parsed: DateTrunc, *, source: ValueKey, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> TimeTruncKey:
+    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``; a leaf bucketed in another zone is
+    refused."""
     granularity = resolve_granularity(parsed.unit, defined=bundle.granularities)
     if granularity is None:
         raise UnknownGranularityError(summary=unknown_granularity_message(
@@ -1921,6 +1955,9 @@ def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSou
         isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)
     ):
         raise GranularityCallError.wrong_shape(canonical_metric_text(parsed))
+    if bundle.time_zone is not None:
+        check_bucketed_zones(name=canonical_metric_text(parsed), zone=bundle.time_zone,
+                             bucketed_zones=_bucketed_zones(source, scope=scope, bundle=bundle))
     return TimeTruncKey(source=source, granularity=granularity)
 
 

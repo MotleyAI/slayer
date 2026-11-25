@@ -470,7 +470,7 @@ carve_outs:
   - {name: _reads_no_column, file: slayer/sql/dialects/tsql.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: describe_cursor_column, file: slayer/sql/dialects/tsql.py, reason: "physical database or result-set column"}
   - {name: reads_source_column, file: slayer/sql/field_expansion.py, reason: "physical database or result-set column"}
-  - {name: windowed_column_sql, file: slayer/sql/field_expansion.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: windowed_column_ast, file: slayer/sql/field_expansion.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: _SemiJoinOps, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _apply_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _build_from_and_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
@@ -641,6 +641,8 @@ carve_outs:
   - {name: model_metrics, file: slayer/engine/field_dependency.py, reason: "Ossie's semantic model (the document)"}
   - {name: column, file: slayer/engine/unknown_types.py, reason: "physical database or result-set column"}
   - {name: columns, file: slayer/engine/unknown_types.py, reason: "physical database or result-set column"}
+  - {name: _column_reader, file: slayer/engine/zone_state.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/engine/zone_state.py, reason: "physical database or result-set column"}
   - {name: _model_metric_payload, file: slayer/inspect/collection_render.py, reason: "Ossie's semantic model (the document)"}
   - {name: _model_metrics_markdown, file: slayer/inspect/collection_render.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_metrics, file: slayer/inspect/collection_render.py, reason: "Ossie's semantic model (the document)"}
@@ -664,6 +666,11 @@ carve_outs:
   - {name: models, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}
   - {name: render_model_scoped_metric_text, file: slayer/search/render.py, reason: "Ossie's semantic model (the document)"}
   - {name: render_semantic_model_text, file: slayer/search/render.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _temporal_columns, file: slayer/sql/zoned_read_check.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/sql/zoned_read_check.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/sql/zoned_reads.py, reason: "physical database or result-set column"}
+  - {name: field_for_column, file: slayer/sql/zoned_reads.py, reason: "physical database or result-set column"}
+  - {name: read_column, file: slayer/sql/zoned_reads.py, reason: "physical database or result-set column"}
   - {name: adopt_semantic_model, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}
   - {name: create_semantic_model, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}
   - {name: edit_semantic_model, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}

@@ -642,6 +642,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 "sql": c.definition_sql or c.name,
                 "allowed_aggregations": aggs,
                 "filter": c.filter,
+                "time_zone": c.time_zone,
                 "label": c.label,
                 "description": _truncate_description(c.description, descriptions_max_chars),
                 "meta": _format_meta(c.meta),
@@ -649,7 +650,8 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             })
         col_columns = [
             "name", "datatype", "primary_key", "unique", "sql", "allowed_aggregations",
-            "filter", "label", "description", "meta", "sampled",
+            "filter", *(["time_zone"] if any(c.time_zone for c in visible_fields) else []),
+            "label", "description", "meta", "sampled",
         ]
         if not show_sql:
             col_columns = [c for c in col_columns if c not in ("sql", "filter")]
@@ -894,6 +896,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     "primary_key": c.primary_key,
                     "unique": c.unique,
                     **({"granularity": str(c.granularity)} if c.granularity is not None else {}),
+                    **({"time_zone": c.time_zone} if c.time_zone is not None else {}),
                     **({"sql": c.definition_sql} if show_sql else {}),
                     "allowed_aggregations": c.allowed_aggregations,
                     **({"filter": c.filter} if show_sql else {}),

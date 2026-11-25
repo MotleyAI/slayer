@@ -56,7 +56,7 @@ A string literal compared with a temporal operand, or used as a `date_range` ele
 
 ### Requirement: Relative tokens resolve against one clock reading
 
-A relative token SHALL be matched case-insensitively with whitespace collapsed, and SHALL denote a period computed from "now", read once per query execution from the engine's clock (the SLayer host's local wall-clock time unless pinned by `SLAYER_NOW` — see "SLAYER_NOW pins the default clock"; arithmetic is naive wall-clock). The grammar is closed: `today`, `yesterday`, `tomorrow`; `this <unit>`, `last <unit>`, `next <unit>` (the current, previous and next unit); `last N <units>` and `next N <units>` (the N whole units immediately before or after the current unit, excluding the current unit); `N <units> ago` and `N <units> from now` (the single unit N steps before or after the current one); `week to date`, `month to date`, `quarter to date`, `year to date` (`[start of the current unit, start of tomorrow)`). `<unit>` is any time granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`) or a custom granularity defined on the query's datasource (`queries/custom-granularities`), with an optional plural `s`; `week` is Monday-anchored and `week_sunday` Sunday-anchored. A custom unit's current unit is the custom bucket containing now, its steps are the adjacent custom buckets, and it is a sub-day unit when its base is `hour`, `minute` or `second`; a custom unit resolves against the datasource the query runs against, and a name that datasource does not define is not a unit. N is a positive integer. The clock SHALL be the engine's own; SQL-side `now()` / `current_date()` (`queries/date-functions`) read the database clock.
+A relative token SHALL be matched case-insensitively with whitespace collapsed, and SHALL denote a period computed from "now", read once per query execution from the engine's clock (the SLayer host's local wall-clock time unless pinned by `SLAYER_NOW` — see "SLAYER_NOW pins the default clock"; arithmetic is naive wall-clock). Under a stage's effective time zone (`queries/time-zones`), "now" SHALL be that one reading taken in the zone's wall clock. The grammar is closed: `today`, `yesterday`, `tomorrow`; `this <unit>`, `last <unit>`, `next <unit>` (the current, previous and next unit); `last N <units>` and `next N <units>` (the N whole units immediately before or after the current unit, excluding the current unit); `N <units> ago` and `N <units> from now` (the single unit N steps before or after the current one); `week to date`, `month to date`, `quarter to date`, `year to date` (`[start of the current unit, start of tomorrow)`). `<unit>` is any time granularity (`second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`) or a custom granularity defined on the query's datasource (`queries/custom-granularities`), with an optional plural `s`; `week` is Monday-anchored and `week_sunday` Sunday-anchored. A custom unit's current unit is the custom bucket containing now, its steps are the adjacent custom buckets, and it is a sub-day unit when its base is `hour`, `minute` or `second`; a custom unit resolves against the datasource the query runs against, and a name that datasource does not define is not a unit. N is a positive integer. The clock SHALL be the engine's own; without a time zone, SQL-side `now()` / `current_date()` (`queries/date-functions`) read the database clock, and under one they read the same reading in the zone.
 
 #### Scenario: Calendar tokens
 
@@ -112,6 +112,11 @@ A relative token SHALL be matched case-insensitively with whitespace collapsed, 
 
 - **WHEN** a filter compares a DATE column with `'last 2 quarter_hours'`
 - **THEN** the query fails with the typed error stating that the column has day resolution
+
+#### Scenario: Tokens read the clock in the query zone
+
+- **WHEN** the clock reads the instant `2025-01-01 03:30:00Z` and a query with `time_zone: America/New_York` filters `ordered_at = 'today'`
+- **THEN** `today` resolves to `[2024-12-31, 2025-01-01)` in New York wall clock
 
 ### Requirement: Temporal operands and time-literal typing
 

@@ -246,6 +246,8 @@ backslash-bearing string values are not supported on such servers.
 
 ### SQL Server (T-SQL) caveats
 
+Under a query `time_zone`, zones map to Windows zone names by CLDR 49; `America/Vancouver`, `America/Edmonton` and `America/Winnipeg` map to the 2026 Windows zones British Columbia, Alberta and Manitoba Standard Time, which a host needs the Windows time zone update to resolve.
+
 T-SQL has `STDEV`/`STDEVP`/`VAR`/`VARP` (not `STDDEV_SAMP`/`STDDEV_POP`/
 `VAR_SAMP`/`VAR_POP`); sqlglot's tsql transpiler emits incorrect names like
 `VAR_SAMP` and `VARIANCE_POP`, so the T-SQL dialect overrides the canonical
@@ -285,6 +287,8 @@ Other T-SQL specifics surfaced by the dialect:
 ### ClickHouse caveats
 
 `JSON` and `Object` columns are read natively by `json_value` through their ingested `db_type` (from `system.columns`), so datasets ingested before that need a re-ingest.
+
+Under a query `time_zone`, a converted timestamp is a `DateTime64(6, zone)` instant, so adding hours or minutes across a DST transition adds elapsed time (01:30 + 1 hour on a spring-forward day gives 03:30, where Postgres or DuckDB give 02:30), and in a repeated hour a `civil` wall clock equals only one of the two instants that read as it.
 
 ### Snowflake caveats
 
@@ -364,7 +368,7 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   mangle.
 - **No `MEDIAN` aggregate; `PERCENTILE_CONT` is analytic-only.** SLayer computes both per row as
   `PERCENTILE_CONT(x, p) OVER (PARTITION BY <grouping keys>)` in a subquery and regroups it.
-- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older datasets), reads as its UTC wall clock everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
+- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a `TIMESTAMP` column, which ingestion types `DateTimeTz` (a stored `DateTime` field with `db_type: TIMESTAMP` loads as one), reads as its UTC wall clock without a query `time_zone` everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
 - **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0, `IS NULL` is false and `count(list)` counts it where other databases see `NULL`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`, so `engine.execute(..., explain=True)` raises
   `ExplainUnsupportedError` (a `ValueError`); use `dry_run=True` to see the SQL.

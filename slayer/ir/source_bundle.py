@@ -121,8 +121,14 @@ class ResolvedSourceBundle(BaseModel):
     runtime_variables: Dict[str, Any] = Field(default_factory=dict)
     # Query-backed datasets this stage reads that could not be spliced, with the cause.
     splice_failures: Dict[str, Exception] = Field(default_factory=dict)
-    # The one clock reading every time point in this execution resolves against.
+    # The one clock reading every time point in this execution resolves against, as this stage's wall clock.
     now: datetime = Field(default_factory=datetime.now)
+    # That reading as taken (aware, or naive host-local): each stage's ``now`` derives from it.
+    clock_reading: Optional[datetime] = None
+    # The stage's effective time zone (its own, else the query's); ``None``: no conversion.
+    time_zone: Optional[str] = None
+    # The datasource's default source zone of its ``DateTime`` fields.
+    datasource_time_zone: Optional[str] = None
     # The datasource's custom granularities, keyed by ``granularity_key``.
     granularities: Dict[str, CustomGranularity] = Field(default_factory=dict)
     # A stored dataset shadows the built-in ``time_spine``.
@@ -338,6 +344,7 @@ def dataset_from_stage_schema(
             _stage_field(DatasetField(
                 name=c.name,
                 datatype=c.datatype,
+                time_zone=c.time_zone if c.datatype is DataType.DATETIME else None,
                 element_type=(c.element_type or DataType.OPAQUE) if c.datatype is DataType.ARRAY else None,
                 granularity=c.granularity.name if isinstance(c.granularity, CustomGranularity) else c.granularity,
                 label=c.label,

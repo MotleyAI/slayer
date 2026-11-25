@@ -4,6 +4,8 @@ Flow: SlayerQuery → plan_query() → PlannedQuery → SQLGenerator → SQL →
 """
 
 import asyncio
+import concurrent.futures
+import threading
 import contextlib
 import copy
 import decimal
@@ -13,6 +15,7 @@ import warnings as _warnings_module
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from functools import partial
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Unpack
 
 from sqlglot import exp
@@ -33,6 +36,7 @@ from slayer.core.enums import (
 )
 from slayer.core.ossie_conformance import parse_conformance
 from slayer.core.errors import (
+    TimeZoneError,
     AggregationArgumentError,
     AmbiguousDatasetError,
     AssociatedGrainWarning,
@@ -122,7 +126,9 @@ from slayer.core.warnings import (
     SlayerWarning,
     SlayerWholeListWarning,
     SlayerDateOnlyMidnightWarning,
+    SlayerTimeZoneUndeclaredWarning,
     DateOnlyMidnightWarning,
+    TimeZoneUndeclaredWarning,
     SlayerWholePeriodsWarning,
     UnrelatedDatasetWarningPayload,
     WholeListWarning,
@@ -219,6 +225,8 @@ from slayer.sql.render.parse import parse_table
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.database.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
+from slayer.sql.zoned_reads import collect_zone_warnings
+from slayer.core.time_zones import CIVIL
 from slayer.sql.generator import (
     PlannedStatement,
     _finish_statement,
@@ -745,6 +753,8 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerNameCollisionWarning(w), stacklevel=outside_stacklevel())
         elif isinstance(w, DateOnlyMidnightWarning):
             _warnings_module.warn(SlayerDateOnlyMidnightWarning(w), stacklevel=outside_stacklevel())
+        elif isinstance(w, TimeZoneUndeclaredWarning):
+            _warnings_module.warn(SlayerTimeZoneUndeclaredWarning(w), stacklevel=outside_stacklevel())
 
 
 def _projection_ordered(expected: List[str], rows: List[Dict[str, Any]]) -> List[str]:
@@ -770,6 +780,8 @@ class SlayerResponse(BaseModel):
     population_inferred: bool = False
     # The datasets supplying the rows (``["unit"]`` with no dimensions).
     row_sources: List[str] = PydanticField(default_factory=list)
+    # The query's time zone (its final stage's): the wall clock timestamps are bucketed and returned in.
+    time_zone: Optional[str] = None
     # The datasource the query ran on; never serialized.
     datasource: Optional[DatasourceConfig] = PydanticField(default=None, exclude=True, repr=False)
 
@@ -827,6 +839,17 @@ class _Prepared(BaseModel):
     row_sources: List[str] = PydanticField(default_factory=list)
     #: The SQL evaluates ``now()`` / ``current_date()``: its result must never be cached.
     reads_clock: bool = False
+    time_zone: Optional[str] = None
+    #: The zones the statement converts between.
+    zones: List[str] = PydanticField(default_factory=list)
+
+
+def _zones_in_play(rendered: "_Rendered") -> set[str]:
+    """Every zone a statement may convert between: its stages' zones and the source zones its datasets declare."""
+    bundles = [rendered.bundle, *(p.stage_bundle for p in rendered.emitted_list if p.stage_bundle is not None)]
+    zones = {b.time_zone for b in bundles} | {rendered.datasource.time_zone}
+    zones |= {f.time_zone for b in bundles for d in b.datasets_by_name.values() for f in d.fields}
+    return {z for z in zones if z is not None and z != CIVIL}
 
 
 class _Rendered(BaseModel):
@@ -981,6 +1004,9 @@ class SlayerQueryEngine:
         self._drift_snapshots = schema_drift.LiveSnapshotCache()
         # Live source-column types a portable definition's undeclared columns read, by table.
         self._source_column_types: dict[tuple, dict[str, DataType]] = {}
+        # Per client: each zone the server was checked to resolve, with the error it raises when it cannot.
+        self._zone_checks: dict[tuple, dict[str, concurrent.futures.Future[Optional[TimeZoneError]]]] = {}
+        self._zone_lock = threading.Lock()
         self._unknown_types = UnknownTypes()
 
     async def _resolve_unknown_types(self, dataset: SlayerDataset) -> SlayerDataset:
@@ -1486,6 +1512,8 @@ class SlayerQueryEngine:
             population_inferred=rendered.population_inferred,
             row_sources=rendered.row_sources,
             reads_clock=plans_read_clock(rendered.emitted_list),
+            time_zone=root_planned.stage_bundle.time_zone if root_planned.stage_bundle is not None else None,
+            zones=get_dialect(dialect).converted_zones(statement, zones=_zones_in_play(rendered)),
         )
 
     async def _plan_and_render(self, **kwargs: Any) -> _Rendered:
@@ -1638,7 +1666,7 @@ class SlayerQueryEngine:
         # Plan the DAG (root last) and compose the whole chain as one statement.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
         render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
-        with collect_stale_spellings() as render_stale_spellings:
+        with collect_stale_spellings() as render_stale_spellings, collect_zone_warnings() as zone_warnings:
             built = build_planned_statement(
                 planned_list, bundle=bundle, dialect=render_dialect,
                 # Plan-derived canonical projection keys drive the write-side length
@@ -1674,6 +1702,7 @@ class SlayerQueryEngine:
         warnings.extend(WholeListWarning(operation=r.operation, list=r.list)
                         for r in dict.fromkeys(r for p in plans for r in p.whole_list_reads))
         warnings.extend({n.message: n for p in plans for n in p.date_only_notices}.values())
+        warnings.extend(zone_warnings)
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
@@ -1916,6 +1945,7 @@ class SlayerQueryEngine:
                 population=prepared.population,
                 population_inferred=prepared.population_inferred,
                 row_sources=prepared.row_sources,
+                time_zone=prepared.time_zone,
             )
 
         use_cache = cache and not dry_run and not explain and not prepared.reads_clock
@@ -1935,6 +1965,7 @@ class SlayerQueryEngine:
                     "population": prepared.population,
                     "population_inferred": prepared.population_inferred,
                     "row_sources": prepared.row_sources,
+                    "time_zone": prepared.time_zone,
                     "warnings": list(prepared.slack_warnings),
                 })
 
@@ -1960,6 +1991,7 @@ class SlayerQueryEngine:
                 population=prepared.population,
                 population_inferred=prepared.population_inferred,
                 row_sources=prepared.row_sources,
+                time_zone=prepared.time_zone,
                 datasource=prepared.datasource,
             )
 
@@ -1980,6 +2012,7 @@ class SlayerQueryEngine:
             population=prepared.population,
             population_inferred=prepared.population_inferred,
             row_sources=prepared.row_sources,
+            time_zone=prepared.time_zone,
             datasource=prepared.datasource,
         )
 
@@ -1998,11 +2031,73 @@ class SlayerQueryEngine:
             await cache_obj.put(key, entry)
         return response
 
+    async def _check_zones(self, *, prepared: _Prepared, client: SqlClient) -> None:
+        """Before the statement runs, the server resolves each zone it converts to: checked once per client and zone
+        through the client (concurrent statements share the one check), a failure raised every time."""
+        dialect = get_dialect(prepared.dialect)
+        key = _sql_client_cache_key(prepared.datasource)
+        for zone in prepared.zones:
+            failure = await self._zone_check(key=key, zone=zone, dialect=dialect, client=client)
+            if failure is not None:
+                raise failure
+
+    async def _zone_check(
+        self, *, key: tuple, zone: str, dialect: SqlDialect, client: SqlClient,
+    ) -> Optional[TimeZoneError]:
+        """``zone``'s cached check, probing it when none is cached or in flight; a cancelled probe is retried."""
+        while True:
+            check, owner = self._claim_zone_check(key=key, zone=zone)
+            if owner:
+                await self._settle_zone_check(check, key=key, zone=zone, dialect=dialect, client=client)
+            try:
+                return await asyncio.shield(asyncio.wrap_future(check))
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if owner or (task is not None and task.cancelling()):
+                    raise  # this statement itself was cancelled
+
+    def _claim_zone_check(
+        self, *, key: tuple, zone: str,
+    ) -> tuple[concurrent.futures.Future[Optional[TimeZoneError]], bool]:
+        """The cached or in-flight check of ``zone``, else a new one this caller owns (and whether it does)."""
+        with self._zone_lock:
+            checks = self._zone_checks.setdefault(key, {})
+            check = checks.get(zone)
+            if check is not None:
+                return check, False
+            check = checks[zone] = concurrent.futures.Future()
+            return check, True
+
+    async def _settle_zone_check(
+        self, check: concurrent.futures.Future[Optional[TimeZoneError]], *, key: tuple, zone: str,
+        dialect: SqlDialect, client: SqlClient,
+    ) -> None:
+        """Probe ``zone`` into ``check``; on any failure uncache it (the next statement retries) and re-raise."""
+        try:
+            check.set_result(await self._probe_zone(dialect=dialect, zone=zone, client=client))
+        except BaseException as exc:
+            with self._zone_lock:
+                checks = self._zone_checks.get(key, {})
+                if checks.get(zone) is check:
+                    del checks[zone]
+            check.set_exception(exc)
+            raise
+
+    @staticmethod
+    async def _probe_zone(*, dialect: SqlDialect, zone: str, client: SqlClient) -> Optional[TimeZoneError]:
+        probe = dialect.zone_probe(ZoneInfo(zone))
+        if probe is None:
+            return None
+        result = await client.execute(sql=probe.sql(dialect=dialect.sqlglot_name))
+        value = next(iter(result.rows[0].values()), None) if result.rows else None
+        return dialect.unresolved_zone_error(ZoneInfo(zone)) if value is None else None
+
     @probes.probe(name="query.run", result=lambda executed: {"query.rows": len(executed.rows)})
     async def _run_data_query(
         self, *, prepared: _Prepared, client: SqlClient
     ) -> ExecutionResult:
         """Run the prepared data query (schema-drift attribution on error); decodes result keys."""
+        await self._check_zones(prepared=prepared, client=client)
         try:
             result = await client.execute(sql=prepared.sql)
         except Exception as exc:
@@ -2166,6 +2261,7 @@ class SlayerQueryEngine:
             population=prepared.population,
             population_inferred=prepared.population_inferred,
             row_sources=prepared.row_sources,
+            time_zone=prepared.time_zone,
             datasource=prepared.datasource,
         )
         return self._build_cache_entry(
