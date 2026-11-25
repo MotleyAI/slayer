@@ -1950,7 +1950,8 @@ class SQLGenerator:
         self, *, model, relation: str, bundle, attached_columns=None,
     ) -> ScopeFrame:
         """A target-rooted ``ScopeFrame`` built purely to reproduce an anchored"""
-        allocator = self._new_allocator()
+        # The generation allocator: its join aliases must match FROM's.
+        allocator = self._gen_allocator or self._new_allocator()
         return ScopeFrame(
             scope_id=allocator.next_scope_id(relation),
             root_model=model,

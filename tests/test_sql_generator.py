@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import sqlglot
 import sqlglot.errors
+from sqlglot import exp
 from pydantic import ValidationError as PydanticValidationError
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
@@ -10424,3 +10425,39 @@ class TestWindowedMeasureGuards:
         sql = await _engine_generate(query=query, model=orders_model)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
+
+
+class TestFilterJoinAliasMatchesFrom:
+    """A filter reads the same join alias FROM assigns, even when a hop path's alias collides with a model name."""
+
+    @staticmethod
+    def _models() -> list[SlayerModel]:
+        def pk() -> Column:
+            return Column(name="id", type=DataType.INT, primary_key=True)
+
+        orders = SlayerModel(name="orders", sql_table="orders", data_source="test", columns=[
+            pk(), Column(name="store_id", type=DataType.INT), Column(name="tag_id", type=DataType.INT),
+        ], joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]]),
+                  ModelJoin(target_model="stores__regions", join_pairs=[["tag_id", "id"]])])
+        stores = SlayerModel(name="stores", sql_table="stores", data_source="test", columns=[
+            pk(), Column(name="region_id", type=DataType.INT),
+        ], joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])])
+        regions = SlayerModel(name="regions", sql_table="regions", data_source="test", columns=[
+            pk(), Column(name="population", type=DataType.INT),
+        ])
+        tags = SlayerModel(name="stores__regions", sql_table="tags", data_source="test", columns=[
+            pk(), Column(name="label", type=DataType.TEXT),
+        ])
+        return [orders, stores, regions, tags]
+
+    @pytest.mark.parametrize("dimensions", [["stores__regions.label"], ["stores__regions.label", "stores.regions.population"]])
+    async def test_two_hop_filter_reads_from_alias(self, dimensions: list[str]) -> None:
+        host, *extra = self._models()
+        query = SlayerQuery.model_validate(
+            {"source_model": "orders", "dimensions": dimensions, "filters": ["stores.regions.population = 1"]},
+        )
+        sql = await _engine_generate(query=query, model=host, extra_models=extra)
+        tree = sqlglot.parse_one(sql, read="postgres")
+        regions_alias = next(t.alias_or_name for t in tree.find_all(exp.Table) if t.name == "regions")
+        where_tables = {c.table for c in tree.args["where"].find_all(exp.Column) if c.name == "population"}
+        assert where_tables == {regions_alias}, sql
