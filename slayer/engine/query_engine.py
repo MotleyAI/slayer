@@ -3134,14 +3134,7 @@ class SlayerQueryEngine:
         tgt_cols = [p[1] for p in relationship.column_pairs]
         target = by_name.get(relationship.to)
 
-        note = _detection_skip_reason(dataset=dataset, target=target, src_cols=src_cols, tgt_cols=tgt_cols)
-        if note is None:
-            # Keys are read in the form each side runs on this datasource.
-            peers = list(by_name.values())
-            dataset = await self._resolved(dataset, datasource=datasource_cfg, datasets=peers)
-            target = await self._resolved(target, datasource=datasource_cfg, datasets=peers)
-            note = _filtered_window_key_reason(sides=((dataset, src_cols), (target, tgt_cols)), dialect=sqlglot_name)
-        if note is not None:
+        def skipped(note: str) -> "tuple[RelationshipCardinalityFinding, None]":
             return RelationshipCardinalityFinding(
                 data_source=data_source, dataset=dataset.name,
                 to=relationship.to, column_pairs=pairs,
@@ -3149,14 +3142,28 @@ class SlayerQueryEngine:
                 verdict=CardinalityVerdict.SKIPPED_UNSUPPORTED, note=note,
             ), None
 
+        note = _detection_skip_reason(dataset=dataset, target=target, src_cols=src_cols, tgt_cols=tgt_cols)
+        if note is not None:
+            return skipped(note)
+        # Keys are read in the form each side runs on this datasource; no other field is resolved.
+        peers = list(by_name.values())
+        src_keyed, tgt_keyed = [
+            await self._resolved(side.model_copy(update={"fields": [f for f in side.fields if f.name in keys],
+                                                         "metrics": []}), datasource=datasource_cfg, datasets=peers)
+            for side, keys in ((dataset, src_cols), (target, tgt_cols))
+        ]
+        note = _filtered_window_key_reason(sides=((src_keyed, src_cols), (tgt_keyed, tgt_cols)), dialect=sqlglot_name)
+        if note is not None:
+            return skipped(note)
+
         src_side = await self._side_stats(
             client=client, table=dataset.sql_table,
-            key_cols=_key_reads(dataset=dataset, keys=src_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=src_keyed, keys=src_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         tgt_side = await self._side_stats(
             client=client, table=target.sql_table,
-            key_cols=_key_reads(dataset=target, keys=tgt_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=tgt_keyed, keys=tgt_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         # 0 == 0 reads as observed_unique, so an empty side would falsely detect

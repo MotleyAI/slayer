@@ -36,7 +36,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.ir.variables import substitute_dataset_sql_surfaces
-from slayer.sql.generator import _WINDOW_LAYER, _prune_window_layers
+from slayer.sql.generator import _UNSAFE_WINDOWS, _WINDOW_LAYER, _prune_window_layers, _refuse_unsafe_window_reads
 from slayer.sql.untrusted_projection import UNTRUSTED_HOP, mark_untrusted
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2210_fixtures import DDL as FILTER_DDL
@@ -365,8 +365,12 @@ async def test_cardinality_profiling_reads_the_key_form_running_on_the_datasourc
     other = "DUCKDB" if own == "SQLITE" else "SQLITE"
     key = DatasetField(name="k", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[
         DialectEntry(dialect=other, expression=RN), DialectEntry(dialect=own, expression="slot")]))
-    await engine.storage.save_dataset(_orders_like("orders_dk", fields=[key], filters=["amount >= 20"], relationships=[
-        DatasetRelationship(to="slots", from_columns=["k"], to_columns=["pos"])]))
+    elsewhere = DatasetField(name="elsewhere", datatype=DataType.INTEGER,
+                             expression=ExpressionObject(dialects=[DialectEntry(dialect=other, expression="amount")]))
+    await engine.storage.save_dataset(_orders_like("orders_dk", fields=[key, elsewhere], filters=["amount >= 20"],
+                                                   relationships=[DatasetRelationship(to="slots", from_columns=["k"],
+                                                                                      to_columns=["pos"])]),
+                                      _validate=False)
     report = await engine.detect_relationship_cardinality(dataset="orders_dk")
     finding = next(f for f in report.findings if f.dataset == "orders_dk" and f.to == "slots")
     assert finding.detected is RelationshipCardinality.MANY_TO_ONE, finding
@@ -605,6 +609,13 @@ class TestModelFilterOnWindowedColumn:
         resp = await _run(filter_engine, {"population": "a", "dimensions": ["a.id"]})
         assert [int(r["a.id"]) for r in resp.data] == [1]
 
+    async def test_an_unread_window_reading_back_blocks_no_filter(self, filter_engine, door):
+        await _save(filter_engine, _cycle_dataset("b", "a", extra=[
+            native("w", "ROW_NUMBER() OVER (PARTITION BY b_to_a.flag ORDER BY id)")]), door=door)
+        await _save(filter_engine, _cycle_dataset("a", "b", filters=["a_to_b.flag = 1"]), door=door)
+        resp = await _run(filter_engine, {"population": "a", "dimensions": ["a.id"]})
+        assert [int(r["a.id"]) for r in resp.data] == [1]
+
     async def test_a_hop_keyed_by_its_own_window_is_a_cycle(self, filter_engine, door):
         keyed = SlayerDataset(
             name="a", data_source="test", sql_table="a", filters=["a_rn.flag = 1"],
@@ -662,6 +673,23 @@ def test_collapsing_an_unread_window_layer_keeps_the_untrusted_mark():
     assert joined.meta.get(UNTRUSTED_HOP)
 
 
+def _scoped_reads(*, read_from_marked: bool) -> exp.Select:
+    """Two derived tables each joining an alias ``t``; only the first one's ``t`` leaves ``__slayer_w_w`` unmaterialised."""
+    marked = exp.select("t.*").from_("tbl AS t").subquery("t")
+    marked.meta[_UNSAFE_WINDOWS] = {"__slayer_w_w": ValueError("unsafe")}
+    safe = exp.select("t.*").from_("tbl AS t").subquery("t")
+    first = exp.select("t.id" if not read_from_marked else "t.__slayer_w_w").from_(marked).subquery("one")
+    second = exp.select("t.__slayer_w_w").from_(safe).subquery("two")
+    return exp.select("one.*").from_(first).join(second, join_type="CROSS")
+
+
+def test_an_unsafe_window_is_refused_only_when_its_own_relation_is_read():
+    _refuse_unsafe_window_reads(_scoped_reads(read_from_marked=False))
+    statement = _scoped_reads(read_from_marked=True)
+    with pytest.raises(ValueError, match="unsafe"):
+        _refuse_unsafe_window_reads(statement)
+
+
 LONG_A = "first_relationship_with_a_rather_long_descriptive_name"
 LONG_B = "second_relationship_with_a_rather_long_descriptive_name"
 
@@ -689,8 +717,10 @@ async def test_a_field_across_a_long_joined_path_reads_the_fitted_alias(tmp_path
         engine.close()
     assert resp.sql is not None
     tree = sqlglot.parse_one(resp.sql, dialect="postgres")
-    aliases = {j.this.alias_or_name for j in tree.find_all(exp.Join)}
-    assert {c.table for c in tree.find_all(exp.Column) if c.name == read} <= aliases, resp.sql
+    terminal = next(j.this.alias_or_name for j in tree.find_all(exp.Join)
+                    if any(t.name == "c" for t in j.this.find_all(exp.Table)))
+    reads = {c.table for c in tree.find_all(exp.Column) if c.name == read}
+    assert reads == {terminal}, resp.sql
 
 
 async def test_a_stored_own_windowed_filter_fails_the_query(filter_engine):

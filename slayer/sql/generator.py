@@ -23,6 +23,7 @@ from typing import (
 from decimal import Decimal
 from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
@@ -5784,7 +5785,10 @@ class SQLGenerator:
                 demand=windows,
             )
         if any(c.name == ROW_IDENTITY_FIELD for c in dataset.fields):
+            unsafe = relation.meta.get(_UNSAFE_WINDOWS)
             relation = self._numbered_relation(relation, alias=outer_alias)
+            if unsafe:
+                relation.meta[_UNSAFE_WINDOWS] = unsafe
         return relation
 
     def _materialised_windows(
@@ -5805,12 +5809,13 @@ class SQLGenerator:
         chains = {path: self._oriented_hop_chain(source_dataset=dataset, path=path, bundle=bundle)
                   for _, paths in rendered.values() for path in paths}
         reads = self._window_reads(rendered=rendered, chains=chains, rows=rows, dataset=dataset)
-        unsafe = _read_closure(_reversed(reads), start={
-            name for name, (_, paths) in rendered.items() if any(not _to_one_hop(chains[p]) for p in paths)})
-        keep = set(rendered) - unsafe if demand is None else _read_closure(reads, start=demand)
-        if keep & unsafe:
-            raise ValueError(f"A windowed field of dataset {dataset.name!r} reads across a hop that is not a proven "
-                             f"to-one hop: {min(keep & unsafe)!r}.")
+        reasons = {name: exc for name, (_, paths) in rendered.items()
+                   if (exc := self._unemittable(name=name, paths=paths, chains=chains, dataset=dataset)) is not None}
+        unsafe = {name: next(reasons[d] for d in sorted(_read_closure(reads, start={name})) if d in reasons)
+                  for name in _read_closure(_reversed(reads), start=set(reasons))}
+        keep = set(rendered) - set(unsafe) if demand is None else _read_closure(reads, start=demand)
+        if keep & set(unsafe):
+            raise unsafe[min(keep & set(unsafe))]
         for layer in _dependency_layers({n: d for n, d in reads.items() if n in keep}, dataset=dataset.name):
             select = exp.select(
                 exp.Column(this=exp.Star(), table=exp.to_identifier(rows)),
@@ -5823,10 +5828,25 @@ class SQLGenerator:
             relation.meta[_WINDOW_LAYER] = True
         relation.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         if unsafe:
-            relation.meta[_UNSAFE_WINDOWS] = {windowed_column(name): (
-                f"A windowed field of dataset {dataset.name!r} reads across a hop that is not a proven to-one hop: "
-                f"{name!r}.") for name in unsafe}
+            relation.meta[_UNSAFE_WINDOWS] = {windowed_column(name): exc for name, exc in unsafe.items()}
         return relation
+
+    def _unemittable(
+        self, *, name: str, paths: List[Tuple[str, ...]],
+        chains: Dict[Tuple[str, ...], List[Tuple[OrientedRelationship, SlayerDataset]]], dataset: SlayerDataset,
+    ) -> Optional[Exception]:
+        """Why window ``name`` cannot be materialised here: a hop not proven to-one, or one reaching a dataset whose
+        filters are being rendered (a filter cycle); ``None`` when it can."""
+        stack = self._gen_filter_stack
+        for path in paths:
+            chain = chains[path]
+            if not _to_one_hop(chain):
+                return ValueError(f"A windowed field of dataset {dataset.name!r} reads across a hop that is not a "
+                                  f"proven to-one hop: {name!r}.")
+            filtering = next((t.name for _, t in chain if t.name in stack), None)
+            if filtering is not None:
+                return DatasetFilterCycleError([*stack[stack.index(filtering):], dataset.name, filtering])
+        return None
 
     def _window_reads(
         self, *, rendered: Dict[str, Tuple[Expression, List[Tuple[str, ...]]]],
@@ -7182,15 +7202,16 @@ def _reversed(reads: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
 
 
 def _refuse_unsafe_window_reads(statement: Expression) -> None:
-    """Refuse a statement reading a window left unmaterialised because it reads across a hop not proven to-one."""
-    for relation in statement.find_all(exp.Subquery, exp.Table):
-        unsafe = relation.meta.get(_UNSAFE_WINDOWS)
-        if not unsafe:
-            continue
-        read = next((c.name for c in statement.find_all(exp.Column) if c.table == relation.alias and c.name in unsafe),
-                    None)
-        if read is not None:
-            raise ValueError(unsafe[read])
+    """Refuse a statement reading, in its own scope, a window its relation left unmaterialised."""
+    if not any(n.meta.get(_UNSAFE_WINDOWS) for n in statement.find_all(exp.Subquery, exp.Table)):
+        return
+    for scope in traverse_scope(statement):
+        for column in scope.columns:
+            source = scope.sources.get(column.table)
+            relation = source.expression.parent if isinstance(source, Scope) else source
+            unsafe = relation.meta.get(_UNSAFE_WINDOWS) if isinstance(relation, Expr) else None
+            if unsafe and column.name in unsafe:
+                raise unsafe[column.name]
 
 
 def _read_closure(reads: Dict[str, Set[str]], *, start: AbstractSet[str]) -> Set[str]:
