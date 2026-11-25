@@ -108,10 +108,10 @@ existing demo database in place.
 - **THEN** setup fails with an error naming that store, and the existing demo database is unchanged
 
 ### Requirement: Demo data is deterministic
-Demo generation SHALL be seeded so that two builds with the same jafgen and Faker versions and the same
-number of years produce identical demo tables, apart from the shift that moves the latest order date to
-today. Row counts and every value except customer names SHALL depend only on the jafgen version and the
-number of years. The demo SHALL never run an unseeded generator: when the bundled generator cannot be run
+Demo generation SHALL be seeded so that two builds with the same jafgen and Faker versions, the same SLayer
+seed recipe and the same number of years produce identical demo tables, apart from the shift that moves the
+latest order date to today. Row counts and every value except customer names SHALL depend only on the
+jafgen version, the seed recipe and the number of years. The demo SHALL never run an unseeded generator: when the bundled generator cannot be run
 seeded, setup SHALL fail with an error naming jafgen. The row count that the CLI guide documents for the
 demo SHALL be the count the CLI prints on a freshly built default demo.
 
