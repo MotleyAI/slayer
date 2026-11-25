@@ -40,4 +40,4 @@
 
 ## 6. Close-out
 
-- [ ] 6.1 The PR closes DEV-2462, DEV-2449 and DEV-2395 (DEV-2405 as duplicate of DEV-2395).
+- [x] 6.1 The PR closes DEV-2462, DEV-2449 and DEV-2395 (DEV-2405 as duplicate of DEV-2395).
