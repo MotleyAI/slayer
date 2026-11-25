@@ -1341,15 +1341,16 @@ def planets_sqlserver_env(sqlserver_container):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_sqlserver_raises(planets_sqlserver_env) -> None:
+async def test_filter_on_windowed_column_sqlserver(planets_sqlserver_env) -> None:
+    """A filter on a windowed field applies outside the materialised window."""
     engine = planets_sqlserver_env
     query = SlayerQuery(
         population="planets",
         dimensions=["planets.name"],
         filter=["planets.rn <= 3"],
     )
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await engine.execute(query)
+    result = await engine.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Neptune"}
 
 
 # ---------------------------------------------------------------------------

@@ -29,10 +29,12 @@ principles every layer obeys.
    definition (column, filter or saved measure) from its declaring dataset — is
    judged alone; composing a definition onto a path is never a revisit (from root
    `a`, `b.d` with `d ≔ a.x` reads a second `a`).
+   A **windowed column** — one whose definition is a window function — is a function of its declaring dataset's rows (Axiom 3.3), evaluated over them before any join, query filter or aggregation reads it, and is then read as a column in every position; a dataset filter reading one reads that dataset (3.3).
    [enforced: test:tests/test_dev1836_producer_execution.py]
    [enforced: test:tests/test_dev1930_save_time_arity.py]
    [enforced: test:tests/test_dev1952_derived_revisit.py]
    [enforced: test:tests/test_dev2074_frame_local_revisit.py]
+   [enforced: test:tests/test_dev2432_windowed_columns.py]
 2. **Home dataset**: every row-level expression, and every aggregation, has at most
    one home dataset — the dataset over whose rows it is evaluated with exactly one
    value per row (an aggregation is counted over it, Axiom 4). Datasets are the

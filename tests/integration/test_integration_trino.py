@@ -913,10 +913,11 @@ def trino_planets_env(trino_container, tmp_path):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_raises(trino_planets_env: SlayerQueryEngine) -> None:
+async def test_filter_on_windowed_column(trino_planets_env: SlayerQueryEngine) -> None:
+    """A filter on a windowed field applies outside the materialised window."""
     query = SlayerQuery.model_validate({"population": "planets", "dimensions": ["planets.name"], "filter": ["planets.rn <= 3"]})
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await trino_planets_env.execute(query)
+    result = await trino_planets_env.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Earth"}
 
 
 # ---------------------------------------------------------------------------
