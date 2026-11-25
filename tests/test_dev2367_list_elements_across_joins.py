@@ -11,11 +11,10 @@ from typing import Any, Optional, Union
 import pytest
 import sqlglot
 from pytest_postgresql import factories
-from sqlalchemy.exc import ProgrammingError
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.errors import TimeAxisError, UnsafeRelationshipInputError
+from slayer.core.errors import TimeAxisError, UnknownReferenceError, UnsafeRelationshipInputError
 from slayer.core.keys import AggregateKey, FieldKey, Grain, anchor_token
 from slayer.core.models import (
     Aggregation,
@@ -376,6 +375,8 @@ def _band_query(population: str, expression: str, *, two: bool = False) -> Slaye
     return SlayerQuery.model_validate(body(population, m(expression), dimensions=dims))  # pyright: ignore[reportArgumentType]
 
 
+@pytest.mark.xfail(strict=True, raises=UnknownReferenceError,
+                   reason="DEV-2375: a computed-dimension re-aggregation's placeholder is read on a table lacking it")
 async def test_home_survives_a_reaggregation_partition_key() -> None:
     # The target-rooted aggregate rebuilt around the re-aggregation placeholder keeps its home.
     sql = await emit_contractors(_band_query("contractors",
@@ -399,7 +400,7 @@ def _band_cells(resp: SlayerResponse) -> dict[tuple[Any, Any], Any]:
     return {(r[team], r[band]): num(r[v]) for r in resp.data if r[team] is not None}
 
 
-@pytest.mark.xfail(strict=True, raises=ProgrammingError,
+@pytest.mark.xfail(strict=True, raises=UnknownReferenceError,
                    reason="DEV-2375: a computed-dimension re-aggregation's placeholder is read on a table lacking it")
 @pytest.mark.parametrize("kind", sorted(BAND_SHAPES))
 async def test_a_reaggregation_dimension_is_independent_of_the_root(engine: SlayerQueryEngine, kind: str) -> None:
@@ -410,7 +411,7 @@ async def test_a_reaggregation_dimension_is_independent_of_the_root(engine: Slay
     assert {k: home[k] for k in other} == other
 
 
-@pytest.mark.xfail(strict=True, raises=ProgrammingError,
+@pytest.mark.xfail(strict=True, raises=UnknownReferenceError,
                    reason="DEV-2375: a computed-dimension re-aggregation's placeholder is read on a table lacking it")
 @pytest.mark.parametrize(("population", "expression"), [
     ("contractors", "sum(contractors.rate * length(contractors.skills.value), partition_by=[band, band2])"),
