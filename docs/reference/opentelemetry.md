@@ -78,7 +78,7 @@ In library use, SLayer exports traces and metrics. It does not attach a log hand
 $ slayer otel status
 OTel is on (decided by: SLAYER_OTEL).
 otel extra: installed
-Service: slayer 1.9.1
+Service: slayer 1.9.2
 traces:  otlp -> http://localhost:4318/v1/traces
 metrics: otlp -> http://localhost:4318/v1/metrics
 logs:    otlp -> http://localhost:4318/v1/logs
