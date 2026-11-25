@@ -7,7 +7,7 @@ from datetime import datetime
 import functools
 from enum import Enum, IntEnum
 from typing import (
-    AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypedDict, Union, cast,
+    AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypeAlias, TypedDict, Union, cast,
 )
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -263,12 +263,41 @@ class EmptyBaseGrainPlan(BaseModel):
     host_gated: bool = False
 
 
+class ComputedKey(BaseModel):
+    """A relationship key computed by an expression over its relation's source columns."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["computed"] = "computed"
+    text: str
+
+
+class WindowedKey(BaseModel):
+    """A relationship key read as the column its relation materialises a windowed field in."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["windowed"] = "windowed"
+    field: str
+
+
+#: A non-physical relationship key (``None`` in its place: a physical column).
+DerivedKey: TypeAlias = Union[ComputedKey, WindowedKey]
+
+
+def derived_key(field: DatasetField) -> Optional[DerivedKey]:
+    """How relationship key ``field`` is read: ``None`` for its physical column."""
+    if field.windowed:
+        return WindowedKey(field=field.name)
+    return None if field.is_base else ComputedKey(text=field.definition_sql or field.name)
+
+
 class KeyArgs(TypedDict):
     """``SemiJoinHop``'s key fields, as ``SemiJoinHop.key_args`` builds them."""
 
     join_pairs: Tuple[Tuple[str, str], ...]
     quoted: Tuple[Tuple[bool, bool], ...]
-    computed: Tuple[Tuple[Optional[str], Optional[str]], ...]
+    computed: Tuple[Tuple[Optional[DerivedKey], Optional[DerivedKey]], ...]
 
 
 class SemiJoinHop(BaseModel):
@@ -282,8 +311,8 @@ class SemiJoinHop(BaseModel):
     join_pairs: Tuple[Tuple[str, str], ...]
     #: Per pair, whether each key's stored SQL quotes its physical name (``DatasetField.physical_quoted``).
     quoted: Tuple[Tuple[bool, bool], ...] = ()
-    #: Per pair, each computed key's expression over its own source (``None``: a physical key).
-    computed: Tuple[Tuple[Optional[str], Optional[str]], ...] = ()
+    #: Per pair, each side's derived key (``None``: a physical key).
+    computed: Tuple[Tuple[Optional[DerivedKey], Optional[DerivedKey]], ...] = ()
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
     #: analysis's input (a declared-INNER hop is never null-extended).
@@ -306,12 +335,8 @@ class SemiJoinHop(BaseModel):
         return {
             "join_pairs": tuple((s.key_name, t.key_name) for s, t in keys),
             "quoted": tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
-            "computed": tuple((_computed_text(s), _computed_text(t)) for s, t in keys),
+            "computed": tuple((derived_key(s), derived_key(t)) for s, t in keys),
         }
-
-
-def _computed_text(field: DatasetField) -> Optional[str]:
-    return None if field.is_base else field.definition_sql or field.name
 
 
 class SemiJoinFilter(BaseModel):

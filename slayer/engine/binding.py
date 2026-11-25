@@ -31,7 +31,6 @@ from slayer.core.errors import (
     CallArgumentError,
     CircularRelationshipPathError,
     GranularityCallError,
-    IllegalWindowInFilterError,
     MetricCycleError,
     MetricRecursionLimitError,
     PartitionKeyError,
@@ -161,7 +160,7 @@ from slayer.core.scalar_args import (
     slot_name,
 )
 from slayer.sql.dialects.base import LIBRARY_FUNCTIONS, is_list_fn, require_library
-from slayer.sql.sql_expr import build_cast_type, cast_slayer_type, has_window_function, native_json_type
+from slayer.sql.sql_expr import build_cast_type, cast_slayer_type, native_json_type
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 from slayer.core.models import DatasetField
@@ -448,8 +447,7 @@ def bind_filter(
 ) -> BoundFilter:
     """Bind a parsed filter predicate + classify its phase.
 
-    Walks the bound tree to gather every referenced ``ValueKey``; raises
-    ``IllegalWindowInFilterError`` if a referenced ``DatasetField.sql`` is windowed.
+    Walks the bound tree to gather every referenced ``ValueKey``.
     ``alias_map`` maps a stage's declared-metric names to their bound
     ``ValueKey`` so a bare ref matching an alias interns onto that slot rather
     than resolving against dataset fields (the aggregate and its alias share one slot).
@@ -464,7 +462,6 @@ def bind_filter(
         (k.phase for k in refs),
         default=value_key.phase,
     )
-    _reject_windowed_field_sql(refs, scope=scope, bundle=bundle, parsed=parsed)
     return BoundFilter(
         value_key=value_key, phase=phase, referenced_keys=refs,
     )
@@ -2778,48 +2775,3 @@ def _check_literal_count(count: ValueKey) -> None:
             f"date_add() / interval() count must be an integer or a numeric expression; "
             f"got the literal {value!r}."
         )
-
-
-def _reject_windowed_field_sql(
-    refs: Tuple[ValueKey, ...],
-    *,
-    scope: DatasetScope,
-    bundle: ResolvedSourceBundle,
-    parsed: ParsedExpr,
-) -> None:
-    """Raise ``IllegalWindowInFilterError`` if any referenced ``FieldSqlKey``
-    has a windowed ``DatasetField.sql`` body (no predicate-promotion)."""
-    for k in refs:
-        if not isinstance(k, FieldSqlKey):
-            continue
-        dataset = _lookup_dataset(name=k.dataset, scope=scope, bundle=bundle)
-        if dataset is None:
-            continue
-        col = next((c for c in dataset.fields if c.name == k.field_name), None)
-        if col is None or col.definition_sql is None:
-            continue
-        if has_window_function(col.definition_sql):
-            raise IllegalWindowInFilterError(
-                filter_expr=str(parsed),
-                source=(
-                    f"filter references field {k.field_name!r} on dataset "
-                    f"{k.dataset!r} whose DatasetField.sql contains a window "
-                    f"function"
-                ),
-                suggestion=(
-                    "use a rank-family transform (rank, percent_rank, "
-                    "dense_rank, ntile) in the expression instead, or "
-                    "compute the windowed value in an earlier stage."
-                ),
-            )
-
-
-def _lookup_dataset(
-    *,
-    name: str,
-    scope: DatasetScope,
-    bundle: ResolvedSourceBundle,
-) -> Optional[SlayerDataset]:
-    if scope.population is not None and scope.population.name == name:
-        return scope.population
-    return bundle.get_referenced_dataset(name)

@@ -8547,29 +8547,30 @@ def planets_dataset() -> SlayerDataset:
 
 
 class TestWindowFunctionInFilter:
-    """A query filter that references a ``DatasetField`` whose ``sql`` contains a window function (``OVER (...)``) no longer auto-promotes to a post-aggregation outer WHERE. The rank-family transforms (``rank`` / ``percent_rank`` / ``dense_rank`` / ``ntile``) cover top-N filtering in pure DSL, so the escape hatch is redundant. The engine raises a clear error directing the user to those transforms or to a multi-stage source_queries dataset."""
+    """A windowed field is a column of its dataset's materialised relation, so a query filter on it is a plain WHERE."""
 
-    async def test_filter_on_windowed_column_raises(
+    async def test_filter_on_windowed_column_applies_outside_the_window(
         self, generator: SQLGenerator, planets_dataset: SlayerDataset,
     ) -> None:
-        """Filtering on a field whose sql contains a window function raises with an actionable message at enrichment time."""
+        """The filter reads the materialised column; no WHERE holds a window."""
         query = SlayerQuery(
             population="planets",
             dimensions=["planets.name"],
             filter=["planets.rn <= 3"],
         )
-        with pytest.raises(ValueError) as excinfo:
-            await _generate(generator=generator, query=query, dataset=planets_dataset)
-        msg = str(excinfo.value).lower()
-        assert "window function" in msg or "rank" in msg, (
-            f"Expected the message to mention 'window function' and/or "
-            f"'rank' suggestion. Got: {excinfo.value}"
-        )
+        sql = await _generate(generator=generator, query=query, dataset=planets_dataset)
+        tree = sqlglot.parse_one(sql, dialect="postgres")
+        assert tree.find(exp.Window) is not None, sql
+        assert all(where.find(exp.Window) is None for where in tree.find_all(exp.Where)), sql
+        filters = [lte for lte in tree.find_all(exp.LTE) if lte.find_ancestor(exp.Where) is not None]
+        assert len(filters) == 1, sql
+        assert isinstance(filters[0].this, exp.Column), sql
+        assert filters[0].expression.sql() == "3", sql
 
     async def test_select_only_on_windowed_column_unchanged(
         self, generator: SQLGenerator, planets_dataset: SlayerDataset,
     ) -> None:
-        """A windowed DatasetField.sql is still legal as a *projection* — only as a filter target does it now error."""
+        """A windowed DatasetField.sql projects without a post-filter wrap."""
         query = SlayerQuery(
             population="planets",
             dimensions=["planets.name", "planets.rn"],

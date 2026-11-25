@@ -124,7 +124,6 @@ from slayer.core.time_points import (
     TIME_POINT_FORMS, Instant, Period, TimePoint, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
     resolve_time_point, units_after,
 )
-from slayer.sql.sql_expr import has_window_function
 from slayer.ir.planned import MaskTyping
 from slayer.ir.elaborated import (
     ConjunctTyping, ElaboratedQuery, ExpressionEntry, PositionVerdict, Term,
@@ -624,7 +623,7 @@ def check_reserved_regroup_prefix(fields: List[str]) -> None:
 
 
 def validate_dataset_filter(*, mf: str, references: Iterable[Tuple[SlayerDataset, str]]) -> None:
-    """Reject a dataset filter naming a saved metric or a windowed field, each ``(owner, leaf)`` reference judged on its owner."""
+    """Reject a dataset filter naming a saved metric, each ``(owner, leaf)`` reference judged on its owner."""
     for owner, col in references:
         if col in {m.name for m in owner.metrics or []}:
             raise DatasetFilterError(
@@ -632,15 +631,6 @@ def validate_dataset_filter(*, mf: str, references: Iterable[Tuple[SlayerDataset
                 f"Dataset filters can only reference row-level fields (WHERE).",
                 location=f"dataset filter {mf!r}",
                 suggestion="Use query-level filters for metric conditions.",
-            )
-        field = owner.get_field(col)
-        if field is not None and field.definition_sql and has_window_function(field.definition_sql):
-            raise DatasetFilterError(
-                summary=f"The dataset filter references field {col!r} whose "
-                f"SQL contains a window function.",
-                location=f"dataset filter {mf!r}",
-                suggestion="Factor it into a multi-stage source_queries dataset "
-                "or use a rank-family transform at query time.",
             )
 
 

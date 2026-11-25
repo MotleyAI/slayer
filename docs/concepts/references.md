@@ -107,7 +107,7 @@ The query-backed dataset wrap (`_expand_query_backed_dataset`, via `flat_name` i
 
 2. **Query-side filters** strict-resolve at enrichment time: any bare name that isn't a `DatasetField` / `DatasetMetric` / custom aggregation / query alias / canonical-agg synthesis raises a clear error.
 
-3. **No predicate promotion.** A query filter that names a windowed `DatasetField` raises with a suggestion to use a rank-family transform (`rank` / `percent_rank` / `dense_rank` / `ntile`) or a multi-stage `source_queries` dataset. The rank-family transforms cover top-N filtering in pure DSL.
+3. **A windowed field is a column.** A query filter naming a field whose dialect entry is a window function filters on the value computed over its dataset's rows (see [datasets.md](datasets.md#window-functions-in-a-fields-expression)).
 
 4. **Single reference-resolution surface.** Identifier handling lives in `slayer/core/refs.py`; relationship walks live in the binder (`slayer/engine/binding.py`), which resolves each hop against the resolved source bundle.
 
