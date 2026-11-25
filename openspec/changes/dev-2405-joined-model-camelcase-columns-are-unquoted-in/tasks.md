@@ -64,6 +64,6 @@ clause.
 - [x] 3.1 `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors vs the baseline),
   `la-check-conventions`, `poetry run la-arch-check`,
   `openspec validate dev-2405-joined-model-camelcase-columns-are-unquoted-in --strict` all pass.
-- [ ] 3.2 After merge, post forward-port notes for `main` as a comment on DEV-2405: `main` reads a
+- [x] 3.2 After merge, post forward-port notes for `main` as a comment on DEV-2405: `main` reads a
   joined model through a `SELECT DISTINCT` subquery whose inner column read is also unquoted; carry
   over the tests and the one-renderer shape. Verify: the comment exists on DEV-2405.
