@@ -257,6 +257,8 @@ backslash-bearing string values are not supported on such servers.
 
 ### SQL Server (T-SQL) caveats
 
+Under a query `time_zone`, zones map to Windows zone names by CLDR 49; `America/Vancouver`, `America/Edmonton` and `America/Winnipeg` map to the 2026 Windows zones British Columbia, Alberta and Manitoba Standard Time, which a host needs the Windows time zone update to resolve.
+
 T-SQL has `STDEV`/`STDEVP`/`VAR`/`VARP` (not `STDDEV_SAMP`/`STDDEV_POP`/
 `VAR_SAMP`/`VAR_POP`); sqlglot's tsql transpiler emits incorrect names like
 `VAR_SAMP` and `VARIANCE_POP`, so the T-SQL dialect overrides the canonical
@@ -298,7 +300,7 @@ Other T-SQL specifics surfaced by the dialect:
 
 `JSON` and `Object` columns are read natively by `json_value` through their ingested `db_type` (from `system.columns`), so datasets ingested before that need a re-ingest.
 
-Under a query `time_zone`, a converted timestamp is a `DateTime64(6, zone)` instant, so adding hours or minutes across a DST transition adds elapsed time (01:30 + 1 hour on a spring-forward day gives 03:30, where Postgres or DuckDB give 02:30).
+Under a query `time_zone`, a converted timestamp is a `DateTime64(6, zone)` instant, so adding hours or minutes across a DST transition adds elapsed time (01:30 + 1 hour on a spring-forward day gives 03:30, where Postgres or DuckDB give 02:30), and in a repeated hour a `civil` wall clock equals only one of the two instants that read as it.
 
 ### Snowflake caveats
 

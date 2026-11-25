@@ -2129,13 +2129,13 @@ class TestMySQLTimeZones:
         before = _probe_count(mysql_tz_container)
         await mysql_tz_env.execute(_local_day_query("ordered_at"))
         await mysql_tz_env.execute(_local_day_query("paid_at"))
-        assert _probe_count(mysql_tz_container) - before == 1
+        assert _probe_count(mysql_tz_container) - before == 2  # New York and the datasource's UTC
 
     async def test_each_zone_probes_once(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
         before = _probe_count(mysql_tz_container)
         for zone in (TZ_NY, TZ_TOKYO, TZ_NY, TZ_TOKYO):
             await mysql_tz_env.execute(_local_day_query("ordered_at", zone=zone))
-        assert _probe_count(mysql_tz_container) - before == 2
+        assert _probe_count(mysql_tz_container) - before == 3  # New York, Tokyo and the datasource's UTC
 
     async def test_instant_typing_changes_nothing_without_a_zone(self, mysql_tz_env: SlayerQueryEngine) -> None:
         for zoned, naive in zip(instant_typing_queries("orders"), instant_typing_queries("orders_naive")):

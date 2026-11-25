@@ -112,9 +112,12 @@ async def test_sql_server_uses_windows_zone_names_only() -> None:
 
 @pytest.mark.parametrize(("zone", "windows"), [
     ("Asia/Almaty", "West Asia Standard Time"),  # CLDR 46+: Kazakhstan on UTC+5 since 2024-03-01
+    ("Asia/Qostanay", "West Asia Standard Time"),
     ("Asia/Bishkek", "Central Asia Standard Time"),
-    ("America/Vancouver", "Pacific Standard Time"),  # not British Columbia Standard Time, a 2025 Windows zone
-    ("America/Edmonton", "Mountain Standard Time"),
+    ("America/Vancouver", "British Columbia Standard Time"),  # CLDR 49: no fall-back from 2026-11-01
+    ("Canada/Pacific", "British Columbia Standard Time"),  # an alias takes its canonical zone's id
+    ("America/Edmonton", "Alberta Standard Time"),
+    ("America/Winnipeg", "Manitoba Standard Time"),
 ])
 async def test_sql_server_windows_zone_ids(zone: str, windows: str) -> None:
     sql = await render("tsql", zoned_query(zone=zone, **_queries("ordered_at")["bucket"]))

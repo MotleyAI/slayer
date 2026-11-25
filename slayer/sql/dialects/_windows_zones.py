@@ -1,7 +1,6 @@
 """IANA zone → Windows zone id for SQL Server ``AT TIME ZONE``: CLDR 49 ``common/supplemental/windowsZones.xml``,
-every territory, plus tzlocal 5.3.1's alias names at their earlier id. A zone CLDR 49 maps to a Windows zone added in
-2025 (Alberta, British Columbia, Manitoba Standard Time) keeps its earlier id, the same rules, which an unpatched
-SQL Server host also knows. Regenerate from a newer CLDR by the same rules; never edit by hand."""
+every territory, plus tzlocal 5.3.1's alias names at their canonical zone's id (tzdb ``backward`` links). Regenerate
+from a newer CLDR by the same rules; never edit by hand."""
 
 _BY_WINDOWS_ID: dict[str, tuple[str, ...]] = {
     "AUS Central Standard Time": ("Australia/Darwin", "Australia/North"),
@@ -14,6 +13,7 @@ _BY_WINDOWS_ID: dict[str, tuple[str, ...]] = {
         "America/Anchorage", "America/Juneau", "America/Metlakatla", "America/Nome", "America/Sitka", "America/Yakutat",
         "US/Alaska",
     ),
+    "Alberta Standard Time": ("America/Edmonton", "America/Inuvik", "America/Yellowknife", "Canada/Mountain"),
     "Aleutian Standard Time": ("America/Adak", "America/Atka", "US/Aleutian"),
     "Altai Standard Time": ("Asia/Barnaul",),
     "Arab Standard Time": ("Asia/Aden", "Asia/Bahrain", "Asia/Kuwait", "Asia/Qatar", "Asia/Riyadh"),
@@ -39,6 +39,7 @@ _BY_WINDOWS_ID: dict[str, tuple[str, ...]] = {
     "Bangladesh Standard Time": ("Asia/Dacca", "Asia/Dhaka", "Asia/Thimbu", "Asia/Thimphu"),
     "Belarus Standard Time": ("Europe/Minsk",),
     "Bougainville Standard Time": ("Pacific/Bougainville",),
+    "British Columbia Standard Time": ("America/Vancouver", "Canada/Pacific"),
     "Canada Central Standard Time": ("America/Regina", "America/Swift_Current", "Canada/Saskatchewan"),
     "Cape Verde Standard Time": ("Atlantic/Cape_Verde", "Etc/GMT+1"),
     "Caucasus Standard Time": ("Asia/Yerevan",),
@@ -65,8 +66,8 @@ _BY_WINDOWS_ID: dict[str, tuple[str, ...]] = {
     "Central Standard Time": (
         "America/Chicago", "America/Indiana/Knox", "America/Indiana/Tell_City", "America/Knox_IN", "America/Matamoros",
         "America/Menominee", "America/North_Dakota/Beulah", "America/North_Dakota/Center",
-        "America/North_Dakota/New_Salem", "America/Ojinaga", "America/Rainy_River", "America/Rankin_Inlet",
-        "America/Resolute", "America/Winnipeg", "CST6CDT", "Canada/Central", "US/Central", "US/Indiana-Starke",
+        "America/North_Dakota/New_Salem", "America/Ojinaga", "America/Rankin_Inlet", "America/Resolute", "CST6CDT",
+        "US/Central", "US/Indiana-Starke",
     ),
     "Central Standard Time (Mexico)": (
         "America/Bahia_Banderas", "America/Chihuahua", "America/Merida", "America/Mexico_City", "America/Monterrey",
@@ -130,15 +131,15 @@ _BY_WINDOWS_ID: dict[str, tuple[str, ...]] = {
     "Lord Howe Standard Time": ("Australia/LHI", "Australia/Lord_Howe"),
     "Magadan Standard Time": ("Asia/Magadan",),
     "Magallanes Standard Time": ("America/Coyhaique", "America/Punta_Arenas"),
+    "Manitoba Standard Time": ("America/Rainy_River", "America/Winnipeg", "Canada/Central"),
     "Marquesas Standard Time": ("Pacific/Marquesas",),
     "Mauritius Standard Time": ("Indian/Mahe", "Indian/Mauritius", "Indian/Reunion"),
     "Middle East Standard Time": ("Asia/Beirut",),
     "Montevideo Standard Time": ("America/Montevideo",),
     "Morocco Standard Time": ("Africa/Casablanca", "Africa/El_Aaiun"),
     "Mountain Standard Time": (
-        "America/Boise", "America/Cambridge_Bay", "America/Ciudad_Juarez", "America/Denver", "America/Edmonton",
-        "America/Inuvik", "America/Shiprock", "America/Yellowknife", "Canada/Mountain", "MST7MDT", "Navajo",
-        "US/Mountain",
+        "America/Boise", "America/Cambridge_Bay", "America/Ciudad_Juarez", "America/Denver", "America/Shiprock",
+        "MST7MDT", "Navajo", "US/Mountain",
     ),
     "Mountain Standard Time (Mexico)": ("America/Mazatlan", "Mexico/BajaSur"),
     "Myanmar Standard Time": ("Asia/Rangoon", "Asia/Yangon", "Indian/Cocos"),
@@ -153,7 +154,7 @@ _BY_WINDOWS_ID: dict[str, tuple[str, ...]] = {
     "North Korea Standard Time": ("Asia/Pyongyang",),
     "Omsk Standard Time": ("Asia/Omsk",),
     "Pacific SA Standard Time": ("America/Santiago", "Chile/Continental"),
-    "Pacific Standard Time": ("America/Los_Angeles", "America/Vancouver", "Canada/Pacific", "PST8PDT", "US/Pacific"),
+    "Pacific Standard Time": ("America/Los_Angeles", "PST8PDT", "US/Pacific"),
     "Pacific Standard Time (Mexico)": (
         "America/Ensenada", "America/Santa_Isabel", "America/Tijuana", "Mexico/BajaNorte",
     ),

@@ -2421,6 +2421,27 @@ class TestClickHouseTimeZones:
         slots = {i: datetime.fromisoformat(TZ_ROWS[i][2]) for i in TZ_ROWS}
         assert got == {i: slots[i] for i in TZ_ROWS if tz_local(i, TZ_NY) < slots[i]}, resp.sql
 
+    async def test_a_civil_value_meets_one_instant_of_a_repeated_hour(
+        self, clickhouse_tz_env: SlayerQueryEngine, clickhouse_container,
+    ) -> None:
+        """Documented: in New York's repeated 01:30 a civil 01:30 equals one of the two instants reading as it."""
+        ds = await clickhouse_tz_env.storage.get_datasource(TZ_DS)
+        assert ds is not None
+        assert ds.database is not None
+        with disposable_engine(_ds_url_for_db(clickhouse_container, ds.database)) as engine:
+            with engine.begin() as conn:
+                conn.execute(sa.text(
+                    "INSERT INTO orders VALUES "
+                    "(5, 1.0, '2024-11-03 05:30:00', '2024-11-03 05:30:00', '2024-11-03 01:30:00', '2024-11-03', "
+                    "'2024-11-03 05:30:00'), "
+                    "(6, 1.0, '2024-11-03 06:30:00', '2024-11-03 06:30:00', '2024-11-03 01:30:00', '2024-11-03', "
+                    "'2024-11-03 06:30:00')"))
+        resp = await clickhouse_tz_env.execute(SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TZ_NY, "dimensions": ["orders.id"],
+            "filter": ["orders.ordered_at = orders.local_slot"],
+        }))
+        assert len({int(r["orders.id"]) for r in resp.data} & {5, 6}) == 1, resp.sql
+
     async def test_derived_timestamps_keep_the_query_zone_wall_clock(self, clickhouse_tz_env: SlayerQueryEngine) -> None:
         later = [DatasetField.model_validate({"name": f"{src}_later", "expression": f"{src} + INTERVAL 1 HOUR",
                                               "datatype": datatype})
