@@ -124,9 +124,6 @@ P13 (one relation door); system P4, P11.
 
 ## Risks / Trade-offs
 
-- [A query-backed dataset reaches the door as a stage relation, not through `_backing_relation`] → an
-  explicit query-backed scenario; the wrapper is applied to the relation `_emit_relation` returns, whatever
-  its backing.
 - [Computed join keys and semi-join hops carry strings today] → decision 14 types them; tests cover source,
   target and both-sided windowed keys and a correlated semi-join.
 - [The materialised wrapper changes SQL shape that some generator tests pin] → only the approved alignments

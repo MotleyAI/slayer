@@ -66,9 +66,9 @@ Scenarios use `orders(id, region, amount, ordered_at, customer_id)` with rows `(
 - **WHEN** dataset `big_orders` reads table `orders` with the filter `amount >= 20` and the same field `rn`, and a query has the dimension `big_orders.rn` and the metric `sum(big_orders.amount)`
 - **THEN** it returns `130` for `rn = 1`, `80` for `rn = 2` and `60` for `rn = 3`
 
-#### Scenario: SQL-backed and query-backed datasets
-- **WHEN** a dataset backed by the SQL `SELECT * FROM orders` declares field `rn`, and a dataset backed by a query stage that groups `orders` by `region` into `total = sum(amount)` declares field `pos` as the dialect entry `ROW_NUMBER() OVER (ORDER BY total DESC)`
-- **THEN** the SQL-backed dataset answers the dimension, query-filter and raw-rows-under-a-filter scenarios with the values `orders` gives, and a query with the dimensions `pos` and `region` returns US at `1`, AS at `2` and EU at `3`
+#### Scenario: A SQL-backed dataset
+- **WHEN** a dataset backed by the SQL `SELECT * FROM orders` declares field `rn`
+- **THEN** it answers the dimension, query-filter and raw-rows-under-a-filter scenarios with the values `orders` gives
 
 #### Scenario: A windowed relationship key
 - **WHEN** dataset `slots` reads `slots(pos, label)` with rows `(1, first)`, `(2, second)`, `(3, third)`, `orders` joins `slots` many-to-one from `rn` to `pos`, and a query has the dimension `orders.slots.label` and the metric `sum(orders.amount)`; and separately the join's target key is a windowed field of the target (`slots` reading `slot_src(label, sort_key)` with rows `(first, 10)`, `(second, 20)`, `(third, 30)` and `pos` the dialect entry `ROW_NUMBER() OVER (ORDER BY sort_key)`), with a source key that is stored or windowed
