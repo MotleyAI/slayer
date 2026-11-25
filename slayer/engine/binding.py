@@ -477,7 +477,9 @@ def _bind_cmp(
     time_point = _time_point_comparison(parsed, units=bundle.granularities)
     if time_point is not None:
         operand, op, point, literal_on_left = time_point
-        return TimePointCmpKey(op=op, point=point, literal_on_left=literal_on_left, operand=sub(operand))
+        return TimePointCmpKey(
+            op=op, point=point, literal_on_left=literal_on_left, operand=sub(operand), parenthesised=parsed.parenthesised,
+        )
     # ``IN`` / ``NOT IN`` fold into a single ``InKey`` (structured
     # column + literal-tuple handle for the generator).
     if parsed.op in _MEMBERSHIP_OP:

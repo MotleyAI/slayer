@@ -1,4 +1,4 @@
-"""DEV-1750 — execution ground truth on SQLite AND DuckDB (both required by the
+"""Execution ground truth on SQLite AND DuckDB (both required by the
 issue). Every expectation is hand-computed from the fixture dataset in
 ``tests/_dev1750_fixtures.py``; a missing join or a wrong grain is not a cosmetic
 difference — the SQL either fails to bind or returns the wrong number.
@@ -144,12 +144,12 @@ class TestChangeDesugars:
 
 class TestChangeOverCrossingFragmentInner:
     """``change`` / ``change_pct`` over a crossing-fragment inner used to hit
-    a ``RenderContextMissingFacilityError``; DEV-1838 D5 desugars the inner
+    a ``RenderContextMissingFacilityError``; the inner now desugars
     onto a host-rooted producer, so the transform now composes with the
     correct values (the closure axiom, one shape over)."""
 
     async def test_change_of_wscaled_composes(self, exec_engine) -> None:
-        """DEV-1838 D5 lifted the gap: the crossing-fragment inner desugars
+        """The crossing-fragment inner desugars
         onto a host-rooted producer, so ``change`` composes with the correct
         month-over-month deltas (48−35, 46−48 from the dataset recap)."""
         resp = await exec_engine.execute(_q(measures=[
@@ -177,25 +177,29 @@ class TestSiblingProtectionUnderFanOut:
     own CTEs, so the sibling stays true — a claim only a fan-out dataset can
     actually test (Codex F1)."""
 
-    async def test_one_to_many_fragment_fails_closed(
+    async def test_one_to_many_fragment_homes_on_line_items(
         self, exec_engine
     ) -> None:
-        """DEV-1838 D5 (class-(d) crossed-argument ledger row): the 1:N
-        ``line_items`` param fanned the SUM silently — now a hard error naming
-        the hop and the remedy. Sibling protection under fan-out survives as a
-        structural property of producer isolation, pinned by the proven-hop
-        shapes above."""
-        query = _q(measures=[
+        """The 1:N ``line_items`` param homes the SUM on ``line_items``, which determines
+        ``orders.amount``; the sibling ``amount:sum`` is not multiplied by the fan-out."""
+        resp = await exec_engine.execute(_q(measures=[
             ModelMeasure(formula="amount:sum", name="s"),
             ModelMeasure(formula="amount:liscaled_sum", name="li"),
             ModelMeasure(
                 formula="time_shift(amount:liscaled_sum, -1)", name="prev"),
-        ])
-        with pytest.raises(ValueError) as ei:
-            await exec_engine.execute(query)
-        message = str(ei.value)
-        assert "line_items" in message
-        assert any(w in message.lower() for w in ("cardinality", "unique", "declare"))
+        ]))
+        plain = await exec_engine.execute(_q(measures=[ModelMeasure(formula="amount:sum", name="s")]))
+        from_line_items = await exec_engine.execute(SlayerQuery.model_validate({
+            "source_model": "line_items",
+            "time_dimensions": [{"dimension": "orders.ordered_at", "granularity": "month"}],
+            "measures": [{"formula": "sum(orders.amount * factor)", "name": "li"}],
+        }))
+        by = _by_month(resp)
+        assert {k: float(r["orders.s"]) for k, r in by.items()} == {
+            k: float(r["orders.s"]) for k, r in _by_month(plain).items()}
+        expected = {month_key(r["line_items.orders.ordered_at"]): float(r["line_items.li"])
+                    for r in from_line_items.data}
+        assert {k: float(r["orders.li"]) for k, r in by.items()} == expected
 
 
 class TestConsecutivePeriodsExecution:

@@ -103,15 +103,22 @@ class TestCrossedPredicateFailsClosed:
 class TestCrossedArgumentFailsClosed:
     """An aggregation param / ranking arg crossing an unproven hop."""
 
-    async def test_aggregation_param_over_unproven_hop_errors(self, exec_backend):
+    async def test_aggregation_param_over_fanning_hop_homes_on_tags(self, exec_backend):
+        # tags determines orders.amount: the SUM runs over tag rows, each tag once.
         _, engine = exec_backend
-        query = q(
+        resp = await engine.execute(q(
             dimensions=["status"],
             measures=[ModelMeasure(formula="amount:tscaled_sum", name="t")],
-        )
-        with pytest.raises(RAISES) as ei:
-            await engine.execute(query)
-        _assert_clear(ei, "tags")
+        ))
+        from_tags = await engine.execute(q(
+            source_model="tags", dimensions=["orders.status"],
+            measures=[ModelMeasure(formula="sum(orders.amount * factor)", name="t")],
+        ))
+        got = {s: float(r["orders.t"]) for (s,), r in rows_by(resp, "orders.status").items()}
+        twin = {s: float(r["tags.t"]) for (s,), r in rows_by(from_tags, "tags.orders.status").items()
+                if r["tags.t"] is not None}
+        assert {s: got[s] for s in ("ok", "new")} == pytest.approx({"ok": 135.0, "new": 8.0})
+        assert {s: got[s] for s in twin} == pytest.approx(twin)
 
     async def test_ranking_arg_over_unproven_hop_errors(self, exec_backend):
         _, engine = exec_backend

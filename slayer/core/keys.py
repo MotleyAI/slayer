@@ -698,6 +698,8 @@ class TimePointCmpKey(_FrozenKey, frozen=True):
     operand: "ValueKey"
     point: str
     literal_on_left: bool = False
+    #: ``in`` / ``not in`` written ``x in ('v')``: a value list unless the operand is temporal.
+    parenthesised: bool = False
 
     @property
     def phase(self) -> Phase:
@@ -1638,15 +1640,6 @@ def is_local_partitioned_agg(k: ValueKey) -> bool:
         isinstance(k, AggregateKey)
         and k.partition_keys is not None
         and not source_anchor_path(k.source)
-    )
-
-
-def is_cross_model_agg(k: ValueKey) -> bool:
-    """A cross-model AggregateKey (source lives on another model); a host-grain wrap (locus="host") is excluded."""
-    return (
-        isinstance(k, AggregateKey)
-        and bool(source_anchor_path(k.source))
-        and k.locus != "host"
     )
 
 

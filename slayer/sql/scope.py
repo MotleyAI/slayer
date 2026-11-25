@@ -133,6 +133,8 @@ class ScopeFrame(BaseModel):
     placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
     #: Element types of the list-valued ones.
     placeholder_elements: Dict[Any, DataType] = Field(default_factory=dict)
+    #: A semi-join group's tree-node path → its model name; such paths are not root join paths.
+    node_models: Dict[Tuple[str, ...], str] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
@@ -147,7 +149,7 @@ class ScopeFrame(BaseModel):
         template = self._anchor(ref)
         return self._close(template, consumer=consumer)
 
-    def _register_path_prefixes(self, path: Tuple[str, ...]) -> None:
+    def register_path_prefixes(self, path: Tuple[str, ...]) -> None:
         """Register every join-path prefix of ``path`` into this scope."""
         for i in range(1, len(path) + 1):
             self.join_paths.add(path[:i])
@@ -239,7 +241,7 @@ class ScopeFrame(BaseModel):
                 root=self.root_relation, path=owner_path,
                 limit=self.dialect.max_identifier_bytes,
             )
-            self._register_path_prefixes(owner_path)
+            self.register_path_prefixes(owner_path)
         else:
             owner_model = self.root_model
             alias_path = self.root_relation
@@ -401,13 +403,20 @@ class ScopeFrame(BaseModel):
                     f"through the attach registry; reaching column anchoring "
                     f"means the placeholder escaped its producer's join scope.",
                 )
+            if self._plain_column(ref) is None:
+                raise UnknownReferenceError(
+                    name=".".join((*ref.path, ref.leaf)),
+                    scope_kind="ScopeFrame",
+                    scope_summary=f"scope rooted at model {self.root_model.name!r}",
+                    suggestion="A plain column reference must name a column its join path's terminal model declares.",
+                )
             # The allocator is the single join-alias authority
             # (dotted-canonical); it also registers the crossed path prefixes.
             alias = self.allocator.alias_for(
                 root=self.root_relation, path=ref.path,
                 limit=self.dialect.max_identifier_bytes,
             )
-            self._register_path_prefixes(ref.path)
+            self.register_path_prefixes(ref.path)
             return quote_mixed_case_identifiers(exp.Column(
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
@@ -432,7 +441,7 @@ class ScopeFrame(BaseModel):
                 )
             else:
                 alias_path = self.root_relation
-            self._register_path_prefixes(owner_path)
+            self.register_path_prefixes(owner_path)
             if col is None:
                 expanded = expand_derived_refs_sync(
                     sql=ref.column_name, model=model, alias_path=alias_path,
@@ -502,6 +511,13 @@ class ScopeFrame(BaseModel):
     def column(self, ref: ColumnKey | ColumnSqlKey) -> Optional[Column]:
         """The model column ``ref`` names, or ``None`` when unresolvable."""
         return model_column(model=self.root_model, models_by_name=self._models_by_name(), key=ref)
+
+    def _plain_column(self, ref: ColumnKey) -> Optional[Column]:
+        """The column ``ref`` names: through a semi-join node model first, else the join graph."""
+        node_model = self.node_models.get(ref.path)
+        if node_model is None:
+            return self.column(ref)
+        return self._models_by_name()[node_model].get_column(ref.leaf)
 
     def _model_for(self, name: str) -> SlayerModel:
         """Resolve a model name against the scope root, then the bundle.

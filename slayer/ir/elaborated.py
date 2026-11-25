@@ -19,7 +19,7 @@ from slayer.core.scope import ModelScope, StageSchema
 from slayer.ir.planned import MaskTyping
 from slayer.ir.prebound import PreboundQuery, StrictQueryCarrier
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.ir.terms import Aggregate, Broadcast, DatasetT, Transform
+from slayer.ir.terms import Aggregate, AggregateHomes, Broadcast, DatasetT, Transform
 
 PositionVerdict = Literal["field", "measure"]
 
@@ -83,6 +83,7 @@ class _CompileInputs(ElaboratedQuery):
     )
     prebound: PreboundQuery = PydanticField(repr=False)
     filter_typings: Tuple[ConjunctTyping, ...] = PydanticField(default=(), repr=False)
+    homes: AggregateHomes = PydanticField(default_factory=AggregateHomes, repr=False)
 
 
 class ElaboratedStage(_CompileInputs):
