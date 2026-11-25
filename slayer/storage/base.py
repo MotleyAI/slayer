@@ -1014,8 +1014,9 @@ class StorageBackend(ABC):
         _refuse_colon_metrics(dataset)
         check_enforced_keys(dataset)
         datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
+        stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
         if datasource is not None and not dataset.source_queries:
-            check_forms(dataset, ds_type=datasource.type)
+            check_forms(dataset, ds_type=datasource.type, stored=stored)
         if self._ids_collide_as_filenames:
             await self._check_dataset_identity_collision(dataset)
         await self._check_case_collisions(dataset)
@@ -1029,7 +1030,6 @@ class StorageBackend(ABC):
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_dataset_filters(dataset=dataset, reachable=peers,
                               dialect=ossie_token(datasource.type) if datasource is not None else None)
-        stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
         check_evaluated_metrics(dataset=dataset, reachable=peers, stored=stored, model_metrics={
             m.name for m in await self.list_model_scoped_metrics(dataset.data_source)})
         self._validate_relationship_edges(dataset, peers=peers)

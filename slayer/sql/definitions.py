@@ -48,15 +48,17 @@ def check_metric_forms(dataset: SlayerDataset, *, ds_type: str | None) -> None:
                 suggestion="Write it as the metric's sql.")
 
 
-def check_forms(dataset: SlayerDataset, *, ds_type: str | None) -> None:
-    """Refuse a field with two entries for the datasource's dialect or no form that runs there, a native dataset's
-    portable window, and a metric's own-dialect entry."""
+def check_forms(dataset: SlayerDataset, *, ds_type: str | None, stored: SlayerDataset | None = None) -> None:
+    """Refuse a field with two entries for the datasource's dialect or no form that runs there, a portable window
+    (a document's own, unchanged from ``stored``, excepted), and a metric's own-dialect entry."""
     token = ossie_token(ds_type)
+    carried = ({f.name: f.expression for f in stored.fields}
+               if stored is not None and dataset.semantic_model is not None else {})
     for field in with_converted_sql(dataset, ds_type=ds_type).fields:
         if field.expression is None:
             continue
         form = running_form(owner=f"Field {field.name!r}", expression=field.expression, dialect=token)
-        if not form.native and dataset.semantic_model is None:
+        if not form.native and carried.get(field.name) != field.expression:
             check_portable_window(form.text, field=field.name, dataset=dataset.name)
     check_metric_forms(dataset, ds_type=ds_type)
 

@@ -5815,17 +5815,17 @@ class SQLGenerator:
                   for name in _read_closure(_reversed(reads), start=set(reasons))}
         keep = set(rendered) - set(unsafe) if demand is None else _read_closure(reads, start=demand)
         if keep & set(unsafe):
-            raise _WindowRefused(unsafe[min(keep & set(unsafe))])
+            raise _WindowRefused(unsafe[min(keep & set(unsafe))], windows=set(demand or ()) & set(unsafe))
         while True:
             try:
                 layered = self._window_stack(relation, keep=keep, reads=reads, rendered=rendered, chains=chains,
                                              dataset=dataset, rows=rows, allocator=allocator, bundle=bundle)
                 break
             except _WindowRefused as refused:
-                keep = _refused_out(refused, demand=demand, keep=keep, rendered=rendered, reads=reads, unsafe=unsafe)
+                keep = _refused_out(refused, demand=demand, keep=keep, reads=reads, unsafe=unsafe)
         layered.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         if unsafe:
-            layered.meta[_UNSAFE_WINDOWS] = {windowed_column(name): exc for name, exc in unsafe.items()}
+            layered.meta[_UNSAFE_WINDOWS] = {windowed_column(name): _raiser(exc) for name, exc in unsafe.items()}
         return layered
 
     def _window_stack(
@@ -5891,18 +5891,24 @@ class SQLGenerator:
             chain = chains[path]
             edge, target = chain[-1]
             next_alias = allocator.alias_for(root=rows, path=path, limit=limit)
-            read = {c.name for name in layer for c in rendered[name][0].find_all(exp.Column) if c.table == next_alias}
-            keys = {tgt.name for _, tgt in self._hop_keys(chain, source=dataset)}
-            keys |= {src.name for p in paths if p[:-1] == path for src, _ in self._hop_keys(chains[p], source=dataset)}
+            windowed = {windowed_column(f.name): f.name for f in target.fields if f.windowed}
+            # What each window of the layer needs of the target; the hop's own target keys every user needs.
+            needs = {name: {windowed[c.name] for c in rendered[name][0].find_all(exp.Column)
+                            if c.table == next_alias and c.name in windowed}
+                           | {src.name for p in rendered[name][1] if p[:-1] == path
+                              for src, _ in self._hop_keys(chains[p], source=dataset)}
+                     for name in layer if path in rendered[name][1]}
+            common = {tgt.name for _, tgt in self._hop_keys(chain, source=dataset)}
             try:
                 join, on, _kind = self._hop_join(
                     edge=edge, prev_dataset=chain[-2][1] if len(chain) > 1 else dataset, next_dataset=target,
                     current_alias=allocator.alias_for(root=rows, path=path[:-1], limit=limit), next_alias=next_alias,
-                    bundle=bundle, windows={f.name for f in target.fields
-                                            if f.windowed and (windowed_column(f.name) in read or f.name in keys)},
+                    bundle=bundle, windows=set(windowed.values()) & (common | set().union(*needs.values())),
                 )
             except _WindowRefused as refused:
-                raise _WindowRefused(refused.error, path=path) from None
+                blamed = {n for n, need in needs.items() if need & refused.windows}
+                raise _WindowRefused(refused.error, windows=set(needs) if common & refused.windows or not blamed
+                                     else blamed) from None
             joins.append((join, on, "LEFT"))  # a row definition never drops its dataset's rows
         return joins
 
@@ -7211,29 +7217,34 @@ _UNSAFE_WINDOWS = "slayer_unsafe_windows"
 
 
 class _WindowRefused(Exception):
-    """A demanded window can't be materialised: ``error`` is what a read of it raises, ``path`` the hop reaching it."""
+    """The ``windows`` of a relation that can't be materialised; ``error`` is what a read of them raises."""
 
-    def __init__(self, error: Exception, *, path: Tuple[str, ...] = ()) -> None:
+    def __init__(self, error: Exception, *, windows: AbstractSet[str]) -> None:
         super().__init__(str(error))
         self.error = error
-        self.path = path
+        self.windows = set(windows)
 
 
 def _refused_out(
-    refused: _WindowRefused, *, demand: Optional[AbstractSet[str]], keep: Set[str],
-    rendered: Dict[str, Tuple[Expression, List[Tuple[str, ...]]]], reads: Dict[str, Set[str]],
+    refused: _WindowRefused, *, demand: Optional[AbstractSet[str]], keep: Set[str], reads: Dict[str, Set[str]],
     unsafe: Dict[str, Exception],
 ) -> Set[str]:
-    """``keep`` without the windows reaching ``refused``'s hop and their readers, now ``unsafe``; a demanded build
-    propagates the refusal."""
-    if demand is not None:
-        raise _WindowRefused(refused.error) from None
-    failed = {n for n in keep if refused.path in rendered[n][1]}
+    """``keep`` without ``refused``'s windows and their readers, now ``unsafe``; a demanded build propagates the
+    refusal of the demanded windows it reaches."""
+    failed = refused.windows & keep
     if not failed:
         raise refused.error from None
-    for name in _read_closure(_reversed(reads), start=failed):
+    lost = _read_closure(_reversed(reads), start=failed)
+    if demand is not None:
+        raise _WindowRefused(refused.error, windows=set(demand) & lost) from None
+    for name in lost:
         unsafe.setdefault(name, refused.error)
     return keep - set(unsafe)
+
+
+def _raiser(error: Exception) -> Callable[[], Exception]:
+    """``error`` behind a function: node meta is deep-copied with the tree, and a copied exception loses its fields."""
+    return lambda: error
 
 
 def _to_one_hop(chain: List[Tuple[OrientedRelationship, SlayerDataset]]) -> bool:
@@ -7256,7 +7267,7 @@ def _refuse_unsafe_window_reads(statement: Expression) -> None:
             relation = source.expression.parent if isinstance(source, Scope) else source
             unsafe = relation.meta.get(_UNSAFE_WINDOWS) if isinstance(relation, Expr) else None
             if unsafe and column.name in unsafe:
-                raise unsafe[column.name]
+                raise unsafe[column.name]()
 
 
 def _read_closure(reads: Dict[str, Set[str]], *, start: AbstractSet[str]) -> Set[str]:

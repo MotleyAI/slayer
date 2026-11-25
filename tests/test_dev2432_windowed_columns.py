@@ -36,7 +36,13 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.ir.variables import substitute_dataset_sql_surfaces
-from slayer.sql.generator import _UNSAFE_WINDOWS, _WINDOW_LAYER, _prune_window_layers, _refuse_unsafe_window_reads
+from slayer.sql.generator import (
+    _UNSAFE_WINDOWS,
+    _WINDOW_LAYER,
+    _prune_window_layers,
+    _raiser,
+    _refuse_unsafe_window_reads,
+)
 from slayer.sql.untrusted_projection import UNTRUSTED_HOP, mark_untrusted
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2210_fixtures import DDL as FILTER_DDL
@@ -516,6 +522,18 @@ class TestPortableWindowedField:
         with pytest.raises(UnevaluableEntityError, match="doc_orders.rn"):
             await engine.execute(query)
 
+    @pytest.mark.parametrize("door", ["engine", "storage"])
+    async def test_an_authored_document_window_is_refused(self, engine, door):
+        await engine.storage.save_semantic_model_text(data_source="test", name="m_doc", text=DOC_WINDOW)
+        dataset = await engine.storage.get_dataset("doc_orders", data_source="test")
+        assert dataset is not None
+        added = DatasetField(name="rn2", datatype=DataType.INTEGER, expression=ExpressionObject(
+            dialects=[DialectEntry(dialect="OSSIE_SQL_2026", expression="RANK() OVER (ORDER BY id)")]))
+        changed = dataset.model_copy(update={"fields": [*dataset.fields, added]})
+        save = engine.save_dataset if door == "engine" else engine.storage.save_dataset
+        with pytest.raises(IllegalWindowInFilterError, match="rn2"):
+            await save(changed)
+
 
 RANKED = "rank() over (order by amount)"
 CYCLE_DDL = (
@@ -562,6 +580,20 @@ async def _save(engine: SlayerQueryEngine, dataset: SlayerDataset, *, door: str)
         await engine.save_dataset(dataset)
     else:
         await engine.storage.save_dataset(dataset)
+
+
+def _reaching_back() -> tuple[SlayerDataset, SlayerDataset]:
+    """``c.cw`` partitions by ``a.flag``; ``b.w`` reads ``c.cw``: a filter of ``a`` reading ``b`` reaches back to ``a``."""
+    to_one = RelationshipCardinality.MANY_TO_ONE
+    c = SlayerDataset(name="c", data_source="test", sql_table="b", fields=[
+        _col("id", primary_key=True), _col("flag"), _col("a_id"),
+        native("cw", "ROW_NUMBER() OVER (PARTITION BY c_to_a.flag ORDER BY id)")], relationships=[
+        DatasetRelationship(to="a", name="c_to_a", from_columns=["a_id"], to_columns=["id"], cardinality=to_one)])
+    b = SlayerDataset(name="b", data_source="test", sql_table="b", fields=[
+        _col("id", primary_key=True), _col("flag"), _col("a_id"), native("w", "SUM(b_to_c.cw) OVER ()")],
+        relationships=[DatasetRelationship(to="c", name="b_to_c", from_columns=["id"], to_columns=["id"],
+                                           cardinality=to_one)])
+    return c, b
 
 
 @pytest.mark.parametrize("door", ["engine", "storage"])
@@ -616,16 +648,17 @@ class TestModelFilterOnWindowedColumn:
         resp = await _run(filter_engine, {"population": "a", "dimensions": ["a.id"]})
         assert [int(r["a.id"]) for r in resp.data] == [1]
 
+    async def test_a_sibling_sharing_the_hop_of_a_refused_window_stays_readable(self, filter_engine, door):
+        c, b = _reaching_back()
+        b = b.model_copy(update={"fields": [*b.fields, native("safe", "SUM(b_to_c.flag) OVER ()")]})
+        await _save(filter_engine, c, door=door)
+        await _save(filter_engine, b, door=door)
+        await _save(filter_engine, _cycle_dataset("a", "b", filters=["a_to_b.safe = 1"]), door=door)
+        resp = await _run(filter_engine, {"population": "a", "dimensions": ["a.id"]})
+        assert sorted(int(r["a.id"]) for r in resp.data) == [1, 2]
+
     async def test_an_unread_window_reaching_back_through_another_window_blocks_no_filter(self, filter_engine, door):
-        c = SlayerDataset(name="c", data_source="test", sql_table="b", fields=[
-            _col("id", primary_key=True), _col("flag"), _col("a_id"),
-            native("cw", "ROW_NUMBER() OVER (PARTITION BY c_to_a.flag ORDER BY id)")], relationships=[
-            DatasetRelationship(to="a", name="c_to_a", from_columns=["a_id"], to_columns=["id"],
-                                cardinality=RelationshipCardinality.MANY_TO_ONE)])
-        b = SlayerDataset(name="b", data_source="test", sql_table="b", fields=[
-            _col("id", primary_key=True), _col("flag"), _col("a_id"), native("w", "SUM(b_to_c.cw) OVER ()")],
-            relationships=[DatasetRelationship(to="c", name="b_to_c", from_columns=["id"], to_columns=["id"],
-                                               cardinality=RelationshipCardinality.MANY_TO_ONE)])
+        c, b = _reaching_back()
         await _save(filter_engine, c, door=door)
         await _save(filter_engine, b, door=door)
         await _save(filter_engine, _cycle_dataset("a", "b", filters=["a_to_b.flag = 1"]), door=door)
@@ -689,10 +722,10 @@ def test_collapsing_an_unread_window_layer_keeps_the_untrusted_mark():
     assert joined.meta.get(UNTRUSTED_HOP)
 
 
-def _scoped_reads(*, read_from_marked: bool) -> exp.Select:
+def _scoped_reads(*, read_from_marked: bool, error: Exception | None = None) -> exp.Select:
     """Two derived tables each joining an alias ``t``; only the first one's ``t`` leaves ``__slayer_w_w`` unmaterialised."""
     marked = exp.select("t.*").from_("tbl AS t").subquery("t")
-    marked.meta[_UNSAFE_WINDOWS] = {"__slayer_w_w": ValueError("unsafe")}
+    marked.meta[_UNSAFE_WINDOWS] = {"__slayer_w_w": _raiser(error or ValueError("unsafe"))}
     safe = exp.select("t.*").from_("tbl AS t").subquery("t")
     first = exp.select("t.id" if not read_from_marked else "t.__slayer_w_w").from_(marked).subquery("one")
     second = exp.select("t.__slayer_w_w").from_(safe).subquery("two")
@@ -704,6 +737,13 @@ def test_an_unsafe_window_is_refused_only_when_its_own_relation_is_read():
     statement = _scoped_reads(read_from_marked=True)
     with pytest.raises(ValueError, match="unsafe"):
         _refuse_unsafe_window_reads(statement)
+
+
+def test_a_refusal_survives_a_copy_of_the_statement():
+    copied = _scoped_reads(read_from_marked=True, error=DatasetFilterCycleError(["a", "b", "a"])).copy()
+    with pytest.raises(DatasetFilterCycleError) as exc:
+        _refuse_unsafe_window_reads(copied)
+    assert exc.value.cycle == ["a", "b", "a"]
 
 
 LONG_A = "first_relationship_with_a_rather_long_descriptive_name"
