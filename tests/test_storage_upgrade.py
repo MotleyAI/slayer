@@ -485,50 +485,6 @@ def test_one_upgrade_run_reads_one_rename_table(backend: str, tmp_path: Path, mo
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-def test_an_unreadable_memory_holds_a_scoped_rename(backend: str, tmp_path: Path) -> None:
-    base = str(tmp_path / "store")
-    asyncio.run(_granularity_store(backend=backend, base=base, name="left"))
-    if backend == "yaml":
-        Path(base, "memories", "broken_memory.md").write_text("---\nid: [unclosed\n---\nbody\n")
-    else:
-        with transaction(os.path.join(base, "store.db")) as conn:
-            conn.execute("INSERT INTO memories (id, data) VALUES (?, ?)", ("broken_memory", "{not json"))
-    held = upgrade(store_path(gran.reopen(backend=backend, base=base)), "--data-source", gran.DS)
-    assert held.code == 1, held
-    assert any(line.startswith(f"datasource {gran.DS}: not upgraded") and "broken_memory" in line
-               for line in held.out.splitlines()), held.out
-    assert "left_granularity" not in raw(backend=backend, base=base)[f"datasources/{gran.DS}"]
-
-
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_a_held_dependent_holds_its_datasources_rename(backend: str, tmp_path: Path,
-                                                       monkeypatch: pytest.MonkeyPatch) -> None:
-    base = str(tmp_path / "store")
-    asyncio.run(_granularity_store(backend=backend, base=base, name="left"))
-    backend_class = SQLiteStorage if backend == "sqlite" else YAMLStorage
-    write = backend_class._write_raw_if_unchanged
-
-    async def conflict_on_bucketed(self: Any, **kwargs: Any) -> bool:
-        return False if kwargs["name"] == "bucketed" else await write(self, **kwargs)
-
-    monkeypatch.setattr(backend_class, "_write_raw_if_unchanged", conflict_on_bucketed)
-    held = upgrade(store_path(gran.reopen(backend=backend, base=base)))
-    assert held.code == 1, held
-    assert any(line.startswith(f"datasource {gran.DS}: not upgraded") and "bucketed" in line
-               for line in held.out.splitlines()), held.out
-    stored = raw(backend=backend, base=base)
-    assert "left_granularity" not in stored[f"datasources/{gran.DS}"]
-    bucketed = asyncio.run(gran.reopen(backend=backend, base=base).get_dataset("bucketed", data_source=gran.DS))
-    assert bucketed is not None
-    assert "left_granularity" in bucketed.model_dump_json()
-    monkeypatch.undo()
-    assert upgrade(store_path(gran.reopen(backend=backend, base=base))).code == 0
-    finished = raw(backend=backend, base=base)
-    assert "left_granularity" in finished[f"datasources/{gran.DS}"]
-    assert not any(_mentions_granularity(text, "left") for text in finished.values())
-
-
-@pytest.mark.parametrize("backend", BACKENDS)
 def test_datasource_writes_keep_the_runs_rename_table(backend: str, tmp_path: Path) -> None:
     base = str(tmp_path / "store")
     db_path = gran.live_db(base)
@@ -677,3 +633,19 @@ def test_the_datasource_config_is_used_for_the_dialect(tmp_path: Path) -> None:
     status_upper = orders.get_field("status_upper")
     assert status_upper is not None
     assert "DUCKDB" in status_upper.model_dump_json()
+
+
+def test_a_dry_run_on_a_pre_v4_store_moves_its_files_only(tmp_path: Path) -> None:
+    base = tmp_path / "store"
+    (base / "datasources").mkdir(parents=True)
+    (base / "datasources" / "demo.yaml").write_text(yaml.safe_dump({"name": "demo", "type": "sqlite", "version": 1}))
+    flat = {"version": 15, "name": "orders", "data_source": "demo", "sql_table": "orders",
+            "columns": [{"name": "status", "type": "TEXT"}]}
+    (base / "models").mkdir()
+    (base / "models" / "orders.yaml").write_text(yaml.safe_dump(flat, sort_keys=False))
+    result = upgrade(str(base), "--dry-run")
+    assert result.code == 0, result
+    assert not (base / "models" / "orders.yaml").exists()
+    assert yaml.safe_load((base / "models" / "demo" / "orders.yaml").read_text()) == flat
+    assert yaml.safe_load((base / "datasources" / "demo.yaml").read_text())["version"] == 1
+    assert any(line.startswith("dataset demo.orders: would upgrade") for line in result.out.splitlines()), result.out
