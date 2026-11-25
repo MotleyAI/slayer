@@ -39,6 +39,7 @@ from slayer.core.errors import (
     DatasetFieldCycleError,
     DatasetFilterCycleError,
     QueryBackedCycleError,
+    UnknownReferenceError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.field_expression import portable_text
@@ -1029,9 +1030,10 @@ class SQLGenerator:
         """A root-bound alias resolver for ``expand_derived_refs_sync`` so a"""
         return lambda path: self._join_alias(root=root, path=path)
 
-    def _scope_frame(self, *, dataset, relation, bundle, allocator, attached_fields=None):
+    def _scope_frame(self, *, dataset, relation, bundle, allocator, attached_fields=None, node_datasets=None):
         """Build a ``ScopeFrame`` rooted at ``dataset`` / ``relation`` on the"""
         return ScopeFrame(
+            node_datasets=dict(node_datasets or {}),
             scope_id=allocator.next_scope_id(relation),
             root_dataset=dataset,
             root_relation=relation,
@@ -2053,7 +2055,8 @@ class SQLGenerator:
         self, *, dataset, relation: str, bundle, attached_fields=None,
     ) -> ScopeFrame:
         """A target-rooted ``ScopeFrame`` built purely to reproduce an anchored"""
-        allocator = self._new_allocator()
+        # The generation allocator: its join aliases must match FROM's.
+        allocator = self._gen_allocator or self._new_allocator()
         return ScopeFrame(
             scope_id=allocator.next_scope_id(relation),
             root_dataset=dataset,
@@ -2065,6 +2068,32 @@ class SQLGenerator:
             placeholder_types=self._placeholder_types(),
             placeholder_elements=self._placeholder_elements(),
         )
+
+    @staticmethod
+    def _resolve_plain_row_fields(
+        *, render_slot_ids: Iterable[str], order_slot_ids: Iterable[str], slots_by_id: Dict[str, Any],
+        scope: ScopeFrame,
+    ) -> Dict[str, Expression]:
+        """Resolve ROW slots' plain fields (a ``TimeTruncKey``'s untruncated source) through ``scope``;
+        order-only slots, which the base select does not read, register their relationship path only."""
+
+        def _plain(sid: str) -> Optional[FieldKey]:
+            slot = slots_by_id.get(sid)
+            if slot is None or slot.phase != Phase.ROW:
+                return None
+            field = slot.key.source if isinstance(slot.key, TimeTruncKey) else slot.key
+            return field if isinstance(field, FieldKey) else None
+
+        out: Dict[str, Expression] = {}
+        for sid in render_slot_ids:
+            field = _plain(sid)
+            if field is not None and sid not in out:
+                out[sid] = scope.resolve(field)
+        for sid in order_slot_ids:
+            field = _plain(sid)
+            if field is not None and sid not in out:
+                scope.register_path_prefixes(field.path)
+        return out
 
     def _render_computed_dims_via_scope(
         self, *, base_render_order, slots_by_id, scope,
@@ -2140,17 +2169,17 @@ class SQLGenerator:
         """Build the base SELECT (sqlglot ``Select``) for ``generate_from_planned``."""
 
         # Every relationship-crossing ref registers its path into host_scope.relationship_paths as it resolves (Law 1);
-        # first-seen order keeps the FROM byte-identical to the legacy collectors'.
-        needed_relationship_paths = self._collect_joined_paths_for_base(
-            base_render_order=base_render_order,
-            slots_by_id=slots_by_id,
-            order_slot_ids=[e.slot_id for e in planned_query.order],
-        )
+        # plain row fields resolve first, so first-seen order keeps the FROM stable.
         host_allocator = self._gen_allocator or self._new_allocator()
         host_scope = self._scope_frame(
             dataset=source_dataset, relation=source_relation,
             bundle=bundle, allocator=host_allocator,
             attached_fields=regroup_env,
+        )
+        plain_expr_by_sid = self._resolve_plain_row_fields(
+            render_slot_ids=base_render_order,
+            order_slot_ids=[e.slot_id for e in planned_query.order],
+            slots_by_id=slots_by_id, scope=host_scope,
         )
         derived_expr_by_sid = self._expand_derived_row_dims(
             base_render_order=base_render_order, slots_by_id=slots_by_id,
@@ -2180,13 +2209,10 @@ class SQLGenerator:
             scope=host_scope,
             skip_cross_dataset_aggs=skip_cross_dataset_aggs,
         )
-        for p in host_scope.relationship_paths.as_list():
-            if p not in needed_relationship_paths:
-                needed_relationship_paths.append(p)
         from_clause, base_joins = self._build_from_and_joins(
             source_dataset=source_dataset,
             source_relation=source_relation,
-            joined_paths=needed_relationship_paths,
+            joined_paths=host_scope.relationship_paths.as_list(),
             bundle=bundle,
         )
 
@@ -2221,26 +2247,17 @@ class SQLGenerator:
             if slot.phase == Phase.ROW:
                 key = slot.key
                 if isinstance(key, FieldKey):
-                    attached = regroup_env.get(key) if regroup_env else None
-                    if attached is not None:
-                        col_expr = attached.copy()
-                    else:
-                        col_expr = self._joined_or_local_dim_expr(
-                            path=key.path,
-                            leaf=key.leaf,
-                            source_dataset=source_dataset,
-                            source_relation=source_relation,
-                            bundle=bundle,
-                        )
+                    col_expr = plain_expr_by_sid[sid]
                     select_columns.append(col_expr.copy().as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, TimeTruncKey):
-                    col_expr = derived_expr_by_sid.get(sid) or self._raw_time_col_expr_for_planned(
+                    col_expr = plain_expr_by_sid.get(sid) or derived_expr_by_sid.get(sid) or self._raw_time_col_expr_for_planned(
                         time_field=key.source,
                         source_dataset=source_dataset,
                         source_relation=source_relation,
                         bundle=bundle,
+                        scope=host_scope,
                     )
                     trunc_expr = self._build_date_trunc(col_expr=col_expr, key=key)
                     select_columns.append(trunc_expr.copy().as_(full_alias, quoted=True))
@@ -2801,7 +2818,7 @@ class SQLGenerator:
             if isinstance(key.source, (FieldKey, FieldSqlKey)):
                 raw = self._raw_time_col_expr_for_planned(
                     time_field=key.source, source_dataset=root_dataset,
-                    source_relation=root_relation, bundle=bundle,
+                    source_relation=root_relation, bundle=bundle, scope=scope,
                 )
                 self._register_ranked_paths(
                     raw, field_path(key.source), root_dataset=root_dataset, root_relation=root_relation,
@@ -2814,14 +2831,7 @@ class SQLGenerator:
                 )
             return self._build_date_trunc(col_expr=raw, key=key)
         if isinstance(key, FieldKey):
-            expr = self._joined_or_local_dim_expr(
-                path=key.path, leaf=key.leaf, source_dataset=root_dataset,
-                source_relation=root_relation, bundle=bundle,
-            )
-            self._register_ranked_paths(
-                expr, key.path, root_dataset=root_dataset, root_relation=root_relation, bundle=bundle, scope=scope,
-            )
-            return expr
+            return scope.resolve(key)
         if isinstance(key, FieldSqlKey):
             return self._ranked_derived_field_expr(
                 key=key, root_dataset=root_dataset, root_relation=root_relation, bundle=bundle, scope=scope,
@@ -4801,51 +4811,20 @@ class SQLGenerator:
             slot=slot, alias_index=alias_index, source_relation=source_relation,
         )
 
-    def _collect_joined_paths_for_base(
-        self,
-        *,
-        base_render_order: List[str],
-        slots_by_id: Dict[str, Any],
-        order_slot_ids: Optional[List[str]] = None,
-    ) -> List[Tuple[str, ...]]:
-        """Walk ROW slots in render order to collect unique joined DIMENSION"""
-
-        seen: set = set()
-        ordered: List[Tuple[str, ...]] = []
-
-        def _add(path: Tuple[str, ...]) -> None:
-            if not path or path in seen:
-                return
-            seen.add(path)
-            ordered.append(path)
-
-        def _add_row_slot(sid: str) -> None:
-            slot = slots_by_id.get(sid)
-            if slot is None or slot.phase != Phase.ROW:
-                return
-            key = slot.key
-            if isinstance(key, FieldKey):
-                _add(key.path)
-            elif isinstance(key, TimeTruncKey) and isinstance(key.source, (FieldKey, FieldSqlKey)):
-                _add(field_path(key.source))
-
-        for sid in base_render_order:
-            _add_row_slot(sid)
-        for sid in order_slot_ids or ():
-            _add_row_slot(sid)
-        return ordered
-
     def _oriented_hop_chain(
         self, *, source_dataset: SlayerDataset, path, bundle: ResolvedSourceBundle,
     ) -> List[Tuple[OrientedRelationship, SlayerDataset]]:
         """``(OrientedRelationship, next_dataset)`` hops of a bound (possibly composed) relationship ``path``;
-        ``ValueError`` when it does not resolve, ``AmbiguousRelationshipPathError`` on an ambiguous hop."""
+        ``UnknownReferenceError`` when it does not resolve, ``AmbiguousRelationshipPathError`` on an ambiguous hop."""
         datasets_by_name = bundle.datasets_by_name
         datasets_by_name.setdefault(source_dataset.name, source_dataset)
         chain = follow(root=source_dataset, path=tuple(path), datasets_by_name=datasets_by_name)
         if chain is None:
-            raise ValueError(
-                f"Joined path {tuple(path)!r} does not resolve from dataset {source_dataset.name!r}.",
+            raise UnknownReferenceError(
+                name=".".join(path),
+                scope_kind="SQLGenerator",
+                scope_summary=f"relationship paths from dataset {source_dataset.name!r}",
+                suggestion="A joined path must follow declared relationships from the dataset it starts at.",
             )
         return [(edge, datasets_by_name[edge.to]) for edge in chain]
 
@@ -4975,43 +4954,6 @@ class SQLGenerator:
         # Root-relative join type: LEFT keeps the querying root whole in the traversal
         # direction, INNER is symmetric; RIGHT is never emitted.
         return join_expr, on_expr, edge.join_type.value.upper()
-
-    def _joined_or_local_dim_expr(
-        self,
-        *,
-        path: Tuple[str, ...],
-        leaf: str,
-        source_dataset: SlayerDataset,
-        source_relation: str,
-        bundle,
-    ) -> Expression:
-        """Resolve a dimension field expression on either the host"""
-        if not path:
-            return self._dim_field_expr_from_planned(
-                source_dataset=source_dataset,
-                source_relation=source_relation,
-                leaf=leaf,
-            )
-        current_alias = source_relation
-        chain = self._oriented_hop_chain(
-            source_dataset=source_dataset, path=path, bundle=bundle,
-        )
-        current_dataset = source_dataset
-        for hop_idx, (_edge, next_dataset) in enumerate(chain):
-            current_alias = self._join_alias(
-                root=source_relation, path=path[: hop_idx + 1],
-            )
-            current_dataset = next_dataset
-        col_def = next(
-            (c for c in current_dataset.fields if c.name == leaf), None,
-        )
-        if col_def is None:
-            raise ValueError(
-                f"Field {leaf!r} not found on joined dataset "
-                f"{current_dataset.name!r}.",
-            )
-        column = exp.Column(this=exp.to_identifier(leaf), table=exp.to_identifier(current_alias))
-        return self._dialect.read_column(column, zoned=self._dialect.is_zoned_db_type(col_def.db_type))
 
     def _rank_family_window(
         self, *, fn: Expression, metric: Expression, partition_by: Iterable[Expression], descending: bool,
@@ -5746,7 +5688,7 @@ class SQLGenerator:
             if isinstance(key, TimeTruncKey) and isinstance(key.source, FieldSqlKey):
                 raw = self._raw_time_col_expr_for_planned(
                     time_field=key.source, source_dataset=source_dataset,
-                    source_relation=source_relation, bundle=bundle,
+                    source_relation=source_relation, bundle=bundle, scope=scope,
                 )
                 _add(field_path(key.source))
                 for p in self._joined_paths_in_sql(
@@ -6121,25 +6063,21 @@ class SQLGenerator:
         """Untruncated value of a bucket's ``source`` in ``scope``, registering the relationship paths it reads."""
         if not isinstance(source, (FieldKey, FieldSqlKey)):
             return render_value_key(key=source, ctx=RenderContext(scope=scope, dialect=self._dialect))
-        scope.resolve(source)
+        if isinstance(source, FieldSqlKey):
+            scope.resolve(source)
         return self._raw_time_col_expr_for_planned(
             time_field=source, source_dataset=source_dataset,
-            source_relation=source_relation, bundle=bundle,
+            source_relation=source_relation, bundle=bundle, scope=scope,
         )
 
     def _raw_time_col_expr_for_planned(
         self, *, time_field, source_dataset: SlayerDataset, source_relation: str, bundle: ResolvedSourceBundle,
+        scope: ScopeFrame,
     ) -> Expression:
         """Untruncated value of a field bucket source."""
 
         if isinstance(time_field, FieldKey):
-            return self._joined_or_local_dim_expr(
-                path=time_field.path,
-                leaf=time_field.leaf,
-                source_dataset=source_dataset,
-                source_relation=source_relation,
-                bundle=bundle,
-            )
+            return scope.resolve(time_field)
         if isinstance(time_field, FieldSqlKey):
             if time_field.path:
                 joined_dataset = self._walk_relationship_path_dataset(
@@ -6673,7 +6611,7 @@ class SQLGenerator:
         ctx = RenderContext(
             scope=self._scope_frame(
                 dataset=source_dataset, relation=source_relation,
-                bundle=bundle, allocator=allocator,
+                bundle=bundle, allocator=allocator, node_datasets=node_datasets,
             ),
             dialect=self._dialect,
             filters=FilterFacilities(
@@ -7065,12 +7003,11 @@ class SQLGenerator:
         # grain, so the bare ref is legal and Law 1 pulls the join in).
         key = slot.key
         row_key = key.source if isinstance(key, TimeTruncKey) else key
-        if source_dataset is not None and isinstance(row_key, FieldKey):
-            return self._joined_or_local_dim_expr(
-                path=row_key.path, leaf=row_key.leaf,
-                source_dataset=source_dataset,
-                source_relation=source_relation, bundle=bundle,
-            )
+        if source_dataset is not None and bundle is not None and isinstance(row_key, FieldKey):
+            return self._scope_frame(
+                dataset=source_dataset, relation=source_relation, bundle=bundle,
+                allocator=self._gen_allocator or self._new_allocator(),
+            ).resolve(row_key)
 
         # A local derived ORDER BY column renders through the same expansion a projected derived dimension gets, so both
         # spellings sort identically.

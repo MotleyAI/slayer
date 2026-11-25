@@ -5640,7 +5640,7 @@ class TestDev1501HiddenFirstLastRender:
     async def test_composite_first_last_with_joined_time_arg_adds_join(
         self, generator: SQLGenerator
     ) -> None:
-        """A composite metric containing a first/last operand with a JOINED explicit time arg (``last(revenue, customers.signed_up_at) + 1``) must pull the ``customers`` join into the FROM so the ranked subquery's ORDER BY can reference ``customers.signed_up_at``. Without composite-aware path discovery in ``_collect_joined_paths_for_base``, the join is missing and the SQL references an unjoined alias. Codex review of PR #159 round 5."""
+        """A composite metric containing a first/last operand with a JOINED explicit time arg (``last(revenue, customers.signed_up_at) + 1``) must pull the ``customers`` join into the FROM so the ranked subquery's ORDER BY can reference ``customers.signed_up_at``. Without composite-aware join discovery, the join is missing and the SQL references an unjoined alias."""
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
@@ -5860,7 +5860,7 @@ class TestDev1501HiddenFirstLastRender:
     async def test_derived_time_arg_pulls_in_referenced_join(
         self, generator: SQLGenerator,
     ) -> None:
-        """A DERIVED first/last time arg whose ``DatasetField.sql`` references a joined field must pull that join into the base FROM. Join discovery (``_resolve_agg_inputs_via_scope`` via ``_explicit_time_arg_of``) registers it, and the ranked plan expands ``net_signed_at.sql = "customers.signed_up_at"`` so the ranked subquery's ``ORDER BY`` emits ``customers.signed_up_at``; without a corresponding ``LEFT JOIN customers`` the SQL is broken. Previously ``_collect_joined_paths_for_base`` only walked ``ColumnKey`` args; ``ColumnSqlKey`` derived time args were invisible to join discovery."""
+        """A DERIVED first/last time arg whose ``DatasetField.sql`` references a joined field must pull that join into the base FROM. Join discovery (``_resolve_agg_inputs_via_scope`` via ``_explicit_time_arg_of``) registers it, and the ranked plan expands ``net_signed_at.sql = "customers.signed_up_at"`` so the ranked subquery's ``ORDER BY`` emits ``customers.signed_up_at``; without a corresponding ``LEFT JOIN customers`` the SQL is broken."""
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
@@ -5903,7 +5903,7 @@ class TestDev1501HiddenFirstLastRender:
             assert "customers.signed_up_at" in sql, (
                 f"Expected expanded customers.signed_up_at ranking expression in SQL:\n{sql}"
             )
-            # The customers join must be present in the base FROM. Without the fix, ``_collect_joined_paths_for_base`` skipped the ColumnSqlKey arg and the join was missing → broken SQL.
+            # The customers join must be present in the base FROM.
             assert _re.search(
                 r"LEFT JOIN\s+customers\b", sql, _re.IGNORECASE,
             ) is not None, (
@@ -10440,3 +10440,40 @@ class TestWindowedMeasureGuards:
         sql = await _engine_generate(query=query, dataset=orders_dataset)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
+
+
+class TestFilterJoinAliasMatchesFrom:
+    """A filter reads the same join alias FROM assigns, even when a hop path's alias collides with a dataset name."""
+
+    @staticmethod
+    def _datasets(*, trusted: bool) -> list[SlayerDataset]:
+        def rel(to: str, key: str) -> DatasetRelationship:
+            return DatasetRelationship(to=to, from_columns=[key], to_columns=["id"], trusted=trusted)
+
+        orders = SlayerDataset(name="orders", sql_table="orders", data_source="test", fields=[
+            pk(datatype=DataType.INT), col("store_id", DataType.INT), col("tag_id", DataType.INT),
+        ], relationships=[rel("stores", "store_id"), rel("stores__regions", "tag_id")])
+        stores = SlayerDataset(name="stores", sql_table="stores", data_source="test", fields=[
+            pk(datatype=DataType.INT), col("region_id", DataType.INT),
+        ], relationships=[rel("regions", "region_id")])
+        regions = SlayerDataset(name="regions", sql_table="regions", data_source="test", fields=[
+            pk(datatype=DataType.INT), col("population", DataType.INT),
+        ])
+        tags = SlayerDataset(name="stores__regions", sql_table="tags", data_source="test", fields=[
+            pk(datatype=DataType.INT), col("label", DataType.TEXT),
+        ])
+        return [orders, stores, regions, tags]
+
+    @pytest.mark.parametrize("trusted", [False, True], ids=["untrusted", "trusted"])
+    @pytest.mark.parametrize("dimensions", [["stores__regions.label"], ["stores__regions.label", "stores.regions.population"]])
+    async def test_two_hop_filter_reads_from_alias(self, dimensions: list[str], trusted: bool) -> None:
+        host, *extra = self._datasets(trusted=trusted)
+        query = SlayerQuery.model_validate(
+            {"population": "orders", "dimensions": dimensions, "filters": ["stores.regions.population = 1"]},
+        )
+        sql = await _engine_generate(query=query, dataset=host, extra_datasets=extra)
+        tree = sqlglot.parse_one(sql, read="postgres")
+        [regions_alias] = {t.alias_or_name for t in tree.find_all(exp.Table) if t.name == "regions"}
+        reads = [c for c in tree.find_all(exp.Column) if c.name == "population"]
+        assert reads, sql
+        assert {c.table for c in reads} == {regions_alias}, sql
