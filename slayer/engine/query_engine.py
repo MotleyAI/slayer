@@ -3202,12 +3202,11 @@ class SlayerQueryEngine:
         rows excluded from both."""
         tbl: Expr = parse_table(name=table, dialect=get_dialect(sqlglot_name))
         cols = [exp.column(c) if isinstance(c, exp.Identifier) else c for c in key_cols]
-        windows = {i: c for i, c in enumerate(cols) if c.find(exp.Window) is not None}
-        if windows:
-            # A windowed key is computed over the table's rows first, then read as a column.
-            tbl = exp.select(exp.Star(), *(exp.alias_(c.copy(), f"w{i}") for i, c in windows.items())).from_(
-                tbl).subquery("t")
-            cols = [exp.column(f"w{i}") if i in windows else c for i, c in enumerate(cols)]
+        if any(c.find(exp.Window) is not None for c in cols):
+            # A windowed key is computed over the table's rows first; every key is then read as a column.
+            names = [f"__slayer_key_{i}" for i in range(len(cols))]
+            tbl = exp.select(*(exp.alias_(c.copy(), n) for c, n in zip(cols, names))).from_(tbl).subquery("__slayer_t")
+            cols = [exp.column(n) for n in names]
         predicate = None
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))

@@ -111,6 +111,13 @@ def _datasets() -> list[SlayerDataset]:
             DatasetRelationship(to="slots_w", from_columns=["slot"], to_columns=["pos"], cardinality=RelationshipCardinality.MANY_TO_ONE)]),
         _orders_like("orders_ws", fields=[native("rn", RN)], relationships=[
             DatasetRelationship(to="slots_w", from_columns=["rn"], to_columns=["pos"], cardinality=RelationshipCardinality.MANY_TO_ONE)]),
+        SlayerDataset(name="slots_wc", data_source="test", sql_table="slot_src", fields=[
+            _col("label", DataType.STRING), _col("sort_key"), native("pos", "ROW_NUMBER() OVER (ORDER BY sort_key)"),
+            native("zero", "sort_key * 0")]),
+        _orders_like("orders_wc", fields=[native("rn", RN), native("zero", "amount * 0")],
+                     relationships=[DatasetRelationship(
+                         to="slots_wc", from_columns=["rn", "zero"], to_columns=["pos", "zero"],
+                         cardinality=RelationshipCardinality.MANY_TO_ONE)]),
         _orders_like("orders_inner", fields=[native("w", "ROW_NUMBER() OVER (PARTITION BY nomatch.tier ORDER BY id)")],
                      relationships=[DatasetRelationship(
                          to="customers", name="nomatch", from_columns=["amount"], to_columns=["id"],
@@ -284,8 +291,9 @@ class TestRelationshipKeys:
         assert _num(_by(resp, "slots.label", "m")) == {"first": 1, "third": 1}
 
 
-@pytest.mark.parametrize("source, target", [("orders_s", "slots"), ("orders_wt", "slots_w"), ("orders_ws", "slots_w")],
-                         ids=["windowed-source", "windowed-target", "windowed-both"])
+@pytest.mark.parametrize("source, target", [
+    ("orders_s", "slots"), ("orders_wt", "slots_w"), ("orders_ws", "slots_w"), ("orders_wc", "slots_wc")],
+    ids=["windowed-source", "windowed-target", "windowed-both", "windowed-and-computed-composite"])
 async def test_cardinality_profiling_reads_a_windowed_key_as_a_column(engine, source, target):
     report = await engine.detect_relationship_cardinality(dataset=source)
     finding = next(f for f in report.findings if f.dataset == source and f.to == target)
