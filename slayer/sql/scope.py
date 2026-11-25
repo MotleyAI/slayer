@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import ParseError
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
@@ -279,7 +280,7 @@ class ScopeFrame(BaseModel):
 
     def _expand(
         self, sql: str, *, dataset: SlayerDataset, alias_path: str, owner_path: Tuple[str, ...], context: Context,
-    ) -> Optional[exp.Expression]:
+    ) -> Optional[Expression]:
         """``sql`` expanded at ``alias_path`` and parsed as SLayer parses a fragment, its column reads through the read
         path in ``context``; ``None`` when it reads as written."""
         return self._read(expand_derived_refs_ast(
@@ -295,7 +296,7 @@ class ScopeFrame(BaseModel):
             context=context,
         ))
 
-    def _read(self, marked: Optional[exp.Expression]) -> Optional[exp.Expression]:
+    def _read(self, marked: Optional[Expression]) -> Optional[Expression]:
         """``marked`` (an expansion, its reads marked) with SLayer's parse rewrites, its reads through the read path."""
         if marked is None:
             return None
@@ -436,7 +437,7 @@ class ScopeFrame(BaseModel):
             declared = dataset_field(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name(), key=ref)
             owner = self.root_dataset if not ref.path else resolved_terminal(
                 root=self.root_dataset, path=tuple(ref.path), datasets_by_name=self._datasets_by_name())
-            if owner is None:
+            if owner is None or not isinstance(column, exp.Column):
                 return column
             site = ReadSite(dataset=owner, field=declared, column=ref.leaf, path=tuple(ref.path),
                             context=self.context)

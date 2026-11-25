@@ -666,6 +666,10 @@ class ClickhouseDialect(SqlDialect):
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:
             return exp.Anonymous(this="toDate", expressions=[exp.Literal.string(value.isoformat())])
+        if self.time_zone is not None:
+            # A converted value's type: the zone's wall clock.
+            zoned = exp.DataType.build(f"DateTime64(6, '{self.time_zone}')", dialect="clickhouse")
+            return exp.Cast(this=exp.Literal.string(iso_text(value)), to=zoned)
         return self.promote_to_timestamp(exp.Literal.string(iso_text(value)))
 
     def build_current_date(self) -> Expression:

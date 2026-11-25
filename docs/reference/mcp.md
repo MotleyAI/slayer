@@ -78,7 +78,7 @@ claude mcp list
 | `create_datasource` | Create a DB connection, test it, and auto-ingest datasets (set `auto_ingest=false` to skip). The ingest is the idempotent one of `ingest_datasource`: re-creating a datasource merges into its stored datasets and never overwrites them. |
 | `list_datasources` | List configured datasources (no credentials shown). |
 | `describe_datasource` | Show details, test connection, list available schemas, and (by default) list tables in the given or default schema. Params: `name`, `list_tables` (default `true`), `schema_name` (empty = dialect default). |
-| `edit_datasource` | Edit an existing datasource config. |
+| `edit_datasource` | Edit an existing datasource config; `create_datasource` and `edit_datasource` take `time_zone`, the IANA zone its `DateTime` columns are stored in ([Time zones](../concepts/time.md#time-zones)). |
 | `delete_datasource` | Remove a datasource config. |
 | `set_datasource_priority` | Set the datasource priority list (most preferred first; `[]` clears it): a bare dataset name that exists in several datasources resolves to the first listed datasource that has it, else errors as ambiguous. Params: `priority`. |
 | `get_datasource_priority` | Return the datasource priority list, or `[]` when none is set. |

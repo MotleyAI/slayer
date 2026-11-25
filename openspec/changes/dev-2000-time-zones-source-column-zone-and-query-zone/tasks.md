@@ -48,60 +48,60 @@
 
 ## 2. Core fields and validation
 
-- [ ] 2.1 Add `time_zone` to `SlayerQuery`, `QueryRefinement` (including the `refine_query` merge list), `DatasourceConfig` and `DatasetField`, with IANA, `civil` and field-shape validation at construction and assignment. Verify the 1.5 validation tests and `tests/test_migrations.py` (legacy documents load unchanged).
-- [ ] 2.2 Add the `time_zone_undeclared` warning kind (payload, `AnySlayerWarning`, Python carrier) and the typed time-zone errors. Verify the 1.5 warning payload tests.
-- [ ] 2.3 Store `DatasetField.time_zone` in the `SLAYER` field payload and export it. Store `DatasourceConfig.time_zone` in the datasource YAML. Verify the 1.8 round-trip tests.
+- [x] 2.1 Add `time_zone` to `SlayerQuery`, `QueryRefinement` (including the `refine_query` merge list), `DatasourceConfig` and `DatasetField`, with IANA, `civil` and field-shape validation at construction and assignment. Verify the 1.5 validation tests and `tests/test_migrations.py` (legacy documents load unchanged).
+- [x] 2.2 Add the `time_zone_undeclared` warning kind (payload, `AnySlayerWarning`, Python carrier) and the typed time-zone errors. Verify the 1.5 warning payload tests.
+- [x] 2.3 Store `DatasetField.time_zone` in the `SLAYER` field payload and export it. Store `DatasourceConfig.time_zone` in the datasource YAML. Verify the 1.8 round-trip tests.
 
 ## 3. Ingestion and storage
 
-- [ ] 3.1 Type BigQuery `TIMESTAMP`, ClickHouse `DateTime(tz)` / `DateTime64(p, tz)` and MySQL `TIMESTAMP` as `DateTimeTz` in reflection, and re-key the BigQuery zoned read, `bare_comparands` and `coerce_zoned_comparisons` on `DateTimeTz`. Verify 1.8 typing and the 1.2 goldens.
-- [ ] 3.2 Re-ingest re-type of `DateTime` → `DateTimeTz` in `slayer/live_schema/ingestion.py`. Verify 1.8.
-- [ ] 3.3 `SlayerModel` 30 → 31 load upgrade for BigQuery `db_type: TIMESTAMP` fields. Verify 1.8 and `tests/test_law_load_never_writes.py`.
+- [x] 3.1 Type BigQuery `TIMESTAMP`, ClickHouse `DateTime(tz)` / `DateTime64(p, tz)` and MySQL `TIMESTAMP` as `DateTimeTz` in reflection, and re-key the BigQuery zoned read, `bare_comparands` and `coerce_zoned_comparisons` on `DateTimeTz`. Verify 1.8 typing and the 1.2 goldens.
+- [x] 3.2 Re-ingest re-type of `DateTime` → `DateTimeTz` in `slayer/live_schema/ingestion.py`. Verify 1.8.
+- [x] 3.3 `SlayerModel` 30 → 31 load upgrade for BigQuery `db_type: TIMESTAMP` fields. Verify 1.8 and `tests/test_law_load_never_writes.py`.
 
 ## 4. Zone resolution and the clock
 
-- [ ] 4.1 Resolve each stage's effective zone (own, else the final stage's, including query-backed stored stages) and carry it through prebound → `PlannedQuery` → render context. Verify the 1.6 inheritance tests.
-- [ ] 4.2 Make the engine clock reading an aware instant, with naive readings as host-local. Derive a per-stage Q "now" for relative tokens, `whole_periods_only` and the spine bound. Render `now()` / `current_date()` as literals under a zone, and narrow `plans_read_clock`. Verify 1.7 and the existing time-points, spine and `tests/test_dev1737_clock_cache.py` tests.
+- [x] 4.1 Resolve each stage's effective zone (own, else the final stage's, including query-backed stored stages) and carry it through prebound → `PlannedQuery` → render context. Verify the 1.6 inheritance tests.
+- [x] 4.2 Make the engine clock reading an aware instant, with naive readings as host-local. Derive a per-stage Q "now" for relative tokens, `whole_periods_only` and the spine bound. Render `now()` / `current_date()` as literals under a zone, and narrow `plans_read_clock`. Verify 1.7 and the existing time-points, spine and `tests/test_dev1737_clock_cache.py` tests.
 
 ## 5. The one read path
 
-- [ ] 5.1 Build the typed read path in `slayer/sql`, taking the `value` / `stored predicate` context. It resolves the source zone, `civil` and the undeclared warning, and wraps the read in the dialect conversion. Route every physical read through it, including the bypasses listed in 1.3. Split `_anchor(FieldSqlKey)` so value and filter expand in their own contexts, recursively. Verify 1.3 and 1.4.
-- [ ] 5.2 Add the AST-level read validator (D18), enabled in the test harness. Verify 1.3's check fails on an injected untagged read and passes on the suite.
-- [ ] 5.3 Deduplicate the warning by dataset, field and join path in the execution-level accumulator, and surface it on both channels. Verify 1.5.
-- [ ] 5.4 Convert zoned casts at the cast under a zone (D17). Verify the cast scenario.
+- [x] 5.1 Build the typed read path in `slayer/sql`, taking the `value` / `stored predicate` context. It resolves the source zone, `civil` and the undeclared warning, and wraps the read in the dialect conversion. Route every physical read through it, including the bypasses listed in 1.3. Split `_anchor(FieldSqlKey)` so value and filter expand in their own contexts, recursively. Verify 1.3 and 1.4.
+- [x] 5.2 Add the AST-level read validator (D18), enabled in the test harness. Verify 1.3's check fails on an injected untagged read and passes on the suite.
+- [x] 5.3 Deduplicate the warning by dataset, field and join path in the execution-level accumulator, and surface it on both channels. Verify 1.5.
+- [x] 5.4 Convert zoned casts at the cast under a zone (D17). Verify the cast scenario.
 
 ## 6. Dialects
 
-- [ ] 6.1 Implement the conversion primitives (D15) for Postgres, DuckDB, Snowflake, BigQuery, Trino, SQL Server (with the vendored CLDR table and its version recorded), MySQL, ClickHouse and SQLite (`slayer_convert_tz` with the D13 DST rule, registered with the other SQLite functions). Verify 1.9 and the DST tests.
-- [ ] 6.2 Carry the converted SQL type into literal, custom-origin, spine-bound and window-bound rendering, and route SQLite comparisons through normalisation. Verify the 1.9 emission tests and the executed tests.
-- [ ] 6.3 Add the MySQL zone probe through the engine's client, cached per client and zone (D16). Verify the 1.10 MySQL tests, including request counts.
-- [ ] 6.4 Add the Tier-2 typed error when a conversion is needed. Verify 1.9.
+- [x] 6.1 Implement the conversion primitives (D15) for Postgres, DuckDB, Snowflake, BigQuery, Trino, SQL Server (with the vendored CLDR table and its version recorded), MySQL, ClickHouse and SQLite (`slayer_convert_tz` with the D13 DST rule, registered with the other SQLite functions). Verify 1.9 and the DST tests.
+- [x] 6.2 Carry the converted SQL type into literal, custom-origin, spine-bound and window-bound rendering, and route SQLite comparisons through normalisation. Verify the 1.9 emission tests and the executed tests.
+- [x] 6.3 Add the MySQL zone probe through the engine's client, cached per client and zone (D16). Verify the 1.10 MySQL tests, including request counts.
+- [x] 6.4 Add the Tier-2 typed error when a conversion is needed. Verify 1.9.
 
 ## 7. Stages and re-bucketing
 
-- [ ] 7.1 Add the zone state to `StageField`, computed by the dependency-closure walker (D10), with Z → Q conversion at the reader and query-backed `time_zone` stamping. Verify 1.6.
-- [ ] 7.2 Add the cross-zone re-bucketing check to `check_time_dimension_field` / `check_axis_rebucket`. Verify 1.6.
+- [x] 7.1 Add the zone state to `StageField`, computed by the dependency-closure walker (D10), with Z → Q conversion at the reader and query-backed `time_zone` stamping. Verify 1.6.
+- [x] 7.2 Add the cross-zone re-bucketing check to `check_time_dimension_field` / `check_axis_rebucket`. Verify 1.6.
 
 ## 8. Pre-filter
 
-- [ ] 8.1 Add the D14 raw-column pre-filter: a naive literal, or a UTC instant through a dialect hook; omitted when it can't be rendered; never on frame bounds. Verify the presence, absence and result-equality tests, including Postgres under a non-UTC session.
+- [x] 8.1 Add the D14 raw-column pre-filter: a naive literal, or a UTC instant through a dialect hook; omitted when it can't be rendered; never on frame bounds. Verify the presence, absence and result-equality tests, including Postgres under a non-UTC session.
 
 ## 9. Response and surfaces
 
-- [ ] 9.1 Add `SlayerResponse.time_zone`. Verify its scenario.
-- [ ] 9.2 Add the surfaces: REST `QueryRequest` and `refine`; MCP `query`, `create_datasource` / `edit_datasource`, dataset tools; CLI `datasources create --time-zone`; inspect output. Verify 1.11.
+- [x] 9.1 Add `SlayerResponse.time_zone`. Verify its scenario.
+- [x] 9.2 Add the surfaces: REST `QueryRequest` and `refine`; MCP `query`, `create_datasource` / `edit_datasource`, dataset tools; CLI `datasources create --time-zone`; inspect output. Verify 1.11.
 
 ## 10. Docs and architecture
 
-- [ ] 10.1 Docs:
+- [x] 10.1 Docs:
   - a "Time zones" section in `docs/concepts/time.md`: the read rule, `civil`, stored definitions vs predicates, stage inheritance, the clock, DST and per-engine notes, the `DateTimeTz`-naive-under-a-zone note, the repeated-hour note, dialect entries seeing converted values
   - one sentence each in `docs/concepts/datasets.md`, `docs/concepts/queries.md`, `docs/configuration/datasources.md`, `docs/reference/mcp.md`, `docs/reference/rest-api.md`
   - `docs/database-support.md`: fix the outdated `db_type` claim and describe instant typing
   - `docs/concepts/ingestion.md`
   - the help memory `slayer/memories/help_content/05_time.md`
   Confirm `zensical.toml` needs no new page.
-- [ ] 10.2 Confirm system principle 12's test tag resolves to `tests/test_law_zoned_reads.py`, and run `la-arch-check` and `npx -y likec4@1.47.0 validate architecture`.
+- [x] 10.2 Confirm system principle 12's test tag resolves to `tests/test_law_zoned_reads.py`, and run `la-arch-check` and `npx -y likec4@1.47.0 validate architecture`.
 
 ## 11. Gates
 
-- [ ] 11.1 Run the local test scope per the `/la:pr` flow (`la-affected-tests` plus the goldens and the dialect, ingestion and storage suites touched), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `openspec validate dev-2000-time-zones-source-column-zone-and-query-zone --strict`.
+- [x] 11.1 Run the local test scope per the `/la:pr` flow (`la-affected-tests` plus the goldens and the dialect, ingestion and storage suites touched), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `openspec validate dev-2000-time-zones-source-column-zone-and-query-zone --strict`.

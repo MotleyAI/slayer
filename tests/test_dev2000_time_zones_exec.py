@@ -38,9 +38,9 @@ DAY_TD = {"field": "orders.ordered_at", "granularity": "day"}
 
 
 def _day_sums(zone: str) -> dict[date, float]:
-    out: Counter[date] = Counter()
+    out: dict[date, float] = {}
     for i in ROWS:
-        out[local(i, zone).date()] += amount(i)
+        out[local(i, zone).date()] = out.get(local(i, zone).date(), 0.0) + amount(i)
     return dict(out)
 
 

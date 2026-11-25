@@ -775,7 +775,7 @@ class _SemiJoinOps:
 
     def __init__(
         self, *, alias: Callable[[Tuple[str, ...]], str],
-        col: Callable[[str, str, bool], exp.Column],  # (table, name, quoted)
+        col: Callable[[str, str, bool], Expression],  # (table, name, quoted)
         table: Callable[[Any, bool], Tuple[Expression, str]],  # pyright: ignore[reportPrivateImportUsage] — sqlglot exports it
         attached: Set[Tuple[str, ...]],
         computed: Callable[[str, str], Expression],  # (table, a computed key's expression)
@@ -4977,15 +4977,17 @@ class SQLGenerator:
         return self._read(key, field=field, dataset=dataset, bundle=bundle, context=context, path=path)
 
     def _computed_key(
-        self, *, text: str, dataset: SlayerDataset, alias: str, bundle, context: Context = VALUE,
+        self, *, text: str, dataset: Optional[SlayerDataset], alias: str, bundle, context: Context = VALUE,
         path: Tuple[str, ...] = (),
     ) -> Expression:
-        """A computed relationship key: its expression over ``alias``'s source columns, each read through the read
-        path."""
+        """A computed relationship key: its expression over ``alias``'s source columns, each a dataset's read through
+        the read path."""
         key = self._parse(text)
         for column in list(key.find_all(exp.Column)):
             if not column.table:
                 column.set("table", exp.to_identifier(alias))
+                if dataset is None:
+                    continue
                 read = self._read(column.copy(), field=field_for_column(dataset, column.name), dataset=dataset,
                                   bundle=bundle, context=context, reads_naive=False, path=path)
                 if column is key:

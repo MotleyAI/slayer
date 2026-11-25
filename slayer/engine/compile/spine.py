@@ -220,8 +220,8 @@ def check_axis_rebucket(
         return
     name = ".".join((*field.path, leaf))
     upstream = resolve_granularity(col.granularity, defined=bundle.granularities)
-    zone = col.time_zone if col.time_zone is not None or owner.name in bundle.stage_displays \
-        else bundle.datasource_time_zone
+    stage = owner is not None and owner.name in bundle.stage_displays
+    zone = col.time_zone if col.time_zone is not None or stage else bundle.datasource_time_zone
     zoned = col.datatype is DataType.DATETIME and zone is not None and zone != CIVIL
     check_time_dimension_field(
         name=name, field_type=col.datatype, requested_granularity=rerooted.granularity,

@@ -133,7 +133,9 @@ async def test_reingest_retypes_an_instant_column_and_nothing_else(tmp_path: Pat
     assert got["inst"].datatype is TZ
     assert got["wall"].datatype is DT
     for name in ("inst", "wall"):
-        assert _attrs(got[name]) == _attrs(before.get_field(name)), name
+        authored = before.get_field(name)
+        assert authored is not None
+        assert _attrs(got[name]) == _attrs(authored), name
 
 
 def test_reingest_merge_retypes_a_mysql_timestamp_column() -> None:
@@ -210,7 +212,9 @@ async def test_other_datasources_are_untouched(tmp_path: Path, backend: str) -> 
     storage, _ = await _v30_store(tmp_path, backend=backend, datasource=POSTGRES)
     model = await storage.get_dataset("events", data_source=DS)
     assert model is not None
-    assert model.get_field("created_at").datatype is DT
+    created = model.get_field("created_at")
+    assert created is not None
+    assert created.datatype is DT
 
 
 # --------------------------------------------------------------------------- #

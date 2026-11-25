@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expr
 
 from slayer.core.query import SlayerQuery
 
@@ -38,11 +39,11 @@ async def render(dialect: str, query: SlayerQuery, *, now: str = "2025-06-01 12:
     )
 
 
-def parse(sql: str, dialect: str) -> exp.Expression:
+def parse(sql: str, dialect: str) -> Expr:
     return sqlglot.parse_one(sql, read=dialect)
 
 
-def is_conversion(node: exp.Expression) -> bool:
+def is_conversion(node: Expr) -> bool:
     """A zone-conversion primitive: ``AT TIME ZONE``, ``CONVERT_TZ`` / ``CONVERT_TIMEZONE``, zoned ``DATETIME`` /
     ``TIMESTAMP`` (BigQuery), ``toTimeZone``, ``with_timezone``, ``slayer_convert_tz``."""
     if isinstance(node, (exp.AtTimeZone, exp.ConvertTimezone)):
@@ -54,7 +55,7 @@ def is_conversion(node: exp.Expression) -> bool:
     return isinstance(node, exp.Anonymous) and str(node.this).lower() in _NAMED
 
 
-def conversions_above(node: exp.Expression, *, stop: Optional[exp.Expression] = None) -> int:
+def conversions_above(node: Expr, *, stop: Optional[Expr] = None) -> int:
     """How many conversion primitives wrap ``node`` (up to ``stop``, exclusive)."""
     count, cur = 0, node.parent
     while cur is not None and cur is not stop:
@@ -63,7 +64,7 @@ def conversions_above(node: exp.Expression, *, stop: Optional[exp.Expression] = 
     return count
 
 
-def _relation(column: exp.Column) -> Optional[exp.Expression]:
+def _relation(column: exp.Column) -> Optional[Expr]:
     """The FROM / JOIN relation ``column``'s qualifier names, in the nearest enclosing SELECT binding it."""
     select = column.find_ancestor(exp.Select)
     while select is not None:
@@ -75,7 +76,7 @@ def _relation(column: exp.Column) -> Optional[exp.Expression]:
     return None
 
 
-def reads(tree: exp.Expression, name: str) -> list[exp.Column]:
+def reads(tree: Expr, name: str) -> list[exp.Column]:
     """Reads of a dataset table's column ``name``: a column of a CTE or derived table carries an earlier read."""
     ctes = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
     out = []
@@ -86,11 +87,11 @@ def reads(tree: exp.Expression, name: str) -> list[exp.Column]:
     return out
 
 
-def comparisons(tree: exp.Expression) -> list[exp.Expression]:
+def comparisons(tree: Expr) -> list[exp.Binary]:
     return [n for n in tree.walk() if isinstance(n, _COMPARISONS)]
 
 
-def literal_contexts(tree: exp.Expression, prefix: str, *, dialect: str) -> list[str]:
+def literal_contexts(tree: Expr, prefix: str, *, dialect: str) -> list[str]:
     """The rendered parent of every string literal starting with ``prefix``."""
     return [
         (lit.parent or lit).sql(dialect=dialect) for lit in tree.find_all(exp.Literal)
@@ -98,7 +99,7 @@ def literal_contexts(tree: exp.Expression, prefix: str, *, dialect: str) -> list
     ]
 
 
-def converted_sides(tree: exp.Expression, name: str) -> list[tuple[exp.Expression, exp.Expression]]:
+def converted_sides(tree: Expr, name: str) -> list[tuple[Expr, Expr]]:
     """``(converted side, other side)`` of each comparison one side of which converts a read of ``name``."""
     out = []
     for cmp in comparisons(tree):
@@ -108,7 +109,7 @@ def converted_sides(tree: exp.Expression, name: str) -> list[tuple[exp.Expressio
     return out
 
 
-def raw_sides(tree: exp.Expression, name: str) -> list[tuple[exp.Expression, exp.Expression]]:
+def raw_sides(tree: Expr, name: str) -> list[tuple[Expr, Expr]]:
     """``(raw side, other side)`` of each comparison one side of which reads ``name`` unconverted."""
     out = []
     for cmp in comparisons(tree):

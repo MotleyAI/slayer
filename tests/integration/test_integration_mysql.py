@@ -2059,7 +2059,9 @@ def _probe_count(container) -> int:
                 "AND argument LIKE %s AND argument NOT LIKE %s",
                 ("%CONVERT_TZ('2000-01-01 00:00:00', '+00:00'%", "%general_log%"),
             )
-            return int(cur.fetchone()[0])
+            row = cur.fetchone()
+            assert row is not None
+            return int(row[0])
     finally:
         conn.close()
 
@@ -2073,7 +2075,9 @@ def _data_statements(container) -> int:
                 "AND argument LIKE %s AND argument NOT LIKE %s",
                 (f"%{_TZ_MARKER}%", "%general_log%"),
             )
-            return int(cur.fetchone()[0])
+            row = cur.fetchone()
+            assert row is not None
+            return int(row[0])
     finally:
         conn.close()
 

@@ -379,7 +379,7 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` to BigQuery's analytic
   form). Use a custom `Aggregation` with `APPROX_QUANTILES(x, 100)[OFFSET(N)]`
   when you need it.
-- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older datasets), reads as its UTC wall clock everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
+- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a `TIMESTAMP` column, which ingestion types `DateTimeTz` (a stored `DateTime` field with `db_type: TIMESTAMP` loads as one), reads as its UTC wall clock without a query `time_zone` everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
 - **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0, `IS NULL` is false and `count(list)` counts it where other databases see `NULL`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`, so `engine.execute(..., explain=True)` raises
   `ExplainUnsupportedError` (a `ValueError`); use `dry_run=True` to see the SQL.

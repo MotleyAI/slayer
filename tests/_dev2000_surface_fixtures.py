@@ -62,6 +62,7 @@ def zone_error(exc: BaseException) -> TimeZoneError:
     if isinstance(exc, TimeZoneError):
         return exc
     assert isinstance(exc, ValidationError), f"not a time-zone error: {exc!r}"
-    found = [e["ctx"]["error"] for e in exc.errors() if isinstance((e.get("ctx") or {}).get("error"), TimeZoneError)]
+    found = [(e.get("ctx") or {})["error"] for e in exc.errors()
+             if isinstance((e.get("ctx") or {}).get("error"), TimeZoneError)]
     assert found, f"no TimeZoneError inside: {exc}"
     return found[0]
