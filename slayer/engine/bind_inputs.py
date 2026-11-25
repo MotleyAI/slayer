@@ -22,7 +22,7 @@ from slayer.core.errors import (
 )
 from slayer.core.format import NumberFormat
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, is_spine, is_spine_query
-from slayer.core.relationship_walker import follow, resolve_hop, resolved_terminal, walk_terminal
+from slayer.core.relationship_walker import follow, reaches_spine, resolve_hop, resolved_terminal, walk_terminal
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -1944,14 +1944,17 @@ def _text_reads_spine(text: str, *, scope: DatasetScope) -> bool:
     )
 
 
-def _reads_spine(source: ValueKey, *, scope: DatasetScope) -> bool:
+def _reads_spine(source: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> bool:
     """Whether ``source`` reads ``time_spine.timestamp``."""
-    host_is_spine = _host_is_spine(scope)
-    return any(
-        isinstance(k, FieldKey) and k.leaf == TIME_SPINE_FIELD
-        and (k.path[-1:] == (TIME_SPINE_DATASET,) or (not k.path and host_is_spine))
-        for k in walk_value_keys(source)
-    )
+    host = scope.population
+
+    def spine_path(path: Tuple[str, ...]) -> bool:
+        if host is None:
+            return path[-1:] == (TIME_SPINE_DATASET,)
+        return reaches_spine(root=host, path=path, datasets_by_name=bundle.datasets_by_name) if path else is_spine(host)
+
+    return any(isinstance(k, FieldKey) and k.leaf == TIME_SPINE_FIELD and spine_path(k.path)
+               for k in walk_value_keys(source))
 
 
 def _check_time_dimension(
@@ -1963,7 +1966,7 @@ def _check_time_dimension(
     if btd.is_expression:
         source = _td_source(btd.bound)
         check_spine_time_dimension(
-            offender=td.field if _reads_spine(source, scope=scope) else None, remedy=bucket_remedy(source),
+            offender=td.field if _reads_spine(source, scope=scope, bundle=bundle) else None, remedy=bucket_remedy(source),
         )
         check_time_dimension_row_level(name=td.field, source=source)
         field_type = time_dimension_type(source, field_type=scope_field_type(scope=scope, bundle=bundle))

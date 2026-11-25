@@ -30,12 +30,15 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType, invert_cardinality
 from slayer.core.errors import AmbiguousHopError, AmbiguousRelationshipPathError, CircularRelationshipPathError, SelfRelationshipTraversalError
 from slayer.core.keys import (
-    FieldElementFn, FieldKey, FieldSqlKey, FieldTypeFn, ValueKey, anchor_token, source_anchor_path, token_anchor,
+    SPINE_TOKEN, FieldElementFn, FieldKey, FieldSqlKey, FieldTypeFn, ValueKey, anchor_token, source_anchor_path,
+    token_anchor,
 )
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset, is_key_set_unique, relationship_key_error
 from slayer.core.names import match_name
 from slayer.core.ossie_steps import ossie_from
-from slayer.core.time_spine import PRODUCT_JOIN_TYPE, TIME_SPINE_DATASET, axis_field, is_spine, spine_relationships
+from slayer.core.time_spine import (
+    PRODUCT_JOIN_TYPE, TIME_SPINE_DATASET, axis_field, axis_relationship, is_spine, spine_relationships,
+)
 
 __all__ = [
     "OrientedRelationship",
@@ -66,6 +69,9 @@ __all__ = [
     "provably_to_one",
     "resolve_hop",
     "resolved_terminal",
+    "reaches_spine",
+    "SPINE_TOKEN",
+    "spine_token",
     "reverse_token",
     "terminal_dataset",
     "trusted_to_one",
@@ -116,6 +122,8 @@ class OrientedRelationship(BaseModel):
     document_from: str | None = None
     # The relationship is marked trusted (its declared cardinality may be assumed).
     trusted: bool = False
+    # A virtual spine hop's reserved spelling while a declared name shadows its own; ``None`` otherwise.
+    spelling: str | None = None
 
 
 _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
@@ -159,8 +167,8 @@ def observe_read(name: str) -> None:
 
 
 def canonical_token(edge: OrientedRelationship) -> str:
-    """A hop's canonical spelling: the edge name, else the target's spelling."""
-    return edge.name or edge.target_spelling or edge.to
+    """A hop's canonical spelling: its reserved spelling, else the edge name, else the target's spelling."""
+    return edge.spelling or edge.name or edge.target_spelling or edge.to
 
 
 def reverse_token(edge: OrientedRelationship) -> str:
@@ -175,7 +183,8 @@ def _spellings(edge: OrientedRelationship) -> tuple[tuple[str, ...], ...]:
     (never a stage's minted identity), then its query-local aliases."""
     dataset = edge.to if edge.target_spelling is None else None
     return (
-        tuple(n for n in (edge.name,) if n is not None), tuple(n for n in (edge.target_spelling,) if n is not None),
+        tuple(n for n in (edge.spelling or edge.name,) if n is not None),
+        tuple(n for n in (edge.target_spelling,) if n is not None),
         tuple(n for n in (dataset,) if n is not None), tuple(edge.aliases),
     )
 
@@ -538,12 +547,17 @@ def neighbors(
     """
     spellings = {n: m.explicit_spelling for n, m in datasets_by_name.items()}
     spellings[dataset.name] = dataset.explicit_spelling
-    out = _virtual_spine_edges(dataset=dataset, datasets_by_name=datasets_by_name)
-    out.extend(_list_edges(dataset=dataset, datasets_by_name=datasets_by_name))
-    for j in spine_relationships(dataset, datasets_by_name=datasets_by_name):
+    virtual = _virtual_spine_edges(dataset=dataset, datasets_by_name=datasets_by_name)
+    out = [*virtual, *_list_edges(dataset=dataset, datasets_by_name=datasets_by_name)]
+    for j in dataset.relationships:
         if j.to != dataset.name:
             out.append(_orient(relationship=j, declaring=dataset.name, from_dataset=dataset.name,
                                spellings=spellings))
+    axis = axis_relationship(dataset) if TIME_SPINE_DATASET in datasets_by_name else None
+    if axis is not None:
+        virtual.append(_orient(relationship=axis, declaring=dataset.name, from_dataset=dataset.name,
+                               spellings=spellings))
+        out.append(virtual[-1])
     for other in datasets_by_name.values():
         if other.name == dataset.name:
             continue
@@ -552,7 +566,24 @@ def neighbors(
                 out.append(_orient(relationship=j, declaring=other.name, from_dataset=dataset.name,
                                    spellings=spellings))
     _observe((e.to for e in out), strict=False)
-    return out
+    return _spell_spine_hops(out, virtual=virtual)
+
+
+def _spell_spine_hops(edges: list[OrientedRelationship], *, virtual: list[OrientedRelationship]) -> list[OrientedRelationship]:
+    """``edges`` with each virtual hop into the spine its own token no longer names alone spelled ``SPINE_TOKEN``."""
+    shadowed = [v for v in virtual if v.to == TIME_SPINE_DATASET and matching_edges(edges, canonical_token(v)) != [v]]
+    if not shadowed:
+        return edges
+    return [e.model_copy(update={"spelling": SPINE_TOKEN}) if any(e is v for v in shadowed) else e for e in edges]
+
+
+def spine_token(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> str:
+    """The token spelling the spine from ``dataset``: its hop's into it, else ``time_spine`` unless an edge takes it."""
+    incident = neighbors(dataset=dataset, datasets_by_name={**datasets_by_name, dataset.name: dataset})
+    hop = next((e for e in incident if e.to == TIME_SPINE_DATASET and e.lateral is None), None)
+    if hop is not None:
+        return canonical_token(hop)
+    return SPINE_TOKEN if matching_edges(incident, TIME_SPINE_DATASET) else TIME_SPINE_DATASET
 
 
 def incident_dataset_names(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> list[str]:
@@ -566,8 +597,9 @@ def resolve_hop(
     token: str,
     datasets_by_name: dict[str, SlayerDataset],
     quoted: bool = False,
+    resolved: bool = False,
 ) -> OrientedRelationship | None:
-    """Resolve one path ``token`` from ``current``.
+    """Resolve one path ``token`` from ``current`` (``resolved``: a canonical token, by precedence alone).
 
     A token matches an incident edge's ``name`` first, then a query stage's
     spelling, else the opposite-endpoint dataset name. Returns ``None`` when nothing matches (the caller raises its own
@@ -592,7 +624,8 @@ def resolve_hop(
             candidates=candidates,
             token=token,
         )
-    _refuse_edge_target_clash(current=current, edge=candidates[0], incident=incident, token=token, quoted=quoted)
+    if not resolved:
+        _refuse_edge_target_clash(current=current, edge=candidates[0], incident=incident, token=token, quoted=quoted)
     _observe([candidates[0].to], strict=True)
     return candidates[0]
 
@@ -608,8 +641,7 @@ def _refuse_edge_target_clash(
     other = next((e for e in incident if e.to != edge.to and e.lateral is None and not is_product_edge(e)
                   and match_name(name=token, declared=[e.target_spelling or e.to], quoted=quoted) is not None), None)
     if other is not None:
-        raise AmbiguousHopError(dataset=current.spelling, segment=token, edge=edge.name,
-                                other_edge=canonical_token(other))
+        raise AmbiguousHopError(dataset=current.spelling, segment=token, edge=edge.name, other_edge=other.name)
 
 
 def _refuse_self_hop(*, current: SlayerDataset, token: str, quoted: bool) -> None:
@@ -665,6 +697,7 @@ def _walk(
     datasets_by_name: dict[str, SlayerDataset],
     revisits: bool,
     quoted: Sequence[bool] = (),
+    resolved: int = 0,
 ) -> tuple[list[OrientedRelationship] | None, WalkMiss | None]:
     current = root
     visited = {root.name}
@@ -674,6 +707,7 @@ def _walk(
             return None, WalkMiss(index=i, token=token, kind="spine")  # a path may end at the spine, never cross it
         edge = resolve_hop(
             current=current, token=token, datasets_by_name=datasets_by_name, quoted=i < len(quoted) and quoted[i],
+            resolved=revisits or i < resolved,
         )
         if edge is None:
             return None, WalkMiss(index=i, token=token, kind="no_edge")
@@ -702,15 +736,18 @@ def walk(
     path: Sequence[str],
     datasets_by_name: dict[str, SlayerDataset],
     quoted: Sequence[bool] = (),
+    resolved: int = 0,
 ) -> list[OrientedRelationship] | None:
-    """Resolve a full ``path`` of tokens spelled in one frame from ``root`` into an oriented chain.
+    """Resolve a full ``path`` of tokens spelled in one frame from ``root`` into an oriented chain (its first
+    ``resolved`` tokens canonical).
 
     Returns the chain, ``None`` only on an unknown/unloaded hop, propagates
     :class:`AmbiguousRelationshipPathError` from any ambiguous hop, and raises
     :class:`CircularRelationshipPathError` when a hop revisits a dataset already on the path
     (a definite malformation, not a miss).
     """
-    return _walk(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False, quoted=quoted)[0]
+    return _walk(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False, quoted=quoted,
+                 resolved=resolved)[0]
 
 
 def walk_miss(
@@ -719,9 +756,11 @@ def walk_miss(
     path: Sequence[str],
     datasets_by_name: dict[str, SlayerDataset],
     quoted: Sequence[bool] = (),
+    resolved: int = 0,
 ) -> WalkMiss | None:
     """Why :func:`walk` returns ``None`` for ``path`` (``None`` when it does not); raises as :func:`walk` does."""
-    return _walk(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False, quoted=quoted)[1]
+    return _walk(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False, quoted=quoted,
+                 resolved=resolved)[1]
 
 
 def walk_terminal(
@@ -730,10 +769,11 @@ def walk_terminal(
     path: Sequence[str],
     datasets_by_name: dict[str, SlayerDataset],
     quoted: Sequence[bool] = (),
+    resolved: int = 0,
 ) -> tuple[SlayerDataset, tuple[str, ...]] | None:
     """``(terminal dataset, canonical path)`` of :func:`walk`, ``None`` where it misses; raises as it does."""
     datasets = with_list_children({**datasets_by_name, root.name: datasets_by_name.get(root.name, root)})
-    chain = walk(root=root, path=path, datasets_by_name=datasets, quoted=quoted)
+    chain = walk(root=root, path=path, datasets_by_name=datasets, quoted=quoted, resolved=resolved)
     if chain is None:
         return None
     return (datasets[chain[-1].to] if chain else root), canonical_path(chain)
@@ -893,6 +933,12 @@ def resolved_terminal(
 ) -> SlayerDataset | None:
     """:func:`terminal_dataset` of an already-resolved, possibly composed key path (revisits allowed)."""
     return _terminal(root=root, path=path, datasets_by_name=datasets_by_name, revisits=True)
+
+
+def reaches_spine(*, root: SlayerDataset, path: Sequence[str], datasets_by_name: dict[str, SlayerDataset]) -> bool:
+    """A resolved ``path`` from ``root`` ends at the spine; one that does not resolve, when it spells it."""
+    terminal = resolved_terminal(root=root, path=path, datasets_by_name=datasets_by_name) if path else None
+    return is_spine(terminal) if terminal is not None else bool({TIME_SPINE_DATASET, SPINE_TOKEN} & set(path))
 
 
 def dataset_field(

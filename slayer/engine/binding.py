@@ -991,6 +991,7 @@ def _walk_relationship_chain(
     original_quoted: Tuple[bool, ...] = (),
     routes_short_form: bool = True,
     anchor: Optional[Tuple[str, int]] = None,
+    resolved: int = 0,
 ):
     """Walk ``hop_path`` relationship hops from ``host`` through the shared bidirectional
     walker; returns ``(terminal_dataset, canonical effective_hop_path)``. Each token
@@ -1006,7 +1007,8 @@ def _walk_relationship_chain(
     remaining tokens spell a flat field raises the flat-spelling refusal instead.
     ``parts`` is the full dotted ref, for error messages; ``quoted`` flags each of
     its segments; ``original_parts`` (pre-self-prefix-strip, defaulting to
-    ``parts``) spells the reference in full, ``original_quoted`` flagging its segments."""
+    ``parts``) spells the reference in full, ``original_quoted`` flagging its segments; the first ``resolved`` hops
+    are a canonical route."""
     datasets_by_name = bundle.datasets_by_name
     datasets_by_name.setdefault(host.name, host)
     spelled = parts if original_parts is None else original_parts
@@ -1016,10 +1018,11 @@ def _walk_relationship_chain(
     )
     refusal = partial(
         _flat_spelling_refusal, host=host, hop_path=hop_path, leaf=leaf, spelled=spelled,
-        written=written, quoted=quoted, datasets_by_name=datasets_by_name, anchor=anchor,
+        written=written, quoted=quoted, datasets_by_name=datasets_by_name, anchor=anchor, resolved=resolved,
     )
     try:
-        walked = walk_terminal(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted)
+        walked = walk_terminal(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted,
+                               resolved=resolved)
     except CircularRelationshipPathError as e:
         raise refusal() or CircularRelationshipPathError(
             reference=".".join(spelled), root_dataset=host.spelling,
@@ -1028,7 +1031,7 @@ def _walk_relationship_chain(
         ) from None
     if walked is not None:
         return walked
-    miss = walk_miss(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted)
+    miss = walk_miss(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted, resolved=resolved)
     assert miss is not None
     if miss.kind == "unloaded":
         assert miss.target is not None
@@ -1077,6 +1080,7 @@ def _flat_spelling_refusal(
     quoted: Tuple[bool, ...],
     datasets_by_name: Dict[str, SlayerDataset],
     anchor: Optional[Tuple[str, int]] = None,
+    resolved: int = 0,
 ) -> Optional[UnknownReferenceError]:
     """The refusal of a failed walk whose remaining tokens, joined with ``__``, name a field of a dataset on its walked
     prefix (nearest the root first); ``written`` is the dropped root qualifier, if any; ``anchor`` is an anchored
@@ -1084,7 +1088,8 @@ def _flat_spelling_refusal(
     tokens = (*hop_path, leaf)
     for k in range(len(hop_path)):
         try:
-            walked = walk_terminal(root=host, path=hop_path[:k], datasets_by_name=datasets_by_name, quoted=quoted[:k])
+            walked = walk_terminal(root=host, path=hop_path[:k], datasets_by_name=datasets_by_name, quoted=quoted[:k],
+                                   resolved=resolved)
         except CircularRelationshipPathError:
             return None
         if walked is None:
@@ -1147,7 +1152,7 @@ def _route_edgeless_hop(
     terminal = datasets_by_name.get(hop)
     if terminal is None:
         raise _target_not_in_bundle(parts=parts, target=hop)
-    chain = walk(root=host, path=tuple(route), datasets_by_name=datasets_by_name)
+    chain = walk(root=host, path=tuple(route), datasets_by_name=datasets_by_name, resolved=len(route))
     assert chain is not None  # a safe route walks by construction
     return terminal, canonical_path(chain)
 
@@ -1297,9 +1302,9 @@ def _resolve_anchored(
     current, effective_hop_path = _walk_relationship_chain(
         hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf=path[-1], quoted=flags,
         routes_short_form=False,
-        anchor=(_quoted_segment(parts[0], quoted=quoted[0]), route_len),
+        anchor=(_quoted_segment(parts[0], quoted=quoted[0]), route_len), resolved=route_len,
     )
-    if TIME_SPINE_DATASET in effective_hop_path[route_len:]:  # hops after the anchor's route
+    if is_spine(current) and len(effective_hop_path) > route_len:  # hops after the anchor's route reach the spine
         raise UnresolvableDimensionRelationshipError(
             reference=".".join(parts), root_dataset=host.spelling,
             reason=f"a route never crosses {TIME_SPINE_DATASET!r}, which is read only as an anchor.",
