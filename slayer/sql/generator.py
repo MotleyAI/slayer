@@ -5726,7 +5726,7 @@ class SQLGenerator:
             )
             if owner_dataset is None:
                 return None
-            owner_relation = "__".join(key.path)
+            owner_relation = self._join_alias(root=source_relation, path=tuple(key.path))
         else:
             owner_dataset = source_dataset
             owner_relation = source_relation

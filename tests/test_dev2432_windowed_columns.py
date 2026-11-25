@@ -30,10 +30,11 @@ from slayer.core.errors import (
     UnsafeRelationshipInputError,
 )
 from slayer.core.field_expression import DialectEntry, ExpressionObject
-from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.models import DatasetField, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2210_fixtures import DDL as FILTER_DDL
 from tests._dev2210_fixtures import seed, table_datasets
 from tests._engine_helpers import seeded_exec_engine
@@ -593,6 +594,37 @@ async def test_windows_of_two_datasets_reading_each_other_across_to_one_hops(fil
     assert sorted(int(r["a.id"]) for r in ids.data) == [1, 2]
     windows = await _run(filter_engine, _grouped("a", "a.w", "count(a.*)"))
     assert _num(_by(windows, "a.w", "m")) == {1: 2}
+
+
+LONG_A = "first_relationship_with_a_rather_long_descriptive_name"
+LONG_B = "second_relationship_with_a_rather_long_descriptive_name"
+
+
+@pytest.mark.parametrize("leaf, read", [("dv", "v"), ("wv", "__slayer_w_wv")], ids=["derived", "windowed"])
+async def test_a_field_across_a_long_joined_path_reads_the_fitted_alias(tmp_path, leaf, read):
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_datasource(DatasourceConfig(name="pg", type="postgres", host="localhost", database="x"))
+    to_one = RelationshipCardinality.MANY_TO_ONE
+    pg = [DialectEntry(dialect="POSTGRES", expression="ROW_NUMBER() OVER (ORDER BY v)")]
+    await storage.save_dataset(SlayerDataset(name="c", data_source="pg", sql_table="c", fields=[
+        _col("id", primary_key=True), _col("v"), DatasetField(name="dv", datatype=DataType.INTEGER, expression="c.v * 2"),
+        DatasetField(name="wv", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=pg))]), _validate=False)
+    await storage.save_dataset(SlayerDataset(name="b", data_source="pg", sql_table="b", fields=[
+        _col("id", primary_key=True), _col("c_id")], relationships=[DatasetRelationship(
+            name=LONG_B, to="c", from_columns=["c_id"], to_columns=["id"], cardinality=to_one)]), _validate=False)
+    await storage.save_dataset(SlayerDataset(name="a", data_source="pg", sql_table="a", fields=[
+        _col("id", primary_key=True), _col("b_id")], relationships=[DatasetRelationship(
+            name=LONG_A, to="b", from_columns=["b_id"], to_columns=["id"], cardinality=to_one)]), _validate=False)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        resp = await engine.execute(SlayerQuery.model_validate(
+            {"population": "a", "dimensions": [f"a.{LONG_A}.{LONG_B}.{leaf}"], "metrics": ["count(a.*)"]}), dry_run=True)
+    finally:
+        engine.close()
+    assert resp.sql is not None
+    tree = sqlglot.parse_one(resp.sql, dialect="postgres")
+    aliases = {j.this.alias_or_name for j in tree.find_all(exp.Join)}
+    assert {c.table for c in tree.find_all(exp.Column) if c.name == read} <= aliases, resp.sql
 
 
 async def test_a_stored_own_windowed_filter_fails_the_query(filter_engine):
